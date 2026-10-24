@@ -670,7 +670,9 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let (v, ds) = judge(src);
+    assert_eq!(judge(src).0, Verdict::Uncertified,
+        "construction still has a separate unresolved run-context obligation");
+    let (v, ds) = judge(&src.replace("run() { self.s.go(); }", "fn start() { self.s.go(); }"));
     assert_eq!(
         v,
         Verdict::Holds,
@@ -707,7 +709,9 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let (v, ds) = judge(src);
+    assert_eq!(judge(src).0, Verdict::Uncertified,
+        "construction still has a separate unresolved run-context obligation");
+    let (v, ds) = judge(&src.replace("run() { self.s.go(); }", "fn start() { self.s.go(); }"));
     assert_eq!(
         v,
         Verdict::Holds,
@@ -716,4 +720,3 @@ fn main() { App { }; }
         ds
     );
 }
-

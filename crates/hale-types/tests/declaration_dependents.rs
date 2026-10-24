@@ -361,11 +361,10 @@ fn main() { let a = Api { }; }\n\n\
 fn pick(s: String) -> String {\n    let t = [\"a\", \"b\"];\n    return s + t[idx()];\n}\n\n\
 fn idx() -> Int { return 0; }\n";
 
-/// A call no summary body records (a type's field default, a position
-/// the summary does not walk) leaves the relation no edge to join, so the
-/// declaration holding it is a dependent of every declaration.
+/// A field default retains its own call edge and its type declaration's
+/// dependency identity. An unrelated edit no longer invalidates that type.
 #[test]
-fn a_call_no_summary_body_records_makes_its_declaration_everyones_dependent() {
+fn data_default_calls_keep_their_declared_dependents_without_the_opaque_fallback() {
     let text = "type Rec {\n    n: Int = start();\n}\n\n\
 fn start() -> Int { return 1; }\n\n\
 fn unrelated() -> Int { return 2; }\n\n\
@@ -374,10 +373,19 @@ fn main() { let r = Rec { }; println(r.n + unrelated()); }\n";
     let snap = load(&dir, &BTreeMap::new()).expect("the seed checks");
     let all = keys(snap.declarations());
     let rec = all.iter().find(|k| k.2 == "Rec").expect("Rec");
-    for name in ["start", "unrelated", "main"] {
+    let start = all.iter().find(|k| k.2 == "start").expect("start");
+    let affected = answer(&snap, start).expect("the helper is placed");
+    assert!(affected.contains(rec), "the default's type depends on its helper");
+    let main = all.iter().find(|k| k.2 == "main").expect("main");
+    assert!(affected.contains(main), "the constructing caller depends on the default's helper");
+    for name in ["unrelated", "main"] {
         let k = all.iter().find(|k| k.2 == name).expect("the fn");
-        assert!(answer(&snap, k).expect("a fn is placed").contains(rec), "`Rec` answers for `{name}`");
+        assert!(!answer(&snap, k).expect("a fn is placed").contains(rec), "`Rec` does not depend on `{name}`");
     }
+    let overrides = BTreeMap::from([(dir.join("main.hl"), text.replace("Rec { }", "Rec { n: 7 }"))]);
+    let supplied = load(&dir, &overrides).expect("the supplied-field control checks");
+    assert!(!answer(&supplied, start).expect("the helper is placed").contains(main),
+        "supplying the field removes the caller's dependency on that default's helper");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

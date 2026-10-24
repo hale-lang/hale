@@ -43,3 +43,6 @@ mod ownership_bubble_multi;
 mod unowned_literal_pair_leak;
 #[path = "unowned_literal_positions.rs"]
 mod unowned_literal_positions;
+
+#[path = "ownership_generic_ancestors.rs"]
+mod ownership_generic_ancestors;

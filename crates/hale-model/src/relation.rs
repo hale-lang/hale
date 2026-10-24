@@ -113,6 +113,10 @@ pub struct Call {
     pub dispatch: DispatchKind,
     /// Source-order site ordinal within `from` (see above).
     pub site: u32,
+    /// Explicit argument count for an authored, named callable invocation.
+    /// Function-value/interface dispatch and contracted edges have no such
+    /// default-evaluation premise; their call shape is preserved separately.
+    pub supplied: Option<u32>,
     /// The site sits inside a loop.
     pub in_loop: bool,
     /// The site's per-activation repetition is not statically
@@ -120,6 +124,189 @@ pub struct Call {
     /// separate facts; so does this schema).
     pub unbounded: bool,
     /// The call expression — what a witness points at.
+    pub provenance: ProvenanceId,
+}
+
+/// Evaluation of one argument omitted at a represented named call. The
+/// callable body remains a separate edge: supplying the argument skips this
+/// evaluation without changing which body the call enters.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ArgumentEvaluation {
+    /// The body evaluating the argument at its call site.
+    pub from: FunctionId,
+    /// The real argument-default body.
+    pub to: FunctionId,
+    /// The callable declaring that default.
+    pub callee: FunctionId,
+    /// The represented call ordinal in `from`.
+    pub site: u32,
+    /// The omitted argument's declaration position.
+    pub argument: u32,
+    /// The declared parameter name.
+    pub parameter: String,
+    /// The invocation is inside a source loop.
+    pub in_loop: bool,
+    /// Its enclosing loop has no static bound.
+    pub unbounded: bool,
+    /// The actual call expression witness.
+    pub provenance: ProvenanceId,
+}
+
+/// An authored self lifecycle declaration, independent of invocation context.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LifecycleDefinition {
+    /// The actual executable hook declaration.
+    pub function: FunctionId,
+    /// Locus whose self is supplied when entered.
+    pub owner: crate::LocusDeclId,
+    /// Declared self lifecycle stage.
+    pub stage: crate::LifecycleStage,
+    /// Source body is empty and native invocation can be elided.
+    pub empty: bool,
+}
+/// Guarded constructor may-entry into a known lifecycle body. No native stack-frame,
+/// admission, retention or scheduling fact is implied by this relation.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LifecycleEvaluation {
+    /// Original user constructor identity, independent of call ordinals.
+    pub source: Option<hale_graph::ids::SiteId>,
+    /// Opportunity permitting this work; execution/admission remains conditional.
+    pub guard: crate::LifecycleGuard,
+    /// Body containing the source construction.
+    pub from: FunctionId,
+    /// The actual lifecycle body that construction can enter.
+    pub to: FunctionId,
+    /// Source self lifecycle stage, entered only under its guard.
+    pub stage: crate::LifecycleStage,
+    /// Constructor ordinal in `from`, independent of call ordinals.
+    pub site: u32,
+    /// The construction is enclosed in a loop.
+    pub in_loop: bool,
+    /// Its loop has no static bound.
+    pub unbounded: bool,
+    /// Source constructor witness.
+    pub provenance: ProvenanceId,
+}
+
+/// One source birth-check clause, independent of its enclosing locus body.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BirthCheckDefinition {
+    /// Executable predicate and conditional payload, identified by the clause.
+    pub function: FunctionId,
+    /// Locus whose post-birth state the predicate reads.
+    pub owner: crate::LocusDeclId,
+    /// Inline closure that the predicate can conditionally violate.
+    pub closure: String,
+    /// Clause declaration order within the locus.
+    pub ordinal: u32,
+}
+
+/// The source expressions of one declared closure assertion.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClosureDefinition {
+    /// Executable assertion body, identified by its closure declaration.
+    pub function: FunctionId,
+    /// The declaring locus and its implicit self.
+    pub owner: crate::LocusDeclId,
+    /// The authored closure name.
+    pub name: String,
+    /// The declared runtime epoch.
+    pub epoch: crate::ClosureEpoch,
+    /// Closure declaration order, including assertion-less inline closures.
+    pub ordinal: u32,
+}
+
+/// A source `check_closures()` invocation, including a legitimate no-op.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClosureCheck {
+    /// The source body containing the intrinsic.
+    pub function: FunctionId,
+    /// The implicit-self locus whose explicit assertions are evaluated.
+    pub owner: crate::LocusDeclId,
+    /// Dedicated checkpoint ordinal, never an authored Call ordinal.
+    pub site: u32,
+    /// Actual minted call expression identity.
+    pub source: hale_graph::ids::SiteId,
+    /// The checkpoint is inside a source loop.
+    pub in_loop: bool,
+    /// Its enclosing loop has no static bound.
+    pub unbounded: bool,
+    /// Source witness for the intrinsic expression.
+    pub provenance: ProvenanceId,
+}
+
+/// Execution of one assertion at a represented explicit checkpoint.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClosureEvaluation {
+    /// Source body containing the checkpoint.
+    pub from: FunctionId,
+    /// The assertion body selected by the checkpoint's implicit self.
+    pub to: FunctionId,
+    /// The source checkpoint's dedicated ordinal.
+    pub site: u32,
+    /// Closure declaration order within that self locus.
+    pub closure: u32,
+    /// The checkpoint is inside a source loop.
+    pub in_loop: bool,
+    /// Its enclosing loop has no static bound.
+    pub unbounded: bool,
+    /// The actual checkpoint expression witness.
+    pub provenance: ProvenanceId,
+}
+
+/// The declaration constructed by an expression. Records retain their type
+/// ownership and acquire no locus lifecycle or instance semantics.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum ConstructorTarget {
+    /// A locus declaration.
+    Locus(crate::LocusDeclId),
+    /// A plain data type declaration.
+    Type(crate::TypeDeclId),
+}
+
+/// Constructor evaluation of one omitted default. Constructor
+/// ordinals are separate from authored call and publish ordinals.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Initialization {
+    /// The body evaluating the constructor.
+    pub from: FunctionId,
+    /// The parameter/field default body entered.
+    pub to: FunctionId,
+    /// The constructed declaration, which owns `to`.
+    pub owner: ConstructorTarget,
+    /// The omitted member's declared name.
+    pub field: String,
+    /// Member declaration order within the constructed declaration.
+    pub member: u32,
+    /// Source-order constructor ordinal within `from`.
+    pub site: u32,
+    /// The constructor is nested in a source loop.
+    pub in_loop: bool,
+    /// The enclosing loop has no statically established bound.
+    pub unbounded: bool,
+    /// The source constructor witness.
+    pub provenance: ProvenanceId,
+}
+
+/// A represented source constructor, including explicit field overrides.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Construction {
+    /// Original user constructor site. None is unavailable; this internal
+    /// identity is distinct from the portable per-function ordinal.
+    pub source: Option<hale_graph::ids::SiteId>,
+    /// The body evaluating the constructor.
+    pub function: FunctionId,
+    /// The locus or data type being constructed.
+    pub owner: ConstructorTarget,
+    /// Source-order constructor ordinal within the body.
+    pub site: u32,
+    /// Explicitly supplied parameter names, sorted and unique.
+    pub supplied: Vec<String>,
+    /// The constructor is nested in a source loop.
+    pub in_loop: bool,
+    /// The enclosing loop has no established finite bound.
+    pub unbounded: bool,
+    /// The source constructor witness.
     pub provenance: ProvenanceId,
 }
 
@@ -369,10 +556,11 @@ pub enum SupervisedRef {
 }
 
 /// `supervises(parent, child, error_type, policy)` — one row per
-/// `on_failure` handler. Two handlers supervising the same child
-/// for DIFFERENT error types are distinct policies (the schema-1.10
-/// supervision section is per-handler), so the error type is part
-/// of the row and its canonical key.
+/// authored `on_failure` handler. The error type remains part of the
+/// source policy and historical artifact identity. Runtime dispatch reads
+/// the canonical handler-routing table by child type; it does not select
+/// a handler by this error-type string. The current checker requires
+/// `ClosureViolation` and refuses a second handler for the same child.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Supervises {
     /// The supervising locus — the one declaring `on_failure`.
@@ -390,9 +578,9 @@ pub struct Supervises {
     /// stable-sorts by (locus, child) only, so handlers sharing
     /// both serialize in authored order, not error-type order
     /// (review round 11). PART OF THE CANONICAL KEY: two handlers
-    /// with identical (parent, child, error_type) signatures are
-    /// check-clean and both serialize in the legacy artifact, so
-    /// the model must hold both rows (review round 14).
+    /// with identical (parent, child, error_type) signatures can occur
+    /// in historical artifacts/source inventories (review round 14).
+    /// Current checked programs cannot declare that duplicate.
     pub authored_ordinal: u32,
     /// The `on_failure` declaration.
     pub provenance: ProvenanceId,

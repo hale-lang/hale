@@ -96,7 +96,17 @@ use crate::symbol::Bundle;
 // 9 (GH #1327): the law account includes instance-domain separation,
 // judged from ownership, placement and cardinality evidence. A sidecar
 // from the earlier engine cannot stand in for this expanded law account.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 9;
+// 10: aggregate instance queue reservations and resource adequacy.
+// 11: type-wide flow policy with explicit generic-classification gaps.
+// 12: handler calls/effects, symbolic generic receivers and recovery cost coverage.
+// 13: retain executable recovery observations from discarded struct-default walks.
+// 14: explicit structural failure cannot certify through implicit handler dispatch.
+// 15: constructor invocation includes omitted locus parameter defaults in failure coverage.
+// 16: ordinary parameter-default execution participates in effects, costs and graph paths.
+// 20: refuse certification across unmodeled automatic construction epochs.
+// 21: source phase roots include automatic assertions and reject missing reports.
+// 25: parent accept/release work follows source caller construction contexts.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 28;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -392,12 +402,12 @@ pub fn model_fanout<'a>(
         // choice, whichever account its alternatives come from.
         //
         // Contribution of one alternative, keyed by authored site.
-        let mut by_site: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
-        for c in r.calls.iter().filter(|c| c.from == from) {
+        let mut by_site: BTreeMap<(u8, u32, u32), Vec<u64>> = BTreeMap::new();
+        for c in crate::model_query::executions(model).filter(|c| c.from == from) {
             // Through-stdlib rows are the CONTRACTED endpoint pair;
             // their multiplicity and grouping live in the per-entry
             // absorption account, and counting both would double.
-            if c.dispatch == hale_model::DispatchKind::ViaStdlib {
+            if c.contracted() {
                 continue;
             }
             let n = bail!(fn_fanout(model, c.to, path));
@@ -407,7 +417,14 @@ pub fn model_fanout<'a>(
                 path.pop();
                 return None;
             }
-            by_site.entry(c.site).or_default().push(n);
+            let site = match c.site {
+                crate::model_query::ExecutionSite::Call(site) => (0, site, 0),
+                crate::model_query::ExecutionSite::ClosureCheck { check,closure } => (4,check,closure),
+                crate::model_query::ExecutionSite::ArgumentDefault { call, argument } => (3, call, argument),
+                crate::model_query::ExecutionSite::Initialization { constructor, parameter } => (1, constructor, parameter),
+                crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => { path.pop(); return None; },
+            };
+            by_site.entry(site).or_default().push(n);
         }
         for a in model
             .analyses
@@ -420,7 +437,15 @@ pub fn model_fanout<'a>(
                 path.pop();
                 return None;
             }
-            by_site.entry(a.site).or_default().push(n);
+            let site = match crate::model_query::absorption_site(a) {
+                Some(crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. }) => { path.pop(); return None; },
+                Some(crate::model_query::ExecutionSite::Call(site)) => (0, site, 0),
+                Some(crate::model_query::ExecutionSite::ClosureCheck { check,closure }) => (4,check,closure),
+                Some(crate::model_query::ExecutionSite::ArgumentDefault { call, argument }) => (3, call, argument),
+                Some(crate::model_query::ExecutionSite::Initialization { constructor, parameter }) => (1, constructor, parameter),
+                None => (2, a.site, 0),
+            };
+            by_site.entry(site).or_default().push(n);
         }
         for (_, alts) in by_site {
             // One dispatch runs ONE alternative.
@@ -474,6 +499,7 @@ pub fn model_fanout<'a>(
                     | hale_model::AbsorbedEvent::PublishHole { .. }
                     | hale_model::AbsorbedEvent::Deliver { .. }
                     | hale_model::AbsorbedEvent::Truncated
+                    | hale_model::AbsorbedEvent::Lifecycle { .. }
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         seen.pop();
                         return None;
@@ -609,6 +635,25 @@ pub fn derive_certificate_evidence_over(
     effects: &crate::effects::EffectCertificates,
     summary: &crate::alloc_summary::AllocSummary,
 ) -> EvidenceTable {
+    derive_certificate_evidence_with_recovery_reports_over(bundle, table, model, effects, summary).0
+}
+
+/// The model-derived refusals that the legacy effect stream has not emitted.
+/// These are collected at the verdict change, never rediscovered by matching
+/// diagnostic text or rerunning a certificate engine.
+pub(crate) struct RecoveryCertificateReport {
+    pub ordinal: u32,
+    pub message: String,
+}
+
+pub(crate) fn derive_certificate_evidence_with_recovery_reports_over(
+    bundle: &Bundle<'_>,
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    effects: &crate::effects::EffectCertificates,
+    summary: &crate::alloc_summary::AllocSummary,
+) -> (EvidenceTable, Vec<RecoveryCertificateReport>) {
+    let mut recovery_reports = Vec::new();
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
     let mut groups = effects.clone();
@@ -688,15 +733,11 @@ pub fn derive_certificate_evidence_over(
     }
     let mut cursor: BTreeMap<(String, String), usize> =
         BTreeMap::new();
-    // Round 8/9: the certificate engines walk only ANALYZABLE
-    // loci, and they emit no certificate for an implicit lifecycle
-    // phase with no hook body (`@phase_effects(birth: {})` on a
-    // locus that declares no `birth`). No hook body performs no
-    // effects, so the truthful certificate for such a phase is a
-    // synthetic `Holds` — unanalyzed loci stay report-less and
-    // judge `uncertified`. The analyzability fact is the MODEL's
-    // (`LocusDecl::analyzable`, set once by the model builder) —
-    // this layer never re-walks source.
+    // Only a lifecycle phase with no represented source bodies is vacuous.
+    // An automatic assertion supplies a real phase body even without an
+    // authored hook. Missing reports over real roots stay Uncertified.
+    // The phase relation and analyzability are the model's; this layer does
+    // not re-walk source or infer membership from a callable spelling.
     let locus_analyzable = |raw: &str| -> bool {
         model
             .entities
@@ -714,6 +755,7 @@ pub fn derive_certificate_evidence_over(
             ClaimIr::EffectForbid { at, .. }
             | ClaimIr::EffectOnly { at, .. }
             | ClaimIr::EffectPublishSet { at, .. }
+            | ClaimIr::EffectCauses { at, .. }
             | ClaimIr::NoPanic { at }
             // Change 5h: a budget contract's subject is its
             // annotated fn, and the judgment refuses evidence whose
@@ -724,7 +766,7 @@ pub fn derive_certificate_evidence_over(
             _ => None,
         };
         let mut certs: Vec<CertificateEvidence> = Vec::new();
-        for key in forms {
+        for (form_index, key) in forms.into_iter().enumerate() {
             let idx = by_key.get(&key).and_then(|list| {
                 let c = cursor.entry(key.clone()).or_insert(0);
                 let i = list.get(*c).copied();
@@ -732,14 +774,32 @@ pub fn derive_certificate_evidence_over(
                 i
             });
             let Some(i) = idx else {
-                if let ClaimIr::PhaseEffects { locus, .. } =
+                if let ClaimIr::PhaseEffects { locus, phases } =
                     &row.law
                 {
                     if locus_analyzable(locus.1.raw.as_str()) {
+                        let phase = &phases[form_index].0;
+                        let has_body = model.relations.phase_of.iter().any(|p|
+                            model.entities.functions[p.function.index()].owner == locus.0
+                                && model.entities.phases[p.phase.index()].name == *phase);
+                        let empty_lifecycle = !has_body && matches!(phase.as_str(), "birth" | "accept" | "release" | "run" | "drain" | "dissolve");
+                        let invalid_phase = !has_body && !empty_lifecycle;
+                        let mut diags = Vec::new();
+                        if !empty_lifecycle {
+                            if let Some(locus) = locus.0 {
+                                let pid = ProvenanceId(out.provenance.records.len() as u32);
+                                out.provenance.records.push(model.provenance.records[model.entities.loci[locus.index()].provenance.index()].clone());
+                                diags.push((if invalid_phase {
+                                    format!("phase `{phase}` is not declared by this locus")
+                                } else {
+                                    format!("phase `{phase}` uncertified: the source phase account has no matching certificate")
+                                }, pid));
+                            }
+                        }
                         certs.push(CertificateEvidence {
                             form: key.1.clone(),
-                            result: VerdictIr::Holds,
-                            diags: Vec::new(),
+                            result: if empty_lifecycle { VerdictIr::Holds } else if invalid_phase { VerdictIr::Invalid } else { VerdictIr::Uncertified },
+                            diags,
                         });
                     }
                 }
@@ -789,9 +849,43 @@ pub fn derive_certificate_evidence_over(
                 }
                 diags_out.push((d.message, pid));
             }
+            // Explicit summaries cannot certify behavior across unresolved
+            // recovery execution. Preserve an existing violation; withdraw
+            // only a would-be Holds, with the model's scoped witness.
+            let mut result = cert.result;
+            let coverage_roots: Vec<_> = match &row.law {
+                ClaimIr::AllocBudget { .. } => subject.into_iter().map(|f| (f, false)).collect(),
+                ClaimIr::QuantBudget { dim, .. } => subject.into_iter().map(|f| (f, matches!(dim, hale_model::QuantDimIr::Fanout))).collect(),
+                ClaimIr::EffectForbid { .. } | ClaimIr::EffectOnly { .. } | ClaimIr::EffectPublishSet { .. }
+                | ClaimIr::NoPanic { .. } => subject.into_iter().map(|f| (f, false)).collect(),
+                ClaimIr::EffectCauses { .. } => subject.into_iter().map(|f| (f, true)).collect(),
+                ClaimIr::PhaseEffects { locus: (Some(locus), _), phases } => phases.get(form_index).map(|(phase, _)| {
+                    model.relations.phase_of.iter().filter(|p| model.entities.phases[p.phase.index()].name == *phase
+                        && model.entities.functions[p.function.index()].owner == Some(*locus))
+                        .map(|p| (p.function, false)).collect()
+                }).unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if result == crate::verdict::Verdict::Holds {
+                if let Some(gap) = coverage_roots.iter().find_map(|(root, delivery)| crate::model_query::recovery_cost_gap(model, *root, *delivery)) {
+                    result = crate::verdict::Verdict::Uncertified;
+                    if let Some(witness) = model.provenance.records.get(gap.hole.provenance.index()) {
+                        let pid = ProvenanceId(out.provenance.records.len() as u32);
+                        out.provenance.records.push(witness.clone());
+                        let path = gap.path.iter().map(|f| model.entities.functions[f.index()].display.as_str()).collect::<Vec<_>>().join(" -> ");
+                        let budget = matches!(row.law, ClaimIr::AllocBudget { .. } | ClaimIr::QuantBudget { .. });
+                        let kind = if budget { "budget" } else { "effect certificate" };
+                        let form = if budget { String::new() } else { format!(" ({})", demangled[i].1) };
+                        let execution = if gap.hole.kind == hale_model::HoleKind::UnmodeledInitialization { "implicit execution" } else { "recovery execution" };
+                        let message = format!("{kind} uncertified{form}: `{path}` reaches {}; explicit work does not cover the unresolved {execution}", gap.hole.reason);
+                        if !budget { recovery_reports.push(RecoveryCertificateReport { ordinal: row.ordinal, message: message.clone() }); }
+                        diags_out.push((message, pid));
+                    }
+                }
+            }
             certs.push(CertificateEvidence {
                 form: demangled[i].1.clone(),
-                result: match cert.result {
+                result: match result {
                     crate::verdict::Verdict::Holds => {
                         VerdictIr::Holds
                     }
@@ -814,5 +908,5 @@ pub fn derive_certificate_evidence_over(
             certs,
         });
     }
-    out
+    (out, recovery_reports)
 }

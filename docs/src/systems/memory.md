@@ -39,10 +39,42 @@ When a parent locus dissolves, its entire subtree of child regions frees wholesa
 
 ### Flow-Child Reclamation (`release`)
 
-When a long-running parent accepts child loci via `accept(c: Conn)`, child lifetime depends on whether the parent declares `release(c: Conn)`:
+When a long-running parent accepts child loci via `accept(c: Conn)`, child lifetime depends on whether any locus in the program declares `release(c: Conn)`:
 
 - **Resident children (default)**: Without `release`, an accepted child's arena lives until the parent locus dissolves.
 - **Flow children (`release(c: Conn)`)**: Declaring `release` marks `Conn` as a per-request or per-connection flow. As soon as the child's `run()` returns (or it executes `terminate;`), the runtime dissolves the child and reclaims its arena immediately (see [Parents & Children](../services/parents-children.md)).
+
+An empty or omitted flow `run()` also completes and reclaims the child.
+This includes children handed across a pool boundary to their accepting
+owner: birth and the completion bookends execute on the owner's thread.
+Only that accepting owner's `release` body runs, when it declares one.
+The child leaves its owner's tracker and its struct becomes reusable.
+
+A generic release uses its concrete type argument: specializing an owner
+whose hook is `release(c: T)` with `T = Conn` makes `Conn` a flow.
+Declaring the generic template alone names no concrete child type.
+
+The compiler records the effective storage policy once in its allocation
+summary, including recognition mode/cap and accept-hook presence. The
+model and lowering view read that row, and generic instances inherit the
+template's literal policy. This agreement supplies configuration facts for
+resource analysis; it does not establish a retained-child or byte bound.
+
+### Recognition reservations
+
+`projection recognition(cap=N, fixed_cell)` and `shared_slab` reserve at most
+`N` child arenas concurrently per owner, shared by its accepted child types.
+An exhausted reservation fails with `RecognitionPoolUnavailable` before the
+owner exposes the new child through its header, registration, `accept` and
+`birth`. This is a hard runtime failure; the `accept` callback does not reject
+children. Cross-domain create requests may have already evaluated and copied
+params before this owner-side check.
+
+A child's reclaim returns a reservation. Fixed cells become reusable; a shared
+slab keeps its bytes and bump position until the owner dissolves. Reusing a
+slab reservation does not replenish its storage budget. These caps alone do
+not establish a total byte ceiling or account for pending create requests,
+restart overlap, or temporary work.
 
 ## Structural Memory Safety
 

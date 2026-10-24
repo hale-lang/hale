@@ -1,0 +1,9 @@
+locus Worker {
+    params { n: Int = 0; }
+    closure audit { self.n ~~ self.n within 0; epoch birth; }
+}
+group workers = { Worker };
+main locus App {
+    claims { quiet: forbid reaches(workers, effects(stdio)) during birth; }
+}
+fn main() { Worker { }; App { }; }

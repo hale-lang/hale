@@ -2,36 +2,11 @@
 //! of obligations per snapshot, `Snapshot::demand_lifecycle`, counted as
 //! `lifecycle_order`.
 //!
-//! [`derive_lifecycle`] reads four families and the declarations they
-//! name, and derives nothing those families already answer:
-//!
-//! - the **placement table** (P1): every instance template, static
-//!   (an [`InstanceKey`] of the root's, the entry's, an adapter's tower,
-//!   replicas apart) or dynamic (a literal outside the tower, with the
-//!   domains its scope runs in and its bound), and the domains. A held
-//!   row and the rows projected under it are their source's instances
-//!   and owe nothing of their own; a hole names no declaration and gets
-//!   no rows. A dynamic literal's own locus fields are not rows of the
-//!   table (P1 enumerates no subtree it cannot key), so they are
-//!   instances here, each its field literal's template, in its owner's
-//!   domains. A field literal reached through several constructions of
-//!   its owner's declaration is one template that keeps each one's
-//!   contribution (owner, instantiating domain, own domain), a nested
-//!   field the product of its owner's with its own placement, and its
-//!   bound is their sum. A body or accepted literal keeps every template
-//!   of its enclosing locus as an owner the same way, each occurrence on
-//!   the domain its enclosing occurrence runs it on, with the table's
-//!   bound, which covers every enclosing scope. A claim is one domain
-//!   where the contributions agree and their set where they do not,
-//!   never one owner's alone.
-//! - the **handler rows**: which `on_failure` an instance's owner runs
-//!   for it, and the recovery ops it can invoke (a restart).
-//! - the **flow rows**: whether an accepted child is reclaimed at the
-//!   end of its `run()` (a flow) or by its owner's cascade (a resident).
-//! - the **bus graph**: which instances subscribe (registration,
-//!   readiness, the teardown delivery contract).
-//! - the **entry row**: which `main locus` is the entry, by identity,
-//!   whose deferred teardown is the main entry's spine.
+//! [`derive_lifecycle`] reads shared source instance contexts, the placement
+//! domains, handler routing, completed flow membership, bus subscriptions and
+//! the entry identity. Construction position, owner contributions, dynamic
+//! fields and bounds are derived upstream by `lifecycle_context`, once per
+//! snapshot, independently of obligation and emission plans.
 //!
 //! Each instance owes its rows in the order its domain performs them:
 //! params settle (when its declaration brackets), accept, subscribe and
@@ -72,13 +47,13 @@ use super::{
 };
 use crate::bus_graph::BusGraph;
 use crate::entry::EntryRow;
-use crate::flows::{is_flow, FlowRows};
+use crate::flow_instances::FlowInstances;
 use crate::handler_routing::HandlerRouting;
 use crate::placement::{
-    Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind, InstanceKey, LocusIndex, Origin,
-    PlacementTable, SiteRef, SiteUniverse, Template,
+    Bound, DomainId, DomainKind, LocusIndex, PlacementTable, SiteUniverse, Template,
 };
-use crate::snapshot::Snapshot;
+use hale_model::LifecycleStage;
+use crate::lifecycle_context::{initialization_domain, Construction as How, Contribution, LifecycleContext, LifecycleContexts, LiteralPosition as Built};
 use crate::symbol::Bundle;
 
 /// What the producer reads: the snapshot's placement table, handler
@@ -88,11 +63,10 @@ pub struct LifecycleInputs<'a> {
     pub bundle: &'a Bundle<'a>,
     pub placement: &'a PlacementTable,
     pub handlers: &'a HandlerRouting,
-    pub flows: &'a FlowRows,
+    pub flows: &'a FlowInstances,
     pub bus: &'a BusGraph,
-    /// The ownership graph: the loci an interface `accept(c: I)` admits
-    /// (its `accepts` relation), which no declaration spells.
-    pub ownership: &'a crate::ownership_graph::OwnershipGraph,
+    /// Shared source instance contexts, derived independently of this plan.
+    pub contexts: &'a LifecycleContexts,
     /// The entry row: which `main locus` is the entry, whose deferred
     /// teardown is the main entry's spine.
     pub entry: &'a EntryRow,
@@ -102,14 +76,16 @@ pub struct LifecycleInputs<'a> {
 /// instance template the placement table names, and the process's.
 pub fn derive_lifecycle(inputs: &LifecycleInputs<'_>) -> LifecyclePlan {
     let index = LocusIndex::of(inputs.bundle);
-    let literals = literal_positions(inputs.bundle);
-    let subjects = subjects(inputs, &index, &literals);
+    let subjects: Vec<_> = inputs.contexts.instances.iter().map(|context| Subject {
+        context,
+        decl: index.decl(context.site.decl.site).expect("source context names an original declaration"),
+    }).collect();
     let mut b = Builder {
         inputs,
         subjects: &subjects,
         facts: subjects
             .iter()
-            .map(|s| Facts::of(s.decl, s.universe, &index, inputs.bus, is_flow(inputs.flows, &s.site.decl.lowered)))
+            .map(|s| Facts::of(s.decl, s.universe, &index, inputs.bus, inputs.flows.is_flow(&s.site.decl.lowered)))
             .collect(),
         plan: LifecyclePlan {
             obligations: Vec::new(),
@@ -133,370 +109,14 @@ pub fn derive_lifecycle(inputs: &LifecycleInputs<'_>) -> LifecyclePlan {
     b.plan
 }
 
-// ------------------------------------------------------- the literals
-
-/// Where a locus literal is written: its statement position and the
-/// body that holds it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LiteralAt {
-    built: Built,
-    member: Member,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Built {
-    /// `Kid { };` — torn down where the statement ends (the eager spine).
-    Statement,
-    /// `let k = Kid { };` — torn down at the scope's exit (a frame entry).
-    Let,
-    /// Inside another expression (a receiver, an argument, a field
-    /// default): torn down with the frame, as a let-bound one is.
-    Nested,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Member {
-    /// The top-level user `fn main`.
-    FnMain,
-    Fn,
-    /// An `on_failure` body: runs only when the handler does.
-    Handler,
-    /// A lifecycle body with a row of its locus's own (`birth`, `run`,
-    /// `drain`, `dissolve`): the row whose end follows each statement.
-    Lifecycle(K),
-    Other,
-}
-
-/// Every locus literal of both universes, by site.
-fn literal_positions(bundle: &Bundle<'_>) -> BTreeMap<SiteRef, LiteralAt> {
-    let mut w = LiteralWalk { out: BTreeMap::new(), ids: &bundle.snapshot, universe: SiteUniverse::User, member: Member::Other };
-    for program in bundle.programs.values() {
-        w.items(&program.items, true);
-    }
-    if let (Some(p), Some(ids)) = (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
-        w.ids = ids;
-        w.universe = SiteUniverse::StdlibAnalysis;
-        w.items(&p.items, false);
-    }
-    w.out
-}
-
-struct LiteralWalk<'s> {
-    out: BTreeMap<SiteRef, LiteralAt>,
-    ids: &'s Snapshot,
-    universe: SiteUniverse,
-    member: Member,
-}
-
-impl LiteralWalk<'_> {
-    fn items(&mut self, items: &[TopDecl], top: bool) {
-        for item in items {
-            match item {
-                TopDecl::Fn(f) => {
-                    let main = top && self.universe == SiteUniverse::User && f.name.name == "main";
-                    self.member = if main { Member::FnMain } else { Member::Fn };
-                    self.block(&f.body);
-                }
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Params(pb) => {
-                                self.member = Member::Other;
-                                for p in &pb.params {
-                                    if let ParamInit::Value(e) = &p.init {
-                                        self.expr(e, Built::Nested);
-                                    }
-                                }
-                            }
-                            LocusMember::Lifecycle(d) => {
-                                self.member = match d.kind {
-                                    LifecycleKind::Birth => Member::Lifecycle(K::Birth),
-                                    LifecycleKind::Run => Member::Lifecycle(K::Run),
-                                    LifecycleKind::Drain => Member::Lifecycle(K::Drain),
-                                    LifecycleKind::Dissolve => Member::Lifecycle(K::Dissolve),
-                                    LifecycleKind::Accept | LifecycleKind::Release => Member::Other,
-                                };
-                                self.block(&d.body);
-                            }
-                            LocusMember::Fn(f) => {
-                                self.member = Member::Other;
-                                self.block(&f.body);
-                            }
-                            LocusMember::Failure(f) => {
-                                self.member = Member::Handler;
-                                self.block(&f.body);
-                            }
-                            LocusMember::Mode(md) => {
-                                self.member = Member::Other;
-                                self.block(&md.body);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                TopDecl::Module(m) => self.items(&m.items, false),
-                _ => {}
-            }
-        }
-    }
-
-    fn block(&mut self, b: &Block) {
-        for s in &b.stmts {
-            self.stmt(s);
-        }
-        if let Some(t) = &b.tail {
-            self.expr(t, Built::Nested);
-        }
-    }
-
-    fn if_chain(&mut self, i: &IfStmt) {
-        self.expr(&i.cond, Built::Nested);
-        self.block(&i.then_block);
-        match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => self.block(b),
-            Some(ElseBranch::ElseIf(n)) => self.if_chain(n),
-            None => {}
-        }
-    }
-
-    fn stmt(&mut self, s: &Stmt) {
-        match s {
-            Stmt::Let { value, .. } => self.expr(value, Built::Let),
-            Stmt::LetTuple { value, .. } => self.expr(value, Built::Nested),
-            Stmt::Assign { value, .. } => self.expr(value, Built::Nested),
-            Stmt::Expr(e) => self.expr(e, Built::Statement),
-            Stmt::If(i) => self.if_chain(i),
-            Stmt::Match(m) => {
-                self.expr(&m.scrutinee, Built::Nested);
-                for arm in &m.arms {
-                    match &arm.body {
-                        MatchArmBody::Expr(e) => self.expr(e, Built::Statement),
-                        MatchArmBody::Block(b) => self.block(b),
-                    }
-                }
-            }
-            Stmt::For { iter, body, .. } => {
-                self.expr(iter, Built::Nested);
-                self.block(body);
-            }
-            Stmt::While { cond, body, .. } => {
-                self.expr(cond, Built::Nested);
-                self.block(body);
-            }
-            Stmt::Return(Some(e), _) | Stmt::Fail { value: e, .. } => self.expr(e, Built::Nested),
-            Stmt::Block(b) => self.block(b),
-            Stmt::Send { value, .. } => self.expr(value, Built::Nested),
-            _ => {}
-        }
-    }
-
-    /// `e`, written at `built`: a literal records it; anything inside
-    /// it is nested.
-    fn expr(&mut self, e: &Expr, built: Built) {
-        match e {
-            Expr::Struct { inits, id, .. } => {
-                if let Some(site) = self.ids.site_id(*id) {
-                    self.out.insert(SiteRef { universe: self.universe, id: site }, LiteralAt { built, member: self.member });
-                }
-                for i in inits {
-                    self.expr(&i.value, Built::Nested);
-                }
-            }
-            Expr::Binary { left, right, .. } => {
-                self.expr(left, Built::Nested);
-                self.expr(right, Built::Nested);
-            }
-            Expr::Unary { operand, .. } => self.expr(operand, Built::Nested),
-            Expr::Call { callee, args, .. } => {
-                self.expr(callee, Built::Nested);
-                for a in args {
-                    self.expr(a, Built::Nested);
-                }
-            }
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver, Built::Nested),
-            Expr::Index { receiver, index, .. } => {
-                self.expr(receiver, Built::Nested);
-                self.expr(index, Built::Nested);
-            }
-            Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
-                for p in parts {
-                    self.expr(p, Built::Nested);
-                }
-            }
-            Expr::Block(b) => self.block(b),
-            Expr::If(i) => self.if_chain(i),
-            Expr::Match(m) => {
-                self.expr(&m.scrutinee, Built::Nested);
-                for arm in &m.arms {
-                    match &arm.body {
-                        MatchArmBody::Expr(e) => self.expr(e, Built::Nested),
-                        MatchArmBody::Block(b) => self.block(b),
-                    }
-                }
-            }
-            Expr::Or { inner, .. } => self.expr(inner, Built::Nested),
-            _ => {}
-        }
-    }
-}
-
-// ------------------------------------------------------- the instances
-
-/// One instance template: the declaration it realizes, where it sits,
-/// and every parent context it is reached through.
+/// A source context joined to its original declaration for plan-specific facts.
 struct Subject<'a> {
-    site: SourceSite,
+    context: &'a LifecycleContext,
     decl: &'a LocusDecl,
-    universe: SiteUniverse,
-    how: How,
-    /// Every parent context, in construction order: one for a static
-    /// row, an adapter, a template's top and a literal in a free fn; one
-    /// per contribution of each owner for a dynamic literal's field,
-    /// which is one template however many constructions of its owner's
-    /// declaration reach it, and for a body or accepted literal, whose
-    /// owners are every template of its enclosing locus. Nothing about
-    /// an occurrence is read from one contribution alone.
-    contributions: Vec<Contribution>,
-    /// How many occurrences: the table's for a static row and a literal
-    /// (it covers every scope the literal is written in), its owners'
-    /// summed for a field.
-    bound: Bound,
-    /// Built in an `on_failure` body under every contribution: it exists
-    /// only on a path where the handler runs.
-    in_handler: bool,
-    /// Built by a statement of its enclosing locus's lifecycle body: the
-    /// kind of that body's row, which ends after the statement's
-    /// teardown (C13).
-    statement_of: Option<K>,
-    /// A field's name in its owner's params: where it falls in the
-    /// owner's declaration order, the order the cascade walks fields in.
-    field: Option<String>,
-    /// Its domain was decided for it (a root entry, a binding), not
-    /// inherited from its owner.
-    placed: bool,
 }
-
-/// One parent context of a template: the owner it is built under there,
-/// and the domains it is built and runs on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Contribution {
-    /// The instance whose `on_failure` it fails to and whose arena holds
-    /// it: a field's owner, an accepted child's acceptor, a body
-    /// literal's enclosing locus. `None` for a template's top, a literal
-    /// in a free fn, and the occurrences of a cycle of owners.
-    owner: Option<usize>,
-    /// A representative of the owner's execution context: for a field,
-    /// its owner's context with the field's own placement; for a body or
-    /// accepted literal, the enclosing occurrence that runs it. `None`
-    /// pairs it with every contribution of the owner.
-    under: Option<usize>,
-    /// The instantiating thread: the domain running the code that holds
-    /// the literal. `None` when the scope's domains are unknown or many.
-    it: Option<DomainId>,
-    /// The queue owner: where its `run()` runs and its cells land.
-    own: Option<DomainId>,
-    in_handler: bool,
-}
-
-/// Pinned and pool anchors initialize their params on their own domain
-/// (C49/C50). Their literal and, for a pool anchor, their own birth still
-/// run on the instantiating thread.
-fn initialization_domain(t: &PlacementTable, placed: bool, c: &Contribution) -> Option<DomainId> {
-    if placed && c.own.is_some_and(|d| matches!(t.domains[d.0 as usize].kind, DomainKind::Pinned { .. } | DomainKind::Pool { .. })) {
-        c.own
-    } else {
-        c.it
-    }
-}
-
-/// Where a template's contributions come from.
-enum Source<'t> {
-    /// A static row or a literal in a free fn: the one the table gives.
-    Fixed,
-    /// A body or accepted literal: one per contribution of each template
-    /// of its enclosing locus, on the domain that occurrence runs (one of
-    /// the table's `domains` for the scope).
-    Enclosed { decl: DeclRef, domains: &'t BTreeSet<DomainId>, in_handler: bool },
-    /// A dynamic literal's field: one per contribution of each template
-    /// its literal is a default of.
-    Field { parents: Vec<usize> },
-}
-
-/// Whether `to` is `from` or an owner of it, through any owner.
-fn reaches(owners: &[Vec<usize>], from: usize, to: usize) -> bool {
-    let mut seen = BTreeSet::new();
-    let mut stack = vec![from];
-    while let Some(o) = stack.pop() {
-        if o == to {
-            return true;
-        }
-        if seen.insert(o) {
-            stack.extend(owners[o].iter().copied());
-        }
-    }
-    false
-}
-
-/// `c` at the end of `v`, where `v` does not hold it yet.
-fn push_unique(v: &mut Vec<Contribution>, c: Contribution) {
-    if !v.contains(&c) {
-        v.push(c);
-    }
-}
-
-/// The first parent contribution for each execution context. Consumers of
-/// `under` read the parent's instantiating and queue domains, never its
-/// ancestry. Fields also inherit whether construction is in a handler.
-/// Retain those distinctions without expanding every path through shared
-/// owners: a chain of two literals per level otherwise doubles its contexts
-/// at every level, although all paths on one thread make the same claims.
-fn parent_contexts(all: &[Contribution]) -> impl Iterator<Item = (usize, &Contribution)> {
-    let mut seen = BTreeSet::new();
-    all.iter().enumerate().filter(move |(_, c)| seen.insert((c.it, c.own, c.in_handler)))
-}
-
-/// A template's contributions from its owners' current ones; `cut` are
-/// the owners whose edge closed a cycle, built under none of theirs.
-fn derived_contributions(
-    out: &[Subject<'_>],
-    source: &Source<'_>,
-    owners: &[usize],
-    cut: &[usize],
-) -> Vec<Contribution> {
-    let mut v = Vec::new();
-    match source {
-        Source::Fixed => unreachable!("a fixed template keeps the table's contribution"),
-        Source::Enclosed { domains, in_handler, .. } => {
-            // One domain for the scope is every occurrence's; otherwise the
-            // enclosing occurrence's own, where the table names it.
-            let one = (domains.len() == 1).then(|| *domains.iter().next().expect("one"));
-            let on = |d: Option<DomainId>| one.or(d.filter(|d| domains.contains(d)));
-            for &o in owners {
-                for (k, c) in parent_contexts(&out[o].contributions) {
-                    let d = on(c.own);
-                    v.push(Contribution { owner: Some(o), under: Some(k), it: d, own: d, in_handler: *in_handler });
-                }
-            }
-            if owners.is_empty() || !cut.is_empty() {
-                push_unique(&mut v, Contribution { owner: None, under: None, it: one, own: one, in_handler: *in_handler });
-            }
-        }
-        // Built inline in the owner's params loop: on the owner's threads,
-        // under that owner.
-        Source::Field { .. } => {
-            for &p in owners {
-                for (k, c) in parent_contexts(&out[p].contributions) {
-                    v.push(Contribution { owner: Some(p), under: Some(k), ..c.clone() });
-                }
-            }
-            for &p in cut {
-                for c in &out[p].contributions {
-                    push_unique(&mut v, Contribution { owner: None, under: None, ..c.clone() });
-                }
-            }
-        }
-    }
-    v
+impl std::ops::Deref for Subject<'_> {
+    type Target = LifecycleContext;
+    fn deref(&self) -> &Self::Target { self.context }
 }
 
 /// One claim from every contribution's: the rule they share, over the
@@ -521,310 +141,6 @@ fn fields_named(subjects: &[Subject<'_>], owner: usize, name: &str) -> usize {
         .iter()
         .filter(|s| s.how == How::Field && s.contributions.iter().any(|c| c.owner == Some(owner)) && s.field.as_deref() == Some(name))
         .count()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum How {
-    /// A template's top: a root or entry literal, or the entry's implicit
-    /// construction of the root; `in_fn_main` where `fn main`'s frame
-    /// holds it (a root built by another fn is torn down at that fn's
-    /// exit).
-    Top { built: Built, main_locus: bool, in_fn_main: bool },
-    /// A params field of its owner.
-    Field,
-    /// An adapter of the root's `bindings { }`.
-    Adapter,
-    /// A literal its enclosing locus accepts.
-    Accepted { flow: bool },
-    /// A literal its scope tears down.
-    Body { built: Built, in_fn_main: bool },
-}
-
-fn subjects<'a>(
-    inputs: &LifecycleInputs<'a>,
-    index: &LocusIndex<'a>,
-    literals: &BTreeMap<SiteRef, LiteralAt>,
-) -> Vec<Subject<'a>> {
-    let t = inputs.placement;
-    let held: BTreeSet<&InstanceKey> = t
-        .holes
-        .iter()
-        .filter_map(|h| match (&h.at, &h.kind) {
-            (HoleAt::Instance(k), HoleKind::Reuse { .. }) => Some(k),
-            _ => None,
-        })
-        .collect();
-    let main_locus = t.root.as_ref().map(|r| r.realizes.clone());
-    let bound_of = |origin: &Origin| -> Bound {
-        let lit = match origin {
-            Origin::Construction(l) => *l,
-            Origin::Entry(_) | Origin::Binding(_) => return Bound::Once,
-        };
-        t.root
-            .iter()
-            .flat_map(|r| &r.constructions)
-            .chain(&t.entry_literals)
-            .find(|c| c.literal == lit)
-            .map(|c| c.bound.clone())
-            .unwrap_or(Bound::Once)
-    };
-    let mut out: Vec<Subject<'a>> = Vec::new();
-    let mut by_key: BTreeMap<&InstanceKey, usize> = BTreeMap::new();
-    for (key, row) in &t.instances {
-        if row.built_by.is_some() || held.contains(key) {
-            continue;
-        }
-        let (Some(realizes), Some(decl)) = (row.realizes.clone(), row.realizes.as_ref().and_then(|d| index.decl(d.site)))
-        else {
-            continue;
-        };
-        let how = if key.path.is_empty() {
-            match key.origin {
-                Origin::Binding(_) => How::Adapter,
-                Origin::Entry(_) => {
-                    How::Top { built: Built::Statement, main_locus: main_locus.as_ref() == Some(&realizes), in_fn_main: true }
-                }
-                Origin::Construction(lit) => How::Top {
-                    built: literals.get(&lit).map(|l| l.built).unwrap_or(Built::Statement),
-                    main_locus: main_locus.as_ref() == Some(&realizes),
-                    in_fn_main: literals.get(&lit).is_none_or(|l| l.member == Member::FnMain),
-                },
-            }
-        } else {
-            How::Field
-        };
-        let owner = row.owner.as_ref().and_then(|k| by_key.get(k).copied());
-        let it = owner.map_or(Some(PlacementTable::MAIN), |o| {
-            initialization_domain(t, out[o].placed, &out[o].contributions[0])
-        });
-        by_key.insert(key, out.len());
-        let bound = bound_of(&key.origin);
-        out.push(Subject {
-            site: SourceSite { decl: realizes.clone(), template: Template::Static(key.clone()) },
-            decl,
-            universe: realizes.site.universe,
-            how,
-            contributions: vec![Contribution {
-                owner,
-                under: None,
-                it,
-                own: Some(row.domain),
-                in_handler: false,
-            }],
-            bound,
-            in_handler: false,
-            statement_of: None,
-            field: (how == How::Field).then(|| key.path.last().map(|s| s.field.clone())).flatten(),
-            placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
-        });
-    }
-    // Every dynamic template first: a body literal's owners are its
-    // enclosing locus's templates, which may be dynamic sites listed after
-    // it or their fields, so contributions are derived once all exist.
-    let mut sources: Vec<Source<'a>> = out.iter().map(|_| Source::Fixed).collect();
-    for d in &t.dynamic {
-        let (Some(realizes), Some(decl)) = (d.realizes.clone(), d.realizes.as_ref().and_then(|r| index.decl(r.site))) else {
-            continue;
-        };
-        let at = literals.get(&d.literal).copied().unwrap_or(LiteralAt { built: Built::Nested, member: Member::Other });
-        let domain = (d.domains.len() == 1).then(|| *d.domains.iter().next().expect("one"));
-        let in_handler = at.member == Member::Handler;
-        let i = out.len();
-        let how = match &d.enclosing {
-            Enclosing::Locus(enclosing) => {
-                sources.push(Source::Enclosed { decl: enclosing.clone(), domains: &d.domains, in_handler });
-                let acceptor = index.decl(enclosing.site);
-                // A concrete `accept` names the child's declaration; an
-                // interface's admits it in the graph's `accepts`.
-                let accepts = acceptor.is_some_and(|a| {
-                    accept_types(a).any(|ty| index.names(ty, enclosing.site.universe) == Some(realizes.site))
-                        || (accept_types(a).any(|ty| index.names(ty, enclosing.site.universe).is_none())
-                            && inputs.ownership.accepts.get(&a.name.name).is_some_and(|c| c.contains(&realizes.lowered)))
-                });
-                if accepts {
-                    How::Accepted { flow: is_flow(inputs.flows, &realizes.lowered) }
-                } else {
-                    How::Body { built: at.built, in_fn_main: false }
-                }
-            }
-            Enclosing::Fn(_) => {
-                sources.push(Source::Fixed);
-                How::Body { built: at.built, in_fn_main: at.member == Member::FnMain }
-            }
-        };
-        out.push(Subject {
-            site: SourceSite { decl: realizes.clone(), template: Template::Dynamic { literal: d.literal } },
-            decl,
-            universe: realizes.site.universe,
-            how,
-            contributions: vec![Contribution { owner: None, under: None, it: domain, own: domain, in_handler }],
-            bound: d.bound.clone(),
-            in_handler,
-            statement_of: match (how, at.member) {
-                (How::Body { built: Built::Statement, .. }, Member::Lifecycle(k)) => Some(k),
-                _ => None,
-            },
-            field: None,
-            placed: false,
-        });
-        dynamic_fields(&mut out, &mut sources, i, index, &inputs.bundle.snapshot);
-    }
-    // Each template's owners: a static row's from the table, a body
-    // literal's every template of its enclosing locus, in the order they
-    // are listed, a field's every template it is a default of.
-    let mut owners: Vec<Vec<usize>> = (0..out.len())
-        .map(|i| match &sources[i] {
-            Source::Fixed => out[i].contributions.iter().filter_map(|c| c.owner).collect(),
-            Source::Enclosed { decl, .. } => (0..out.len()).filter(|&j| j != i && out[j].site.decl == *decl).collect(),
-            Source::Field { parents } => parents.clone(),
-        })
-        .collect();
-    // A locus that builds itself (`B { }` in B's run, or two loci that
-    // build each other) owns no instance of its own chain: the owner
-    // closing a cycle of owners is cut, its occurrences built under none.
-    let mut cut: Vec<Vec<usize>> = vec![Vec::new(); out.len()];
-    for i in 0..out.len() {
-        let mut k = 0;
-        while k < owners[i].len() {
-            if reaches(&owners, owners[i][k], i) {
-                cut[i].push(owners[i].remove(k));
-            } else {
-                k += 1;
-            }
-        }
-    }
-    for i in 0..out.len() {
-        if matches!(sources[i], Source::Fixed) {
-            for c in &mut out[i].contributions {
-                c.owner = c.owner.filter(|o| !cut[i].contains(o));
-            }
-        } else {
-            out[i].contributions.clear();
-        }
-    }
-    // Every contribution from its owners', to a fixpoint: with the cycles
-    // cut the owners are acyclic, so each template's count is bounded.
-    loop {
-        let mut changed = false;
-        for i in 0..out.len() {
-            if matches!(sources[i], Source::Fixed) {
-                continue;
-            }
-            let next = derived_contributions(&out, &sources[i], &owners[i], &cut[i]);
-            if next != out[i].contributions {
-                out[i].contributions = next;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    // A field's bound is its owners' summed (a cut owner's without its own
-    // cycle); a template is built in a handler only where every
-    // contribution is.
-    fn bound_of_field(
-        i: usize,
-        out: &[Subject<'_>],
-        sources: &[Source<'_>],
-        owners: &[Vec<usize>],
-        cut: Option<&[Vec<usize>]>,
-    ) -> Bound {
-        if !matches!(sources[i], Source::Field { .. }) {
-            return out[i].bound.clone();
-        }
-        let from_owners = owners[i].iter().map(|&o| bound_of_field(o, out, sources, owners, cut));
-        let from_cut = cut.into_iter().flat_map(|c| &c[i]).map(|&o| bound_of_field(o, out, sources, owners, None));
-        from_owners.chain(from_cut).reduce(|a, b| add_bounds(&a, &b)).unwrap_or(Bound::Once)
-    }
-    let bounds: Vec<Bound> = (0..out.len()).map(|i| bound_of_field(i, &out, &sources, &owners, Some(&cut))).collect();
-    for (s, bound) in out.iter_mut().zip(bounds) {
-        s.bound = bound;
-        s.in_handler = !s.contributions.is_empty() && s.contributions.iter().all(|c| c.in_handler);
-    }
-    out
-}
-
-/// The locus fields a dynamic literal's declaration builds from its
-/// defaults, each one template of its field literal however many
-/// templates it is a default of, recursively; a field literal already
-/// a template is not re-entered, which a cycle of defaults ends at.
-fn dynamic_fields<'a>(
-    out: &mut Vec<Subject<'a>>,
-    sources: &mut Vec<Source<'a>>,
-    parent: usize,
-    index: &LocusIndex<'a>,
-    ids: &Snapshot,
-) {
-    let universe = out[parent].universe;
-    if universe != SiteUniverse::User {
-        return;
-    }
-    let decl = out[parent].decl;
-    for m in &decl.members {
-        let LocusMember::Params(pb) = m else { continue };
-        for p in &pb.params {
-            let ParamInit::Value(Expr::Struct { path: lit_path, id, .. }) = &p.init else { continue };
-            let ty = TypeExpr::Named { path: lit_path.clone(), generic_args: Vec::new(), span: lit_path.span };
-            let Some(site) = index.names(&ty, universe) else { continue };
-            let Some(field_decl) = index.decl(site) else { continue };
-            let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
-            let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone(), template: field_decl.name.name.clone() };
-            let field = p.name.name.clone();
-            // Every instance of a literal shares its rows: a field literal
-            // reached under several of its declaration's templates is one
-            // template, with each as a parent.
-            let template = Template::Dynamic { literal };
-            match out.iter().position(|s| s.site.template == template) {
-                Some(j) => {
-                    if let Source::Field { parents } = &mut sources[j] {
-                        if !parents.contains(&parent) {
-                            parents.push(parent);
-                        }
-                    }
-                }
-                None => {
-                    out.push(Subject {
-                        field: Some(field),
-                        placed: false,
-                        site: SourceSite { decl: realizes, template },
-                        decl: field_decl,
-                        universe,
-                        how: How::Field,
-                        contributions: Vec::new(),
-                        bound: Bound::Once,
-                        in_handler: false,
-                        statement_of: None,
-                    });
-                    sources.push(Source::Field { parents: vec![parent] });
-                    dynamic_fields(out, sources, out.len() - 1, index, ids);
-                }
-            }
-        }
-    }
-}
-
-/// How many occurrences two sources of one template give it together.
-fn add_bounds(a: &Bound, b: &Bound) -> Bound {
-    let n = |x: &Bound| match x {
-        Bound::Once => Some(1u32),
-        Bound::AtMost(k) => Some(*k),
-        Bound::Unbounded(_) => None,
-    };
-    match (n(a), n(b)) {
-        (Some(x), Some(y)) => Bound::AtMost(x.saturating_add(y)),
-        _ => match (a, b) {
-            (Bound::Unbounded(why), _) | (_, Bound::Unbounded(why)) => Bound::Unbounded(why.clone()),
-            _ => unreachable!("a bound without a count is unbounded"),
-        },
-    }
-}
-
-fn accept_types(decl: &LocusDecl) -> impl Iterator<Item = &TypeExpr> {
-    decl.members.iter().filter_map(|m| match m {
-        LocusMember::Lifecycle(d) if d.kind == LifecycleKind::Accept => d.params.first().map(|p| &p.ty),
-        _ => None,
-    })
 }
 
 // ------------------------------------------------- what a declaration has
@@ -1236,6 +552,10 @@ impl<'b, 'a> Builder<'b, 'a> {
         if self.is_pinned(i) {
             return (Spine::PinnedMain, DomainRole::Own);
         }
+        if matches!(s.how, How::Top { .. } | How::Body { .. })
+            && self.inputs.flows.is_flow(&s.site.decl.lowered) {
+            return (Spine::Reclaim, DomainRole::Own);
+        }
         match s.how {
             How::Field => (Spine::Cascade, DomainRole::Teardown),
             How::Accepted { .. } => (Spine::Reclaim, DomainRole::Teardown),
@@ -1288,7 +608,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         // before physical reclaim, not before drain or dissolve.
         let posted_run = on_pool && !in_pool_init && matches!(s.how, How::Field | How::Accepted { .. });
         let accepted = matches!(s.how, How::Accepted { .. });
-        let flow = matches!(s.how, How::Accepted { flow: true });
+        let flow = self.inputs.flows.is_flow(&s.site.decl.lowered);
         let let_bound = matches!(s.how, How::Body { built: Built::Let | Built::Nested, .. });
         let brackets = self.facts[i].brackets;
         // A pinned thread runs `run()` whether the author wrote one or the
@@ -1633,7 +953,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         let pinned = self.is_pinned(i);
         let owner_brackets = owners.iter().any(|&o| self.facts[o].brackets);
         let field = s.how == How::Field;
-        let flow = matches!(s.how, How::Accepted { flow: true });
+        let flow = self.inputs.flows.is_flow(&s.site.decl.lowered);
         let in_fn_main_cascade = field && {
             // A field of a template's top whose cascade is lowered in
             // `fn main`, where no locus is `self` (inventory C31).
@@ -1986,11 +1306,10 @@ impl<'b, 'a> Builder<'b, 'a> {
         // has not reached the body's end, nor what waits for it.
         if let (Some(kind), (Spine::EagerTeardown, _), Some(cr)) = (self.subjects[i].statement_of, self.teardown(i), child.reclaim) {
             let body = match kind {
-                K::Birth => parent.birth,
-                K::Run => parent.run,
-                K::Drain => parent.drain,
-                K::Dissolve => parent.dissolve,
-                _ => None,
+                LifecycleStage::Birth => parent.birth,
+                LifecycleStage::Run => parent.run,
+                LifecycleStage::Drain => parent.drain,
+                LifecycleStage::Dissolve => parent.dissolve,
             };
             if let Some(b) = body {
                 self.get(b).edges.completion.push(after(cr, Point::Completed, Rule::SHIPPED));
@@ -2528,23 +1847,14 @@ mod tests {
             let (top, diags) = crate::resolve::build_top_scope(bundle);
             assert!(diags.is_empty(), "{diags:?}");
             let placement = crate::placement::bundle_placement(bundle, &top);
-            let handlers = HandlerRouting::default();
-            let bus = BusGraph::default();
             let programs: Vec<_> = bundle.programs.values().copied().collect();
             let flows = crate::flows::survey(&programs, &bundle.import_renames);
-            let entry = crate::entry::entry_row(bundle);
+            let flows = FlowInstances::derive(bundle, &flows, &crate::typed_bodies::Monomorphs::default(), &top).expect("flow instances");
             let ownership = crate::ownership_graph::OwnershipGraph::default();
-            let inputs = LifecycleInputs {
-                bundle,
-                placement: &placement,
-                handlers: &handlers,
-                flows: &flows,
-                bus: &bus,
-                entry: &entry,
-                ownership: &ownership,
+            let inputs = crate::lifecycle_context::LifecycleContextInputs {
+                bundle, placement: &placement, flows: &flows, ownership: &ownership,
             };
-            let index = LocusIndex::of(bundle);
-            let all = subjects(&inputs, &index, &literal_positions(bundle));
+            let all = crate::lifecycle_context::derive_lifecycle_contexts(&inputs).instances;
             assert_eq!(all.len(), 33, "one template per literal");
             for subject in all {
                 assert!(subject.contributions.len() <= 2, "{}: {} contexts for at most two same-thread owners", subject.site.decl.lowered, subject.contributions.len());

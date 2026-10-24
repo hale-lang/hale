@@ -45,6 +45,9 @@ pub mod closure_events;
 pub mod correspondence;
 pub mod handler_routing;
 pub mod lifecycle;
+pub mod lifecycle_context;
+pub mod lifecycle_hooks;
+pub mod protocol_execution;
 pub mod law;
 pub mod lowering_laws;
 pub mod claim_lowering;
@@ -52,12 +55,15 @@ pub mod claims;
 pub mod desugar_sequence;
 pub mod model;
 pub mod judgment;
+pub mod reachability_proof;
+pub mod recovery_facts;
 pub mod mangle;
 pub mod model_builder;
 pub mod key_routing;
 pub mod route_coverage;
 pub mod model_query;
 mod placement_claim;
+mod resource_claim;
 pub mod route_loss;
 pub mod api_names;
 mod route_params_copy;
@@ -105,6 +111,8 @@ mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;
 pub mod flows;
+pub mod flow_instances;
+pub mod generic_instances;
 mod fn_values;
 mod shadowed_callees;
 pub mod sealability;
@@ -557,3 +565,5 @@ pub fn stdlib_law_source() -> &'static str {
 pub fn stdlib_law_constitutions() -> &'static [(&'static str, &'static str)] {
     hale_stdlib::LAW_CONSTITUTIONS
 }
+
+mod flow_policy;

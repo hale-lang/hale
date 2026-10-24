@@ -1,0 +1,9 @@
+fn observe() -> Int { println("initializer observed"); return 1; }
+locus Settings { params { n: Int = observe(); } }
+locus Worker { fn measure() { let settings = Settings { }; } }
+group workers = { Worker };
+group observers = { observe };
+main locus App {
+    claims { quiet: forbid reaches(workers, effects(stdio)) avoiding observers; }
+}
+fn main() { App { }; }

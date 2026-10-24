@@ -1275,7 +1275,7 @@ fn build_resolved_lowered(
         merged,
         owner_table,
         fresh_locus_factories,
-        ownership,
+        concrete_accepts,
         bubble,
         handlers,
         plan,
@@ -1287,6 +1287,18 @@ fn build_resolved_lowered(
     // emitter reads the plan, and every comparison against the main locus
     // and the `fn main` lowering emits read the row. A view without one is
     // a compiler defect, refused before anything is lowered.
+    let flows = resolved.flows.as_ref().ok_or_else(|| {
+        CodegenError::missing_row("flow_instances", "the complete concrete flow membership and generic inventory", None)
+    })?;
+    let storage_projections = resolved.storage_projections.as_ref().ok_or_else(|| {
+        CodegenError::missing_row("alloc_summary", "the effective locus storage projections", None)
+    })?;
+    let lifecycle_hooks = resolved.lifecycle_hooks.as_ref().ok_or_else(|| {
+        CodegenError::missing_row("alloc_summary", "the source self lifecycle hook inventory", None)
+    })?;
+    let protocol_hooks = resolved.protocol_hooks.as_ref().ok_or_else(|| {
+        CodegenError::missing_row("alloc_summary", "the source parent protocol hook inventory", None)
+    })?;
     let lifecycle = resolved.lifecycle().ok_or_else(|| {
         CodegenError::missing_row("lifecycle_order", "the program's lifecycle plan, which every spine is emitted from", None)
     })?;
@@ -1569,7 +1581,7 @@ fn build_resolved_lowered(
         slot_field_clone: false,
         program: merged,
         topics: &resolved.top.topics,
-        flows: &resolved.flows,
+        flows,
         forms: &resolved.forms,
         bindings: &resolved.bindings,
         typed: &resolved.typed,
@@ -1578,7 +1590,6 @@ fn build_resolved_lowered(
         default_invocations: Vec::new(),
         default_evaluation: Vec::new(),
         current_body: None,
-        specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
         current_fn: None,
@@ -1595,6 +1606,9 @@ fn build_resolved_lowered(
         locus_decls_by_name: locus_decl_index(merged),
         pending_locus_names: BTreeSet::new(),
         alloc_routing: &resolved.alloc_routing,
+        storage_projections,
+        lifecycle_hooks,
+        protocol_hooks,
         lifecycle,
         spines: hale_types::lifecycle::spine::SpineIndex::new(lifecycle),
         entry_locus: entry_locus(entry, merged),
@@ -1629,12 +1643,13 @@ fn build_resolved_lowered(
         ownership_bubble_plan: bubble.singleton,
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
+        ownership_bubble_alternatives: bubble.alternatives,
+        ownership_alternative_forwarding: bubble.alternative_forwarding,
+        bubble_instance_override: None,
         ownership_bubble_crosspool_plan: bubble.crosspool,
         ownership_bubble_mixed_plan: bubble.mixed,
         mixed_bubble_arm: None,
-        ownership_accepts: ownership.accepts.clone(),
-        ownership_accept_rows: &ownership.accept_rows,
-        specialized_accepts: BTreeMap::new(),
+        ownership_accepts: concrete_accepts.clone(),
         handlers: handlers.clone(),
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
@@ -3572,10 +3587,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// subscriptions are held to. Lowering reads a topic's wire
     /// subject, payload, routing key and bound here and derives none.
     pub(crate) topics: &'p hale_types::topic_identity::TopicRows,
-    /// The flow rows over `program` (the lowering view's): a locus is a
-    /// flow, reclaimed when its `run()` completes, when a `release(c: T)`
-    /// clause's `T` denotes it. Lowering asks [`Cx::is_flow`].
-    pub(crate) flows: &'p hale_types::flows::FlowRows,
+    /// Completed flow membership and generic inventory. Lifecycle and
+    /// emission read the same snapshot family; no late flow additions.
+    pub(crate) flows: &'p hale_types::flow_instances::FlowInstances,
     /// The form rows (the lowering view's, F.40 phase 3, C1): a
     /// `@form(hashmap)` slot is laid out by its row's effective `sync`
     /// discipline, inference's included.
@@ -3621,11 +3635,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (`conversion.rs`), so a stdlib body, whose spans start at 0 like
     /// the first user file's, never reads a user body's row.
     pub(crate) current_body: Option<NodeId>,
-    /// The loci the specializations lowering created make flows: each
-    /// generic owner's template clause, specialized by the row with the
-    /// instantiation queue's own substitution (`(owner, child)`, the
-    /// owner by its mangled name). Filled before any body is lowered.
-    pub(crate) specialized_flows: Vec<(String, String)>,
+
     /// The elision rows of the loci lowering synthesized (a generic
     /// locus's monomorphs, by mangled name), which the view cannot hold:
     /// `AllocRouting::specialize` over each synthesized declaration.
@@ -3714,6 +3724,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// and modes lower without their per-call scratch (`locus_elision`),
     /// with the elidable-method sets the noalias-self proof reads.
     pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
+    /// Effective class, allocator mode and cap from the shared summary.
+    pub(crate) storage_projections: &'p BTreeMap<String, hale_types::alloc_summary::StorageProjectionRow>,
+    pub(crate) lifecycle_hooks: &'p hale_types::lifecycle_hooks::LoweredHooks,
+    pub(crate) protocol_hooks: &'p hale_types::protocol_execution::LoweredProtocolHooks,
     /// The view's lifecycle plan (`LoweringView::lifecycle`): the
     /// emitters read each spine's obligations, in order, from it
     /// (`hale_types::lifecycle::spine`, F.40 phase 3, L4). A required
@@ -3944,6 +3958,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
     pub(crate) ownership_forwarding_sets:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    pub(crate) ownership_bubble_alternatives: BTreeMap<(String, String), Vec<hale_types::ownership_graph::OwnerAlternative>>,
+    pub(crate) ownership_alternative_forwarding: BTreeMap<String, BTreeSet<(String, String)>>,
+    /// One source-selected owner arm for the next constructor. Taken before
+    /// its nested defaults execute; None in the inner tuple is the orphan arm.
+    pub(crate) bubble_instance_override: Option<Option<(String, PointerValue<'ctx>, bool)>>,
     /// Interest-based ownership, artifact #3 — cross-pool bubbling.
     /// Same key `(enclosing_locus, child_ty)`, value the owner locus
     /// type `A`, but here `A` is a `SingletonConst` on a DIFFERENT
@@ -3982,17 +4001,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// emptied under `LOTUS_NO_OWNERSHIP_BUBBLE=1`: direct acceptance
     /// is not a bubble.
     pub(crate) ownership_accepts:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// The ownership graph's `accept` rows, by the declaring locus's
-    /// identity: a generic template's, which the synthesis loop
-    /// specializes for each monomorph (`specialized_accepts`).
-    pub(crate) ownership_accept_rows: &'p hale_types::ownership_graph::AcceptRows,
-    /// The child loci each specialization lowering created accepts (a
-    /// generic locus's monomorphs, by mangled name): its template's
-    /// accept rows, asked for by the template's identity, with the
-    /// instantiation queue's own substitution. Filled before any body
-    /// is lowered.
-    pub(crate) specialized_accepts:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// Which `on_failure` handler a failing child reaches: one row per
     /// handler, the child type resolved once (F.40 phase 1.4). The
@@ -5721,6 +5729,7 @@ pub(crate) struct LocusInfo<'ctx> {
     /// carry no forwarding field.
     pub(crate) owner_forward_field_idxs:
         std::collections::BTreeMap<String, u32>,
+    pub(crate) owner_alternative_field_idxs: BTreeMap<(String, String), u32>,
     /// m42: index of the synthetic `__parent_on_failure: ptr`
     /// field. Paired with `parent_self_field_idx`. Holds the
     /// parent's `on_failure` fn ptr (or null). Read by the
@@ -5839,6 +5848,8 @@ pub(crate) struct LocusInfo<'ctx> {
     /// — for accept-in-a-loop patterns (`coord_with_churn`-style)
     /// that's the dominant per-child cost.
     pub(crate) empty_lifecycle: std::collections::BTreeSet<&'static str>,
+    /// Actual source declaration joined to the source hook inventory.
+    pub(crate) birth_declaration: Option<NodeId>,
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -9293,74 +9304,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .filter(|l| !l.generics.is_empty())
             .map(|l| (l.name.name.clone(), l.clone()))
             .collect();
-        let mut generic_names: BTreeMap<String, String> = generic_type_decls
-            .keys()
-            .chain(generic_locus_decls.keys())
-            .map(|name| (name.clone(), name.clone()))
-            .collect();
-        // Body annotations keep their authored qualified paths. Resolve
-        // those paths to the same template as signatures and aliases.
-        for (path, target) in &self.import_renames {
-            if generic_names.contains_key(target) {
-                generic_names.insert(path.join("::"), target.clone());
-            }
-        }
-        let mut seen_mangles: BTreeSet<String> = BTreeSet::new();
-        let mut requests: Vec<(String, Vec<TypeExpr>)> = Vec::new();
-        Self::collect_generic_uses_in_program(
-            self.program,
-            &generic_names,
-            &mut seen_mangles,
-            &mut requests,
-        )?;
-        // A generic fn can spell Holder<T> before T is bound. The
-        // typed producer records the concrete monomorphs discovered
-        // while specializing its body. Queue those concrete rows;
-        // the source walk below leaves unbound template uses out.
-        for m in self.typed.monomorphs().rows() {
-            let template = match m.kind {
-                hale_types::typed_bodies::TemplateKind::Locus => generic_locus_decls.values()
-                    .find(|l| l.id.0 == m.template.0).map(|l| l.name.name.clone()),
-                hale_types::typed_bodies::TemplateKind::Type => generic_type_decls.values()
-                    .find(|t| t.id.0 == m.template.0).map(|t| t.name.name.clone()),
-                hale_types::typed_bodies::TemplateKind::Fn => None,
-            };
-            let Some(template) = template else { continue };
-            let span = hale_syntax::Span::new(0, 0);
-            let args: Option<Vec<TypeExpr>> = m.args.iter().map(|t| match t {
-                hale_types::ty::Ty::Prim(p) => Some(TypeExpr::Primitive(*p, span)),
-                hale_types::ty::Ty::Named(n) => Some(TypeExpr::Named {
-                    path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
-                    generic_args: Vec::new(),
-                    span,
-                }),
-                _ => None,
-            }).collect();
-            if let Some(args) = args {
-                if seen_mangles.insert(m.name.clone()) {
-                    requests.push((template, args));
-                }
-            }
-        }
-        // m63: process requests as a queue — synthesizing one
-        // instantiation may surface NEW generic uses inside its
-        // substituted body (e.g., `Holder<Int>` instantiates
-        // a body containing `Box<Int>` which itself needs
-        // synthesizing). The queue closes when discovery on the
-        // most recent synthesis adds nothing new.
-        // m67: split the generic-instantiation pass into two
-        // phases so a synthesized type can reference another
-        // synthesized type regardless of queue order. Phase 1
-        // synthesizes everything (no declarations) while
-        // continuing to discover nested generic uses; phase 2
-        // declares synthesized types in dependency order via a
-        // retry loop that defers any decl whose field-type
-        // resolution would fail because a dep isn't declared
-        // yet. The pre-m67 BFS-then-declare path worked for
-        // linear chains (Outer → Pair_Int → Box_Int) only when
-        // declared in reverse queue order; for fan-in cases
-        // where two outer types share a nested generic, the
-        // queue order doesn't yield a valid topological sort.
+        // The snapshot's completed generic inventory is shared with
+        // lifecycle flow classification; emission discovers no extra
+        // flow types while synthesizing declarations.
+        let requests: Vec<(String, Vec<TypeExpr>)> = self.flows.instantiations.iter()
+            .map(|i| (i.template.clone(), i.args.clone())).collect();
+        // m63/m67: discovery has already closed the inventory.
+        // Synthesize first, then declare in dependency order; two
+        // outer types can share a nested generic independently of
+        // request order.
         let mut synthesized_types: Vec<TypeDecl> = Vec::new();
         let mut synthesized_loci: Vec<LocusDecl> = Vec::new();
         let mut next_idx = 0usize;
@@ -9372,32 +9324,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Self::synthesize_generic_instantiation(
                         template, &args,
                     )?;
-                // Walk the synthesized decl's body for nested
-                // generic uses; deps go in the queue and get
-                // synthesized in subsequent loop iterations.
-                if let TypeDeclBody::Struct(fields) = &synthesized.body {
-                    for f in fields {
-                        Self::collect_generic_uses(
-                            &f.ty,
-                            &generic_names,
-                            &mut seen_mangles,
-                            &mut requests,
-                        )?;
-                    }
-                } else if let TypeDeclBody::Enum(variants) =
-                    &synthesized.body
-                {
-                    for v in variants {
-                        for f in &v.fields {
-                            Self::collect_generic_uses(
-                                f,
-                                &generic_names,
-                                &mut seen_mangles,
-                                &mut requests,
-                            )?;
-                        }
-                    }
-                }
                 synthesized_types.push(synthesized);
             } else if let Some(template) =
                 generic_locus_decls.get(&template_name)
@@ -9408,22 +9334,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Self::synthesize_generic_locus_instantiation(
                         template, &args, &mangled,
                     )?;
-                // The flow row answers for this specialization: the
-                // template's release clauses with the substitution the
-                // synthesis just applied.
+                // Other specialized rows use the substitution the
+                // syntax synthesis applied. Flow membership is already
+                // the snapshot's completed answer.
                 let subst = Self::generic_locus_subst(template, &args);
-                for child in self
-                    .flows
-                    .specialize(template, |t| Self::substitute_type_expr(t, &subst))
-                {
-                    self.specialized_flows.push((mangled.clone(), child));
-                }
-                // So do the accept rows: the template's, by its identity,
-                // with the same substitution.
-                let accepts = self
-                    .ownership_accept_rows
-                    .specialize(template, |t| Self::substitute_type_expr(t, &subst));
-                self.specialized_accepts.insert(mangled.clone(), accepts);
+                // Acceptance and bubbling already consume the shared
+                // concrete source ownership rows from the resolved view.
                 // Handler sites stay the template's, while their child
                 // types use this monomorph's substitution and route.
                 self.handlers.specialize(template, &mangled, |t| {
@@ -9433,16 +9349,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // over the synthesized declaration.
                 let elision = self.alloc_routing.specialize(&synthesized);
                 self.specialized_elision.insert(mangled.clone(), elision);
-                // Walk synthesized locus's substituted member
-                // type positions for nested generic uses.
-                for member in &synthesized.members {
-                    Self::collect_in_locus_member(
-                        member,
-                        &generic_names,
-                        &mut seen_mangles,
-                        &mut requests,
-                    )?;
-                }
                 self.specialized_locus_decls.insert(mangled, synthesized.clone());
                 synthesized_loci.push(synthesized);
             }
@@ -10661,6 +10567,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn collect_main_placement(&mut self) -> Result<(), CodegenError> {
         use hale_types::placement::{Decision, DomainKind, InstanceKey, InstanceRow, Origin};
         let table = self.placement;
+        table.validate_construction_supervision()
+            .map_err(|why| CodegenError::missing_row("placement", why.to_string(), None))?;
         // Total where the entry row names no `main locus`: no root, and
         // nothing deployed. A root the entry names is a required row.
         let Some(root) = table.root.as_ref() else {
@@ -12312,8 +12220,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// lowering created. Total: no clause naming `locus` means it is not a
     /// flow, a resident child its owner's cascade tears down.
     pub(crate) fn is_flow(&self, locus: &str) -> bool {
-        hale_types::flows::is_flow(self.flows, locus)
-            || self.specialized_flows.iter().any(|(_, child)| child == locus)
+        self.flows.is_flow(locus)
     }
 
     /// The wire subject of the topic declared as `name`, read from the
@@ -12691,47 +12598,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `TypeExpr` per the supplied substitution map. Recurses into
     /// generic args, array elems, tuple parts, etc., so a body
     /// like `[T; 4]` substitutes to `[Int; 4]` correctly.
-    fn substitute_type_expr(
-        expr: &TypeExpr,
-        subst: &BTreeMap<String, TypeExpr>,
-    ) -> TypeExpr {
-        match expr {
-            TypeExpr::Named { path, generic_args, span }
-                if path.segments.len() == 1
-                    && generic_args.is_empty()
-                    && subst.contains_key(&path.segments[0].name) =>
-            {
-                subst[&path.segments[0].name].clone()
-            }
-            TypeExpr::Named { path, generic_args, span } => TypeExpr::Named {
-                path: path.clone(),
-                generic_args: generic_args
-                    .iter()
-                    .map(|a| Self::substitute_type_expr(a, subst))
-                    .collect(),
-                span: span.clone(),
-            },
-            TypeExpr::Array { elem, size, span } => TypeExpr::Array {
-                elem: Box::new(Self::substitute_type_expr(elem, subst)),
-                size: size.clone(),
-                span: span.clone(),
-            },
-            TypeExpr::Tuple(parts, span) => TypeExpr::Tuple(
-                parts
-                    .iter()
-                    .map(|p| Self::substitute_type_expr(p, subst))
-                    .collect(),
-                span.clone(),
-            ),
-            TypeExpr::Projection { class, inner, span } => {
-                TypeExpr::Projection {
-                    class: *class,
-                    inner: Box::new(Self::substitute_type_expr(inner, subst)),
-                    span: span.clone(),
-                }
-            }
-            other => other.clone(),
-        }
+    fn substitute_type_expr(expr: &TypeExpr, subst: &BTreeMap<String, TypeExpr>) -> TypeExpr {
+        hale_types::generic_instances::substitute_type_expr(expr, subst)
     }
 
     /// m63: synthesize a concrete (non-generic) LocusDecl from
@@ -13229,468 +13097,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 
 
-    /// m61b: comprehensive walk for generic instantiations
-    /// across the entire program. Calls `collect_generic_uses` at
-    /// every TypeExpr-bearing site we care about: type decl
-    /// fields, fn / locus signatures, bus payload types, let
-    /// ascriptions in fn bodies. The walk is purely structural —
-    /// the typechecker has already validated names — and runs
-    /// before any synthesis so the synthesized instantiations
-    /// land in user_types before any concrete decl's bodies are
-    /// resolved.
-    fn collect_generic_uses_in_program(
-        program: &Program,
-        generic_names: &BTreeMap<String, String>,
-        seen: &mut BTreeSet<String>,
-        requests: &mut Vec<(String, Vec<TypeExpr>)>,
-    ) -> Result<(), CodegenError> {
-        fn mentions_parameter(te: &TypeExpr, names: &BTreeSet<&str>) -> bool {
-            match te {
-                TypeExpr::Named { path, generic_args, .. } => {
-                    (path.segments.len() == 1 && names.contains(path.segments[0].name.as_str()))
-                        || generic_args.iter().any(|t| mentions_parameter(t, names))
-                }
-                TypeExpr::Projection { inner, .. } => mentions_parameter(inner, names),
-                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => mentions_parameter(elem, names),
-                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions_parameter(t, names)),
-                TypeExpr::Function { params, ret, .. } => params.iter().any(|t| mentions_parameter(t, names))
-                    || ret.as_ref().is_some_and(|t| mentions_parameter(t, names)),
-                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
-            }
-        }
-        // GH #884: module nesting flattened — a generic
-        // instantiation written one brace deeper needs the same
-        // monomorph synthesized, and the `TopDecl::Module` arm
-        // below is now "already descended into" rather than
-        // "skipped".
-        for item in hale_syntax::ast::flat_decls(&program.items) {
-            match item {
-                TopDecl::Type(t) if t.generics.is_empty() => {
-                    match &t.body {
-                        TypeDeclBody::Struct(fields) => {
-                            for f in fields {
-                                Self::collect_generic_uses(
-                                    &f.ty,
-                                    generic_names,
-                                    seen,
-                                    requests,
-                                )?;
-                            }
-                        }
-                        // m61c: enum variant field types can
-                        // reference generic instantiations
-                        // (e.g., a non-generic enum variant
-                        // carrying a Box<Int> payload).
-                        TypeDeclBody::Enum(variants) => {
-                            for v in variants {
-                                for f in &v.fields {
-                                    Self::collect_generic_uses(
-                                        f,
-                                        generic_names,
-                                        seen,
-                                        requests,
-                                    )?;
-                                }
-                            }
-                        }
-                        // GH #759: an alias may NAME a generic
-                        // instantiation (`type Names =
-                        // Vec<String>;`). Walk its target so the
-                        // monomorph is synthesized even when the
-                        // program only ever spells the alias.
-                        TypeDeclBody::Alias(te) => {
-                            Self::collect_generic_uses(
-                                te,
-                                generic_names,
-                                seen,
-                                requests,
-                            )?;
-                        }
-                        // GH #1076: a unit-dialect scalar names `Int` or
-                        // another scalar, never a generic instantiation.
-                        TypeDeclBody::Scalar(_) => {}
-                    }
-                }
-                TopDecl::Type(_) => {
-                    /* generic template — its own body's `T`
-                     * references aren't instantiations. */
-                }
-                TopDecl::Fn(f) if f.generics.is_empty() => {
-                    Self::collect_in_fn_decl(
-                        f,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
-                }
-                TopDecl::Fn(f) => {
-                    // Like type and locus templates, unbound fn
-                    // annotations are not concrete instantiations.
-                    // Keep concretely spelled uses (including builtin
-                    // Option/Result); the typed rows supply bound uses.
-                    let names = f.generics.iter().map(|g| g.name.name.as_str()).collect();
-                    let mut local_seen = BTreeSet::new();
-                    let mut local_requests = Vec::new();
-                    Self::collect_in_fn_decl(f, generic_names, &mut local_seen, &mut local_requests)?;
-                    for (name, args) in local_requests {
-                        if !args.iter().any(|t| mentions_parameter(t, &names)) {
-                            let mangled = Self::mangle_generic_name(&name, &args)?;
-                            if seen.insert(mangled) {
-                                requests.push((name, args));
-                            }
-                        }
-                    }
-                }
-                TopDecl::Locus(l) if l.generics.is_empty() => {
-                    for member in &l.members {
-                        Self::collect_in_locus_member(
-                            member,
-                            generic_names,
-                            seen,
-                            requests,
-                        )?;
-                    }
-                }
-                TopDecl::Locus(_) => {
-                    /* m63: generic locus template — its members'
-                     * type positions still mention the generic
-                     * params (e.g. `Box<T>`) which can't unify
-                     * against any actual concrete type yet.
-                     * Synthesis later walks the substituted
-                     * version. */
-                }
-                TopDecl::Const(c) => {
-                    Self::collect_generic_uses(
-                        &c.ty,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
-                }
-                TopDecl::Perspective(_) | TopDecl::Module(_) => {
-                    /* Perspective type-bearing positions could grow
-                     * into this when that feature lands in v0.1
-                     * codegen. A Module carries nothing of its own:
-                     * GH #884 made the loop above flatten it, so its
-                     * declarations have already been visited as
-                     * themselves by the time this arm sees the node. */
-                }
-                TopDecl::Interface(_) => {
-                    /* Interface declarations have no body to walk
-                     * for generic uses. Method signatures are
-                     * captured separately during the impl-check
-                     * pass. */
-                }
-                TopDecl::Topic(t) => {
-                    /* The topic's payload type may mention a
-                     * generic name. Capture it the same way
-                     * other type-bearing positions do. */
-                    Self::collect_generic_uses(
-                        &t.payload,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
-                }
-                TopDecl::Target(_) => {
-                    // FUv0.8.2 #7: target capability blocks
-                    // carry no type-bearing positions; nothing
-                    // to collect for generic monomorph.
-                }
-                TopDecl::RingLayout(_) => {
-                    // ring_layout members are layout tokens, not
-                    // type-bearing positions; nothing to collect.
-                }
-                TopDecl::Group(_) => {
-                    // GH #382: groups name decls, not types —
-                    // no type-bearing positions.
-                }
-                TopDecl::Role(_) => {
-                    // GH #1109: roles name roles — no type-bearing
-                    // positions, and no code.
-                }
-                TopDecl::Claims(_) | TopDecl::Constitution(_) => {
-                    // #392 / #409: claims and constitutions lower to
-                    // no code and carry no type-bearing positions.
-                }
-                TopDecl::Unit(_) => {
-                    // GH #1076: a unit is a node of the catalogue the
-                    // checker closes; it lowers to no code.
-                }
-                TopDecl::Api(_) => {
-                    // GH #1417: a surface is model rows; it lowers to no
-                    // code until a serve site serves it (R2).
-                }
-                TopDecl::Fleet(_) => {
-                    // Phase 4 (C2): a fleet is checked, never built; the
-                    // entry refuses it before anything lowers.
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn collect_in_fn_decl(
-        f: &FnDecl,
-        generic_names: &BTreeMap<String, String>,
-        seen: &mut BTreeSet<String>,
-        requests: &mut Vec<(String, Vec<TypeExpr>)>,
-    ) -> Result<(), CodegenError> {
-        for p in &f.params {
-            Self::collect_generic_uses(&p.ty, generic_names, seen, requests)?;
-        }
-        if let Some(ret) = &f.ret {
-            Self::collect_generic_uses(ret, generic_names, seen, requests)?;
-        }
-        Self::collect_in_block(&f.body, generic_names, seen, requests)?;
-        Ok(())
-    }
-
-    fn collect_in_locus_member(
-        member: &LocusMember,
-        generic_names: &BTreeMap<String, String>,
-        seen: &mut BTreeSet<String>,
-        requests: &mut Vec<(String, Vec<TypeExpr>)>,
-    ) -> Result<(), CodegenError> {
-        match member {
-            LocusMember::Params(pb) => {
-                for p in &pb.params {
-                    if let Some(t) = &p.ty {
-                        Self::collect_generic_uses(
-                            t,
-                            generic_names,
-                            seen,
-                            requests,
-                        )?;
-                    }
-                }
-            }
-            LocusMember::Bus(bb) => {
-                for bm in &bb.members {
-                    match bm {
-                        BusMember::Subscribe { ty: Some(t), .. } => {
-                            Self::collect_generic_uses(
-                                t,
-                                generic_names,
-                                seen,
-                                requests,
-                            )?;
-                        }
-                        BusMember::Publish { ty: Some(t), .. } => {
-                            Self::collect_generic_uses(
-                                t,
-                                generic_names,
-                                seen,
-                                requests,
-                            )?;
-                        }
-                        BusMember::Subscribe { ty: None, .. }
-                        | BusMember::Publish { ty: None, .. } => {}
-                    }
-                }
-            }
-            LocusMember::Lifecycle(lc) => {
-                for p in &lc.params {
-                    Self::collect_generic_uses(
-                        &p.ty,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
-                }
-                if let Some(r) = &lc.ret {
-                    Self::collect_generic_uses(
-                        r,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
-                }
-                Self::collect_in_block(
-                    &lc.body,
-                    generic_names,
-                    seen,
-                    requests,
-                )?;
-            }
-            LocusMember::Fn(fd) => {
-                Self::collect_in_fn_decl(
-                    fd,
-                    generic_names,
-                    seen,
-                    requests,
-                )?;
-            }
-            LocusMember::Mode(_) => {
-                /* Modes' body / params walk would mirror Fn; not
-                 * yet wired. m61c. */
-            }
-            LocusMember::Const(c) => {
-                Self::collect_generic_uses(
-                    &c.ty,
-                    generic_names,
-                    seen,
-                    requests,
-                )?;
-            }
-            LocusMember::Type(t) if t.generics.is_empty() => {
-                match &t.body {
-                    TypeDeclBody::Struct(fields) => {
-                        for f in fields {
-                            Self::collect_generic_uses(
-                                &f.ty,
-                                generic_names,
-                                seen,
-                                requests,
-                            )?;
-                        }
-                    }
-                    TypeDeclBody::Enum(variants) => {
-                        for v in variants {
-                            for f in &v.fields {
-                                Self::collect_generic_uses(
-                                    f,
-                                    generic_names,
-                                    seen,
-                                    requests,
-                                )?;
-                            }
-                        }
-                    }
-                    // GH #759: see the top-level arm.
-                    TypeDeclBody::Alias(te) => {
-                        Self::collect_generic_uses(
-                            te,
-                            generic_names,
-                            seen,
-                            requests,
-                        )?;
-                    }
-                    // GH #1076: see the top-level arm.
-                    TypeDeclBody::Scalar(_) => {}
-                }
-            }
-            LocusMember::Failure(fd) => {
-                for param in &fd.params {
-                    Self::collect_generic_uses(&param.ty, generic_names, seen, requests)?;
-                }
-                Self::collect_in_block(&fd.body, generic_names, seen, requests)?;
-            }
-            LocusMember::Contract(_)
-            | LocusMember::Closure(_)
-            | LocusMember::Type(_)
-            | LocusMember::Bindings(_)
-            | LocusMember::Placement(_)
-            | LocusMember::Topology(_)
-            // GH #382: claims carry no type-bearing positions.
-            | LocusMember::Claims(_)
-            | LocusMember::BirthCheck(_)
-            | LocusMember::Seam(_) => {}
-            LocusMember::Capacity(_) => {
-                // F.22 slot cell types are concrete in v1; no
-                // generic-template use sites. Future generic Pool/
-                // Heap (`pool entries of T;` with locus generic
-                // T) would walk slot.elem_ty here.
-            }
-        }
-        Ok(())
-    }
-
-    fn collect_in_block(
-        block: &Block,
-        generic_names: &BTreeMap<String, String>,
-        seen: &mut BTreeSet<String>,
-        requests: &mut Vec<(String, Vec<TypeExpr>)>,
-    ) -> Result<(), CodegenError> {
-        for stmt in &block.stmts {
-            Self::collect_in_stmt(stmt, generic_names, seen, requests)?;
-        }
-        Ok(())
-    }
-
-    fn collect_in_stmt(
-        stmt: &Stmt,
-        generic_names: &BTreeMap<String, String>,
-        seen: &mut BTreeSet<String>,
-        requests: &mut Vec<(String, Vec<TypeExpr>)>,
-    ) -> Result<(), CodegenError> {
-        match stmt {
-            Stmt::Let { ty: Some(t), .. } => {
-                Self::collect_generic_uses(t, generic_names, seen, requests)?;
-            }
-            Stmt::LetTuple { ty: Some(t), .. } => {
-                Self::collect_generic_uses(t, generic_names, seen, requests)?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// m61: walk a TypeExpr looking for generic instantiations
-    /// that reference one of the known generic templates. Each
-    /// unique (template_name, args) tuple is recorded in
-    /// `requests` (deduped via the mangled name in `seen`), with
-    /// recursion into the args themselves so nested generics like
-    /// `Box<Pair<Int, String>>` register `Pair_Int_String` first
-    /// then `Box_Pair_Int_String`. Discovery is purely structural
-    /// — the typechecker has already validated names.
-    fn collect_generic_uses(
-        t: &TypeExpr,
-        generic_names: &BTreeMap<String, String>,
-        seen: &mut BTreeSet<String>,
-        requests: &mut Vec<(String, Vec<TypeExpr>)>,
-    ) -> Result<(), CodegenError> {
-        match t {
-            TypeExpr::Named { path, generic_args, .. } => {
-                for arg in generic_args {
-                    Self::collect_generic_uses(arg, generic_names, seen, requests)?;
-                }
-                if !generic_args.is_empty() {
-                    let written = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-                    if let Some(template) = generic_names.get(&written) {
-                        let mangled = Self::mangle_generic_name(template, generic_args)?;
-                        if seen.insert(mangled) {
-                            requests.push((template.clone(), generic_args.clone()));
-                        }
-                    }
-                }
-            }
-            TypeExpr::Bounded { elem, .. } => Self::collect_generic_uses(
-                elem,
-                generic_names,
-                seen,
-                requests,
-            )?,
-            TypeExpr::Array { elem, .. } => Self::collect_generic_uses(
-                elem,
-                generic_names,
-                seen,
-                requests,
-            )?,
-            TypeExpr::Tuple(parts, _) => {
-                for p in parts {
-                    Self::collect_generic_uses(
-                        p,
-                        generic_names,
-                        seen,
-                        requests,
-                    )?;
-                }
-            }
-            TypeExpr::Projection { inner, .. } => Self::collect_generic_uses(
-                inner,
-                generic_names,
-                seen,
-                requests,
-            )?,
-            TypeExpr::Primitive(_, _)
-            | TypeExpr::Function { .. }
-            // Phase 2a: `perspective(P)` carries no generic args.
-            | TypeExpr::Perspective { .. } => {}
-        }
-        Ok(())
-    }
-
     /// m61: synthesize a concrete TypeDecl from a generic template
     /// + a tuple of concrete type args. The synthesized decl has
     /// the mangled name (e.g., `Box_Int`), no generics, and a body
@@ -13730,6 +13136,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let new_fields: Vec<StructField> = fields
                     .iter()
                     .map(|f| StructField {
+                        id: f.id,
                         name: f.name.clone(),
                         ty: Self::substitute_type_expr(&f.ty, &subst),
                         default: f.default.clone(),

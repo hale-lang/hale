@@ -69,7 +69,7 @@ fn tiny_model() -> ApplicationModel {
 
     ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V1,
+            semantics: MODEL_SEMANTICS_V12,
             entrypoint: "App".to_string(),
         },
         entities: Entities {
@@ -84,12 +84,15 @@ fn tiny_model() -> ApplicationModel {
                     name: "App::run".to_string(),
                     display: "App::run".to_string(),
                     kind: FunctionKind::Hook,
+            initializer: None,
+            type_owner: None,
+            argument_owner: None,
                     effects: vec!["publish".to_string()],
                     direct_effects: Vec::new(),
                     attribution: Vec::new(),
                     opaque_call: false,
                     carries_user_class: false,
-                    decl: None,
+                    decl: Some(hale_graph::ids::SiteId { seed: hale_graph::ids::SeedId(0), index: 0 }),
                     provenance: p,
                 },
                 Function {
@@ -101,6 +104,9 @@ fn tiny_model() -> ApplicationModel {
                     name: "Worker::on_r".to_string(),
                     display: "Worker::on_r".to_string(),
                     kind: FunctionKind::Method,
+            initializer: None,
+            type_owner: None,
+            argument_owner: None,
                     effects: vec![],
                     direct_effects: Vec::new(),
                     attribution: Vec::new(),
@@ -112,7 +118,10 @@ fn tiny_model() -> ApplicationModel {
             ],
             loci: vec![
                 LocusDecl {
+                    decl: None,
                     name: "App".to_string(),
+                    flow: FlowClass::Resident,
+                    storage: None,
                     display: "App".to_string(),
                     sealed: false,
                     analyzable: true,
@@ -121,7 +130,10 @@ fn tiny_model() -> ApplicationModel {
                     provenance: p,
                 },
                 LocusDecl {
+                    decl: None,
                     name: "Worker".to_string(),
+                    flow: FlowClass::Resident,
+                    storage: None,
                     display: "Worker".to_string(),
                     sealed: false,
                     analyzable: true,
@@ -167,10 +179,10 @@ fn tiny_model() -> ApplicationModel {
                 hash: 0xfb9f,
                 provenance: p,
             }],
-            phases: vec![Phase {
-                name: "run".to_string(),
-                provenance: p,
-            }],
+            phases: vec![
+                Phase { name: "on_r".to_string(), provenance: p },
+                Phase { name: "run".to_string(), provenance: p },
+            ],
             seeds: vec![Seed {
                 name: "app".to_string(),
                 provenance: p,
@@ -188,6 +200,11 @@ fn tiny_model() -> ApplicationModel {
             surface_rows: vec![],
         },
         relations: Relations {
+            lifecycle_definitions: vec![LifecycleDefinition { function:FunctionId(0),owner:LocusDeclId(0),stage:LifecycleStage::Run,empty:false }],
+            phase_of: vec![
+                PhaseOf { function: FunctionId(0), phase: PhaseId(1), provenance: p },
+                PhaseOf { function: FunctionId(1), phase: PhaseId(0), provenance: p },
+            ],
             realizes: vec![Realizes {
                 instance: LocusInstanceId(0),
                 decl: LocusDeclId(1),
@@ -241,6 +258,84 @@ fn tiny_model() -> ApplicationModel {
         provenance: prov,
         analyses: Analyses::default(),
     }
+}
+
+#[test]
+fn flow_classification_requires_nonempty_canonical_resolvable_witnesses() {
+    let mut m = tiny_model();
+    let release = FlowRelease {
+        owner: FlowOwner::Declared(LocusDeclId(0)),
+        specialization: Some("App_Worker".to_string()),
+        provenance: ProvenanceId(0),
+    };
+    m.entities.loci[1].flow = FlowClass::Flow {
+        releases: vec![release.clone()],
+    };
+    assert_eq!(m.validate(), Ok(()));
+
+    let invalid = |releases| {
+        let mut candidate = m.clone();
+        candidate.entities.loci[1].flow = FlowClass::Flow { releases };
+        candidate.validate()
+    };
+    assert_eq!(
+        invalid(vec![]),
+        Err(ModelError::InvalidFlowClass { locus: 1 })
+    );
+    assert!(matches!(
+        invalid(vec![release.clone(), release.clone()]),
+        Err(ModelError::NotCanonical {
+            table: "loci.flow.releases",
+            ..
+        })
+    ));
+    assert_eq!(
+        invalid(vec![FlowRelease {
+            owner: FlowOwner::Declared(LocusDeclId(99)),
+            ..release.clone()
+        }]),
+        Err(ModelError::DanglingId {
+            table: "loci.flow.releases.owner",
+            index: 1
+        })
+    );
+    assert_eq!(
+        invalid(vec![FlowRelease {
+            provenance: ProvenanceId(99),
+            ..release.clone()
+        }]),
+        Err(ModelError::DanglingProvenance {
+            table: "loci.flow.releases",
+            index: 1
+        })
+    );
+    for bad in [
+        FlowRelease {
+            owner: FlowOwner::External(String::new()),
+            ..release.clone()
+        },
+        FlowRelease {
+            specialization: Some(String::new()),
+            ..release.clone()
+        },
+    ] {
+        assert_eq!(
+            invalid(vec![bad]),
+            Err(ModelError::InvalidFlowClass { locus: 1 })
+        );
+    }
+    // Templates carry an explicit non-concrete state, not a negative
+    // classification obtained by dropping a missing release witness.
+    m.entities.loci[1].flow = FlowClass::GenericTemplate;
+    assert_eq!(m.validate(), Err(ModelError::UnrepresentedUnknown { table: "loci.flow", index: 1 }));
+    m.holes.push(Hole {
+        at: EntityRef::LocusDecl(LocusDeclId(1)), kind: HoleKind::GenericFlowTemplate,
+        hides: RelationSet::FLOW_CLASSIFICATION, authored_site: None,
+        reason: "generic template".into(), provenance: ProvenanceId(0),
+    });
+    assert_eq!(m.validate(), Ok(()));
+    m.capabilities.exact_flow_classification = true;
+    assert_eq!(m.validate(), Err(ModelError::CapabilityContradiction { capability: "exact_flow_classification" }));
 }
 
 fn provenance_source() -> hale_model::provenance::SourceUnit {
@@ -607,9 +702,10 @@ fn every_capability_flag_is_mapped_to_a_family() {
         exact_cardinality: true,
         exact_delivery_guarantees: true,
         exact_costs: true,
+        exact_flow_classification: true,
     };
     let vouched = all.vouched_families();
-    assert_eq!(vouched.len(), 11, "every flag appears exactly once");
+    assert_eq!(vouched.len(), 12, "every flag appears exactly once");
     for (name, claimed, family) in vouched {
         assert!(claimed, "{} must carry its flag", name);
         assert!(!family.is_empty(), "{} must vouch a real family", name);
@@ -666,6 +762,7 @@ fn call_sites_keep_their_own_loop_facts() {
             from: FunctionId(0),
             to: FunctionId(1),
             dispatch: DispatchKind::Direct,
+            supplied: None,
             site: 0,
             in_loop: false,
             unbounded: false,
@@ -675,6 +772,7 @@ fn call_sites_keep_their_own_loop_facts() {
             from: FunctionId(0),
             to: FunctionId(1),
             dispatch: DispatchKind::Direct,
+            supplied: None,
             site: 1,
             in_loop: true,
             unbounded: true,
@@ -1841,15 +1939,17 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
     ] {
         let mut m = tiny_model();
         m.analyses.stdlib_absorption.push(
-            hale_model::StdlibAbsorption {
+            hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
+                entry_initialization: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: None,
                 entry_in_loop: false,
                 entry_group: None,
                 entry_provenance: ProvenanceId(0),
-                nodes: vec![hale_model::AbsorbedNode {
+                nodes: vec![hale_model::AbsorbedNode { lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "interior".to_string(),
                     carries: Vec::new(),
@@ -1877,5 +1977,65 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
             ev,
             m.validate()
         );
+    }
+}
+
+#[test]
+fn failure_handlers_obey_ordinary_coverage_and_owner_completeness_laws() {
+    let mut m = tiny_model();
+    m.entities.functions[0].kind = FunctionKind::FailureHandler;
+    // The role changed, so the old self lifecycle definition no longer applies.
+    m.relations.lifecycle_definitions.clear();
+    m.validate().expect("an analyzed failure handler is a lawful executable body");
+    assert!(m.locus_members_analyzed(LocusDeclId(0)));
+    m.entities.functions[0].analyzed = false;
+    assert!(matches!(m.validate(), Err(ModelError::CoverageLaw { .. })),
+        "a summarized handler cannot claim to be unanalyzed");
+    m.entities.functions[0].summarized = false;
+    assert!(!m.locus_members_analyzed(LocusDeclId(0)),
+        "an unavailable handler summary cannot disappear from owner coverage");
+    assert!(matches!(m.validate(), Err(ModelError::CoverageLaw { .. })),
+        "missing handler coverage must retain explicit body residue");
+}
+
+#[test]
+fn old_and_unknown_model_semantics_are_refused() {
+    let mut m = tiny_model();
+    for version in [MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, 0, MODEL_SEMANTICS_V12 + 1] {
+        m.header.semantics = version;
+        assert_eq!(m.validate(), Err(ModelError::UnsupportedModelSemantics { actual: version }));
+    }
+}
+
+#[test]
+fn failure_dispatch_withdraws_execution_coverage_without_inventing_publish_sites() {
+    let mut m = tiny_model();
+    m.capabilities.exact_calls = false;
+    m.holes.push(Hole {
+        at: EntityRef::Function(FunctionId(0)),
+        kind: HoleKind::UnmodeledFailureDispatch,
+        hides: RelationSet::CALLS.union(RelationSet::EFFECTS).union(RelationSet::COSTS),
+        authored_site: None,
+        reason: "implicit failure dispatch is unresolved".to_string(),
+        provenance: ProvenanceId(0),
+    });
+    m.validate().expect("direct publish-site completeness is independent of invocation coverage");
+    assert!(m.capabilities.exact_publishes);
+    for bit in [RelationSet::CALLS, RelationSet::EFFECTS, RelationSet::COSTS] {
+        let mut bad = m.clone(); bad.holes[0].hides.0 &= !bit.0;
+        assert!(bad.validate().is_err(), "a failure gap cannot retain {bit:?} coverage");
+    }
+    let mut wrong_grain = m.clone(); wrong_grain.holes[0].hides = wrong_grain.holes[0].hides.union(RelationSet::PUBLISHES);
+    assert!(wrong_grain.validate().is_err(), "dispatch uncertainty cannot become an unknown authored send");
+    let mut wrong_site = m.clone(); wrong_site.holes[0].authored_site = Some(0);
+    assert!(wrong_site.validate().is_err(), "implicit dispatch has no invented call ordinal");
+    for capability in ["exact_calls", "exact_effects", "exact_costs"] {
+        let mut bad = m.clone();
+        match capability {
+            "exact_calls" => bad.capabilities.exact_calls = true,
+            "exact_effects" => bad.capabilities.exact_effects = true,
+            _ => bad.capabilities.exact_costs = true,
+        }
+        assert!(matches!(bad.validate(), Err(ModelError::CapabilityContradiction { .. })), "{capability}");
     }
 }

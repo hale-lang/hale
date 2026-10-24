@@ -49,11 +49,19 @@ These checks run automatically on every `hale check` and `hale build`:
 | **Subject type mismatch** | Error | Two declarations or bindings disagree on a topic's payload type |
 | **Intra-locus re-entrant publish** | Error | Direct synchronous self-publish cycle with no queued hop |
 | **No locus-return** | Error | A locus method returns a managed locus value (violating single-tree ownership / CQRS) |
-| **Codec purity** | Error | A bus codec's `encode`/`decode` reaches `syscall`, `block`, or `publish` |
+| **Codec purity** | Error | A bus codec's `encode`/`decode` reaches state mutation, parent admission/tracking, structural failure, scheduler/recovery actions, `syscall`, `block`, or `publish`, or lacks a complete execution/confinement account |
 | **`ring_layout` conformance** | Error | A foreign shared-memory ring layout has overlapping fields or invalid offsets |
 | **Orphan topic** | Warning | A topic has publishers but no subscribers (or vice versa) in a closed binary |
 | **Bus queue cycle** | Warning | A publish-subscribe cycle across loci that can spin indefinitely |
 | **Unthrottled publish loop** | Warning | Publishing inside an unbounded loop without a sleep/yield/blocking gate |
+
+Codec purity follows implicit work as well as explicit calls. Constructing a
+child can evaluate omitted defaults, enter lifecycle bodies, or invoke its
+parent's `accept`/`release` callbacks. Even an empty `accept` can update the
+parent's child tracking. Keep that work outside codecs, whose methods may run
+concurrently on several threads. Local data transformations and classified
+allocation remain allowed; an unresolved callback or receiver-confinement
+question cannot establish that a codec is safe.
 
 ### Concurrency & Thread Placement Checks
 

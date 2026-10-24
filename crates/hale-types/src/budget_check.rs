@@ -137,6 +137,20 @@ impl FactVisitor for BudgetVisitor {
     fn is_zero(&self, f: &Count) -> bool {
         !f.nonzero()
     }
+
+    fn loop_initialization(&mut self, _key: &FnKey, edge: &crate::alloc_summary::InitializationEdge, _sub: Count, emit: bool) -> Count {
+        if emit {
+            self.offenders.push(Offender {
+                span: edge.span,
+                note: format!("parameter default `{}` allocates inside a constructor loop", edge.initializer.field),
+            });
+        }
+        Count::Unbounded
+    }
+    fn loop_closure(&mut self, _key:&FnKey, edge:&crate::alloc_summary::ClosureEvaluationEdge, _sub:Count, emit:bool) -> Count {
+        if emit { self.offenders.push(Offender { span:edge.span,note:format!("closure assertion `{}` allocates inside a checkpoint loop",edge.target.display()) }); }
+        Count::Unbounded
+    }
     /// #392: one interface dispatch invokes ONE conforming target, so
     /// the alternatives of a dispatch group bound the count by their
     /// max, not their sum.

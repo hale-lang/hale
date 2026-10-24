@@ -63,6 +63,9 @@ pub struct Arranged {
     /// The field's name in its owner's params, as written; the root's
     /// own name for the root.
     pub span: hale_syntax::Span,
+    /// Every construction/alternative row represented by this logical path.
+    /// Agreement on declaration and domain does not erase birth context.
+    pub constructions: Vec<InstanceKey>,
 }
 
 /// The placement table's rows projected onto the user's declarations,
@@ -231,6 +234,7 @@ pub fn project_arrangement<'a>(
             domain: domain_name(r.domain),
             parent: r.owner.as_ref().map(|o| path_of(root_name, o)),
             span,
+            constructions: vec![k.clone()],
         });
     }
     // Two rows realize one declaration when they name it alike: the
@@ -253,7 +257,13 @@ pub fn project_arrangement<'a>(
             .iter()
             .find(|d| path == **d || path.starts_with(&format!("{d}.")) || path.starts_with(&format!("{d}[")));
         match under {
-            None => instances.extend(rows.into_iter().take(1)),
+            None => {
+                let mut rows = rows.into_iter();
+                if let Some(mut first) = rows.next() {
+                    for row in rows { first.constructions.extend(row.constructions); }
+                    instances.push(first);
+                }
+            }
             Some(d) => disagreeing.extend(rows.into_iter().map(|a| (a, d.clone()))),
         }
     }

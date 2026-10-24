@@ -258,23 +258,12 @@ fn the_model_classifies_phases_and_seed_origin() {
         vec!["dep".into(), "Helper".into()],
         "__lib_1_dep_Helper".into(),
     )];
-    let model =
-        hale_types::model::Model::derive(&[&program], &renames);
-    let birth = model
-        .phases
-        .get(&hale_types::alloc_summary::FnKey::method(None,
-            "W".to_string(),
-            "birth".to_string(),
-        ))
-        .expect("birth phase row");
+    let snapshot = entries::load_files(&[("main.hl", src)], hale_frontend::snapshot::Config::check(true, false));
+    let summary = snapshot.demand_alloc_summary().unwrap();
+    let model = hale_types::model::Model::derive(&[&program], &renames, &summary.source_phases);
+    let birth = model.phases.iter().find(|(key, _)| key.display() == "W::birth").unwrap().1;
     assert!(birth.hook && birth.phase == "birth");
-    let step = model
-        .phases
-        .get(&hale_types::alloc_summary::FnKey::method(None,
-            "W".to_string(),
-            "step".to_string(),
-        ))
-        .expect("method phase row");
+    let step = model.phases.iter().find(|(key, _)| key.display() == "W::step").unwrap().1;
     assert!(!step.hook && step.phase == "step");
     assert_eq!(
         model.seeds.get("dep").map(|s| s.len()),

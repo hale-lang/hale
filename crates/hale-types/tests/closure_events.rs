@@ -338,10 +338,8 @@ fn an_imported_locus_is_not_judged() {
 
 #[test]
 fn an_event_a_generic_supervisor_applies_is_not_judged() {
-    // `Sup<T>`'s handler restarts a `T`: the handler row's child is the
-    // `T` its `on_failure` declares (a recovery receiver outside a
-    // handler is typed per monomorph; a handler's child is not), so no
-    // `restart` is reported unreached; `quarantine` still is.
+    // `Sup<T>`'s handler is typed per monomorph: its receiver is a
+    // `Tracker`, so restart is reached; quarantine still is not.
     let src = world(
         "persists_through(restart, quarantine);",
         None,
@@ -486,4 +484,45 @@ fn the_alphabet_is_accepted() {
     let src = tracker("persists_through(restart, restart_in_place, quarantine);");
     let all = diags(&src);
     assert!(all.iter().all(|d| !d.message.contains("recovery event") && !d.message.contains("dissolve")), "{all:?}");
+}
+
+
+#[test]
+fn a_handler_recovery_targets_its_argument_not_its_failing_child_type() {
+    let extra = "    params { other: Other = Other { }; }\n";
+    for op in ["quarantine(self.other);", "restart(self.other) for 3;"] {
+        let src = format!("locus Other {{ params {{ n: Int = 0; }} }}\n{}",
+            world("persists_through(restart, quarantine);", Some(op), extra));
+        let all = diags(&src);
+        assert!(!all.iter().any(|d| d.is_error()), "{all:?}");
+        assert_eq!(warnings(&all).iter().map(|d| at(&src, d)).collect::<Vec<_>>(), ["restart", "quarantine"], "{op}: {all:?}");
+        for warning in warnings(&all) {
+            assert_eq!(witness(&src, warning)[0].0, "`App` handles a failing `Tracker` here and applies no recovery event");
+        }
+    }
+    // Conversely a handler for Other can apply an event to Tracker.
+    let src = format!("locus Other {{ params {{ n: Int = 0; }} }}\n{}",
+        world("persists_through(restart, quarantine);", None,
+            "    on_failure(c: Other, err: ClosureViolation) { quarantine(self.t); }\n"));
+    let all = diags(&src);
+    assert_eq!(warnings(&all).iter().map(|d| at(&src, d)).collect::<Vec<_>>(), ["restart"], "{all:?}");
+    assert_eq!(witness(&src, warnings(&all)[0]), [("`App` applies `quarantine` to a `Tracker` here", "quarantine(self.t);")]);
+}
+
+#[test]
+fn handler_generic_receivers_are_resolved_per_specialization() {
+    for signature in ["Tracker", "T"] {
+        let supervisor = format!("locus Other {{ params {{ n: Int = 0; }} }}\nlocus Sup<T> {{\n    params {{ c: T; }}\n    on_failure(failed: {signature}, err: ClosureViolation) {{ restart(self.c) for 2; }}\n}}\n");
+        let src = format!("{supervisor}{}", world("persists_through(restart, quarantine);", None,
+            "    fn mk() { let sup: Sup<Other> = Sup { c: Other { } }; }\n"));
+        let all = diags(&src);
+        assert!(!all.iter().any(|d| d.is_error()), "{all:?}");
+        assert_eq!(warnings(&all).iter().map(|d| at(&src, d)).collect::<Vec<_>>(), ["restart", "quarantine"], "{signature}: {all:?}");
+        let reached = src.replace("Sup<Other> = Sup { c: Other { } }", "Sup<Tracker> = Sup { c: Tracker { } }");
+        let all = diags(&reached);
+        assert!(warnings(&all).is_empty(), "{signature}: {all:?}");
+        // Without a concrete receiver, suspend the two possible events.
+        let unknown = format!("{supervisor}{}", world("persists_through(restart, quarantine);", None, ""));
+        assert!(warnings(&diags(&unknown)).is_empty());
+    }
 }

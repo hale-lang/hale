@@ -3393,18 +3393,15 @@ void lotus_arena_destroy(lotus_arena_t *a) {
  *   front, so the cell IS the child's arena — child body code
  *   treats the returned pointer as a regular lotus_arena_t* and
  *   the existing arena_alloc path bumps the in-cell bump pointer.
- *   Overflow returns NULL from arena_alloc (caller routes to the
- *   closure-violation channel). Release clears the bit; the slot
+ *   Payload overflow returns NULL from arena_alloc. Exhausted
+ *   acquisition is refused before constructing a child. Release clears the bit; the slot
  *   is reusable. Whole block frees at parent dissolve.
  *
  * shared_slab(bytes=K): one fixed_size lotus_arena_t whose initial
- *   chunk is K bytes. Every acquire returns the SAME arena pointer
- *   — children share a bump space, so per-child release is a no-op
- *   and child structs + arena allocations interleave in the slab.
- *   Whole slab frees at parent dissolve. cap_count is recorded but
- *   not enforced at the C layer (codegen's birth-cap check is what
- *   limits concurrent children — the slab is a memory budget, not
- *   a child-count budget).
+ *   chunk is K bytes. Every successful acquire returns the SAME arena pointer
+ *   — children share a bump space. Atomic admission reservations
+ *   enforce cap_count; release returns one reservation, retaining
+ *   all bytes and the bump position until parent dissolve.
  *
  * In both cases the arena returned by acquire has `fixed_size=1`,
  * so `lotus_arena_alloc` refuses to grow on overflow. The codegen
@@ -3428,12 +3425,13 @@ typedef struct lotus_recpool_fixed {
     size_t    cell_bytes;    /* user-facing payload bytes per cell */
     size_t    cell_stride;   /* total per-cell stride incl. inline header */
     size_t    bitmap_words;  /* number of uint64_t words in `bitmap` */
-    uint64_t *bitmap;        /* 1 bit per cell; 1 = occupied */
+    _Atomic(uint64_t) *bitmap; /* 1 bit per cell; acquire/release across domains */
     char     *cells;         /* cap_count * cell_stride bytes */
 } lotus_recpool_fixed_t;
 
 typedef struct lotus_recpool_slab {
-    size_t         cap_count;   /* recorded, not enforced here (see codegen) */
+    size_t         cap_count;   /* simultaneous arena reservations */
+    _Atomic(size_t) live_count;
     size_t         slab_bytes;
     lotus_arena_t *slab_arena;  /* fixed_size=1; never grows */
 } lotus_recpool_slab_t;
@@ -3443,10 +3441,9 @@ typedef struct lotus_recpool_slab {
  * aligned (the arena_alloc default align is 8; bumping to 16 covers
  * SSE/struct alignment without effort). */
 static size_t lotus_recpool_compute_stride(size_t cell_bytes) {
-    size_t raw = sizeof(lotus_arena_t)
-               + sizeof(lotus_arena_chunk_t)
-               + cell_bytes;
-    return lotus_align_up(raw, 16);
+    size_t header = sizeof(lotus_arena_t) + sizeof(lotus_arena_chunk_t);
+    if (cell_bytes > SIZE_MAX - header - 15) return 0;
+    return lotus_align_up(header + cell_bytes, 16);
 }
 
 /* Initialize the inline arena+chunk at the head of a cell so that
@@ -3457,46 +3454,46 @@ static size_t lotus_recpool_compute_stride(size_t cell_bytes) {
  * lives at (chunk+1), which lands on the payload region. */
 static void lotus_recpool_init_cell_arena(char *cell_base, size_t cell_bytes) {
     lotus_arena_t *a = (lotus_arena_t *)cell_base;
+    /* Use the same initialization authority as ordinary arenas: the
+     * recognition path also needs retirement, reuse and mutex state. */
+    lotus_arena_init_struct(a);
     lotus_arena_chunk_t *c =
         (lotus_arena_chunk_t *)(cell_base + sizeof(lotus_arena_t));
     c->next  = NULL;
     c->used  = 0;
     c->cap   = cell_bytes;
+    c->via_mmap = 0;
+    c->mmap_size = 0;
 
     a->head               = c;
     a->default_chunk_size = cell_bytes;  /* irrelevant when fixed_size=1 */
-    a->parent             = NULL;
-    a->slot               = -1;
-    a->free_list          = NULL;
-    a->free_count         = 0;
-    a->free_cap           = 0;
-    a->next_slot          = 0;
+    a->chunk_byte_total   = cell_bytes;
     a->fixed_size         = 1;
-    a->slot_reuse         = NULL;
-    a->chunk_index        = NULL;
-    a->chunk_index_lock   = 0;
 }
 
 static size_t lotus_recpool_bitmap_words_for(size_t cap_count) {
-    return (cap_count + 63) / 64;
+    return cap_count / 64 + (cap_count % 64 != 0);
 }
 
-/* Forward scan: find the lowest-index zero bit, or -1 if all set
- * up to cap_count. Uses ctzll on the inverted word for O(1) per
- * word; the bitmap is small enough (cap ~ 100s) that the loop is
- * fine without SIMD. */
-static int lotus_recpool_bitmap_first_zero(uint64_t *bm,
-                                           size_t words,
-                                           size_t cap_count) {
+/* Claim a cell before publishing its arena. A release on another domain
+ * synchronizes with the successful CAS before the arena is reinitialized.
+ * SIZE_MAX is the failure sentinel; no cell index is narrowed to int. */
+static size_t lotus_recpool_bitmap_claim(_Atomic(uint64_t) *bm,
+                                         size_t words, size_t cap_count) {
     for (size_t w = 0; w < words; w++) {
-        uint64_t inv = ~bm[w];
-        if (inv == 0) continue;
-        int b = __builtin_ctzll(inv);
-        size_t slot = w * 64 + (size_t)b;
-        if (slot >= cap_count) return -1;
-        return (int)slot;
+        uint64_t occupied = atomic_load_explicit(&bm[w], memory_order_relaxed);
+        for (;;) {
+            uint64_t available = ~occupied;
+            if (!available) break;
+            unsigned bit = (unsigned)__builtin_ctzll(available);
+            size_t slot = w * 64 + bit;
+            if (slot >= cap_count) break;
+            uint64_t desired = occupied | ((uint64_t)1 << bit);
+            if (atomic_compare_exchange_weak_explicit(&bm[w], &occupied, desired,
+                    memory_order_acquire, memory_order_relaxed)) return slot;
+        }
     }
-    return -1;
+    return SIZE_MAX;
 }
 
 /* fixed_cell ---------------------------------------------------- */
@@ -3510,9 +3507,12 @@ lotus_recpool_fixed_t *lotus_recpool_fixed_create(size_t cap_count,
     p->cap_count    = cap_count;
     p->cell_bytes   = cell_bytes;
     p->cell_stride  = lotus_recpool_compute_stride(cell_bytes);
+    if (!p->cell_stride || cap_count > SIZE_MAX / p->cell_stride) { free(p); return NULL; }
     p->bitmap_words = lotus_recpool_bitmap_words_for(cap_count);
-    p->bitmap       = (uint64_t *)calloc(p->bitmap_words, sizeof(uint64_t));
+    if (p->bitmap_words > SIZE_MAX / sizeof(*p->bitmap)) { free(p); return NULL; }
+    p->bitmap       = (_Atomic(uint64_t) *)malloc(p->bitmap_words * sizeof(*p->bitmap));
     if (!p->bitmap) { free(p); return NULL; }
+    for (size_t w = 0; w < p->bitmap_words; w++) atomic_init(&p->bitmap[w], 0);
     p->cells = (char *)malloc(cap_count * p->cell_stride);
     if (!p->cells) { free(p->bitmap); free(p); return NULL; }
     return p;
@@ -3520,11 +3520,8 @@ lotus_recpool_fixed_t *lotus_recpool_fixed_create(size_t cap_count,
 
 lotus_arena_t *lotus_recpool_fixed_acquire(lotus_recpool_fixed_t *p) {
     if (!p) return NULL;
-    int slot = lotus_recpool_bitmap_first_zero(p->bitmap,
-                                               p->bitmap_words,
-                                               p->cap_count);
-    if (slot < 0) return NULL;
-    p->bitmap[slot / 64] |= ((uint64_t)1 << (slot % 64));
+    size_t slot = lotus_recpool_bitmap_claim(p->bitmap, p->bitmap_words, p->cap_count);
+    if (slot == SIZE_MAX) return NULL;
     char *cell_base = p->cells + (size_t)slot * p->cell_stride;
     lotus_recpool_init_cell_arena(cell_base, p->cell_bytes);
     return (lotus_arena_t *)cell_base;
@@ -3539,10 +3536,15 @@ void lotus_recpool_fixed_release(lotus_recpool_fixed_t *p,
     if (off % p->cell_stride != 0) return;
     size_t slot = off / p->cell_stride;
     if (slot >= p->cap_count) return;
-    /* GH #1490: the cell's String-field reuse state is malloc'd; the
-     * next acquire re-initializes the inline arena without it. */
+    /* Release bookkeeping before another domain may reinitialize the
+     * cell. Its arena and chunk themselves belong to the pool. */
+    if (lotus_current_caller_arena == arena) lotus_current_caller_arena = NULL;
+    free(arena->free_list);
     lotus_slot_reuse_free(arena);
-    p->bitmap[slot / 64] &= ~((uint64_t)1 << (slot % 64));
+    lotus_chunk_index_free(arena);
+    if (lotus_runtime_multithreaded()) pthread_mutex_destroy(&arena->subregion_lock);
+    pthread_mutex_destroy(&arena->retire_lock);
+    atomic_fetch_and_explicit(&p->bitmap[slot / 64], ~((uint64_t)1 << (slot % 64)), memory_order_release);
     /* Cell content stays valid-looking until the next acquire
      * re-initializes the inline arena. No memset — matches the
      * existing Pool free-list contract (caller of acquire is
@@ -3551,6 +3553,16 @@ void lotus_recpool_fixed_release(lotus_recpool_fixed_t *p,
 
 void lotus_recpool_fixed_destroy(lotus_recpool_fixed_t *p) {
     if (!p) return;
+    /* Owner teardown may retain resident reservations. All users have
+     * stopped before destroy; release their initialized bookkeeping. */
+    for (size_t w = 0; w < p->bitmap_words; w++) {
+        uint64_t bits = atomic_load_explicit(&p->bitmap[w], memory_order_relaxed);
+        while (bits) {
+            size_t slot = w * 64 + (unsigned)__builtin_ctzll(bits);
+            lotus_recpool_fixed_release(p, (lotus_arena_t *)(p->cells + slot * p->cell_stride));
+            bits &= bits - 1;
+        }
+    }
     free(p->cells);
     free(p->bitmap);
     free(p);
@@ -3560,11 +3572,12 @@ void lotus_recpool_fixed_destroy(lotus_recpool_fixed_t *p) {
 
 lotus_recpool_slab_t *lotus_recpool_slab_create(size_t cap_count,
                                                 size_t slab_bytes) {
-    if (slab_bytes == 0) return NULL;
+    if (cap_count == 0 || slab_bytes == 0 || slab_bytes > SIZE_MAX - sizeof(lotus_arena_chunk_t)) return NULL;
     lotus_recpool_slab_t *p =
         (lotus_recpool_slab_t *)malloc(sizeof(lotus_recpool_slab_t));
     if (!p) return NULL;
     p->cap_count  = cap_count;
+    atomic_init(&p->live_count, 0);
     p->slab_bytes = slab_bytes;
     /* Build the slab arena with one initial chunk sized to the
      * user-spelled budget, then mark it fixed_size=1 so arena_alloc
@@ -3572,38 +3585,36 @@ lotus_recpool_slab_t *lotus_recpool_slab_create(size_t cap_count,
     lotus_arena_t *a =
         (lotus_arena_t *)malloc(sizeof(lotus_arena_t));
     if (!a) { free(p); return NULL; }
-    a->head = lotus_arena_new_chunk(slab_bytes);
-    if (!a->head) { free(a); free(p); return NULL; }
+    lotus_arena_chunk_t *head = lotus_arena_new_chunk(slab_bytes);
+    if (!head) { free(a); free(p); return NULL; }
+    lotus_arena_init_struct(a);
+    a->head = head;
     a->default_chunk_size = slab_bytes;
-    a->parent             = NULL;
-    a->slot               = -1;
-    a->free_list          = NULL;
-    a->free_count         = 0;
-    a->free_cap           = 0;
-    a->next_slot          = 0;
+    a->chunk_byte_total   = slab_bytes;
     a->fixed_size         = 1;
-    a->slot_reuse         = NULL;
-    a->chunk_index        = NULL;
-    a->chunk_index_lock   = 0;
     p->slab_arena = a;
     return p;
 }
 
 lotus_arena_t *lotus_recpool_slab_acquire(lotus_recpool_slab_t *p) {
     if (!p) return NULL;
-    /* Every child shares the same slab arena. Sibling allocations
-     * interleave; per-child release is a no-op. The cap_count from
-     * the locus annotation bounds the number of concurrent children
-     * via codegen's accept-side check; the C layer doesn't track it. */
-    return p->slab_arena;
+    size_t live = atomic_load_explicit(&p->live_count, memory_order_relaxed);
+    while (live < p->cap_count) {
+        if (atomic_compare_exchange_weak_explicit(&p->live_count, &live, live + 1,
+                memory_order_acquire, memory_order_relaxed)) return p->slab_arena;
+    }
+    return NULL;
 }
 
 void lotus_recpool_slab_release(lotus_recpool_slab_t *p,
                                 lotus_arena_t *arena) {
-    /* No-op by design — the slab is freed wholesale at parent
-     * dissolve via lotus_recpool_slab_destroy. */
-    (void)p;
-    (void)arena;
+    if (!p || !arena || arena != p->slab_arena) return;
+    /* Return one admission reservation, not its bytes. Storage and bump
+     * position survive until owner teardown. Language reclaim calls this
+     * exactly once per successful acquisition; raw C callers owe the same. */
+    size_t live = atomic_load_explicit(&p->live_count, memory_order_relaxed);
+    while (live != 0 && !atomic_compare_exchange_weak_explicit(&p->live_count, &live, live - 1,
+            memory_order_release, memory_order_relaxed)) { }
 }
 
 void lotus_recpool_slab_destroy(lotus_recpool_slab_t *p) {

@@ -1,0 +1,6 @@
+fn target(n: Int) -> Int { return n; }
+fn operation(n: Int) -> Int { return n + 1; }
+group operations = { operation };
+group targets = { target };
+constitution Boundary { inherited: forbid reaches(operations, targets); }
+claims { local_boundary: forbid reaches(operations, targets); }

@@ -382,29 +382,14 @@ fn model_and_artifact_extract_the_same_facts() {
         .iter()
         .map(|r| r["fn"].as_str().unwrap().to_string())
         .collect();
-    // The model's residue is a SUPERSET: it holes bodies the legacy
-    // summary never walked (on_failure). Every
-    // artifact anchor must be a model hole, and every extra must be
-    // exactly that richer species.
-    let model_hole_fns: BTreeSet<String> = m
-        .holes
-        .iter()
-        .filter(|h| h.kind != HoleKind::UnanalyzedBody)
-        .filter_map(|h| match h.at {
-            EntityRef::Function(id) => Some(fname(id)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        art_unknown_fns, model_hole_fns,
-        "legacy-visible residue anchors agree"
-    );
-    assert!(
-        m.holes
-            .iter()
-            .any(|h| h.kind == HoleKind::UnanalyzedBody),
-        "the on_failure body holes out (model-richer residue)"
-    );
+    // Canonical handler summaries now project through the same artifact
+    // path as ordinary function summaries; no blanket body hole remains.
+    let model_hole_fns: BTreeSet<String> = m.holes.iter().filter_map(|h| match h.at {
+        EntityRef::Function(id) => Some(fname(id)),
+        _ => None,
+    }).collect();
+    assert_eq!(art_unknown_fns, model_hole_fns, "residue anchors agree");
+    assert!(!m.holes.iter().any(|h| h.kind == HoleKind::UnanalyzedBody));
 
     // groups: the artifact's as-authored member lists equal the
     // model's authored selector displays, per group, in order.
@@ -546,7 +531,7 @@ fn main() { App { }; }
 }
 
 #[test]
-fn a_clean_program_claims_exactness() {
+fn a_static_arrangement_keeps_lifecycle_context_separate_from_topology() {
     let src = r#"
 type T { n: Int = 0; }
 topic Evt { payload: T; subject: "evt"; }
@@ -563,8 +548,9 @@ main locus App {
 fn main() { App { }; }
 "#;
     let m = derive(src);
-    assert!(m.holes.is_empty());
-    assert!(m.capabilities.exact_calls);
+    assert!(m.holes.iter().any(|h| h.kind == HoleKind::UnmodeledInitialization
+        && matches!(h.at, EntityRef::Function(f) if m.entities.functions[f.index()].display == "main")));
+    assert!(!m.capabilities.exact_calls);
     assert!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes);
     assert!(m.capabilities.exact_key_filters);
     // Change 8: the arrangement tables are populated, so a fully
@@ -586,6 +572,9 @@ fn main() { App { }; }
         "one domain: main"
     );
     assert_eq!(m.entities.thread_domains[0].name, "main");
+    let empty_run = derive(&src.replace("run() { Evt <- T { n: 1 }; }", "run() { }"));
+    assert!(empty_run.holes.is_empty());
+    assert!(empty_run.capabilities.exact_calls && empty_run.capabilities.exact_effects);
 }
 
 #[test]
@@ -1169,14 +1158,10 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 7): an on_failure body the behavior analysis never
-/// walks HOLES OUT — the entity exists, its behavior is
-/// typed-unknown, and the capabilities go false. A module-scoped
-/// body is walked like a top-level one (F.40 phase 3, E3a part C: a
-/// module is a namespace, not an analysis boundary), so the module
-/// fn beside it is analyzed and does not.
+/// Both module and failure-handler bodies are analyzed. An indirect
+/// call remains a site-specific gap rather than a blanket body hole.
 #[test]
-fn unanalyzed_bodies_hole_out() {
+fn handler_and_module_bodies_keep_only_their_actual_gaps() {
     let src = r#"
 type T { n: Int = 0; }
 topic Evt { payload: T; subject: "evt"; }
@@ -1218,35 +1203,16 @@ fn main() { App { }; }
         handler.kind,
         hale_model::FunctionKind::FailureHandler
     );
-    // …the failure handler holes out as UnanalyzedBody, the module fn
-    // does not…
-    let unanalyzed: Vec<String> = m
-        .holes
-        .iter()
-        .filter(|h| h.kind == HoleKind::UnanalyzedBody)
-        .filter_map(|h| match h.at {
-            EntityRef::Function(id) => {
-                Some(e.functions[id.index()].name.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    assert!(
-        !unanalyzed.iter().any(|n| n == "sneaky"),
-        "a module body is analyzed: {:?}",
-        unanalyzed
-    );
     let sneaky = e.functions.iter().find(|f| f.name == "sneaky").unwrap();
     assert!(sneaky.analyzed && sneaky.summarized);
-    assert!(
-        unanalyzed.iter().any(|n| n.contains("on_failure")),
-        "failure body holes out: {:?}",
-        unanalyzed
-    );
-    // …so the capabilities cannot lie.
+    assert!(handler.analyzed && handler.summarized);
+    assert!(!m.holes.iter().any(|h| h.kind == HoleKind::UnanalyzedBody));
+    let handler_id = hale_model::FunctionId(e.functions.iter().position(|f| std::ptr::eq(f, handler)).unwrap() as u32);
+    assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(handler_id)),
+        "the handler's unresolved callback/recovery retains scoped coverage gaps");
     assert!(!m.capabilities.exact_calls);
-    assert!(!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes));
     assert!(!m.capabilities.exact_effects);
+    assert!(m.relations.publishes.iter().any(|p| p.function.index() == e.functions.iter().position(|f| std::ptr::eq(f, handler)).unwrap()));
 }
 
 /// P1 (round 7): canonical identity is importer-independent — the

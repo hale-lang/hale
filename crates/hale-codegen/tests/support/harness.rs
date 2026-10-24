@@ -61,15 +61,18 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// The text is built with `build_opts::build_source`: loaded as a seed
 /// of one file, as a verb loads it (F.40 phase 4, T2).
 #[allow(dead_code)]
-pub fn build_source_ir_text(source: &str, bin: &Path) -> Result<String, hale_codegen::CodegenError> {
+pub fn build_source_ir_text(
+    source: &str,
+    bin: &Path,
+) -> Result<String, hale_codegen::CodegenError> {
     let ll = bin.with_extension("ll");
     let options = hale_codegen::BuildOptions {
         dump_ir: Some(ll.clone()),
         ..build_opts::options()
     };
     build_opts::build_source(source, bin, &options)?;
-    let text = std::fs::read_to_string(&ll)
-        .expect("BuildOptions::dump_ir should have written the .ll");
+    let text =
+        std::fs::read_to_string(&ll).expect("BuildOptions::dump_ir should have written the .ll");
     let _ = std::fs::remove_file(&ll);
     Ok(text)
 }
@@ -91,8 +94,7 @@ pub fn build_source_asan(source: &str, bin: &Path) {
         asan: true,
         ..build_opts::options()
     };
-    build_opts::build_source(source, bin, &options)
-        .expect("asan build");
+    build_opts::build_source(source, bin, &options).expect("asan build");
     const MARKER: &[u8] = b"__asan_init";
     let image = std::fs::read(bin).expect("read the built binary");
     assert!(
@@ -161,9 +163,7 @@ pub fn statm_resident_bytes(line: &str) -> i64 {
             )
         })
         .parse()
-        .unwrap_or_else(|e| {
-            panic!("statm resident field is not a number ({e}): {line:?}")
-        });
+        .unwrap_or_else(|e| panic!("statm resident field is not a number ({e}): {line:?}"));
     pages * 4096
 }
 
@@ -191,7 +191,11 @@ pub fn statm_resident_bytes(line: &str) -> i64 {
 /// stack or to a `OnceLock` that never drops.
 pub fn unique_bin(name: &str) -> PathBuf {
     let module: Vec<&str> = module_path!().split("::").collect();
-    let file = if module.len() >= 3 { format!("{}_", module[module.len() - 2]) } else { String::new() };
+    let file = if module.len() >= 3 {
+        format!("{}_", module[module.len() - 2])
+    } else {
+        String::new()
+    };
     let mut p = std::env::temp_dir();
     p.push(format!(
         "hale_t_{}{}_{}_{}",
@@ -231,7 +235,9 @@ pub fn remove_at_exit(path: &Path) {
             atexit(remove_made);
         }
     });
-    MADE.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_path_buf());
+    MADE.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(path.to_path_buf());
 }
 
 extern "C" fn remove_made() {
@@ -244,15 +250,21 @@ extern "C" fn remove_made() {
         Ok(_) => drop(std::fs::remove_file(p)),
         Err(_) => {}
     };
-    let mut beside: std::collections::BTreeMap<PathBuf, Vec<String>> = std::collections::BTreeMap::new();
+    let mut beside: std::collections::BTreeMap<PathBuf, Vec<String>> =
+        std::collections::BTreeMap::new();
     for p in &made {
         remove(p);
         if let (Some(dir), Some(name)) = (p.parent(), p.file_name()) {
-            beside.entry(dir.to_path_buf()).or_default().push(format!("{}.", name.to_string_lossy()));
+            beside
+                .entry(dir.to_path_buf())
+                .or_default()
+                .push(format!("{}.", name.to_string_lossy()));
         }
     }
     for (dir, prefixes) in beside {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if prefixes.iter().any(|pre| name.starts_with(pre.as_str())) {

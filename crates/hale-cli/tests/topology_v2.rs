@@ -247,23 +247,32 @@ fn main() { A { }; }
         "the topics row must carry the protocol-vector identity:\n{}",
         art
     );
-    // Unhashed: an edit to a payload FIELD changes the topic row
-    // but must not change the model shape identity (topology is
-    // unchanged).
+    // Payload layout remains outside the model half. Changing a field's
+    // representation changes observation identity, but its constructor's
+    // named override set and the execution graph stay the same.
+    let changed_type = src.replace("label: String", "label: Int")
+        .replace("label: \"t\"", "label: 1");
+    let a = dump(src, "obs_identity_a");
+    let type_edit = dump(&changed_type, "obs_identity_type");
+    assert_ne!(a.lines().find(|l| l.contains("payload_hash")), type_edit.lines().find(|l| l.contains("payload_hash")));
+    assert_eq!(shape_hash(&a), shape_hash(&type_edit), "a payload representation edit does not change constructor execution");
+
+    // Schema 1.27 records record constructors' supplied fields to validate
+    // the exact default-omission account. Renaming a supplied field changes
+    // that hashed execution fact as well as the observation identity.
     let renamed = src
         .replace("label: String", "tag: String")
         .replace("label: \"t\"", "tag: \"t\"");
-    let a = dump(src, "obs_identity_a");
     let b = dump(&renamed, "obs_identity_b");
     assert_ne!(
         a.lines().find(|l| l.contains("payload_hash")),
         b.lines().find(|l| l.contains("payload_hash")),
         "a payload field edit must change the observation identity"
     );
-    assert_eq!(
+    assert_ne!(
         shape_hash(&a),
         shape_hash(&b),
-        "a payload field edit must NOT change the model shape_hash"
+        "a supplied-field rename changes the constructor omission account"
     );
 }
 

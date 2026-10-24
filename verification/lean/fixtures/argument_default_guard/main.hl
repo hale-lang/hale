@@ -1,0 +1,9 @@
+fn observe() -> Int { println("argument default observed"); return 1; }
+fn calculate(n: Int = observe()) -> Int { return n; }
+locus Worker { fn measure() { let n = calculate(); } }
+group workers = { Worker };
+group observers = { observe };
+main locus App {
+    claims { quiet: forbid reaches(workers, effects(stdio)) avoiding observers; }
+}
+fn main() { App { }; }

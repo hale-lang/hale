@@ -1,0 +1,20 @@
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response { status: 200, content_type: "text/plain", body: "hi" };
+    }
+}
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+group gates = { Gate };
+main locus App { claims { pure: forbid reaches(gates, effects(alloc)); } }
+fn main() {
+    let r = std::http::Router { };
+    r.add("GET", "/", Hello { });
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+    App { };
+}

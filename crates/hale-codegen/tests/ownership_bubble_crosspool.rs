@@ -235,7 +235,9 @@ fn crosspool_bubble_is_clean_under_asan() {
     let mut last = String::new();
     for _ in 0..6 {
         let out = Command::new(&bin)
-            .env("ASAN_OPTIONS", "detect_leaks=1")
+            // Apple ASan does not support LeakSanitizer. Linux keeps
+            // the leak oracle as well as the address checks.
+            .env("ASAN_OPTIONS", if cfg!(target_os = "macos") { "detect_leaks=0" } else { "detect_leaks=1" })
             .env("LOTUS_NO_CHUNK_POOL", "1")
             .output()
             .expect("run the asan build");
@@ -300,7 +302,7 @@ fn world_collects_crosspool_children_through_an_interface_accept() {
     let mut last = String::new();
     for _ in 0..6 {
         let out = Command::new(&bin)
-            .env("ASAN_OPTIONS", "detect_leaks=1")
+            .env("ASAN_OPTIONS", if cfg!(target_os = "macos") { "detect_leaks=0" } else { "detect_leaks=1" })
             .env("LOTUS_NO_CHUNK_POOL", "1")
             .output()
             .expect("run the asan build");

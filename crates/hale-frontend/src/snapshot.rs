@@ -18,8 +18,9 @@
 //!   model reads beside the scope. The checker reads the handler rows
 //!   too, demanded before it runs.
 //! - [`Snapshot::demand_flows`]: the flow rows over the checked
-//!   programs, which the check, the lifecycle plan, the lowering view,
-//!   the editor's dependents relation and `check --flows` read.
+//!   programs, which the check, dependents and `check --flows` read.
+//! - [`Snapshot::demand_flow_instances`]: concrete flow membership and
+//!   the generic inventory shared by lifecycle and emission.
 //! - [`Snapshot::demand_law_selection`]: law selection over the programs
 //!   after the sequence, for the configuration's environment: the check
 //!   reports its diagnostics, the laws stage lowers its clauses, and the
@@ -100,6 +101,7 @@ use hale_types::flows::FlowRows;
 use hale_types::form_rows::FormRows;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::lifecycle::LifecyclePlan;
+use hale_types::lifecycle_context::{LifecycleContextInputs, LifecycleContexts};
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
@@ -149,7 +151,7 @@ use crate::source::SourceProvider;
 /// carried to lowering; `unit_declarations` the unit-dialect rows and
 /// the catalogue closed from them ([`Snapshot::demand_units`]), which
 /// the check reads.
-pub const FAMILIES: [&str; 29] = [
+pub const FAMILIES: [&str; 33] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -163,8 +165,11 @@ pub const FAMILIES: [&str; 29] = [
     "typed_bodies",
     "bus_graph",
     "ownership",
+    "default_evaluation",
+    "protocol_execution",
     "handler_routing",
     "flows",
+    "flow_instances",
     "law_selection",
     "role_rows",
     "surface",
@@ -174,6 +179,7 @@ pub const FAMILIES: [&str; 29] = [
     "placement",
     "arrangement",
     "dispatch",
+    "lifecycle_context",
     "lifecycle_order",
     "model",
     "claims",
@@ -506,11 +512,14 @@ pub struct Snapshot {
     previous: Cell<Option<Box<Snapshot>>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
+    default_evaluations: OnceCell<Result<hale_types::ownership_graph::DefaultEvaluations, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
     flows: OnceCell<Result<FlowRows, Blocked>>,
+    flow_instances: OnceCell<Result<hale_types::flow_instances::FlowInstances, Blocked>>,
     /// Shared with the effect rows, which hold the summary their walk
     /// read.
     alloc_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
+    execution_summary: OnceCell<Result<Arc<AllocSummary>, Blocked>>,
     law_selection: OnceCell<Result<LawSelection, Blocked>>,
     role_rows: OnceCell<Result<RoleRows, Blocked>>,
     surface_rows: OnceCell<Result<hale_types::surfaces::SurfaceRows, Blocked>>,
@@ -520,6 +529,7 @@ pub struct Snapshot {
     arrangement: OnceCell<Result<Arrangement, Blocked>>,
     dispatch_gates: OnceCell<Result<Vec<hale_model::DispatchGate>, Blocked>>,
     dispatch_plan: OnceCell<Result<DispatchPlan, Blocked>>,
+    lifecycle_context: OnceCell<Result<LifecycleContexts, Blocked>>,
     lifecycle: OnceCell<Result<LifecyclePlan, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     /// The typing stage, and how many of its diagnostics are the
@@ -660,7 +670,7 @@ impl Snapshot {
         config: Config,
         loaded: Loaded,
     ) -> Result<Snapshot, LoadError> {
-        let builds: [Cell<u32>; FAMILIES.len()] = Default::default();
+        let builds: [Cell<u32>; FAMILIES.len()] = std::array::from_fn(|_| Cell::new(0));
         let mut snap = Snapshot {
             key,
             config,
@@ -693,9 +703,12 @@ impl Snapshot {
             previous: Cell::new(None),
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
+            default_evaluations: OnceCell::new(),
             handlers: OnceCell::new(),
             flows: OnceCell::new(),
+            flow_instances: OnceCell::new(),
             alloc_summary: OnceCell::new(),
+            execution_summary: OnceCell::new(),
             law_selection: OnceCell::new(),
             role_rows: OnceCell::new(),
             surface_rows: OnceCell::new(),
@@ -705,6 +718,7 @@ impl Snapshot {
             arrangement: OnceCell::new(),
             dispatch_gates: OnceCell::new(),
             dispatch_plan: OnceCell::new(),
+            lifecycle_context: OnceCell::new(),
             lifecycle: OnceCell::new(),
             model: OnceCell::new(),
             typing_stage: OnceCell::new(),
@@ -1086,7 +1100,7 @@ impl Snapshot {
     pub fn demand_capability_uses(&self) -> Result<&CapabilityUses, &Blocked> {
         self.capability_uses
             .get_or_init(|| {
-                let summary = self.alloc_summary().map_err(Clone::clone)?.clone();
+                let summary = self.execution_summary().map_err(Clone::clone)?.clone();
                 Ok(hale_types::capability::uses::derive_capability_uses(&self.bundle(), &summary))
             })
             .as_ref()
@@ -1336,10 +1350,11 @@ impl Snapshot {
             handlers: self.demand_handlers().map_err(Clone::clone)?,
             flows: self.demand_flows().map_err(Clone::clone)?,
             ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
+            default_evaluations: self.demand_default_evaluations().map_err(Clone::clone)?,
             effects: &effects,
             entry: self.demand_entry().map_err(Clone::clone)?,
             bindings: self.demand_bindings().map_err(Clone::clone)?,
-            alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
+            alloc_summary: self.execution_summary().map_err(Clone::clone)?,
             forms: self.demand_forms().map_err(Clone::clone)?,
             bus: self.demand_bus_graph().map_err(Clone::clone)?,
             intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
@@ -1518,6 +1533,20 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// Source default contexts, derived once from the ownership walk and the
+    /// verified typing walk's omission rows. This includes no-locus roots and
+    /// explicit gaps; it establishes no runtime ancestry or admission fact.
+    pub fn demand_default_evaluations(&self) -> Result<&hale_types::ownership_graph::DefaultEvaluations, &Blocked> {
+        self.default_evaluations.get_or_init(|| {
+            let walked = self.final_walk().map_err(Clone::clone)?;
+            let graph = self.demand_ownership_graph().map_err(Clone::clone)?;
+            self.count("default_evaluation");
+            let record = &walked.walk.record;
+            Ok(graph.default_evaluations(&graph.bubble_plans(),
+                hale_types::typed_bodies::OmittedView { by_call:&record.omitted_args,by_path:&record.calls_by_path }))
+        }).as_ref()
+    }
+
     /// The handler rows of the checked programs: the checker's
     /// duplicate-handler rule and `@supervised` law, and the model's
     /// supervision. Blocked with the scope, which a file that did not
@@ -1558,6 +1587,20 @@ impl Snapshot {
                 Ok(hale_types::flows::survey(&programs, &bundle.import_renames).admit_interfaces(&scope.top))
             })
             .as_ref()
+    }
+
+    /// Concrete flow membership and generic requests, after expression
+    /// typing, for the model, lifecycle plan and emission. The declaration-only
+    /// survey remains available before typing.
+    pub fn demand_flow_instances(&self) -> Result<&hale_types::flow_instances::FlowInstances, &Blocked> {
+        self.flow_instances.get_or_init(|| {
+            let flows = self.demand_flows().map_err(Clone::clone)?;
+            let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
+            let scope = self.scope().map_err(Clone::clone)?;
+            self.count("flow_instances");
+            hale_types::flow_instances::FlowInstances::derive(&self.bundle(), flows, typed.monomorphs(), &scope.top)
+                .map_err(|(message, span)| Blocked { family: "flow_instances", because: vec![hale_syntax::Diag::ty(span, message)], refused: None })
+        }).as_ref()
     }
 
     /// Law selection ([`hale_types::claims::select_laws`], F.40 phase 4,
@@ -1660,11 +1703,31 @@ impl Snapshot {
         self.effects
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
-                let summary = self.alloc_summary().map_err(Clone::clone)?.clone();
+                let summary = self.execution_summary().map_err(Clone::clone)?.clone();
                 self.count("effects");
                 Ok(hale_types::effect_rows::derive_effect_rows(&self.bundle(), &scope.top, summary))
             })
             .as_ref()
+    }
+
+    /// Contextual execution over the base source summary. The verified walk
+    /// may demand the base through editor dependencies, so this late account
+    /// must never be a dependency of `alloc_summary` or its dependency index.
+    fn execution_summary(&self) -> Result<&Arc<AllocSummary>, &Blocked> {
+        self.execution_summary.get_or_init(|| {
+            let base = self.alloc_summary().map_err(Clone::clone)?;
+            let graph = self.demand_ownership_graph().map_err(Clone::clone)?;
+            let defaults = self.demand_default_evaluations().map_err(Clone::clone)?;
+            self.count("protocol_execution");
+            Ok(Arc::new(hale_types::protocol_execution::derive(base, graph, defaults)))
+        }).as_ref()
+    }
+
+    /// Shared contextual execution facts read by certificates and effect rows.
+    /// The base allocation summary remains available independently to editor
+    /// dependencies and lowering's source/routing projections.
+    pub fn demand_protocol_execution(&self) -> Result<&AllocSummary, &Blocked> {
+        self.execution_summary().map(|summary| &**summary)
     }
 
     /// The allocation summary, with the stdlib's analysis copy beside the
@@ -1727,8 +1790,8 @@ impl Snapshot {
     /// snapshot, with the stdlib's analysis copy beside them and
     /// cross-seed calls resolved through the import renames
     /// ([`hale_types::alloc_summary::derive_alloc_summary`]). The
-    /// check's effects certificate engine reads it, and the effect rows
-    /// walk it. Blocked with the scope; its producer reads declarations
+    /// contextual execution family extends it for effect certificates and
+    /// effect rows. Blocked with the scope; its producer reads declarations
     /// and bodies, not types, so it is total over a program that does
     /// not typecheck.
     pub fn demand_alloc_summary(&self) -> Result<&AllocSummary, &Blocked> {
@@ -1877,15 +1940,30 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// Source construction, ownership and execution contexts. This family is
+    /// independent of lifecycle planning and can be read by model derivation.
+    pub fn demand_lifecycle_contexts(&self) -> Result<&LifecycleContexts, &Blocked> {
+        self.lifecycle_context.get_or_init(|| {
+            let placement = self.demand_placement().map_err(Clone::clone)?;
+            let flows = self.demand_flow_instances().map_err(Clone::clone)?;
+            let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+            self.count("lifecycle_context");
+            let bundle = self.bundle();
+            Ok(hale_types::lifecycle_context::derive_lifecycle_contexts(&LifecycleContextInputs {
+                bundle: &bundle, placement, flows, ownership,
+            }))
+        }).as_ref()
+    }
+
     /// The lifecycle plan ([`hale_types::lifecycle::derive`]): per
     /// instance template the placement table names, and per action, the
     /// obligation, with its guard, holder and domain, its entry and
     /// completion edges, its terminals, what it retains and the progress
     /// it owes, each rule with its decision line's status; and the
     /// process's own. Over the placement table, the handler rows, the
-    /// flow rows of the checked programs, the bus graph and the entry
-    /// row, each demanded. Blocked with the scope; like its inputs it reads
-    /// declarations and bodies, not types. No check builds it; the
+    /// completed flow membership, the bus graph and the entry row,
+    /// each demanded. Concrete flow membership reads typed monomorphs;
+    /// an incomplete inventory blocks the plan. No check builds it; the
     /// lowering view carries it to the emitters (F.40 phase 3, L4).
     pub fn demand_lifecycle(&self) -> Result<&LifecyclePlan, &Blocked> {
         self.lifecycle
@@ -1894,8 +1972,8 @@ impl Snapshot {
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
-                let flows = self.demand_flows().map_err(Clone::clone)?;
-                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                let flows = self.demand_flow_instances().map_err(Clone::clone)?;
+                let contexts = self.demand_lifecycle_contexts().map_err(Clone::clone)?;
                 self.count("lifecycle_order");
                 let bundle = self.bundle();
                 Ok(hale_types::lifecycle::derive::derive_lifecycle(&hale_types::lifecycle::derive::LifecycleInputs {
@@ -1905,7 +1983,7 @@ impl Snapshot {
                     flows,
                     bus,
                     entry,
-                    ownership,
+                    contexts,
                 }))
             })
             .as_ref()
@@ -1932,10 +2010,14 @@ impl Snapshot {
                     });
                 }
                 let inputs = hale_types::model_builder::ModelInputs {
+                    lifecycle_contexts: self.demand_lifecycle_contexts().map_err(Clone::clone)?,
                     top: &self.scope().map_err(Clone::clone)?.top,
                     bus_graph: self.demand_bus_graph().map_err(Clone::clone)?,
                     ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    typed: self.demand_typed_bodies().map_err(Clone::clone)?,
+                    stdlib_recoveries: hale_types::stdlib_bodies::recovery_rows(),
+                    flows: self.demand_flow_instances().map_err(Clone::clone)?,
                     effects: self.demand_effects().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
@@ -2100,7 +2182,7 @@ impl Snapshot {
             bindings: self.demand_bindings().map_err(Clone::clone)?,
             entry: self.demand_entry().map_err(Clone::clone)?,
             ownership: &ownership,
-            omitted: self.demand_typed_bodies().map_err(Clone::clone)?.omitted_args(),
+            default_evaluations: self.demand_default_evaluations().map_err(Clone::clone)?,
         };
         let mut diags = hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs);
         hale_types::finish_check_diags(&mut diags);
@@ -2158,7 +2240,7 @@ impl Snapshot {
                 // the allocation summary's (F.40 phase 4, Q1): the check
                 // demanded the summary on the gated path, the target
                 // admission on the harness's.
-                let flows = self.demand_flows().map_err(Clone::clone)?;
+                let flows = self.demand_flow_instances().map_err(Clone::clone)?;
                 let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
                 // The effective target's column: what lowering reads for
                 // every behaviour and obligation it emits per target. A
@@ -2199,6 +2281,14 @@ impl Snapshot {
                     class,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })?;
+                view.storage_projections = Some(summary.storage_projections(&flows.instantiations)
+                    .map_err(|msg| Blocked { family: "alloc_summary", because: Vec::new(), refused: Some(msg) })?);
+                view.lifecycle_hooks = Some(hale_types::lifecycle_hooks::lower(&summary.lifecycle_hooks,
+                    |id| view.correspondence.merged_stdlib_node(id.0).map(hale_syntax::ast::NodeId))
+                    .map_err(|message| Blocked { family:"alloc_summary",because:Vec::new(),refused:Some(message.to_string()) })?);
+                view.protocol_hooks = Some(hale_types::protocol_execution::lower(&summary.protocol_hooks,
+                    |id| view.correspondence.merged_stdlib_node(id.0).map(hale_syntax::ast::NodeId))
+                    .map_err(|message| Blocked { family:"alloc_summary",because:Vec::new(),refused:Some(message.to_string()) })?);
                 view.lifecycle = Some(lifecycle);
                 view.entry = Some(entry);
                 view.owned_views = Some(owned_views.lowered(|id| view.correspondence.merged_stdlib_node(id)));

@@ -178,15 +178,8 @@ pub fn run_is_called(body_empty: bool, flow: bool) -> bool {
 /// universe that minted it.
 pub use crate::placement::{DeclRef, InstanceKey, Origin, SiteRef, Step, Template};
 
-/// A row's static identity: the declaration built and the template
-/// that builds it. Two specializations of one generic share
-/// [`DeclRef::site`] and differ in [`DeclRef::lowered`], so they are
-/// two source sites with two sets of rows.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SourceSite {
-    pub decl: DeclRef,
-    pub template: Template,
-}
+/// Source declaration specialization and construction template, owned upstream.
+pub use crate::lifecycle_context::SourceSite;
 
 /// The runtime level: one live object and one incarnation of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

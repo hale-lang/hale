@@ -106,31 +106,46 @@ pub fn bus_rows() -> Option<&'static crate::bus_graph::BusRows> {
 /// dropped (the stdlib is not the user's code to fix, as the scope drops
 /// its own); a site it could not type is `Unknown`, which costs a copy.
 pub fn view_types() -> Option<&'static [std::sync::Arc<crate::typed_bodies::ViewTypes>]> {
-    stdlib_walk().map(|(views, _)| views.as_slice())
+    stdlib_walk().map(|walk| walk.views.as_slice())
 }
 
 /// The monomorph shapes the stdlib's walk typed ([`view_types`]'s walk).
 pub fn mono_shapes() -> Option<&'static crate::typed_bodies::MonoShapes> {
-    stdlib_walk().map(|(_, monos)| monos)
+    stdlib_walk().map(|walk| &walk.monos)
 }
 
-#[allow(clippy::type_complexity)]
-static STDLIB_WALK: OnceLock<
-    Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)>,
-> = OnceLock::new();
+/// Typed recovery receivers from the same whole-copy walk as the view
+/// types when recovery syntax exists. Proven syntax absence returns an
+/// empty inventory without typing. Declaration references use `StdlibAnalysis`.
+/// `None` means unavailable, not an empty recovery inventory.
+pub fn recovery_rows() -> Option<&'static [crate::typed_bodies::RecoveryRow]> {
+    // The identity mint already visits the expressions to bind their uses.
+    // Proven syntax absence means typing cannot produce a recovery row.
+    // Positive or unavailable presence still uses the actual typed walk.
+    if identities()?.recovery_syntax == Some(false) {
+        return Some(&[]);
+    }
+    stdlib_walk().map(|walk| walk.recoveries.as_slice())
+}
 
-#[allow(clippy::type_complexity)]
-fn stdlib_walk() -> Option<&'static (Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
+struct StdlibWalk {
+    views: Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>,
+    monos: crate::typed_bodies::MonoShapes,
+    recoveries: Vec<crate::typed_bodies::RecoveryRow>,
+}
+
+static STDLIB_WALK: OnceLock<Option<StdlibWalk>> = OnceLock::new();
+
+fn stdlib_walk() -> Option<&'static StdlibWalk> {
     STDLIB_WALK.get_or_init(|| walk_copy(&|_, _| None)).as_ref()
 }
 
 /// The checker's walk of the copy over the scope of no program, the
 /// declarations `reuse` answers for stood in: each item's `views` table,
 /// in item order, and the monomorph shapes the walk typed.
-#[allow(clippy::type_complexity)]
 fn walk_copy(
     reuse: &dyn Fn(&str, usize) -> Option<crate::check::DeclChecked>,
-) -> Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
+) -> Option<StdlibWalk> {
     let program = program()?;
     let bundle = crate::Bundle::new(std::iter::once((crate::snapshot::STDLIB_SEED.to_string(), program)).collect());
     let (top, _) = crate::resolve::build_top_scope(&crate::Bundle::new(Default::default()));
@@ -141,9 +156,21 @@ fn walk_copy(
     let inputs =
         crate::check::WalkInputs { top: &top, handlers: &handlers, bindings: &bindings, units: &units, target: &target };
     let walk = crate::check::walk_bundle_for_record(&bundle, &inputs, reuse);
+    let recoveries = walk.record.bodies.values().flat_map(|body| body.recoveries.iter().cloned()).map(|mut row| {
+        // In this walk the stdlib is the bundle's own program. Its
+        // locally User-tagged references belong to the analysis copy
+        // when exposed outside the walk, never to a user's mint.
+        for reference in [&mut row.parent, &mut row.child].into_iter().flatten() {
+            reference.universe = crate::placement::SiteUniverse::StdlibAnalysis;
+        }
+        if let crate::typed_bodies::RecoveryRoot::CurrentLocus(ref mut reference) = row.operand.root {
+            reference.universe = crate::placement::SiteUniverse::StdlibAnalysis;
+        }
+        row
+    }).collect();
     let mut views = walk.record.views;
     let monos = (*walk.record.mono_shapes).clone();
-    views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos))
+    views.remove(crate::snapshot::STDLIB_SEED).map(|views| StdlibWalk { views, monos, recoveries })
 }
 
 /// The `views` column of the items of the copy a program reaches
@@ -164,8 +191,8 @@ pub fn view_types_within(reach: &crate::stdlib_reach::StdlibReach) -> Option<Rea
         static WHOLE: OnceLock<Option<ReachedViews>> = OnceLock::new();
         return WHOLE
             .get_or_init(|| {
-                let (views, monos) = stdlib_walk()?;
-                Some(ReachedViews { views: views.clone(), monos: Arc::new(monos.clone()) })
+                let walk = stdlib_walk()?;
+                Some(ReachedViews { views: walk.views.clone(), monos: Arc::new(walk.monos.clone()) })
             })
             .clone();
     }
@@ -183,7 +210,7 @@ pub fn view_types_within(reach: &crate::stdlib_reach::StdlibReach) -> Option<Rea
     });
     let missing: std::collections::BTreeSet<usize> = reach.items().filter(|&i| !held.walked[i]).collect();
     if !missing.is_empty() {
-        let (views, monos) = walk_copy(&|_, i| {
+        let StdlibWalk { views, monos, .. } = walk_copy(&|_, i| {
             (!missing.contains(&i)).then(|| crate::check::DeclChecked {
                 typing: Vec::new(),
                 reveal: Vec::new(),
@@ -513,7 +540,8 @@ mod reached_walk {
     /// reaches.
     #[test]
     fn reached_walk_is_the_whole_walk() {
-        let (whole, whole_monos) = super::stdlib_walk().expect("the stdlib parses");
+        let whole_walk = super::stdlib_walk().expect("the stdlib parses");
+        let (whole, whole_monos) = (&whole_walk.views, &whole_walk.monos);
         let n = whole.len();
         let hello = hale_syntax::parse_source("fn main() { println(\"hi\"); }").expect("parses");
         let reach = crate::stdlib_reach::StdlibReach::of(&[&hello]);
@@ -521,7 +549,7 @@ mod reached_walk {
         parts.push((0..n).map(|i| reach.contains(i)).collect());
         parts.push((0..n).map(|i| i >= n / 2).collect());
         for (p, part) in parts.iter().enumerate() {
-            let (views, monos) = super::walk_copy(&|_, i| {
+            let walk = super::walk_copy(&|_, i| {
                 (!part[i]).then(|| crate::check::DeclChecked {
                     typing: Vec::new(),
                     reveal: Vec::new(),
@@ -529,10 +557,11 @@ mod reached_walk {
                 })
             })
             .expect("the stdlib parses");
+            let (views, monos) = (&walk.views, &walk.monos);
             for i in (0..n).filter(|&i| part[i]) {
                 assert!(views[i] == whole[i], "part {p}: item {i}'s table is not the whole walk's");
             }
-            for (name, shape) in &monos {
+            for (name, shape) in monos {
                 assert_eq!(whole_monos.get(name), Some(shape), "part {p}: monomorph `{name}`");
             }
         }

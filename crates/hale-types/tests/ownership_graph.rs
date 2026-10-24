@@ -691,7 +691,7 @@ fn a_cross_pool_spawn_in_another_locus_default_is_refused_at_the_default() {
                 format!("{}.{}", g.declarations[g.sites[i].enclosing_decl].name, g.sites[i].child_ty),
                 g.declarations[e.context].name.clone(),
             )),
-            ExpandedLiteral::Free(_) | ExpandedLiteral::Other(_) => None,
+            ExpandedLiteral::Free(_) | ExpandedLiteral::Other(_) | ExpandedLiteral::Binding(_) => None,
         })
         .collect();
     assert!(contexts.contains(&("Holder.Ship".to_string(), "Driver".to_string())), "{contexts:?}");
@@ -1260,4 +1260,120 @@ fn lowerings_graph_is_the_snapshots_rows_through_the_correspondence() {
     let scope = s.demand_scope().unwrap_or_else(|_| panic!("the scope is blocked"));
     assert_eq!(format!("{:?}", view.top), format!("{scope:?}"));
     assert!(view.top.symbols.keys().any(|k| k.starts_with("__Std")));
+}
+
+
+// Original source identities distinguish runtime contexts without treating a
+// declaration's lexical location as the place an inline default executes.
+const DEFAULT_CALLER_SOURCE: &str = r#"
+locus Child { }
+fn use_child(c: Child = Child { }) { }
+locus Parent {
+    accept(c: Child) { println("accepted"); }
+    fn make() { use_child(); }
+    run() { self.make(); }
+}
+fn main() { use_child(); Parent { }; }
+"#;
+const PARAM_ROOT_SOURCE: &str = r#"
+locus Child { }
+locus Root { params { child: Child = Child { }; } }
+locus Parent {
+    accept(c: Child) { println("accepted"); }
+    fn make() { Root { }; Root { }; }
+    run() { self.make(); }
+}
+fn main() { Parent { }; }
+"#;
+fn context_snapshot(source: &str) -> hale_frontend::snapshot::Snapshot {
+    entries::load_files(&[("app.hl",source)],hale_frontend::snapshot::Config::check(false,false))
+}
+#[test]
+fn default_source_contexts_keep_caller_and_no_locus_roots_separate() {
+    let snapshot=context_snapshot(DEFAULT_CALLER_SOURCE);
+    let graph=snapshot.demand_ownership_graph().unwrap();
+    let contexts=snapshot.demand_default_evaluations().unwrap();
+    assert!(std::ptr::eq(contexts,snapshot.demand_default_evaluations().unwrap()));
+    assert_eq!(snapshot.builds()["default_evaluation"],1);
+    assert_eq!(snapshot.builds()["model"],0);
+    assert_eq!(snapshot.builds()["alloc_summary"],0);
+    assert_eq!(snapshot.builds()["effects"],0);
+    assert_eq!(snapshot.builds()["lifecycle_order"],0);
+    let literal=graph.free_fn_sites.iter().find(|s| s.arg_default.is_some()).unwrap().literal.unwrap();
+    let selected:Vec<_>=contexts.rows.iter().filter(|e| graph.literal(e.literal).literal==Some(literal)).collect();
+    assert_eq!(selected.len(),2,"one source default, two different roots: {selected:?}");
+    let parent=graph.declarations.iter().position(|d| d.name=="Parent").unwrap();
+    assert!(contexts.gaps.iter().any(|g| g.kind==hale_types::ownership_graph::DefaultContextGapKind::UnrepresentedDefaults && g.context==Some(parent)),"a primitive/foreign call has no fabricated user-default account");
+    assert!(selected.iter().any(|e| e.context==Some(parent)));
+    assert!(selected.iter().any(|e| e.context.is_none()));
+    let roots:std::collections::BTreeSet<_>=selected.iter().map(|e| e.root_site.unwrap()).collect();
+    assert_eq!(roots.len(),2);
+    for root in roots { assert!(graph.calls.iter().any(|c| c.source==Some(root))); }
+}
+#[test]
+fn default_roots_do_not_alias_when_generated_witness_spans_overlap() {
+    let source=PARAM_ROOT_SOURCE.replace("locus Root { params { child: Child = Child { }; } }", "locus Root { params { child: Child = Child { }; } accept(c: Child) { println(\"inner\"); } }");
+    let snapshot=context_snapshot(&source);
+    let mut graph=snapshot.demand_ownership_graph().unwrap().clone();
+    let roots:Vec<_>=graph.sites.iter().enumerate().filter(|(_,s)| s.enclosing_locus=="Parent" && s.child_ty=="Root").map(|(i,_)| i).collect();
+    assert_eq!(roots.len(),2);
+    assert_ne!(graph.sites[roots[0]].literal,graph.sites[roots[1]].literal);
+    graph.sites[roots[1]].span=graph.sites[roots[0]].span;
+    let contexts=graph.default_evaluations(&Default::default(),Default::default());
+    let source=graph.sites.iter().find(|s| s.params_default && s.child_ty=="Child").unwrap().literal;
+    let rows:Vec<_>=contexts.rows.iter().filter(|e| graph.literal(e.literal).literal==source).collect();
+    assert_eq!(rows.len(),2,"distinct roots survive coincident witnesses: {rows:?}");
+    assert_eq!(rows[0].root,rows[1].root);
+    assert_ne!(rows[0].root_site,rows[1].root_site);
+    let parent=graph.declarations.iter().position(|d| d.name=="Parent").unwrap();
+    assert!(rows.iter().all(|e| e.context==Some(parent)),"construction context is distinct from the initialized Root's self binding");
+}
+#[test]
+fn missing_default_call_classification_is_an_explicit_context_gap() {
+    let snapshot=context_snapshot(DEFAULT_CALLER_SOURCE);
+    let graph=snapshot.demand_ownership_graph().unwrap();
+    let contexts=graph.default_evaluations(&Default::default(),Default::default());
+    use hale_types::ownership_graph::DefaultContextGapKind as Gap;
+    let parent=graph.declarations.iter().position(|d| d.name=="Parent").unwrap();
+    let call=graph.calls.iter().find(|c| c.enclosing_decl==Some(parent) && c.arg_default.is_none()).unwrap();
+    assert!(contexts.gaps.iter().any(|g| g.kind==Gap::MissingCallClassification && g.at==call.source && g.root_site==call.source && g.context==Some(parent)));
+}
+#[test]
+fn posted_params_are_a_boundary_rather_than_proven_absent_work() {
+    let snapshot=context_snapshot(PARAM_ROOT_SOURCE);
+    let graph=snapshot.demand_ownership_graph().unwrap();
+    let posted: BTreeMap<_,_>=[(("Parent".to_string(),"Root".to_string()),"Owner".to_string())].into_iter().collect();
+    let contexts=graph.default_evaluations(&hale_types::ownership_graph::BubblePlans { crosspool:posted.clone(), ..Default::default() },Default::default());
+    assert_eq!(contexts.posted,posted);
+    use hale_types::ownership_graph::DefaultContextGapKind as Gap;
+    let parent=graph.declarations.iter().position(|d| d.name=="Parent").unwrap();
+    let gaps:Vec<_>=contexts.gaps.iter().filter(|g| g.kind==Gap::PostedParameterDefaults && g.context==Some(parent)).collect();
+    assert_eq!(gaps.len(),2);
+    assert!(gaps.iter().all(|g| g.at.is_some() && g.at==g.root_site));
+    assert_ne!(gaps[0].root_site,gaps[1].root_site);
+}
+
+#[test]
+fn per_use_candidates_do_not_claim_an_exact_lexical_use() {
+    let source=format!("const S: Ship = Ship {{ hull: 1 }};\n{}",crosspool_src("        println(S.hull);"));
+    let snapshot=context_snapshot(&source);
+    let graph=snapshot.demand_ownership_graph().unwrap();
+    let contexts=snapshot.demand_default_evaluations().unwrap();
+    let literal=graph.other_sites.iter().find(|s| matches!(s.position,hale_types::ownership_graph::OtherPosition::PerUse(_))).unwrap().site.literal;
+    assert!(literal.is_some());
+    use hale_types::ownership_graph::DefaultContextGapKind as Gap;
+    let gaps:Vec<_>=contexts.gaps.iter().filter(|g| g.kind==Gap::PerUseContext && g.at==literal).collect();
+    assert!(gaps.iter().any(|g| g.context.is_none()));
+    assert!(gaps.iter().any(|g| g.context.is_some()));
+    assert!(gaps.iter().all(|g| g.root_site==literal));
+}
+#[test]
+fn repeated_source_contexts_are_not_occurrence_counts() {
+    let source=PARAM_ROOT_SOURCE.replace("locus Root { params { child: Child = Child { }; } }", "locus Carrier { params { child: Child = Child { }; } }\nlocus Root { params { left: Carrier = Carrier { }; right: Carrier = Carrier { }; } }").replace("Root { }; Root { };", "Root { };");
+    let snapshot=context_snapshot(&source);
+    let graph=snapshot.demand_ownership_graph().unwrap();
+    let contexts=snapshot.demand_default_evaluations().unwrap();
+    let child=graph.sites.iter().find(|s| s.enclosing_locus=="Carrier" && s.child_ty=="Child").unwrap().literal;
+    use hale_types::ownership_graph::DefaultContextGapKind as Gap;
+    assert!(contexts.gaps.iter().any(|g| g.kind==Gap::RepeatedDefaultContext && g.at==child && g.root_site.is_some()));
 }

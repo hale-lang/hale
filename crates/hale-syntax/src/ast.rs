@@ -681,6 +681,9 @@ pub enum ClaimForm {
     /// over its members, so the quantifier is spelled differently on
     /// purpose.
     RequireSealed { group: Ident },
+    /// `require flow(all G)` — every selected concrete child type is
+    /// classified for run-completion reclamation. No termination bound.
+    RequireFlow { group: Ident },
     /// GH #436: `require attributed(all syscall);` — every user fn
     /// that DIRECTLY performs an operation of the named built-in class
     /// carries at least one user-declared effect class.
@@ -731,6 +734,9 @@ pub enum ClaimForm {
     /// member of A executes in a different domain from every member
     /// of B. Both groups must have a known, nonempty population.
     RequireSeparateDomains { left: Ident, right: Ident },
+    /// Sum declared subscription queue slots over every arranged
+    /// instance of the group's locus declarations.
+    QueueSlots { group: Ident, limit: u64 },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.
@@ -835,9 +841,11 @@ impl ClaimForm {
             ClaimForm::Bound { from, .. } => vec![from],
             ClaimForm::Require { group, .. }
             | ClaimForm::RequireSealed { group }
+            | ClaimForm::RequireFlow { group }
             | ClaimForm::Cover { group, .. }
             | ClaimForm::RouteCoverage { group, .. }
-            | ClaimForm::RequireNoSilentLossGroup { group } => vec![group],
+            | ClaimForm::RequireNoSilentLossGroup { group }
+            | ClaimForm::QueueSlots { group, .. } => vec![group],
             ClaimForm::RequireSeparateDomains { left, right } => vec![left, right],
             ClaimForm::RequireAttributed { .. }
             | ClaimForm::RequireNoSilentLossTopic { .. }
@@ -1293,10 +1301,10 @@ pub enum ProjectionClass {
 }
 
 /// Parameters attached to a `: projection recognition(...)`
-/// locus annotation. `cap` is the child-count cap; `sub_mode`
-/// picks the allocator strategy. The cell stride is *not* a
-/// user knob — it's derived at codegen time from the union of
-/// accept-method param types on this locus. The forcing-function
+/// locus annotation. `cap` is the simultaneous recognition-reservation
+/// cap; `sub_mode` picks the allocator strategy. The cell stride is not
+/// a user knob: current lowering derives it from the concrete accepted
+/// child's struct size and refuses an interface accept layout. The forcing-function
 /// at the surface is still: user names cap and sub-mode at the
 /// declaration site (same shape as the two-channel rule).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1307,12 +1315,11 @@ pub struct RecognitionParams {
 
 /// Storage discipline picked by the user inside
 /// `recognition(cap=N, <sub_mode>)`. v1 ships `FixedCell` and
-/// `SharedSlab`; `Spillover` and `SummaryOnly` parse + typecheck
-/// but reject at codegen with a "v1.x pending" diagnostic
+/// `SharedSlab`; `Spillover` and `SummaryOnly` parse but declaration
+/// resolution rejects them with a "v1.x pending" diagnostic
 /// (mirrors the v1.x-4 / v1.x-4b surface-then-runtime split).
-/// Cell stride for FixedCell / SharedSlab / Spillover is derived
-/// at codegen time from accept-method param types — not a
-/// user-supplied byte budget.
+/// Cell stride for shipped modes is derived at codegen time from a
+/// concrete accepted child layout, not a user-supplied byte budget.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RecognitionSubMode {
     FixedCell,
@@ -1646,6 +1653,8 @@ pub enum SeamFailure {
 /// birth state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BirthCheckDecl {
+    /// Snapshot identity of this executable clause, minted after desugaring.
+    pub id: NodeId,
     /// The boolean predicate evaluated after birth(). Reads
     /// `self.X` like any other locus body. `true` means "this
     /// locus is in an inconsistent post-birth state."
@@ -2659,6 +2668,9 @@ impl ScalarClause {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
+    /// The field declaration's source identity, minted with its type.
+    /// Defaults retain this site when evaluated at different constructors.
+    pub id: NodeId,
     pub name: Ident,
     pub ty: TypeExpr,
     pub default: Option<Expr>,
@@ -3491,7 +3503,7 @@ pub enum Pattern {
 /// violates substrate-invariance, so v0.1 removes them from
 /// the recovery vocabulary entirely. To end a locus's role on
 /// failure, use `bubble(err)`.
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum RecoveryOp {
     Restart,
     RestartInPlace,

@@ -40,6 +40,10 @@ pub(crate) const BUILD_ONLY_FLAGS: &[&str] = &[
 /// evaluations.
 pub(crate) const PER_SEED_FLAGS: &[&str] = &[
     "--dump-topology",
+    "--dump-reachability-proofs",
+    "--dump-reachability-lean",
+    "--check-reachability-proofs",
+    "--check-reachability-lean",
     "--api",
     "--dump-model",
     "--check-topology",
@@ -63,6 +67,10 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-effects-manifest", false),
     ("--dump-resource-budget", false),
     ("--dump-topology", false),
+    ("--dump-reachability-proofs", true),
+    ("--dump-reachability-lean", true),
+    ("--check-reachability-proofs", true),
+    ("--check-reachability-lean", true),
     // GH #1417 (R1): the surface rows' documents: the inventory, one
     // exposure's description for a caller, one surface's projections.
     ("--api", false),

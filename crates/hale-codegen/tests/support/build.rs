@@ -72,7 +72,8 @@ pub fn harness_config(options: &BuildOptions) -> Config {
 #[allow(dead_code)]
 pub fn load_seed(source: &str, config: Config) -> Result<Snapshot, LoadError> {
     let entry = PathBuf::from(SEED_ENTRY);
-    let buffers: BTreeMap<PathBuf, String> = std::iter::once((entry.clone(), source.to_string())).collect();
+    let buffers: BTreeMap<PathBuf, String> =
+        std::iter::once((entry.clone(), source.to_string())).collect();
     Snapshot::load(&entry, LoadMode::WholeSeed, &Overlay::new(&buffers), config)
 }
 
@@ -84,8 +85,16 @@ pub fn load_seed(source: &str, config: Config) -> Result<Snapshot, LoadError> {
 /// does not parse is refused as `CodegenError::Unsupported` with the
 /// load's rendering, which names the line and column.
 #[allow(dead_code)]
-pub fn build_source(source: &str, output_path: &Path, options: &BuildOptions) -> Result<(), CodegenError> {
-    build_loaded(load_seed(source, harness_config(options)), output_path, options)
+pub fn build_source(
+    source: &str,
+    output_path: &Path,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
+    build_loaded(
+        load_seed(source, harness_config(options)),
+        output_path,
+        options,
+    )
 }
 
 /// Build the seed `entry` names on disk, as `hale build <entry>` loads
@@ -97,7 +106,11 @@ pub fn build_source(source: &str, output_path: &Path, options: &BuildOptions) ->
 /// test that spans files writes them under a directory of its own
 /// (`harness::unique_dir`) and names the entry.
 #[allow(dead_code)]
-pub fn build_seed_dir(entry: &Path, output_path: &Path, options: &BuildOptions) -> Result<(), CodegenError> {
+pub fn build_seed_dir(
+    entry: &Path,
+    output_path: &Path,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
     build_loaded(
         Snapshot::load(entry, LoadMode::WholeSeed, &Disk, harness_config(options)),
         output_path,
@@ -120,23 +133,39 @@ pub fn build_program(
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
     build_loaded(
-        Snapshot::from_program(program.clone(), import_renames.to_vec(), harness_config(options)),
+        Snapshot::from_program(
+            program.clone(),
+            import_renames.to_vec(),
+            harness_config(options),
+        ),
         output_path,
         options,
     )
 }
 
-fn build_loaded(loaded: Result<Snapshot, LoadError>, output_path: &Path, options: &BuildOptions) -> Result<(), CodegenError> {
+fn build_loaded(
+    loaded: Result<Snapshot, LoadError>,
+    output_path: &Path,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
     let snap = match loaded {
         Ok(s) => s,
         Err(LoadError::Refused(msg)) => return Err(CodegenError::Unsupported(msg)),
         Err(LoadError::Load(f)) => return Err(CodegenError::Unsupported(f.text())),
     };
-    let view = snap.demand_lowering().map_err(|b| match (b.family, b.because.first()) {
-        ("target_capability", Some(d)) => CodegenError::CapabilityRefused(d.message.clone(), Some(d.span)),
-        _ => CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
-            b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
-        })),
-    })?;
+    let view = snap
+        .demand_lowering()
+        .map_err(|b| match (b.family, b.because.first()) {
+            ("target_capability", Some(d)) => {
+                CodegenError::CapabilityRefused(d.message.clone(), Some(d.span))
+            }
+            _ => CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
+                b.because
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })),
+        })?;
     hale_codegen::build_resolved(view, output_path, options)
 }

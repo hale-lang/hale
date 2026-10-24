@@ -167,6 +167,24 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn pointwise_effects_request_recovery_coverage_only_when_relevant() {
+    let pure = NO_CLAIMS.replace("fn go()", "@no_syscall fn go()");
+    for (tag, source, models) in [
+        ("effect-without-recovery", pure.clone(), 0),
+        ("effect-with-unrelated-recovery", format!("{pure}\nfn repair(d: Desk) {{ restart(d); }}\n"), 1),
+    ] {
+        let d = seed(tag, &source);
+        let s = editor(&d.join("app.hl"), &source);
+        assert_clean(&s);
+        assert_eq!(s.builds()["model"], models);
+        assert!(!s.demand_effect_certificates().unwrap().is_empty(), "the annotation must be judged");
+        assert_eq!(s.builds()["effects"], models, "only the model requests the effect rows in this fixture");
+        assert_at_most_once(&s, "pointwise recovery coverage");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 const WITH_CODEC: &str = r#"
 type Tick { sym: String = ""; price: Int = 0; }
 type EncErr { kind: String = ""; }
@@ -261,9 +279,9 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         let again = s.demand_effects().expect("still there") as *const _;
         assert_eq!(first, again, "the second demand reads the first result");
         assert_eq!(s.builds()["effects"], 1, "the effects fixpoint runs once per snapshot");
-        // The allocation summary: one per snapshot, the one the check's
-        // certificate engine read and the effect rows walked.
-        let summary = s.demand_alloc_summary().expect("a clean program has a summary");
+        // One contextual execution summary: the check's certificate engine
+        // and effect rows read this same cached extension of base facts.
+        let summary = s.demand_protocol_execution().expect("a clean program has contextual execution");
         let rows = s.demand_effects().expect("the rows");
         assert!(std::ptr::eq(summary, &*rows.summary), "the effect rows walk the snapshot's summary");
         assert_eq!(s.builds()["alloc_summary"], 1, "the summary is built once per snapshot");
@@ -434,19 +452,10 @@ locus Manager<T> {
 fn main() { Pool { }; let a: Manager<Worker> = Manager { }; }
 ";
 
-/// F.40 phase 4, Q1: the flow rows are surveyed once per snapshot, and
-/// the lowering view reads that survey. It used to survey the merged
-/// program again; lowering reads the rows by locus name (`is_flow`,
-/// `specialize`), and the stdlib declares no `release` clause and no
-/// type alias, so that survey's clauses are the snapshot's, row for row:
-/// an alias followed, a template's clause kept for its specializations.
+/// F.40 phase 4, Q1: one declaration survey, then one completed
+/// concrete flow family shared by the plan and lowering.
 #[test]
 fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
-    let std = hale_types::stdlib_bodies::program().expect("the stdlib parses");
-    assert!(hale_types::flows::survey(&[std], &[]).is_empty(), "the stdlib declares no `release` clause");
-    let declared = hale_types::handler_routing::DeclaredNames::of(&[std]);
-    assert!(declared.aliases.is_empty(), "the stdlib declares no type alias a clause's child could follow");
-
     let d = seed("one-flows", WITH_FLOWS);
     let s = build(&d.join("app.hl"));
     assert_clean(&s);
@@ -468,9 +477,13 @@ fn a_build_surveys_the_flows_once_and_lowering_reads_that_survey() {
         vec![("Job", Some("Worker"), false), ("T", None, true)],
         "the alias resolved, the template's clause kept"
     );
-    assert_eq!(rows(&view.flows), snapshot, "the view's rows are the snapshot's");
-    let merged = hale_types::flows::survey(&[&view.merged], &view.import_renames);
-    assert_eq!(rows(&merged), snapshot, "the merged program's survey is the snapshot's, row for row");
+    let concrete = s.demand_flow_instances().expect("concrete flow family");
+    assert_eq!(s.builds()["flow_instances"], 1);
+    assert_eq!(view.flows.as_ref().unwrap().sources, concrete.sources);
+    assert_eq!(view.flows.as_ref().unwrap().instantiations.iter().map(|i| &i.name).collect::<Vec<_>>(),
+               concrete.instantiations.iter().map(|i| &i.name).collect::<Vec<_>>());
+    assert!(concrete.is_flow("Worker"));
+    assert!(concrete.sources.iter().any(|s| s.specialization.as_deref() == Some("Manager_Worker")));
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -581,6 +594,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "expression_typing",
         "typed_bodies",
         "lowering_view",
+        "lifecycle_context",
         "lifecycle_order",
     ] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
@@ -789,8 +803,14 @@ const GATE: &[GateRow] = &[
     row("typed_bodies", 1, 1, |s| { let _ = s.demand_typed_bodies(); }),
     row("bus_graph", 1, 1, |s| { let _ = s.demand_bus_graph(); }),
     row("ownership", 1, 1, |s| { let _ = s.demand_ownership_graph(); }),
+    row("default_evaluation", 1, 1, |s| { let _ = s.demand_default_evaluations(); }),
+    row("protocol_execution", 1, 1, |s| { let _ = s.demand_protocol_execution(); }),
     row("handler_routing", 1, 1, |s| { let _ = s.demand_handlers(); }),
     row("flows", 1, 1, |s| { let _ = s.demand_flows(); }),
+    // A claims-bearing check's model now projects the same completed
+    // flow membership as lifecycle and lowering. No-claims diagnostics
+    // still demand neither the model nor this completed inventory.
+    row("flow_instances", 1, 1, |s| { let _ = s.demand_flow_instances(); }),
     row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
     row("role_rows", 1, 1, |s| { let _ = s.demand_role_rows(); }),
     row("surface", 1, 1, |s| { let _ = s.demand_surface_rows(); }),
@@ -804,8 +824,9 @@ const GATE: &[GateRow] = &[
     row("placement", 1, 1, |s| { let _ = s.demand_placement(); }),
     row("arrangement", 1, 1, |s| { let _ = s.demand_arrangement(); }),
     row("dispatch", 1, 1, |s| { let _ = s.demand_dispatch_plan(); }),
-    // Lowering's: a check emits nothing, so it plans no lifecycle and
-    // builds no lowering view.
+    // The model shares source contexts with planning; only lowering
+    // asks for obligation order and a lowering view.
+    row("lifecycle_context", 1, 1, |s| { let _ = s.demand_lifecycle_contexts(); }),
     row("lifecycle_order", 0, 1, |s| { let _ = s.demand_lifecycle(); }),
     row("model", 1, 1, |s| { let _ = s.demand_model(); }),
     row("claims", 1, 1, |s| { let _ = s.demand_laws(); }),

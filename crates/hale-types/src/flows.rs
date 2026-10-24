@@ -159,7 +159,19 @@ impl FlowRows {
     /// clause's type is. The template is matched by its identity, or by
     /// its name and span when the program was never minted.
     pub fn specialize(&self, template: &LocusDecl, substitute: impl Fn(&TypeExpr) -> TypeExpr) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for (_, name) in self.specialization_clauses(template, substitute) {
+            if !out.contains(&name) { out.push(name); }
+        }
+        out
+    }
+
+    pub(crate) fn declared_loci(&mut self, names: impl Iterator<Item = String>) {
+        self.declared.loci.extend(names);
+    }
+
+    pub(crate) fn specialization_clauses(&self, template: &LocusDecl, substitute: impl Fn(&TypeExpr) -> TypeExpr) -> Vec<(Span, String)> {
+        let mut out = Vec::new();
         for c in self.flows.iter().flat_map(|f| &f.clauses) {
             let Some(t) = &c.template else { continue };
             let same = if t.owner_id.is_none() || template.id.is_none() {
@@ -167,15 +179,13 @@ impl FlowRows {
                     && template.span.start <= c.span.start
                     && c.span.end <= template.span.end
             } else {
-                t.owner_id.0 == template.id.0
+                c.owner == template.name.name && t.owner_id.0 == template.id.0
             };
             if !same {
                 continue;
             }
             if let Some(name) = self.locus(&substitute(&t.ty)) {
-                if !out.contains(&name) {
-                    out.push(name);
-                }
+                out.push((c.span, name));
             }
         }
         out
@@ -195,6 +205,7 @@ impl FlowRows {
         let mut runs: Vec<RunRow> = Vec::new();
         let mut concrete: Vec<String> = Vec::new();
         walk(stdlib_items, &self, &mut by_child, &mut runs, &mut concrete);
+        self.concrete.extend(concrete);
         for (child, mut clauses) in by_child {
             clauses.sort_by_key(|c| c.span.start.as_usize());
             self.flows.push(Flow { child, clauses });

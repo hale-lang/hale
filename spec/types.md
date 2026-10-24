@@ -1406,6 +1406,14 @@ declared type at the site. The sites that declare one are:
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 - the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
 
+The default-site rule covers both generic data types and generic loci.
+A typed locus param default (`p: Parent<Int> = Parent { ... }`) supplies
+its specialization's arguments, including parameters absent from the
+locus's fields. Its initializer fields are checked against the substituted
+param types. The completed generic inventory discovers the specialization
+before emission, so the default constructs a fresh instance of that field;
+a handle supplied from elsewhere retains its original construction context.
+
 An array (`[x, y]` or `[x; N]`) or tuple literal at one of these sites
 hands each element the declared element type, so its template literals
 take that type's arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,

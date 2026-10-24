@@ -110,6 +110,10 @@ pub struct Snapshot {
     /// that names no local binding (a field, a top-level fn or const, a
     /// locus, a topic, nothing) has no row. Resolved once, by the mint.
     pub binding_of: BTreeMap<SiteId, SiteId>,
+    /// Whether the mint's existing expression/binding walk saw recovery
+    /// syntax. `None` is an unminted or unsupported horizon, never absence.
+    /// This proves only syntactic presence/absence, not runtime behavior.
+    pub recovery_syntax: Option<bool>,
 }
 
 impl Snapshot {
@@ -241,7 +245,7 @@ pub fn mint<'a>(
             w[0].id.index, w[0].kind, w[0].span, w[1].kind, w[1].span
         );
     }
-    let mut snapshot = Snapshot { sites, seeds, origins: Vec::new(), binding_of: BTreeMap::new() };
+    let mut snapshot = Snapshot { sites, seeds, origins: Vec::new(), binding_of: BTreeMap::new(), recovery_syntax: None };
 
     let mut by_index: BTreeMap<u32, Origin> = BTreeMap::new();
     for (_, p) in programs.iter() {
@@ -259,9 +263,15 @@ pub fn mint<'a>(
         .collect();
 
     let mut uses: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut recovery_syntax = Some(false);
     for (_, p) in programs.iter() {
-        resolve_uses(p, &mut uses);
+        recovery_syntax = match (recovery_syntax, resolve_uses(p, &mut uses)) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        };
     }
+    snapshot.recovery_syntax = recovery_syntax;
     snapshot.binding_of = uses
         .into_iter()
         .filter_map(|(u, d)| Some((snapshot.site_id(NodeId(u))?, snapshot.site_id(NodeId(d))?)))
@@ -296,14 +306,17 @@ pub fn resolutions_on_this_thread() -> u64 {
 /// Lookup is innermost first. A name no frame holds is not a local: no
 /// row. The implicit `err` has no site, so it shadows and resolves to
 /// nothing, as does any binding whose declaration was not minted.
-fn resolve_uses(p: &Program, out: &mut BTreeMap<u32, u32>) {
-    let mut w = UseScopes { frames: Vec::new(), out };
+fn resolve_uses(p: &Program, out: &mut BTreeMap<u32, u32>) -> Option<bool> {
+    let mut w = UseScopes { frames: Vec::new(), out, saw_recovery: false, recovery_closed: true };
     w.items(&p.items);
+    if w.saw_recovery { Some(true) } else if w.recovery_closed { Some(false) } else { None }
 }
 
 struct UseScopes<'p, 'o> {
     frames: Vec<Vec<(&'p str, NodeId)>>,
     out: &'o mut BTreeMap<u32, u32>,
+    saw_recovery: bool,
+    recovery_closed: bool,
 }
 
 impl<'p> UseScopes<'p, '_> {
@@ -367,8 +380,17 @@ impl<'p> UseScopes<'p, '_> {
                 TopDecl::Module(md) => self.items(&md.items),
                 TopDecl::Const(c) => self.detached(&c.value),
                 TopDecl::Type(t) => self.type_decl(t),
-                TopDecl::Interface(_)
-                | TopDecl::Topic(_)
+                TopDecl::Interface(interface) => {
+                    for method in &interface.methods {
+                        for param in &method.params {
+                            if let Some(default) = &param.default { self.detached(default); }
+                        }
+                    }
+                }
+                // Fleet deployment expressions are outside this body's
+                // binding horizon. They cannot establish syntax absence.
+                TopDecl::Fleet(_) => self.recovery_closed = false,
+                TopDecl::Topic(_)
                 | TopDecl::Group(_)
                 | TopDecl::RingLayout(_)
                 | TopDecl::Target(_)
@@ -376,8 +398,7 @@ impl<'p> UseScopes<'p, '_> {
                 | TopDecl::Claims(_)
                 | TopDecl::Constitution(_)
                 | TopDecl::Unit(_)
-                | TopDecl::Api(_)
-                | TopDecl::Fleet(_) => {}
+                | TopDecl::Api(_) => {}
             }
         }
     }
@@ -598,6 +619,7 @@ impl<'p> UseScopes<'p, '_> {
             Stmt::Fail { value, .. } => self.expr(value),
             Stmt::Block(b) => self.block(b),
             Stmt::Recovery { args, modifier, .. } => {
+                self.saw_recovery = true;
                 for a in args {
                     self.expr(a);
                 }

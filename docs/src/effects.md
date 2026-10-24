@@ -162,6 +162,21 @@ The compiler rejects contradictory or duplicate decorator combinations at the de
 
 ## Quantitative Budgets (`@budget`)
 
+Recovery operations can invoke lifecycle work that the explicit call summaries
+do not yet describe. If a budget, effect assertion or phase contract reaches
+that unresolved work, `hale check` and `hale verify` refuse certification as
+`uncertified`. This includes recovery reached through a helper in an evaluated
+field default. Explicit `violate` statements in represented function bodies and
+helper calls reaching them also prevent certification: the failure handler can perform effects outside the
+explicit call graph, even when it contains no recovery statement. Automatic
+closure checks, declaration/default execution outside the function call graph,
+runtime admission and full handler execution remain outside this
+coverage account. Failure dispatch leaves call/effect/cost coverage open while
+known publish sites retain their declared route and loss policies. A known
+forbidden effect still produces a violation, and an
+unrelated function keeps its own coverage. The topology artifact carries the
+same verdict and a source witness.
+
 `@budget` enforces compile-time upper bounds on per-call resource consumption across a function's transitive call tree:
 
 ```hale,fragment
@@ -193,7 +208,7 @@ Unlike `publish` (which counts `Topic <- msg` statements), `fanout` measures dow
 
 ## Lifecycle Phase Contracts (`@phase_effects`)
 
-Attach `@phase_effects` to a **locus** to restrict which effect classes each lifecycle hook (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`) or named handler/method may perform:
+Attach `@phase_effects` to a **locus** to restrict which effect classes each lifecycle hook (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`) or named handler, method, mode or failure-handler phase may perform:
 
 ```hale,fragment
 @phase_effects(birth: {alloc}, run: {})
@@ -372,3 +387,116 @@ effect manifest changed — .hale.effects no longer matches the program's effect
 ```
 
 If a helper function several calls deep introduces a `syscall`, `--check-effects-manifest` flags the exact callers whose transitive `does={...}` set widened, even if those callers had no `@effects` annotation of their own.
+
+### Effects and failures during construction
+
+Constructing a locus or data record evaluates each default whose field the literal
+omits. Explicit structural failures reached through those defaults, nested
+constructors or helper calls suspend an otherwise successful effect
+certificate: implicit failure-handler execution is still unresolved. Supplying
+a field explicitly removes that default from this execution path. An unused
+default does not affect an unrelated function.
+
+Ordinary calls and allocations in locus parameter and data-field defaults are counted too.
+A printing default can therefore violate `none: {stdio}`; supplying that field
+skips the default and preserves a closed result. Helper calls stay visible as
+helper paths, including to graph claims using `avoiding`. Distinct omitted
+fields contribute separately to budgets. Locals inside default expressions
+also contribute to the conservative stack charge, without adding a new native
+call frame for an inline default.
+
+This account covers locus parameter and data-field defaults.
+Automatic closure checks and runtime lifecycle
+execution still require their own coverage; it is not a whole-machine proof.
+
+
+### Defaults in function calls
+
+A named call evaluates its omitted argument defaults before entering the
+function body. `calculate()` therefore includes the effects and costs of its
+default arguments in the calling function; `calculate(4)` skips the default
+for that argument. This applies to free functions, concrete methods and modes.
+Distinct omitted defaults add their costs, including across repeated calls.
+Helper calls remain visible to graph claims and helper barriers.
+
+A contract on `calculate` describes its body and the work that body calls.
+A contract on its caller also describes the arguments evaluated there, whether
+written explicitly or supplied by defaults. Function-value and interface calls
+supply every argument. Defaults keep their declaration's scope restrictions;
+they cannot read a caller's local binding or `self`.
+
+
+### Explicit closure checks
+
+`check_closures()` evaluates the explicit-epoch assertions of the current
+locus. Effects in their operands and helpers count against the calling
+function's contract. A checkpoint with no explicit assertions does no work;
+an ordinary method call does not evaluate them. Multiple assertions are
+visited in their declaration order, and a checkpoint inside a loop retains
+that repetition for per-call budgets.
+
+A comparison may report or route a failure, so its unresolved failure path
+can make an otherwise quiet checkpoint `Uncertified`. A known forbidden effect
+in an operand still gives a violation. When a checkpoint is inside an omitted
+argument default, it uses the caller's locus. The compiler refuses a closed
+certificate while that caller context is unresolved; supplying the argument
+skips the default. Automatic birth/dissolve/tick/duration invocation paths
+remain separate analysis work. A construction with such assertions returns
+`Uncertified` while the automatic scheduling, lifetime and failure context
+are unresolved. The gap follows helper calls and evaluated defaults; it does
+not add a direct effect or count the assertion as an ordinary call frame.
+Unrelated functions retain their certificates, and known forbidden effects
+still give violations.
+
+
+### Automatic assertion phases
+
+Birth and dissolve assertions belong to `birth` and `dissolve`, including
+when no hook body is authored. Tick and duration assertions supply named
+`tick` and `duration` phases. A phase contract checks every represented
+body of that phase: a quiet assertion cannot hide a forbidden effect in
+a hook, or another assertion, sharing the phase. An omitted phase remains
+unconstrained.
+
+Explicit assertions keep the phase of the real `check_closures()` caller.
+They do not create an independent phase. Phase contracts inside modules
+and contracts on modes use the same source phase inventory as graph claims.
+
+A represented source phase body needs a matching certificate. Within this
+named-body account, a lifecycle phase with no roots receives a synthetic
+`Holds`. Each `birth_check` clause is also a birth-phase root, even without
+an authored hook. Its predicate and conditional payload use their own source
+identity. Known helper effects can violate the phase contract; a potentially
+rejecting check remains `Uncertified` until its failure dispatch is covered.
+Constructor claims also remain uncertified across unresolved birth-check
+invocation context. Operand/helper effects can violate an
+automatic phase contract; unresolved comparison failure remains
+`Uncertified`. Generated wrapper work, timing and lifecycle invocation still
+need their own execution coverage.
+
+
+### Constructor lifecycle effects
+
+Constructing a locus can lead to its authored birth, run, drain and dissolve
+bodies. Effect contracts and graph claims follow these possible bodies and
+their helper calls, so a caller that forbids `stdio` cannot hide a printing
+self hook behind a locus literal. Each constructor entry is separate from an
+authored call and retains its construction witness and stage guard.
+
+Its scheduling, frame, admission and retained lifetime remain separate
+coverage questions. Pure represented work can still be `Uncertified` across
+unresolved context. The guards describe construction, run admission and
+teardown opportunities; a path does not prove that an opportunity occurs.
+Nonempty run, drain and dissolve bodies retain invocation obligations while
+their admission/retention context is modeled. Their possible work is not a
+native stack-frame charge. Parent admission, conditional
+handler dispatch, generated wrappers and precise default caller contexts still
+need their own coverage. This is not a physical stack or retained-byte proof.
+
+Parent `accept` and `release` bodies can perform work when a method constructs
+a child, including when an omitted argument or parameter default constructs
+it inline. Effect checks include known parent work at that caller's source
+root. An ordinary free-function call does not pass its caller's construction
+locus into the free-function body. Admission, release timing and runtime
+context remain coverage obligations; pure nonempty callbacks may therefore
+leave a certificate uncertified.

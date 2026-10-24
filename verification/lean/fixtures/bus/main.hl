@@ -1,0 +1,18 @@
+type Message { n: Int; }
+topic Work { payload: Message; }
+locus Producer {
+    bus { publish Work; }
+    fn send(n: Int) { Work <- Message { n: n }; }
+}
+locus Consumer {
+    bus { subscribe Work as receive; }
+    fn receive(m: Message) { println(m.n); }
+}
+group producers = { Producer };
+group consumers = { Consumer };
+main locus App {
+    params { producer: Producer = Producer { }; consumer: Consumer = Consumer { }; }
+    claims { isolated: forbid reaches(producers, consumers) via { bus }; }
+    run() { self.producer.send(1); }
+}
+fn main() { App { }; }

@@ -27,6 +27,13 @@ dispatch gates + arrangement        -->  DispatchPlan (the model holds it projec
 admitted Artifact                   -->  ComponentModel --> fleet ModelGraph
 ```
 
+Reachability proof reports are judgment outputs kept outside
+`ApplicationModel`. The existing successor projection supplies their graph
+facts; finite closed-set/path checkers and Lean validate the certificates.
+They do not derive a second model or certify extraction/lowering. The exact
+export, replay and completeness boundaries are in
+[verification.md](./verification.md#reachability-proof-export-gh-1327).
+
 **Derive a modeled semantic fact once.** Downstream consumers
 project or query it; they do not walk the AST, the artifact JSON,
 or codegen state to rediscover it.
@@ -265,7 +272,7 @@ digest.
 
 | table | what a row is |
 |---|---|
-| `functions` | free fn, method, lifecycle hook, mode, failure handler |
+| `functions` | free fn, method, lifecycle hook, mode, failure handler, locus parameter default, data-field default, argument default |
 | `loci` | a locus *declaration* |
 | `locus_instances` | a statically exact instance in the main arrangement (`App.w`, `App.workers[3]`) |
 | `topics` | a declared topic |
@@ -485,6 +492,7 @@ See below.
 | `member_of`, `phase_of`, `declared_in`, `realizes` | structure |
 | `owns` | instance parent → child |
 | `calls` | **site**; carries `dispatch`, `in_loop`, `unbounded` |
+| `constructions`, `initializes` | typed locus/type constructor targets, supplied fields and exact omitted-default evaluations; separate from authored call sites |
 | `dead_interface_calls` | uninhabited dispatch |
 | `publishes` | **site**; carries `key_domain`, `in_loop`, `disposition` |
 | `declares_publish` | the endpoint grain (`bus { publish T; }`) |
@@ -521,10 +529,76 @@ Hole { at: EntityRef, kind: HoleKind, hides: RelationSet,
        authored_site: Option<u32>, reason: String, provenance }
 ```
 
-Ten kinds: `IndirectCall`, `UntypedReceiver`, `ComputedSubject`,
+Thirteen kinds: `IndirectCall`, `UntypedReceiver`, `ComputedSubject`,
 `UnknownKeyDomain`, `OpenInterface`, `RuntimeInheritedPlacement`,
 `DynamicEndpoint`, `ExternalOpaque`, `UnsupportedArtifactSemantics`,
-`UnanalyzedBody`.
+`UnanalyzedBody`, `UnmodeledRecovery`, `UnmodeledFailureDispatch`,
+`GenericFlowTemplate`.
+
+`UnmodeledRecovery` is a function-grain behavioral gap. It hides `CALLS`,
+`PUBLISHES`, `EFFECTS` and `COSTS`, and retains a recovery-statement witness.
+Unanchored default/foreign recovery contexts conservatively affect every
+function until callers can be bound. Schema 1.24 introduced its
+`unmodeled_recovery` artifact residue.
+
+`UnmodeledFailureDispatch` hides `CALLS`, `EFFECTS` and `COSTS`. It preserves
+the distinction between invoking existing handler bodies and the inventory
+of authored publish sites: `Publish.function` identifies the body containing
+a send, independent of how that body is invoked. A missing handler body,
+computed send or other independent publish gap remains unresolved. Failure
+dispatch alone introduces no new authored send, so it cannot withdraw a
+closed route-policy judgment by manufacturing an unknown publisher.
+`HoleKind::implicit_execution_families` supplies the required masks for both
+implicit-execution kinds; validation rejects a narrowed recovery mask or a
+failure-dispatch mask that invents publish-site uncertainty. Both are
+whole-function gaps with no invented call-site ordinal.
+
+The allocation-summary producer caches a reverse reachability forest from
+its existing `violates` rows through resolved call edges and constructor
+invocations of omitted locus parameter and data-field defaults, once per summary, using the
+shared graph engine. Initializer nodes use a source-universe-qualified owner
+and field identity; they are not callable functions or authored call edges.
+Each constructor retains its own supplied fields, so an overridden default
+adds no invocation edge. The existing body walk supplies each field's calls
+and nested constructors; aliases and imports use the shared nominal resolver. Program projections preserve that forest and
+its foreign source classification when library bodies are contracted away.
+Affected user functions carry failure-dispatch gaps; there is no invented
+executable edge to a handler. One reverse search over default-call coverage
+retains each seed's family mask; a join with actual recovery keeps its broader
+gap. Absence from the explicit-failure forest does not establish coverage of
+automatic closure checks, other declaration-body execution, or runtime
+admission. Ordinary locus-parameter effects and costs use the execution
+account below.
+
+Schema 1.25 adds the distinct `unmodeled_failure_dispatch` residue. An older
+schema cannot carry that vocabulary. This addition does not reinterpret the
+existing recovery hole or canonical-model semantics. Analysis semantics 15
+also binds constructor/default structural-failure coverage. Schema 1.26 and
+analysis semantics 16 extend ordinary locus-parameter execution as described
+below.
+
+Budget evidence withdraws a would-be `Holds` when either implicit-execution
+gap is reachable through canonical calls (or possible delivery for fan-out).
+The finite search retains an actual failure/recovery witness; an unrelated
+handler's gap does not withdraw a closed function's budget. Reachability
+retains these unordered behavioral gaps while exploring known selected edges:
+a concrete counterexample or the existing saturation result still wins, and a
+fruitless search with a relevant gap is `Uncertified`, with no closed-set proof.
+Other authored unresolved-call holes keep their existing stop rule. This is a
+coverage gate, not a new cost count.
+
+Model semantics version 6 adds closure assertion bodies and exact explicit
+checkpoint accounts, retaining scoped comparison failures and unresolved caller
+contexts. Version 5 adds call-site argument-default execution with callable
+ownership and supplied-argument counts. Version 4 adds type-owned data-field defaults and typed
+constructor targets. Version 3 includes locus parameter-default execution bodies
+and distinct constructor evaluation edges. Model semantics version 2 allowed failure handlers to be analyzed and
+summarized under the same coverage laws as other executable functions.
+Version 1 required them to remain unanalyzed. The current model validator
+refuses older and unknown model semantics. A handler with a canonical
+summary has no blanket `UnanalyzedBody` hole; any unresolved sites retain
+their ordinary scoped holes. Artifact semantics version 3 and analysis
+semantics version 12 bind this change for downstream consumers and proofs.
 
 `hides` names the relation families the hole withdraws.
 `allowed_hole_families` is a **shape law**, validated: each
@@ -603,12 +677,17 @@ shape, and the collapse reads as a proof of absence.
 
 ## Capabilities and adequacy
 
-`Capabilities` is the **positive** completeness account: eleven
+`Capabilities` is the **positive** completeness account: twelve
 independent booleans (`exact_calls`, `exact_publishes`,
 `exact_subscribes`, `exact_key_filters`, `exact_ownership`,
 `exact_placement`, `exact_routes`, `exact_effects`,
-`exact_cardinality`, `exact_delivery_guarantees`, `exact_costs`),
+`exact_cardinality`, `exact_delivery_guarantees`, `exact_costs`,
+`exact_flow_classification`),
 each vouching a `RelationSet`.
+
+`exact_publishes` vouches for the direct authored-site inventory. It does not
+prove invocation order, multiplicity, admission or completion; call/effect/cost
+coverage remains independently necessary for claims about that execution.
 
 The account is positive on purpose. Absence of recorded unknowns is
 not proof of completeness, so an unvouched family reads `degraded`
@@ -659,6 +738,111 @@ each carry their own.
 `Analyses` carries products the model does not derive itself but
 that no other table holds:
 
+- **`recovery`** — typed recovery observations from the user's checked
+  bodies and the separate stdlib typing walk (`RecoveryInventory`). Each
+  optional inventory distinguishes unavailable from available-and-empty.
+  The source-site mint's existing lexical-expression walk records whether it
+  saw recovery syntax. Proven stdlib syntax absence supplies an empty
+  inventory without forcing a whole-stdlib typing walk. Positive or
+  unavailable presence still uses the actual typed observations; no handler
+  signature or missing typed row substitutes for this absence proof.
+  `RecoveryAction` retains an optional model body anchor, handler status,
+  specialization symbol, typed operation and receiver type, symbolic operand,
+  retry bound, and source witnesses. A symbolic root is the current locus,
+  an immutable parameter by body and ordinal (with its arity), or unresolved;
+  a field path reads fields at the statement. Mutable aliases, saved field
+  values, computed values and call results are unresolved, even when their
+  type is known. Immutable aliases of whole immutable locus roots retain
+  that root. This prevents an
+  alias captured before field replacement from becoming a live field lookup.
+  Literal bounds retain signed values; dynamic bounds retain their expression
+  provenance. Evaluated defaults retain separate, outermost-first evaluation
+  witnesses for each invocation. Their body and operand root remain unresolved
+  until those evaluation contexts are bound; the default expression's offsets
+  remain foreign rather than indexing caller text. Unresolved evaluation sites
+  remain `None`, not invented source locations. The outer user invocation
+  retains provenance when its minted site is available. Nested bare site ids do not carry
+  their source universe, so they remain unavailable rather than aliasing a
+  same-numbered user site. Generic walks retain their concrete monomorph symbol without
+  using a display or Debug rendering as machine identity. Unmapped contexts
+  remain explicit. The stdlib side never joins user ids and has foreign
+  provenance. Validation rejects dangling references, malformed parameter
+  ordinals, empty names/paths, illegal literal/dynamic bound operations and
+  source-universe confusion.
+
+  The recovery inventory also carries optional call-operand bindings joined by
+  caller, authored invocation identity and callee declaration. A saved field
+  value never becomes a live ownership path. `bind_recovery_call` and
+  `bind_recovery_operand` substitute static arranged-instance IDs under a
+  supplied invocation premise. They establish no failure dispatch, guard
+  feasibility, execution order or containment verdict. Missing contexts and
+  default arguments are explicit operand-scoped gaps. These internal facts
+  are not part of topology artifact identity or a closed recovery capability.
+  They must not be used as artifact proof inputs without a corresponding
+  versioned binding.
+
+  `failure_entries` retains conditional handler-entry contexts for every arranged
+  logical instance. The arrangement keeps all contributing construction keys,
+  even when their declaration and domain agree. Fresh field rows record whether
+  the construction uses its literal's field holder or its declaring params
+  initializer. Lowering requires this column where the table represents a fresh
+  field, checks its index, and checks that the selected context source agrees.
+  The ownership family's shared `supervision_override` query selects the source;
+  no allocation-owner edge alone supplies a supervisor.
+
+  Held projections retain their original `built_by` source. Moving a parent does
+  not change its children's original supervisor; moving a child does not give it
+  a new one. A unique original-source correspondence can name an arranged parent;
+  multiple logical aliases remain explicit instance/supervisor gaps. Each context
+  retains a root-to-field construction witness path and an alternative guard bit.
+  Missing roots, unconstructed catalogs, missing sources, unmapped handlers and
+  unbound generic specializations remain unknown. A known unhandled route is
+  separate from unavailable routing facts. Handler identities come from the
+  shared routing rows by declaration, joined to the canonical function table.
+
+  `recovery_handler_invocation` substitutes that conditional context into a
+  handler frame: its actual constructed-field supervisor is `self`, and its
+  failed-child argument names the selected logical instance. Every contributing
+  context must be accounted for. These facts do not establish a live runtime
+  instance, incarnation, feasible guard, failure trigger, params settlement,
+  scheduling/admission or unchanged field state. They are not exported proof
+  inputs, change no recovery completeness capability and upgrade no verdict.
+
+  Evaluated default calls remain separate from counted call rows. The model
+  retains their outer source witness and causally evaluating function when
+  available; nested numeric ids do not qualify a source universe. One shared
+  reverse graph closure checks possible recovery reachability, including nested
+  defaults and opaque calls. Relevant unresolved execution leaves scoped
+  `UnmodeledRecovery` gaps. Temporary default-walk undo keeps executable
+  observations; declaration-only and locus name probes supply no such facts.
+
+  These observations are **not** a behavioral recovery relation. Conditional
+  parameter substitution does not establish runtime instance identity, field
+  state, guards, admitted handler invocations or operation execution order.
+  There is no recovery completeness
+  capability or containment judgment over them yet. `model_query::recovery_observations`
+  returns selected-body actions together with all unanchored observations
+  and inventory availability; it never silently drops the latter to certify
+  a smaller world. The current topology artifact does not export this
+  inventory. Authored failure handlers now have canonical function summaries,
+  call, effect, publish, cost and phase rows. Each joins by its declaration
+  identity, so display spellings are never a join key. Duplicate handler
+  signatures remain checker errors. Ordinary unresolved
+  call sites retain their scoped holes. This closes the same syntactic
+  call/effect horizon as other bodies. Calls through locus type aliases use the canonical
+  locus resolver and retain the template declaration of a generic target.
+  Function-valued fields retain value dispatch when their declared type is
+  a function alias or a generic parameter. A receiver typed by a lexical generic
+  parameter still has no single concrete dispatch target and retains an
+  opaque-receiver hole; its spelling cannot bind to a same-named global
+  locus. This does not establish which runtime
+  recovery instances or guarded calls execute. Recovery
+  operations retain `UnmodeledRecovery` gaps for their implicit lifecycle
+  execution and costs, so observing their explicit helper calls cannot
+  certify the hidden work. A named receiver with no established
+  locus declaration may be an interface; it is not evidence of a non-locus
+  value. A future behavioral consumer must add its relation/capability,
+  scoped typed holes, artifact/schema contract and adequacy gate first.
 - **`dispatch_plan`** — the program's one dispatch plan (below),
   projected onto the subjects the program's own bus sites name and
   the loci the model declares: each kept row's subscriber column
@@ -667,6 +851,7 @@ that no other table holds:
   `log.**` itself, and never with the stdlib's sinks.
 - **`stdlib_absorption`** — what a merged-summary walk sees *inside*
   stdlib bodies reachable from a user fn.
+
 
 Absorption is kept as a **graph**, not a flattened summary, and its
 grain matters twice over. One `StdlibAbsorption` row is one
@@ -787,7 +972,7 @@ actually hash — not what their names suggest.
 | `artifact_digest` | the whole serialised document | any byte changes |
 | `law_digest` | every law row (ordinal, name, origin, typed law, provenance id) **and the law provenance STORE** — its source units and every record | an operand changes, *or* a law's span moves, *or* the source snapshot does |
 | `inputs_digest` | analysis inputs OUTSIDE the model: `ANALYSIS_SEMANTICS_VERSION`, the Hale stdlib source, **the compiler package version**, the import-rename table, and **the stdlib surface-classification registry** (namespaces, fn names, effect masks, open prefixes) | any of those drift — most do not rely on anyone remembering |
-| `coverage_digest` | per locus: name + `analyzable`. Per function: name, `analyzed`, `summarized`, a **failure-handler discriminator** — not the full `FunctionKind`, so a move among `Free`/`Method`/`Hook`/`Mode` is not in that byte — and **canonical owner** | coverage changes, *or* a member moves between owners |
+| `coverage_digest` | per locus: name + `analyzable`. Per function: name, `analyzed`, `summarized`, a **failure-handler discriminator** — not the full `FunctionKind`, so a move among `Free`/`Method`/`Hook`/`Mode` is not in that byte — plus **canonical locus/type/callable owner** and optional default **kind, field and ordinal** | coverage changes, a member moves between owners, or its default identity changes |
 | `model_shape` (in `EvidenceTable`) | the `shape_hash` the sidecar was derived beside | the model half does |
 | obs `model_hash` | **the emitted `shape_hash`** — the build's snapshot's model's model-half digest (`project_shape_hash`, the value the artifact of that model stamps), read from the model, never from a rendered artifact | the model half does. It is the runtime exposure of `TopologyShapeV1`, **not** a full-model identity |
 | obs `entity_id_digest` | the exact stamped id table (kind, name, id) | the numbering does. It exists because `model_hash` does *not* cover every table the ids index — arrangement bindings are not in the artifact at all, and an unused topic's wire subject rides an unhashed section, so two builds could share a `model_hash` while numbering entities differently |
@@ -913,6 +1098,119 @@ group references. Artifact admission validates these operands, their
 rendered form, and the evidence account using the existing law reader.
 It does not reconstruct instance placement or evaluate a second model.
 
+## Resource judgments
+
+`bound queue_slots <= N on instances G` joins the group's selected locus
+declarations to every arranged instance and to every subscription registration
+of that declaration. `model_query::queue_reservations` owns this query;
+replicas, repeated constructions and distinct subscription sites retain their
+identity and source provenance. Descendants are selected only when their
+declarations are members of the group. Keys and execution domains do not
+discount declared capacity.
+
+The `resource` family reads `OWNS | SUBSCRIBES | CARDINALITY`. A finite
+reservation is the sum of the selected registrations' capacities. The
+arithmetic does not wrap at a machine integer boundary. A known unbounded
+registration or a known subtotal above the limit is `violated`; a relevant
+population/subscription hole prevents `holds` otherwise. Invalid selections
+and selected declarations with an exact zero population are `invalid`.
+An instantiated locus with no subscriptions contributes zero slots.
+
+Topology schema 1.22 adds the typed `queue_slots` law (`group`, `limit`)
+and the required `adequacy.resource` entry. Older schemas cannot carry this
+law. Admission validates the law account without reconstructing a model.
+This is a declared subscription reservation, independent of runtime queue
+occupancy, payload storage, topic-wide quotas and in-flight processing.
+
+## Flow classification and retained children
+
+`LocusDecl::flow` records the shared completed `flow_instances` family's
+classification at declaration grain:
+
+- `Resident`: no release clause classifies this concrete declaration as
+  a flow.
+- `Flow`: a nonempty, canonical list of `FlowRelease` witnesses names the
+  classifying owners, their concrete specializations when applicable,
+  and the release clauses' provenance.
+- `GenericTemplate`: this declaration has type parameters; the model
+  asserts no single concrete classification for all its specializations.
+
+The snapshot supplies the completed inventory to `ModelInputs`; the
+model does not discover generic instances or rederive membership. A
+missing inventory blocks model construction. Owners in the application
+join by `LocusDeclId`; owners in the separate stdlib analysis universe
+remain external, and their offsets remain foreign provenance even if
+numerically equal offsets exist in application text. `validate` rejects
+empty flow witness lists, duplicate or unsorted witnesses, dangling owner
+or provenance IDs, and empty external/specialization identities.
+
+`model_query::flow_classes` projects selected declaration IDs into flows,
+residents and non-concrete templates, preserving release witnesses. It
+uses no arrangement counts, source traversal or lifecycle plan.
+
+This is type-wide classification: even an uninstantiated owner's release
+clause can classify a child. It does not identify the accepting owner of
+a particular birth. A resident classification alone does not mean that
+an instance survives until owner teardown: scope and ownership also
+matter. A flow classification does not prove that `run` returns, that
+field completion and owner cancellation are safe on every path, or that
+live children or retained bytes have a finite bound. Those judgments
+require birth, ownership and retention facts at their own grains.
+
+`require flow(all G)` checks this declaration-grain policy through the
+`flow_policy` judgment family. It projects locus declarations from `G`;
+no selected loci, an absent group or a refused selection is invalid.
+Selected generic templates are uncertified. A known concrete resident
+is a counterexample even alongside a selected template. A withdrawn
+capability with no typed account of its gaps is uncertified before
+using absence of membership as a resident counterexample.
+
+The family reads `FLOW_CLASSIFICATION` (bit 13). The positive capability
+is `exact_flow_classification`; each `GenericTemplate` requires a
+`GenericFlowTemplate` hole at its declaration hiding exactly that family.
+Such a hole on a concrete declaration is invalid. A template withdraws
+global adequacy for this family without poisoning claims over unrelated
+concrete types. Other judgment families do not read this bit.
+
+Topology schema 1.23 adds `require_flow`, `adequacy.flow_policy` and the
+classification capability. Optional hashed `flow_classes` rows record
+non-default `flow` and `template` tags, sorted by locus display name;
+omitted loci have the concrete `resident` default in this schema. The
+field is independent of law selection. It is absent when every locus is
+resident, preserving those shape hashes. Flow or template classifications
+now participate in shape identity; affected recordings need re-recording.
+Admission validates tag vocabulary, identity, order, duplicates, schema,
+capability contradictions and law/evidence binding without evaluating a
+second flow judgment. Analysis semantics is 11; model semantics remains
+1 because this adds facts without reinterpreting existing rows.
+
+## Storage and admission configuration
+
+`LocusDecl::storage` holds declaration-level configuration from the
+allocation summary's `LocusShape::projection` row. The row says whether
+an accept hook is declared and which storage policy is effective:
+explicit annotation, or chunked for an acceptor and rich otherwise.
+Recognition records the literal cap and selected mode. The declaration's
+provenance covers this nested value. A missing summary row becomes
+`None`, never an uncapped policy; `model_query::storage_policies` preserves
+that distinction.
+
+Lowering consumes the same rows through the view's required
+`storage_projections` table. Concrete generic instances inherit their
+template's literal policy under the shared closed inventory's names;
+lowering neither rereads annotations nor reinfers defaults. Missing
+tables, declaration rows and monomorph rows are named `alloc_summary`
+refusals. `LocusShape::recognition_cap()` projects the recorded class,
+keeping the allocation-summary text format unchanged.
+
+These are configuration facts. An unshipped mode is not an enforced
+allocator, and a cap alone does not bound all retained children, owner
+populations, historical slab bytes, queued construction requests or
+restart overlap. No storage-bound judgment consumes this column yet;
+it is not a new artifact law or projection field. A consuming judgment
+must add its required relations, completeness, source witnesses and
+artifact/schema account together.
+
 ## Adding a judgment family
 
 The discipline below is contract, not style. Each rule states a
@@ -973,13 +1271,18 @@ does not require cloning the compiler.
 **`application`** — the model itself and its sidecars.
 `ApplicationModel`, `ModelHeader`, `ModelHashKind`, `Entities`,
 `Relations`, `Analyses`, `LabelRow`, `WeightRow`, `ModelError`.
+Recovery observations: `RecoveryInventory`, `RecoveryFailureEntry`,
+`RecoveryFailureContext`, `RecoveryConstructionSource`, `RecoveryFailureDispatch`,
+`RecoveryFailureGap`, `RecoveryAction`, `RecoveryOperation`,
+`RecoveryReceiverType`, `RecoveryOperand`, `RecoveryRoot`, `RecoverySpecialization`,
+`RecoveryBound`.
 Absorption: `StdlibAbsorption`, `AbsorbedNode`, `AbsorbedEvent`,
 `AbsorbedTarget`, `AbsorbedHoleKind`. Evidence: `EvidenceTable`,
 `EvidenceRow`, `CertificateEvidence`, `VerdictIr`. Plus
 `DispatchGate`.
 
 **`entity`** — the fifteen sorts. `Function`, `FunctionKind`,
-`LocusDecl`, `LocusParam`, `LocusInstance`, `Topic`, `Subject`,
+`LocusDecl`, `LocusStorage`, `StorageProjection`, `RecognitionMode`, `FlowClass`, `FlowOwner`, `FlowRelease`, `LocusParam`, `LocusInstance`, `Topic`, `Subject`,
 `PayloadContract`, `Phase`, `Seed`, `ThreadDomain`, `Binding`,
 `BindingRole`, `TransportKind`, `Group`, `TypeDecl`,
 `InterfaceDecl`, `EffectClassDecl`, `EffectClassDefinition`,
@@ -1054,3 +1357,482 @@ Stated so nobody mistakes them for oversights:
   diagnostic says so.
 - Absorption interiors are explored to a frontier. Beyond it the
   account is `Truncated`, which withdraws rather than assumes.
+
+
+### Constructor-default execution
+
+A locus parameter default is an executable body with
+`FunctionKind::ParameterDefault`, a real parameter declaration site, a locus
+owner, and typed `Initializer { kind: Parameter, field, ordinal }` metadata. It is not a
+callable name or a generated native function. Its canonical name is
+`Locus::params::field`. Locus groups include these owned executable bodies;
+phase roots still select only the phase relation.
+
+A data-field default has `FunctionKind::FieldDefault`, its real field
+declaration site, `type_owner: TypeDeclId`, and `InitializerKind::Field`.
+Its canonical name is `Type::fields::field`. It has no locus owner or
+`member_of` row; no fake locus or free function is introduced. The built-in
+`program` group includes main-seed field bodies, even when unused, and a
+`lib::*` selector includes the imported seed's field bodies. Imported bodies
+are not silently included in `program`; execution from a selected caller
+still reaches them through constructors.
+
+`constructions(function, owner, site, supplied, in_loop, unbounded)` records
+source constructors in their own site namespace. `owner` is a typed
+`ConstructorTarget::Locus` or `ConstructorTarget::Type`.
+`initializes(from, to, owner, field, site, member, in_loop, unbounded)` evaluates exactly the omitted
+defaults, in declaration order. These are separate from authored `Call` rows,
+call ordinals, dispatch alternatives and call-operand bindings. An explicitly
+supplied field has no default evaluation. Validation recomputes the entire
+omission account from constructor overrides and default definitions, including
+source witnesses and loop facts; evidence coverage uses the same validator.
+
+The existing body walk supplies each default's calls, constructors, effects
+and local stack charges once. The executable row participates in ordinary
+call resolution; the editor's declaration-body copy is refreshed afterward.
+`model_query::executions` exposes both invocation relations with typed
+`ExecutionSite` namespaces. Reachability, quantitative paths, communication,
+causal and dependency consumers share that projection. Helper effects remain
+on the helper's body: an initialization edge can reach that helper, and an
+`avoiding` mask can still stop there. Closed/path graph certificates use these
+actual vertices and edges.
+
+Known stdlib defaults enter the existing absorption graph. An entry carries
+typed initialization metadata, and its site is a constructor ordinal; it
+joins no authored-call dispatch group. Interior default evaluations retain
+the same distinction, real default-body vertices and helper edges. Module
+barriers match the actual stdlib owners. The contracted re-emergence account
+also follows these executions. Fan-out costs use separate call, constructor
+and delivery namespaces, summing distinct omitted defaults.
+
+Per-call costs include each evaluated default. Distinct omitted defaults are
+sequential contributions, not alternatives of an interface dispatch. Stack
+charges come from the summary's original body walk, including locals inside
+expression blocks. Inline defaults start with zero frame overhead;
+initializer local and helper charges are summed conservatively in the
+caller. This retains
+the existing local-sizing/ABI assumptions rather than establishing an
+independent physical-stack or retained-byte theorem.
+
+A default absent from both the canonical bodies and the known absorption horizon has an
+`UnmodeledInitialization` gap hiding calls, effects and costs. It invents no
+publish site: direct publishing from defaults is prohibited, while existing
+helper bodies retain their own authored publish inventory. These gaps are
+scoped through invocation edges and preserve concrete known violations.
+
+Schema 1.27 exports the hashed `sorts.types` universe and unified
+`relations.initializers` definitions. Constructor and initialization rows
+carry `owner: { kind: "locus" | "type", name }` and a `member` ordinal.
+`law.types` binds raw/display type identities to that hashed universe;
+function coverage carries `field_default` and `owner_type` for field bodies.
+Admission checks exclusive ownership, default definitions, constructor
+omissions and typed target agreement. It cannot interchange a record and a
+locus. Schema 1.26's locus-only `parameter_defaults` account remains readable;
+older schemas reject the new vocabulary. Model semantics is 8; analysis semantics is 21. Explicit closure checkpoints
+have the separate execution account below. Automatic closure epochs and
+runtime lifecycle execution still require their own source/coverage accounts;
+this constructor-default projection does not establish those obligations.
+The source summary joins each resolved constructor to automatic assertion
+declarations by the real owner identity, preserving the source universe. The
+pending epoch work is an `UnmodeledInitialization` gap at that construction's
+function, hiding calls, effects and costs. It is not an ordinary call or a
+synthetic per-call frame charge. Reachable evaluated defaults retain their
+own construction obligations; supplied defaults do not execute. Tick/duration
+obligations conservatively retain the unresolved cell-admission context,
+including when this analysis has not established that a cell can occur.
+Model semantics 7 requires a complete calls/effects/costs gap at each
+represented automatic-assertion construction and its source provenance.
+Schema 1.30 admission checks the corresponding constructor/epoch/residue
+account. Earlier explicit-checkpoint accounts remain readable. An artifact
+bound to the current analysis inputs cannot evade automatic-assertion residue
+by relabeling its envelope as schema 1.29; artifacts with older analysis inputs
+already require a new dump.
+
+Record constructor overrides are now part of the hashed model half. Renaming
+a supplied field therefore changes `shape_hash`, even when the field has no
+default. A field's representation alone remains outside this identity;
+per-topic payload hashes continue to bind the wire layout separately.
+
+
+### Argument-default execution
+
+A callable's parameter default is an executable `ArgumentDefault` body with
+`InitializerKind::Argument`, the actual parameter binding site, and an
+`argument_owner: FunctionId`. Its name is `callable::args::parameter`.
+A method or mode default retains the callable's locus owner and `member_of`
+row; a free-function default has its callable owner and no locus owner.
+Defaults cannot own other defaults. This identity describes inline evaluation,
+not an emitted native function or a callable source symbol.
+
+`Call::supplied` records the explicit argument count of a named invocation.
+`argument_evaluations(from, to, callee, site, argument, parameter, in_loop,
+unbounded)` enters every omitted default at that actual call. Supplied
+arguments skip their defaults. The evaluation's callee, source call ordinal,
+loop facts and provenance must agree with the call, and its target must belong
+to the named callable. Model and evidence admission share the validator that
+recomputes the exact omission set. Constructor and argument evaluations keep
+separate namespaces; arguments do not become constructor rows, authored calls
+or dispatch alternatives.
+
+The shared summary's resolved call and source arity supply these facts.
+Function-value and interface dispatch carry no named-default expansion;
+their arguments must be supplied. Function bodies and argument evaluation
+remain separate executions. A contract or graph selector on a function body
+starts inside that body; the caller's contract includes its evaluated
+arguments. The `program` and imported-seed selections also include declared
+argument-default bodies, as they include other declared executable defaults.
+A default's own generic scope is retained; an unresolved symbolic receiver
+withdraws coverage rather than becoming a zero-effect leaf.
+
+Effects, per-call costs, structural-failure coverage and graph queries follow
+the same evaluation edges. Distinct omitted arguments add their costs, across
+parameters and calls. Inline defaults have zero native-frame overhead and
+retain local/helper charges. Helpers remain separate vertices, including
+under `avoiding`. Foreign defaults enter the existing absorption graph with
+typed argument metadata and the actual call ordinal, distinct from both
+constructor entries and ordinary call dispatch.
+
+Schema **1.28** adds `argument_default`/`owner_function` coverage, function-owned
+initializer definitions, hashed `argument_calls` and `argument_evaluations`
+tables. These tables bind supplied counts and evaluations to the represented
+call graph. Older schemas reject the new vocabulary; the reader retains the
+1.26 locus-only and 1.27 typed constructor accounts. Artifact admission is a
+structural check of this exported account, not reconstruction of an
+`ApplicationModel` or evaluation of a second language semantics.
+
+
+### Explicit closure-checkpoint execution
+
+A closure with an assertion contributes one `ClosureAssertion` executable body,
+identified by its closure declaration site and owned by its declaring locus.
+Its source name is `locus::closures::name`. It is not entered in callable-name
+lookup. `closure_definitions` records the actual owner, declared epoch and
+closure declaration ordinal, including assertion-less inline declarations in
+that order. Inline closures introduce no assertion body. Duration thresholds
+are retained beside assertion operands by the same source body walk.
+
+An authored `check_closures()` statement has a `closure_checks` row with its
+actual call identity, a dedicated checkpoint ordinal, implicit-self owner,
+repetition facts and source provenance. It evaluates each explicit-epoch
+assertion of that owner, in closure declaration order. `closure_evaluations`
+records those edges separately from authored calls, constructor defaults and
+argument defaults. Its exact account is validated before model/evidence use;
+a missing assertion, lost check, wrong owner, duplicate or changed loop fact
+cannot silently become empty behavior. Checkpoints with no explicit assertions
+remain represented no-ops. Function selectors retain the assertion/helper
+boundaries; a graph witness renders `checks closure` at the evaluation edge.
+
+The shared effects, allocation, quantitative and graph consumers follow this
+execution relation. Conservative stack charges account for assertion operands
+inside the generated epoch wrapper without asserting a native frame per
+assertion. Distinct evaluated assertions contribute separately to counts.
+Known operand effects can supply a concrete forbidden path even when the
+comparison's failure branch remains unknown.
+
+The comparison can report or dispatch a structural failure. Until that
+conditional execution is modeled, user assertions retain a scoped
+`UnmodeledFailureDispatch` gap; a barrier excluding the assertion excludes
+its gap too. This is not an arithmetic proof that the assertion holds.
+A checkpoint inside an omitted default uses its caller's implicit self. An
+unbound caller context retains an explicit execution gap and categorical
+reporters refuse certification, rather than borrowing the callee's declared
+locus. Supplying the argument skips that default and its contextual checkpoint.
+
+Schema **1.29** exports `closure_assertion` function coverage and the three
+closure tables in the hashed model half. Each definition binds its exact
+function identity, owner, name, epoch and declaration ordinal; checks and
+evaluations preserve separate checkpoint ordinals and repetition flags.
+Artifact admission checks their structural account without reconstructing an
+ApplicationModel or interpreting laws. Source SiteIds remain in the canonical
+model; artifacts use stable per-body ordinals, so source motion does not change
+this structural identity. Earlier envelopes reject this vocabulary. Schema
+1.28 argument accounts and earlier supported constructor accounts remain
+readable. Automatic birth, dissolve, tick and duration execution is separate
+work; retaining an epoch declaration does not establish its invocation path.
+
+
+### Source phase membership
+
+`AllocSummary::source_phases` is produced in the existing declaration
+inventory, with the real function key, typed locus owner, phase name,
+substrate/source-slice role and source span. The provenance/seed view
+consumes this inventory rather than surveying phases again. Ordinary phase
+certificates, the canonical `phase_of` relation and artifact projection
+therefore select the same bodies. Imported owners retain their identity
+universe; lexical spelling does not substitute for owner identity.
+
+Automatic assertion bodies belong to their birth, dissolve, tick or duration
+epoch. This source membership exists without an authored hook. Explicit
+assertions have no independent phase: their execution edges inherit the
+checkpoint caller's phase. A method named `tick` keeps its method role while
+a tick assertion keeps its substrate role; both are sources of the named
+phase. Modes, failure handlers and module-nested phase contracts use the
+same inventory.
+
+Model semantics 11 requires exactly one source phase for each hook, method,
+mode, failure handler and birth check. Automatic assertions require their matching epoch
+phase; explicit assertions and inline default bodies have no independent
+phase. Dropping an authored phase relation therefore cannot manufacture a
+bodyless phase certificate. Schema 1.34
+admission checks the corresponding epoch/phase/role account, including
+downgraded envelopes bound to current analysis inputs. It selects phase
+bodies through the exported phase relation and locus ownership, not a
+`Locus::phase` callable-name convention. Only a lifecycle phase with no
+represented source bodies can receive a synthetic Holds certificate. A
+missing certificate over a real source phase stays Uncertified.
+
+This relation selects source roots for `during` and phase certificates.
+Construction scheduling, retained lifetime, primitive wrapper operations and
+conditional failure remain separate execution/coverage obligations. The
+constructor gaps introduced by model semantics 7 remain required.
+Each `birth_check` clause has its own minted declaration identity and
+`BirthCheck` executable body, named `Locus::birth_checks::N` by clause order.
+The predicate is evaluated once and the payload remains in its conditional
+branch. These bodies are inline, with no fabricated native frame, and share
+the existing call/default/effect summaries. They are not callable-name entries.
+The editor retains their enclosing declaration dependency view.
+
+The `birth_checks` relation records the executable body, typed locus owner,
+inline closure name and clause ordinal. Validation requires exactly one
+definition per birth-check body, its birth-phase binding, and scoped
+`UnmodeledFailureDispatch` coverage for the possible conditional rejection.
+The predicate is not modeled as an unconditional explicit `violate` or a
+closure comparison. Its actual helper calls remain graph edges, so known
+forbidden effects still violate before uncertainty is considered.
+
+Resolved constructors of a locus with birth checks also require an
+`UnmodeledInitialization` gap at the actual constructor witness. Shared
+`BirthCheckInvocation` source obligations feed ordinary effects, canonical
+coverage and foreign-call absorption. They do not invent an execution edge,
+stack charge or scheduling/lifetime fact. The checker and lowering use the
+same clause body identity. Actual constructor/lifecycle invocation, generated
+wrapper work and whole birth/teardown behavior remain unfinished.
+
+
+### Self lifecycle declarations and constructor entry
+
+`AllocSummary.lifecycle_hooks` is produced in the declaration inventory, not
+from lifecycle plans or emitted artifacts. Every locus has a row, including
+one with no self lifecycle body. Its birth/run/drain/dissolve declarations
+retain real declaration identities, stages, source spans, source-empty facts
+and synthesized markers. Parent `accept`/`release` admission is a separate
+invocation account. Synthesized empty run bodies remain visible to lowering
+without becoming authored canonical executable bodies.
+
+The analysis API also accepts unminted inputs, as its `FnKey` contract
+permits. Their lifecycle owners retain the resolved name and source universe
+with no declaration identity; hook effects remain visible. This case cannot
+produce native lifecycle rows: lowering requires real owner and body
+identities and refuses missing ones.
+
+The program-alone `own_rows` projection removes foreign constructor bindings
+and implicit body entries together with the source bodies it excludes.
+`program_rows` retains these source facts for the canonical model's absorption
+and invocation-context accounts. Neither projection derives facts from an
+artifact or an emitted lifecycle plan.
+
+`lifecycle_definitions` records each authored self hook with its typed locus
+owner, stage and source-empty fact. Each nonempty self stage has a guarded
+may-entry in `lifecycle_evaluations`, keyed by constructor ordinal and stage,
+independently of authored call and argument/checkpoint ordinals. The guards
+are `construction` for birth, `run_admission` for run and `teardown` for drain
+and dissolve. Each entry preserves the actual constructor witness, original
+source identity and repetition facts. The complete definition and
+constructor-entry accounts are validated before judgment or evidence use.
+Empty hooks have no fabricated entry when the native call is elided.
+
+Effect and reachability consumers follow these entries and retain known
+body/helper effects of all four self stages. These are possible source paths:
+the graph does not prove that the guard succeeds or that a path is a feasible
+runtime trace. They are not caller-frame edges for stack-cycle
+or quantitative accounting. Constructor invocation context remains scoped
+`UnmodeledInitialization` coverage: no successful admission, stack placement,
+retained lifetime or generated-wrapper guarantee follows from the entry.
+Run/drain/dissolve may-entries do not establish immediate execution. Known
+violations in represented work still take precedence over context uncertainty.
+Phase filters select source roots; transitive may-entries retain their own
+stages and do not become members of the caller's phase.
+
+Foreign self-stage entry uses a distinct absorption entry namespace and typed
+lifecycle events; it is never encoded as an authored call or an initializer.
+Interior hook stages retain source metadata, and coverage validation requires
+invocation-context residue at the entry's user function. Numeric cost evidence
+refuses unresolved lifecycle execution rather than charging an arbitrary
+callee frame to its constructor. These facts do not establish complete
+runtime refinement or physical resource ceilings.
+
+The lowering view projects this source inventory through the existing source
+correspondence. Native self-stage selection uses the real source declaration and
+source-empty fact, including generic templates, and refuses missing or
+mismatched rows. Self-stage emptiness is not independently rediscovered after
+lowering rewrites. Initial construction, pinned-thread birth, cross-pool birth
+and restart birth all consume the same hook selection. Lifecycle-plan ordering
+continues to govern emission; the canonical model is not derived from a plan.
+
+### Source lifecycle contexts
+
+`Snapshot::demand_lifecycle_contexts` caches construction and ownership contexts
+from the original bundle, placement, ownership and completed concrete flow
+membership. Each source template retains all owner contributions, its
+instantiating and queue domains, construction bound and source lifecycle
+statement stage. `lifecycle_order` consumes these rows to derive obligations;
+source context derivation does not read that plan. A source construction bound
+counts occurrences and does not establish a simultaneous live population or a
+physical storage ceiling. Unknown domains and recursive-owner cuts remain
+explicit, with typed ownership gaps. Summed construction counts that exceed
+the representation become unbounded rather than saturated. A representative
+parent context preserves execution-domain distinctions; it is not a proof of
+exact runtime ancestry. These source rows do not yet discharge the canonical model's
+lifecycle invocation-context gaps.
+
+The canonical model retains these source facts in
+`Analyses.lifecycle_contexts`, including templates outside the arranged entity
+horizon. Declaration bindings distinguish represented user declarations,
+foreign declarations and unrepresented user declarations. A foreign source
+identity is never joined numerically to a user entity or resolved into user
+provenance. User locus entities retain their original declaration ID for this
+join, separately from their display spelling and name-span provenance. The source-neutral identity, domain and construction-position
+schema is shared with placement and planning in `hale_model::construction`.
+
+This internal inventory is not yet an invocation/completeness relation and is
+not consumed by a claim, a graph certificate or the topology artifact. An
+absent inventory means unavailable, and an available inventory does not prove
+runtime admission, exact ancestry, incarnation identity, safe reclaim or a
+physical population/byte ceiling. Such judgments require their own scoped
+coverage and evidence bindings before these rows can certify them.
+
+A context retains the original constructor literal ID where one exists.
+Implicit entry and binding templates invent no authored constructor site;
+unknown field literals stay absent. Specialization keys identify declarations
+and must not be parsed to reconstruct type arguments or target layouts.
+
+Known generation markers retain named synthetic provenance. Generated JSON/API
+offsets are never used as context witnesses into overlapping user source.
+
+
+### Source default evaluation contexts
+
+The `default_evaluation` family retains the ownership walk's original literal
+and root-call identities while following the verified typing walk's omission
+and evaluation-path rows. A literal in a params or argument default is evaluated
+under its root caller's construction context. An ordinary free-function body
+and an adapter binding have no caller locus. The same default declaration
+can therefore have rows under a locus and under no locus, with distinct roots.
+This context does not bind `self` reads: a locus parameter default has a
+separate binding to the instance being initialized. Failure supervision and
+accepting runtime instances also remain separate facts.
+`None` for a source identity is unavailable; a source span is only a witness.
+Overlapping generated witness spans do not merge distinct identified roots.
+
+The source account also retains unavailable identities or default declarations,
+missing call classifications, recursive
+default-call cutoffs, coalesced repeated source contexts, parameter defaults
+beyond a cross-pool post, and per-use
+positions whose uses are not related to particular loci. Per-use candidates
+include the no-locus context and cannot establish that a particular use occurs.
+A missing context row does not prove no execution. Rows are source candidates,
+not invocation counts or runtime occurrence IDs. The omission column's
+classification gaps do not by themselves classify a primitive's effects. Its
+callee identities describe user defaults only; a primitive or foreign callee
+retains an unrepresented-default boundary rather than acquiring a user
+declaration through a coincident numeric ID.
+
+The snapshot caches these rows once. The checker and harness lowering
+backstop read the same rows and possible cross-pool owner routes. A possible
+post is enough to prohibit using the constructed value. It does not prove
+that the post occurs: local and orphan alternatives still evaluate defaults
+locally. Definite posts alone cut default expansion at the handoff boundary;
+possible posts are retained separately and cannot erase those evaluations.
+The locus-only
+`OwnershipGraph::expansions` API projects the same source computation. The
+producer reads the verified expression walk and ownership graph, without
+reading a lifecycle plan or deriving an application model. This source
+inventory establishes no admission, accepting runtime instance, failure
+supervisor, lifetime, native frame or completeness capability. Parent
+accept/release execution and its claim coverage remain separate required work.
+
+### Parent protocol execution
+
+The source execution account retains parent `accept` and `release`
+declarations from the allocation summary's existing declaration walk. Each
+row carries the real owner and callable identity, resolved child symbol,
+source emptiness and synthesis status. Native hook selection reads these
+facts through the merge correspondence; a missing inventory or mismatched
+hook identity is a compiler refusal.
+
+A contextual source edge retains both the triggering call/construction and
+the nested constructor. Parent work from an inline default belongs to the
+caller's triggering root. It is not an unconditional successor of the shared
+default body. Ordinary free functions have no caller locus merely because a
+locus called them. Construction context remains distinct from parameter
+`self`, failure supervision and runtime ancestry.
+
+Known parent bodies participate in source effect traversal. The account
+retains admission/release opportunity, scheduling, frame and lifetime
+uncertainty; it establishes no occurrence count, native caller frame,
+physical retention bound or feasible temporal trace. The portable model
+currently preserves this work as scoped initialization coverage at its root.
+A portable parent-protocol execution relation and independent account
+validation remain unfinished; graph absence cannot use this source account
+as proof of complete execution coverage.
+
+
+### Parent protocol source contexts and guarded entry
+
+Model semantics 12 adds `protocol_definitions`, `protocol_contexts` and
+`protocol_evaluations`. These are derived from the shared `protocol_execution`
+source family, never lifecycle plans or artifact reconstruction. Definitions
+retain each authored accept/release body's real function and locus identity,
+source stage, resolved child symbol, interface boundary and empty-body fact.
+The source inventory also supplies native selection through the existing
+lowering correspondence. Synthesized and source-empty bodies create no
+invented execution.
+
+A context preserves both the triggering caller root and the actual nested
+constructor. Call roots are projected through original authored-site identity
+to the model's grouped call ordinal; source-summary call indexes are not
+portable ordinals. Construction and call namespaces remain distinct. A nested
+constructor must be reachable through the root's initializer evaluations,
+including omitted arguments and record fields; ordinary callees do not
+inherit their caller's construction context. Parameter `self` remains separate.
+Root and constructor witnesses and endpoint repetition facts are retained.
+Intermediate default-path repetition remains unresolved.
+
+Each context retains its resolved child symbol separately from the original
+constructor template. `Cell_Int` does not become `Cell`: specialization
+bindings come from the existing lifecycle source inventory, joined by the
+original constructor identity and declaration binding. Nongeneric constructors
+retain their already-resolved nominal target. No generated-name parsing or
+lowering resurvey supplies this relation.
+
+Each context has exactly its matching nonempty nominal parent entries.
+`accept` is guarded by `admission_opportunity`; `release` by
+`release_opportunity`. Validation checks definitions against source phases,
+constructor ownership and source identity, initializer reachability, exact
+entry sets and function-scoped `UnmodeledInitialization` coverage. This is a
+source may-entry account. It does not prove successful admission, a runtime
+occurrence/incarnation, callback scheduling, a native caller frame, retained
+lifetime, population or physical bytes. The declared accepting parent is a
+source candidate, not a proved runtime ancestry relation.
+
+The canonical execution query and reachability engine follow these entries.
+Known forbidden paths take precedence over unresolved invocation coverage.
+Path certificates describe that graph proposition; absence certificates and
+quantitative results still require adequate scope. Parent opportunities never
+become ordinary authored calls or numeric frame charges. Interface matching,
+foreign and unrepresented bodies and remaining source horizons keep their
+scoped gaps rather than fabricated nominal edges.
+
+Schema 1.35 exports these accounts and a `protocol_constructors` source-symbol
+account. The latter binds resolved child specializations to real constructor
+function/ordinal pairs independently of selected callback contexts. Admission checks their exact shapes,
+references, constructor/root namespaces, initializer paths, repetition, guard,
+coverage and matching entry sets directly over JSON. A document with authored
+parent callbacks requires the new account; deleting a table or downgrading
+its schema is refused. Older self-stage-only accounts retain their existing
+supported horizon. Artifact admission checks consistency, not source
+extraction or runtime correspondence. It cannot detect coordinated deletion
+of all independent source facts; proof trust still includes extraction.
+Fleet composition and topology rendering project the admitted guarded edges.
+Analysis semantics is 26. The twelve-part claims upgrade remains broader than
+this execution account.

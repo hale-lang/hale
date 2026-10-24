@@ -60,6 +60,26 @@ fn topology_artifact<'c>(
     Ok(cell.get().map(String::as_str).unwrap_or_default())
 }
 
+/// Replace the output directory entry atomically, so an existing hard link
+/// cannot turn evidence export into truncation of a loaded source inode.
+fn write_proof_output(path: &str, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let destination = Path::new(path);
+    let name = destination.file_name().ok_or_else(|| std::io::Error::new(
+        std::io::ErrorKind::InvalidInput, "proof destination requires a filename"))?;
+    let temporary = destination.with_file_name(format!(".{}.hale-proof-{}-{}",
+        name.to_string_lossy(), std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    let result = (|| {
+        file.write_all(contents.as_bytes())?;
+        drop(file);
+        std::fs::rename(&temporary, destination)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result
+}
+
 /// The refusal every flag that needs the model prints when the
 /// program does not typecheck: exit 1, the program named, the kind of
 /// the first error.
@@ -628,6 +648,138 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     // derives one model, not two — rendered once for every flag that
     // reads it (the dump and both gates).
     let artifact_cell: OnceCell<String> = OnceCell::new();
+
+    // Proof export is explicit demand: normal check retains its lazy analysis
+    // path and does not retain graph traces. All four flags require operands.
+    let proof_flags = [
+        "--dump-reachability-proofs",
+        "--dump-reachability-lean",
+        "--check-reachability-proofs",
+        "--check-reachability-lean",
+    ];
+    let mut proof_paths = Vec::new();
+    for flag in proof_flags {
+        match flag_value(flag) {
+            Ok(path) => proof_paths.push(path),
+            Err(message) => {
+                eprintln!("{message}");
+                return 2;
+            }
+        }
+    }
+    if proof_paths.iter().any(Option::is_some) {
+        if let Some(d) = checked
+            .iter()
+            .find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim)
+        {
+            eprintln!(
+                "refusing reachability proof evidence: `{}` does not typecheck; fix the {} first",
+                target.display(),
+                d.kind_str()
+            );
+            return 1;
+        }
+        let model = match snap.demand_model() {
+            Ok(model) => model,
+            Err(blocked) => {
+                return refuse_without_model(
+                    target,
+                    "export or check reachability proof evidence",
+                    blocked,
+                )
+            }
+        };
+        let selection = match snap.demand_law_selection() {
+            Ok(selection) => selection,
+            Err(blocked) => {
+                return refuse_without_model(target, "select reachability laws", blocked)
+            }
+        };
+        let bundle = snap.bundle();
+        let table = hale_types::claim_lowering::lower_claims_over(&bundle, model, selection);
+        let bases = bundle.sources.iter().map(|s| s.base).collect::<Vec<_>>();
+        let proofs =
+            match hale_types::reachability_proof::ProofBundle::derive(&table, model, &bases) {
+                Ok(proofs) => proofs,
+                Err(message) => {
+                    eprintln!("cannot derive reachability proof evidence: {message}");
+                    return 1;
+                }
+            };
+        let lean = if proof_paths[1].is_some() {
+            match proofs.lean_source() {
+                Ok(source) => Some(source),
+                Err(message) => {
+                    eprintln!("{message}");
+                    return 1;
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(path) = &proof_paths[2] {
+            let supplied = match std::fs::read_to_string(path) {
+                Ok(source) => source,
+                Err(error) => {
+                    eprintln!("could not read {path}: {error}");
+                    return 2;
+                }
+            };
+            if let Err(message) = proofs.check_canonical(&supplied) {
+                eprintln!("{message}");
+                return 1;
+            }
+        }
+        if let Some(path) = &proof_paths[3] {
+            let supplied = match std::fs::read_to_string(path) {
+                Ok(source) => source,
+                Err(error) => {
+                    eprintln!("could not read {path}: {error}");
+                    return 2;
+                }
+            };
+            if let Err(message) = proofs.check_canonical_lean(&supplied) {
+                eprintln!("{message}");
+                return 1;
+            }
+        }
+        let mut destinations = std::collections::BTreeSet::new();
+        for path in proof_paths[..2].iter().flatten() {
+            let destination = std::fs::canonicalize(path).unwrap_or_else(|_| {
+                let path = Path::new(path);
+                let parent = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                std::fs::canonicalize(parent)
+                    .unwrap_or_else(|_| parent.to_path_buf())
+                    .join(path.file_name().unwrap_or_default())
+            });
+            if !destinations.insert(destination.clone()) {
+                eprintln!("proof report and Lean document require different output paths");
+                return 2;
+            }
+            if snap
+                .programs()
+                .keys()
+                .any(|source| std::fs::canonicalize(source).ok().as_ref() == Some(&destination))
+            {
+                eprintln!("refusing to overwrite source file {path} with proof evidence");
+                return 2;
+            }
+        }
+        for (path, text) in [
+            (&proof_paths[0], Some(proofs.canonical_json())),
+            (&proof_paths[1], lean),
+        ] {
+            if let (Some(path), Some(text)) = (path, text) {
+                if let Err(error) = write_proof_output(path, &text) {
+                    eprintln!("could not write {path}: {error}");
+                    return 2;
+                }
+            }
+        }
+    }
 
     if dump_topology || dump_topology_to.is_some() {
         // The artifact's EXISTENCE means the model is sound.

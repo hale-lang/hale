@@ -503,6 +503,7 @@ pub fn lower_claims_over(
                 group: group_ref(recs, &group.name, group.span),
                 topic: topic_ref(recs, topic),
             },
+            ClaimForm::RequireFlow { group } => ClaimIr::RequireFlow { group: group_ref(recs, &group.name, group.span) },
             ClaimForm::RequireSealed { group } => {
                 ClaimIr::RequireSealed {
                     group: group_ref(recs, &group.name, group.span),
@@ -524,6 +525,10 @@ pub fn lower_claims_over(
                     right: group_ref(recs, &right.name, right.span),
                 }
             }
+            ClaimForm::QueueSlots { group, limit } => ClaimIr::QueueSlots {
+                group: group_ref(recs, &group.name, group.span),
+                limit: *limit,
+            },
             ClaimForm::RequireAttributed { class_name } => {
                 ClaimIr::RequireAttributed {
                     class: class_ref_named(

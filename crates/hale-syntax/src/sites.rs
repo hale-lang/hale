@@ -37,6 +37,8 @@ pub enum SiteKind {
     Group,
     Module,
     Param,
+    /// A data type's field declaration, including its executable default.
+    Field,
     PlacementEntry,
     BindingEntry,
     Publish,
@@ -61,6 +63,8 @@ pub enum SiteKind {
     /// GH #1076: a `unit` declaration's equation, an edge of the unit
     /// graph (the catalogue's `Equation.site`).
     UnitEquation,
+    /// One declarative birth-time predicate and its conditional payload.
+    BirthCheck,
 }
 
 /// Visit every identity field of the program in pre-order (a
@@ -301,6 +305,7 @@ macro_rules! walk {
                         }
                     }
                     LocusMember::BirthCheck(bc) => {
+                        f(SiteKind::BirthCheck, bc.span, None, & $($m)? bc.id);
                         expr(& $($m)? bc.cond, f);
                         opt_expr(& $($m)? bc.payload, f);
                     }
@@ -381,6 +386,7 @@ macro_rules! walk {
                     TypeDeclBody::Alias(a) => ty(a, f),
                     TypeDeclBody::Struct(fields) => {
                         for field in fields {
+                            f(SiteKind::Field, field.span, Some(field.name.name.as_str()), & $($m)? field.id);
                             ty(& $($m)? field.ty, f);
                             opt_expr(& $($m)? field.default, f);
                         }

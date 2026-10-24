@@ -1,16 +1,11 @@
-//! GH #476 Change 5e — the pointwise-certificate differential.
+//! Certificate pipeline coverage and evidence binding (GH #476 Change 5e).
 //!
-//! The certificate ENGINES stay the analysis authority; the
-//! producer (`evidence::derive_certificate_evidence`) runs them and
-//! keys each certificate's outcome + diagnostics BY ClAIM ORDINAL
-//! in an `EvidenceTable` sidecar, and the judgment consumes the
-//! sidecar structurally. The gates: the judgment's diagnostic
-//! stream (undeclared-class validation + per-certificate diags,
-//! with the lowering's carries-issues) must be byte-identical to
-//! the evaluator's law strata; every certificate-family ClaimIr row
-//! must produce exactly one Judged row (engine completeness — the
-//! unmigrated families judge Uncertified rather than vanishing);
-//! and evidence is refused when stale, missing, or malformed.
+//! The corpus runs through one minted frontend snapshot, its shared source
+//! facts, evidence producer and canonical judgment. Every certificate-family
+//! law must survive, and its judgment must preserve the evidence outcome.
+//! Mutation tests below reject stale, missing and malformed evidence.
+//! The retired raw-bundle evaluator comparison could neither represent the
+//! executable-body identities nor the model's scoped coverage refinements.
 
 #[path = "support/entries.rs"]
 mod entries;
@@ -28,11 +23,13 @@ use hale_types::Bundle;
 
 fn bundle_of<'a>(
     src: &str,
-    program: &'a hale_syntax::ast::Program,
+    program: &'a mut hale_syntax::ast::Program,
 ) -> Bundle<'a> {
+    let identities = hale_types::snapshot::mint([("app.hl", &mut *program)], &[]);
     let mut programs = BTreeMap::new();
-    programs.insert("app.hl".to_string(), program);
+    programs.insert("app.hl".to_string(), &*program);
     let mut b = Bundle::new(programs);
+    b.snapshot = identities;
     b.sources = vec![SourceFile {
         id: 0,
         path: "app.hl".to_string(),
@@ -72,10 +69,24 @@ fn sev(v: Verdict) -> u8 {
 fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let program = hale_syntax::parse_source(src)
         .map_err(|_| format!("{}: parse", origin))?;
-    let bundle = bundle_of(src, &program);
-    let model = derive_application_model(&bundle);
-    let table = lower_claims(&bundle, &model);
-    let evidence = derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
+    let snapshot = hale_frontend::snapshot::Snapshot::from_program(
+        program, Vec::new(), hale_frontend::snapshot::Config::check(true, false),
+    ).map_err(|error| match error {
+        hale_frontend::snapshot::LoadError::Refused(message) => format!("{origin}: {message}"),
+        hale_frontend::snapshot::LoadError::Load(failure) => format!("{origin}: {}", failure.diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ")),
+    })?;
+    // Non-law typing errors have no checked canonical model. Negative law
+    // verdicts remain in this corpus, including Violated and Uncertified.
+    let Ok(model) = snapshot.demand_model() else { return Ok(0) };
+    model.validate().map_err(|error| format!("{origin}: model {error:?}"))?;
+    let bundle = snapshot.bundle();
+    let table = lower_claims(&bundle, model);
+    let evidence = hale_types::evidence::derive_certificate_evidence_over(
+        &bundle, &table, model, snapshot.demand_effect_certificates().map_err(|error| format!("{origin}: reports {error:?}"))?,
+        snapshot.demand_alloc_summary().map_err(|error| format!("{origin}: summary {error:?}"))?,
+    );
+    evidence.validate(model, hale_types::topology_projection::project_shape_hash(model), &table, hale_types::evidence::analysis_inputs_digest())
+        .map_err(|error| format!("{origin}: evidence {error:?}"))?;
     let fam_ordinals: BTreeSet<u32> = table
         .rows
         .iter()
@@ -86,43 +97,6 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     if n_rows == 0 && evidence.rows.is_empty() {
         return Ok(0);
     }
-    // Old: the evaluator's law strata (undeclared-class validation +
-    // the per-certificate stream), demangled like `hale check`.
-    let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
-    let summary = hale_types::alloc_summary::derive_alloc_summary(&bundle);
-    let (_pre, mut p1, _tail, groups) =
-        hale_types::effects::effect_report_three_way(&programs_v, &summary);
-    hale_types::stdlib_bodies::demangle_imports(&mut p1, &[]);
-    let mut group_diags: Vec<hale_syntax::Diag> = groups
-        .into_iter()
-        .flat_map(|(_, ds)| ds.into_iter().map(|(d, _foreign)| d))
-        .collect();
-    hale_types::stdlib_bodies::demangle_imports(&mut group_diags, &[]);
-    // Change 5h: `@budget` certifies through the same evidence
-    // pipeline, so the comparison arm is the counting engines too.
-    let programs_b: Vec<&hale_syntax::ast::Program> = vec![&program];
-    let mut budget_diags =
-        hale_types::budget_check::budget_diags_with_renames(
-            &programs_b,
-            &summary,
-            &[],
-        );
-        // Change 5h: fan-out is a publish-SITE question, answered by
-    // the model. Both arms take the SAME supplier — fan-out
-    // supply is not the thing under differential.
-    let fanout = hale_types::evidence::model_fanout(&model);
-    budget_diags.extend(hale_types::quantitative::quantitative_diags(
-        &programs_b,
-        &summary,
-        &fanout,
-    ));
-    let old: Vec<(String, hale_syntax::Span)> = p1
-        .iter()
-        .chain(group_diags.iter())
-        .chain(budget_diags.iter())
-        .map(|d| (d.message.clone(), d.span))
-        .collect();
-    // New: lowering issues (carries validation) + judgment output.
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     // Engine completeness: exactly one Judged row per
     // certificate-family ClaimIr row — the unmigrated families
@@ -221,76 +195,12 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
             ));
         }
     }
-    let issue_span = |pid: hale_model::ProvenanceId| {
-        match table.provenance.records.get(pid.index()) {
-            Some(hale_model::Provenance::Source { span, .. }) => {
-                hale_syntax::Span::new(
-                    span.0 as usize,
-                    span.1 as usize,
-                )
-            }
-            _ => hale_syntax::Span::new(0, 0),
-        }
-    };
-    let new: Vec<(String, hale_syntax::Span)> = table
-        .issues
-        .iter()
-        .filter(|i| {
-            i.message.contains("asserts about effect class")
-                || i.message.contains("budgets effect class")
-        })
-        .map(|i| (i.message.clone(), issue_span(i.provenance)))
-        .chain(
-            judged
-                .iter()
-                .flat_map(|j| j.diags.iter())
-                .map(|d| (d.message.clone(), d.span)),
-        )
-        .collect();
-    // ORDER-INSENSITIVE within strata boundaries is not enough for
-    // byte parity — compare as multisets first, then sequences; the
-    // corpus arbitrates whether stream interleaving ever differs.
-    let key = |x: &(String, hale_syntax::Span)| {
-        (x.0.clone(), x.1.start.as_usize(), x.1.end.as_usize())
-    };
-    let mut old_sorted = old.clone();
-    let mut new_sorted = new.clone();
-    // Round 8/9 documented divergence: a report-less subject
-    // (an unanalyzed body) judges `uncertified` WITH its residue
-    // reason — a diagnostic the old engine (which skipped the
-    // subject entirely) never produced.
-    new_sorted.retain(|(m, _)| {
-        !m.contains("did not analyze this subject")
-    });
-    old_sorted.sort_by_key(key);
-    new_sorted.sort_by_key(key);
-    if old_sorted != new_sorted {
-        let missing: Vec<_> = old_sorted
-            .iter()
-            .filter(|x| !new_sorted.contains(x))
-            .take(2)
-            .collect();
-        let extra: Vec<_> = new_sorted
-            .iter()
-            .filter(|x| !old_sorted.contains(x))
-            .take(2)
-            .collect();
-        return Err(format!(
-            "{}: certificate diags diverge (old {} / new {}).\n  \
-             missing: {:?}\n  extra: {:?}",
-            origin,
-            old.len(),
-            new.len(),
-            missing,
-            extra
-        ));
-    }
     Ok(n_rows)
 }
 
-/// THE 5e gate.
+/// Every checked corpus law keeps its certificate-family binding.
 #[test]
-fn certificate_judgment_matches_the_evaluator_over_the_corpus() {
+fn canonical_certificate_pipeline_covers_the_corpus() {
     let mut bad: Vec<String> = Vec::new();
     let mut rows = 0usize;
     for p in
@@ -314,7 +224,7 @@ fn certificate_judgment_matches_the_evaluator_over_the_corpus() {
     );
     assert!(
         bad.is_empty(),
-        "{} corpus programs diverge:\n{}",
+        "{} corpus certificate pipelines failed:\n{}",
         bad.len(),
         bad.join("\n\n")
     );
@@ -328,8 +238,8 @@ fn derive_all(
     hale_model::EvidenceTable,
     Vec<hale_types::judgment::Judged>,
 ) {
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence = derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
@@ -351,8 +261,8 @@ fn main() { App { }; }
 #[test]
 fn dropping_evidence_changes_the_verdict() {
     let src = HOLDS_SRC;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let mut evidence =
@@ -389,8 +299,8 @@ fn dropping_evidence_changes_the_verdict() {
 #[test]
 fn stale_evidence_is_refused() {
     let src = HOLDS_SRC;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let mut evidence =
@@ -598,8 +508,8 @@ main locus App {
 fn main() { App { }; }
 "#;
     let foreign_of = |src: &str| -> Vec<(bool, u32)> {
-        let program = hale_syntax::parse_source(src).expect("parse");
-        let bundle = bundle_of(src, &program);
+        let mut program = hale_syntax::parse_source(src).expect("parse");
+        let bundle = bundle_of(src, &mut program);
         let model = derive_application_model(&bundle);
         let table = lower_claims(&bundle, &model);
         let evidence =
@@ -674,13 +584,13 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let pa = hale_syntax::parse_source(src_a).expect("parse a");
-    let ba = bundle_of(src_a, &pa);
+    let mut pa = hale_syntax::parse_source(src_a).expect("parse a");
+    let ba = bundle_of(src_a, &mut pa);
     let ma = derive_application_model(&ba);
     let ta = lower_claims(&ba, &ma);
     let ea = derive_certificate_evidence(&ba, &ta, &ma, &effect_certificates(&ba));
-    let pb = hale_syntax::parse_source(src_b).expect("parse b");
-    let bb = bundle_of(src_b, &pb);
+    let mut pb = hale_syntax::parse_source(src_b).expect("parse b");
+    let bb = bundle_of(src_b, &mut pb);
     let mb = derive_application_model(&bb);
     let tb = lower_claims(&bb, &mb);
     // The trap the digest closes: identical topology shape.
@@ -715,8 +625,8 @@ fn main() { App { }; }
 #[test]
 fn malformed_evidence_is_refused() {
     let src = HOLDS_SRC;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
@@ -837,8 +747,8 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
@@ -908,13 +818,13 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let p1 = hale_syntax::parse_source(v1).expect("parse v1");
-    let b1 = bundle_of(v1, &p1);
+    let mut p1 = hale_syntax::parse_source(v1).expect("parse v1");
+    let b1 = bundle_of(v1, &mut p1);
     let m1 = derive_application_model(&b1);
     let t1 = lower_claims(&b1, &m1);
     let e1 = derive_certificate_evidence(&b1, &t1, &m1, &effect_certificates(&b1));
-    let p2 = hale_syntax::parse_source(v2).expect("parse v2");
-    let mut b2 = bundle_of(v2, &p2);
+    let mut p2 = hale_syntax::parse_source(v2).expect("parse v2");
+    let mut b2 = bundle_of(v2, &mut p2);
     b2.sources[0].digest = "1".to_string();
     let m2 = derive_application_model(&b2);
     let t2 = lower_claims(&b2, &m2);
@@ -945,8 +855,8 @@ fn main() { App { }; }
 /// toolchain / stdlib snapshot is refused via the inputs digest.
 #[test]
 fn different_toolchain_evidence_is_refused() {
-    let program = hale_syntax::parse_source(HOLDS_SRC).expect("parse");
-    let bundle = bundle_of(HOLDS_SRC, &program);
+    let mut program = hale_syntax::parse_source(HOLDS_SRC).expect("parse");
+    let bundle = bundle_of(HOLDS_SRC, &mut program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let mut evidence =
@@ -984,13 +894,13 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let p1 = hale_syntax::parse_source(v1).expect("parse v1");
-    let b1 = bundle_of(v1, &p1);
+    let mut p1 = hale_syntax::parse_source(v1).expect("parse v1");
+    let b1 = bundle_of(v1, &mut p1);
     let m1 = derive_application_model(&b1);
     let t1 = lower_claims(&b1, &m1);
     let e1 = derive_certificate_evidence(&b1, &t1, &m1, &effect_certificates(&b1));
-    let p2 = hale_syntax::parse_source(v2).expect("parse v2");
-    let mut b2 = bundle_of(v2, &p2);
+    let mut p2 = hale_syntax::parse_source(v2).expect("parse v2");
+    let mut b2 = bundle_of(v2, &mut p2);
     b2.sources[0].digest = "1".to_string();
     let m2 = derive_application_model(&b2);
     let t2 = lower_claims(&b2, &m2);
@@ -1026,8 +936,8 @@ fn main() { App { }; }
     // changes the model and leaves every row, span and source unit.
     let table_and_shape = |tail: &str| {
         let src = format!("{v1}{tail}");
-        let program = hale_syntax::parse_source(&src).expect("parse");
-        let bundle = bundle_of(&src, &program);
+        let mut program = hale_syntax::parse_source(&src).expect("parse");
+        let bundle = bundle_of(&src, &mut program);
         let model = derive_application_model(&bundle);
         let digest = lower_claims(&bundle, &model).semantic_digest();
         (digest, hale_types::topology_projection::project_shape_hash(&model))
@@ -1154,8 +1064,8 @@ fn main() { App { }; }
 #[test]
 fn coverage_change_invalidates_evidence_identity() {
     let src = HOLDS_SRC;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let mut model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
@@ -1164,9 +1074,9 @@ fn coverage_change_invalidates_evidence_identity() {
     assert_eq!(judged[0].verdict, Verdict::Holds);
     // The keeping half: a comment that moves every span moves no bit.
     let shifted_src = format!("// a comment that moves every span\n{src}");
-    let shifted = hale_syntax::parse_source(&shifted_src).expect("parse");
+    let mut shifted = hale_syntax::parse_source(&shifted_src).expect("parse");
     assert_eq!(
-        derive_application_model(&bundle_of(&shifted_src, &shifted)).analysis_coverage_digest(),
+        derive_application_model(&bundle_of(&shifted_src, &mut shifted)).analysis_coverage_digest(),
         model.analysis_coverage_digest(),
         "no coverage bit moved: analysis_coverage_digest must keep its value"
     );
@@ -1200,8 +1110,8 @@ fn coverage_change_invalidates_evidence_identity() {
 #[test]
 fn certs_for_unanalyzed_subjects_are_refused() {
     let src = HOLDS_SRC;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &mut program);
     let mut model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
@@ -1277,6 +1187,7 @@ fn mark_unanalyzed(
         reason: "body not walked by the behavior analysis".to_string(),
         provenance,
     });
+    model.holes.sort_by(|a, b| (a.at, &a.kind, &a.reason).cmp(&(b.at, &b.kind, &b.reason)));
     model.capabilities.exact_calls = false;
     model.capabilities.exact_publishes = false;
     model.capabilities.exact_effects = false;
@@ -1305,9 +1216,9 @@ fn main() { App { }; }
 /// fails `ApplicationModel::validate` on `analyzed ⇒ summarized`.
 #[test]
 fn function_coverage_upgrade_fails_model_validation() {
-    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+    let mut program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
         .expect("parse");
-    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     model.validate().expect("the honest model is lawful");
     let idx = mark_unanalyzed(&mut model, "f");
@@ -1334,9 +1245,9 @@ fn function_coverage_upgrade_fails_model_validation() {
 /// (analyzed AND summarized), so the judgment refuses.
 #[test]
 fn function_coverage_upgrade_cannot_manufacture_holds() {
-    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+    let mut program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
         .expect("parse");
-    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     let idx = mark_unanalyzed(&mut model, "f");
     let table = lower_claims(&bundle, &model);
@@ -1393,10 +1304,10 @@ fn main() { App { }; }
 /// member_of relation and FunctionKind).
 #[test]
 fn locus_coverage_upgrade_fails_model_validation() {
-    let program =
+    let mut program =
         hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     model.validate().expect("the honest model is lawful");
     mark_unanalyzed(&mut model, "Hidden::poke");
@@ -1423,11 +1334,10 @@ fn locus_coverage_upgrade_fails_model_validation() {
 /// alone cannot make the phases reportable.
 #[test]
 fn locus_coverage_upgrade_cannot_manufacture_holds() {
-    let program =
+    let mut program =
         hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1443,7 +1353,7 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
     // upgraded bit steers it), digests recomputed by
     // construction.
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1469,11 +1379,10 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
 /// same shared validator.
 #[test]
 fn deleted_membership_is_refused_everywhere() {
-    let program =
+    let mut program =
         hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1507,7 +1416,7 @@ fn deleted_membership_is_refused_everywhere() {
     // cannot certify — EvidenceTable::validate runs the SAME
     // shared ownership/coverage validator.
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1535,11 +1444,10 @@ fn deleted_membership_is_refused_everywhere() {
 /// mirror.
 #[test]
 fn coordinated_ownership_laundering_is_refused() {
-    let program =
+    let mut program =
         hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1584,7 +1492,7 @@ fn coordinated_ownership_laundering_is_refused() {
         ),
     }
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1607,11 +1515,10 @@ fn coordinated_ownership_laundering_is_refused() {
 /// coverage law now contradicts its flag.
 #[test]
 fn moved_membership_is_refused_everywhere() {
-    let program =
+    let mut program =
         hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
             .expect("parse");
-    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
-    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &mut program);
     let mut model = derive_application_model(&bundle);
     mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
@@ -1652,7 +1559,7 @@ fn moved_membership_is_refused_everywhere() {
         "the destination's coverage law contradicts the move"
     );
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged

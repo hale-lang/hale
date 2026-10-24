@@ -439,12 +439,9 @@ fn main() {
 // instead of shipping.
 
 #[test]
-fn a_generic_locus_as_a_locus_param_default_stays_refused() {
-    // Discovery does not reach a generic LOCUS through another
-    // locus's params block in time to declare it, so the build
-    // refuses with "not synthesized — discovery missed the use
-    // site". The generic-STRUCT twin below is fine, which is why
-    // the tolerance is per-site rather than per-question.
+fn a_generic_locus_param_default_uses_the_completed_inventory() {
+    // The shared generic inventory now discovers this site before layouts
+    // are declared, including arguments absent from the template's fields.
     agree(
         "locus_param_default_locus",
         r#"
@@ -470,7 +467,7 @@ fn main() {
     let a: App = App { };
 }
 "#,
-        &Expect::Refused("param `c`: declared `Cache_Int_String`"),
+        &Expect::Runs("cap=7\napp\n"),
     );
 }
 

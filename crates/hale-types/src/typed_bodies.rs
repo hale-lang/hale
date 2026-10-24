@@ -10,7 +10,7 @@
 //!
 //! The table is keyed by declaration identity, the site the snapshot
 //! minted: a body by its declaration's id (a fn, a lifecycle hook, a
-//! mode, an `on_failure`, a closure; the enclosing locus or top-level
+//! mode, an `on_failure`, a closure, a `birth_check` clause; the enclosing locus or top-level
 //! declaration for a value outside any body), a call by its `Call`
 //! site. A monomorph is keyed by its template's site and its type
 //! arguments, never by a name string; its mangled name is a value of
@@ -69,8 +69,8 @@
 //!    with its exact factor ([`Scale`]) and its policy, each quantity
 //!    literal with its count converted at compile time, and each printed
 //!    quantity with its unit.
-//! 9. `recoveries`, per body: each recovery statement written outside
-//!    every `on_failure` body (`restart(self.w)` in a method), with its
+//! 9. `recoveries`, per body: every recovery statement, including in
+//!    `on_failure` (`restart(self.w)` can target another child), with its
 //!    operation, whether it states a `for` bound, and its receiver as
 //!    the checker typed the first argument: the locus that type names, a
 //!    monomorph's template. The unreached-event law reads it (F.40 phase
@@ -628,10 +628,30 @@ impl ParamAccess {
     }
 }
 
-/// One recovery statement written outside every `on_failure` body (a
-/// method or a lifecycle body that restarts a child it holds), as the
-/// checker typed it: the `recoveries` column. A handler's own statements
-/// are its handler row's `ops`, on the handler's child.
+/// The symbolic root of a recovery argument. A parameter is identified
+/// by its declaring body and position, not by its spelling. An immutable
+/// locus alias preserves that root; saved field values, mutable aliases,
+/// calls, indexes and computed values need additional value/state facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryRoot {
+    CurrentLocus(LocusRef),
+    Parameter { body: u32, ordinal: u32, arity: u32 },
+    Unknown,
+}
+
+/// A typed recovery argument's symbolic place. Fields are evaluated at the
+/// recovery statement; this is not an instance identity or an alias proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryOperand {
+    pub root: RecoveryRoot,
+    pub fields: Vec<String>,
+}
+
+/// One recovery statement as the checker typed it: the `recoveries`
+/// column, including statements in `on_failure`. The first argument
+/// selects the receiver; it need not be the handler's failing child.
+/// Rows describe possible operations in source walk order, not an
+/// execution trace or a proof that a branch runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecoveryRow {
     /// The locus whose member writes the statement, by declaration (a
@@ -641,6 +661,19 @@ pub struct RecoveryRow {
     pub parent_name: Option<String>,
     /// The statement's span.
     pub statement: Span,
+    /// The first argument's source expression, absent for a missing argument.
+    /// This is a witness, not a resolved instance or alias identity.
+    pub receiver_span: Option<Span>,
+    /// The bound root and field path of the first argument. Unknown
+    /// aliases are preserved even when their receiver type is known.
+    pub operand: RecoveryOperand,
+    /// Outermost-first invocation/literal sites when evaluating a default.
+    /// A default evaluated twice is two observations, not one source span.
+    pub evaluation: Vec<u32>,
+    /// Whether typed under an `on_failure` context. For an evaluated
+    /// default, that need not be the declaration containing its text.
+    /// The body key is the current walk's declaration, per specialization.
+    pub in_handler: bool,
     pub op: hale_syntax::ast::RecoveryOp,
     /// Whether it states a `for` bound: a spent one quarantines the child.
     pub bounded: bool,
@@ -655,6 +688,21 @@ pub struct RecoveryRow {
     /// type arguments: empty on the ordinary walk. A generic body walked
     /// per monomorph has a row per monomorph, so a receiver of a
     /// parameter type is named in each.
+    pub specialization: Vec<Ty>,
+}
+
+/// One invocation's immutable lexical roots, recorded beside the checker's
+/// existing callee/default resolution. Fields still need runtime state;
+/// immutable whole-root aliases retain identity, while saved field values,
+/// mutable aliases and computed expressions remain unresolved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoveryCallRow {
+    pub call: NodeId,
+    pub callee: Option<NodeId>,
+    pub callee_arity: Option<u32>,
+    pub receiver: Option<RecoveryOperand>,
+    pub arguments: Vec<RecoveryOperand>,
+    pub evaluation: Vec<u32>,
     pub specialization: Vec<Ty>,
 }
 
@@ -689,6 +737,9 @@ pub struct TypedBody {
     pub conversions: BTreeMap<ConversionSite, ConversionRow>,
     /// In walk order: the template walk's, then each walk per monomorph's.
     pub recoveries: Vec<RecoveryRow>,
+    /// Calls whose operands can bind recovery helper parameters. Kept per
+    /// typing context, including evaluated defaults, never merged by span.
+    pub recovery_calls: Vec<RecoveryCallRow>,
     /// GH #1530 step 1: by site, every value of a set's member that flows
     /// into the set (an argument, a binding, a return, a field), which
     /// lowering builds as the set's variant for it.
@@ -1244,6 +1295,9 @@ pub struct Conformance {
 /// monomorph table. [`typed_bodies`] packages it.
 #[derive(Debug, Clone, Default)]
 pub struct TypingRecord {
+    /// The existing source-presence fact requested operand capture. False
+    /// leaves the column unavailable, rather than asserting no calls exist.
+    pub recovery_calls_available: bool,
     pub bodies: BTreeMap<u32, TypedBody>,
     /// Which body each recorded call site belongs to.
     pub sites: BTreeMap<u32, u32>,
@@ -1293,9 +1347,9 @@ struct WalkUndo {
 }
 
 impl TypingRecord {
-    /// Open a walk whose rows are discarded (a struct field's default,
-    /// typed at a literal that leaves it): every write from here on is
-    /// undone by [`Self::close_walk`]. Walks do not nest.
+    /// Open temporary typing of a struct-field default. Closing undoes its
+    /// lowering rows and retains context-qualified recovery observations.
+    /// Walks do not nest.
     pub fn open_walk(&mut self) {
         debug_assert!(self.walk.is_none(), "a discarded walk opened inside another");
         self.walk = Some(WalkUndo { monomorphs: self.monomorphs.rows.len(), ..WalkUndo::default() });
@@ -1304,7 +1358,8 @@ impl TypingRecord {
     /// Close the open walk: the record put back as it was when the walk
     /// opened, and the conversions the walk recorded at a site the record
     /// did not hold then returned (by site), each with its row as the
-    /// walk left it.
+    /// walk left it. Evaluated recovery/call observations stay as facts;
+    /// their body, path and specialization are not lowering rows.
     pub fn close_walk(&mut self) -> Vec<(ConversionSite, ConversionRow)> {
         let Some(undo) = self.walk.take() else { return Vec::new() };
         // the injections the walk recorded, which the owner keeps as it
@@ -1326,6 +1381,20 @@ impl TypingRecord {
             .filter(|(_, before)| before.is_none())
             .filter_map(|(site, _)| Some((site.clone(), self.conversion_at(site)?.clone())))
             .collect();
+        // Evaluated defaults are executable observations, even though their
+        // temporary typing rows are undone. Keep the context-qualified facts
+        // just as calls_by_path already keeps each evaluation's answer.
+        let observed: Vec<_> = undo.bodies.iter().filter_map(|(decl, before)| {
+            let body = self.bodies.get(decl)?;
+            // These two columns append observations; retain only the suffix
+            // the temporary walk added, not a clone/rejoin of every old row.
+            let recoveries = before.as_ref().map_or(0, |b| b.recoveries.len());
+            let calls = before.as_ref().map_or(0, |b| b.recovery_calls.len());
+            let recoveries = body.recoveries.get(recoveries..).unwrap_or(&body.recoveries);
+            let calls = body.recovery_calls.get(calls..).unwrap_or(&body.recovery_calls);
+            if recoveries.is_empty() && calls.is_empty() { return None; }
+            Some((*decl, recoveries.to_vec(), calls.to_vec()))
+        }).collect();
         fn put_back<K: Ord, V>(map: &mut BTreeMap<K, V>, undo: BTreeMap<K, Option<V>>) {
             for (k, before) in undo {
                 match before {
@@ -1339,6 +1408,12 @@ impl TypingRecord {
             }
         }
         put_back(&mut self.bodies, undo.bodies);
+        for (decl, recoveries, calls) in observed {
+            if recoveries.is_empty() && calls.is_empty() { continue; }
+            let body = self.bodies.entry(decl).or_default();
+            for row in recoveries { if !body.recoveries.contains(&row) { body.recoveries.push(row); } }
+            for row in calls { if !body.recovery_calls.contains(&row) { body.recovery_calls.push(row); } }
+        }
         put_back(&mut self.sites, undo.sites);
         put_back(&mut self.omitted_args, undo.omitted_args);
         put_back(&mut self.conversion_sites, undo.conversion_sites);
@@ -1549,9 +1624,18 @@ impl TypingRecord {
     }
 }
 
+/// Shared demand gate for optional recovery operands and model-only
+/// certificate coverage. The mint establishes absence; an unknown horizon
+/// requests the facts rather than treating missing syntax as an empty world.
+pub(crate) fn needs_recovery_call_operands(ids: &crate::snapshot::Snapshot) -> bool {
+    ids.recovery_syntax != Some(false)
+        || crate::stdlib_bodies::identities().is_none_or(|std| std.recovery_syntax != Some(false))
+}
+
 /// The table of one snapshot: the `typed_bodies` family's.
 #[derive(Debug, Clone, Default)]
 pub struct TypedBodies {
+    recovery_calls_available: bool,
     bodies: BTreeMap<u32, TypedBody>,
     sites: BTreeMap<u32, u32>,
     monomorphs: Monomorphs,
@@ -1742,10 +1826,38 @@ impl TypedBodies {
         self.bodies.values().flat_map(|b| b.fallible_calls.values())
     }
 
-    /// Every recovery statement's row outside the handlers, body by body
+    /// Every recovery statement's row, handlers included, body by body
     /// (by the body's declaration), each body's in walk order.
     pub fn recoveries(&self) -> impl Iterator<Item = (NodeId, &RecoveryRow)> {
         self.bodies.iter().flat_map(|(id, b)| b.recoveries.iter().map(move |r| (NodeId(*id), r)))
+    }
+
+    /// Context-qualified call operands; unavailable when the source-presence
+    /// gate did not request them. A body and call site belong to this store.
+    pub fn recovery_calls(&self) -> Option<impl Iterator<Item = (NodeId, &RecoveryCallRow)>> {
+        self.recovery_calls_available.then(|| self.bodies.iter().flat_map(|(id, b)| {
+            b.recovery_calls.iter().map(move |row| (NodeId(*id), row))
+        }))
+    }
+
+    /// Whether a typed recovery can request restoring `locus`'s built
+    /// parameters. This includes helpers and handlers for other child
+    /// types. An unresolved receiver conservatively requires a snapshot;
+    /// it does not establish a recovery target for a claim.
+    /// The stdlib copy's rows have their own universe and are queried
+    /// separately, never inserted into the user's body/site index.
+    pub fn may_restart_in_place(&self, locus: &str) -> bool {
+        let applies = |row: &RecoveryRow| {
+            if row.op != hale_syntax::ast::RecoveryOp::RestartInPlace {
+                return false;
+            }
+            match (&row.receiver, row.child) {
+                (Ty::Named(name), Some(_)) => name == locus,
+                _ => true,
+            }
+        };
+        self.recoveries().any(|(_, row)| applies(row))
+            || crate::stdlib_bodies::recovery_rows().is_none_or(|rows| rows.iter().any(applies))
     }
 
     /// Every param access's row, body by body (by the body's
@@ -1842,6 +1954,7 @@ impl<'a> Declared<'a> {
 /// holds against every interface.
 pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, record: &TypingRecord) -> TypedBodies {
     let table = TypedBodies {
+        recovery_calls_available: record.recovery_calls_available,
         bodies: record.bodies.clone(),
         sites: record.sites.clone(),
         monomorphs: record.monomorphs.clone(),
