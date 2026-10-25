@@ -224,6 +224,12 @@ When a closure invariant fails, execution immediately transitions the locus into
 2. **Closed-world horizon:** Static guarantees hold up to explicit external boundaries (`@ffi("c")`, network/IPC sockets, OS filesystems).
 3. **Source-level cost models:** `@budget(alloc_per_call = N)` and resource budgets count source-level arena operations and placement declarations prior to LLVM inlining.
 
+Runtime counter measurements complement these static checks on particular
+executions. `std::diag::heap_alloc_count` and `syscall_count` require the
+Linux native counter backend without sanitizers. A reading of `-1` means
+the counter is unavailable, including on macOS; subtracting two unavailable
+readings cannot establish that an operation had zero effects.
+
 ## 8. Independent Proof Checks
 
 ### Reachability Certificates and Lean

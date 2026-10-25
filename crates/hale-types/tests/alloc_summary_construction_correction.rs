@@ -329,11 +329,13 @@ fn own_scope_let_block_scope_test() {
             // (`__metrics_render_series`); 486, and two more entry points,
             // since a `std::metrics::Registry` registers at birth and leaves
             // at dissolve (the observe backends themselves join only a
-            // program that holds one)
+            // program that holds one); 669 since executable default
+            // bodies (181) and birth checks (2) joined the summary. The
+            // callable call-line differences below remain the same.
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 486 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 486 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 669 fns, 32 entry points, 133 invoked-unboundedly",
+                "+ # 669 fns, 32 entry points, 132 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -516,7 +518,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (133, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (134, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -526,7 +528,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (133, 0),
+        (134, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -546,7 +548,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (155, 13),
+        (156, 13),
         &[
             "b64",
             "decode",
@@ -613,7 +615,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (135, 6),
+        (136, 6),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -941,6 +943,7 @@ fn program_declaration_stdlib_files_checked_as_themselves() {
                 .filter_map(|i| match i {
                     hale_syntax::ast::TopDecl::Fn(f) => Some(&f.name),
                     hale_syntax::ast::TopDecl::Locus(l) => Some(&l.name),
+                    hale_syntax::ast::TopDecl::Type(t) => Some(&t.name),
                     hale_syntax::ast::TopDecl::Interface(n) => Some(&n.name),
                     _ => None,
                 })
@@ -1049,9 +1052,9 @@ fn module_bodies_only_one_target_has_them() {
     assert_eq!(with, ["crates/hale-codegen/tests/fixtures/examples/91-module-decls"]);
 }
 
-/// 91-module-decls: seven rows, the seven calls into them resolve, the
-/// effect rows gain the seven and `App::run`'s targets, no effect class
-/// moves, and the model's holes close.
+/// 91-module-decls: seven callable rows and three parameter defaults;
+/// the seven authored calls resolve, effect rows gain all ten bodies
+/// and `App::run`'s targets, no effect class moves, and body holes close.
 #[test]
 fn module_bodies_91_module_decls() {
     over_target("crates/hale-codegen/tests/fixtures/examples/91-module-decls", |snap, now| {
@@ -1059,7 +1062,7 @@ fn module_bodies_91_module_decls() {
         let (old, rows, calls) = without_module_bodies(now, &module_nested(bundle.programs.values().copied()));
         assert_eq!(
             rows,
-            ["larger", "manhattan", "read_through", "twice", "Counter::bump", "Listener::on_ping", "Sensor::value"]
+            ["larger", "manhattan", "read_through", "twice", "Counter::bump", "Counter::params::seen", "Listener::on_ping", "Listener::params::heard", "Sensor::params::base", "Sensor::value"]
         );
         assert_eq!(
             calls,
@@ -1076,8 +1079,8 @@ fn module_bodies_91_module_decls() {
         assert_eq!(
             (counts(&old), counts(now)),
             (
-                "# 3 fns, 2 entry points, 0 invoked-unboundedly".to_string(),
-                "# 10 fns, 3 entry points, 1 invoked-unboundedly".to_string()
+                "# 7 fns, 2 entry points, 0 invoked-unboundedly".to_string(),
+                "# 17 fns, 3 entry points, 1 invoked-unboundedly".to_string()
             )
         );
         let rows_now = &whole_effects(snap);
@@ -1091,13 +1094,20 @@ fn module_bodies_91_module_decls() {
             }
         }
         assert_eq!(moved, ["App::run"]);
-        assert_eq!(rows_now.rows.len(), rows_old.rows.len() + 7);
+        assert_eq!(rows_now.rows.len(), rows_old.rows.len() + 10);
         assert!(snap.demand_effect_certificates().expect("the certificates").is_empty());
         let model = snap.demand_model().expect("the model");
         assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
         assert!(model.entities.loci.iter().all(|l| l.analyzable));
         let caps = &model.capabilities;
-        assert!(caps.exact_calls && caps.exact_publishes && caps.exact_effects);
+        assert!(!caps.exact_calls && caps.exact_publishes && !caps.exact_effects);
+        // Body coverage is complete; entering the main run hook still has
+        // a distinct scheduling/frame/lifetime obligation. Nested bodies
+        // resolving must not erase that execution gap.
+        let main = hale_model::FunctionId(model.entities.functions.iter().position(|f| f.name == "main").unwrap() as u32);
+        assert!(model.holes.iter().any(|h| h.at == hale_model::EntityRef::Function(main)
+            && h.kind == hale_model::HoleKind::UnmodeledInitialization
+            && h.reason.contains("App::run")));
     })
     .expect("91-module-decls loads");
 }

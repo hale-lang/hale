@@ -2749,7 +2749,11 @@ assume the others in a build:
   defect that "the checker says what I expect" testing cannot find.
   A negative control asserts the oracle detects the effect when it
   genuinely happens, so the conformance checks can never pass
-  vacuously. Same philosophy as GenMC-in-CI, applied to effects.
+  vacuously. These counter-based checks require the Linux GNU link-wrap
+  backend. Other native targets return `-1` for unavailable counters;
+  equal unavailable readings establish no zero-effect property. A separate
+  runtime test checks counter availability against the host backend.
+  Same philosophy as GenMC-in-CI, applied to effects.
 - **The `.hale.effects` manifest + CI gate** (GH #265 step 7). The
   manifest is a **behavioural fingerprint**: every fn's declared
   contracts *and* its INFERRED effect set (`does={…}`), stable-sorted
@@ -2778,14 +2782,19 @@ assume the others in a build:
   the seed boundary and under-reported those effects; an imported
   fn's own rows stay out of an app's manifest.
 - **Corpus-wide conformance** (GH #265 step 7). Beyond the per-test
-  runtime oracle, a sweep over the whole in-tree `.hl` corpus asserts
-  three properties everywhere real code lives: no reachable stdlib
-  call lands on an **unclassified** registry row (an unclassified
-  leaf silently weakens every assertion over it, so frontier
-  completeness must not rot as the corpus grows); inference is
-  **deterministic** (the same program inferred twice yields identical
-  sets — otherwise manifests diff spuriously); and every corpus
-  program carrying an assertion **satisfies** it.
+  runtime oracle, `effects_corpus_conformance.rs` sweeps the example
+  `main.hl` files and all bodies in each source summary, including
+  module members and implicit execution bodies. The shared witness walk
+  identifies any reachable **unclassified registry leaf**; an injected
+  leaf checks that this oracle detects a missing classification.
+  Inference is **deterministic** across its upper bound, known effects
+  and unknown flag. An unknown execution horizon retains a conservative
+  upper bound and cannot contribute an unknown effect to the known
+  lower bound. Such uncertainty is distinct from an unclassified registry
+  leaf and still cannot certify an effect assertion. The sweep also
+  rejects known violations of declared contracts; it does not establish
+  that every uncertain contract is certified or that the example sweep
+  covers the full language corpus.
 - **The `.hale.effects` manifest** (GH #265 step 7). `effect_manifest`
   / `render_effect_manifest` emit the whole program's declared
   contracts in a stable, sorted line format alongside `.hale.topo`.

@@ -195,8 +195,11 @@ The standard library provides zero-allocation networking and diagnostic primitiv
 | `std::io::tcp::set_nodelay(fd, true)` | Disables Nagle's algorithm (`TCP_NODELAY`; also available on `std::io::tls`) so small writes flush immediately without 40 ms coalescing delays. |
 | `recv_stamped_into` + `last_recv_kernel_ns()` | Reads into a reused `BytesBuilder` while capturing the kernel RX timestamp from `recvmsg` for wire-to-handler latency measurement. |
 | `std::io::MirrorRing` | Double-maps a circular virtual memory region so slices crossing the ring wrap boundary remain contiguous in memory without copying. |
-| `std::diag::heap_alloc_count()` | Returns the thread's cumulative heap allocation count; assert a delta of `0` across a steady-state test loop. |
-| `std::diag::syscall_count(name)` | Returns the count of a named syscall (e.g., `"recv"`) to verify exact I/O batching in tests. |
+| `std::diag::heap_alloc_count()` | Returns the process's cumulative heap allocation count, or `-1` when unavailable. With valid readings, test a steady-state loop's allocation delta. |
+| `std::diag::syscall_count(name)` | Returns the process's count of a named syscall (e.g., `"recv"`), or `-1` when unavailable or the name is unknown. With valid readings, test I/O batching. |
+
+The diagnostic counters require a Linux native build without sanitizers.
+They are unavailable on macOS. Check availability before comparing readings.
 
 For live arena residency profiling (`LOTUS_ARENA_RESIDENCY=1`, `LOTUS_ARENA_LOG_CHUNK_ATTACH=N`, `LOTUS_CHUNK_POOL_STATS=1`), see [Operations & Debugging](./operations.md).
 
@@ -209,6 +212,10 @@ By default, `hale build` compiles native binaries at `-O3` targeting the host CP
 | `--target-cpu native` *(default)* | Optimizes and vectorizes for the build machine's exact CPU. | Local execution (`hale run`) and homogeneous production hosts. |
 | `--target-cpu baseline` | Targets portable `x86-64-v3` (AVX2 + BMI2 + FMA). | Shipping compiled binaries across mixed hardware fleets. |
 | `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
+
+Native LTO requires Clang and LLD versions compatible with the compiler's
+LLVM 18 bitcode. Changing the host C compiler also requires a fresh
+runtime-object cache so previously compiled bitcode is not reused.
 
 ## Runtime Performance Profile
 
