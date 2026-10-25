@@ -173,7 +173,8 @@ RUN printf 'locus H {\n  birth() { println("ok"); }\n}\nfn main() { H { }; }\n' 
     && rm -f /tmp/t /tmp/t.hl /tmp/t.wasm /tmp/t.mjs \
     && hale iris --build-only >/dev/null \
     && cache="$(hale iris --where)" \
-    && rm -rf /var/cache/hale/runtime "$cache/iris/consumer/fuse-hl/fuse-hl" \
+    && rm -rf /var/cache/hale/runtime \
+    && find "$cache" -type f -executable -delete \
     && hale build --target-cpu baseline "$cache/iris/consumer/fuse-hl" \
     && pids="" \
     && for seed in dna/host dna/host/verb dna/api/practice_review dna/api/project_service dna/face/standard dna/oidc/serve dna/reflexes; do \

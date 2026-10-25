@@ -411,11 +411,18 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     // the graft runs on in the head's keeping: its log, until its exit
     let exit = log.with_extension("log.exit");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
-    while !exit.is_file() && std::time::Instant::now() < deadline {
+    let mut code = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(t) = std::fs::read_to_string(&exit) {
+            let trimmed = t.trim();
+            if !trimmed.is_empty() {
+                code = trimmed.to_string();
+                break;
+            }
+        }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     let said = std::fs::read_to_string(&log).unwrap_or_default();
-    let code = std::fs::read_to_string(&exit).ok().map(|t| t.trim().to_string()).unwrap_or_default();
     Some(if code == "0" {
         serde_json::json!({ "ok": true, "said": said })
     } else {
