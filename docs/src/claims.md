@@ -539,6 +539,31 @@ The claim budgets declared subscription capacity. Payload bytes, actual
 occupancy, topic-wide limits and work in flight have separate meanings.
 Diagnostics name the contributing instance paths and subscription sites.
 
+This complete example reserves two eight-slot subscriptions on the main
+queue, so its sixteen-slot claim holds:
+
+```hale
+type Message { n: Int; }
+topic Work { payload: Message; }
+locus Worker {
+    params { n: Int = 0; }
+    bus { subscribe Work as on_work bounded(8, drop_new); }
+    fn on_work(message: Message) { self.n = self.n + message.n; }
+}
+group workers = { Worker };
+main locus App {
+    params { first: Worker = Worker { }; second: Worker = Worker { }; }
+    bus { publish Work; }
+    claims { queues: bound queue_slots <= 16 on instances workers; }
+    run() { Work <- Message { n: 1 }; }
+}
+fn main() { App { }; }
+```
+
+Lowering the limit to fifteen violates the claim and reports the contributing
+instances. The `drop_new` overflow policy is a separate concern: a queue
+reservation budget does not establish lossless delivery.
+
 ## Library-Tier Claims
 
 A library seed (a directory with no `main locus`) can declare a top-level `claims { }` block over its own loci, functions, and topics:
@@ -879,53 +904,50 @@ law:
   + claim quiet: count publishers(topic Out) == 0  [violated]
 ```
 
-### Topology Artifact Schema (`1.23`)
+### Topology Artifact Format
+
+The current exporter writes schema **1.35** and artifact semantics **3**.
+For example, these selected header fields appear in a fresh export:
 
 ```json
 {
-  "schema": "1.23",
-  "semantics": 1,
-  "shape_hash": "<fnv1a-64 over the model half>",
-  "sorts":     { "loci": ["..."], "fns": ["..."], "topics": ["..."] },
-  "sealed":    [ "<@sealed loci>" ],
-  "relations": {
-    "calls": [ {"from": "...", "to": "...", "loop": true, "unbounded": true, "via_interface": "<iface>"} ],
-    "calls_via_stdlib": [ {"from": "...", "to": "...", "loop": true} ],
-    "publishes": ["..."],
-    "subscribes": ["..."]
-  },
-  "groups":    { "<name>": ["<members as declared>"] },
-  "labels":    { "<fn>": ["<declared effect classes>"] },
-  "phases":    { "<fn>": {"phase": "...", "kind": "hook|method"} },
-  "seeds":     { "<alias>": ["<member decls>"] },
-  "effects":   { "<fn>": ["<derived effect classes>"] },
-  "supervision": [ {"locus": "...", "child": "...", "err": "...", "ops": ["..."], "retry_bound": 3} ],
-  "unknowns":  [ {"fn": "...", "reasons": ["indirect_call | untyped_receiver_call:<callee> | uninhabited_interface_call:<iface>.<callee> | computed_publish"]} ],
-  "endpoint_identity": [ {"verb": "...", "fn": "...", "wire": "...", "topic": "..."} ],
-  "sources":   [ {"id": 0, "path": "...", "digest": "..."} ],
-  "provenance": { "calls": ["..."], "publishes": ["..."], "subscribes": ["..."], "decls": {}, "supervision": ["..."] },
-  "topics":    [ {"name": "...", "subject": "...", "shape": "...", "payload_hash": "..."} ],
-  "endpoints": [ {"verb": "publish|subscribe", "subject": "...", "via": "site|declaration"} ],
-  "declares_publish": [ {"locus": "...", "subject": "..."} ],
-  "contracts": [ {"locus": "...", "sealed": false, "params": [], "methods": [], "publishes": [], "subscribes": [], "supervises": [], "instances": []} ],
-  "bindings":  [ "<declared bindings: topic, transport, role>" ],
-  "observe":   [ {"param": "...", "kind": "...", "backend": "...", "host": "...", "port": 0, "path": "..."} ],
-  "claims":    [ {"name": "...", "form": "...", "result": "holds|violated|uncertified|invalid", "ordinal": 0, "source": "Core"} ],
-  "lowered":   [ {"subject": "...", "form": "...", "result": "holds", "ordinal": 0} ],
-  "law":       { "law_digest": "...", "inputs_digest": "...", "fn_universe": [], "loci": [], "groups": [], "topics": [], "subjects": [], "effect_classes": [], "legacy": [], "issues": [], "rows": [] },
-  "capabilities": { "exact_calls": true },
-  "adequacy":  { "reachability": "exact", "boundary": "exact", "endpoint": "exact", "bound": "exact", "certificate": "exact", "causes": "exact", "depends": "exact", "budget": "exact", "placement": "exact", "resource": "exact" },
-  "evaluation": { "environment": "prod", "roots": [], "closure": [] },
-  "verdict":   "clean | law_failed",
-  "artifact_digest": "<digest over entire document>"
+  "schema": "1.35",
+  "semantics": 3,
+  "shape_hash": "<fnv1a-64 over the model half>"
 }
 ```
 
-Key artifact sections:
+This is an excerpt, not an importable artifact. Export the complete document
+with `--dump-topology`; do not assemble one from this example.
 
-- **`shape_hash` vs. `artifact_digest`**: `shape_hash` hashes only the structural model half (`sorts`, `relations`, `groups`, `labels`, `phases`, `seeds`, `effects`, `supervision`, `unknowns`, `endpoint_identity`). `artifact_digest` hashes the entire JSON document to prevent tampering. Both `hale topology graph` and `hale fleet check` verify `artifact_digest`, `shape_hash`, `law_digest`, and `inputs_digest` before admitting an artifact.
-- **`calls_via_stdlib`**: Collapses any user-to-user call path traversing standard library internals into a single contracted edge so external artifact verifiers can replay reachability without stdlib source.
-- **`lowered`**: Records every function-level `@effects`, `@budget`, and `@phase_effects` contract in its equivalent relational claim form alongside top-level `claims`.
+| Section | Contents |
+|---|---|
+| `sorts`, `relations`, `groups`, `labels`, `phases`, `seeds` | Declaration identities, graph relations, phase membership and selection sets. Execution relations include defaults and guarded lifecycle/parent-protocol accounts when present. |
+| `effects`, `supervision`, `unknowns` | Derived effects, handler policies and unresolved work. A recovery policy is not proof that a particular instance recovers. |
+| `claims`, `lowered`, `law` | Authored and lowered laws, typed operands, origins, verdicts, witnesses and analysis-input bindings. |
+| `capabilities`, `adequacy` | Exactness/degradation for each represented relation and judgment family, including resource reservations and flow policy. These vary with the program; they are not all necessarily exact. |
+| `sources`, `provenance` | Source identities and locations used to explain the model and judgments. |
+
+The versions describe different things:
+
+| Version | Current value | Meaning |
+|---|---|---|
+| Topology `schema` | `1.35` | Serialized fields and admission rules. |
+| Topology `semantics` | `3` | Interpretation of artifact rows. |
+| In-process model semantics | `12` | Canonical model invariants; separate from topology `semantics`. |
+| Analysis semantics | `28` | Meaning of the analyses and evidence inputs. |
+| Reachability proof schema | `hale.reachability-proofs/2` | Separate certificate report format. |
+
+Key artifact rules:
+
+- **`shape_hash` vs. `artifact_digest`**: `shape_hash` identifies the structural model half, including its derived execution accounts. `artifact_digest` covers the serialized document before its final digest field. The law and analysis-input digests bind their own accounts. Consumers check these identities before admission. These FNV digests detect inconsistent or stale data; they do not authenticate an author or protect against someone deliberately recomputing them.
+- **`calls_via_stdlib`**: Contracts user-to-user paths through standard-library interiors for the artifact graph. It does not make the artifact a full compiler `ApplicationModel`.
+- **`lowered`**: Records function-level contracts alongside authored claims; the typed `law` rows retain their bindings and verdicts.
+- **Compatibility**: Consumers validate supported schema and semantics versions and their required accounts. Re-export from source when an older artifact lacks needed execution coverage; changing a version label cannot add those facts.
+
+The exact producer/consumer contract is in
+[`spec/model.md`](https://github.com/hale-lang/hale/blob/main/spec/model.md)
+and [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).
 
 ---
 
@@ -940,10 +962,15 @@ Key artifact sections:
 ## Require flow reclamation for selected child types
 
 ```hale
+locus Request { }
 group requests = { Request };
 main locus App {
+    accept(request: Request) { }
+    release(request: Request) { }
     claims { reclaimable: require flow(all requests); }
+    run() { Request { }; }
 }
+fn main() { App { }; }
 ```
 
 This policy checks the compiler's type-wide flow classification. A

@@ -666,7 +666,18 @@ bytes. Schema 1.23 adds the typed law, hashed classification tags,
 classification capability and `flow_policy` adequacy. Analysis semantics
 11 binds the added judgment and completeness family.
 
-**The topology artifact** (#382 phase 2; schema 1.33):
+**The topology artifact** (#382 phase 2; current schema 1.35):
+The exporter uses artifact semantics **3**. The in-process canonical model
+uses semantics **12**, and analysis inputs use semantics **28**. These are
+separate version domains; the artifact's `semantics` field is not the model
+semantics version. Reachability reports use their own schema,
+`hale.reachability-proofs/2`. Schema 1.35 adds the complete guarded parent
+protocol accounts; schema 1.34 introduced the guarded self-stage accounts.
+Consumers apply the admission rules for the supported schema and semantics,
+not just a string-label check. Re-export from source when required coverage
+is absent.
+
+
 `hale check <t> --dump-topology` emits a PROJECTION of the model
 (lossy by construction; see [`spec/model.md`](./model.md)) —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
@@ -956,8 +967,8 @@ Version 16 also represents ordinary locus parameter defaults as explicit
 executable bodies, with separate constructor-evaluation edges. The same source
 facts supply categorical effects, per-call costs and helper-preserving graph
 paths. Version 17 extends that execution account to data-field defaults with
-real type owners and field declaration sites. The canonical model uses
-semantics 10 and the artifact schema is 1.33;
+real type owners and field declaration sites. Model semantics 10 and
+artifact schema 1.33 introduced the validated constructor account;
 constructor/default omission tables are validated independently of authored
 call ordinals. Inline defaults have zero native-frame overhead, retaining
 their own local and helper charges. Version 18 adds argument defaults

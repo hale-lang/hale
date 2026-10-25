@@ -7,7 +7,11 @@ In Hale, functions and loci can declare **effect contracts** specifying which si
 fn price(book: OrderBook, qty: Int) -> Decimal { ... }
 ```
 
-Effect contracts are opt-in and have zero runtime cost. The only implicit check applies to loci placed on an `async_io` coroutine pool, where the compiler warns if a handler reaches a thread-blocking operation.
+Function effect contracts are opt-in and have zero runtime cost. Placement
+checks and bus codec purity also apply without an authored `@effects`
+contract: `async_io` handlers are checked for thread-blocking work, and codecs
+need a complete account of effects and receiver confinement. See the
+[verification reference](./verification.md#bus-topology--design-rules).
 
 ---
 

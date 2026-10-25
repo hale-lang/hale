@@ -20,9 +20,16 @@ substrate is **C** (pthreads + C11 atomics), which decides it:
   and keeping two implementations in sync. **Rejected** (the substrate
   is C; we want to check the code that ships).
 - **TLA+** — an *abstract* spec, not the C; smaller state space, good
-  as documentation, but the spec-to-code mapping is unverified.
-  **Complementary, not primary** — write it later if a primitive wants
-  a formal design record.
+  for explicit temporal properties. The [wake-handshake pilot](tla/README.md)
+  checks finite delivery and quiescent shutdown with explicit fairness,
+  exclusions and source-alignment guards. The mapping to C remains a
+  reviewed transcription rather than a refinement proof.
+
+Graph claims have a separate [Lean certificate checker](lean/README.md).
+It checks compiler-produced finite-graph propositions independently of the
+compiler's search bookkeeping. It does not check C11 interleavings or prove
+that compiler extraction and native execution correspond. See the
+[user verification reference](../docs/src/verification.md) for these scopes.
 
 GenMC v0.17.0 builds against the project's LLVM 18. See
 `build_genmc.sh`.

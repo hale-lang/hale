@@ -22,8 +22,11 @@ lake build
 lake env leanchecker GraphCertificates
 ```
 
-`lean-toolchain` pins the toolchain. CI also audits the axioms reachable from
-the `Hale.Claims` namespace with the allowlist `propext,Quot.sound`. A proof
+`lean-toolchain` pins the toolchain. The compiled library module is
+`GraphCertificates`; `haleGraphCertificates` is the Lake package name, not a
+module to pass to `leanchecker`. CI is configured to audit the axioms
+reachable from the `Hale.Claims` namespace with the allowlist
+`propext,Quot.sound`. A proof
 that adds an arbitrary axiom or a native-evaluation assumption fails that
 audit even if the compiler accepted its term.
 
@@ -50,27 +53,33 @@ python3 verification/lean/check_generated.py
 The runner builds `hale-types`' LLVM-free `reachability_proofs` example. That
 harness loads each real Hale seed through the shared frontend, demands its
 canonical model and law selection, and calls the same exporter as the CLI.
-It contains no replacement graph interpreter. The fixtures exercise a closed
-cyclic cone with a masked gate, a stdlib interior effect witness, a reflexive
-violation, the empty-target theorem, phase restriction, bus composition,
-imported library/constitution bindings with shadowed group names, and a locus
-parameter default, a data-field default and a function-argument default, each with an effect path and a
-masked helper barrier, plus an explicit closure-checkpoint path and a closed
-barrier excluding its assertion owner. A sixteenth fixture starts a birth-phase path at an automatic assertion
-without an authored hook. The compiler fixtures preserve
-the explicit-checkpoint body and its scoped failure gap. Every
-generated module is checked by Lean and replayed by `leanchecker`. An omitted-root mutation must be
-rejected by Lean, and an invalid law must be refused by the compiler. A third
-negative control requires unresolved automatic-epoch construction to refuse
-theorem export without leaving a JSON or Lean output behind. A fourth
-negative control requires a phase-local assertion with unresolved failure
-coverage to refuse theorem export too.
+It contains no replacement graph interpreter. The positive cases cover:
+
+- A closed cyclic cone with a masked gate, a stdlib interior effect path,
+  reflexive violation, the empty-target theorem, phase restriction and bus
+  composition.
+- Imported library/constitution laws with shadowed group names. This case
+  checks both origins rather than treating them as one selected law.
+- Locus parameter, data-field and function-argument defaults, each with an
+  effect path and a masked helper barrier.
+- Explicit closure checkpoints, automatic assertion phase roots and actual
+  birth-check predicates.
+- Authored self hooks in birth, run, drain and dissolve, plus parent accept
+  and release callbacks reached from construction contexts.
+
+Every generated module is checked by Lean and replayed by `leanchecker`.
+Negative controls require Lean to reject an omitted-root certificate and the
+compiler to refuse theorem export for invalid laws, unresolved automatic
+epochs, phase-local failure coverage, conditional birth rejection, unresolved
+parent invocation and unresolved invocation at each of the four self stages.
+Compiler refusals must leave neither the requested JSON nor Lean output.
 
 Generated JSON, Lean modules and oleans live under
 `target/verification/lean/`. `--offline` uses cached Cargo dependencies;
 `--lake /absolute/path/to/lake` selects an installed pinned toolchain. The
 runner fails on nonzero positive checks, unexpected negative results and
-timeouts. CI retains the evidence as an artifact.
+timeouts. CI uploads available evidence as an artifact even when a later
+check fails; an artifact or successful export alone is not a passing proof gate.
 
 The finite certificate checker verifies closure or path arithmetic
 independently of the compiler's search bookkeeping. Compiler replay checks

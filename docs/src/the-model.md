@@ -157,7 +157,7 @@ birth, ownership and retention facts beyond the static arrangement.
 
 `ApplicationModel` exists only in memory inside the compiler process and is constructed exclusively by checking source code.
 
-Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under an FNV-1a `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`. Schema 1.23 projects non-default flow classifications and carries the `flow_policy` law and adequacy account.
+Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under an FNV-1a `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`. The current exporter uses schema 1.35 and artifact semantics 3. It includes non-default flow classifications and their policy adequacy, default evaluations, and guarded self/parent lifecycle accounts. Model semantics 12 and analysis semantics 28 are separate version domains; see the [artifact format reference](./claims.md#topology-artifact-format).
 
 ### Further Reading
 
