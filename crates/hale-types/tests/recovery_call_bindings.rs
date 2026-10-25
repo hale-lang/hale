@@ -155,16 +155,21 @@ fn evaluated_struct_defaults_keep_recoveries_after_temporary_typing_is_undone() 
     assert!(matches!(foreign.validate(), Err(hale_model::ModelError::InvalidRecoveryFact { .. })),
         "a caller reference must resolve independently of the source span's display kind");
 
-    for effect_src in [helper_src.replace("@budget(publish = 0)", "@no_syscall"),
-        helper_src.replace("main locus App", "@phase_effects(run: {alloc}) main locus App")] {
+    // Permit the known constructor effects to isolate the recovery gap.
+    // Denying the default's explicit spawn still has to be a violation.
+    for (effect_src, expected) in [
+        (helper_src.replace("@budget(publish = 0)", "@no_syscall"), hale_types::verdict::Verdict::Uncertified),
+        (helper_src.replace("main locus App", "@phase_effects(run: {alloc, spawn}) main locus App"), hale_types::verdict::Verdict::Uncertified),
+        (helper_src.replace("main locus App", "@phase_effects(run: {alloc}) main locus App"), hale_types::verdict::Verdict::Violated),
+    ] {
         let s = snapshot(&effect_src); let m = s.demand_model().unwrap(); let bundle = s.bundle();
         let table = hale_types::claim_lowering::lower_claims(&bundle, m);
         let evidence = hale_types::evidence::derive_certificate_evidence_over(&bundle, &table, m,
             s.demand_effect_certificates().unwrap(), s.demand_alloc_summary().unwrap());
         let rows = hale_types::judgment::judge_certificates(&table, m, &evidence, &[0]);
         let effect = table.rows.iter().find(|r| matches!(r.law, hale_model::ClaimIr::EffectForbid { .. } | hale_model::ClaimIr::PhaseEffects { .. })).unwrap();
-        assert_eq!(rows.iter().find(|r| r.ordinal == effect.ordinal).unwrap().verdict, hale_types::verdict::Verdict::Uncertified,
-            "effect and phase evidence must retain the same evaluated recovery gap");
+        assert_eq!(rows.iter().find(|r| r.ordinal == effect.ordinal).unwrap().verdict, expected,
+            "unknown recovery cannot erase a known spawn violation, or certify an otherwise permitted effect set");
     }
 
     let pure_src = helper_src.replace("fn main()", "@budget(publish = 0) fn unrelated() { }\nfn main()");

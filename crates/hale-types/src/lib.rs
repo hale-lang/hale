@@ -57,6 +57,7 @@ pub mod model;
 pub mod judgment;
 pub mod reachability_proof;
 pub mod recovery_facts;
+pub mod recovery_query;
 pub mod mangle;
 pub mod model_builder;
 pub mod key_routing;

@@ -4666,5 +4666,6 @@ pub fn render_internal(m: &ApplicationModel) -> String {
     }
     s.push_str(&crate::recovery_facts::render_recovery_facts(m));
     s.push_str(&crate::recovery_facts::render_recovery_failure_entries(m));
+    s.push_str(&crate::recovery_query::render_first_targets(m));
     s
 }

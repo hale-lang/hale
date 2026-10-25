@@ -187,3 +187,146 @@ fn multiple_logical_aliases_of_one_construction_are_not_distinct_actual_objects(
         assert_eq!(recovery_handler_invocation(m, instance(m, path), 0), Err(RecoveryEntryGap::Unknown(Gap::AmbiguousInstance)));
     }
 }
+
+#[test]
+fn the_joined_probe_follows_helpers_without_merging_sibling_instances() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryQueries};
+    let s = load(SOURCE); let m = s.demand_model().unwrap();
+    let query = RecoveryQueries::new(m).unwrap();
+    let dump = hale_types::model_builder::render_internal(m);
+    assert!(dump.contains("first conditional recovery targets (source may-paths; not runtime containment)"));
+    assert!(dump.contains("App.p.a [context 0]: Restart App.p.a"));
+    assert!(dump.contains("App.p.b [context 0]: Restart App.p.b"));
+    for path in ["App.p.a", "App.p.b"] {
+        let failed = instance(m, path);
+        let Probe::PossibleEscape { action, target, trace } = query.probe_boundary(failed, &Default::default(), None).unwrap() else { panic!("missing conditional target"); };
+        assert_eq!(target, failed);
+        assert_eq!(trace.calls.len(), 2);
+        assert_eq!(trace.frames.len(), 3);
+        assert_eq!(trace.frames[0].receiver, Some(instance(m, "App.p")));
+        assert_eq!(trace.frames[2].arguments, vec![Some(failed)]);
+        assert_eq!(m.analyses.recovery.user.as_ref().unwrap()[action].execution_caller, Some(function(m, "recover")));
+        assert!(matches!(query.probe_boundary(failed, &[failed].into(), None).unwrap(), Probe::Incomplete { .. }),
+            "an in-bound target does not discharge recovery lifecycle semantics");
+    }
+}
+
+#[test]
+fn a_helper_restart_of_the_supervisor_names_the_actual_outside_instance() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryQueries};
+    let src = SOURCE.replace("relay(c);", "reset(self);")
+        .replace("fn relay(c: Child)", "fn reset(p: Parent) { restart(p); } fn relay(c: Child)");
+    let s = load(&src); let m = s.demand_model().unwrap();
+    let failed = instance(m, "App.p.a");
+    let Probe::PossibleEscape { target, trace, .. } = RecoveryQueries::new(m).unwrap().probe_boundary(failed, &[failed].into(), None).unwrap() else { panic!("missing supervisor target"); };
+    assert_eq!(target, instance(m, "App.p"));
+    assert_eq!(trace.frames.len(), 2);
+    assert_eq!(trace.frames[1].function, function(m, "reset"));
+    assert_eq!(trace.frames[1].arguments, vec![Some(target)]);
+}
+
+#[test]
+fn cycles_are_finite_and_a_search_limit_is_never_absence() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryQueries};
+    let src = SOURCE.replace("fn relay(c: Child) { recover(c); }", "fn relay(c: Child) { recover(c); again(c); } fn again(c: Child) { relay(c); }");
+    let s = load(&src); let m = s.demand_model().unwrap();
+    let failed = instance(m, "App.p.a"); let query = RecoveryQueries::new(m).unwrap();
+    let result = query.probe_boundary(failed, &Default::default(), None).unwrap();
+    assert!(matches!(result, Probe::PossibleEscape { target, .. } if target == failed), "{result:?}\ncall bindings: {:?}\ntyped calls: {:?}",
+        m.relations.calls.iter().enumerate().map(|(i,c)| (&m.entities.functions[c.from.index()].name, &m.entities.functions[c.to.index()].name,
+            &m.analyses.recovery.calls.as_ref().unwrap()[i].contexts)).collect::<Vec<_>>(),
+        s.demand_typed_bodies().unwrap().recovery_calls().unwrap().collect::<Vec<_>>());
+    assert_eq!(query.probe_boundary(failed, &Default::default(), Some(0)).unwrap(), Probe::Saturated);
+    assert!(matches!(query.probe_boundary(failed, &[failed].into(), None).unwrap(), Probe::Incomplete { .. }));
+    let src = SOURCE.replace("fn relay(c: Child) { recover(c); }", "fn relay(c: Child) { again(c); } fn again(c: Child) { relay(c); }");
+    let s = load(&src); let m = s.demand_model().unwrap();
+    assert_eq!(RecoveryQueries::new(m).unwrap().probe_boundary(instance(m, "App.p.a"), &Default::default(), None).unwrap(), Probe::NoRepresentedEscape);
+    // The checker does not type a statement after a diverging call. The
+    // broader source call row cannot manufacture its missing operand row.
+    let src = SOURCE.replace("fn relay(c: Child) { recover(c); }", "fn relay(c: Child) { again(c); recover(c); } fn again(c: Child) { relay(c); }");
+    let s = load(&src); let m = s.demand_model().unwrap();
+    assert!(matches!(RecoveryQueries::new(m).unwrap().probe_boundary(instance(m, "App.p.a"), &Default::default(), None).unwrap(),
+        Probe::Incomplete { gap: hale_types::recovery_query::RecoveryProbeGap::CallBinding { .. }, .. }));
+}
+
+#[test]
+fn fields_defaults_and_missing_call_accounts_keep_scoped_probe_gaps() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryProbeGap as Gap, RecoveryQueries};
+    let s = load(&SOURCE.replace("relay(c);", "relay(self.b);")); let m = s.demand_model().unwrap();
+    let failed = instance(m, "App.p.a");
+    assert!(matches!(RecoveryQueries::new(m).unwrap().probe_boundary(failed, &Default::default(), None).unwrap(),
+        Probe::Incomplete { gap: Gap::CallOperand { gap: hale_types::model_query::RecoveryCallGap { reason: hale_types::model_query::RecoveryBindingGap::FieldState, .. }, .. }, .. }));
+    let s = load(SOURCE); let mut m = s.demand_model().unwrap().clone();
+    m.analyses.recovery.calls = None;
+    assert!(matches!(RecoveryQueries::new(&m).unwrap().probe_boundary(instance(&m, "App.p.a"), &Default::default(), None).unwrap(),
+        Probe::Incomplete { gap: Gap::CallBinding { .. }, .. }));
+    let src = SOURCE.replace("fn relay(c: Child) { recover(c); }", "fn relay(c: Child, other: Child = Child { }) { recover(other); }");
+    let s = load(&src); let m = s.demand_model().unwrap();
+    assert!(matches!(RecoveryQueries::new(m).unwrap().probe_boundary(instance(m, "App.p.a"), &Default::default(), None).unwrap(),
+        Probe::Incomplete { gap: Gap::CallOperand { gap: hale_types::model_query::RecoveryCallGap { reason: hale_types::model_query::RecoveryBindingGap::OmittedArgument, .. }, .. }, .. }));
+}
+
+#[test]
+fn an_unknown_construction_cannot_hide_another_contexts_known_target() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryQueries};
+    let src = SOURCE.replace("fn main() { App { }; }", "fn main() { App { }; App { }; }");
+    let s = load(&src); let mut m = s.demand_model().unwrap().clone();
+    let failed = instance(&m, "App.p.a");
+    let rows = &mut m.analyses.recovery.failure_entries.as_mut().unwrap()[failed.index()].contexts;
+    assert_eq!(rows.len(), 2);
+    rows[0].dispatch = Dispatch::Unknown(Gap::UnmappedHandler);
+    let Probe::PossibleEscape { target, trace, .. } = RecoveryQueries::new(&m).unwrap().probe_boundary(failed, &Default::default(), None).unwrap() else { panic!("a known alternative must remain visible"); };
+    assert_eq!(target, failed); assert_eq!(trace.context, 1);
+    assert_eq!(trace.entry.unwrap().construction_path, contexts(&m, failed)[1].construction_path);
+}
+
+#[test]
+fn the_probe_validates_its_model_and_selections() {
+    use hale_types::recovery_query::{RecoveryProbeError, RecoveryQueries};
+    let s = load(SOURCE); let m = s.demand_model().unwrap(); let failed = instance(m, "App.p.a");
+    let query = RecoveryQueries::new(m).unwrap();
+    assert_eq!(query.probe_boundary(LocusInstanceId(u32::MAX), &Default::default(), None), Err(RecoveryProbeError::InvalidFailedInstance));
+    assert_eq!(query.probe_boundary(failed, &[LocusInstanceId(u32::MAX)].into(), None), Err(RecoveryProbeError::InvalidAllowedInstance));
+    let expected = query.probe_boundary(failed, &Default::default(), None).unwrap();
+    let mut labels = m.clone();
+    for f in &mut labels.entities.functions { f.display.push_str(" [different witness label]"); }
+    assert_eq!(RecoveryQueries::new(&labels).unwrap().probe_boundary(failed, &Default::default(), None).unwrap(), expected);
+    let mut broken = m.clone(); broken.analyses.recovery.failure_entries.as_mut().unwrap()[failed.index()].failed = LocusInstanceId(u32::MAX);
+    assert!(RecoveryQueries::new(&broken).is_err());
+}
+
+#[test]
+fn absent_entry_and_action_inventories_are_not_empty_closed_worlds() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryProbeGap as Gap, RecoveryQueries};
+    let s = load(SOURCE); let base = s.demand_model().unwrap(); let failed = instance(base, "App.p.a");
+    let mut m = base.clone(); m.analyses.recovery.failure_entries = None;
+    assert!(matches!(RecoveryQueries::new(&m).unwrap().probe_boundary(failed, &Default::default(), None).unwrap(),
+        Probe::Incomplete { gap: Gap::Entry(RecoveryEntryGap::Unavailable), .. }));
+    assert!(hale_types::recovery_query::render_first_targets(&m).contains("unavailable construction-entry inventory"));
+    let mut m = base.clone(); m.analyses.recovery.user = None;
+    assert!(matches!(RecoveryQueries::new(&m).unwrap().probe_boundary(failed, &Default::default(), None).unwrap(),
+        Probe::Incomplete { gap: Gap::ActionsUnavailable, .. }));
+}
+
+#[test]
+fn the_joined_probe_binds_a_method_receiver_to_the_failed_child() {
+    use hale_types::recovery_query::{ConditionalRecoveryProbe as Probe, RecoveryQueries};
+    let src = SOURCE.replace("fn break_it()", "fn fix() { restart(self); } fn break_it()")
+        .replace("relay(c);", "c.fix();");
+    let s = load(&src); let m = s.demand_model().unwrap();
+    let failed = instance(m, "App.p.b");
+    let Probe::PossibleEscape { target, trace, .. } = RecoveryQueries::new(m).unwrap().probe_boundary(failed, &Default::default(), None).unwrap() else { panic!("missing receiver target"); };
+    assert_eq!(target, failed);
+    assert_eq!(trace.frames.last().unwrap().receiver, Some(failed));
+    assert!(trace.frames.last().unwrap().arguments.is_empty());
+}
+
+#[test]
+fn model_dump_reports_its_limit_instead_of_implying_complete_target_coverage() {
+    let src = SOURCE.replace("fn main() { App { }; }", &format!("fn main() {{ {} }}", "App { };".repeat(513)));
+    let s = load(&src); let m = s.demand_model().unwrap();
+    assert_eq!(contexts(m, instance(m, "App.p.a")).len(), 513);
+    let dump = hale_types::recovery_query::render_first_targets(m);
+    assert!(dump.contains("inspection limit reached (512 states)"), "{dump}");
+    assert!(!dump.contains("no represented target"));
+}

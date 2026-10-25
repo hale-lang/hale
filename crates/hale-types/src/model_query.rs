@@ -703,7 +703,7 @@ pub fn recovery_cost_gap(model: &ApplicationModel, root: FunctionId, include_del
 /// A supplied, type-correct invocation premise over static arranged instances.
 /// This does not establish admission, failure dispatch, dynamic identities or
 /// incarnations. Parameter type correctness belongs to the premise's producer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RecoveryInvocation {
     pub function: FunctionId,
     pub receiver: Option<hale_model::LocusInstanceId>,

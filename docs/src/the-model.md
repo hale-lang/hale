@@ -207,6 +207,16 @@ catalog entries, unmapped sources and generic specializations remain explicit
 gaps. A known unhandled route is distinct from unknown routing. The inventory
 changes no existing claim verdict and is not exported as a recovery proof.
 
+`hale model dump` also follows those conditional frames through helper calls
+to show the first represented recovery target for each arranged instance.
+Its source path retains the selected child and supervisor across calls, so two
+siblings of the same type remain distinct. Missing field state, argument
+bindings and implicit execution remain visible as incomplete inspection.
+The dump limits each search to 512 states and reports reaching that limit.
+This is a source may-path: it does not establish that a failure or branch occurs,
+that the target is live, or that recovery stays inside a runtime boundary.
+It lists neither every target nor the full effects of restarting a target.
+
 Model dumps show the typed recovery operations inside handlers, methods and
 helpers. Their operands distinguish the current locus, immutable parameters
 by position, field paths and unresolved values. A local that shadows a

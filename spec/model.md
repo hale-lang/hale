@@ -529,11 +529,11 @@ Hole { at: EntityRef, kind: HoleKind, hides: RelationSet,
        authored_site: Option<u32>, reason: String, provenance }
 ```
 
-Thirteen kinds: `IndirectCall`, `UntypedReceiver`, `ComputedSubject`,
+Fourteen kinds: `IndirectCall`, `UntypedReceiver`, `ComputedSubject`,
 `UnknownKeyDomain`, `OpenInterface`, `RuntimeInheritedPlacement`,
 `DynamicEndpoint`, `ExternalOpaque`, `UnsupportedArtifactSemantics`,
 `UnanalyzedBody`, `UnmodeledRecovery`, `UnmodeledFailureDispatch`,
-`GenericFlowTemplate`.
+`UnmodeledInitialization`, `GenericFlowTemplate`.
 
 `UnmodeledRecovery` is a function-grain behavioral gap. It hides `CALLS`,
 `PUBLISHES`, `EFFECTS` and `COSTS`, and retains a recovery-statement witness.
@@ -548,9 +548,9 @@ a send, independent of how that body is invoked. A missing handler body,
 computed send or other independent publish gap remains unresolved. Failure
 dispatch alone introduces no new authored send, so it cannot withdraw a
 closed route-policy judgment by manufacturing an unknown publisher.
-`HoleKind::implicit_execution_families` supplies the required masks for both
+`HoleKind::implicit_execution_families` supplies the required masks for these
 implicit-execution kinds; validation rejects a narrowed recovery mask or a
-failure-dispatch mask that invents publish-site uncertainty. Both are
+failure-dispatch mask that invents publish-site uncertainty. These are
 whole-function gaps with no invented call-site ordinal.
 
 The allocation-summary producer caches a reverse reachability forest from
@@ -807,6 +807,28 @@ that no other table holds:
   instance, incarnation, feasible guard, failure trigger, params settlement,
   scheduling/admission or unchanged field state. They are not exported proof
   inputs, change no recovery completeness capability and upgrade no verdict.
+
+  `RecoveryQueries` validates and indexes these model tables once. Its
+  conditional boundary probe follows every construction alternative with the
+  shared graph engine. A search state keeps the construction context, function,
+  receiver and parameter instance IDs; recursion cannot merge sibling operands
+  or produce an infinite chain of identical frames. Call witnesses retain the
+  canonical relation index and typing alternative. Recovery operands bind only
+  through the existing substitution queries and must agree with the receiver's
+  locus declaration. Field state, omitted operands, absent call accounts,
+  specializations without an execution binding, implicit entries, contracted
+  stdlib execution and deliveries remain scoped gaps. An action's implicit
+  lifecycle behavior remains a gap even when its receiver is known.
+
+  The probe can identify a possible represented receiver outside a supplied
+  arranged-instance set; that source witness wins over other uncertainty. A
+  fruitless search retains the first gap. An explicit search limit returns
+  saturation, never absence. `NoRepresentedEscape` describes only the inspected
+  source graph and is not a containment verdict: runtime admission, incarnation,
+  guard feasibility, recovery effects and native correspondence remain separate
+  obligations. The model dump reports at most the first target per logical
+  instance, with a 512-state inspection limit. These observations do not change
+  model/artifact identity, evidence inputs, capabilities or existing verdicts.
 
   Evaluated default calls remain separate from counted call rows. The model
   retains their outer source witness and causally evaluating function when
