@@ -383,13 +383,139 @@ from the bundled nursery, all through the face.
   the roles' endpoints from it without provisioning anything, and, when
   something is missing or behind, say so and name the act that supplies
   it (`hale habitat migrate <organism>`).
-- Only a test's habitat is taken down (`sweep`).
+- Only a test's habitat is taken down (`sweep`), and any other only by
+  `hale habitat down --forget`, planned and confirmed (below).
+
+## Destroying: plan, then confirm
+
+A habitat act that destroys plans first, like terraform: one auditor
+computes the plan, a list of items, and the destroy step executes exactly
+those items one by one, in order, so what is printed is what is done and
+nothing else decides what to remove (`dna/core/teardown.hl`). Each item
+says what it is, its size or count, and whether it is recoverable (`no`,
+or `yes` and how). Nothing is touched until the person types back the name
+of what is destroyed; there is no `--yes` and no other way to confirm.
+`--plan` prints the plan and exits. The confirmation is bound to the plan
+the person saw: the act audits again before it executes, and when what it
+would remove changed meanwhile (an allocation placed, a host changed, a
+volume or slot appeared) it refuses (`plan_changed`), touching nothing, and
+the person plans again. The rows carry the binding as the plan's `digest`
+(each item's group, subject, action, host, arguments and recoverability,
+never its sizes, which grow while the person reads). An item's arguments
+name the resources it audited, each by its identity (every container,
+volume and network of a compose project, sorted; a volume, a vault slot, a
+path; a Forgejo account by its id and its repositories by theirs, each
+repository deleted by id before the account is), and its execution removes exactly those: a
+resource that appeared since is a changed plan, never one swept in by a
+project's name. An allocation is planned where it is applied, as the
+habitat recorded it (this machine unless it says otherwise); a placement
+on another host not applied yet is audited there too. A destroy that fails
+part way stops at the item that failed and says which items were done and
+which were not, and leaves the rest; run again, it plans again from what
+remains.
+
+A host that does not answer over SSH is still removable. What the habitat
+ran there is planned as `unreachable: left on <host>, cannot be removed
+from here (not recoverable from the habitat)`, an allocation a line; on
+confirmation the habitat's own side of it goes (its rows, its record of
+where each allocation was applied, its slots and files here) and the
+report names what was left there. The same holds in `down --forget` (which
+keeps those lines as notes, like the authorized key lines) and in an
+organism's removal.
+
+Only what the habitat minted is removed from the vault. A slot a person
+supplied (the forge token of a GitHub forge the Board allocated, a
+`--key-vault` slot, a model key) is listed as kept, with that reason, even
+when an allocation row names it.
+
+**`hale habitat down --forget`** removes the habitat whole. Its plan,
+grouped by what each item is:
+
+- the habitat's record and memory: the record's row count, the organisms
+  it grafted and the newest row's time, its memory's volume, and its own
+  nerves and senses' store; its directory (its genome repository, the
+  allocations' files and secrets files, its saplings, logs and state) and
+  its systemd user units; and its body and face, stopped first;
+- each grafted organism: its record (its memory's volume), its genome
+  repository (the habitat's clone of a sapling is removed; a checkout
+  outside the habitat is the person's, and kept), its forge repository
+  (at the habitat's Forgejo, removed with it; GitHub's, kept), and its
+  allocations by host (a heart's database and broker go with the memory
+  and nerves servers that hold them);
+- the compose projects and their volumes: the habitat's project and each
+  organism's services project, their containers and networks, and any
+  volume of theirs no other item names;
+- the vault: the slots the habitat and its organisms hold, by name, never a
+  value: the ones the habitat minted (memory's and the nerves' accounts,
+  the OIDC clients, the record's key, Forgejo's administrator and each
+  organism's token, the habitat's SSH key) are removed, and the ones a
+  person supplied (a forge token, a `--key-vault` slot, the model keys) are
+  listed as kept; a vault at `HALE_VAULT_ADDR` is provisioned out of band
+  and kept;
+- the habitat's Forgejo, its volume, and the accounts and repositories it
+  holds;
+- the hosts' entries, and the line each `ssh` host's
+  `~/.ssh/authorized_keys` took, which the habitat cannot remove: it is
+  noted;
+- what it runs on each `ssh` host, as the host answers over SSH: each
+  allocation placed or applied there (its service stopped and removed, its
+  volume deleted), the rest of the habitat's compose projects there, and
+  the directories the renders were copied to (`~/.hale/habitat/<project>`).
+
+The audit reads the records, so a memory of the habitat's project that is
+stopped (a plain `down` stops them) is started for it and stopped again
+when nothing is removed. The confirmation is the habitat's name typed back
+at a terminal: when stdin is not one, `--forget` without `--plan` refuses
+(exit 2) and says why; a name that is not the habitat's is refused (exit
+1) and nothing is touched. Executed, what runs on the hosts goes first,
+then this machine's projects, volumes, slots and files. The authorized key
+lines are kept as notes beside the habitat's directory
+(`forgotten-notes.jsonl`): the next plan shows each until a forget clears
+it, so a second `--plan` after a forget shows those lines alone. On
+`operator` backends the record is in the operator's Postgres, which the
+habitat adopted: it is noted and kept.
+
+**`hale habitat host remove <name>`** on a host with allocations plans the
+same way: the plan (`Commands::plan_remove_host`, a read) is each
+allocation placed or applied there and what stops or is deleted on that
+host, the rest of the habitat's projects there, the directories copied
+there, each allocation placed there unplaced in the record (its
+`habitat.allocated` row with no host; `hale habitat place` places it
+again), the host's entry marked removed, and the authorized key line,
+noted. When the plan stops or deletes anything on the host, the removal
+(`Commands::remove_host`) takes the host's name typed back as `confirm`
+and refuses without it (`confirm_required`) or on a mismatch
+(`confirm_mismatch`), touching nothing; a host that runs nothing of the
+habitat's is removed without one. A host that does not answer over SSH
+is planned as such: what runs there is not known and is left there. The
+operator face's hardware screen shows the plan and a field for the name.
+
+**`hale habitat organism remove <name> [--plan]`** removes one organism
+the habitat grafted (by its name, or its key when two share a name), the
+same way: the plan (`Commands::plan_remove_organism`, a read of the
+Board's) is its record and memory, its genome repository (the habitat's
+clone of a sapling is removed; a checkout of the person's is kept), its
+Forgejo repository and account, its allocations by host (this machine's
+volumes, another host's over SSH, an unanswering host's named and left),
+its compose services and projects, its vault slots and its files here, and
+its rows in the habitat's record: its `habitat.grafted` row and each
+`habitat.allocated` row written again with `"state": "removed"`, after
+which no reader lists it. `Commands::remove_organism` (`{name, confirm,
+digest}`) executes it only with the organism's name typed back and the
+plan's digest, refusing `confirm_required`, `confirm_mismatch` or
+`plan_changed`; the CLI requires a terminal. The habitat itself is no
+organism this removes (`not_removable`): `down --forget` is its removal.
+The operator face's organisms screen offers `remove` on each organism, with
+the plan and a field for its name.
+
+A plain **`hale habitat down`** stops processes and removes nothing.
 
 ## Verbs
 
 `hale habitat <verb>`; each verb prints its usage with `--help`. The host
 verbs are clients of the habitat head's Board commands
-(`Commands::add_host`, `::probe_host`, `::remove_host`, `spec/dna.md`):
+(`Commands::add_host`, `::probe_host`, `::plan_remove_host`,
+`::remove_host`, `spec/dna.md`):
 they call the head's socket, so the habitat's body must be up.
 
 | Verb | Behaviour |
@@ -397,7 +523,7 @@ they call the head's socket, so the habitat's body must be up.
 | `up [--foreground \| --no-body] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's socket as the person this account maps to. |
 | `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
-| `down` | Stops the habitat's face, its body and every service of its project. Data is kept; `up` brings them back. |
+| `down [--forget [--plan]]` | Stops the habitat's face, its body and every service of its project, and removes nothing; `up` brings them back. `--forget` removes the habitat whole, planned and confirmed by its name typed back at a terminal; `--plan` prints the plan and exits (above). |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
@@ -405,7 +531,8 @@ they call the head's socket, so the habitat's body must be up.
 | `apply [<host>] [--fresh]` | Applies the allocations where they are placed and prints the pulse (`Commands::apply_allocations`, above). |
 | `host add <name> [--user <user>] [--port <n>]` | Adds a machine of the LAN as an `ssh` host (above): prints the host key first seen there and its fingerprint, what it offers, and the habitat's public key with the line its `~/.ssh/authorized_keys` takes. A host already added is refused (`host_exists`), and one where no SSH server answers is not added (`unreachable`). |
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
-| `host remove <name>` | Removes the host, a `habitat.host` row in state `removed`. Refused while any allocation is placed on it, naming them (`allocations_placed`); `local` is not removed. |
+| `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
+| `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
 | `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
@@ -454,8 +581,12 @@ person who does not hold the Board is refused as the row says).
   (`Commands::add_host`: name, user, port) and then shows the habitat's
   public key line for the machine's `authorized_keys`, with a copy button
   (the form and the line are crossings, so brass); a `pending-key` host
-  offers `probe` (`Commands::probe_host`); every host offers `remove`
-  (`Commands::remove_host`). A refusal is shown as the row answered it.
+  offers `probe` (`Commands::probe_host`); every host offers `remove`,
+  which asks the plan first (`Commands::plan_remove_host`) and, when it
+  stops or deletes anything on the host, shows it with a field for the
+  host's name, which `Commands::remove_host` checks (a crossing, so
+  brass). A refusal is shown as the row answered it, and a removal's
+  report item by item.
 - **Infrastructure** (`infrastructure.js`): the allocations (role,
   instance, provider, host, the state the provider observes) and the policy
   (`Commands::policy`). A host picker per allocation calls
@@ -472,7 +603,10 @@ person who does not hold the Board is refused as the row says).
   follows the graft's log through `Commands::graft_log` (`{graft, from}`
   answering `{text, next, done, exit}`, the Board's like the graft) until it
   is done, then refreshes. `graft_log` reads only the log of a graft this
-  head started, by its id, and refuses any other name or path.
+  head started, by its id, and refuses any other name or path. Each
+  organism offers `remove`: its plan (`Commands::plan_remove_organism`)
+  with a field for its name, which `Commands::remove_organism` checks with
+  the plan's digest (a crossing, so brass).
 
 ## Pairing: an agent beside a person
 

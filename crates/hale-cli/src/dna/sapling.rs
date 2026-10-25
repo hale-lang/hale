@@ -941,7 +941,7 @@ fn allocate_forge(organism: &str, provider: &str, repo: &str, key_vault: &str) -
         manifest_pin(&genome.join("hale.toml")).ok().flatten().ok_or("the habitat is not born")?
     } else {
         let grafted = latest(&rows, "habitat.grafted");
-        grafted.iter().find(|(_, b)| b["name"] == organism).map(|(_, b)| b["child"].as_str().unwrap_or("").to_string()).filter(|c| c.len() >= 12).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))?
+        grafted.iter().find(|(_, b)| b["name"] == organism && b["state"] != "removed").map(|(_, b)| b["child"].as_str().unwrap_or("").to_string()).filter(|c| c.len() >= 12).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))?
     };
     let key = &child[..12];
     // the habitat's Forgejo: the organism's user, token and repository

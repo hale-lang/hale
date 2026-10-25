@@ -116,6 +116,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "ssh_provider",
     "steps",
     "tape",
+    "teardown",
     "tools",
     "topics",
     "types",
@@ -162,7 +163,7 @@ macro_rules! host {
 /// with the project resolved. This seed is the host's body (`run`,
 /// `dev`, `node`, `body-fence`: the `main locus` and the renewer beside
 /// it), and the library the verb program imports.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "forgejo_habitat", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "placement", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "forgejo_habitat", "forget", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "placement", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 
@@ -358,6 +359,7 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/api/definition_drafts.hl",
     "dna/api/habitat_brief.hl",
     "dna/api/habitat_hosts.hl",
+    "dna/api/habitat_organisms.hl",
     "dna/api/habitat_placement.hl",
     "dna/api/habitat_rows.hl",
     "dna/api/http.hl",

@@ -11823,6 +11823,13 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/habitat_face_test.hl
 
+== dna/tests/habitat_forget_test.hl
+row	__lib_dna__core___ssh_provider__SshProvider@main1	__lib_dna__core___ssh_provider__SshProvider	main	default
+shared	__lib_dna__core___memory_record__RecordJournal@main2	__lib_dna__core___memory_record__RecordJournal #8053e680
+shared	dynamic	sites in core #de4d766f
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/tests/habitat_graft_test.hl
 
 == dna/tests/habitat_hale_organism_test.hl
@@ -11833,13 +11840,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/habitat_hosts_test.hl
 row	__lib_dna__core___ssh_provider__SshProvider@main1	__lib_dna__core___ssh_provider__SshProvider	main	default
 shared	__lib_dna__core___memory_record__RecordJournal@main2	__lib_dna__core___memory_record__RecordJournal #8053e680
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___exchange__ExchangeKey	on main
-dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #de4d766f
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in the stdlib #c3a51769
 
@@ -19935,6 +19936,14 @@ dynamic	__lib_dna__core___record__RowBatch	on main
 == shared sites in core #de2fb49b
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+
+== shared sites in core #de4d766f
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___exchange__ExchangeKey	on main
+dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
 == shared sites in core #ee955449
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)

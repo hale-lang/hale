@@ -263,11 +263,12 @@ fn index_organisms(root: String, j: dna::Journal, cap: Int) -> String {
     let out = std::json::Builder { };
     out.begin_array();
     let allocated = habitat_latest(j, "habitat.allocated");
+    let grafted = habitat_latest(j, "habitat.grafted");
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() && n < cap {
         let e = j.read(i);
-        if e.kind == "habitat.grafted" {
+        if e.kind == "habitat.grafted" && habitat_holds(grafted, e.entity, i) {
             let face = std::json::find_string_field(e.body, "face");
             let name = std::json::find_string_field(e.body, "name");
             out.begin_object();

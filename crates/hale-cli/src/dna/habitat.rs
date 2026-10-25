@@ -20,6 +20,9 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 #[path = "sapling.rs"]
 mod sapling;
 
+#[path = "forget.rs"]
+mod forget;
+
 /// Whether the habitat's Board trusts the nursery `source`
 /// (`habitat.nursery`, `hale habitat nursery add`).
 pub(super) fn trusts_nursery(source: &str) -> bool {
@@ -43,10 +46,11 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
-       hale habitat host remove <name>
+       hale habitat host remove <name> [--plan]
+       hale habitat organism remove <name> [--plan]
        hale habitat brief
        hale habitat status
-       hale habitat down
+       hale habitat down [--forget [--plan]]
        hale habitat migrate [organism]
        hale habitat sweep <root> | --test-vaults [<root>]
 
@@ -190,10 +194,30 @@ host probe <name>    probe it again over SSH: what it offers (docker
                      a pending-key host whose key is now authorized is
                      ready. A host that answers with another host key is
                      refused.
-host remove <name>   remove it; refused while an allocation is placed on it.
+host remove <name>   remove it, planned first: the plan lists each allocation
+                     placed or applied there and what stops or is deleted
+                     on that host, the record's rows about it, and the line
+                     its authorized_keys took, which the habitat cannot
+                     remove. When the plan stops or deletes anything there,
+                     nothing is touched until the host's name is typed back
+                     at a terminal; --plan prints the plan and exits.
                      The host verbs are the Board's commands of the
                      habitat's head (Commands::add_host, ::probe_host,
-                     ::remove_host): its body must be up.
+                     ::plan_remove_host, ::remove_host): its body must be
+                     up.
+organism remove <name>
+                     remove an organism the habitat grafted, planned first:
+                     its record and memory, its genome repository (the
+                     habitat's clone of a sapling; a checkout of the
+                     person's is kept), its Forgejo repository and account,
+                     its allocations by host, its compose services and
+                     projects, its vault slots (by name) and its files
+                     here, and its rows in the habitat's record marked
+                     removed. Nothing is touched until its name is typed
+                     back at a terminal; --plan prints the plan and exits.
+                     The head's Commands::plan_remove_organism and
+                     ::remove_organism. The habitat itself is removed by
+                     `down --forget`.
 brief                the Board's hat as a prompt, with the habitat's live
                      state: its hosts, its allocations and their pulse, its
                      organisms, its saplings, and what waits for the Board.
@@ -208,8 +232,23 @@ status               the habitat, its genome and body, its face and, while
                      runs, the schema version memory and the nerves record
                      against this toolchain's, and how a heart's declared
                      migration last ran.
-down                 stop the habitat's body and every service of its
-                     project; their data is kept, and `up` brings them back.
+down                 stop the habitat's body, its face and every service of
+                     its project; nothing is removed, and `up` brings them
+                     back. --forget removes the habitat whole, planned
+                     first: its record and memory, each grafted organism
+                     (its record, genome repository, forge repository and
+                     allocations by host), the compose projects and their
+                     volumes, its vault slots (by name), its Forgejo and
+                     the accounts there, its hosts' entries and what it
+                     runs on each over SSH, each line with its size or
+                     count and whether it is recoverable. Nothing is
+                     touched until the habitat's name is typed back at a
+                     terminal; there is no other way to confirm, and
+                     without a terminal --forget refuses. --plan prints the
+                     plan and exits. A forget that fails part way says what
+                     was done and what was not, and run again plans from
+                     what remains. The line each host's authorized_keys
+                     took is noted, never removed.
 migrate [organism]   bring the organism's allocations up and migrate them:
                      memory's schema and the nerves' stream move to this
                      toolchain's, and the head's DSN is kept in the
@@ -266,6 +305,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
         Some("nursery") => sapling::nursery_cmd(&args[1..]),
         Some("host") => host(&args[1..]),
+        Some("organism") => organism(&args[1..]),
         Some("brief") if args.len() == 1 => brief(),
         Some("place") => sapling::place_cmd(&args[1..]),
         Some("model-map") => sapling::model_map_cmd(&args[1..], false),
@@ -273,7 +313,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("apply") => sapling::apply_cmd(&args[1..]),
         Some("forge") => sapling::forge_cmd(&args[1..]),
         Some("status") if args.len() == 1 => status(),
-        Some("down") if args.len() == 1 => down(),
+        Some("down") => down(&args[1..]),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
             let root = args.get(2).map(PathBuf::from).unwrap_or_else(crate::verbs::test::test_vault_root);
             match crate::verbs::test::sweep_dead_test_vaults(&root) {
@@ -324,9 +364,19 @@ fn head_socket_of(genome: &Path) -> Option<PathBuf> {
 }
 
 fn host(args: &[String]) -> ExitCode {
-    let usage = "usage: hale habitat host add <name> [--user <user>] [--port <n>] | probe <name> | remove <name>";
+    let usage = "usage: hale habitat host add <name> [--user <user>] [--port <n>] | probe <name> | remove <name> [--plan]";
+    if args.first().map(String::as_str) == Some("remove") {
+        return match (args.get(1), args.get(2).map(String::as_str), args.len()) {
+            (Some(n), None, 2) if !n.starts_with('-') => host_remove(n, false),
+            (Some(n), Some("--plan"), 3) if !n.starts_with('-') => host_remove(n, true),
+            _ => {
+                eprintln!("{usage}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let (verb, name) = match (args.first().map(String::as_str), args.get(1)) {
-        (Some(v @ ("add" | "probe" | "remove")), Some(n)) if !n.starts_with('-') => (v, n.clone()),
+        (Some(v @ ("add" | "probe")), Some(n)) if !n.starts_with('-') => (v, n.clone()),
         _ => {
             eprintln!("{usage}");
             return ExitCode::from(2);
@@ -351,30 +401,12 @@ fn host(args: &[String]) -> ExitCode {
         }
         i += 2;
     }
-    let genome = genome_dir();
-    let Some(socket) = head_socket_of(&genome).filter(|p| p.exists()) else {
-        eprintln!("hale habitat host: the habitat's head is not up (`hale habitat up` starts it)");
-        return ExitCode::from(1);
+    let member = if verb == "add" { "Commands::add_host" } else { "Commands::probe_host" };
+    let v = match host_call(member, payload) {
+        Ok(v) => v,
+        Err(code) => return code,
     };
-    let member = match verb {
-        "add" => "Commands::add_host",
-        "probe" => "Commands::probe_host",
-        _ => "Commands::remove_host",
-    };
-    let line = match crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-host" })) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("hale habitat host: the habitat's head did not answer: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-    if reply["ok"] != serde_json::json!(true) {
-        let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
-        eprintln!("hale habitat host: the habitat's head refused {member}: {why}");
-        return ExitCode::from(1);
-    }
-    let v = &reply["value"];
+    let v = &v;
     let h: serde_json::Value = v["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
     let field = |k: &str| h[k].as_str().unwrap_or("").to_string();
     if v["ok"] != serde_json::json!(true) {
@@ -383,9 +415,6 @@ fn host(args: &[String]) -> ExitCode {
     }
     let offers = if field("offers").is_empty() { "nothing yet".to_string() } else { field("offers") };
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
-    if verb == "remove" {
-        return ExitCode::SUCCESS;
-    }
     println!("{:<8}{offers}{}", "offers", if field("os").is_empty() { String::new() } else { format!(" ({} {})", field("os"), field("arch")) });
     if verb == "add" {
         println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
@@ -397,6 +426,168 @@ fn host(args: &[String]) -> ExitCode {
     } else if let Some(why) = v["why"].as_str().filter(|w| !w.is_empty()) {
         println!("{:<8}{why}", "note");
     }
+    ExitCode::SUCCESS
+}
+
+/// `hale habitat organism remove <name> [--plan]`: the organism's removal,
+/// planned (`Commands::plan_remove_organism`), printed, and confirmed by its
+/// name typed back at a terminal, which `Commands::remove_organism` checks
+/// before it executes the plan item by item. `--plan` prints it and exits.
+fn organism(args: &[String]) -> ExitCode {
+    use std::io::{BufRead, IsTerminal, Write};
+    let usage = "usage: hale habitat organism remove <name> [--plan]";
+    let (name, plan_only) = match (args.first().map(String::as_str), args.get(1), args.get(2).map(String::as_str), args.len()) {
+        (Some("remove"), Some(n), None, 2) if !n.starts_with('-') => (n.clone(), false),
+        (Some("remove"), Some(n), Some("--plan"), 3) if !n.starts_with('-') => (n.clone(), true),
+        _ => {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        }
+    };
+    if !plan_only && !std::io::stdin().is_terminal() {
+        eprintln!("hale habitat organism remove {name}: stdin is not a terminal; removing an organism deletes its record and everything the habitat holds for it, and is confirmed only by typing its name at a terminal (`--plan` prints the plan)");
+        return ExitCode::from(2);
+    }
+    let planned = match host_call("Commands::plan_remove_organism", serde_json::json!({ "name": name })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if planned["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat organism remove {name}: {} ({})", planned["why"].as_str().unwrap_or(""), planned["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    let items: Vec<serde_json::Value> = planned["plan"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    let confirm = planned["confirm"].as_str().unwrap_or("").to_string();
+    println!("the plan to remove the organism {confirm} (nothing is touched until its name is typed back):");
+    for (group, heading) in [("record", "its record and memory"), ("genome", "its genome repository"), ("forge", "its Forgejo repository and account"), ("allocations", "its allocations"), ("compose", "its compose services and projects"), ("vault", "its vault slots (names only)"), ("remote", "on the hosts, over SSH")] {
+        let of: Vec<&serde_json::Value> = items.iter().filter(|i| i["group"] == group).collect();
+        if of.is_empty() {
+            continue;
+        }
+        println!();
+        println!("{heading}");
+        for i in of {
+            println!("  - {}", plan_line(i));
+        }
+    }
+    if plan_only {
+        return ExitCode::SUCCESS;
+    }
+    print!("\ntype the organism's name ({confirm}) to remove it and all of the above: ");
+    let _ = std::io::stdout().flush();
+    let mut typed = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut typed);
+    let v = match host_call("Commands::remove_organism", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    print_report(&v);
+    if v["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat organism remove {name}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    println!("the organism {confirm} is removed");
+    ExitCode::SUCCESS
+}
+
+/// A plan's item as a line: what it is, its size or count, and whether it
+/// is recoverable.
+fn plan_line(i: &serde_json::Value) -> String {
+    let field = |k: &str| i[k].as_str().unwrap_or("").to_string();
+    let tail = match (field("measure").as_str(), field("recoverable").as_str()) {
+        ("" | "-", "" | "-") => String::new(),
+        ("" | "-", r) => format!(" (recoverable: {r})"),
+        (m, "" | "-") => format!(" ({m})"),
+        (m, r) => format!(" ({m}; recoverable: {r})"),
+    };
+    format!("{}{tail}", field("what"))
+}
+
+/// A removal's report, an item a line: done, failed (and why) or not done.
+fn print_report(v: &serde_json::Value) {
+    let report: Vec<serde_json::Value> = v["report"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    for r in &report {
+        let shown = match r["state"].as_str().unwrap_or("") {
+            "done" => "done",
+            "failed" => "FAILED",
+            _ => "not done",
+        };
+        let why = r["why"].as_str().filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default();
+        println!("{shown:<10}{}{why}", r["what"].as_str().unwrap_or(""));
+    }
+}
+
+/// `member` of the habitat head's commands called over its socket with
+/// `payload`: the value it answered, or the exit status after saying why
+/// there is none.
+fn host_call(member: &str, payload: serde_json::Value) -> Result<serde_json::Value, ExitCode> {
+    let genome = genome_dir();
+    let Some(socket) = head_socket_of(&genome).filter(|p| p.exists()) else {
+        eprintln!("hale habitat host: the habitat's head is not up (`hale habitat up` starts it)");
+        return Err(ExitCode::from(1));
+    };
+    let line = match crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-host" })) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("hale habitat host: the habitat's head did not answer: {e}");
+            return Err(ExitCode::from(1));
+        }
+    };
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+    if reply["ok"] != serde_json::json!(true) {
+        let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
+        eprintln!("hale habitat host: the habitat's head refused {member}: {why}");
+        return Err(ExitCode::from(1));
+    }
+    Ok(reply["value"].clone())
+}
+
+/// `hale habitat host remove <name> [--plan]`: the removal's plan
+/// (`Commands::plan_remove_host`) printed and, when it stops or deletes
+/// anything on the host, confirmed by the host's name typed back at a
+/// terminal, which `Commands::remove_host` checks before it executes the
+/// plan item by item. `--plan` prints it and exits.
+fn host_remove(name: &str, plan_only: bool) -> ExitCode {
+    use std::io::{BufRead, IsTerminal, Write};
+    let planned = match host_call("Commands::plan_remove_host", serde_json::json!({ "name": name })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if planned["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat host remove {name}: {} ({})", planned["why"].as_str().unwrap_or(""), planned["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    let items: Vec<serde_json::Value> = planned["plan"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    println!("the plan to remove the host {name}:");
+    for i in &items {
+        println!("  - {}", plan_line(i));
+    }
+    if plan_only {
+        return ExitCode::SUCCESS;
+    }
+    let confirm = planned["confirm"].as_str().unwrap_or("").to_string();
+    let mut typed = String::new();
+    if !confirm.is_empty() {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("hale habitat host remove {name}: stdin is not a terminal; removing the host stops and deletes what the habitat runs there, and is confirmed only by typing the host's name at a terminal (`--plan` prints the plan)");
+            return ExitCode::from(2);
+        }
+        print!("\ntype the host's name ({name}) to remove it and all of the above: ");
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stdin().lock().read_line(&mut typed);
+    }
+    let v = match host_call("Commands::remove_host", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    print_report(&v);
+    if v["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat host remove {name}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    let h: serde_json::Value = v["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    let field = |k: &str| h[k].as_str().unwrap_or("").to_string();
+    println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
     ExitCode::SUCCESS
 }
 
@@ -683,6 +874,18 @@ fn recorded_allocations() -> Option<Vec<(String, serde_json::Value)>> {
         }
         let Some((key, role)) = r["entity"].as_str().and_then(|e| e.split_once('/')) else { continue };
         let body: serde_json::Value = r["body"].as_str().and_then(|b| serde_json::from_str(b).ok()).unwrap_or_else(|| r["body"].clone());
+        // an organism removed: its allocations are the record's history alone
+        if kind == "habitat.allocated" && body["state"] == "removed" {
+            if let Some(row) = by.get_mut(key) {
+                if let Some(roles) = row["roles"].as_object_mut() {
+                    roles.remove(role);
+                }
+                if row["roles"].as_object().is_some_and(|r| r.is_empty()) {
+                    by.remove(key);
+                }
+            }
+            continue;
+        }
         let row = by.entry(key.to_string()).or_insert_with(|| serde_json::json!({ "roles": {} }));
         if kind == "habitat.allocated" {
             row["organism"] = body["organism"].clone();
@@ -1656,38 +1859,23 @@ fn alive(pid: i32) -> bool {
     pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
-fn down() -> ExitCode {
-    let mut said = Vec::new();
-    stop_face(&mut said);
-    if let Ok(pid) = std::fs::read_to_string(pid_file()) {
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            if alive(pid) && unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
-                // the body drains on SIGTERM, onto its backends: wait for it
-                // (the pid file stays while it lives), and only then stop them
-                let deadline = std::time::Instant::now() + drain_window();
-                while alive(pid) && std::time::Instant::now() < deadline {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                if alive(pid) {
-                    eprintln!("hale habitat down: the habitat's body (pid {pid}) did not drain within {}s; killed", drain_window().as_secs());
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                    while alive(pid) {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                }
-                said.push(format!("stopped the habitat's body (pid {pid}), drained"));
-            }
+/// `hale habitat down`: the habitat's processes stopped and every service
+/// of its project stopped; nothing is removed, and `up` brings it back.
+/// `--forget` removes it whole, planned first (forget.rs).
+fn down(args: &[String]) -> ExitCode {
+    match args {
+        [] => {}
+        [f] if f == "--forget" => return forget::forget(false),
+        [f, p] | [p, f] if f == "--forget" && p == "--plan" => return forget::forget(true),
+        _ => {
+            eprintln!("usage: hale habitat down [--forget [--plan]]");
+            return ExitCode::from(2);
         }
-        let _ = std::fs::remove_file(pid_file());
     }
-    if Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(unit_name()).status().is_ok_and(|s| s.success()) {
-        match Command::new("systemctl").args(["--user", "stop"]).arg(unit_name()).status() {
-            Ok(s) if s.success() => said.push(format!("stopped the habitat's body (systemd user unit {})", unit_name())),
-            _ => {
-                eprintln!("hale habitat down: systemctl --user stop {} failed", unit_name());
-                return ExitCode::from(1);
-            }
-        }
+    let mut said = Vec::new();
+    if let Err(why) = stop_processes(&mut said) {
+        eprintln!("hale habitat down: {why}");
+        return ExitCode::from(1);
     }
     let ids = match docker(&["ps", "-q", "--filter", &format!("label=com.docker.compose.project={}", local_habitat_project())]) {
         Docker::Answered(out) => out.lines().map(str::to_string).filter(|l| !l.is_empty()).collect::<Vec<_>>(),
@@ -1715,6 +1903,41 @@ fn down() -> ExitCode {
         println!("its data is kept: `hale habitat up` brings it back");
     }
     ExitCode::SUCCESS
+}
+
+/// The habitat's processes stopped: its face, then its body (drained onto
+/// its backends, which are left running), whether in the foreground or a
+/// systemd user unit. What was stopped is said in `said`.
+fn stop_processes(said: &mut Vec<String>) -> Result<(), String> {
+    stop_face(said);
+    if let Ok(pid) = std::fs::read_to_string(pid_file()) {
+        if let Ok(pid) = pid.trim().parse::<i32>() {
+            if alive(pid) && unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+                // the body drains on SIGTERM, onto its backends: wait for it
+                // (the pid file stays while it lives), and only then stop them
+                let deadline = std::time::Instant::now() + drain_window();
+                while alive(pid) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                if alive(pid) {
+                    eprintln!("hale habitat: the habitat's body (pid {pid}) did not drain within {}s; killed", drain_window().as_secs());
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    while alive(pid) {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+                said.push(format!("stopped the habitat's body (pid {pid}), drained"));
+            }
+        }
+        let _ = std::fs::remove_file(pid_file());
+    }
+    if Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(unit_name()).status().is_ok_and(|s| s.success()) {
+        match Command::new("systemctl").args(["--user", "stop"]).arg(unit_name()).status() {
+            Ok(s) if s.success() => said.push(format!("stopped the habitat's body (systemd user unit {})", unit_name())),
+            _ => return Err(format!("systemctl --user stop {} failed", unit_name())),
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------
