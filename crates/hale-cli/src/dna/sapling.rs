@@ -409,10 +409,23 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     };
     let Some(log) = v["log"].as_str().filter(|l| !l.is_empty()).map(PathBuf::from) else { return Some(v) };
     // the graft runs on in the head's keeping: its log, until its exit
+    super::progress(&format!("grafting `{name}`"));
+    let live = std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let mut streamed = 0usize;
     let exit = log.with_extension("log.exit");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
     let mut code = String::new();
     while std::time::Instant::now() < deadline {
+        if live {
+            if let Ok(s) = std::fs::read_to_string(&log) {
+                if s.len() > streamed && s.is_char_boundary(streamed) {
+                    print!("{}", &s[streamed..]);
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    streamed = s.len();
+                }
+            }
+        }
         if let Ok(t) = std::fs::read_to_string(&exit) {
             let trimmed = t.trim();
             if !trimmed.is_empty() {
@@ -422,7 +435,12 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let full = std::fs::read_to_string(&log).unwrap_or_default();
+    let said = if streamed <= full.len() && full.is_char_boundary(streamed) {
+        full[streamed..].to_string()
+    } else {
+        full
+    };
     Some(if code == "0" {
         serde_json::json!({ "ok": true, "said": said })
     } else {

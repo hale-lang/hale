@@ -1398,6 +1398,12 @@ fn up(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+pub(super) fn progress(msg: &str) {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprintln!("... {msg}");
+    }
+}
+
 /// The habitat's placement, through its providers (phase 4): the host
 /// the `compose` provider produces (`local`, with what it offers), the
 /// `local` profile's policy (a provider per role, on these backends) and
@@ -1405,6 +1411,7 @@ fn up(args: &[String]) -> ExitCode {
 /// record written when the record does not already say it (`habitat-place`,
 /// dna/host/placement.hl). What it recorded, a line each, printed.
 fn place(genome: &Path, backends: &str) -> Result<(), String> {
+    progress("recording placement and refreshing nurseries");
     let said = host_run("habitat-place", genome, &[backends.to_string()]).map_err(|e| format!("the habitat's placement was not recorded: {e}"))?;
     print!("{said}");
     // what its nurseries offer, read into its record (a newer revision of a
@@ -1429,6 +1436,7 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
     // resumed from them (memory that is merely down is never mistaken for
     // a birth that did not happen)
     if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() && !birth_pending().exists() {
+        progress("migrating the habitat's memory and nerves");
         out.extend(migrate_lines(&genome)?);
     } else {
         std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
@@ -1512,6 +1520,7 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
     // whether the record was born is memory's to say, never a local
     // marker's: a genesis memory holds is resumed, never drawn again
     let manifest = genome.join("hale.toml");
+    progress("birthing the habitat's genome, memory, and nerves");
     match genesis_state(genome)? {
         Genesis::Unpinned => {
             out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
@@ -1954,8 +1963,9 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     };
     std::fs::write(&ports_path, new_ports).map_err(|e| format!("write {}: {e}", ports_path.display()))?;
 
-    let ran = Command::new("env")
-        .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+    progress("starting body and face compose services");
+    let mut cmd = Command::new("env");
+    cmd.args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
         .arg(local_habitat_project())
         .arg("--project-directory")
         .arg(&dir)
@@ -1963,13 +1973,16 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         .arg(&compose_path)
         .arg("-f")
         .arg(&ports_path)
-        .args(["up", "-d", "body", "face"])
-        .output()
-        .map_err(|e| format!("docker compose: {e}"))?;
+        .args(["up", "-d", "body", "face"]);
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        cmd.stderr(std::process::Stdio::inherit());
+    }
+    let ran = cmd.output().map_err(|e| format!("docker compose: {e}"))?;
     if !ran.status.success() {
         return Err(format!("docker compose up -d body face: {}", String::from_utf8_lossy(&ran.stderr).trim()));
     }
 
+    progress("waiting for the habitat's body and face probes");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     let mut body_ok = false;
     let mut face_ok = false;
