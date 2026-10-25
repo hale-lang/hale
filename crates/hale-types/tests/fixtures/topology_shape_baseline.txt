@@ -757,6 +757,8 @@ crates/hale-codegen/tests/fn_ptr.rs#1 7bf60cd5c71bd365
 crates/hale-codegen/tests/fn_ptr.rs#2 59934cc9285c01d6
 crates/hale-codegen/tests/fn_ptr.rs#3 82766b4cdb70ab1e
 crates/hale-codegen/tests/fn_ptr.rs#4 a49792a7cae9010a
+crates/hale-codegen/tests/fn_ptr.rs#5 2e3c7ca5db852cd4
+crates/hale-codegen/tests/fn_ptr.rs#6 8073df9f0e93b92f
 crates/hale-codegen/tests/form_enum_cells.rs#0 423fe126e455a091
 crates/hale-codegen/tests/form_hashmap_cas_retire.rs#1 10d6ffbfc90d5372
 crates/hale-codegen/tests/form_hashmap_cas_retire.rs#2 63c899346f742ec4
@@ -1265,6 +1267,7 @@ crates/hale-codegen/tests/ownership_bubble_multi.rs#2 bd0f9c9a2c740d6d
 crates/hale-codegen/tests/ownership_generic_ancestors.rs#0 df8cbe0a9553b928
 crates/hale-codegen/tests/ownership_generic_ancestors.rs#1 f6bb1cab0780c224
 crates/hale-codegen/tests/ownership_generic_ancestors.rs#2 1fb80ee95fab7005
+crates/hale-codegen/tests/ownership_generic_ancestors.rs#3 54bc8be2e03bf844
 crates/hale-codegen/tests/panic_atexit.rs#1 dc7ef5b193f2ef43
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#0 d3cbe16c2f148429
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#5 284b1054d3d3526f

@@ -681,7 +681,8 @@ fn logging_program(body: &str, claims: &str) -> String {
 fn assert_lifecycle_uncertified(ds: &[String]) {
     assert!(ds.iter().any(|m| m.contains("cannot be certified") && m.contains("lifecycle")), "{ds:?}");
     assert!(ds.iter().all(|m| (m.contains("cannot be certified") && m.contains("lifecycle"))
-        || m == "unmodeled failure/recovery execution is reached here"), "{ds:?}");
+        || m == "unmodeled failure/recovery execution is reached here"
+        || m == "unmodeled implicit execution is reached here"), "{ds:?}");
 }
 
 /// The known print path is gated; unresolved construction still refuses proof.

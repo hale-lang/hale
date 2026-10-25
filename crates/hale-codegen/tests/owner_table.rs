@@ -389,6 +389,19 @@ fn a_params_block_default_is_owned_by_the_declaration() {
 }
 
 #[test]
+fn nominal_aliases_keep_fresh_handle_defaults_in_the_field() {
+    for target in ["Subj", "Probe"] {
+        let source = [DECLS, "\ntype First = ", target,
+            "; type Held = First; locus AliasHolder { params { c: Held = Subj { n: 1 }; } }\nfn main() { AliasHolder { }; }"].concat();
+        let table = table_of(&source);
+        let entry = row(&table, "AliasHolder.params.c", "param-field initialiser", "Subj");
+        assert_eq!(entry.owner, Owner::Field {
+            owner: ExprId::DECLARED, field: "c".to_string(),
+        }, "alias to {target}");
+    }
+}
+
+#[test]
 fn a_carrier_let_rhs_is_a_frame_temporary_of_the_frame() {
     let t = table_of(&program(
         "    let c = true;\n    let a = if c { make(1) } else { make2(1) };\n    println(\"u=\", a.probe());",

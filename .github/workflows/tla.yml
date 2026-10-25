@@ -84,6 +84,7 @@ jobs:
           lint: 'false'
           use-mathlib-cache: 'false'
           leanchecker: 'true'
+          leanchecker-args: GraphCertificates
           axiom-audit: 'true'
           axiom-audit-root: Hale.Claims
           axiom-audit-allow: propext,Quot.sound

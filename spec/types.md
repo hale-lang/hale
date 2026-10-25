@@ -1414,6 +1414,13 @@ param types. The completed generic inventory discovers the specialization
 before emission, so the default constructs a fresh instance of that field;
 a handle supplied from elsewhere retains its original construction context.
 
+Ownership classification follows nominal aliases to their locus or interface
+declarations, including alias chains and qualified or specialized targets.
+A fresh locus initializer transfers into such a field under the same rule as
+the unaliased type; a supplied handle remains borrowed. The written alias
+cannot demote a fresh child default to a frame temporary or change its
+construction supervisor. Record aliases remain value fields.
+
 An array (`[x, y]` or `[x; N]`) or tuple literal at one of these sites
 hands each element the declared element type, so its template literals
 take that type's arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,
@@ -1815,6 +1822,12 @@ fns' names, a `match` pattern's binding of a variant's value whose
 declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
 beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
 calls `zero`.
+
+For a member call, a function-valued field takes precedence over a method of
+the same name. Both `self.callback(args)` and `handle.callback(args)` invoke
+the stored function with its declared argument and return types, including
+when the handle is a failure-handler parameter. The locus or record receiver
+is used to load the field; it is not an implicit argument to that function.
 
 A bare callee no such binding shadows names the fn or the builtin. A
 binding of a known type that is no fn leaves it so (`let max = 10;

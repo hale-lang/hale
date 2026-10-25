@@ -1619,6 +1619,15 @@ and synthesized markers. Parent `accept`/`release` admission is a separate
 invocation account. Synthesized empty run bodies remain visible to lowering
 without becoming authored canonical executable bodies.
 
+Declaration metadata and executable-body selection are separate. When a
+checked seed declares a stdlib name, its body shadows the analysis copy's
+executable row. The full declaration inventory still retains both source
+universes: the merged lowering view contains the bundled clone and requires
+its own hook identities, empty-body facts and synthesis markers. The
+`own_rows` and `program_rows` projections retain only program-universe hook
+metadata; retaining a bundled declaration must not restore its shadowed
+body, calls or effects. Parent protocol declarations follow the same rule.
+
 The analysis API also accepts unminted inputs, as its `FnKey` contract
 permits. Their lifecycle owners retain the resolved name and source universe
 with no declaration identity; hook effects remain visible. This case cannot

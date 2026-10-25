@@ -30389,6 +30389,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.emit_cross_pool_check(recv_val.into_pointer_value(), Some(receiver_expr), &locus_name.clone(), &what, receiver_expr.span(), scope)?;
             self.emit_stdlib_call_site(&locus_name, receiver_expr.span())?;
         }
+        // A callback field shadows a method just as it does on `self` and
+        // on a data record. Use the field's declared signature and the
+        // ordinary free-function pointer ABI, without an implicit locus self.
+        if let Some((index, CodegenTy::FnPtr { args: fn_args, ret: fn_ret })) =
+            info.fields.get(method_name).cloned()
+        {
+            let field = self.builder.build_struct_gep(info.struct_ty,
+                recv_val.into_pointer_value(), index, "callback.field")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let pointer = self.builder.build_load(self.context.ptr_type(AddressSpace::default()),
+                field, "callback.pointer")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.into_pointer_value();
+            return self.emit_fnptr_indirect_call(pointer, &fn_args, fn_ret.as_deref(),
+                args, scope, &format!("{}.{}", locus_name, method_name));
+        }
         // v1.x-FORM-2 PR5: intercept synthesized @form(vec) methods
         // before the user_methods lookup. They aren't real LLVM fns;
         // they lower inline to lotus_vec_* on the inline vec slot.

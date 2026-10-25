@@ -106,7 +106,8 @@ use crate::symbol::Bundle;
 // 20: refuse certification across unmodeled automatic construction epochs.
 // 21: source phase roots include automatic assertions and reject missing reports.
 // 25: parent accept/release work follows source caller construction contexts.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 28;
+// 29: fresh field ownership follows canonical nominal alias/generic resolution.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 29;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib

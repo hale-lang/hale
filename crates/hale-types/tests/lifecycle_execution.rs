@@ -13,6 +13,49 @@ fn main() { construct(); }
 fn snapshot(source: &str) -> Snapshot {
     entries::load_files(&[("main.hl",source)],Config::check(true,false))
 }
+
+#[test]
+fn a_stdlib_seed_keeps_own_bodies_and_bundled_hook_identities() {
+    use hale_frontend::{frontend::LoadMode, source::Disk};
+    use hale_syntax::ast::{flat_decls, LocusMember, TopDecl};
+    use hale_types::placement::SiteUniverse;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../hale-stdlib/hl/log.hl");
+    let source = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(true, false))
+        .ok().expect("stdlib source loads as a checked seed");
+    let summary = source.demand_alloc_summary().unwrap();
+    let logger = "__StdLogLogger";
+    let owners: Vec<_> = summary.lifecycle_hooks.keys().filter(|o| o.name == logger).collect();
+    assert_eq!(owners.len(), 2, "both source universes retain declaration metadata");
+    assert!(owners.iter().any(|o| o.universe == SiteUniverse::User));
+    assert!(owners.iter().any(|o| o.universe == SiteUniverse::StdlibAnalysis));
+    assert!(summary.fns.keys().filter(|k| k.locus.as_deref() == Some(logger))
+        .all(|k| k.decl.is_some_and(|d| d.universe == SiteUniverse::User)),
+        "the shadowed copy must not restore executable summary rows");
+    assert!(summary.own_rows().lifecycle_hooks.keys().all(|o| o.universe == SiteUniverse::User));
+    assert!(summary.program_rows().protocol_hooks.keys().all(|o| o.universe == SiteUniverse::User));
+
+    let lowered = source.demand_lowering().unwrap();
+    let mut checked = 0;
+    for item in flat_decls(&lowered.merged.items) {
+        let TopDecl::Locus(locus) = item else { continue };
+        for member in &locus.members {
+            let LocusMember::Lifecycle(hook) = member else { continue };
+            if let Some(stage) = hale_types::lifecycle_hooks::stage(hook.kind) {
+                let rows = &lowered.lifecycle_hooks.as_ref().unwrap()[&locus.id.0];
+                let row = rows.iter().find(|r| r.stage == stage).expect("self hook metadata");
+                assert_eq!((row.declaration, row.synthesized), (hook.id, hook.synthesized), "{}", locus.name.name);
+                checked += 1;
+            } else if let Some(stage) = hale_types::protocol_execution::stage_of(hook.kind) {
+                let rows = &lowered.protocol_hooks.as_ref().unwrap()[&locus.id.0];
+                assert!(rows.iter().any(|r| r.stage == stage && r.declaration == hook.id), "{}", locus.name.name);
+            }
+        }
+    }
+    assert!(checked > 10, "merged stdlib declarations must participate");
+
+}
 #[test]
 fn constructor_effects_enter_the_actual_birth_body() {
     let s=snapshot(SOURCE);

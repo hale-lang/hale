@@ -288,7 +288,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let expected = self.placement.construction_supervisor_at(hale_syntax::ast::NodeId(site.0))
                 .map_err(|why| CodegenError::missing_row("placement", why.to_string(), None))?;
             if expected.is_some_and(|expected| expected != source) {
-                return Err(CodegenError::missing_row("placement", format!("construction supervisor for literal #{} disagrees with the supplied lowering context", site.0), None));
+                return Err(CodegenError::missing_row("placement", format!("construction supervisor for literal #{} disagrees with the supplied lowering context: expected {expected:?}, supplied {source:?}", site.0), None));
             }
         }
         use hale_types::ownership::SupervisionOverride;

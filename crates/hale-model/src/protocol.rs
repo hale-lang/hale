@@ -34,12 +34,17 @@ pub enum ProtocolRoot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProtocolDefinition {
+    /// Function identity of the authored parent callback body.
     pub function: FunctionId,
+    /// Locus declaration containing the callback, not an admitted instance.
     pub owner: LocusDeclId,
+    /// Whether this declaration describes acceptance or release.
     pub stage: ProtocolStage,
     /// Resolved nominal symbol; None retains an unresolved signature.
     pub child: Option<String>,
+    /// Whether the declared child constraint names an interface.
     pub interface: bool,
+    /// Whether the authored callback body has neither statements nor a tail.
     pub empty: bool,
 }
 
@@ -49,16 +54,27 @@ pub struct ProtocolDefinition {
 pub struct ProtocolContext {
     /// Resolved source specialization, not the constructor template name.
     pub child: String,
+    /// Function containing the root that can trigger this construction.
     pub from: FunctionId,
+    /// Root ordinal in its construction or authored-call namespace.
     pub root: ProtocolRoot,
+    /// Minted identity of the triggering root in its source universe.
     pub root_source: SiteId,
+    /// Function containing the actual constructor, possibly a nested default.
     pub constructor_function: FunctionId,
+    /// Constructor ordinal within `constructor_function`.
     pub constructor: u32,
+    /// Minted identity of the actual constructor in its source universe.
     pub constructor_source: SiteId,
+    /// Candidate accepting parent declaration for this source context.
     pub owner: LocusDeclId,
+    /// Whether the triggering context is syntactically loop-nested.
     pub in_loop: bool,
+    /// Whether the triggering context lies in an unbounded loop.
     pub unbounded: bool,
+    /// Location of the triggering root, indexing model provenance.
     pub provenance: ProvenanceId,
+    /// Location of the actual constructor, indexing model provenance.
     pub constructor_provenance: ProvenanceId,
 }
 impl ProtocolContext {
@@ -87,8 +103,11 @@ impl ProtocolContext {
 /// context index names the source account, never a runtime occurrence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProtocolEvaluation {
+    /// Index into `Relations::protocol_contexts` supplying this opportunity.
     pub context: u32,
+    /// Nonempty authored parent callback that may execute.
     pub to: FunctionId,
+    /// Acceptance or release opportunity guarding the callback entry.
     pub stage: ProtocolStage,
 }
 

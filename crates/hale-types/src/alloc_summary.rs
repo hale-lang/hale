@@ -1388,9 +1388,12 @@ pub struct AllocSummary {
     /// Automatic assertion epochs are phase roots even without an authored
     /// hook. Invocation and scheduling remain separate execution facts.
     pub source_phases: BTreeMap<FnKey, SourcePhase>,
-    /// Self lifecycle bodies, including synthesized/empty declarations for lowering.
+    /// Self lifecycle declaration metadata, including empty/synthesized and
+    /// shadowed bundled declarations needed by the merged lowering view.
+    /// This inventory does not restore shadowed executable summary rows.
     pub lifecycle_hooks: crate::lifecycle_hooks::LifecycleHooks,
-    /// Parent admission/release declarations, from the same source inventory.
+    /// Parent admission/release declaration metadata, with the same source
+    /// universes and shadowing boundary as `lifecycle_hooks`.
     pub protocol_hooks: crate::protocol_execution::ProtocolHooks,
     /// The contextual source family supplied its account. This marks the
     /// required input as available, not complete admission/runtime coverage.
@@ -1813,9 +1816,9 @@ impl AllocSummary {
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
             parent_execution_supplied: self.parent_execution_supplied,
-            protocol_hooks: self.protocol_hooks.iter().filter(|(owner, _)| runtime_own || own_locus(&owner.name))
+            protocol_hooks: self.protocol_hooks.iter().filter(|(owner, _)| owner.universe == SiteUniverse::User && (runtime_own || own_locus(&owner.name)))
                 .map(|(owner, hooks)| (owner.clone(), hooks.clone())).collect(),
-            lifecycle_hooks: self.lifecycle_hooks.iter().filter(|(owner, _)| runtime_own || own_locus(&owner.name))
+            lifecycle_hooks: self.lifecycle_hooks.iter().filter(|(owner, _)| owner.universe == SiteUniverse::User && (runtime_own || own_locus(&owner.name)))
                 .map(|(owner, hooks)| (owner.clone(), hooks.clone())).collect(),
             source_phases: self.source_phases.iter().filter(|(key, _)| own_key(key)).map(|(key, phase)| (key.clone(), phase.clone())).collect(),
             // Keep foreign path nodes: an own caller can reach a violation
@@ -3251,7 +3254,37 @@ pub fn summarize_within(
         // snapshot's rows, which the effects engine adds
         // (`add_sync_forms`), so nothing here reads a `sync =` argument.
         let copy_forms = is_stdlib_copy(ids).then(crate::stdlib_bodies::forms).flatten();
-        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
+        for item in flat_decls(&program.items) {
+            // Lowering retains the bundled declarations in its merged source.
+            // Their declaration metadata survives executable-body shadowing;
+            // universe-qualified identities keep both copies distinct.
+            if let TopDecl::Locus(l) = item {
+                let owner = crate::lifecycle_hooks::LifecycleOwner::new(universe, l.id, l.name.name.clone());
+                let hooks = lifecycle_hooks.entry(owner.clone()).or_default();
+                let protocols = protocol_hooks.entry(owner).or_default();
+                for member in &l.members {
+                    if let LocusMember::Lifecycle(lc) = member {
+                        if let Some(stage) = crate::protocol_execution::stage_of(lc.kind) {
+                            let child = lc.params.first().filter(|_| lc.params.len() == 1)
+                                .and_then(|p| crate::handler_routing::resolve_named_type(&p.ty, &scope_types[scope_index(ids)], if is_stdlib_copy(ids) { &[] } else { import_renames }));
+                            protocols.push(crate::protocol_execution::ProtocolHook {
+                                key: FnKey::method(DeclId::of(universe, lc.id), l.name.name.clone(), stage.as_str()), stage,
+                                parameter: lc.params.first().and_then(|p| DeclId::of(universe, p.name.id)),
+                                child: child.as_ref().map(|c| c.0.clone()),
+                                interface: child.as_ref().is_some_and(|c| interface_names.contains(&c.1)),
+                                empty: crate::lifecycle::body_is_empty(&lc.body), synthesized: lc.synthesized, span: lc.span,
+                            });
+                        }
+                        if let Some(stage) = crate::lifecycle_hooks::stage(lc.kind) {
+                            hooks.push(crate::lifecycle_hooks::LifecycleHook {
+                                key: FnKey::method(DeclId::of(universe, lc.id), l.name.name.clone(), stage.as_str()), stage,
+                                empty: crate::lifecycle::body_is_empty(&lc.body), synthesized: lc.synthesized, span: lc.span,
+                            });
+                        }
+                    }
+                }
+            }
+            if shadowed(ids, item) { continue; }
             match item {
                 TopDecl::Fn(decl) => {
                     let beyond = outside(ids, decl.id);
@@ -3351,33 +3384,11 @@ pub fn summarize_within(
                         let owner = crate::lifecycle_hooks::LifecycleOwner::new(universe, l.id, locus.clone());
                         source_phases.insert(key.clone(), SourcePhase { owner, phase: phase.to_string(), hook, span });
                     };
-                    let owner = crate::lifecycle_hooks::LifecycleOwner::new(universe, l.id, locus.clone());
-                    let hooks = lifecycle_hooks.entry(owner.clone()).or_default();
-                    let protocols = protocol_hooks.entry(owner).or_default();
                     let mut closure_ordinal=0u32;
                     let mut birth_check_ordinal=0u32;
                     for member in &l.members {
                         let ordinal=closure_ordinal;
                         if matches!(member,LocusMember::Closure(_)) { closure_ordinal+=1; }
-                        if let LocusMember::Lifecycle(lc) = member {
-                            if let Some(stage) = crate::protocol_execution::stage_of(lc.kind) {
-                                let child = lc.params.first().filter(|_| lc.params.len() == 1)
-                                    .and_then(|p| crate::handler_routing::resolve_named_type(&p.ty, &scope_types[scope_index(ids)], if is_stdlib_copy(ids) { &[] } else { import_renames }));
-                                protocols.push(crate::protocol_execution::ProtocolHook {
-                                    key: FnKey::method(DeclId::of(universe, lc.id), locus.clone(), stage.as_str()), stage,
-                                    parameter: lc.params.first().and_then(|p| DeclId::of(universe, p.name.id)),
-                                    child: child.as_ref().map(|c| c.0.clone()),
-                                    interface: child.as_ref().is_some_and(|c| interface_names.contains(&c.1)),
-                                    empty: crate::lifecycle::body_is_empty(&lc.body), synthesized: lc.synthesized, span: lc.span,
-                                });
-                            }
-                            if let Some(stage) = crate::lifecycle_hooks::stage(lc.kind) {
-                                hooks.push(crate::lifecycle_hooks::LifecycleHook {
-                                    key: FnKey::method(DeclId::of(universe, lc.id), locus.clone(), stage.as_str()), stage,
-                                    empty: crate::lifecycle::body_is_empty(&lc.body), synthesized: lc.synthesized, span: lc.span,
-                                });
-                            }
-                        }
                         match member {
                             // A `mode` body was never collected, so
                             // its callees were invisible to the

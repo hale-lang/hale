@@ -73,6 +73,8 @@ fn selected(lines: &[String], prefix: &str) -> Vec<String> {
         .cloned()
         .collect()
 }
+
+
 #[test]
 fn different_generic_layouts_share_a_producer_without_crossing_owners() {
     let lines = run(NOMINAL, "generic_owner_layouts", false);
@@ -268,4 +270,35 @@ fn unused_generic_locus_parameters_still_specialize_typed_defaults() {
     assert_eq!(lines.iter().filter(|s| *s == "app").count(), 1);
     assert_eq!(lines.iter().filter(|s| *s == "child gone").count(), 2);
     assert!(lines.iter().any(|s| s == "completed 1"), "{lines:?}");
+}
+
+#[test]
+fn a_pinned_holder_reached_through_aliases_retains_its_default_child() {
+    let source = r#"
+locus Child {
+    params { value: String = std::str::upper("payload"); }
+    birth() { println("child born"); }
+    fn peek() -> String { return self.value; }
+    dissolve() { println("child gone"); }
+}
+locus Holder {
+    params { child: Child = Child { }; }
+    birth() { println("holder born ", self.child.peek()); }
+    dissolve() { println("holder gone ", self.child.peek()); }
+}
+type Held = Holder;
+type Alias = Held;
+main locus App {
+    params { holder: Alias = Holder { }; }
+    placement { holder: pinned; }
+}
+fn main() { App { }; }
+"#;
+    let lines = run(source, "aliased_pinned_holder_default", false);
+    assert_eq!(selected(&lines, "child born"), ["child born"]);
+    assert_eq!(selected(&lines, "holder born"), ["holder born PAYLOAD"]);
+    assert_eq!(selected(&lines, "holder gone"), ["holder gone PAYLOAD"]);
+    assert_eq!(selected(&lines, "child gone"), ["child gone"]);
+    assert!(lines.iter().position(|s| s == "holder gone PAYLOAD").unwrap()
+        < lines.iter().position(|s| s == "child gone").unwrap(), "{lines:?}");
 }
