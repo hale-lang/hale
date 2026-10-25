@@ -601,10 +601,17 @@ Every claim and lowered function certificate (`@effects`, `@budget`, `@phase_eff
 |---|---|---|
 | `holds` | Proved over all modeled paths. | None (passes build). |
 | `violated` | Disproved; a concrete counterexample path or configuration exists. | Fix the code or configuration identified by the witness. |
-| `uncertified` | Well-formed claim, but the program graph contains an unresolvable edge (indirect call, untyped receiver, computed publish subject). | Refactor the unresolvable call/publish into a statically typed form. |
+| `uncertified` | Well-formed claim, but relevant execution or resource facts are incomplete (for example, an unresolved call, dynamic population or implicit lifecycle context). | Follow the coverage diagnostic; make the required facts explicit where supported. Some gaps require additional compiler coverage. |
 | `invalid` | The claim or group declaration itself is malformed (e.g., undeclared group member or empty group without `may_be_empty`). | Fix the claim or group syntax. |
 
-Both `violated`, `uncertified`, and `invalid` fail `hale check`.
+All three non-`holds` verdicts fail `hale check`.
+
+A typed handler or a visible source path does not by itself close implicit
+failure dispatch, recovery, admission or teardown. Known forbidden source
+paths can still violate a graph claim while those gaps prevent an absence
+certificate. The model dump's conditional recovery targets are inspection
+results, not additional claim verdicts; see
+[Inspecting recovery targets](./services/failure.md#inspecting-recovery-targets).
 
 ### How Indirect Calls, Receivers, and Interfaces Are Resolved
 

@@ -139,6 +139,28 @@ recovery receivers to retain original parameters for `restart_in_place`,
 including when it is called through a helper. An unresolved receiver
 conservatively retains those snapshots.
 
+### Inspecting recovery targets
+
+Inspect the represented handler and helper paths with:
+
+```sh
+hale model dump app/
+```
+
+The experimental dump's `first conditional recovery targets` section keeps
+same-type siblings distinct: a helper receiving `App.parent.first` does not
+implicitly target `App.parent.second`. It shows the first represented target
+and its source call path, or reports incomplete inspection. Each search is
+limited to 512 states; reaching that limit is reported explicitly.
+
+These observations are conditional on the represented construction entering
+its handler. They do not prove that a failure occurs, a handler is admitted,
+the target is live, or recovery remains inside a runtime boundary. An empty
+result supplies no containment guarantee. Fields, missing argument bindings,
+implicit lifecycle work and incarnation identity still need separate coverage.
+See [Recovery observations](../the-model.md#recovery-observations) for the
+model's scope. This inspection adds no recovery-containment claim or proof.
+
 ### Handler Threading & Initialization Timing
 
 - **Deferred delivery during parent `params` initialization**: If an earlier sibling parameter fails while the parent is still initializing later parameters in its `params` block, the runtime holds the `ClosureViolation` until all parent `params` are initialized and delivers it immediately before the parent's `birth()`. This guarantees that `on_failure` never reads uninitialized sibling parameters or has its writes clobbered by later defaults.
