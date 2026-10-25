@@ -28,23 +28,13 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     );
 }
 
-fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
-
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
-}
-
 fn main() {
     if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER")
         || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER")
+        || dna::run_tool("docker\ncompose\nversion").code != 0
     {
         eprintln(
-            "habitat_operator_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER are not both set)",
+            "habitat_operator_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_NATS_URL_OWNER and docker compose are not all available)",
         );
         return;
     }
@@ -59,7 +49,7 @@ fn main() {
     let genome = dna::local_habitat_dir() + "/genome";
 
     // `own` backends with the operator's servers named: refused before anything
-    let refused = in_dir(scratch, toolchain() + "\nhabitat\nup\n--foreground");
+    let refused = in_dir(scratch, toolchain() + "\nhabitat\nup");
     std::test::assert(
         refused.code != 0
             && std::str::contains(
@@ -70,24 +60,22 @@ fn main() {
     );
     std::test::assert(!std::io::fs::file_exists(genome + "/hale.toml"), "and births nothing");
 
-    let log = scratch + "/up.log";
-    let started = in_dir(
-        scratch,
-        "sh\n-c\nnohup timeout --foreground 900 \"$1\" habitat up --foreground --backends operator >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup\n--backends\noperator");
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born on the operator's backends: " + started.stdout + started.stderr,
+    );
+    let services = dna::run_tool(
+        "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project="
+            + dna::local_habitat_project()
+            + "\n--format\n{{.Label \"com.docker.compose.service\"}}",
     );
     std::test::assert(
-        len(dna::trim_nl(started.stdout)) > 0
-            && logged(log, "body    the habitat's body runs in this process", 600),
-        "the habitat is born on the operator's backends: " + text_of(log),
-    );
-    let project = dna::run_tool(
-        "docker\nps\n-a\n-q\n--filter\nlabel=com.docker.compose.project="
-            + dna::local_habitat_project(),
-    );
-    std::test::assert(
-        project.code != 0 || len(dna::trim_nl(project.stdout)) == 0,
-        "no service of its project started: " + project.stdout,
+        services.code == 0
+            && !std::str::contains(services.stdout, "memory-")
+            && !std::str::contains(services.stdout, "nerves-"),
+        "no memory or nerves service of its project started: " + services.stdout,
     );
     let key = dna::allocation_key(genome);
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;

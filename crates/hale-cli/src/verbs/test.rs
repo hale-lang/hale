@@ -371,6 +371,53 @@ pub(crate) fn habitat_down(dir: &Path) -> Result<(), String> {
     crate::dna::habitat::down_under(dir)
 }
 
+/// The habitat toolchain image built once from the checkout for `hale test`
+/// when a fixture brings a habitat's body and face up (`habitat\nup`).
+fn test_habitat_image(f: &Path) -> Option<String> {
+    if let Ok(tag) = std::env::var("HALE_HABITAT_IMAGE") {
+        let tag = tag.trim().to_string();
+        if !tag.is_empty() {
+            return Some(tag);
+        }
+    }
+    let needs_image = std::fs::read_to_string(f)
+        .is_ok_and(|t| t.contains("habitat\nup") || t.contains("habitat up"));
+    if !needs_image {
+        return None;
+    }
+    static IMAGE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IMAGE
+        .get_or_init(|| {
+            let has_compose = std::process::Command::new("docker")
+                .args(["compose", "version"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !has_compose {
+                return None;
+            }
+            let root = find_workspace_root(f)?;
+            if !root.join("Dockerfile").is_file() {
+                return None;
+            }
+            let me = std::env::current_exe().ok()?;
+            let out = std::process::Command::new(me)
+                .args(["habitat", "image", "build"])
+                .arg(&root)
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+        })
+        .clone()
+}
+
 /// Compile and run one `_test.hl` file and judge it by the
 /// `spec/testing.md` contract.
 pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
@@ -387,6 +434,9 @@ pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
                 if let Ok(me) = std::env::current_exe() {
                     cmd.env("HALE_BIN", me);
                 }
+            }
+            if let Some(img) = test_habitat_image(f) {
+                cmd.env("HALE_HABITAT_IMAGE", img);
             }
             // Each test file runs with a vault of its own, made empty for
             // the run and removed after it: a test that provisions a secret,

@@ -5,10 +5,10 @@
 // toolchain ships, the one organism with no parent: its record lives in its
 // own memory allocation, and the allocations it holds are rows of that
 // record, `habitat.allocated` and `habitat.migrated` by organism and role,
-// never by checkout. `--foreground` runs its body in the process. An
-// organism born beside it is its tenant, recorded in the same record.
-// `status` reads the rows; `down` stops the body and every service and
-// keeps their data; `up` again brings them back and migrates only the
+// never by checkout. Its body and face run as services of its compose
+// project. An organism born beside it is its tenant, recorded in the same
+// record. `status` reads the rows; `down` stops the compose project and
+// keeps its volumes; `up` again brings them back and migrates only the
 // habitat's own memory and nerves, never a tenant's. The habitat is this
 // test file's own (`hale test` gives each file one). Without docker compose
 // nothing here is exercised.
@@ -32,17 +32,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     );
 }
 
-// `hale habitat up --foreground` in the background, its output in `log`;
-// its pid.
-fn up(dir: String, log: String) -> String {
-    let started = in_dir(
-        dir,
-        "sh\n-c\nnohup timeout --foreground 900 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
-    );
-    return dna::trim_nl(started.stdout);
-}
-
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
 // How many times `needle` occurs in `text`.
@@ -56,16 +45,6 @@ fn occurrences(text: String, needle: String) -> Int {
         at = std::str::index_of(rest, needle);
     }
     return n;
-}
-
-// Whether `log` comes to say `text` within `secs`.
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
 }
 
 // The record rows of `kind` the habitat's record holds, a line each.
@@ -181,20 +160,20 @@ fn main() {
     );
     let first_key = dna::allocation_key(genome);
 
-    // ---- born, without a parent, its body in the foreground
-    let first = scratch + "/up.log";
-    let body = up(scratch, first);
+    // ---- born, without a parent, its body and face in compose
+    let first = in_dir(scratch, toolchain() + "\nhabitat\nup");
     std::test::assert(
-        len(body) > 0 && logged(first, "body    the habitat's body runs in this process", 600),
-        "the habitat is born and its body runs: " + text_of(first),
+        first.code == 0 && std::str::contains(first.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + first.stdout + first.stderr,
     );
     std::test::assert(
         std::str::contains(
-            text_of(first),
+            first.stdout,
             "born    the habitat at " + genome + " (the one organism with no parent)",
         )
-            && std::str::contains(text_of(first), "resume  the habitat's earlier birth stopped"),
-        "born from the toolchain's genome, the stopped birth resumed: " + text_of(first),
+            && std::str::contains(first.stdout, "resume  the habitat's earlier birth stopped"),
+        "born from the toolchain's genome, the stopped birth resumed: " + first.stdout
+            + first.stderr,
     );
     std::test::assert(
         dna::allocation_key(genome) != first_key,
@@ -217,7 +196,7 @@ fn main() {
     std::test::assert_eq_int(len(key), 12, "the habitat has a record identity");
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(
-        std::str::contains(status, "body    up (pid ")
+        std::str::contains(status, "body    up (compose service body,")
             && std::str::contains(status, "allocations, as the habitat's record:")
             && std::str::contains(status, "memory  memory-" + key + " running, schema ")
             && std::str::contains(status, "(this toolchain's)"),
@@ -774,7 +753,11 @@ fn main() {
     );
     let with_tenant = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(
-        std::str::contains(with_tenant, "allocation " + tkey + " (" + tenant + ")")
+        (std::str::contains(with_tenant, "allocation " + tkey + " (" + tenant + ")")
+                || std::str::contains(
+                    with_tenant,
+                    "allocation " + tkey + " (/private" + tenant + ")",
+                ))
             && std::str::contains(with_tenant, "memory  memory-" + tkey + " running"),
         "status names the tenant's allocation: " + with_tenant,
     );
@@ -810,9 +793,10 @@ fn main() {
         down.code == 0 && std::str::contains(down.stdout, "its data is kept"),
         "down stops the habitat: " + down.stdout + down.stderr,
     );
+    let mem_vol = dna::local_habitat_project() + "_memory-" + key;
     std::test::assert(
-        containers(false) == 0 && containers(true) > 0,
-        "every service stopped, none removed",
+        containers(true) == 0 && dna::run_tool("docker\nvolume\ninspect\n" + mem_vol).code == 0,
+        "every service removed, its volumes kept",
     );
     // memory that cannot be reached, with a birth marked pending, destroys
     // nothing: up refuses, and the identity and its volumes stay
@@ -827,20 +811,24 @@ fn main() {
         "unreachable memory is a refusal: " + blind.stdout + blind.stderr,
     );
     std::test::assert(
-        dna::allocation_key(genome) == key && containers(true) > 0,
+        dna::allocation_key(genome) == key
+            && dna::run_tool("docker\nvolume\ninspect\n" + mem_vol).code == 0,
         "and nothing is undone",
     );
-    let second = scratch + "/up2.log";
-    let again = up(scratch, second);
+    let second = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    let back = second.stdout;
     std::test::assert(
-        len(again) > 0 && logged(second, "body    the habitat's body runs in this process", 300),
-        "up brings the habitat back: " + text_of(second),
+        second.code == 0 && std::str::contains(back, "body    up (compose service body)"),
+        "up brings the habitat back: " + back + second.stderr,
     );
-    let back = text_of(second);
     std::test::assert(
         !std::str::contains(back, "born    ")
             && std::str::contains(back, "resume  the habitat's record is in memory")
-            && std::str::contains(back, "up      allocation " + tkey + " (" + tenant + ")"),
+            && (std::str::contains(back, "up      allocation " + tkey + " (" + tenant + ")")
+                    || std::str::contains(
+                        back,
+                        "up      allocation " + tkey + " (/private" + tenant + ")",
+                    )),
         "born once, resumed against its record, and its tenant brought up: " + back,
     );
     std::test::assert(

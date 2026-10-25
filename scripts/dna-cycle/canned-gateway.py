@@ -14,7 +14,12 @@
 #           on its first line, then answer.
 #   assess  (an Assessment): answer at once with an assessment, calling no tool.
 import json, sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 
 PORT, LOG = int(sys.argv[1]), sys.argv[2]
 NOTE = "// The steward's note: the list's api stays one surface.\n"
@@ -74,4 +79,4 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
-ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

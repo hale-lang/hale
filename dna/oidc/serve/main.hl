@@ -40,7 +40,7 @@ fn main() {
     let base = "http://127.0.0.1:" + to_string(port);
     println("hale dna oidc: ", base, " (stub provider; client ", client, ")");
     std::http::Server {
-        host: "127.0.0.1",
+        host: "0.0.0.0",
         port: port,
         handler: oidc::StubIssuer {
             base: base,

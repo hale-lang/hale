@@ -41,7 +41,8 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
     return in_dir(
         dir,
-        "sh\n-c\nprintf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null\nsh\n" + typed + "\n" + line,
+        "sh\n-c\nif [ -e /proc/version ]; then printf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null; else f=\"$PWD/term-alive-$$\" && : > \"$f\" && { sleep 0.2; printf '%s\\n' \"$1\"; while [ -f \"$f\" ]; do sleep 0.1; done; } | script -q /dev/null sh -c \"trap 'rm -f \\\"$f\\\"' EXIT; $2\"; fi\nsh\n"
+            + typed + "\n" + line,
     );
 }
 
@@ -58,22 +59,12 @@ fn at_terminal_after(
 ) -> dna::RunResult {
     return in_dir(
         dir,
-        "sh\n-c\no=\"$PWD/terminal-$$.log\" && n=0 && { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; } | script -qefc \"$2\" \"$o\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\"; exit $s\nsh\n"
+        "sh\n-c\no=\"$PWD/terminal-$$.log\" && : > \"$o\" && n=0 && if [ -e /proc/version ]; then { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; } | script -qefc \"$2\" \"$o\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\"; exit $s; else f=\"$PWD/term-alive-$$\" && : > \"$f\" && { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; while [ -f \"$f\" ]; do sleep 0.1; done; } | script -qF \"$o\" sh -c \"trap 'rm -f \\\"$f\\\"' EXIT; $2\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\" \"$f\"; exit $s; fi\nsh\n"
             + typed + "\n" + line + "\n" + prompt + "\n" + change,
     );
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
-
-// Whether `log` comes to say `text` within `secs`.
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
-}
 
 // The last non-empty line of `text`.
 fn last_line(text: String) -> String {
@@ -87,11 +78,15 @@ fn last_line(text: String) -> String {
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
-        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY entry.sh /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/docker.sh",
+        "#!/bin/sh\nif [ -z \"$DOCKER_API_VERSION\" ]; then\n  max=\"$(/usr/bin/docker version 2>&1 | sed -n 's/.*Maximum supported API version is \\([0-9.]*\\).*/\\1/p' | head -n 1)\"\n  [ -n \"$max\" ] && export DOCKER_API_VERSION=\"$max\"\nfi\nexec /usr/bin/docker \"$@\"\n",
     ) or discard;
     std::io::fs::write_file(
         dir + "/entry.sh",
-        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\"\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+        "set -e\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nDOCKER_GID=\"$(stat -c %g /var/run/docker.sock 2>/dev/null || echo \"${DOCKER_GID:-0}\")\"\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
     ) or discard;
 }
 
@@ -157,23 +152,22 @@ fn main() {
         eprintln("habitat_forget_test: not exercised (the docker daemon is not on a unix socket)");
         return;
     }
-    let socket = endpoint[7..len(endpoint)];
+    let socket = if std::io::fs::file_exists("/proc/version") {
+        endpoint[7..len(endpoint)]
+    } else {
+        "/var/run/docker.sock"
+    };
     let scratch = dna::scratch_root("habitat-forget");
     dna::reap_on_exit(scratch);
     let genome = dna::local_habitat_dir() + "/genome";
     let name = "forget-test";
 
     // ---- the habitat, up with its head and its Forgejo
-    let log = scratch + "/up.log";
-    let started = in_dir(
-        scratch,
-        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground --name \"$3\" >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log + "\n" + name,
-    );
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup\n--name\n" + name);
     std::test::assert(
-        len(dna::trim_nl(started.stdout)) > 0
-            && logged(log, "body    the habitat's body runs in this process", 600),
-        "the habitat is born and its body runs: " + text_of(log),
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
     );
     let key = dna::allocation_key(genome);
     std::test::assert_eq_int(len(key), 12, "the habitat has a record identity");
@@ -356,10 +350,13 @@ fn main() {
                 op,
                 "its record, in its memory (memory-" + dkey + "), its volume ",
             )
-            && std::str::contains(
+            && (std::str::contains(
                 op,
                 "its genome repository\n  - its genome repository " + scratch + "/doomed",
-            )
+            ) || std::str::contains(
+                op,
+                "its genome repository\n  - its genome repository /private" + scratch + "/doomed",
+            ))
             && std::str::contains(op, "its Forgejo account doomed-" + dkey)
             && std::str::contains(
                 op,
@@ -516,7 +513,11 @@ fn main() {
             && std::str::contains(p, "the newest row at ")
             && std::str::contains(p, "the grafted organisms\n  tenant (" + tkey + "…)")
             && std::str::contains(p, "its record, in its memory (memory-" + tkey + ")")
-            && std::str::contains(p, "its genome repository " + scratch + "/tenant")
+            && (std::str::contains(p, "its genome repository " + scratch + "/tenant")
+                    || std::str::contains(
+                        p,
+                        "its genome repository /private" + scratch + "/tenant",
+                    ))
             && std::str::contains(p, "its Forgejo repository ")
             && std::str::contains(p, tkey + "/nerves: nerves (nerves-" + tkey + ")")
             && std::str::contains(p, "the compose projects and their volumes\n")
@@ -559,14 +560,22 @@ fn main() {
     );
     std::test::assert_eq_str(state(home, true), before, "and changes nothing");
 
-    // ---- a plain down stops and removes nothing
-    let kept = state(home, false);
+    // ---- a plain down takes compose down and keeps the volumes, vault and files
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
     std::test::assert(
         down.code == 0 && std::str::contains(down.stdout, "its data is kept"),
         "a plain down stops the habitat: " + down.stdout + down.stderr,
     );
-    std::test::assert_eq_str(state(home, false), kept, "a plain down removes nothing");
+    let down_state = state(home, false);
+    std::test::assert(
+        std::str::contains(down_state, "containers:\n" + remote_project + "-probe-1\nvault:\n")
+            && std::str::contains(down_state, "memory-" + key)
+            && std::str::contains(down_state, "memory-" + tkey)
+            && std::str::contains(down_state, "forgejo-admin")
+            && std::str::contains(down_state, "genome"),
+        "a plain down leaves only the volumes, vault and files (and the remote host's allocation): "
+            + down_state,
+    );
 
     // ---- what forgetting would remove changes while the person reads the
     // plan (a volume appears in a project the plan removes whole, which a

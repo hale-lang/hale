@@ -29,12 +29,12 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 // operator face makes (hosts, placement, graft): the API child
 // decides each by the visitor's own credential, as for any proxied command.
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
-const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
+const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::brief Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log Commands::set_model_map Commands::probe_model Commands::add_nursery Commands::ratify_sapling Commands::allocate_forge";
 
 // The members of the surface that act or read a graft's log (the Board's):
 // not the reads. In a trusted-local session each carries the launch token as a
 // head's own command does, over either route.
-const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
+const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log Commands::set_model_map Commands::probe_model Commands::add_nursery Commands::ratify_sapling Commands::allocate_forge";
 
 // Whether `path` is the relay of one of those.
 fn surface_act(path: String) -> Bool {
@@ -46,8 +46,14 @@ fn surface_act(path: String) -> Bool {
 
 // The row `path` calls through the head's surface, "" for anything else.
 fn surface_read(path: String) -> String {
-    if !std::str::starts_with(path, HEAD_SURFACE_CALL) { return ""; }
-    let member = path[len(HEAD_SURFACE_CALL)..len(path)];
+    let raw = if std::str::starts_with(path, HEAD_SURFACE_CALL) {
+        path[len(HEAD_SURFACE_CALL)..len(path)]
+    } else if std::str::starts_with(path, "/call/") {
+        path[6..len(path)]
+    } else {
+        ""
+    };
+    let member = std::str::replace(raw, "%3A", ":");
     if len(member) == 0 || std::str::contains(member, " ") { return ""; }
     return if std::str::contains(" " + HEAD_SURFACE_CALLS + " ", " " + member + " ") {
         member
@@ -1341,7 +1347,9 @@ locus Head {
                 true,
             );
         }
-        let bearer = if self.cfg.principal_mode == "oidc" {
+        let token_ok = len(self.cfg.token) > 0
+            && api::token_matches(std::http::header(req, "X-Hale-Token"), self.cfg.token);
+        let bearer = if self.cfg.principal_mode == "oidc" && !token_ok {
             self.auth.session_token(req)
         } else {
             dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "")
@@ -1368,12 +1376,15 @@ locus Head {
     fn handle(req: std::http::Request) -> std::http::Response {
         // the face's client presents the visitor's cookies as its bearer: they
         // become the Cookie header and the request meets the head's own gates
-        // as the visitor's, under the host the visitor used
+        // as the visitor's, under the host the visitor used; a CLI client of
+        // the surface presents the head's launch token as its bearer
         let read = surface_read(req.path);
         if req.method == "POST" && len(read) > 0 {
             let mut r = req;
-            r.headers = headers_without(req.headers, " authorization host cookie ") + "Cookie: "
-                + dna::bearer_token(std::http::header(req, "Authorization"))
+            let auth = dna::bearer_token(std::http::header(req, "Authorization"));
+            let is_token = len(auth) > 0 && !std::str::contains(auth, "=");
+            r.headers = headers_without(req.headers, " authorization host cookie ")
+                + (if is_token { "X-Hale-Token: " + auth } else { "Cookie: " + auth })
                 + "\r\nHost: 127.0.0.1:" + to_string(public_port_of(self.cfg)) + "\r\n";
             r.path = HEAD_PREFIX + "/read-call/" + read;
             return self.handle(r);
@@ -1523,7 +1534,10 @@ locus Head {
                 return self.proxy(req);
             }
             let person = self.auth.session_name(req);
-            if len(person) == 0 {
+            let token_call = std::str::starts_with(path, HEAD_PREFIX + "/read-call/")
+                && len(self.cfg.token) > 0
+                && api::token_matches(std::http::header(req, "X-Hale-Token"), self.cfg.token);
+            if len(person) == 0 && !token_call {
                 if path == "/" { return ui::redirect("/auth/login", ""); }
                 return self.error(401, "unauthenticated", "sign in at /auth/login", false);
             }

@@ -423,6 +423,14 @@ jobs:
         # so the archive is a few hundred MB, not ~100MB per test binary.
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      - name: Build the habitat toolchain image
+        run: |
+          set -eux
+          tag="$(./target/release/hale habitat image build .)"
+          printf '%s\n' "$tag" > target/release/habitat-image.tag
+          docker save "$tag" | zstd -T0 -o target/release/habitat-image.tar.zst
+          ls -lh target/release/habitat-image.tar.zst
+
       - &build-archive
         name: cargo nextest archive
         # The test binaries, the binaries they run (`hale`, through

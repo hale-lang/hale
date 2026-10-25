@@ -13,10 +13,19 @@ SEAT = os.environ["VOICE_SEAT"]
 def ask_seat(req):
     body = dict(req)
     body["stream"] = False
-    r = urllib.request.Request(SEAT, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(r, timeout=30) as resp:
-        answer = json.loads(resp.read())
-    return answer["choices"][0]["message"].get("content") or ""
+    urls = [SEAT]
+    if "127.0.0.1" in SEAT:
+        urls.append(SEAT.replace("127.0.0.1", "host.docker.internal"))
+    last_err = None
+    for url in urls:
+        try:
+            r = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                answer = json.loads(resp.read())
+            return answer["choices"][0]["message"].get("content") or ""
+        except Exception as e:
+            last_err = e
+    raise last_err
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -432,9 +432,6 @@ locus ComposeProvider {
         }
         let mut offers = "";
         if run_tool("docker\ncompose\nversion").code == 0 { offers = "compose"; }
-        if run_tool("systemctl\n--user\nshow-environment").code == 0 {
-            offers = offers + (if len(offers) > 0 { " " } else { "" }) + "systemd-user";
-        }
         return Host {
             name: host,
             provider: "compose",

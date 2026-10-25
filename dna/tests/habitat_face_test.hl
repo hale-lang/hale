@@ -33,16 +33,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
-// Whether `log` comes to say `text` within `secs`.
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
-}
-
 // The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
 fn face_of(status: String) -> String {
     let at = std::str::index_of(status, "face    http://");
@@ -111,47 +101,22 @@ fn main() {
     std::test::assert_eq_int(early.code, 0, "gamma is grafted: " + early.stdout + early.stderr);
     let gamma = head_url(scratch + "/gamma");
 
-    // ---- a fresh machine has no systemd user unit directory: the face's unit
-    // is written into a directory made for it (the unit itself is not seen by
-    // this user's systemd, so the start is refused after the write)
-    let cfg = scratch + "/fresh-config";
-    let fresh = in_dir(
-        scratch,
-        "sh\n-c\nXDG_CONFIG_HOME=\"$1\" exec \"$2\" habitat up\nsh\n" + cfg + "\n" + toolchain(),
-    );
-    std::test::assert(
-        std::io::fs::file_exists(
-            cfg + "/systemd/user/" + dna::local_habitat_project() + "-face.service",
-        )
-            && !std::str::contains(fresh.stderr, "No such file"),
-        "the face's unit is written into a fresh directory: " + fresh.stdout + fresh.stderr,
-    );
-    in_dir(
-        scratch,
-        "sh\n-c\nXDG_CONFIG_HOME=\"$1\" exec \"$2\" habitat down\nsh\n" + cfg + "\n" + toolchain(),
-    );
-
     // ---- up starts the body and the face; status prints the face's address
-    let log = scratch + "/up.log";
-    let started = in_dir(
-        scratch,
-        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
     );
     std::test::assert(
-        len(dna::trim_nl(started.stdout)) > 0
-            && logged(log, "body    the habitat's body runs in this process", 600),
-        "the habitat is born and its body runs: " + text_of(log),
-    );
-    std::test::assert(
-        std::str::contains(text_of(log), "face    starting (pid "),
-        "up starts the habitat's face: " + text_of(log),
+        std::str::contains(started.stdout, "face    up (compose service face, http://127.0.0.1:"),
+        "up starts the habitat's face: " + started.stdout + started.stderr,
     );
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     let face = face_of(status);
     std::test::assert(
         std::str::starts_with(face, "http://127.0.0.1:")
-            && std::str::contains(status, "/ (up, pid "),
+            && std::str::contains(status, "/ (up, compose service face,"),
         "status prints the face's address: " + status,
     );
 

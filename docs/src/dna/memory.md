@@ -175,7 +175,7 @@ Key operational rules for the local habitat:
 - **Explicit migration only**: `hale habitat up`, `hale habitat graft`, and `hale habitat migrate [organism]` are the only commands that start containers or apply schema migrations. Each migration runs in a single transaction and stamps the schema version; if a host connects to a mismatched schema version, it exits and instructs you to run `hale habitat migrate <organism>`.
 - **No implicit migration in `dev` or `run`**: `hale dna dev` derives the `spine` DSN from the running habitat allocation and passes only that DSN to the host. `hale dna run` requires `HALE_DNA_MEMORY_DSN_SPINE` in its environment, strips any `owner` or `head` DSNs, and refuses to start if the spine DSN is missing.
 - **Habitat lifecycle commands**:
-  - `hale habitat up`: Births the habitat organism on first run, starts all recorded allocations, and runs the habitat supervisor (as a systemd user unit or `--foreground`).
+  - `hale habitat up`: Births the habitat organism on first run, starts all recorded allocations, and runs the habitat's `body` and `face` as Docker Compose services.
   - `hale habitat status`: Lists every organism allocation, role, and migrated schema version, highlighting any allocations behind the current toolchain.
   - `hale habitat down`: Stops all habitat containers while preserving their volumes and data.
 

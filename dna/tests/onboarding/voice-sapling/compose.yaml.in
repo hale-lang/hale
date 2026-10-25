@@ -4,7 +4,12 @@
 services:
   voice:
     image: python:3.12-alpine
-    network_mode: host
+    ports:
+      - target: @VOICE_PORT@
+        published: @VOICE_PORT@
+        host_ip: 127.0.0.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     working_dir: /srv
     volumes:
       - "./voice.py:/srv/voice.py:ro"

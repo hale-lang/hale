@@ -1445,6 +1445,10 @@ locus Leg {
                 "--api",
                 if std::env::var_exists("HALE_DNA_API") {
                     std::env::var("HALE_DNA_API")
+                } else if std::env::var_exists("HALE_DNA_HEAD_URL")
+                    && len(std::env::var("HALE_DNA_HEAD_URL")) > 0
+                {
+                    std::env::var("HALE_DNA_HEAD_URL")
                 } else {
                     "http://127.0.0.1:8793"
                 },
@@ -1459,6 +1463,10 @@ locus Leg {
             "--api",
             if std::env::var_exists("HALE_DNA_API") {
                 std::env::var("HALE_DNA_API")
+            } else if std::env::var_exists("HALE_DNA_HEAD_URL")
+                && len(std::env::var("HALE_DNA_HEAD_URL")) > 0
+            {
+                std::env::var("HALE_DNA_HEAD_URL")
             } else {
                 "http://127.0.0.1:8793"
             },

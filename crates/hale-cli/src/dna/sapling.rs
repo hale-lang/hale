@@ -370,7 +370,7 @@ fn applied_lines(v: &serde_json::Value) -> Vec<String> {
 /// followed to its end: what the graft said (`said`) and whether it ended
 /// well (`ok`, else `code` and `why`); `None` when no head is up.
 pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_json::Value> {
-    if !head_socket().is_some_and(|p| p.exists()) {
+    if !super::head_is_up() {
         return None;
     }
     let v = match head_call("Commands::graft", serde_json::json!({ "sapling": name, "host": host, "library": library })) {
@@ -536,38 +536,20 @@ pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
     }
 }
 
-/// The socket the habitat's head serves its commands on, as
-/// `dna/api/main.hl`'s `head_socket` names it for the habitat's record.
-fn head_socket() -> Option<PathBuf> {
-    if let Some(given) = std::env::var("HALE_DNA_RPC_SOCKET").ok().filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(given));
-    }
-    let genome = genome_dir();
-    let id = manifest_pin(&genome.join("hale.toml")).ok().flatten()?;
-    let name = format!("{}.sock", &id[..12.min(id.len())]);
-    let dir = match std::env::var("XDG_RUNTIME_DIR").ok().filter(|v| !v.is_empty()) {
-        Some(r) => format!("{r}/hale/dna"),
-        None => genome.join(".hale/dna").display().to_string(),
-    };
-    // an AF_UNIX path has room for 103 bytes
-    if dir.len() + 1 + name.len() > 103 {
-        let uid = unsafe { libc::getuid() };
-        return Some(PathBuf::from(format!("/tmp/hale-{uid}/{name}")));
-    }
-    Some(PathBuf::from(dir).join(name))
-}
-
-/// One call of the habitat head's surface over its socket: the value it
-/// answered, or why there was none.
+/// One call of the habitat head's surface: the value it answered, or why
+/// there was none.
 pub(super) fn head_call(member: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let socket = head_socket().filter(|p| p.exists()).ok_or("the habitat's head is not up (`hale habitat up` starts it)")?;
-    let line = crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-nursery" })).map_err(|e| format!("the habitat's head did not answer: {e}"))?;
-    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-    if reply["ok"] != serde_json::json!(true) {
-        let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
-        return Err(format!("the habitat's head refused {member}: {why}"));
+    if let Some(socket) = std::env::var("HALE_DNA_RPC_SOCKET").ok().filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.exists()) {
+        let line = crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-nursery" })).map_err(|e| format!("the habitat's head did not answer: {e}"))?;
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        if reply["ok"] != serde_json::json!(true) {
+            let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
+            return Err(format!("the habitat's head refused {member}: {why}"));
+        }
+        return Ok(reply["value"].clone());
     }
-    Ok(reply["value"].clone())
+    let url = super::head_endpoint().ok_or_else(|| "the habitat's head is not up (`hale habitat up` starts it)".to_string())?;
+    super::http_surface_call(&url, member, &payload)
 }
 
 /// `hale habitat nursery add <source> | refresh | list | ratify <sapling>`.
@@ -891,7 +873,7 @@ pub(super) fn forge_cmd(args: &[String]) -> std::process::ExitCode {
         eprintln!("{usage}");
         return ExitCode::from(2);
     };
-    if !no_head && head_socket().is_some_and(|p| p.exists()) {
+    if !no_head && super::head_is_up() {
         return match head_call("Commands::allocate_forge", serde_json::json!({ "organism": organism, "provider": provider, "repo": repo, "key_vault": key_vault })) {
             Ok(v) if v["ok"] == serde_json::json!(true) => {
                 println!("{}", v["why"].as_str().unwrap_or(""));
