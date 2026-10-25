@@ -32,9 +32,13 @@ pub(super) fn set_head_flag(url: String) {
     let _ = HEAD_FLAG.set(url);
 }
 
+pub(super) fn head_flag() -> Option<String> {
+    HEAD_FLAG.get().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
+}
+
 pub(super) fn head_flag_or_local_url() -> Option<String> {
-    if let Some(u) = HEAD_FLAG.get().filter(|s| !s.is_empty()) {
-        return Some(u.trim_end_matches('/').to_string());
+    if let Some(u) = head_flag() {
+        return Some(u);
     }
     if let Some(u) = std::env::var("HALE_DNA_HEAD_URL").ok().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()) {
         return Some(u);
@@ -1837,23 +1841,6 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     if vault_str != hab_dir && !vault_str.starts_with(&format!("{hab_dir}/")) {
         mounts.push(format!("      - \"{vault_str}:{vault_str}\""));
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd_str = cwd.display().to_string();
-        for prefix in ["/private/tmp/dna-", "/tmp/dna-"] {
-            if let Some(rest) = cwd_str.strip_prefix(prefix) {
-                let seg = rest.split('/').next().unwrap_or("");
-                if !seg.is_empty() {
-                    let scratch = format!("{prefix}{seg}");
-                    let target = format!("/tmp/dna-{seg}");
-                    let m = format!("      - \"{scratch}:{target}\"");
-                    if !mounts.contains(&m) {
-                        mounts.push(m);
-                    }
-                }
-                break;
-            }
-        }
-    }
     mounts.push(format!("      - \"{sock}:/var/run/docker.sock\""));
     let mounts_yaml = mounts.join("\n");
 
@@ -1909,9 +1896,28 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let drain_secs = drain_window().as_secs();
     let g = genome.display();
     let fstate = face_state_dir().display().to_string();
-    let services_block = format!(
-        "# habitat-body-and-face\n  body:\n    image: \"{image}\"\n{build_spec}    init: true\n{user_spec}{net_or_hosts}    working_dir: \"{g}\"\n{env_file_spec}    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n{preload}{forwarded_env}    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n  face:\n    image: \"{image}\"\n{build_spec}    init: true\n{user_spec}{net_or_hosts}    working_dir: \"{g}\"\n{env_file_spec}    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n{preload}{forwarded_env}    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"
-    );
+    let mut services_block = String::from("# habitat-body-and-face\n  body:\n");
+    services_block.push_str(&format!("    image: \"{image}\"\n"));
+    services_block.push_str(&build_spec);
+    services_block.push_str("    init: true\n");
+    services_block.push_str(&user_spec);
+    services_block.push_str(&net_or_hosts);
+    services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
+    services_block.push_str(&env_file_spec);
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n"));
+    services_block.push_str(preload);
+    services_block.push_str(&forwarded_env);
+    services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n  face:\n    image: \"{image}\"\n"));
+    services_block.push_str(&build_spec);
+    services_block.push_str("    init: true\n");
+    services_block.push_str(&user_spec);
+    services_block.push_str(&net_or_hosts);
+    services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
+    services_block.push_str(&env_file_spec);
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n"));
+    services_block.push_str(preload);
+    services_block.push_str(&forwarded_env);
+    services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
 
     let compose_path = dir.join("compose.yaml");
     let existing_compose = std::fs::read_to_string(&compose_path).unwrap_or_else(|_| "services:\n".to_string());

@@ -254,11 +254,28 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
         } else {
             out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the tree its graft checked", "kept"));
         }
-    } else if !store.join(".git").is_dir() {
-        std::fs::create_dir_all(store.parent().unwrap_or(&store)).map_err(|e| format!("create {}: {e}", store.display()))?;
-        git(&["clone", "-q", "--no-checkout", &repo, &store.to_string_lossy()], None).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
-    } else if !begun {
-        git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
+    } else {
+        let fetch_repo = if !Path::new(&repo).exists() && crate::dna::pack::staged_repo_dir(&repo).is_dir() {
+            crate::dna::pack::staged_repo_dir(&repo).display().to_string()
+        } else {
+            repo.clone()
+        };
+        if !store.join(".git").is_dir() {
+            std::fs::create_dir_all(store.parent().unwrap_or(&store)).map_err(|e| format!("create {}: {e}", store.display()))?;
+            git(&["clone", "-q", "--no-checkout", &fetch_repo, &store.to_string_lossy()], None).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
+            if fetch_repo != repo {
+                let _ = git(&["remote", "set-url", "origin", &repo], Some(&store));
+            }
+        } else if !begun {
+            if fetch_repo != repo {
+                let _ = git(&["remote", "set-url", "origin", &fetch_repo], Some(&store));
+            }
+            let fetched = git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"));
+            if fetch_repo != repo {
+                let _ = git(&["remote", "set-url", "origin", &repo], Some(&store));
+            }
+            fetched?;
+        }
     }
     // the digest is checked at every graft that has not begun; one that
     // began goes on at the revision it was checked at (a tree the toolchain
@@ -372,6 +389,19 @@ fn applied_lines(v: &serde_json::Value) -> Vec<String> {
 pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_json::Value> {
     if !super::head_is_up() {
         return None;
+    }
+    for src in trusted_nurseries() {
+        if Path::new(&src).is_dir() {
+            let _ = crate::dna::pack::nursery(Some(&src));
+        }
+    }
+    if let Some(pin) = pinned(name) {
+        if let Some(src) = pin["nursery"].as_str().filter(|s| *s != "toolchain" && Path::new(s).is_dir()) {
+            let _ = crate::dna::pack::nursery(Some(src));
+        }
+        if let Some(repo) = pin["repo"].as_str() {
+            crate::dna::pack::stage_local_repo(repo);
+        }
     }
     let v = match head_call("Commands::graft", serde_json::json!({ "sapling": name, "host": host, "library": library })) {
         Ok(v) => v,
@@ -562,6 +592,9 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                 Ok(p) if p.is_dir() => p.display().to_string(),
                 _ => source.clone(),
             };
+            if Path::new(&source).is_dir() {
+                let _ = crate::dna::pack::nursery(Some(&source));
+            }
             match head_call("Commands::add_nursery", serde_json::json!({ "source": source })) {
                 Ok(v) if v["ok"] == serde_json::json!(true) => {
                     println!("{:<8}{source}: the Board trusts it", "nursery");

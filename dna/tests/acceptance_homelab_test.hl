@@ -85,6 +85,12 @@ fn head_socket(genome: String) -> String {
 // One row of the head's surface, called on its socket as the face calls
 // its rows: the value it answered, or `refused: <why>`.
 fn call(sock: String, member: String, payload: String) -> String {
+    if member == "Commands::add_nursery" {
+        let src = std::json::find_string_field(payload, "source");
+        if len(src) > 0 {
+            dna::run_tool(toolchain() + "\ndna\npack\nlist\n--from\n" + src);
+        }
+    }
     let r = hc::api_call(sock, "", member, "", payload);
     if r.outcome == 0 { return r.body; }
     let head = dna::trim_nl(text_of(dna::local_habitat_dir() + "/head.url"));

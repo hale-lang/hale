@@ -128,7 +128,9 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
             cmd.env("HALE_DNA_MEMORY_DSN_HEAD", head);
         }
     }
-    if !named("HALE_DNA_HEAD_URL") {
+    if let Some(u) = habitat::head_flag() {
+        cmd.env("HALE_DNA_HEAD_URL", u);
+    } else if !named("HALE_DNA_HEAD_URL") {
         if let Some(u) = habitat::head_flag_or_local_url() {
             cmd.env("HALE_DNA_HEAD_URL", u);
         }
@@ -1181,7 +1183,10 @@ fn work_exec(dir: &Path, args: &[String]) -> ExitCode {
     };
     let mut cmd = Command::new(&leg);
     cmd.args(args).current_dir(dir);
-    if std::env::var_os("HALE_DNA_API").is_none() && std::env::var_os("HALE_DNA_HEAD_URL").is_none() {
+    let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    if let Some(u) = habitat::head_flag() {
+        cmd.env_remove("HALE_DNA_API").env("HALE_DNA_HEAD_URL", u);
+    } else if !named("HALE_DNA_API") && !named("HALE_DNA_HEAD_URL") {
         if let Some(u) = habitat::head_flag_or_local_url() {
             cmd.env("HALE_DNA_HEAD_URL", u);
         }

@@ -211,7 +211,8 @@ fn ours(project: &str, remote: &[String]) -> bool {
 
 enum Started {
     Stopped(String),
-    Created(PathBuf),
+    CreatedContainer(String),
+    CreatedNetwork(String),
 }
 
 /// The plan, and the memories started to read it.
@@ -262,6 +263,19 @@ fn start_memories() -> Vec<Started> {
         }
     }
     if let Ok(es) = std::fs::read_dir(PathBuf::from(local_habitat_dir()).join("allocations")) {
+        let prior_nets: Vec<String> = listed(&[
+            "network",
+            "ls",
+            "--filter",
+            &format!("label=com.docker.compose.project={project}"),
+            "--format",
+            "{{.Name}}",
+        ])
+        .unwrap_or_default()
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
         for e in es.flatten() {
             let dir = e.path();
             let Some(key) = dir.file_name().and_then(|n| n.to_str()) else {
@@ -293,7 +307,39 @@ fn start_memories() -> Vec<Started> {
                 .output()
                 .is_ok_and(|o| o.status.success())
             {
-                started.push(Started::Created(dir));
+                let ids = listed(&[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("label=com.docker.compose.project={project}"),
+                    "--filter",
+                    &format!("label=com.docker.compose.service={service}"),
+                    "--format",
+                    "{{.ID}}",
+                ])
+                .unwrap_or_default();
+                for id in ids.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                    started.push(Started::CreatedContainer(id.to_string()));
+                }
+            }
+        }
+        if started
+            .iter()
+            .any(|s| matches!(s, Started::CreatedContainer(_)))
+        {
+            let now_nets = listed(&[
+                "network",
+                "ls",
+                "--filter",
+                &format!("label=com.docker.compose.project={project}"),
+                "--format",
+                "{{.Name}}",
+            ])
+            .unwrap_or_default();
+            for net in now_nets.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                if !prior_nets.iter().any(|p| p == net) {
+                    started.push(Started::CreatedNetwork(net.to_string()));
+                }
             }
         }
     }
@@ -855,33 +901,17 @@ fn bound(items: &[Value]) -> Vec<[String; 6]> {
 
 /// The memories started only to read the records, stopped or removed again.
 fn settle(started: &[Started]) {
-    let project = local_habitat_project();
-    let mut downed = false;
     for s in started {
         match s {
             Started::Stopped(id) => {
                 let _ = docker(&["stop", id]);
             }
-            Started::Created(dir) if !downed => {
-                let _ = Command::new("env")
-                    .args([
-                        "COMPOSE_IGNORE_ORPHANS=1",
-                        "docker",
-                        "compose",
-                        "-p",
-                        &project,
-                        "--project-directory",
-                    ])
-                    .arg(dir)
-                    .arg("-f")
-                    .arg(dir.join("compose.yaml"))
-                    .arg("-f")
-                    .arg(dir.join("ports.yaml"))
-                    .args(["down", "--remove-orphans"])
-                    .output();
-                downed = true;
+            Started::CreatedContainer(id) => {
+                let _ = docker(&["rm", "-f", id]);
             }
-            Started::Created(_) => {}
+            Started::CreatedNetwork(net) => {
+                let _ = docker(&["network", "rm", net]);
+            }
         }
     }
 }

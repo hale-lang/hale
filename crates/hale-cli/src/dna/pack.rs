@@ -95,6 +95,75 @@ fn index_of(text: &str, what: &str) -> Result<(Vec<Entry>, Vec<Sapling>), String
     Ok((idx.pack, idx.sapling))
 }
 
+fn stage_key(s: &str) -> String {
+    openssl::sha::sha256(s.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+pub(super) fn staged_nursery_dir(source: &str) -> PathBuf {
+    PathBuf::from(super::local_habitat_dir()).join("nurseries").join(stage_key(source))
+}
+
+pub(super) fn staged_repo_dir(repo: &str) -> PathBuf {
+    PathBuf::from(super::local_habitat_dir()).join("nurseries").join("repos").join(stage_key(repo))
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    for e in fs::read_dir(src).map_err(|e| format!("{}: {e}", src.display()))?.flatten() {
+        let path = e.path();
+        let name = e.file_name();
+        if name == ".git" {
+            continue;
+        }
+        let target = dst.join(name);
+        if path.is_dir() {
+            copy_dir_all(&path, &target)?;
+        } else if path.is_file() {
+            fs::copy(&path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn stage_local_repo(repo: &str) {
+    let hab = PathBuf::from(super::local_habitat_dir());
+    if !hab.is_dir() || repo.starts_with("toolchain:") {
+        return;
+    }
+    let src = Path::new(repo);
+    if !src.exists() || src.starts_with(&hab) {
+        return;
+    }
+    let dst = staged_repo_dir(repo);
+    let _ = fs::remove_dir_all(&dst);
+    if let Some(parent) = dst.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = Command::new("git")
+        .args(["clone", "-q", "--mirror", repo])
+        .arg(&dst)
+        .output();
+}
+
+fn stage_local_nursery(from: &str, root: &Path, saplings: &[Sapling]) {
+    let hab = PathBuf::from(super::local_habitat_dir());
+    if !hab.is_dir() || root.starts_with(&hab) {
+        return;
+    }
+    let canon = root.display().to_string();
+    let dst = staged_nursery_dir(&canon);
+    let _ = fs::remove_dir_all(&dst);
+    let _ = copy_dir_all(root, &dst);
+    if from != canon {
+        let alias = staged_nursery_dir(from);
+        let _ = fs::remove_dir_all(&alias);
+        let _ = copy_dir_all(root, &alias);
+    }
+    for s in saplings {
+        stage_local_repo(&s.repo);
+    }
+}
+
 /// The nursery `--from` names, or the toolchain's.
 pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let Some(from) = from else {
@@ -111,7 +180,14 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
         let root = local.canonicalize().map_err(|e| format!("{from}: {e}"))?;
         let text = fs::read_to_string(root.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
         let (entries, saplings) = index_of(&text, from)?;
+        stage_local_nursery(from, &root, &saplings);
         return Ok(Nursery { entries, saplings, source: root.display().to_string(), root: Some(root) });
+    }
+    let staged = staged_nursery_dir(from);
+    if staged.is_dir() {
+        let text = fs::read_to_string(staged.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
+        let (entries, saplings) = index_of(&text, from)?;
+        return Ok(Nursery { entries, saplings, source: from.to_string(), root: Some(staged) });
     }
     // a git repository: cloned once into the cache, fetched, and read at
     // the revision named (the default branch's head without one)
