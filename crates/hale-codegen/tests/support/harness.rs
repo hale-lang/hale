@@ -35,6 +35,13 @@ mod build_opts;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// AddressSanitizer options for lifetime checks. Linux also checks leaks;
+/// Apple's ASan runtime refuses to start with `detect_leaks=1`.
+#[allow(dead_code)]
+pub fn asan_options() -> &'static str {
+    if cfg!(target_os = "linux") { "detect_leaks=1" } else { "detect_leaks=0" }
+}
+
 /// Build the source text `source` to `bin` with the PRE-optimization LLVM IR dumped
 /// beside it, and hand back the IR text. The `.ll` is removed; the
 /// binary is left in place, because several callers also run it.

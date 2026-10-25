@@ -1,0 +1,27 @@
+// Decision line 4: two instances of one supervisor declaration keep their
+// own failure routes through the recursive field cascade. Each handler
+// reads a heap-backed name while its child is still alive; App's decoy
+// handler must never receive either violation.
+// Expected terminal outcome: `bound-supervisors`.
+
+locus Kid {
+    params { left: Int = 1; name: String = std::str::upper("child"); }
+    closure clean { self.left ~~ 0 within 0; epoch dissolve; }
+}
+
+locus Parent {
+    params { name: String = ""; kid: Kid = Kid { }; }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("ev supervisor " + self.name + " " + c.name + " " + err.closure);
+    }
+}
+
+main locus App {
+    params {
+        first: Parent = Parent { name: std::str::upper("first") };
+        second: Parent = Parent { name: std::str::upper("second") };
+    }
+    on_failure(c: Kid, err: ClosureViolation) { println("ev wrong-supervisor"); }
+}
+
+fn main() { App { }; }

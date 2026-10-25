@@ -56,7 +56,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Resolve the (parent_self, on_failure_fn) pair for a child
-    /// of `child_locus_name` whose closure may fail at dissolve.
+    /// of `child_locus_name` at construction. Later failures read the
+    /// pair stored on that child with `bound_failure_route`.
     /// Which parent INSTANCE is the lowering context's (a runtime
     /// pointer, which no snapshot row holds): the supervising parent
     /// of a literal written as another literal's field, matched to
@@ -105,6 +106,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             cs.self_ptr,
             handler_fn.as_global_value().as_pointer_value(),
         )
+    }
+
+    /// Read the supervisor selected at this instance's construction.
+    /// Teardown may run under another locus's lowering context, or in
+    /// `fn main`; neither context can reconstruct this runtime binding.
+    pub(crate) fn bound_failure_route(
+        &self,
+        info: &LocusInfo<'ctx>,
+        child: PointerValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let load = |index, label| {
+            let slot = self.builder.build_struct_gep(info.struct_ty, child, index, label)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_load(ptr_t, slot, label)
+                .map(|value| value.into_pointer_value())
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+        };
+        Ok((load(info.parent_self_field_idx, "failure.bound.parent")?,
+            load(info.parent_on_failure_field_idx, "failure.bound.handler")?))
     }
 
     /// Call a parent's `on_failure(parent, child, violation)` — unless

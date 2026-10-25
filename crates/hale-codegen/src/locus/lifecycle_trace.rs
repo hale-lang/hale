@@ -115,7 +115,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })?;
         self.lc_step("Dissolve", Some(self_ptr), Some(locus_name), |cx| {
             if let Some(closures_fn) = closures {
-                let (parent_self, handler_ptr) = cx.resolve_failure_route(locus_name);
+                let (parent_self, handler_ptr) = cx.bound_failure_route(info, self_ptr)?;
                 cx.builder
                     .build_call(
                         closures_fn,

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::lifecycle::{
     DomainRole, FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
-    Spine, Status, Template, Terminal, DECISION_LINES,
+    Resource, Spine, Status, Template, Terminal, DECISION_LINES,
 };
 use hale_types::lifecycle::spine::{BIRTH_KINDS, CASCADE_STEPS, RECLAIM_STEPS};
 use hale_types::placement::{Bound, DomainKind, SiteUniverse};
@@ -988,6 +988,35 @@ fn a_resumed_locus_with_no_run_owes_none() {
     for run in runs {
         assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::Shipped));
         assert_eq!(run.terminals, vec![Terminal::NotStarted(NotStarted::NoRun)]);
+    }
+}
+
+/// C25/C31: teardown delivery uses the instance's bound supervisor,
+/// independently of the lowering context and of type-wide flow policy.
+#[test]
+fn dissolve_failure_delivery_is_shipped_on_reclaim_and_cascade() {
+    for (source, decl) in [
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l04_dissolve_route_reclaim.hl"), "Flowing"),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l04_dissolve_route_cascade.hl"), "Kid"),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l04_dissolve_bound_supervisors.hl"), "Kid"),
+    ] {
+        let s = snapshot(source);
+        let p = plan(&s);
+        let deliveries: Vec<_> = rows(p, decl, K::FailureDelivery).into_iter()
+            .filter(|row| row.source == Some(FailureSource::Dissolve)).collect();
+        assert!(!deliveries.is_empty());
+        for row in deliveries {
+            assert_eq!((row.line, row.status), (Some("4"), Status::Shipped));
+            assert_eq!(row.guard, PathGuard::FailedInTeardown);
+            for resource in [Resource::Instance, Resource::FailurePayload] {
+                let retention = row.lifetime.iter().find(|r| r.resource == resource).expect("delivery retains child and payload");
+                assert_eq!(retention.until.obligation, id_of(p, row));
+                // Delivery can return or raise a terminal violation;
+                // both retain the child and payload until it has ended.
+                assert_eq!(retention.until.point, Point::Ended);
+                assert_eq!(retention.status, Status::Shipped);
+            }
+        }
     }
 }
 

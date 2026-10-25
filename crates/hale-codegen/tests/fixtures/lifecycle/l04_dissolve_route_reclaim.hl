@@ -1,15 +1,12 @@
 // Decision line 4, the failure route bound at birth in every spine
-// (FailureDelivery, Reclaim). Known open at inventory row C25.
+// (FailureDelivery, Reclaim). Shipped at inventory row C25.
 //
-// `Flowing` is a flow (App declares `release(c: Flowing)`), accepted by
-// App, and built in App's run(). Its run() completing reclaims it
-// through the reclaim spine, and its dissolve-epoch closure fails
-// there. The route bound at its birth names App's handler. The reclaim
-// spine resolves the route with the child itself as the parent, finds
-// no handler, and takes the bare report and exit.
+// `Flowing` is accepted and released by App. Its empty run completes
+// through the reclaim spine; the failing dissolve closure must read the
+// route stored at construction and reach App exactly once before reclaim.
+// Before the fix, resolving with Flowing itself as parent exited instead.
 //
-// Expected terminal outcome: App's handler hears the violation exactly
-// once, `outcome: owner-handled-once`. Today: the structural exit.
+// Expected terminal outcome: `outcome: owner-handled-once`.
 
 locus Flowing {
     params { left: Int = 1; }

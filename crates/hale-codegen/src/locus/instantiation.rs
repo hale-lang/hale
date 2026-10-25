@@ -4480,7 +4480,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })?;
         if let Some(birth_closures_fn) = info.birth_closures_fn {
             let (parent_self, handler_ptr) =
-                self.resolve_failure_route(&locus_name);
+                self.bound_failure_route(&info, self_ptr)?;
             let before = match birth_pre_slot {
                 Some(_) => Some(self.emit_restart_count(&info, self_ptr)?),
                 None => None,
@@ -4856,7 +4856,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // skipped (quarantined) run().
             if let Some(tick_fn) = info.tick_closures_fn {
                 let (parent_self_t, handler_ptr_t) =
-                    self.resolve_failure_route(&locus_name);
+                    self.bound_failure_route(&info, self_ptr)?;
                 self.builder
                     .build_call(
                         tick_fn,
@@ -4877,7 +4877,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // elapsed since last fire of each duration closure.
             if let Some(duration_fn) = info.duration_closures_fn {
                 let (parent_self_d, handler_ptr_d) =
-                    self.resolve_failure_route(&locus_name);
+                    self.bound_failure_route(&info, self_ptr)?;
                 self.builder
                     .build_call(
                         duration_fn,

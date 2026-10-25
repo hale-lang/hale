@@ -139,6 +139,12 @@ recovery receivers to retain original parameters for `restart_in_place`,
 including when it is called through a helper. An unresolved receiver
 conservatively retains those snapshots.
 
+A dissolve-epoch closure uses the supervisor route stored when that child
+was constructed, including during flow reclaim and recursive field teardown.
+Two instances of the same supervisor type keep distinct routes. The handler
+completes while the child is still readable, before its arena is reclaimed;
+without a handler, the violation remains a structural failure.
+
 ### Inspecting recovery targets
 
 Inspect the represented handler and helper paths with:

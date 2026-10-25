@@ -953,12 +953,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         let pinned = self.is_pinned(i);
         let owner_brackets = owners.iter().any(|&o| self.facts[o].brackets);
         let field = s.how == How::Field;
-        let flow = self.inputs.flows.is_flow(&s.site.decl.lowered);
-        let in_fn_main_cascade = field && {
-            // A field of a template's top whose cascade is lowered in
-            // `fn main`, where no locus is `self` (inventory C31).
-            owners.iter().any(|&o| matches!(self.subjects[o].how, How::Top { .. }))
-        };
         // The occurrences a handler is reached from: the contributions
         // whose owner routes the failure.
         let routed: Vec<&Contribution> =
@@ -983,10 +977,8 @@ impl<'b, 'a> Builder<'b, 'a> {
             // A pinned locus's birth_check runs on its thread, after
             // birth() and before run() (C38, closed by L4's birth spine).
             let (line, status) = match source {
-                FailureSource::Dissolve if flow => ("4", Status::KnownOpen { inventory_row: "C25" }),
-                FailureSource::Dissolve if in_fn_main_cascade => ("4", Status::KnownOpen { inventory_row: "C31" }),
                 FailureSource::BirthClosure | FailureSource::BirthCheck => ("8", Status::Shipped),
-                FailureSource::Dissolve => ("10", Status::Shipped),
+                FailureSource::Dissolve => ("4", Status::Shipped),
                 _ => ("9", Status::Shipped),
             };
             // Decision L0-1: the handler runs on the owner's domain, called

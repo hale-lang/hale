@@ -522,7 +522,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             self.lc_in_spine("Cascade", |cx| {
                 cx.lc_step("Dissolve", Some(inner_ptr), Some(&inner_name), |cx| {
                     if let Some(closures_fn) = closures {
-                        let (parent_self, handler_ptr) = cx.resolve_failure_route(&inner_name);
+                        let (parent_self, handler_ptr) = cx.bound_failure_route(&inner_info, inner_ptr)?;
                         cx.builder
                             .build_call(
                                 closures_fn,

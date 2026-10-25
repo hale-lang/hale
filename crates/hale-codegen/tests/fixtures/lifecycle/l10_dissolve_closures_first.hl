@@ -4,12 +4,8 @@
 // `Kid` is App's field. At App's teardown, Kid's dissolve-epoch closure
 // fails and App's handler prints; then Kid's dissolve() prints.
 //
-// Expected terminal outcome: the closure runs before dissolve(), judged
-// by the harness: `closures-before-dissolve`. Today the cascade's route
-// does not select App's handler either (the reclaim spine's defect,
-// line 4, reaches this cascade too), so the violation takes the
-// structural exit before Kid's dissolve() prints; that order is the
-// same answer.
+// Expected terminal outcome: `closures-before-dissolve`. The handler must
+// return before Kid's dissolve body prints, and teardown must complete.
 
 locus Kid {
     params { left: Int = 1; }

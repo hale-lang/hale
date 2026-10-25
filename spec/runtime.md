@@ -2110,20 +2110,15 @@ zero_copy binding produces.
   `notes/f40-lifecycle-inventory.md` lists the raising sites as
   rows C36–C40.
 
-  One site is misrouted, not misplaced. It is a
-  dissolve-epoch closure that fails under a flow child's
-  run-completion reclaim. The reclaim spine
-  (`synthesize_reclaim_fns`, `crates/hale-codegen/src/codegen.rs`)
-  lowers the closure with the reclaimed child as `current_self`.
-  `resolve_failure_route` therefore asks the child's own type for
-  a handler of its own type and normally finds none. The owner's
-  handler is not selected at all, and the violation takes the
-  bare report-and-exit. The defect is "owner handler not
-  selected", not "owner handler called on a foreign thread". It
-  becomes the second kind only if the route is fixed without this
-  decision: the reclaim then calls the owner's handler in place on
-  the reclaiming thread. Inventory row C25 records the site;
-  inventory Decisions line 4 chooses the route.
+  Dissolve-epoch closure failures read the supervisor and handler stored on
+  the actual child at construction (`__parent_self` / `__parent_on_failure`).
+  The reclaim spine and recursive field cascade use that binding even when
+  lowered under the child itself or in `fn main`. The existing delivery
+  protocol then posts to a live supervisor's domain and waits for completion,
+  or uses its shutdown rule if that domain has ended. The child and violation
+  remain alive through delivery; dissolve failures cannot be held past reclaim.
+  An absent handler retains the structural report-and-exit behavior.
+  Inventory rows C25/C31 and decision line 4 record this correspondence.
 
   The joins make progress. A dissolving parent joins a pinned child
   through `lotus_pinned_join` (`emit_deferred_entry_teardown`,
@@ -2352,13 +2347,13 @@ its `KNOWN_OPEN` table, which is empty today.
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
   route, and the owner and the payload are retained until the
-  delivery completes. Not yet shipped in two places. The reclaim
-  spine resolves the route with the reclaimed child as the parent
-  (inventory row C25, `l04_dissolve_route_reclaim.hl`), and a
-  dissolve cascade lowered in `fn main`, where no locus is `self`,
-  resolves none (row C31, `l04_dissolve_route_cascade.hl`); in both,
-  a dissolve-epoch violation takes the report and the structural
-  exit, and the owner's handler is never selected.
+  delivery completes. Shipped in the reclaim and recursive field cascades
+  (inventory rows C25/C31). `l04_dissolve_route_reclaim.hl` and
+  `l04_dissolve_route_cascade.hl` require exactly one handler delivery and
+  complete teardown. `l04_dissolve_bound_supervisors.hl` distinguishes two
+  instances of the same supervisor declaration and a decoy outer handler;
+  the ASan gate reads heap-backed parent and child data in both dispatch modes.
+
 - **Line 5, `accept`'s position.** `accept(c)` runs once the
   child's region exists and its params are built, and before its
   subscriptions and its `birth()`. Its result is not read: it
@@ -2564,8 +2559,8 @@ its `KNOWN_OPEN` table, which is empty today.
 - **Line 10, dissolve-epoch closures, then `dissolve()`.** In every
   spine a locus's dissolve-epoch closures run before its
   `dissolve()`, so a violation there is delivered while the user's
-  cleanup has not yet run. Shipped (`l10_dissolve_closures_first.hl`;
-  today its violation also shows line 4's cascade route).
+  cleanup has not yet run. Shipped (`l10_dissolve_closures_first.hl`); the handler completes before
+  the user's cleanup, and the fixture requires successful teardown.
 - **Line 11, a let-bound literal.** `birth()` and `run()` happen at
   the construction site; `drain()` and `dissolve()` happen together
   at the enclosing scope's exit. Shipped (`l11_let_bound_drain.hl`).

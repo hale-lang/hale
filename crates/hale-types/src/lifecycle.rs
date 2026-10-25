@@ -105,7 +105,7 @@
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Shipped (pool-placed owner, on its worker, L5)
 //! 2     Closures Run                             Pending (no option chosen)
 //! 3     Accept Birth Run Dissolve                Shipped (birth, L4); Pending (no option chosen)
-//! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
+//! 4     FailureDelivery Reclaim                  Shipped (bound instance route, C25 and C31)
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; Shipped (L4)
 //! 7     WaitAbort PoolJoin ReaderStop            Shipped
@@ -1084,8 +1084,8 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "the failure route bound at birth, in every spine",
         kinds: &[K::FailureDelivery, K::Reclaim],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "C25" }, "a dissolve-epoch violation under the reclaim spine"),
-            (Status::KnownOpen { inventory_row: "C31" }, "a dissolve-epoch violation in a cascade lowered in fn main"),
+            (Status::Shipped, "a dissolve-epoch violation under the reclaim spine"),
+            (Status::Shipped, "a dissolve-epoch violation in a cascade lowered in fn main"),
         ],
     },
     DecisionLine {

@@ -321,3 +321,13 @@ runs `run_genmc.sh` on every push/PR, so a race / UAF / assertion
 violation in any model fails the build. New models are picked up
 automatically. `build_genmc.sh` + `run_genmc.sh` are also the local
 recipe.
+
+### Lifecycle sanitizer checks on native hosts
+
+The lifecycle and failure-delivery fixture tests use AddressSanitizer with
+chunk pooling disabled to expose stale child and supervisor reads. On Linux,
+they also enable LeakSanitizer. Apple's ASan runtime does not support
+`detect_leaks=1`; on macOS these tests retain address checks with leak detection
+disabled. Passing them on macOS establishes no leak-check result. Their Linux
+CI run retains both checks, and negative controls still require a missing
+lifetime hold to produce a memory-access failure.
