@@ -69,6 +69,13 @@ concurrently on several threads. Local data transformations and classified
 allocation remain allowed; an unresolved callback or receiver-confinement
 question cannot establish that a codec is safe.
 
+Local record fields use their declared value semantics even when the record
+comes from the stdlib and its executable bodies are outside the analysis
+horizon. This does not establish confinement for a locus held inside a record.
+An unresolved type parameter also cannot inherit a record's purity merely
+by sharing its name. Unknown callbacks and default execution still need their
+own coverage.
+
 ### Concurrency & Thread Placement Checks
 
 | Check | Severity | Condition Flagged |

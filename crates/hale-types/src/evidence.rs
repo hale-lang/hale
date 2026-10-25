@@ -107,7 +107,8 @@ use crate::symbol::Bundle;
 // 21: source phase roots include automatic assertions and reject missing reports.
 // 25: parent accept/release work follows source caller construction contexts.
 // 29: fresh field ownership follows canonical nominal alias/generic resolution.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 29;
+// 30: declaration-only record confinement and nominal/generic shadowing.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 30;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib

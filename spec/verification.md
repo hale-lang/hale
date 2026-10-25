@@ -668,7 +668,7 @@ classification capability and `flow_policy` adequacy. Analysis semantics
 
 **The topology artifact** (#382 phase 2; current schema 1.35):
 The exporter uses artifact semantics **3**. The in-process canonical model
-uses semantics **12**, and analysis inputs use semantics **29**. These are
+uses semantics **12**, and analysis inputs use semantics **30**. These are
 separate version domains; the artifact's `semantics` field is not the model
 semantics version. Reachability reports use their own schema,
 `hale.reachability-proofs/2`. Schema 1.35 adds the complete guarded parent

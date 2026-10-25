@@ -24,11 +24,12 @@ lake env leanchecker GraphCertificates
 
 `lean-toolchain` pins the toolchain. The compiled library module is
 `GraphCertificates`; `haleGraphCertificates` is the Lake package name, not a
-module to pass to `leanchecker`. CI is configured to audit the axioms
-reachable from the `Hale.Claims` namespace with the allowlist
-`propext,Quot.sound`. A proof
-that adds an arbitrary axiom or a native-evaluation assumption fails that
-audit even if the compiler accepted its term.
+module to pass to `leanchecker`. CI audits declarations defined in the
+`GraphCertificates` module, including the `Hale.Claims` namespace, with the
+allowlist `propext,Quot.sound`. The audit root names a defining module;
+a declaration namespace is not a substitute. A proof that adds an arbitrary
+axiom or a native-evaluation assumption fails that audit even if the compiler
+accepted its term.
 
 The proposition concerns the **supplied graph and source/target lists**. It
 does not establish that an extracted graph represents every relevant Hale

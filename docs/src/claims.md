@@ -935,7 +935,7 @@ The versions describe different things:
 | Topology `schema` | `1.35` | Serialized fields and admission rules. |
 | Topology `semantics` | `3` | Interpretation of artifact rows. |
 | In-process model semantics | `12` | Canonical model invariants; separate from topology `semantics`. |
-| Analysis semantics | `29` | Meaning of the analyses and evidence inputs. |
+| Analysis semantics | `30` | Meaning of the analyses and evidence inputs. |
 | Reachability proof schema | `hale.reachability-proofs/2` | Separate certificate report format. |
 
 Key artifact rules:

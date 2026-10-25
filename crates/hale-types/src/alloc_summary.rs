@@ -2805,20 +2805,23 @@ pub fn summarize_within(
     // uses the same alias/qualified-path resolver as handler routing, keeping
     // the template identity of generic loci rather than parsing a suffix.
     let mut scope_types = vec![crate::handler_routing::DeclaredNames::default(); scopes.len()];
+    let mut scope_nominals = vec![BTreeSet::<String>::new(); scopes.len()];
     {
-        fn collect_names(items: &[TopDecl], out: &mut BTreeSet<String>, types: &mut crate::handler_routing::DeclaredNames, conversions: &mut BTreeSet<String>, foreign: bool) {
+        fn collect_names(items: &[TopDecl], out: &mut BTreeSet<String>, types: &mut crate::handler_routing::DeclaredNames, nominals: &mut BTreeSet<String>, conversions: &mut BTreeSet<String>, foreign: bool) {
             for item in items {
                 match item {
                     TopDecl::Fn(f) => {
                         out.insert(f.name.name.clone());
                     }
                     TopDecl::Locus(l) => {
+                        nominals.insert(l.name.name.clone());
                         types.loci.insert(l.name.name.clone());
                         types.decls.entry(l.name.name.clone()).or_insert(if foreign {
                             crate::handler_routing::DeclAt::Stdlib(l.id)
                         } else { crate::handler_routing::DeclAt::Program(l.id) });
                     }
                     TopDecl::Type(t) => {
+                        nominals.insert(t.name.name.clone());
                         if matches!(t.body, TypeDeclBody::Scalar(_)) { conversions.insert(t.name.name.clone()); }
                         if matches!(t.body, TypeDeclBody::Struct(_)) {
                             types.records.entry(t.name.name.clone()).or_insert(if foreign {
@@ -2831,14 +2834,16 @@ pub fn summarize_within(
                             }
                         }
                     }
-                    TopDecl::Module(m) => collect_names(&m.items, out, types, conversions, foreign),
+                    TopDecl::Interface(i) => { nominals.insert(i.name.name.clone()); }
+                    TopDecl::Perspective(p) => { nominals.insert(p.name.name.clone()); }
+                    TopDecl::Module(m) => collect_names(&m.items, out, types, nominals, conversions, foreign),
                     _ => {}
                 }
             }
         }
         for (program, ids) in identified {
             let scope = scope_index(ids);
-            collect_names(&program.items, &mut scope_fns[scope], &mut scope_types[scope], &mut scope_value_constructors[scope], crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, *ids)));
+            collect_names(&program.items, &mut scope_fns[scope], &mut scope_types[scope], &mut scope_nominals[scope], &mut scope_value_constructors[scope], crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, *ids)));
         }
         // The stdlib surface is visible in every seed; its private aliases
         // remain in its own scope, just as its bare free-fn names do.
@@ -3613,6 +3618,11 @@ pub fn summarize_within(
         BTreeMap::new();
     let mut locus_elem_types: BTreeMap<String, BTreeMap<String, String>> =
         BTreeMap::new();
+    // Plain-record declarations are a language surface even when their
+    // executable bodies are outside this summary. Keep their confinement
+    // shapes separate from call/constructor resolution and respect each
+    // universe's nominal shadowing.
+    let mut confinement_records = vec![BTreeMap::new(); scopes.len()];
     {
         fn elem_type_name(te: &TypeExpr) -> Option<String> {
             match te {
@@ -3624,6 +3634,7 @@ pub fn summarize_within(
             items: &[TopDecl],
             structs: &mut BTreeMap<String, BTreeMap<String, String>>,
             elems: &mut BTreeMap<String, BTreeMap<String, String>>,
+            records: &mut BTreeMap<String, RecordConfinementShape>,
         ) {
             for item in items {
                 match item {
@@ -3636,6 +3647,10 @@ pub fn summarize_within(
                                     m.insert(f.name.name.clone(), tn);
                                 }
                             }
+                            records.insert(td.name.name.clone(), RecordConfinementShape {
+                                fields: m.clone(),
+                                parameters: td.generics.iter().map(|g| g.name.name.clone()).collect(),
+                            });
                             structs.insert(td.name.name.clone(), m);
                         }
                     }
@@ -3706,18 +3721,41 @@ pub fn summarize_within(
                         }
                     }
                     TopDecl::Module(md) => {
-                        collect_maps(&md.items, structs, elems)
+                        collect_maps(&md.items, structs, elems, records)
                     }
                     _ => {}
                 }
             }
         }
-        for program in programs {
-            collect_maps(
-                &program.items,
-                &mut struct_field_types,
-                &mut locus_elem_types,
-            );
+        for (program, ids) in identified {
+            let mut records = BTreeMap::new();
+            let mut fields = BTreeMap::new();
+            let mut elements = BTreeMap::new();
+            collect_maps(&program.items, &mut fields, &mut elements, &mut records);
+            struct_field_types.extend(fields);
+            locus_elem_types.extend(elements);
+            confinement_records[scope_index(ids)].extend(records);
+        }
+        let copy_scope = crate::stdlib_bodies::identities()
+            .and_then(|ids| scopes.iter().position(|s| std::ptr::eq(*s, ids)));
+        let standard_records = if let Some(scope) = copy_scope {
+            confinement_records[scope].clone()
+        } else {
+            let mut records = BTreeMap::new();
+            // The same declaration producer, without adding a single
+            // executable summary/default/call row for these declarations.
+            if let Some(program) = crate::stdlib_bodies::program() {
+                collect_maps(&program.items, &mut BTreeMap::new(), &mut BTreeMap::new(), &mut records);
+            }
+            records
+        };
+        for (scope, records) in confinement_records.iter_mut().enumerate() {
+            if Some(scope) == copy_scope { continue; }
+            let mut visible: BTreeMap<_, _> = standard_records.iter()
+                .filter(|(name, _)| !scope_nominals[scope].contains(*name))
+                .map(|(name, fields)| (name.clone(), fields.clone())).collect();
+            visible.extend(std::mem::take(records));
+            *records = visible;
         }
     }
 
@@ -3866,6 +3904,7 @@ pub fn summarize_within(
             field_types,
             all_field_types: &locus_field_types,
             all_struct_fields: &struct_field_types,
+            confinement_records: &confinement_records[scope_index(ids)],
             all_elem_types: &locus_elem_types,
             fn_ret_types: &fn_ret_types,
             string_rets: &string_rets,
@@ -6312,6 +6351,14 @@ enum Local {
 /// declaration of that name ([`AllocSummary::by_name`]).
 type Known = BTreeMap<(Option<String>, String), FnKey>;
 
+/// Declaration-only data shapes used by receiver confinement. A template
+/// parameter is not a nominal record even when its spelling matches one.
+#[derive(Clone, Debug)]
+struct RecordConfinementShape {
+    fields: BTreeMap<String, String>,
+    parameters: BTreeSet<String>,
+}
+
 struct Walker<'a> {
     purity_sites: Vec<crate::purity::PuritySite>,
     value_conversions: BTreeSet<SiteId>,
@@ -6393,6 +6440,7 @@ struct Walker<'a> {
     /// fallback for chained receivers passing through plain
     /// structs (`route.handler.handle()`).
     all_struct_fields: &'a BTreeMap<String, BTreeMap<String, String>>,
+    confinement_records: &'a BTreeMap<String, RecordConfinementShape>,
     /// #382 receiver-typing: per-locus ELEMENT types (array params
     /// fields + capacity slots), for `for`-binder typing.
     all_elem_types: &'a BTreeMap<String, BTreeMap<String, String>>,
@@ -6704,16 +6752,17 @@ impl<'a> Walker<'a> {
         let mut receiver = self.var_types.get(&target.head.name).cloned();
         for (index, segment) in target.tail.iter().enumerate() {
             let Some(ty) = receiver.as_ref() else { return true };
-            if self.locus_types.contains(ty) { return true; }
+            if self.generic_types.contains(ty) || self.locus_types.contains(ty) { return true; }
             receiver = match segment {
                 LValueSeg::Field(field) => {
-                    if !self.scope_types.records.contains_key(ty) { return true; }
+                    let Some(record) = self.confinement_records.get(ty) else { return true };
                     // Replacing a value record's own field does not mutate
                     // an instance reached through that field. Primitive
                     // fields need no nominal receiver type in the map.
                     if index + 1 == target.tail.len() { return false; }
-                    self.all_struct_fields.get(ty)
-                        .and_then(|fields| fields.get(&field.name)).cloned()
+                    let next = record.fields.get(&field.name);
+                    if next.is_some_and(|name| record.parameters.contains(name)) { return true; }
+                    next.cloned()
                 },
                 LValueSeg::Index(_) if index == 0 => self.var_elem_types.get(&target.head.name).cloned(),
                 LValueSeg::Index(_) => None,

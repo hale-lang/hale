@@ -86,7 +86,7 @@ jobs:
           leanchecker: 'true'
           leanchecker-args: GraphCertificates
           axiom-audit: 'true'
-          axiom-audit-root: Hale.Claims
+          axiom-audit-root: GraphCertificates
           axiom-audit-allow: propext,Quot.sound
       - name: Check compiler-produced certificates and negative controls
         run: python3 verification/lean/check_generated.py

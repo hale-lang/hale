@@ -1181,8 +1181,8 @@ resident, preserving those shape hashes. Flow or template classifications
 now participate in shape identity; affected recordings need re-recording.
 Admission validates tag vocabulary, identity, order, duplicates, schema,
 capability contradictions and law/evidence binding without evaluating a
-second flow judgment. Analysis semantics is 11; model semantics remains
-1 because this adds facts without reinterpreting existing rows.
+second flow judgment. This account was introduced with analysis semantics 11
+and model semantics 1, adding facts without reinterpreting existing rows.
 
 ## Storage and admission configuration
 
@@ -1428,7 +1428,8 @@ function coverage carries `field_default` and `owner_type` for field bodies.
 Admission checks exclusive ownership, default definitions, constructor
 omissions and typed target agreement. It cannot interchange a record and a
 locus. Schema 1.26's locus-only `parameter_defaults` account remains readable;
-older schemas reject the new vocabulary. Model semantics is 8; analysis semantics is 21. Explicit closure checkpoints
+older schemas reject the new vocabulary. This account was introduced in model
+semantics 8 and analysis semantics 21. Explicit closure checkpoints
 have the separate execution account below. Automatic closure epochs and
 runtime lifecycle execution still require their own source/coverage accounts;
 this constructor-default projection does not establish those obligations.
@@ -1781,9 +1782,10 @@ retains admission/release opportunity, scheduling, frame and lifetime
 uncertainty; it establishes no occurrence count, native caller frame,
 physical retention bound or feasible temporal trace. The portable model
 currently preserves this work as scoped initialization coverage at its root.
-A portable parent-protocol execution relation and independent account
-validation remain unfinished; graph absence cannot use this source account
-as proof of complete execution coverage.
+The guarded portable parent-protocol relations and their source-account
+validation are described below. Runtime occurrence, admission, scheduling
+and lifetime correspondence remain separate obligations; graph absence cannot
+use this source account as proof of complete execution coverage.
 
 
 ### Parent protocol source contexts and guarded entry
@@ -1843,5 +1845,27 @@ supported horizon. Artifact admission checks consistency, not source
 extraction or runtime correspondence. It cannot detect coordinated deletion
 of all independent source facts; proof trust still includes extraction.
 Fleet composition and topology rendering project the admitted guarded edges.
-Analysis semantics is 26. The twelve-part claims upgrade remains broader than
-this execution account.
+This account was introduced in analysis semantics 26. The twelve-part claims
+upgrade remains broader than this execution account.
+
+### Receiver confinement and declaration horizons
+
+The shared allocation/execution summary produces receiver-confinement sites
+from record declarations, independently of the executable-body horizon.
+Its existing declaration-field producer also supplies canonical stdlib record
+shapes when those bodies are absent. Each source universe keeps its nominal
+shadowing: local aliases, enums, loci or other type declarations cannot inherit
+a foreign record's shape by name. Private stdlib aliases do not become
+program-scope aliases through this account.
+
+Record fields retain their template-parameter identities. A type parameter
+of a function, locus or record does not become a nominal data record because
+their spellings match. Nested writes through an unresolved parameter
+or managed handle retain a confinement gap. Replacing a local value record's
+own field does not mutate a locus reached through that field.
+
+These facts supply purity through the same summary as calls, defaults,
+lifecycle and parent execution. They import no executable rows, defaults or
+callee bindings, and cannot close an unknown callback or missing execution
+account. Analysis semantics 30 binds this classification. This change adds no
+portable model table and proves no runtime lifetime or retained-resource bound.

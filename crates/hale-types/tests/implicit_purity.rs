@@ -289,3 +289,96 @@ fn main() { let owner: Owner<Child> = Owner { }; owner.maker.make(); }
         Purity::Pure
     ));
 }
+
+// These declaration-only probes intentionally omit foreign executable bodies.
+// Ordinary strings keep partial/negative API inputs out of the program corpus.
+fn declaration_only(source: &str) -> (hale_types::alloc_summary::AllocSummary, Purity) {
+    let mut program = hale_syntax::parse_source(source).unwrap();
+    let ids = hale_types::snapshot::mint([("probe.hl", &mut program)], &[]);
+    let summary = hale_types::alloc_summary::summarize_identified(&[(&program, &ids)], &[]);
+    let key = summary.resolve(None, "adjust").unwrap();
+    let result = hale_types::purity::infer_from_summary(&summary, &Default::default())[key].clone();
+    (summary, result)
+}
+
+#[test]
+fn stdlib_record_confinement_uses_declarations_without_importing_bodies() {
+    for source in [
+        "fn adjust(value: __StdMetricsHistogramData) { let mut local = value; local.count = 2; } fn main() { }",
+        "type Wrapped { value: __StdMetricsHistogramData; } fn adjust(value: Wrapped) { let mut local = value; local.value.count = 2; } fn main() { }",
+    ] {
+        let (summary, result) = declaration_only(source);
+        assert!(matches!(result, Purity::Pure), "{result:?}");
+        assert_eq!(summary.fns.len(), 2, "record visibility imports no executable rows");
+        assert!(summary.analysis_copy.is_empty() && summary.initializers.is_empty());
+        let complete = snapshot(source);
+        assert!(!complete.demand_check().unwrap().diags.iter().any(|d| d.is_error()));
+        assert!(matches!(purity(&complete, "adjust"), Purity::Pure));
+    }
+}
+
+#[test]
+fn a_local_nominal_override_does_not_inherit_a_stdlib_record_proof() {
+    let source = "type __StdMetricsHistogramData = Missing; fn adjust(value: __StdMetricsHistogramData) { let mut local = value; local.count = 2; } fn main() { }";
+    let (_, result) = declaration_only(source);
+    assert!(matches!(&result, Purity::Uncertified { reason, .. } if reason.contains("receiver-confinement")), "{result:?}");
+}
+
+#[test]
+fn data_declarations_do_not_close_an_unknown_callback() {
+    let source = "fn adjust(value: __StdMetricsHistogramData, callback: fn()) { let mut local = value; local.count = 2; callback(); } fn main() { }";
+    let (summary, result) = declaration_only(source);
+    assert_eq!(summary.fns.len(), 2);
+    assert!(matches!(result, Purity::Uncertified { .. }), "{result:?}");
+}
+
+#[test]
+fn data_declarations_do_not_hide_executable_defaults() {
+    let source = "fn default_n() -> Int { println(1); return 0; } type Wrapped { value: __StdMetricsHistogramData; n: Int = default_n(); } fn adjust(value: __StdMetricsHistogramData) { let mut local = value; local.count = 2; let wrapped = Wrapped { value: local }; } fn main() { }";
+    let (summary, result) = declaration_only(source);
+    assert!(!summary.initializers.is_empty());
+    assert!(summary.analysis_copy.is_empty());
+    assert!(matches!(result, Purity::Impure(_)), "{result:?}");
+}
+
+#[test]
+fn record_shapes_do_not_confine_managed_receivers_or_nested_handles() {
+    for source in [
+        "locus State { params { count: Int = 0; } } fn adjust(value: State) { value.count = 2; } fn main() { }",
+        "locus State { params { count: Int = 0; } } type Wrapped { state: State; } fn adjust(value: Wrapped) { let mut local = value; local.state.count = 2; } fn main() { }",
+    ] {
+        let (_, result) = declaration_only(source);
+        assert!(matches!(&result, Purity::Uncertified { reason, .. } if reason.contains("receiver-confinement")), "{result:?}");
+    }
+}
+
+#[test]
+fn generic_parameter_spellings_cannot_borrow_a_nominal_record_proof() {
+    for source in [
+        "fn adjust<__StdMetricsHistogramData>(value: __StdMetricsHistogramData) { value.count = 2; } fn main() { }",
+        "locus State { params { count: Int = 0; } } type Wrapped<__StdMetricsHistogramData> { value: __StdMetricsHistogramData; } fn adjust(value: Wrapped<State>) { value.value.count = 2; } fn main() { }",
+        "type Data { count: Int = 0; } locus State { params { count: Int = 0; } } type Wrapped<Data> { value: Data; } fn adjust(value: Wrapped<State>) { value.value.count = 2; } fn main() { }",
+    ] {
+        let (_, result) = declaration_only(source);
+        assert!(matches!(&result, Purity::Uncertified { reason, .. } if reason.contains("receiver-confinement")), "{result:?}");
+        if source.starts_with("type Data") {
+            let complete = snapshot(source);
+            assert!(!complete.demand_check().unwrap().diags.iter().any(|d| d.is_error()));
+            assert!(matches!(purity(&complete, "adjust"), Purity::Uncertified { .. }));
+        }
+    }
+}
+
+#[test]
+fn generic_record_name_collision_cannot_certify_a_concurrent_codec() {
+    let source = CODEC
+        .replace("locus Child { }", "type Data { count: Int = 0; } locus State { params { count: Int = 0; } } type Wrapped<Data> { value: Data; } fn adjust(value: Wrapped<State>) { value.value.count = 2; }")
+        .replace("params { seen: Int = 0; }", "params { state: State = State { }; }")
+        .replace("    accept(c: Child) { self.seen = self.seen + 1; }", "")
+        .replace("Child { };", "let wrapped: Wrapped<State> = Wrapped { value: self.state }; adjust(wrapped);");
+    let s = snapshot(&source);
+    assert!(matches!(purity(&s, "adjust"), Purity::Uncertified { .. }));
+    assert!(matches!(purity(&s, "Codec::encode"), Purity::Uncertified { .. }));
+    assert!(matches!(purity(&s, "Codec::decode"), Purity::Pure));
+    codec_refused(&s);
+}
