@@ -1089,12 +1089,15 @@ sync.
   `oidc` a head serves nothing without a verified token: `/api/*`
   answers 401, `/` redirects to `/auth/login`. A session comes from OpenID Connect's
   authorization-code flow against `dna.oidc.issuer` (https, or plain
-  http to `127.0.0.1` or `localhost` exactly — the URL's host is parsed,
-  userinfo refused, never matched by prefix): the head discovers the
-  issuer's endpoints, refuses a discovery document whose
+  http to `127.0.0.1` or `localhost` exactly, or to exactly the address
+  the habitat declares, `HALE_DNA_HABITAT_ADDRESS`: a habitat on another
+  machine of the LAN is named by its DNS and runs no TLS, `spec/habitat.md`
+  § A habitat on another machine — the URL's host is parsed, userinfo
+  refused, never matched by prefix, and no other host is admitted): the
+  head discovers the issuer's endpoints, refuses a discovery document whose
   `authorization_endpoint` or `token_endpoint` is not https (plain http
-  only when the issuer itself is on this machine; `discovery_refusal`,
-  #635), sends the browser to its authorize endpoint with a random
+  only when the issuer itself is on this machine or the habitat's declared
+  address; `discovery_refusal`, #635), sends the browser to its authorize endpoint with a random
   `state` and `nonce` (`std::os::getrandom`), and exchanges the
   returned code at the token endpoint itself with the client's secret
   (`dna.oidc.client`, its secret the vault's `oidc-client-<client>`,
@@ -1139,8 +1142,9 @@ sync.
   the session becomes a bearer; a caller's own bearer is not asked.
   An OIDC child is ready when it refuses an unauthenticated read carrying the digest of the
   proof the face gave it (`X-Hale-Child`), so a process squatting on the
-  child's port is never handed a token. **An issuer on the loopback is
-  anyone's who can bind its port**, so its key is pinned: a head under
+  child's port is never handed a token. **An issuer on the loopback (or on
+  the habitat's declared address) is anyone's who can bind its port**, so
+  its key is pinned: a head under
   a loopback issuer does not start without `dna.oidc.key` (the issuer's
   SubjectPublicKeyInfo) and trusts that key alone. In local mode the stub
   signs under a key made for the launch, its client secret is the
@@ -6715,7 +6719,7 @@ otherwise.
 | `HALE_DNA_TASK_POLICY=<path>` | unset | The policy for task administration commands. |
 | `HALE_DNA_RPC_SOCKET=<path>` | the record's socket under `XDG_RUNTIME_DIR/hale/dna` (else `.hale/dna`) | Where the head serves its surface (`HeadCommands`, GH #1417) over `unix::Rpc`; the capabilities name it to the legs. |
 | `HALE_DNA_ORG_DRAFTS=1` | off | Lets the api accept organization-source drafts (`1` only). |
-| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
+| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine, or on exactly the habitat's declared address (`HALE_DNA_HABITAT_ADDRESS`), only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
 | `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |
 | `HALE_DNA_OIDC_MEMBER=<subject>=<member>` | unset | Which member a subject is. |
 | `HALE_DNA_OIDC_KEY=<pin>` | unset | The pin of the issuer's signing key. |

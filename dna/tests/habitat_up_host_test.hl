@@ -24,12 +24,12 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// `argv` in `dir`, with the fixture's SSH config, its head a trusted-local
-// one.
+// `argv` in `dir`, with the fixture's SSH config; the head signs in
+// through the habitat's OIDC stub, as a person's does.
 fn in_dir(dir: String, config: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         1200,
-        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL && exec \"$@\"\nsh\n"
             + dir + "\n" + config + "\n" + argv,
     );
 }
@@ -206,6 +206,30 @@ fn main() {
             && std::str::contains(status.stdout, "head    " + head + " (up)")
             && std::str::contains(status.stdout, "allocations, as the head answers:"),
         "status reads the pointer and asks the head: " + status.stdout + status.stderr,
+    );
+    // the identity stub's issuer and endpoints are recorded under the
+    // habitat's declared address (`localhost`, not the 127.0.0.1 it binds),
+    // so a browser on this machine signs in at the face it reaches
+    let face_url = std::json::find_string_field(p, "face");
+    let base = std::str::parse_int(
+        face_url[(std::str::index_of(face_url, "localhost:") + 10)..len(face_url)],
+    )
+    or 0;
+    let issuer = "http://localhost:" + to_string(base + 3);
+    let discovery = dna::run_tool(
+        "curl\n-sf\n" + issuer + "/.well-known/openid-configuration",
+    ).stdout;
+    std::test::assert(
+        std::json::find_string_field(discovery, "issuer") == issuer
+            && std::str::starts_with(
+                std::json::find_string_field(discovery, "authorization_endpoint"),
+                issuer + "/",
+            )
+            && std::str::starts_with(
+                std::json::find_string_field(discovery, "token_endpoint"),
+                issuer + "/",
+            ),
+        "the stub's discovery document names the declared address: " + issuer + " " + discovery,
     );
     let migrate = in_dir(scratch, config, toolchain() + "\nhabitat\nmigrate");
     std::test::assert(

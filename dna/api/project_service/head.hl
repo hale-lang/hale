@@ -141,8 +141,12 @@ type DetachResult {
 fn public_port_of(cfg: HeadConfig) -> Int {
     return if cfg.public_port > 0 { cfg.public_port } else { cfg.port };
 }
+// The origin a browser reaches the head at: the habitat's declared
+// address, else the loopback.
 fn head_origin(cfg: HeadConfig) -> String {
-    return "http://127.0.0.1:" + to_string(public_port_of(cfg));
+    let declared = dna::declared_address();
+    return "http://" + (if len(declared) > 0 { declared } else { "127.0.0.1" }) + ":"
+        + to_string(public_port_of(cfg));
 }
 fn children_dir(cfg: HeadConfig) -> String { return cfg.state_dir + "/children"; }
 // Where the API child reports the ports it got (`HALE_DNA_API_PORTS`).
@@ -1404,11 +1408,14 @@ locus Head {
         // or nothing — the shell at `/` sends a browser to sign in, and
         // every read and command of the head's and the project's asks for it
         if self.cfg.principal_mode == "oidc" {
-            // the loopback by name only: a page on another name (DNS
-            // rebinding) reaches nothing
+            // the loopback, or the habitat's declared address, by name
+            // only: a page on another name (DNS rebinding) reaches nothing
             let host = std::http::header(req, "Host");
             let port = to_string(public_port_of(self.cfg));
-            if host != "127.0.0.1:" + port && host != "localhost:" + port {
+            let declared = dna::declared_address();
+            if host != "127.0.0.1:" + port && host != "localhost:" + port
+                && (len(declared) == 0 || host != declared + ":" + port)
+            {
                 return self.error(
                     421,
                     "misdirected_request",

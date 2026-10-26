@@ -98,12 +98,25 @@ fn jwks_keys(doc: String, pinned: String) -> String {
 }
 
 // Whether `url` is an issuer on this machine (plain http to the loopback),
+// or the habitat's own on the address it declares (plain http to exactly
+// that host: phase 4's LAN, named by its DNS, no TLS of the habitat's),
 // whose key a record must pin.
 fn issuer_loopback(url: String) -> Bool {
+    let declared = declared_address();
     return std::str::starts_with(url, "http://127.0.0.1:")
         || std::str::starts_with(url, "http://127.0.0.1/")
         || std::str::starts_with(url, "http://localhost:")
-        || std::str::starts_with(url, "http://localhost/");
+        || std::str::starts_with(url, "http://localhost/")
+        || (len(declared) > 0
+                && (std::str::starts_with(url, "http://" + declared + ":")
+                        || std::str::starts_with(url, "http://" + declared + "/")));
+}
+
+// The address the habitat this process serves declares, its face, head and
+// identity stub recorded under it (`HALE_DNA_HABITAT_ADDRESS`, set on the
+// habitat's services); "" when none is declared.
+fn declared_address() -> String {
+    return std::str::trim(env_or_empty("HALE_DNA_HABITAT_ADDRESS"));
 }
 
 // A SubjectPublicKeyInfo (base64) as the PEM the verifier reads.
@@ -291,13 +304,16 @@ fn url_parts(url: String) -> UrlParts {
 }
 
 // Whether a URL may be an identity provider's: https to a host, or plain
-// http to this machine exactly (`127.0.0.1` or `localhost`), never by
-// prefix.
+// http to this machine exactly (`127.0.0.1` or `localhost`) or to exactly
+// the address the habitat declares (`declared_address`), never by prefix.
 fn endpoint_allowed(url: String) -> Bool {
     let u = url_parts(url);
     if len(u.host) == 0 { return false; }
     if u.scheme == "https" { return true; }
-    return u.scheme == "http" && (u.host == "127.0.0.1" || u.host == "localhost");
+    let declared = declared_address();
+    return u.scheme == "http"
+        && (u.host == "127.0.0.1" || u.host == "localhost"
+                || (len(declared) > 0 && u.host == declared));
 }
 
 // The endpoints an issuer's discovery document names, checked before the

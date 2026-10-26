@@ -97,12 +97,16 @@ Nothing the habitat runs binds every interface of the host. The face and
 the head, the listeners a person reaches, bind the address the habitat
 declares (`HALE_DNA_HABITAT_LISTEN`: `127.0.0.1` for a local habitat, the
 host's interface for one on another machine, below), handed to the `face`
-service as `HALE_DNA_LISTEN_HOST`; the head's API child and the OIDC stub
-bind `127.0.0.1`, the stub because its issuer is
-`http://127.0.0.1:<port>` and a sign-in through it is a browser's on the
-habitat's own machine. On macOS the face, the head and the stub bind
-`0.0.0.0` inside the `face` container, on the project's network, and
-compose publishes their ports on the declared address alone.
+service as `HALE_DNA_LISTEN_HOST`, and so does the OIDC stub; the head's
+API child binds `127.0.0.1`. The stub's issuer and endpoints, the head's
+origin and the `Host` it answers as are recorded under the habitat's
+declared address (`HALE_DNA_HABITAT_ADDRESS`, handed to `body` and `face`:
+`127.0.0.1` locally, `<name>` on another machine), so a browser on the
+admin machine signs in at the face it reaches; plain http is admitted for
+the loopback and exactly that address, no other host (`spec/dna.md`
+§ OIDC). On macOS the face, the head and the stub bind `0.0.0.0` inside
+the `face` container, on the project's network, and compose publishes
+their ports on the declared address alone.
 
 ### A habitat on another machine
 

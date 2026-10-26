@@ -1984,6 +1984,9 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     // on the declared address alone (`ports.yaml` below), never on the
     // host's other interfaces.
     let face_listen = if is_macos { "0.0.0.0".to_string() } else { declared.clone() };
+    // The host the face, head and identity stub are recorded under, which
+    // the head answers as and the stub names its issuer and endpoints by.
+    let declared_at = habitat_address();
     let net_or_hosts = if is_macos {
         "    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n".to_string()
     } else {
@@ -2032,7 +2035,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n  face:\n    image: \"{image}\"\n"));
@@ -2042,7 +2045,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
