@@ -93,6 +93,16 @@ the machine's loopback is dialled there. A listener in a service's own
 container (the face's head and its API child, the OIDC stub) is dialled at
 `127.0.0.1` in both.
 
+`body` and `face` mount the host's docker socket because the habitat is the
+compose provider from inside its containers: `body` brings up, restarts,
+observes and probes the allocations of every organism the habitat carries
+and execs into them to provision their credentials, and the head reads
+their published ports. Access to that socket is root on the host: whoever
+can run code in either service (the toolchain image, the habitat's genome,
+the organisms grafted under it) can start any container with any host path
+mounted. A habitat is therefore trusted as the machine's administrator is,
+and an organism runs under it only by graft.
+
 The **`ssh` provider** places on the machines of the LAN, each a host
 added by the name it was added under (`hale habitat host add <name>`),
 resolved by the LAN's DNS and reached over plain SSH on its port (22
