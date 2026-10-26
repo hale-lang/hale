@@ -1104,6 +1104,18 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                 "dir-rm", "", groot, 65,
             ),
         );
+    } else if std::str::starts_with(groot, habitat + "/grafted/") {
+        // a directory grafted through a pointer: the habitat's own copy
+        items = teardown_more(
+            items,
+            teardown_item(
+                "genome", subject,
+                "its genome repository " + groot
+                    + ", the habitat's copy of the directory grafted from another machine",
+                "1 directory", "no: commits made there since and not pushed are lost",
+                "dir-rm", "", groot, 65,
+            ),
+        );
     } else {
         items = teardown_more(
             items,

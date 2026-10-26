@@ -84,6 +84,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat [--head <url>] host probe <name>
        hale habitat [--head <url>] host remove <name> [--plan]
        hale habitat [--head <url>] organism remove <name> [--plan]
+       hale habitat organism <name> dna <verb> [args…]
        hale habitat [--head <url>] brief
        hale habitat [--head <url>] status
        hale habitat down [--forget [--plan]]
@@ -143,9 +144,12 @@ up --host <name>     run the habitat on another machine, one with docker and
                      through the pointer; `status` asks it, `down` runs
                      there over SSH (`--forget` planned and confirmed
                      there by the name typed at this terminal, the pointer
-                     removed last), and `migrate`, `handover` and `graft
-                     <dir>`, which act on a genome here, are refused. Run
-                     again, it finds the same habitat there by its
+                     removed last), `graft <dir>` runs there over SSH (a
+                     directory here shipped there as the habitat's copy,
+                     the organism's home), `organism <name> dna <verb>`
+                     runs an organism's own verbs there, and `migrate` and
+                     `handover`, which act on a genome here, are refused.
+                     Run again, it finds the same habitat there by its
                      record's identity and changes nothing.
 image build [<dir>]  build the habitat toolchain image once from the local
                      checkout at <dir> (`.` by default) as context and print
@@ -283,6 +287,13 @@ organism remove <name>
                      The head's Commands::plan_remove_organism and
                      ::remove_organism. The habitat itself is removed by
                      `down --forget`.
+organism <name> dna <verb> [args…]
+                     `hale dna <verb>` in the grafted organism's own
+                     directory (`review`, `task create`, `work run`,
+                     `show`, `secret set`, …): through a pointer
+                     (`up --host`), on the habitat's machine over SSH, at
+                     this terminal when there is one, after the pointer's
+                     record is checked there.
 brief                the Board's hat as a prompt, with the habitat's live
                      state: its hosts, its allocations and their pulse, its
                      organisms, its saplings, and what waits for the Board.
@@ -377,7 +388,16 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(verb @ ("migrate" | "handover")) if remote::pointer().is_some() => remote::refuse_local(verb).unwrap_or(ExitCode::from(2)),
-        Some("graft") if remote::pointer().is_some() && args.get(1).is_some_and(|a| Path::new(a).is_dir() || a.contains('/')) => remote::refuse_local("graft <dir>").unwrap_or(ExitCode::from(2)),
+        // a directory (one here, or a path) is grafted on the habitat's
+        // machine over SSH; a bare name is a sapling, the head's graft
+        Some("graft") if args.get(1).is_some_and(|a| Path::new(a).is_dir() || a.contains('/')) && remote::pointer().is_some() => match remote::pointer() {
+            Some(p) => remote::graft(&p, &args[1..]),
+            None => ExitCode::from(2),
+        },
+        Some("organism") if args.get(2).map(String::as_str) == Some("dna") => match remote::pointer() {
+            Some(p) => remote::organism_dna(&p, &args[1..]),
+            None => organism_dna(&args[1..]),
+        },
         Some("migrate") => migrate(args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))),
         Some("up") => up(&args[1..]),
         Some("image") => image_cmd(&args[1..]),
@@ -632,6 +652,64 @@ fn host(args: &[String]) -> ExitCode {
 /// planned (`Commands::plan_remove_organism`), printed, and confirmed by its
 /// name typed back at a terminal, which `Commands::remove_organism` checks
 /// before it executes the plan item by item. `--plan` prints it and exits.
+/// The directory of the organism the habitat grafted as `name` (or keyed
+/// `name`), from its `habitat.grafted` row and its allocation's cache.
+fn organism_root(name: &str) -> Result<PathBuf, String> {
+    let genome = genome_dir();
+    let keys: Vec<String> = rows_of(&genome)
+        .iter()
+        .filter(|r| r["kind"] == "habitat.grafted")
+        .filter(|r| r["entity"].as_str() == Some(name) || r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).is_some_and(|b| b["name"].as_str() == Some(name)))
+        .filter_map(|r| r["entity"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let key = match keys.as_slice() {
+        [k] => k.clone(),
+        [] => return Err(format!("the habitat grafted no organism `{name}`")),
+        _ => return Err(format!("the habitat grafted more than one organism named `{name}`: name it by its key")),
+    };
+    let cache = PathBuf::from(local_habitat_dir()).join("allocations").join(&key).join("allocation.json");
+    let root = std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["root"].as_str().map(PathBuf::from));
+    match root {
+        Some(r) if r.is_dir() => Ok(r),
+        Some(r) => Err(format!("the organism `{name}`'s directory {} is not on this machine", r.display())),
+        None => Err(format!("the organism `{name}` ({key}) names no directory in {}", cache.display())),
+    }
+}
+
+/// `hale habitat organism <name> dna <verb> [args…]`: `hale dna <verb>` in
+/// the organism's own directory, as it runs there (through a pointer, on
+/// the habitat's machine: remote::organism_dna).
+fn organism_dna(args: &[String]) -> ExitCode {
+    let (Some(name), Some(verb)) = (args.first(), args.get(2)) else {
+        eprintln!("usage: hale habitat organism <name> dna <verb> [args…]");
+        return ExitCode::from(2);
+    };
+    let _ = verb;
+    let root = match organism_root(name) {
+        Ok(r) => r,
+        Err(why) => {
+            eprintln!("hale habitat organism {name}: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    let me = match std::env::current_exe() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("hale habitat organism {name}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match Command::new(me).arg("dna").args(&args[2..]).current_dir(&root).status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat organism {name}: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn organism(args: &[String]) -> ExitCode {
     use std::io::{BufRead, IsTerminal, Write};
     let usage = "usage: hale habitat organism remove <name> [--plan]";

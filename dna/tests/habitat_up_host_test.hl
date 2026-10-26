@@ -279,6 +279,47 @@ fn main() {
         ).stdout,
     );
 
+    // ---- graft <dir> through the pointer: the directory here shipped
+    // there as the habitat's copy and grafted there; the organism seen
+    // through the head, and its own verbs run there
+    let repo = scratch + "/shipme";
+    std::io::fs::mkdir(repo) or discard;
+    std::io::fs::write_file(
+        repo + "/README.md",
+        "# shipme\n\nA repository grafted through a pointer.\n",
+    )
+    or discard;
+    let made = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -q -m shipme\nsh\n"
+            + repo,
+    );
+    std::test::assert_eq_int(made.code, 0, "the repository to ship: " + made.stderr);
+    let grafted = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n" + repo + "\n--attach\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        grafted.code == 0 && std::str::contains(grafted.stdout, "shipped ")
+            && std::io::fs::file_exists(there + "/grafted/shipme/README.md"),
+        "graft <dir> runs there, the directory shipped as the habitat's copy: " + grafted.stdout
+            + grafted.stderr,
+    );
+    // its record, as the copy there pins it, among the head's allocations
+    let pinned = std::io::fs::read_file(there + "/grafted/shipme/hale.toml") or "";
+    let at = std::str::index_of(pinned, "record = \"");
+    let shipped_id = if at < 0 { "" } else { pinned[(at + 10)..(at + 50)] };
+    let seen = in_dir(scratch, config, toolchain() + "\nhabitat\nstatus");
+    std::test::assert(
+        len(shipped_id) == 40 && std::str::contains(seen.stdout, shipped_id),
+        "the head lists the organism grafted through the pointer: " + seen.stdout + seen.stderr,
+    );
+    let its = in_dir(scratch, config, toolchain() + "\nhabitat\norganism\nshipme\ndna\nstatus");
+    std::test::assert(
+        its.code == 0 && std::str::contains(its.stdout, "profile:"),
+        "its own verbs run in its directory there: " + its.stdout + its.stderr,
+    );
+
     // ---- a stale pointer (another record's identity) tears nothing down
     let kept_pointer = std::io::fs::read_file(pointer) or "";
     let real = std::json::find_string_field(kept_pointer, "identity");

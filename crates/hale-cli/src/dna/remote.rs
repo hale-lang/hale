@@ -464,7 +464,7 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
             }
             for r in rows {
                 let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
-                println!("  {:<24} {:<8} {} on {}: {}{}", f("allocation"), f("role"), f("provider"), if f("applied").is_empty() { f("host") } else { f("applied") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), if f("applied").is_empty() { f("host") } else { f("applied") }, if f("organism").is_empty() { String::new() } else { format!(", {}", f("organism")) }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }
@@ -516,7 +516,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if let Some(why) = teardown_refusal(&t.host, &expected, &found) {
+    if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
         eprintln!("hale habitat down: {why}");
         return ExitCode::from(1);
     }
@@ -560,7 +560,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
 /// Why the habitat on `host` must not be stopped or removed through a
 /// pointer to the record `expected` when the record there is `found`
 /// ("" for none): another record there, or none.
-fn teardown_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
+fn pointer_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
     let short = |id: &str| format!("{}…", &id[..12.min(id.len())]);
     if expected.is_empty() {
         return Some(format!("this machine's pointer names no record of the habitat on {host}; nothing there is touched (`hale habitat up --host {host}` reconnects it)"));
@@ -572,6 +572,125 @@ fn teardown_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
         return Some(format!("the habitat on {host} is not the one this machine points at (its record is {}, the pointer's {}); nothing there is touched", short(found), short(expected)));
     }
     None
+}
+
+/// The machine and its record checked against the pointer before an act
+/// there: the probe, or why the act is refused (the exit code beside it).
+fn checked_machine(p: &serde_json::Value, verb: &str) -> Result<(Target, Machine), ExitCode> {
+    let t = Target::of(p);
+    let m = probe(&t).map_err(|why| {
+        eprintln!("hale habitat {verb}: {why}");
+        ExitCode::from(1)
+    })?;
+    let expected = p["identity"].as_str().unwrap_or("").to_string();
+    let found = remote_state(&t, &m).map(|(_, _, id)| id).map_err(|why| {
+        eprintln!("hale habitat {verb}: {why}");
+        ExitCode::from(1)
+    })?;
+    if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
+        eprintln!("hale habitat {verb}: {why}");
+        return Err(ExitCode::from(1));
+    }
+    Ok((t, m))
+}
+
+/// Where a directory grafted through a pointer lives on the habitat's
+/// machine: the habitat's own copy, `<habitat>/grafted/<name>`, which the
+/// organism's removal and the habitat's forget delete.
+fn grafted_dir(m: &Machine, name: &str) -> String {
+    format!("{}/grafted/{name}", habitat_dir(m))
+}
+
+/// `hale habitat graft <dir> [flags]` through a pointer: the graft runs on
+/// the habitat's machine, as `up` and `down` do. A directory that exists
+/// here is shipped there whole (`tar | ssh`) as the habitat's copy and
+/// becomes the organism's home; a path that does not exist is a new
+/// application made there. Every flag is passed through, and the output
+/// streams back. A graft that fails leaves no copy it shipped.
+pub(super) fn graft(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let Some(given) = args.first() else {
+        eprintln!("usage: hale habitat graft <dir> [flags]");
+        return ExitCode::from(2);
+    };
+    let local = PathBuf::from(given);
+    let name = match std::fs::canonicalize(&local).ok().as_deref().unwrap_or(&local).file_name().and_then(|n| n.to_str()) {
+        Some(n) if !n.is_empty() && n != "." && n != ".." => n.to_string(),
+        _ => {
+            eprintln!("hale habitat graft: `{given}` names no directory");
+            return ExitCode::from(2);
+        }
+    };
+    let (t, m) = match checked_machine(p, "graft") {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    let there = grafted_dir(&m, &name);
+    let existed = t.run(&format!("test -e {} && echo yes || true", sq(&there))).map(|o| o.trim() == "yes").unwrap_or(false);
+    let shipped = local.is_dir();
+    if shipped {
+        super::progress(&format!("shipping {} to {}:{there}", local.display(), t.host));
+        let Some(parent) = std::fs::canonicalize(&local).ok().and_then(|c| c.parent().map(|p| p.to_path_buf())) else {
+            eprintln!("hale habitat graft: `{given}` has no parent directory");
+            return ExitCode::from(2);
+        };
+        let mut tar = match Command::new("tar").arg("-C").arg(&parent).args(["-cf", "-", &name]).stdout(Stdio::piped()).spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("hale habitat graft: tar: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let Some(out) = tar.stdout.take() else { return ExitCode::from(1) };
+        let unpacked = t.ssh(false).arg(format!("mkdir -p {d} && tar -C {d} -xf -", d = sq(&format!("{}/grafted", habitat_dir(&m))))).stdin(out).status();
+        let packed = tar.wait();
+        if !unpacked.is_ok_and(|s| s.success()) || !packed.is_ok_and(|s| s.success()) {
+            eprintln!("hale habitat graft: {} could not be shipped to {}", local.display(), t.host);
+            if !existed {
+                let _ = t.run(&format!("rm -rf {}", sq(&there)));
+            }
+            return ExitCode::from(1);
+        }
+        println!("{:<8}{} shipped to {}:{there}, the habitat's copy", "shipped", local.display(), t.host);
+    } else {
+        let _ = t.run(&format!("mkdir -p {}", sq(&format!("{}/grafted", habitat_dir(&m)))));
+    }
+    let mut a: Vec<&str> = vec!["graft", there.as_str()];
+    a.extend(args[1..].iter().map(String::as_str));
+    let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
+    if ran.as_ref().is_ok_and(|s| s.success()) {
+        return ExitCode::SUCCESS;
+    }
+    if !existed {
+        let _ = t.run(&format!("rm -rf {}", sq(&there)));
+        eprintln!("hale habitat graft: the graft on {} failed; the copy made for it there is removed", t.host);
+    }
+    ExitCode::from(ran.ok().and_then(|s| s.code()).and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
+}
+
+/// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
+/// the organism's own verbs (`review`, `task create`, `work run`, …) run in
+/// its directory on the habitat's machine, at this terminal when there is
+/// one.
+pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let (t, m) = match checked_machine(p, "organism") {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut a: Vec<&str> = vec!["organism"];
+    a.extend(args.iter().map(String::as_str));
+    let mut cmd = t.ssh(tty);
+    cmd.arg(in_image(&m, p, &a, tty));
+    if !tty {
+        cmd.stdin(Stdio::null());
+    }
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat organism: ssh: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// `up` asked without `--host` of a machine that points at a habitat on
@@ -606,10 +725,10 @@ mod tests {
     fn a_habitat_is_torn_down_only_through_its_own_pointer() {
         let a = "a".repeat(64);
         let b = "b".repeat(64);
-        assert_eq!(teardown_refusal("rack-a.lan", &a, &a), None);
-        assert!(teardown_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
-        assert!(teardown_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
-        assert!(teardown_refusal("rack-a.lan", "", &b).is_some());
+        assert_eq!(pointer_refusal("rack-a.lan", &a, &a), None);
+        assert!(pointer_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
+        assert!(pointer_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
+        assert!(pointer_refusal("rack-a.lan", "", &b).is_some());
     }
 
     #[test]
