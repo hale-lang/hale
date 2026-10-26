@@ -199,6 +199,15 @@ fn main() {
         "{\"role\":\"db\",\"provider\":\"operator\",\"host\":\"rack-a.lan\",\"organism\":\"shop\"}",
     );
     std::test::assert(placed.ok, "the allocation's row landed");
+    // an organism's own services, with the addresses they publish, as a
+    // graft onto a host records them
+    let services = j.append(
+        j.revision(),
+        "habitat.allocated",
+        "shop/services",
+        "{\"role\":\"services\",\"service\":\"\",\"provider\":\"ssh\",\"host\":\"rack-b.lan\",\"organism\":\"shop\",\"published\":[{\"service\":\"api\",\"url\":\"http://rack-b.lan:8080\"}]}",
+    );
+    std::test::assert(services.ok, "the services' row landed");
     let added = f.git("add\n-A");
     let committed = f.git("commit\n-q\n-m\nthe operator face");
     f.start_with_project(f.project, 0);
@@ -338,6 +347,14 @@ fn main() {
     std::test::assert(
         allocations.status == 200 && std::str::contains(allocations.body, "shop/db"),
         "allocations answers what is placed on it: " + allocations.body,
+    );
+    std::test::assert(
+        std::str::contains(allocations.body, "shop/services")
+            && std::str::contains(allocations.body, "http://rack-b.lan:8080")
+            && std::str::contains(organisms.body, "allocationsCell")
+            && std::str::contains(organisms.body, "a.href = l.url"),
+        "an organism's services are listed with the addresses they publish, which screen 4 links: "
+            + allocations.body,
     );
     // the Board's acts are relayed to the row, which keeps its gate: the
     // person who signed in holds no Board position yet, so the row refuses

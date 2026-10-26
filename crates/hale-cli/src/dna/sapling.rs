@@ -358,11 +358,47 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     // wrote)
     let tracked = Command::new("git").arg("-C").arg(root).args(["ls-files"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     let mounted: Vec<&str> = tracked.lines().filter(|f| !f.contains('/') && *f != "compose.yaml" && *f != "hale.toml").collect();
-    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
+    // the addresses its services publish, read from the render (compose's
+    // own reading of it): reached at the host's address, the loopback on
+    // this machine
+    let address = if host == "local" { "127.0.0.1".to_string() } else { h["address"].as_str().unwrap_or(host).to_string() };
+    let published = published_services(root, &address);
+    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "published": published, "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
     out.extend(applied_lines(&head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false }))?));
     Ok(out)
+}
+
+/// The addresses the services of the compose file at `root` publish, as
+/// compose itself reads the file (`docker compose config --format json`,
+/// its defaults filled in): each service with a TCP port published, its
+/// first, at `address` (`[{service, url: "http://<address>:<port>"}]`,
+/// in service order). Empty when compose cannot read the file.
+fn published_services(root: &Path, address: &str) -> Vec<serde_json::Value> {
+    let Ok(out) = Command::new("docker").args(["compose", "-f"]).arg(root.join("compose.yaml")).args(["config", "--format", "json"]).current_dir(root).output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let config: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    published_of(&config, address)
+}
+
+fn published_of(config: &serde_json::Value, address: &str) -> Vec<serde_json::Value> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    if let Some(services) = config["services"].as_object() {
+        for (name, svc) in services {
+            let published = |p: &serde_json::Value| p["published"].as_str().map(str::to_string).or_else(|| p["published"].as_u64().map(|n| n.to_string())).filter(|v| !v.is_empty());
+            let port = svc["ports"].as_array().into_iter().flatten().filter(|p| p["protocol"].as_str().unwrap_or("tcp") == "tcp").find_map(published);
+            if let Some(port) = port {
+                found.push((name.clone(), port));
+            }
+        }
+    }
+    found.sort();
+    found.into_iter().map(|(service, port)| serde_json::json!({ "service": service, "url": format!("http://{address}:{port}") })).collect()
 }
 
 /// What `Commands::apply_allocations` answered, a line per allocation.
@@ -699,6 +735,25 @@ fn refreshed() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The services' published addresses, read from compose's own reading
+    /// of the render: the first TCP port of each, at the host's address.
+    #[test]
+    fn a_services_published_addresses_come_from_the_render() {
+        let config = serde_json::json!({ "services": {
+            "nats": { "ports": [{ "target": 4222, "published": "4222", "protocol": "tcp", "host_ip": "127.0.0.1" }] },
+            "api": { "ports": [{ "target": 8080, "published": "8080", "protocol": "tcp" }, { "target": 9090, "published": "9090" }] },
+            "brain": {},
+            "dns": { "ports": [{ "target": 53, "published": "5353", "protocol": "udp" }] },
+        }});
+        assert_eq!(
+            published_of(&config, "rack-a.lan"),
+            vec![
+                serde_json::json!({ "service": "api", "url": "http://rack-a.lan:8080" }),
+                serde_json::json!({ "service": "nats", "url": "http://rack-a.lan:4222" }),
+            ]
+        );
+    }
 
     fn words(line: &str) -> Vec<String> {
         line.split(' ').map(str::to_string).collect()
