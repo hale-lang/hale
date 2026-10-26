@@ -114,6 +114,38 @@ fn released(genome: String, token: Int) -> Bool {
     return false;
 }
 
+// The body lease's rows of the habitat's record, a line each: what a
+// failed drain assertion shows beside the body's log.
+@bounded_by(genome)
+fn lease_rows(genome: String) -> String {
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: genome },
+        ledger: dna::MemoryLedger { repo: genome },
+    };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if std::str::starts_with(e.kind, "body.") { out = out + e.kind + " " + e.body + "\n"; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The habitat body's log, followed into `path` until its container goes
+// (`docker logs -f`, detached): a body `down` removes keeps what it said.
+fn follow_body_log(path: String) {
+    let r = dna::run_tool(
+        "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter label=com.docker.compose.service=body | head -n 1); [ -n \"$id\" ] && (docker logs -t -f \"$id\" > \"$2\" 2>&1 &) ; true\nsh\n"
+            + dna::local_habitat_project() + "\n" + path,
+    );
+}
+
+// The last `n` lines of the file at `path`.
+fn tail_of(path: String, n: Int) -> String {
+    return dna::run_tool("tail\n-n\n" + to_string(n) + "\n" + path).stdout;
+}
+
 // The services of the habitat's project, running (`all` false) or not.
 fn containers(all: Bool) -> Int {
     let r = dna::run_tool(
@@ -788,6 +820,27 @@ fn main() {
             && !std::io::fs::file_exists(dna::local_habitat_dir() + "/birth.pending"),
         "the same identity, its rows intact, the birth whole again",
     );
+    // the body came up once: never restarted by compose (a body whose
+    // genome does not build exits and is started again, giving its lease
+    // back each time), and exactly one lease claimed
+    let restarts = dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\nid=$(docker ps -aq --filter \"label=com.docker.compose.project=$1\" --filter label=com.docker.compose.service=body | head -n 1); docker inspect --format '{{.RestartCount}}' \"$id\"\nsh\n"
+                + dna::local_habitat_project(),
+        ).stdout,
+    );
+    let leases = lease_rows(genome);
+    std::test::assert(
+        restarts == "0" && occurrences(leases, "body.claimed ") == 1,
+        "the body came up once and ran (restarts: " + restarts + "): the lease's rows:\n" + leases
+            + "the body's log (its last 80 lines):\n"
+            + dna::run_tool(
+                "sh\n-c\nid=$(docker ps -aq --filter \"label=com.docker.compose.project=$1\" --filter label=com.docker.compose.service=body | head -n 1); docker logs --tail 80 \"$id\" 2>&1\nsh\n"
+                    + dna::local_habitat_project(),
+            ).stdout,
+    );
+    let body_log = scratch + "/body-1.log";
+    follow_body_log(body_log);
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
     std::test::assert(
         down.code == 0 && std::str::contains(down.stdout, "its data is kept"),
@@ -839,7 +892,10 @@ fn main() {
     // lease went back in memory
     std::test::assert(
         released(genome, 1),
-        "the body drained before its backends stopped: its lease went back in memory",
+        "the body drained before its backends stopped: its lease went back in memory\n"
+            + "down said: " + down.stdout + down.stderr + "\nthe lease's rows:\n"
+            + lease_rows(genome)
+            + "the first body's log (its last 80 lines):\n" + tail_of(body_log, 80),
     );
     let after = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(

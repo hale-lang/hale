@@ -87,12 +87,23 @@ COPY --from=builder /src/target/release/libhale_ts_shim.a /usr/local/bin/libhale
 
 # A hale built already: refused here when the base cannot run it (a newer
 # glibc, a shared library it lacks).
+# Modes set here, never taken from the artifact: a habitat's body and face
+# run as the host user's uid, and must read and run both.
 FROM runtime-base AS hale-artifact
-COPY hale libhale_ts_shim.a /usr/local/bin/
+COPY --chmod=0755 hale /usr/local/bin/hale
+COPY --chmod=0644 libhale_ts_shim.a /usr/local/bin/libhale_ts_shim.a
 RUN if ldd /usr/local/bin/hale | grep -q 'not found'; then ldd /usr/local/bin/hale; exit 1; fi \
     && hale --version
 
 FROM hale-${HALE_FROM} AS runtime
+
+# Whichever source it came from, a uid that is not root (a habitat's body
+# and face run as the host user's) runs `hale` and reads the shim it links
+# every program with: refused here, at the image's build, rather than as a
+# link failure inside a running body.
+RUN setpriv --reuid=65534 --regid=65534 --clear-groups sh -c \
+      'test -x /usr/local/bin/hale && test -r /usr/local/bin/libhale_ts_shim.a && hale --version >/dev/null' \
+    || { ls -l /usr/local/bin/hale /usr/local/bin/libhale_ts_shim.a; exit 1; }
 
 RUN printf '#!/bin/sh\nuid="$(id -u)"\nif [ "$uid" != "0" ]; then\n  grep -v "^[^:]*:[^:]*:$uid:" /etc/passwd > /tmp/.passwd.$$ 2>/dev/null && cat /tmp/.passwd.$$ > /etc/passwd 2>/dev/null; rm -f /tmp/.passwd.$$\n  printf "%%s:x:%%s:%%s::%%s:/bin/sh\\n" "${USER:-hale}" "$uid" "$(id -g)" "${HOME:-/tmp}" >> /etc/passwd 2>/dev/null || true\nfi\nexec hale "$@"\n' > /usr/local/bin/hale-entrypoint \
     && chmod +x /usr/local/bin/hale-entrypoint

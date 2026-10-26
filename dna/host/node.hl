@@ -85,7 +85,7 @@ locus Node {
             return "";
         }
         let b = dna::run_tool(hale + "\nbuild\n" + seed_dir);
-        if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
+        if b.code != 0 { self.say(build_failure(seed_dir, b)); return ""; }
         let sl = last_index_of(seed_dir, "/");
         let bin = seed_dir + "/"
             + (if sl < 0 { seed_dir } else { seed_dir[(sl + 1)..len(seed_dir)] });

@@ -2038,7 +2038,15 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
-    services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n  face:\n    image: \"{image}\"\n"));
+    // The body drains onto the habitat's own memory and nerves (its lease
+    // goes back in memory) when it stops: it depends on them, so compose
+    // stops it, within its grace, before them whatever stops the project
+    // (`compose down`, a body `hale habitat down` did not find running).
+    let key = dir.file_name().map(|k| k.to_string_lossy().into_owned()).unwrap_or_default();
+    let present = std::fs::read_to_string(dir.join("compose.yaml")).unwrap_or_default();
+    let backends_of_body: Vec<String> = ["memory", "nerves"].iter().map(|r| format!("{r}-{key}")).filter(|svc| !key.is_empty() && present.contains(&format!("\n  {svc}:\n"))).collect();
+    let depends = if backends_of_body.is_empty() { String::new() } else { format!("    depends_on:\n{}", backends_of_body.iter().map(|svc| format!("      - \"{svc}\"\n")).collect::<String>()) };
+    services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n{depends}  face:\n    image: \"{image}\"\n"));
     services_block.push_str(&build_spec);
     services_block.push_str("    init: true\n");
     services_block.push_str(&user_spec);
@@ -2095,7 +2103,9 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         .arg(&compose_path)
         .arg("-f")
         .arg(&ports_path)
-        .args(["up", "-d", "body", "face"]);
+        // their backends are the habitat's allocations, brought up by
+        // their provider: `depends_on` orders the stop, never this start
+        .args(["up", "-d", "--no-deps", "body", "face"]);
     if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
         cmd.stderr(std::process::Stdio::inherit());
     }
@@ -2321,8 +2331,12 @@ fn stop_processes(said: &mut Vec<String>) -> Result<(), String> {
             &format!("label=com.docker.compose.project={project}"),
             "--filter",
             &format!("label=com.docker.compose.service={service}"),
+            // a body between restarts is stopped (and drained) here too,
+            // never left for `compose down` to stop beside its backends
             "--filter",
             "status=running",
+            "--filter",
+            "status=restarting",
         ]) else {
             continue;
         };
