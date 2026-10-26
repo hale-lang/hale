@@ -666,12 +666,13 @@ bytes. Schema 1.23 adds the typed law, hashed classification tags,
 classification capability and `flow_policy` adequacy. Analysis semantics
 11 binds the added judgment and completeness family.
 
-**The topology artifact** (#382 phase 2; current schema 1.35):
+**The topology artifact** (#382 phase 2; current schema 1.36):
 The exporter uses artifact semantics **3**. The in-process canonical model
-uses semantics **12**, and analysis inputs use semantics **30**. These are
+uses semantics **13**, and analysis inputs use semantics **31**. These are
 separate version domains; the artifact's `semantics` field is not the model
 semantics version. Reachability reports use their own schema,
-`hale.reachability-proofs/2`. Schema 1.35 adds the complete guarded parent
+`hale.reachability-proofs/2`. Schema 1.36 separates represented self lifecycle
+source work from unresolved runtime cost context. Schema 1.35 adds the complete guarded parent
 protocol accounts; schema 1.34 introduced the guarded self-stage accounts.
 Consumers apply the admission rules for the supported schema and semantics,
 not just a string-label check. Re-export from source when required coverage
@@ -3405,3 +3406,14 @@ caller-sensitive parent execution account. Categorical certificates refuse
 closure through a relevant construction when that required source input is
 absent. Unminted identities do not substitute for an invocation account.
 Known forbidden work still takes precedence over missing coverage.
+
+### Self lifecycle source effects
+
+Categorical source effects include every represented nonempty self lifecycle
+stage of a constructed locus. A complete pure hook is not unknown merely
+because admission, frame placement or teardown timing remains unresolved.
+Those runtime questions retain cost coverage gaps and cannot certify a numeric
+budget. Missing hook inventories or bodies, unknown calls inside hooks,
+failure dispatch, automatic assertion epochs and parent protocols still
+prevent certification where relevant. Known forbidden effects keep their
+ordinary source witnesses.

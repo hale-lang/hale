@@ -913,12 +913,12 @@ law:
 
 ### Topology Artifact Format
 
-The current exporter writes schema **1.35** and artifact semantics **3**.
+The current exporter writes schema **1.36** and artifact semantics **3**.
 For example, these selected header fields appear in a fresh export:
 
 ```json
 {
-  "schema": "1.35",
+  "schema": "1.36",
   "semantics": 3,
   "shape_hash": "<fnv1a-64 over the model half>"
 }
@@ -939,10 +939,10 @@ The versions describe different things:
 
 | Version | Current value | Meaning |
 |---|---|---|
-| Topology `schema` | `1.35` | Serialized fields and admission rules. |
+| Topology `schema` | `1.36` | Serialized fields and admission rules. |
 | Topology `semantics` | `3` | Interpretation of artifact rows. |
-| In-process model semantics | `12` | Canonical model invariants; separate from topology `semantics`. |
-| Analysis semantics | `30` | Meaning of the analyses and evidence inputs. |
+| In-process model semantics | `13` | Canonical model invariants; separate from topology `semantics`. |
+| Analysis semantics | `31` | Meaning of the analyses and evidence inputs. |
 | Reachability proof schema | `hale.reachability-proofs/2` | Separate certificate report format. |
 
 Key artifact rules:
@@ -996,3 +996,10 @@ flow-field cancellation path is safe, or that live children and retained
 bytes are bounded. Use it to enforce the declared reclamation discipline
 while those separate lifetime and resource obligations are checked on
 their own facts.
+
+### Source effects and lifecycle context
+
+A known self lifecycle body contributes its source calls and effects even
+when its runtime admission and retained lifetime are unresolved. Those
+runtime gaps still block quantitative conclusions. Missing source bodies or
+unknown execution inside a hook continue to produce `uncertified` results.

@@ -664,9 +664,16 @@ pub struct RecoveryCostGap<'a> {
 /// follow explicit and contracted calls. Unanchored recovery facts are
 /// already represented by the model's conservative function-grain gaps.
 pub fn recovery_cost_gap(model: &ApplicationModel, root: FunctionId, include_delivery: bool) -> Option<RecoveryCostGap<'_>> {
+    implicit_execution_gap(model, root, include_delivery, hale_model::RelationSet::COSTS)
+}
+
+/// Select the facts required by the actual question. A missing native frame
+/// cannot withdraw a represented source effect account; it still withdraws
+/// the quantitative account. All families use this one traversal.
+pub fn implicit_execution_gap(model: &ApplicationModel, root: FunctionId, include_delivery: bool, required: hale_model::RelationSet) -> Option<RecoveryCostGap<'_>> {
     use crate::model_graph::{self, HolePolicy, Search, Visit};
     let gaps: BTreeMap<_, _> = model.holes.iter().filter_map(|h| match h.at {
-        EntityRef::Function(f) if h.kind.implicit_execution_families().is_some() => Some((f, h)),
+        EntityRef::Function(f) if h.kind.implicit_execution_families().is_some() && h.hides.intersects(required) => Some((f, h)),
         _ => None,
     }).collect();
     if gaps.is_empty() { return None; }

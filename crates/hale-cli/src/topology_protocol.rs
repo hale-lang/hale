@@ -26,7 +26,7 @@ pub(super) fn validate(v: &Value, cx: &RefContext) -> Result<(), String> {
         "protocol_evaluations",
     ];
     let present = names.iter().any(|n| v["relations"].get(*n).is_some());
-    if v["schema"] != "1.35" {
+    if !matches!(v["schema"].as_str(), Some("1.35" | "1.36")) {
         if present || !expected_bodies.is_empty() {
             return Err(
                 "parent protocol accounts require topology schema 1.35; re-export from source"

@@ -992,6 +992,15 @@ fn recovery_certificate_result(summary: &AllocSummary, key: &FnKey, span: Span, 
         diags.push_flagged(Diag::ty(site_span,"the construction requiring contextual parent execution facts is here"),is_stdlib_fn(&site_fn));
         return Verdict::Uncertified;
     }
+    let gap = crate::model_graph::search([key.clone()], |at| {
+        crate::model_graph::Visit::<_, (), ()>::edges(summary.fns.get(at).into_iter()
+            .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))) .collect())
+    }, |at| summary.fns.get(at).is_some_and(|body| !summary.lifecycle_source_complete(body)),
+        |_| false, None, crate::model_graph::HolePolicy::Halt);
+    if let crate::model_graph::Search::Found { hit, .. } = gap {
+        diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches `{}`; lifecycle source execution is incomplete", key.display(), hit.display())));
+        return Verdict::Uncertified;
+    }
     if let Some((chain, site_span, site_fn)) = automatic_closure_gap(summary, key) {
         diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches {chain}; implicit execution scheduling, frame, lifetime and failure context are not modeled", key.display())));
         diags.push_flagged(Diag::ty(site_span, "the construction or default root requiring implicit execution coverage is here"), is_stdlib_fn(&site_fn));
@@ -1052,7 +1061,6 @@ pub(crate) fn automatic_closure_gap(summary: &AllocSummary, key: &FnKey) -> Opti
     find_effect_site(summary, key, |kind| match kind {
         alloc_summary::EffectSiteKind::AutomaticClosure { target, epoch, .. } => Some(format!("automatic {} closure `{}`", epoch.as_str(), target.display())),
         alloc_summary::EffectSiteKind::BirthCheckInvocation { target, .. } => Some(format!("birth check `{}`", target.display())),
-        alloc_summary::EffectSiteKind::LifecycleInvocation { target, stage, .. } => Some(format!("{} lifecycle body `{}`", stage.as_str(), target.display())),
         alloc_summary::EffectSiteKind::ProtocolInvocation { target, stage, reason } => Some(format!("parent {} protocol{}; {}", stage.map(|s| s.as_str()).unwrap_or("accept/release"), target.as_ref().map(|t| format!(" `{}`", t.display())).unwrap_or_default(), reason.as_str())),
         _ => None,
     })

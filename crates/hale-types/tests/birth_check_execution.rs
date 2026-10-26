@@ -183,11 +183,11 @@ fn main() { probe(); }
     let reports = s.demand_effect_certificates().unwrap();
     let report = reports.iter().find(|(r, _)| r.subject == "probe").unwrap();
     assert_eq!(report.0.result, Verdict::Uncertified);
-    assert!(report.1.iter().any(|(d, _)| d.message.contains("birth lifecycle body")), "{:?}", report.1);
+    assert!(report.1.iter().any(|(d, _)| d.message.contains("birth check")), "{:?}", report.1);
     let m = s.demand_model().unwrap();
     m.validate().unwrap();
     let function = hale_model::FunctionId(m.entities.functions.iter().position(|f| f.display == "probe").unwrap() as u32);
     assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(function)
         && h.kind == HoleKind::UnmodeledInitialization && h.reason.contains("birth check")),
-        "the earlier birth-body diagnostic must not erase the independent predicate obligation");
+        "represented birth work must not erase the independent predicate obligation");
 }

@@ -108,7 +108,8 @@ use crate::symbol::Bundle;
 // 25: parent accept/release work follows source caller construction contexts.
 // 29: fresh field ownership follows canonical nominal alias/generic resolution.
 // 30: declaration-only record confinement and nominal/generic shadowing.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 30;
+// 31: complete self lifecycle source work is distinct from quantitative context gaps.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 31;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -869,7 +870,9 @@ pub(crate) fn derive_certificate_evidence_with_recovery_reports_over(
                 _ => Vec::new(),
             };
             if result == crate::verdict::Verdict::Holds {
-                if let Some(gap) = coverage_roots.iter().find_map(|(root, delivery)| crate::model_query::recovery_cost_gap(model, *root, *delivery)) {
+                let budget = matches!(row.law, ClaimIr::AllocBudget { .. } | ClaimIr::QuantBudget { .. });
+                let required = if budget { hale_model::RelationSet::COSTS } else { hale_model::RelationSet::CALLS.union(hale_model::RelationSet::EFFECTS) };
+                if let Some(gap) = coverage_roots.iter().find_map(|(root, delivery)| crate::model_query::implicit_execution_gap(model, *root, *delivery, required)) {
                     result = crate::verdict::Verdict::Uncertified;
                     if let Some(witness) = model.provenance.records.get(gap.hole.provenance.index()) {
                         let pid = ProvenanceId(out.provenance.records.len() as u32);
@@ -878,7 +881,7 @@ pub(crate) fn derive_certificate_evidence_with_recovery_reports_over(
                         let budget = matches!(row.law, ClaimIr::AllocBudget { .. } | ClaimIr::QuantBudget { .. });
                         let kind = if budget { "budget" } else { "effect certificate" };
                         let form = if budget { String::new() } else { format!(" ({})", demangled[i].1) };
-                        let execution = if gap.hole.kind == hale_model::HoleKind::UnmodeledInitialization { "implicit execution" } else { "recovery execution" };
+                        let execution = if matches!(gap.hole.kind, hale_model::HoleKind::UnmodeledInitialization | hale_model::HoleKind::UnmodeledLifecycleContext) { "implicit execution" } else { "recovery execution" };
                         let message = format!("{kind} uncertified{form}: `{path}` reaches {}; explicit work does not cover the unresolved {execution}", gap.hole.reason);
                         if !budget { recovery_reports.push(RecoveryCertificateReport { ordinal: row.ordinal, message: message.clone() }); }
                         diags_out.push((message, pid));

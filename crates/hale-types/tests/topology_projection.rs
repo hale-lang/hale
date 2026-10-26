@@ -650,7 +650,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V12,
+            semantics: MODEL_SEMANTICS_V13,
             entrypoint: "main".to_string(),
         },
         entities: Entities {

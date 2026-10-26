@@ -115,7 +115,7 @@ fn pinned(seed: &str, rows_before: usize, rows_now: usize, expected: &str) {
     assert_eq!((before, now), (rows_before, rows_now), "dna/{seed}: the manifest's row counts");
 }
 
-/// The seven seeds pinned below are the only ones whose manifest the
+/// The nine seeds pinned below are the only ones whose manifest the
 /// correction changes.
 #[test]
 fn no_other_seed_changes() {
@@ -126,7 +126,7 @@ fn no_other_seed_changes() {
             corrected.push(seed);
         }
     }
-    assert_eq!(corrected, ["api", "core", "host", "host/verb", "operations", "organization_runtime", "organization_source"]);
+    assert_eq!(corrected, ["api", "core", "host", "host/verb", "operations", "organization_runtime", "organization_source", "reflexes", "ui"]);
 }
 
 /// Incomplete implicit execution may saturate an upper bound, but must
@@ -313,6 +313,14 @@ fn host() {
         568,
         575,
         "
+        GitHubForge::checks  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::close_review  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::comment  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::open_review  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::review_body  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::review_comments  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::review_state  does={syscall,block,env,alloc,secret_use}
+        GitHubForge::verdicts  does={syscall,block,env,alloc,secret_use}
         GovernanceCli::answered  does={unclassified}
         GovernanceCli::lookup  does={unclassified}
         GovernanceCli::review_profile  does={unclassified}
@@ -396,6 +404,9 @@ fn host() {
         forge_token_slot  does={syscall,env,alloc}
         forgejo_exec  does={syscall,block,env,alloc}
         forgejo_healthy  does={syscall,block,time,env,alloc}
+        forgejo_push  does={syscall,block,env,alloc,secret_use}
+        forgejo_up  does={syscall,block,time,env,alloc,secret_use}
+        forgejo_user  does={syscall,block,time,env,alloc,secret_use}
         forget_allocation_items  does={unclassified}
         forget_newest_row  does={unclassified}
         forget_organism_slots  does={unclassified}
@@ -414,11 +425,13 @@ fn host() {
         genome_fetch_commit  does={syscall,block,alloc}
         genome_fetch_default  does={syscall,block,time,alloc}
         genome_push_branch  does={syscall,block,alloc}
+        genome_push_url  does={syscall,block,env,alloc,secret_use}
         genome_remote  does={unclassified}
         genome_reset  does={syscall,block,alloc}
         genome_root  does={syscall,block,alloc}
         genome_show  does={syscall,block,alloc}
         genome_uncandidate  does={syscall,block,alloc}
+        gh  does={syscall,block,env,alloc,secret_use}
         git_config  does={unclassified}
         git_config_all  does={unclassified}
         habitat_address  does={syscall,block,alloc}
@@ -463,12 +476,19 @@ fn host() {
         record_identity  does={syscall,alloc}
         record_identity_verb  does={unclassified}
         review_knowledge  does={unclassified}
+        revoke_app_secret  does={syscall,block,env,alloc}
+        secret_present  does={syscall,block,env,alloc}
         seeded_listing  does={unclassified}
         slot_vault  does={unclassified}
         sync_record  does={unclassified}
         this_host  does={syscall,block,alloc}
         under_node  does={unclassified}
+        vault_put  does={syscall,block,env,alloc,secret_use}
         work_verb  does={unclassified}
+        write_app_secret  does={syscall,block,env,alloc,secret_use}
+        write_include_secret  does={syscall,block,env,alloc,secret_use}
+        write_nerves_secrets  does={syscall,block,env,alloc,secret_use}
+        write_postgres_secrets  does={syscall,block,env,alloc,secret_use}
         ",
     );
 }
@@ -598,16 +618,22 @@ fn organization_source() {
         49,
         49,
         "
+        OrganizationInspection::execute  does={syscall,block,time,alloc}
+        OrganizationInspection::input_error  does={syscall,block,time,alloc}
+        OrganizationInspection::source_ok  does={syscall,block,time,alloc}
+        OrganizationInspection::tree  does={syscall,block,time,alloc}
         OrganizationPublicationInputs::available  does={alloc}
-        OrganizationPublicationInputs::basis  does={unclassified}
+        OrganizationPublicationInputs::basis  does={env,alloc}
         OrganizationPublicationInputs::birth  does={unclassified}
-        OrganizationPublicationInputs::owner  does={unclassified}
+        OrganizationPublicationInputs::owner  does={env,alloc}
         OrganizationPublicationInputs::relative  does={alloc}
         OrganizationPublicationInputs::request_valid  does={unclassified}
+        OrganizationPublicationInputs::safe_metadata  does={syscall,block,time,alloc}
         OrganizationPublicationInputs::source  does={alloc}
         OrganizationSource::birth  does={unclassified}
         OrganizationSource::declared  does={unclassified}
         OrganizationSource::head  does={unclassified}
+        OrganizationSource::local_vendor  does={syscall,block,time,alloc}
         OrganizationSource::remove_scratch  does={syscall,block,alloc}
         OrganizationSource::scratch  does={syscall,block,alloc}
         ",
@@ -622,12 +648,31 @@ fn core() {
         1795,
         1795,
         "
+        AnthropicMessages::allows  does={syscall,block,env,alloc}
         Dna::organization_source_owner  does={alloc}
+        ExchangeKey::public  does={syscall,block,env,alloc,secret_use}
+        ExchangeKey::ready  does={syscall,block,env,alloc}
+        ForgejoApi::call  does={syscall,block,env,alloc,secret_use}
+        ForgejoForge::call  does={syscall,block,env,alloc,secret_use}
+        ForgejoForge::checks  does={syscall,block,env,alloc,secret_use}
+        ForgejoForge::review_body  does={syscall,block,env,alloc,secret_use}
+        ForgejoForge::review_comments  does={syscall,block,env,alloc,secret_use}
+        ForgejoForge::review_state  does={syscall,block,env,alloc,secret_use}
+        ForgejoForge::verdicts  does={syscall,block,env,alloc,secret_use}
         GraphSelection::offer  does={alloc}
+        HostedCredential::post_json  does={syscall,block,env,alloc,secret_use,external_model}
+        HostedCredential::ready  does={syscall,block,env,alloc}
+        ModelRouter::in_place  does={syscall,block,env,alloc}
+        ModelRouter::price_micros  does={syscall,block,env,alloc}
+        ModelRouter::standing  does={syscall,block,env,alloc}
+        OpenAiChat::allows  does={syscall,block,env,alloc}
         OrganizationLaunchCodec::valid  does={alloc}
         OrganizationSourceRequestCodec::valid  does={alloc}
+        RecordedModel::allows  does={syscall,block,env,alloc}
+        SourceEditor::in_place  does={syscall,block,env,alloc}
         StepRecord::walked  does={alloc}
         TaskRun::birth  does={publish,alloc}
+        TaskRun::start  does={publish,alloc}
         WorkflowCatalog::decode_bound  does={alloc}
         WorkflowCatalog::expand  does={alloc}
         WorkflowCatalog::refuse  does={alloc}
@@ -637,15 +682,47 @@ fn core() {
         board_requirement  does={alloc}
         cosine  does={alloc}
         definitions_listing  does={alloc}
+        derived_dsns  does={syscall,block,env,alloc}
         embed_text  does={alloc}
+        forgejo_held  does={syscall,block,env,alloc,secret_use}
         graph_route  does={alloc}
+        habitat_key_ensure  does={syscall,block,env,alloc}
+        habitat_key_file  does={syscall,block,env,alloc,secret_use}
+        habitat_public_key  does={syscall,block,env,alloc,secret_use}
+        host_holdings  does={syscall,block,env,alloc,secret_use}
+        kept_spine_dsn  does={syscall,block,env,alloc}
+        nerves_missing  does={syscall,block,env,alloc}
         pq_conn  does={unclassified}
+        provision_record_roles  does={syscall,block,env,alloc,secret_use}
+        provision_role  does={syscall,block,env,alloc,secret_use}
         record_key  does={alloc}
         replay  none={syscall}  does={alloc}
+        role_password  does={syscall,block,env,alloc,secret_use}
+        role_sql  does={syscall,block,env,alloc,secret_use}
         route_held_by  does={alloc}
         route_holders  does={alloc}
         route_requirement  does={alloc}
         signers_held_now  does={alloc}
+        ssh_probe  does={syscall,block,env,alloc,secret_use}
+        ssh_run  does={syscall,block,env,alloc,secret_use}
+        vault_provision_local  does={syscall,block,env,alloc,secret_use}
         ",
     );
+}
+
+#[test]
+fn reflexes() {
+    pinned("reflexes", 9, 9, "
+        main  does={unclassified}
+        ");
+}
+
+#[test]
+fn ui() {
+    pinned("ui", 27, 27, "
+        CodeExchange::id_token  does={syscall,block,env,alloc,secret_use}
+        CodeExchange::ready  does={syscall,block,env,alloc}
+        Ui::finish_sign_in  does={syscall,block,time,entropy,env,alloc,secret_use}
+        Ui::handle  does={syscall,block,time,entropy,env,alloc,secret_use}
+        ");
 }

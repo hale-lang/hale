@@ -358,13 +358,14 @@ fn main() { App { }; }
             hale_types::evidence::analysis_inputs_digest()
         )
     );
-    // The known violation survives, but construction's unresolved run
-    // context withdraws global completeness independently of that path.
-    assert_eq!(v["capabilities"]["exact_calls"], false);
-    assert_eq!(v["adequacy"]["reachability"], "degraded");
-    assert_eq!(v["adequacy"]["certificate"], "degraded");
+    // All source work is represented; the known violation survives. The
+    // unresolved run context withdraws the budget account independently.
+    assert_eq!(v["capabilities"]["exact_calls"], true);
+    assert_eq!(v["adequacy"]["reachability"], "exact");
+    assert_eq!(v["adequacy"]["certificate"], "exact");
+    assert_eq!(v["adequacy"]["budget"], "degraded");
     assert!(v["unknowns"].as_array().unwrap().iter().any(|u|
-        u["fn"] == "main" && u["reasons"].as_array().unwrap().iter().any(|r| r == "unmodeled_initialization")));
+        u["fn"] == "main" && u["reasons"].as_array().unwrap().iter().any(|r| r == "unmodeled_lifecycle_context")));
     let closed = src.replace("run() { println(self.a.go(1)); }", "fn start() { println(self.a.go(1)); }");
     let closed_program = hale_syntax::parse_source(&closed).unwrap();
     let closed: serde_json::Value = serde_json::from_str(&entries::dump_topology(&bundle_of(&closed, &closed_program))).unwrap();

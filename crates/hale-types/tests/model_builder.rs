@@ -548,9 +548,9 @@ main locus App {
 fn main() { App { }; }
 "#;
     let m = derive(src);
-    assert!(m.holes.iter().any(|h| h.kind == HoleKind::UnmodeledInitialization
+    assert!(m.holes.iter().any(|h| h.kind == HoleKind::UnmodeledLifecycleContext
         && matches!(h.at, EntityRef::Function(f) if m.entities.functions[f.index()].display == "main")));
-    assert!(!m.capabilities.exact_calls);
+    assert!(m.capabilities.exact_calls && m.capabilities.exact_effects);
     assert!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes);
     assert!(m.capabilities.exact_key_filters);
     // Change 8: the arrangement tables are populated, so a fully

@@ -466,6 +466,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             HoleKind::UnmodeledRecovery => "unmodeled_recovery".to_string(),
             HoleKind::UnmodeledFailureDispatch => "unmodeled_failure_dispatch".to_string(),
             HoleKind::UnmodeledInitialization => "unmodeled_initialization".to_string(),
+            HoleKind::UnmodeledLifecycleContext => "unmodeled_lifecycle_context".to_string(),
             _ => continue,
         };
         unknowns.entry(fn_display(f)).or_default().insert(reason);

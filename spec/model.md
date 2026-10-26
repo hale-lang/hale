@@ -529,11 +529,11 @@ Hole { at: EntityRef, kind: HoleKind, hides: RelationSet,
        authored_site: Option<u32>, reason: String, provenance }
 ```
 
-Fourteen kinds: `IndirectCall`, `UntypedReceiver`, `ComputedSubject`,
+Fifteen kinds: `IndirectCall`, `UntypedReceiver`, `ComputedSubject`,
 `UnknownKeyDomain`, `OpenInterface`, `RuntimeInheritedPlacement`,
 `DynamicEndpoint`, `ExternalOpaque`, `UnsupportedArtifactSemantics`,
 `UnanalyzedBody`, `UnmodeledRecovery`, `UnmodeledFailureDispatch`,
-`UnmodeledInitialization`, `GenericFlowTemplate`.
+`UnmodeledInitialization`, `UnmodeledLifecycleContext`, `GenericFlowTemplate`.
 
 `UnmodeledRecovery` is a function-grain behavioral gap. It hides `CALLS`,
 `PUBLISHES`, `EFFECTS` and `COSTS`, and retains a recovery-statement witness.
@@ -1681,8 +1681,10 @@ Effect and reachability consumers follow these entries and retain known
 body/helper effects of all four self stages. These are possible source paths:
 the graph does not prove that the guard succeeds or that a path is a feasible
 runtime trace. They are not caller-frame edges for stack-cycle
-or quantitative accounting. Constructor invocation context remains scoped
-`UnmodeledInitialization` coverage: no successful admission, stack placement,
+or quantitative accounting. With the exact complete self-hook edge account,
+qualitative source calls and effects are represented. Constructor invocation
+context remains scoped `UnmodeledLifecycleContext` coverage of **costs**:
+no successful admission, stack placement,
 retained lifetime or generated-wrapper guarantee follows from the entry.
 Run/drain/dissolve may-entries do not establish immediate execution. Known
 violations in represented work still take precedence over context uncertainty.
@@ -1895,3 +1897,27 @@ lifecycle and parent execution. They import no executable rows, defaults or
 callee bindings, and cannot close an unknown callback or missing execution
 account. Analysis semantics 30 binds this classification. This change adds no
 portable model table and proves no runtime lifetime or retained-resource bound.
+
+### Self lifecycle source closure and runtime context (model semantics 13)
+
+The source summary checks every constructor against its lifecycle declaration
+inventory. Every nonempty authored self stage needs its exact target body,
+constructor ordinal, source identity, span and repetition flags. Missing
+inventories, bodies or edges keep categorical effects unknown. This account
+uses the original source facts; it reads no lowering plan or artifact.
+
+The model separately validates that all such definitions and entries are
+present. `UnmodeledLifecycleContext` has exactly the `costs` mask and must bind
+a represented constructor/hook source entry. Foreign entries retain their
+own namespace, body stages and source witnesses. A missing context row, a
+detached row, or an altered edge fails validation. Topology schema 1.36 and
+analysis semantics 31 distinguish this account from earlier evidence.
+
+A pure represented hook can therefore satisfy a source effect prohibition;
+known forbidden work inside any potential stage remains a violation. Unknown
+calls, structural failure dispatch, automatic assertion epochs and parent
+protocol gaps retain their independent call/effect coverage. This closes no
+runtime admission, completion, native frame, lifetime, incarnation, retained
+resource, or liveness obligation. Numeric budgets still refuse the unresolved
+lifecycle context. Potential lifecycle work remains separate from synchronous
+caller-frame traversal.

@@ -751,13 +751,13 @@ fn main() { App { }; }
     missing["unknowns"].as_array_mut().unwrap().retain(|row| row["fn"] != "construct");
     refused(missing.clone(), "automatic closure construction requires scoped invocation-context coverage");
     missing["schema"] = json!("1.29");
-    refused(missing, "guarded self lifecycle accounts require topology schema 1.34");
+    refused(missing, "self lifecycle source closure requires topology schema 1.36");
     let mut wrong_anchor = v.clone();
     wrong_anchor["unknowns"].as_array_mut().unwrap().iter_mut().find(|row| row["fn"] == "construct").unwrap()["fn"] = json!("App::run");
     refused(wrong_anchor, "automatic closure construction requires scoped invocation-context coverage");
     let mut downgrade = v;
     downgrade["schema"] = json!("1.29");
-    refused(downgrade, "guarded self lifecycle accounts require topology schema 1.34");
+    refused(downgrade, "self lifecycle source closure requires topology schema 1.36");
     let (_, mut previous) = artifact_with_outcome("prior_epoch_without_authored_hook",
         &source.replace("main locus App { run() { construct(); } }", "main locus App { }"), false);
     previous["schema"] = json!("1.29");
@@ -932,7 +932,7 @@ fn main() { construct(); }
         let edge=&v["relations"]["lifecycle_evaluations"][0];
         assert_eq!(edge["stage"],stage); assert_eq!(edge["guard"],guard);
         assert!(v["unknowns"].as_array().unwrap().iter().any(|r| r["fn"]=="construct"
-            && r["reasons"].as_array().unwrap().iter().any(|r| r=="unmodeled_initialization")));
+            && r["reasons"].as_array().unwrap().iter().any(|r| r=="unmodeled_lifecycle_context")));
         for variant in 0..3 {
             let mut changed=v.clone();
             match variant {
@@ -943,4 +943,26 @@ fn main() { construct(); }
             assert!(topology_law::validate_law_account(&changed,"later stage mutation").is_err());
         }
     }
+}
+
+#[test]
+fn complete_self_lifecycle_source_effects_keep_cost_coverage_separate() {
+    let source = r#"
+locus Child { params { n: Int = 0; } birth() { self.n = 1; } }
+@effects(none: {stdio}) fn construct() { Child { }; }
+fn main() { construct(); }
+"#;
+    let (_, v) = artifact("lifecycle_source_closed", source);
+    topology_law::validate_law_account(&v, "lifecycle source closed").unwrap();
+    assert_eq!(v["law"]["rows"][0]["verdict"], "holds");
+    assert!(v["unknowns"].as_array().unwrap().iter().any(|row| row["fn"]=="construct"
+        && row["reasons"].as_array().unwrap().iter().any(|reason| reason=="unmodeled_lifecycle_context")));
+    let mut old = v.clone(); old["schema"] = json!("1.35");
+    refused(old, "self lifecycle source closure requires topology schema 1.36");
+    let (_, bounded) = artifact_with_outcome("lifecycle_context_budget", &source.replace(
+        "@effects(none: {stdio})", "@effects(none: {stdio}) @budget(alloc_per_call = 1000000)"), false);
+    topology_law::validate_law_account(&bounded, "lifecycle context budget").unwrap();
+    let rows = bounded["law"]["rows"].as_array().unwrap();
+    assert!(rows.iter().any(|r| r["family"]=="budget" && r["verdict"]=="uncertified"));
+    assert!(rows.iter().any(|r| r["family"]=="certificate" && r["verdict"]=="holds"));
 }

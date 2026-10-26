@@ -71,6 +71,10 @@ pub const MODEL_SEMANTICS_V11: u32 = 11;
 /// namespaces; unresolved runtime invocation coverage remains explicit.
 pub const MODEL_SEMANTICS_V12: u32 = 12;
 
+/// Complete self lifecycle source edges close qualitative calls/effects;
+/// admission, scheduling, frame and retained lifetime remain cost coverage.
+pub const MODEL_SEMANTICS_V13: u32 = 13;
+
 /// Named hash algorithms over a model. The replay-compatibility law
 /// (crate docs): the first artifact encoder reproduces
 /// `TopologyShapeV1` byte-for-byte over the corpus before any
@@ -960,7 +964,6 @@ impl ApplicationModel {
                 return Err(bad(index,"every authored self lifecycle body requires exactly one definition"));
             }
         }
-        let hides = crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
         let mut expected = BTreeMap::new();
         for (index,c) in r.constructions.iter().enumerate() {
             if let crate::ConstructorTarget::Locus(owner) = c.owner {
@@ -968,7 +971,7 @@ impl ApplicationModel {
                     expected.insert((c.function,c.site,d.stage,d.function),(c.in_loop,c.unbounded,c.provenance,c.source));
                 }
                 if owners.contains(&owner) && !self.holes.iter().any(|h| h.at==crate::EntityRef::Function(c.function)
-                    && h.kind==crate::HoleKind::UnmodeledInitialization && h.provenance==c.provenance && h.hides.contains(hides)) {
+                    && h.kind==crate::HoleKind::UnmodeledLifecycleContext && h.provenance==c.provenance && h.hides.contains(crate::RelationSet::COSTS)) {
                     return Err(bad(index,"self lifecycle construction requires scoped invocation-context coverage"));
                 }
             }
@@ -981,6 +984,13 @@ impl ApplicationModel {
             }
         }
         if actual != expected.keys().copied().collect() { return Err(bad(0,"lifecycle entries must equal exactly the represented constructors' guarded nonempty lifecycle hooks")); }
+        for (index, hole) in self.holes.iter().enumerate().filter(|(_, h)| h.kind == crate::HoleKind::UnmodeledLifecycleContext) {
+            let crate::EntityRef::Function(from) = hole.at else { return Err(bad(index,"lifecycle context must anchor a source function")); };
+            let own = r.lifecycle_evaluations.iter().any(|v| v.from == from && v.provenance == hole.provenance);
+            let foreign = self.analyses.stdlib_absorption.iter().any(|a| a.from == from && a.entry_provenance == hole.provenance
+                && (a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.events.iter().any(|e| matches!(e, crate::AbsorbedEvent::Lifecycle { .. })))));
+            if !own && !foreign { return Err(bad(index,"lifecycle context requires a represented constructor/hook source entry")); }
+        }
         Ok(())
     }
 
@@ -1799,7 +1809,7 @@ impl ApplicationModel {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
-        if self.header.semantics != MODEL_SEMANTICS_V12 {
+        if self.header.semantics != MODEL_SEMANTICS_V13 {
             return Err(ModelError::UnsupportedModelSemantics { actual: self.header.semantics });
         }
         self.analyses.recovery.validate(self)?;
@@ -2768,9 +2778,8 @@ impl ApplicationModel {
                 return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle",index:i });
             }
             if a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev,crate::AbsorbedEvent::Lifecycle { .. }))) {
-                let hides=crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
                 if !self.holes.iter().any(|h| h.at==crate::EntityRef::Function(a.from)
-                    && h.kind==crate::HoleKind::UnmodeledInitialization && h.hides.contains(hides)) {
+                    && h.kind==crate::HoleKind::UnmodeledLifecycleContext && h.provenance==a.entry_provenance && h.hides.contains(crate::RelationSet::COSTS)) {
                     return Err(ModelError::CoverageLaw { index:i,law:"foreign lifecycle entry requires scoped invocation-context coverage" });
                 }
             }

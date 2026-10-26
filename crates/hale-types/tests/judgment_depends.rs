@@ -670,8 +670,8 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    assert_eq!(judge(src).0, Verdict::Uncertified,
-        "construction still has a separate unresolved run-context obligation");
+    assert_eq!(judge(src).0, Verdict::Holds,
+        "complete run source work cannot make unrelated dead calls relevant");
     let (v, ds) = judge(&src.replace("run() { self.s.go(); }", "fn start() { self.s.go(); }"));
     assert_eq!(
         v,
@@ -709,8 +709,8 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    assert_eq!(judge(src).0, Verdict::Uncertified,
-        "construction still has a separate unresolved run-context obligation");
+    assert_eq!(judge(src).0, Verdict::Holds,
+        "complete run source work cannot make unrelated dead calls relevant");
     let (v, ds) = judge(&src.replace("run() { self.s.go(); }", "fn start() { self.s.go(); }"));
     assert_eq!(
         v,

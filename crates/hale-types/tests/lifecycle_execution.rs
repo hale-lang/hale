@@ -70,7 +70,7 @@ fn constructor_effects_enter_the_actual_birth_body() {
     let contexts=hale_types::model_query::lifecycle_entry_contexts(m,evaluation.from,evaluation.site,evaluation.stage);
     assert!(contexts.inventory_available && contexts.source_available && !contexts.contexts.is_empty());
     assert_eq!(m.entities.functions[evaluation.to.index()].display,"Child::birth");
-    assert!(m.holes.iter().any(|h| h.at==EntityRef::Function(evaluation.from) && h.kind==HoleKind::UnmodeledInitialization && h.provenance==evaluation.provenance));
+    assert!(m.holes.iter().any(|h| h.at==EntityRef::Function(evaluation.from) && h.kind==HoleKind::UnmodeledLifecycleContext && h.provenance==evaluation.provenance));
 }
 
 #[test]
@@ -100,6 +100,15 @@ fn main() { construct(); App { }; }
     assert!(pre.is_empty(),"{pre:?}");assert_eq!(rows.len(),1);assert_eq!(rows[0].verdict,Verdict::Violated);
     assert!(rows[0].diags.iter().any(|d| d.message.contains("may enter birth; guard construction") && d.message.contains("Child::birth")),"{:?}",rows[0].diags);
     proofs[&rows[0].ordinal].validate().unwrap();
+    let pure = snapshot(&source.replace("println(\"hook ran\");", "").replace("fn construct()",
+        "fn unrelated_write() { println(\"elsewhere\"); } fn construct()"));
+    let m = pure.demand_model().unwrap(); m.validate().unwrap();
+    let table = hale_types::claim_lowering::lower_claims(&pure.bundle(), m);
+    let (pre, rows, proofs) = hale_types::judgment::judge_forbid_reaches_with_certificates(&table,m,&[0]);
+    assert!(pre.is_empty());
+    assert_eq!(rows[0].verdict, Verdict::Holds);
+    assert!(matches!(proofs[&rows[0].ordinal].certificate, hale_types::reachability_proof::Certificate::Closed { .. }));
+    proofs[&rows[0].ordinal].validate().unwrap();
 }
 #[test]
 fn lifecycle_entries_keep_the_constructor_namespace_and_loop_facts() {
@@ -126,7 +135,7 @@ fn definitions_entries_and_context_coverage_are_mandatory() {
             2=>changed.relations.lifecycle_evaluations[0].stage=LifecycleStage::Run,
             3=>changed.relations.lifecycle_evaluations[0].site+=1,
             4=>changed.relations.lifecycle_definitions[0].empty=true,
-            5=>changed.holes.retain(|h| h.kind!=HoleKind::UnmodeledInitialization),
+            5=>changed.holes.retain(|h| h.kind!=HoleKind::UnmodeledLifecycleContext),
             6=>changed.relations.lifecycle_evaluations[0].in_loop=true,
             7=>changed.relations.lifecycle_evaluations[0].guard=hale_model::LifecycleGuard::Teardown,
             _=>changed.relations.lifecycle_evaluations[0].source=None,
@@ -146,11 +155,11 @@ fn later_stages_expose_known_work_and_retain_context_uncertainty() {
         assert!(edge.source.is_some());
         let contexts=hale_types::model_query::lifecycle_entry_contexts(m,edge.from,edge.site,edge.stage);
         assert!(contexts.inventory_available && contexts.source_available && !contexts.contexts.is_empty());
-        assert!(m.holes.iter().any(|h| h.at==EntityRef::Function(edge.from) && h.kind==HoleKind::UnmodeledInitialization));
+        assert!(m.holes.iter().any(|h| h.at==EntityRef::Function(edge.from) && h.kind==HoleKind::UnmodeledLifecycleContext));
         assert!(m.relations.lifecycle_definitions.iter().any(|d| d.stage.as_str()==stage && !d.empty));
         let pure=source.replace("println(\"hook ran\");", "");
         let quiet=snapshot(&pure);
-        assert_eq!(quiet.demand_effect_certificates().unwrap().iter().find(|(r,_)| r.subject=="construct").unwrap().0.result,Verdict::Uncertified,"{stage}: a pure possible body cannot erase invocation uncertainty");
+        assert_eq!(quiet.demand_effect_certificates().unwrap().iter().find(|(r,_)| r.subject=="construct").unwrap().0.result,Verdict::Holds,"{stage}: represented pure source work closes qualitative effects");
         let summary=quiet.demand_alloc_summary().unwrap();
         let caller=summary.fns.values().find(|f| f.key.display()=="construct").unwrap();
         assert_eq!(caller.body_evaluations().count(),0,"{stage}: a lifecycle may-entry is not an ordinary frame");
@@ -185,7 +194,7 @@ fn main() { construct(); }
         match variant {
             0=>changed.analyses.stdlib_absorption[index].entry_lifecycle=Some(LifecycleStage::Run),
             1=>changed.analyses.stdlib_absorption[index].nodes[0].lifecycle=None,
-            _=>changed.holes.retain(|h| h.kind!=HoleKind::UnmodeledInitialization),
+            _=>changed.holes.retain(|h| h.kind!=HoleKind::UnmodeledLifecycleContext),
         }
         assert!(changed.validate().is_err(),"variant {variant}");
     }
@@ -228,11 +237,96 @@ fn main() { App { }; }
         && a.nodes.iter().any(|n| n.events.iter().any(|e|
             matches!(e, hale_model::AbsorbedEvent::Lifecycle { .. })))).unwrap();
     assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(interior.from)
-        && h.kind == HoleKind::UnmodeledInitialization
+        && h.kind == HoleKind::UnmodeledLifecycleContext
         && h.reason.contains("foreign self lifecycle invocation")));
     let mut missing = m.clone();
     missing.holes.retain(|h| h.at != EntityRef::Function(interior.from)
-        || h.kind != HoleKind::UnmodeledInitialization);
+        || h.kind != HoleKind::UnmodeledLifecycleContext);
     assert!(missing.validate().is_err(),
         "a gap on another helper cannot cover this source entry");
+}
+
+#[test]
+fn complete_pure_lifecycle_source_does_not_certify_runtime_costs() {
+    let source = r#"
+locus Child { params { n: Int = 0; } birth() { self.n = 1; } }
+@effects(none: {stdio}) @budget(alloc_per_call = 1000000) fn construct() { Child { }; }
+fn main() { construct(); }
+"#;
+    let s = snapshot(source);
+    let reports = s.demand_effect_certificates().unwrap();
+    assert_eq!(reports.iter().find(|(r,_)| r.subject=="construct").unwrap().0.result, Verdict::Holds);
+    let m = s.demand_model().unwrap(); m.validate().unwrap();
+    let edge = &m.relations.lifecycle_evaluations[0];
+    let gap = m.holes.iter().find(|h| h.at==EntityRef::Function(edge.from) && h.kind==HoleKind::UnmodeledLifecycleContext).unwrap();
+    assert_eq!(gap.hides, hale_model::RelationSet::COSTS);
+    let table = hale_types::claim_lowering::lower_claims(&s.bundle(), m);
+    let evidence = hale_types::evidence::derive_certificate_evidence_over(&s.bundle(), &table, m,
+        reports, s.demand_alloc_summary().unwrap());
+    let rows = hale_types::judgment::judge_certificates(&table, m, &evidence, &[0]);
+    for law in &table.rows {
+        let row = rows.iter().find(|r| r.ordinal == law.ordinal).unwrap();
+        match law.law {
+            hale_model::ClaimIr::AllocBudget { .. } => assert_eq!(row.verdict, Verdict::Uncertified),
+            hale_model::ClaimIr::EffectForbid { .. } => assert_eq!(row.verdict, Verdict::Holds),
+            _ => panic!("unexpected law"),
+        }
+    }
+    // No native caller frame is invented by qualitative effect closure.
+    let summary = s.demand_alloc_summary().unwrap();
+    let body = summary.fns.values().find(|f| f.key.display()=="construct").unwrap();
+    assert!(body.frame_targets().all(|(key,_)| key.fn_name != "birth"), "only initializer evaluation uses a caller frame");
+    assert!(summary.lifecycle_source_complete(body));
+    let mut missing = summary.clone();
+    missing.fns.get_mut(&body.key).unwrap().lifecycle_evaluations.clear();
+    assert!(!missing.lifecycle_source_complete(&missing.fns[&body.key]));
+    assert!(hale_types::frontier::infer_effect_bounds(&missing, &body.key, &Default::default()).unknown);
+    let programs: Vec<_> = s.bundle().programs.values().copied().collect();
+    let report = hale_types::effects::certificate_rows(&programs, &missing);
+    assert_eq!(report.iter().find(|r| r.subject=="construct").unwrap().result, Verdict::Uncertified);
+    let mut widened = m.clone();
+    widened.holes.iter_mut().find(|h| h.kind==HoleKind::UnmodeledLifecycleContext).unwrap().hides = hale_model::RelationSet::CALLS;
+    assert!(widened.validate().is_err());
+    let mut detached = m.clone();
+    detached.holes.iter_mut().find(|h| h.kind==HoleKind::UnmodeledLifecycleContext).unwrap().provenance = m.entities.functions[edge.from.index()].provenance;
+    assert!(detached.validate().is_err(), "cost context must bind the exact constructor source");
+}
+
+#[test]
+fn an_unknown_call_inside_a_lifecycle_hook_stays_uncertified() {
+    let source = r#"
+locus B { fn work() { } }
+locus Child { birth() { (match 0 { _ -> B { }, }).work(); } }
+@effects(none: {stdio}) fn construct() { Child { }; }
+fn main() { construct(); }
+"#;
+    let s = snapshot(source);
+    let reports = s.demand_effect_certificates().unwrap();
+    assert_ne!(reports.iter().find(|(r,_)| r.subject=="construct").unwrap().0.result, Verdict::Holds);
+}
+
+#[test]
+fn structural_failure_inside_a_hook_retains_implicit_dispatch_uncertainty() {
+    let source = r#"
+locus Child {
+    params { n: Int = 0; }
+    closure broken { captures: n; epoch inline; }
+    birth() { violate broken; }
+}
+@effects(none: {stdio}) fn construct() { Child { }; }
+main locus App {
+    on_failure(c: Child, e: ClosureViolation) { println("failure"); }
+}
+fn main() { construct(); App { }; }
+"#;
+    let s = snapshot(source);
+    let reports = s.demand_effect_certificates().unwrap();
+    assert_eq!(reports.iter().find(|(r,_)| r.subject=="construct").unwrap().0.result, Verdict::Uncertified);
+    let summary = s.demand_alloc_summary().unwrap();
+    let key = summary.fns.keys().find(|k| k.display()=="construct").unwrap();
+    let trace = summary.structural_failure_path(key).unwrap().unwrap();
+    assert!(trace.path.iter().any(|k| k.display()=="Child::birth"));
+    let m = s.demand_model().unwrap(); m.validate().unwrap();
+    let from = hale_model::FunctionId(m.entities.functions.iter().position(|f| f.display=="construct").unwrap() as u32);
+    assert!(hale_types::model_query::implicit_execution_gap(m, from, false, hale_model::RelationSet::EFFECTS).is_some());
 }

@@ -1100,14 +1100,13 @@ fn module_bodies_91_module_decls() {
         assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
         assert!(model.entities.loci.iter().all(|l| l.analyzable));
         let caps = &model.capabilities;
-        assert!(!caps.exact_calls && caps.exact_publishes && !caps.exact_effects);
-        // Body coverage is complete; entering the main run hook still has
-        // a distinct scheduling/frame/lifetime obligation. Nested bodies
-        // resolving must not erase that execution gap.
+        assert!(caps.exact_calls && caps.exact_publishes && caps.exact_effects);
+        // Source call/effect coverage is complete. The main run entry still
+        // has a separate scheduling/frame/lifetime cost obligation.
         let main = hale_model::FunctionId(model.entities.functions.iter().position(|f| f.name == "main").unwrap() as u32);
         assert!(model.holes.iter().any(|h| h.at == hale_model::EntityRef::Function(main)
-            && h.kind == hale_model::HoleKind::UnmodeledInitialization
-            && h.reason.contains("App::run")));
+            && h.kind == hale_model::HoleKind::UnmodeledLifecycleContext
+            && h.hides == hale_model::RelationSet::COSTS && h.reason.contains("App::run")));
     })
     .expect("91-module-decls loads");
 }

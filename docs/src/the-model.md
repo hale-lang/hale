@@ -162,7 +162,7 @@ Checking a stdlib source seed keeps its own executable bodies while retaining
 the bundled clone's declaration identities for lowering. That metadata does
 not add the shadowed clone's calls or effects to the program model.
 
-Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under an FNV-1a `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`. The current exporter uses schema 1.35 and artifact semantics 3. It includes non-default flow classifications and their policy adequacy, default evaluations, and guarded self/parent lifecycle accounts. Model semantics 12 and analysis semantics 30 are separate version domains; see the [artifact format reference](./claims.md#topology-artifact-format).
+Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under an FNV-1a `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`. The current exporter uses schema 1.36 and artifact semantics 3. It includes non-default flow classifications and their policy adequacy, default evaluations, and guarded self/parent lifecycle accounts. Model semantics 13 and analysis semantics 31 are separate version domains; see the [artifact format reference](./claims.md#topology-artifact-format).
 
 ### Further Reading
 
@@ -303,6 +303,10 @@ dissolve entries form a separate relation, so their effects are visible without
 borrowing an authored call ordinal. Every entry has a guard: `construction`,
 `run_admission` or `teardown`. A graph path does not prove that this guard
 succeeds or that the path is a feasible runtime trace.
+With every declared self-stage body and constructor entry represented,
+qualitative source calls and effects are closed. Admission, native stack
+placement, scheduling and retained lifetime keep a separate cost-context gap.
+Unknown execution inside a hook retains its ordinary source gaps.
 The same source inventory selects the native self-stage body through the lowering
 correspondence. A missing or mismatched declaration is a compiler refusal.
 
@@ -352,7 +356,7 @@ A generic child's resolved symbol and its template remain separate. The
 constructor symbol account links a specialization such as `Cell_Int` to its
 actual source constructor; no spelling-prefix guess supplies that binding.
 
-Artifacts containing parent callbacks require schema 1.35 and their complete
+Artifacts containing parent callbacks require schema 1.35 or later and their complete
 portable definition/constructor/context/entry account. Missing or inconsistent tables
 are refused. Topology views and fleet composition retain the admitted edges.
 Generic, interface, foreign and unrepresented execution boundaries still need

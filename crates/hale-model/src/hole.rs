@@ -115,6 +115,10 @@ pub enum HoleKind {
     /// Constructor evaluation reaches a parameter default outside the
     /// represented executable-body horizon.
     UnmodeledInitialization,
+    /// All possible self lifecycle source bodies are represented by exact
+    /// constructor/hook edges. Admission, native frames, scheduling and
+    /// retained lifetime remain unknown to quantitative judgments.
+    UnmodeledLifecycleContext,
     /// A generic locus template has no single concrete flow discipline.
     GenericFlowTemplate,
 }
@@ -128,6 +132,7 @@ impl HoleKind {
         match self {
             Self::UnmodeledFailureDispatch | Self::UnmodeledInitialization => Some(execution),
             Self::UnmodeledRecovery => Some(execution.union(RelationSet::PUBLISHES)),
+            Self::UnmodeledLifecycleContext => Some(RelationSet::COSTS),
             _ => None,
         }
     }
@@ -240,7 +245,7 @@ pub fn allowed_hole_families(
         // (the subject's subscriber set), so the fn-grain shape
         // stops at what the engines consume — and an unanalyzed
         // body hides ALL of what it could contain (round 9).
-        (EntityRef::Function(_), K::UnmodeledRecovery | K::UnmodeledFailureDispatch | K::UnmodeledInitialization) =>
+        (EntityRef::Function(_), K::UnmodeledRecovery | K::UnmodeledFailureDispatch | K::UnmodeledInitialization | K::UnmodeledLifecycleContext) =>
             kind.implicit_execution_families().map(|hidden| (hidden, hidden)),
         (EntityRef::Function(_), K::UnanalyzedBody) => {
             Some((c.union(p).union(e), c.union(p).union(e)))

@@ -166,7 +166,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let s = snapshot(source); let m = s.demand_model().unwrap(); m.validate().unwrap();
-    assert!(m.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnmodeledInitialization
+    assert!(m.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnmodeledLifecycleContext
         && h.reason.contains("birth lifecycle body") && h.reason.contains("StdoutSink::birth")));
     let entries: Vec<_> = m.analyses.stdlib_absorption.iter().filter(|a| a.entry_initialization.is_some()).collect();
     assert!(entries.iter().any(|a| a.entry_initialization.as_ref().unwrap().field == "format"));
@@ -174,8 +174,8 @@ fn main() { App { }; }
     let table = hale_types::claim_lowering::lower_claims(&s.bundle(), m);
     let (pre, rows, proofs) = hale_types::judgment::judge_forbid_reaches_with_certificates(&table, m, &[0]);
     assert!(pre.is_empty());
-    assert_eq!(rows[0].verdict, Verdict::Uncertified);
-    assert!(proofs.is_empty(), "masking the default helper cannot discharge lifecycle context at its constructor");
+    assert_eq!(rows[0].verdict, Verdict::Holds);
+    proofs[&rows[0].ordinal].validate().unwrap();
     let entry = m.analyses.stdlib_absorption.iter().position(|a| a.entry_initialization.is_some()).unwrap();
     for variant in 0..4 {
         let mut bad = m.clone();

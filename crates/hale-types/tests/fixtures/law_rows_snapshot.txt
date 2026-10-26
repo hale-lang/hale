@@ -99,7 +99,7 @@ crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bu
 crates/hale-types/tests/claims.rs#13	iso	forbid reaches(a_side, b_side)	Uncertified	None
 crates/hale-types/tests/claims.rs#2	read_only	forbid reaches(quote_api, effects(money))	Violated	None
 crates/hale-types/tests/claims.rs#20	c	forbid reaches(writers, effects(syscall))	Uncertified	None
-crates/hale-types/tests/claims.rs#22	logs_structured	forbid reaches(program, effects(stdio)) avoiding std::log::*	Uncertified	None
+crates/hale-types/tests/claims.rs#22	logs_structured	forbid reaches(program, effects(stdio)) avoiding std::log::*	Holds	None
 crates/hale-types/tests/claims.rs#3	read_only	forbid reaches(quote_api, effects(money))	Holds	None
 crates/hale-types/tests/claims.rs#8	iso	forbid reaches(a_side, b_side)	Invalid	None
 crates/hale-types/tests/claims.rs#9	m	forbid reaches(a_side, effects(monye))	Invalid	None
@@ -157,7 +157,7 @@ crates/hale-types/tests/field_default_execution.rs#1	quiet	forbid reaches(progra
 crates/hale-types/tests/field_default_execution.rs#3	imports_visible	forbid reaches(program, effects(stdio))	Holds	None
 crates/hale-types/tests/initializer_execution.rs#0	guarded	forbid reaches(apps, effects(stdio)) avoiding observers	Holds	None
 crates/hale-types/tests/initializer_execution.rs#0	quiet	forbid reaches(apps, effects(stdio))	Violated	None
-crates/hale-types/tests/initializer_execution.rs#1	structured	forbid reaches(program, effects(stdio)) avoiding std::log::*	Uncertified	None
+crates/hale-types/tests/initializer_execution.rs#1	structured	forbid reaches(program, effects(stdio)) avoiding std::log::*	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#10	one_call	bound llm <= 1 on paths from planners	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#11	one_call	bound llm <= 1 on paths from planners	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks)	Violated	None

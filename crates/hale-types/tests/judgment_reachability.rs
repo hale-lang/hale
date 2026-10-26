@@ -516,7 +516,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V12,
+            semantics: MODEL_SEMANTICS_V13,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -2746,7 +2746,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V12,
+            semantics: MODEL_SEMANTICS_V13,
             entrypoint: "main".to_string(),
         },
         entities: Entities {

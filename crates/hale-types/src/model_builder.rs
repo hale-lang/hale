@@ -46,7 +46,7 @@ use hale_model::{
     PublishDisposition, Relations, Seed, SeedId, SelectorForm, Subject,
     SubjectId, Subscribe, Supervises, SupervisedRef, SupervisionPolicy,
     Topic, TopicBound, TopicId, TopicKey, TopicOnFull, TypeDecl as MTypeDecl,
-    TypeDeclId, MODEL_SEMANTICS_V12,
+    TypeDeclId, MODEL_SEMANTICS_V13,
 };
 use hale_syntax::ast::{
     Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
@@ -3340,8 +3340,8 @@ pub fn derive_application_model_over(
     // cannot rely on a user-only call projection to discover that interior.
     for entry in &stdlib_absorption {
         if entry.entry_lifecycle.is_some() || entry.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev,hale_model::AbsorbedEvent::Lifecycle { .. }))) {
-            let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
-            holes.entry((EntityRef::Function(entry.from),kind,"foreign self lifecycle invocation at this source entry has unresolved admission, scheduling, frame and retention context".to_string()))
+            let kind=HoleKind::UnmodeledLifecycleContext;let hides=kind.implicit_execution_families().unwrap();
+            holes.entry((EntityRef::Function(entry.from),kind,format!("foreign self lifecycle invocation at source entry {} ({:?}, {:?}) has unresolved admission, scheduling, frame and retention context", entry.site, entry.entry_lifecycle, entry.entry_initialization)))
                 .or_insert((hides,None,entry.entry_provenance));
         }
     }
@@ -3357,7 +3357,7 @@ pub fn derive_application_model_over(
                     .or_insert((hides,None,intern_span(&mut records,site.span)));
             }
             if let EffectSiteKind::LifecycleInvocation { constructor, target, stage } = &site.kind {
-                let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
+                let kind=HoleKind::UnmodeledLifecycleContext;let hides=kind.implicit_execution_families().unwrap();
                 holes.entry((EntityRef::Function(from),kind,format!("construction {constructor} can enter {} lifecycle body `{}`; admission, scheduling, frame and retention context are unresolved",stage.as_str(),target.display())))
                     .or_insert((hides,None,intern_span(&mut records,site.span)));
             }
@@ -3896,7 +3896,7 @@ pub fn derive_application_model_over(
     }
 
     let foreign_automatic_epochs = merged.fns.iter().any(|(key, fs)| !user_key(key)
-        && fs.effect_sites.iter().any(|site| matches!(site.kind, EffectSiteKind::AutomaticClosure { .. } | EffectSiteKind::BirthCheckInvocation { .. } | EffectSiteKind::LifecycleInvocation { .. } | EffectSiteKind::ProtocolInvocation { .. })));
+        && fs.effect_sites.iter().any(|site| matches!(site.kind, EffectSiteKind::AutomaticClosure { .. } | EffectSiteKind::BirthCheckInvocation { .. } | EffectSiteKind::ProtocolInvocation { .. })));
     // An explicit failure can invoke a handler outside the source call
     // graph. The summary's one reverse witness forest records this gap
     // even when no handler contains recovery syntax. Keep one scoped row
@@ -4343,7 +4343,7 @@ pub fn derive_application_model_over(
             stdlib_absorption,
         },
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V12,
+            semantics: MODEL_SEMANTICS_V13,
             entrypoint,
         },
         entities: e,

@@ -274,3 +274,16 @@ assumptions. It excludes full-ring backpressure, posts racing shutdown,
 arbitrary handler behavior and several other runtime paths. Runtime source
 fingerprints detect drift; they do not prove refinement. This pilot adds no
 general termination, latency, lifecycle-safety or durability claim to Hale.
+
+### Lifecycle source effects
+
+The compiler includes a constructed locus's nonempty `birth`, `run`, `drain`
+and `dissolve` bodies in its source call and effect account. If every body and
+entry is known, pure lifecycle work can satisfy an effect prohibition. A
+forbidden effect inside a hook still fails it; an unresolved callback still
+prevents certification.
+
+This source account does not establish when a hook runs or how long its
+storage stays live. Resource budgets retain the missing runtime context.
+Automatic assertions, failure dispatch and parent protocol work also retain
+their separate coverage requirements.

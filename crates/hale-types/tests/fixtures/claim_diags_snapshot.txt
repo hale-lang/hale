@@ -125,8 +125,6 @@ Claim [792..798] claim `tagged` violated: a fn performs `syscall` with no declar
 Claim [104..109] claim `quiet` violated: counted 1 subscriber(s) (`Worker`) of `Evt`, claim requires == 0
 --- crates/hale-types/tests/claim_lowering.rs#2 ---
 Claim [37..44] unknown constitution `Missing` — nothing declares it
---- crates/hale-types/tests/claim_lowering.rs#15 ---
-Claim [37..44] declared dependency set cannot be certified: `Sink` is reached from a closure this model does not fully know — a publishing function is reachable through a call the compiler cannot follow, so its callers' own inputs cannot be enumerated. The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/claim_no_silent_loss.rs#3 ---
 Claim [345..349] claim `loss` violated: route `Payments` is configured to discard silently — topic `Payments` keyed by `id` is `on_unmatched: swallow`
 --- crates/hale-types/tests/claim_no_silent_loss.rs#6 ---
@@ -181,9 +179,6 @@ Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
 Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
 --- crates/hale-types/tests/claims.rs#20 ---
 Claim [568..569] claim `c` cannot be certified: `Writer::write` (reachable from `writers`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
---- crates/hale-types/tests/claims.rs#22 ---
-Claim [187..202] claim `logs_structured` cannot be certified: `App::run` (reachable from `program`) — foreign self lifecycle invocation at this source entry has unresolved admission, scheduling, frame and retention context
-Claim [304..393] unmodeled implicit execution is reached here
 --- crates/hale-types/tests/claims_edges.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here
@@ -270,9 +265,6 @@ Claim [394..400] declared causal set violated: `Api::handle` can transitively ca
 Claim [377..382] claim `quiet` violated: `apps` reaches `effects(stdio)` — witness: `App::omitted` -(initializes n)-> `Settings::params::n` -> `observe`
 Claim [103..112] claim `quiet`: the boundary into `effects(stdio)` is crossed by this call
 Claim [4..11] claim `quiet`: the forbidden destination `observe` is declared here
---- crates/hale-types/tests/initializer_execution.rs#1 ---
-Claim [101..111] claim `structured` cannot be certified: `App::params::sink` (reachable from `program`) — construction 0 can enter birth lifecycle body `std::log::StdoutSink::birth`; admission, scheduling, frame and retention context are unresolved
-Claim [60..84] unmodeled implicit execution is reached here
 --- crates/hale-types/tests/interface_dispatch.rs#4 ---
 Claim [478..481] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.send)-> `Email::send`
 Claim [289..306] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
@@ -332,8 +324,6 @@ Claim [305..312] declared dependency set is invalid: `Carry` names `DECLARED`, w
 Claim [99..106] declared dependency set cannot be certified: `Carry` is reached from a closure this model does not fully know — `Recalled` can be published into from outside this application (an inbound route or an opaque boundary). The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/judgment_depends.rs#12 ---
 Claim [261..268] declared dependency set cannot be certified: `Target` is reached from a closure this model does not fully know — a publish whose subject the compiler could not name may address a wire this locus subscribes to. The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
---- crates/hale-types/tests/judgment_depends.rs#13 ---
-Claim [273..280] declared dependency set cannot be certified: `Target` is reached from a closure this model does not fully know — a publishing function is reachable through a call the compiler cannot follow, so its callers' own inputs cannot be enumerated. The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/judgment_reachability.rs#0 ---
 Claim [228..231] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `leak`
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
@@ -382,6 +372,8 @@ Claim [434..440] claim `single` violated: counted 2 subscriber(s) (`A`, `B`) of 
 --- crates/hale-types/tests/lifecycle_execution.rs#1 ---
 Claim [24..33] group member `construct` names no declared locus or fn. Unknown names are errors, never empty sets.
 Claim [1..36] group `constructors` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-types/tests/lifecycle_execution.rs#6 ---
+Claim [139..148] budget uncertified: `construct` reaches construction 0 can enter birth lifecycle body `Child::birth`; admission, scheduling, frame and retention context are unresolved; explicit work does not cover the unresolved implicit execution
 --- crates/hale-types/tests/model_fanout.rs#0 ---
 Claim [369..373] budget exceeded: `App::beat` declares `@budget(fanout = 1)` but the compiler measures 3 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/model_fanout.rs#2 ---

@@ -4588,6 +4588,28 @@ pub struct StructuralFailureTrace {
 }
 
 impl AllocSummary {
+    /// Qualitative self lifecycle work is closed only when each constructor's
+    /// complete hook inventory has its exact source edge and analyzed body.
+    /// This says nothing about admission, stack frames or retained lifetime.
+    pub fn lifecycle_source_complete(&self, body: &FnSummary) -> bool {
+        let mut expected = BTreeSet::new();
+        for (ordinal, constructor) in body.constructions.iter().enumerate() {
+            let Some(owner) = &constructor.lifecycle_owner else { continue };
+            let Some(hooks) = self.lifecycle_hooks.get(owner) else { return false };
+            for hook in hooks.iter().filter(|h| !h.empty && !h.synthesized) {
+                if !self.fns.contains_key(&hook.key) { return false; }
+                expected.insert((ordinal as u32, hook.stage, &hook.key));
+                if !body.lifecycle_evaluations.iter().any(|edge| edge.ordinal == ordinal as u32
+                    && edge.stage == hook.stage && edge.target == hook.key
+                    && edge.invocation == constructor.site && edge.span == constructor.span
+                    && edge.loop_depth == constructor.loop_depth
+                    && edge.in_unbounded_loop == constructor.in_unbounded_loop) { return false; }
+            }
+        }
+        body.lifecycle_evaluations.len() == expected.len()
+            && body.lifecycle_evaluations.iter().all(|edge| expected.contains(&(edge.ordinal, edge.stage, &edge.target)))
+    }
+
     /// Read the one cached forest, preserving unavailable/broken coverage as
     /// an error rather than manufacturing an empty successor set.
     pub fn structural_failure_path(&self, root: &FnKey) -> Result<Option<StructuralFailureTrace>, &'static str> {
@@ -4644,7 +4666,10 @@ fn derive_structural_failure_paths(summary: &AllocSummary) -> BTreeMap<FnKey, St
         for edge in &fs.initializations {
             reverse.entry(edge.target.clone()).or_default().push((caller.clone(), edge.span, Some(edge.initializer.clone())));
         }
-        for edge in &fs.closure_evaluations {
+        // Every qualitative source successor can raise a failure. Defaults
+        // keep their richer witness above; duplicate reverse endpoints are
+        // harmless and the forest still selects one deterministic witness.
+        for edge in fs.effect_evaluations() {
             reverse.entry(edge.target.clone()).or_default().push((caller.clone(),edge.span,None));
         }
     }

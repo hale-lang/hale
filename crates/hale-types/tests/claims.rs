@@ -676,23 +676,14 @@ fn logging_program(body: &str, claims: &str) -> String {
     .replace("BODY", body)
 }
 
-/// Source-entry lifecycle context remains unresolved even when the known
-/// printing path is masked by the logger module.
-fn assert_lifecycle_uncertified(ds: &[String]) {
-    assert!(ds.iter().any(|m| m.contains("cannot be certified") && m.contains("lifecycle")), "{ds:?}");
-    assert!(ds.iter().all(|m| (m.contains("cannot be certified") && m.contains("lifecycle"))
-        || m == "unmodeled failure/recovery execution is reached here"
-        || m == "unmodeled implicit execution is reached here"), "{ds:?}");
-}
-
-/// The known print path is gated; unresolved construction still refuses proof.
+/// Every known terminal write is gated; represented construction closes source effects.
 #[test]
-fn logging_construction_keeps_its_unresolved_lifecycle_context() {
+fn logging_construction_has_complete_source_effect_coverage() {
     let ds = diags(&logging_program(
         "let c = std::log::ConsoleSink { }; c.write(\"three\");",
         LOGS_STRUCTURED,
     ));
-    assert_lifecycle_uncertified(&ds);
+    assert!(ds.is_empty(), "{ds:?}");
 }
 
 /// Fail: a bare `println` the program declares is a path that avoids
@@ -877,23 +868,22 @@ fn a_program_that_only_logs_reaches_a_syscall_through_its_sink() {
     );
 }
 
-/// The logger gate masks the known print; foreign lifecycle context at
-/// its source entry remains a separate obligation.
+/// The logger gate masks every known print in the complete source account.
 #[test]
-fn structured_logging_preserves_the_foreign_lifecycle_obligation() {
+fn structured_logging_holds_with_represented_lifecycle_source() {
     let ds = diags(&only_logs(
         "sink: std::log::StdoutSink = std::log::StdoutSink { };",
         "logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;",
     ));
-    assert_lifecycle_uncertified(&ds);
+    assert!(ds.is_empty(), "{ds:?}");
 }
 
-/// An absent sink adds no known print path, but logger construction
-/// still has unresolved lifecycle context.
+/// Without a sink, the logger has no source syscall path. Runtime lifetime
+/// and scheduling remain separate quantitative obligations.
 #[test]
-fn an_absent_sink_does_not_discharge_logger_lifecycle_context() {
+fn an_absent_sink_has_no_logger_source_syscall_path() {
     let ds = diags(&only_logs("", "c: forbid reaches(app, effects(syscall));"));
-    assert_lifecycle_uncertified(&ds);
+    assert!(ds.is_empty(), "{ds:?}");
 }
 
 /// A publish through a local binding is a computed subject, not a
@@ -967,7 +957,7 @@ fn a_program_publish_to_a_stdlib_sink_reaches_a_syscall() {
 /// `log.**` itself is logging through a sink, and the law holds. The
 /// print is the sink's, inside the module the law masks.
 #[test]
-fn raw_log_delivery_keeps_its_foreign_lifecycle_obligation() {
+fn raw_log_delivery_through_a_sink_holds_the_structured_logging_law() {
     let ds = diags(
         r#"
     main locus App {
@@ -982,7 +972,7 @@ fn raw_log_delivery_keeps_its_foreign_lifecycle_obligation() {
     }
 "#,
     );
-    assert_lifecycle_uncertified(&ds);
+    assert!(ds.is_empty(), "{ds:?}");
 }
 
 /// A gate over the target's stdlib module masks the target, and the
@@ -1009,5 +999,6 @@ fn a_gate_over_the_target_s_stdlib_module_is_refused() {
     .replace("main locus App", "group app = { App };\n    main locus App"));
     assert!(ds.iter().any(|m| m.contains("`avoiding std::log::*` overlaps `sinks`")), "{ds:?}");
 
-    assert_lifecycle_uncertified(&diags(&logging_program("let _ = n;", LOGS_STRUCTURED)));
+    let ds = diags(&logging_program("let _ = n;", LOGS_STRUCTURED));
+    assert!(ds.is_empty(), "{ds:?}");
 }
