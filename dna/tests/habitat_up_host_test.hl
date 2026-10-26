@@ -314,6 +314,33 @@ fn main() {
         len(shipped_id) == 40 && std::str::contains(seen.stdout, shipped_id),
         "the head lists the organism grafted through the pointer: " + seen.stdout + seen.stderr,
     );
+    // its head and face are recorded under the habitat's declared address
+    // (`localhost` here), where the operator face's links reach them
+    let rows = dna::run_tool(
+        "sh\n-c\nexport HALE_VAULT_DIR=\"$1\" HALE_DNA_HABITAT=\"$2\" && exec \"$3\" dna record-rows \"$2/genome\"\nsh\n"
+            + home + "/.local/share/hale/vault\n" + there + "\n" + toolchain(),
+    ).stdout;
+    let mut graft_row = "";
+    let mut rest = rows;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") == "habitat.grafted"
+            && std::str::contains(line, "shipme")
+        {
+            graft_row = line;
+        }
+    }
+    let graft_body = std::json::find_string_field(graft_row, "body");
+    std::test::assert(
+        std::str::starts_with(std::json::find_string_field(graft_body, "face"), "http://localhost:")
+            && std::str::starts_with(
+                std::json::find_string_field(graft_body, "head"),
+                "http://localhost:",
+            ),
+        "the grafted organism's face and head are recorded at the declared address: " + graft_row,
+    );
     let its = in_dir(scratch, config, toolchain() + "\nhabitat\norganism\nshipme\ndna\nstatus");
     std::test::assert(
         its.code == 0 && std::str::contains(its.stdout, "profile:"),

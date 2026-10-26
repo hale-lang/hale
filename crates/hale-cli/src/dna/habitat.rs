@@ -2916,7 +2916,7 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         taken.extend(head_url_at(&genome).as_deref().and_then(loopback_port));
         let base = head_block(&root, &taken)?;
         let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let mut body = serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends, "name": name, "face": format!("http://127.0.0.1:{base}"), "head": format!("http://127.0.0.1:{}", base + 1) });
+        let mut body = serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends, "name": name, "face": format!("http://{}:{base}", habitat_address()), "head": format!("http://{}:{}", habitat_address(), base + 1) });
         // its declared purpose (dna/org/purpose.hl), for the habitat's index
         body["purpose"] = serde_json::json!(declared_purpose(&root));
         // a sapling's graft says which sapling, revision and digest it is
