@@ -318,7 +318,6 @@ fn host() {
         build_cache_dir  does={syscall,block,env,alloc}
         build_cache_keep  does={syscall,block,alloc}
         build_cache_touch  does={syscall,block,alloc}
-        build_failure  does={syscall,block,alloc}
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
         codebase_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}

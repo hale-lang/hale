@@ -546,22 +546,36 @@ fn build_cache_keep(entry: String, work: String, cache: String) {
 // The outcome of a seed build: the binary's path, or "" and why not.
 type SeedBuild { bin: String = ""; why: String = ""; }
 
+// The last `n` lines of `text`, whole: what a failed tool said last.
+@bounded_by(text)
+fn last_lines(text: String, n: Int) -> String {
+    let t = dna::trim_nl(text);
+    let mut at = len(t);
+    let mut seen = 0;
+    while at > 0 && seen < n {
+        at = at - 1;
+        if t[at..(at + 1)] == "\n" { seen = seen + 1; }
+    }
+    return if seen < n { t } else { t[(at + 1)..len(t)] };
+}
+
 // Why `hale build <seed_dir>` failed, as the build said it: its exit
-// status and the last lines of its stderr (an operator reads the cause in
-// the body's log, not only that it failed). A build killed by a signal
-// (the kernel's OOM killer, a supervisor) says nothing itself: its status
-// says so.
+// status and the last lines of what it printed, its stderr and then its
+// stdout (an operator reads the cause in the body's log, not only that it
+// failed). A build killed by a signal (the kernel's OOM killer, a
+// supervisor) says nothing itself: its status says so.
 fn build_failure(seed_dir: String, b: dna::RunResult) -> String {
-    let said = dna::trim_nl(
-        dna::run_tool("sh\n-c\nprintf '%s' \"$1\" | tail -n 20\nsh\n" + b.stderr).stdout,
-    );
+    let err = last_lines(b.stderr, 30);
+    let out = last_lines(b.stdout, 10);
     let status = if b.code > 128 && b.code < 160 {
         "killed by signal " + to_string(b.code - 128)
     } else {
         "exit " + to_string(b.code)
     };
     return "`hale build " + seed_dir + "` failed (" + status + ")"
-        + (if len(said) > 0 { ":\n" + said } else { ", and said nothing" });
+        + (if len(err) > 0 { "; its stderr ends:\n" + err } else { "" })
+        + (if len(out) > 0 { "\nits stdout ends:\n" + out } else { "" })
+        + (if len(err) == 0 && len(out) == 0 { ", and said nothing" } else { "" });
 }
 
 // A seed is built ONCE per content fingerprint (see `build_cache_dir`
