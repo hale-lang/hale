@@ -96,6 +96,10 @@ Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call 
 Claim [81..91] counts against `hot`'s alloc budget: a `P` instantiation
 --- crates/hale-types/tests/artifact_law_projection.rs#16 ---
 Claim [411..415] claim `iso`: phase `boot` names nothing in group `a_side` — no member locus declares it. A claim over an empty phase holds vacuously
+--- crates/hale-types/tests/birth_check_execution.rs#3 ---
+Claim [334..339] claim `quiet` violated: `constructors` reaches `effects(stdio)` — witness: `construct` -(may evaluate birth check 0)-> `Child::birth_checks::0` -> `operand`
+Claim [180..189] claim `quiet`: the boundary into `effects(stdio)` is crossed by this call
+Claim [4..11] claim `quiet`: the forbidden destination `operand` is declared here
 --- crates/hale-types/tests/budget_contract.rs#3 ---
 Claim [52..56] hot-path budget exceeded: `make` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [70..80] counts against `make`'s alloc budget: a `P` instantiation

@@ -153,7 +153,7 @@ impl ProofBundle {
         model: &ApplicationModel,
         source_bases: &[u32],
     ) -> Result<Self, String> {
-        if model.header.semantics != hale_model::MODEL_SEMANTICS_V13 {
+        if model.header.semantics != hale_model::MODEL_SEMANTICS_V14 {
             return Err("unsupported model semantics for reachability proof extraction".into());
         }
         if table.provenance.sources != model.provenance.sources {

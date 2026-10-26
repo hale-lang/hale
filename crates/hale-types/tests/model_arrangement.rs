@@ -178,7 +178,7 @@ fn the_wrongly_inferred_twin_is_removed() {
     let m = model(&s);
     remapped(m, &[("App", Some(0), Some(0)), ("App.a", Some(1), Some(1)), ("App.l", Some(2), None), ("App.z", Some(3), Some(2))]);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.a Reader - main 0", "2 App.z Tail - main 0"]);
-    identities_hold(m, "043997753e2a13a3", "76ab966fa69b16ae");
+    identities_hold(m, "03027c9cfa7a1713", "76ab966fa69b16ae");
 }
 
 /// U-4 (M-2): the projection is user-only. The table places the stdlib

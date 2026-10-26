@@ -75,6 +75,9 @@ pub const MODEL_SEMANTICS_V12: u32 = 12;
 /// admission, scheduling, frame and retained lifetime remain cost coverage.
 pub const MODEL_SEMANTICS_V13: u32 = 13;
 
+/// Constructor-bound birth predicates and automatic assertion operand entries.
+pub const MODEL_SEMANTICS_V14: u32 = 14;
+
 /// Named hash algorithms over a model. The replay-compatibility law
 /// (crate docs): the first artifact encoder reproduces
 /// `TopologyShapeV1` byte-for-byte over the corpus before any
@@ -198,6 +201,8 @@ pub struct Relations {
     pub lifecycle_definitions: Vec<crate::LifecycleDefinition>,
     /// Constructor entries kept separate from authored call sites.
     pub lifecycle_evaluations: Vec<crate::LifecycleEvaluation>,
+    /// All possible source birth predicates and automatic assertion entries.
+    pub constructor_checks: Vec<crate::ConstructorCheckEvaluation>,
     /// Parent admission/release declarations, including source-empty bodies.
     pub protocol_definitions: Vec<crate::ProtocolDefinition>,
     /// Actual source roots and nested constructors under accepting parents.
@@ -301,6 +306,8 @@ pub struct StdlibAbsorption {
     /// Original user constructor site for a lifecycle entry, when available.
     /// Source identity is kept separate from portable execution ordinals.
     pub entry_constructor_source: Option<hale_graph::ids::SiteId>,
+    /// Predicate entry namespace; never an authored call or self hook.
+    pub entry_constructor_check: Option<crate::ConstructorCheck>,
     /// The user function whose call site enters the stdlib interior
     /// this row describes.
     pub from: FunctionId,
@@ -340,6 +347,12 @@ impl StdlibAbsorption {
     /// Canonical ordering keeps call, constructor and publish ordinals in
     /// separate namespaces. Multiple conformers may share one call key.
     pub fn entry_key(&self) -> (FunctionId, u8, u32, u32) {
+        if let Some(check) = self.entry_constructor_check {
+            return match check {
+                crate::ConstructorCheck::BirthCheck(ordinal) => (self.from, 5, self.site, ordinal),
+                crate::ConstructorCheck::Assertion { epoch, ordinal } => (self.from, 6 + epoch as u8, self.site, ordinal),
+            };
+        }
         match (&self.entry_initialization, &self.entry_bus) {
             (Some(default), _) => (self.from, if default.kind == crate::InitializerKind::Argument { 3 } else { 1 }, self.site, default.ordinal),
             (_, Some(_)) => (self.from, 2, self.site, 0),
@@ -356,6 +369,8 @@ impl StdlibAbsorption {
 /// claim's via masks).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AbsorbedNode {
+    /// Actual automatic assertion or birth-predicate body metadata.
+    pub constructor_check: Option<crate::ConstructorCheck>,
     /// Present exactly for a constructor-default body, from the shared
     /// source inventory. Event validation never infers this from its display.
     pub initializer: Option<crate::Initializer>,
@@ -385,6 +400,8 @@ pub struct AbsorbedNode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbsorbedEvent {
+    /// Possible predicate operands under a constructor's runtime opportunity.
+    ConstructorCheck { target: AbsorbedTarget, kind: crate::ConstructorCheck, in_loop: bool },
     /// Constructor entry into an actual self lifecycle body. Frame and
     /// scheduling coverage stay separate from the known effect graph.
     Lifecycle {
@@ -988,9 +1005,36 @@ impl ApplicationModel {
             let crate::EntityRef::Function(from) = hole.at else { return Err(bad(index,"lifecycle context must anchor a source function")); };
             let own = r.lifecycle_evaluations.iter().any(|v| v.from == from && v.provenance == hole.provenance);
             let foreign = self.analyses.stdlib_absorption.iter().any(|a| a.from == from && a.entry_provenance == hole.provenance
-                && (a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.events.iter().any(|e| matches!(e, crate::AbsorbedEvent::Lifecycle { .. })))));
+                && (a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.constructor_check.is_some() || n.events.iter().any(|e| matches!(e, crate::AbsorbedEvent::Lifecycle { .. } | crate::AbsorbedEvent::ConstructorCheck { .. })))));
             if !own && !foreign { return Err(bad(index,"lifecycle context requires a represented constructor/hook source entry")); }
         }
+        Ok(())
+    }
+
+    /// Every represented constructor retains its complete possible predicate
+    /// body account. Runtime admission and failure dispatch are separate facts.
+    fn validate_constructor_checks(&self) -> Result<(), ModelError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let r = &self.relations;
+        let bad = |index| ModelError::CoverageLaw { index, law: "constructor predicate entries must equal all source clauses with exact construction identities and repetition" };
+        check_sorted_keys("constructor_checks", r.constructor_checks.iter().map(|v| (v.from, v.site, v.kind, v.to)))?;
+        let mut expected = BTreeMap::new();
+        for c in &r.constructions {
+            let crate::ConstructorTarget::Locus(owner) = c.owner else { continue };
+            let targets = r.birth_checks.iter().filter(|d| d.owner == owner)
+                .map(|d| (d.function, crate::ConstructorCheck::BirthCheck(d.ordinal)))
+                .chain(r.closure_definitions.iter().filter(|d| d.owner == owner && d.epoch != crate::ClosureEpoch::Explicit)
+                    .map(|d| (d.function, crate::ConstructorCheck::Assertion { epoch: d.epoch, ordinal: d.ordinal })));
+            for (to, kind) in targets {
+                expected.insert((c.function, c.site, kind, to), (c.source, c.in_loop, c.unbounded, c.provenance));
+            }
+        }
+        let mut actual = BTreeSet::new();
+        for (index, v) in r.constructor_checks.iter().enumerate() {
+            let key = (v.from, v.site, v.kind, v.to);
+            if expected.get(&key) != Some(&(v.source, v.in_loop, v.unbounded, v.provenance)) || !actual.insert(key) { return Err(bad(index)); }
+        }
+        if actual != expected.keys().copied().collect() { return Err(bad(0)); }
         Ok(())
     }
 
@@ -1046,6 +1090,7 @@ impl ApplicationModel {
     fn validate_source_phases(&self) -> Result<(), ModelError> {
         self.validate_birth_checks()?;
         self.validate_lifecycle_evaluations()?;
+        self.validate_constructor_checks()?;
         self.validate_protocol_account()?;
         let mut counts = vec![0usize; self.entities.functions.len()];
         check_sorted_keys("phase_of", self.relations.phase_of.iter().map(|p| (p.function, p.phase)))?;
@@ -1640,6 +1685,9 @@ impl ApplicationModel {
         }
         for a in &self.analyses.stdlib_absorption {
             for n in &a.nodes {
+                if n.constructor_check.is_some() {
+                    m = m.union(crate::RelationSet::CALLS).union(crate::RelationSet::EFFECTS).union(crate::RelationSet::COSTS);
+                }
                 for ev in &n.events {
                     match ev {
                         crate::AbsorbedEvent::CallHole(_) => {
@@ -1809,7 +1857,7 @@ impl ApplicationModel {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
-        if self.header.semantics != MODEL_SEMANTICS_V13 {
+        if self.header.semantics != MODEL_SEMANTICS_V14 {
             return Err(ModelError::UnsupportedModelSemantics { actual: self.header.semantics });
         }
         self.analyses.recovery.validate(self)?;
@@ -2741,7 +2789,7 @@ impl ApplicationModel {
             }
             // A delivery entry sits at a publish site, which is no
             // call site: it joins no dispatch class.
-            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none() && a.entry_initialization.is_none() && a.entry_lifecycle.is_none()) {
+            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none() && a.entry_initialization.is_none() && a.entry_lifecycle.is_none() && a.entry_constructor_check.is_none()) {
                 join(
                     (a.from.0, a.site),
                     a.entry_dispatch.clone(),
@@ -2770,12 +2818,27 @@ impl ApplicationModel {
                     index: i,
                 });
             }
-            if a.entry_constructor_source.is_some() && a.entry_lifecycle.is_none() {
+            if a.entry_constructor_source.is_some() && a.entry_lifecycle.is_none() && a.entry_constructor_check.is_none() {
                 return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle_source",index:i });
+            }
+            if a.entry_constructor_check != a.nodes[0].constructor_check
+                || a.entry_constructor_check.is_some_and(|kind| a.entry_constructor_source.is_none()
+                || matches!(kind, crate::ConstructorCheck::Assertion { epoch: crate::ClosureEpoch::Explicit, .. })
+                || a.entry_lifecycle.is_some() || a.entry_initialization.is_some() || a.entry_dispatch.is_some()
+                || a.entry_group.is_some() || a.entry_bus.is_some()) {
+                return Err(ModelError::NotCanonical { table: "legacy.stdlib_absorption.constructor_check", index: i });
             }
             if a.entry_lifecycle.is_some_and(|stage| a.nodes[0].lifecycle != Some(stage) || a.entry_initialization.is_some()
                 || a.entry_dispatch.is_some() || a.entry_group.is_some() || a.entry_bus.is_some()) {
                 return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle",index:i });
+            }
+            if a.entry_constructor_check.is_some() || a.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev, crate::AbsorbedEvent::ConstructorCheck { .. }))) {
+                let required = crate::RelationSet::COSTS;
+                if !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(a.from)
+                    && h.kind == crate::HoleKind::UnmodeledLifecycleContext && h.provenance == a.entry_provenance
+                    && h.hides.contains(required)) {
+                    return Err(ModelError::CoverageLaw { index: i, law: "foreign constructor predicate requires scoped runtime cost coverage" });
+                }
             }
             if a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev,crate::AbsorbedEvent::Lifecycle { .. }))) {
                 if !self.holes.iter().any(|h| h.at==crate::EntityRef::Function(a.from)
@@ -2829,8 +2892,26 @@ impl ApplicationModel {
                     u32,
                     &(String, String),
                 > = std::collections::BTreeMap::new();
+                if n.constructor_check.is_some_and(|kind| n.initializer.is_some() || n.lifecycle.is_some()
+                    || matches!(kind, crate::ConstructorCheck::BirthCheck(u32::MAX)
+                        | crate::ConstructorCheck::Assertion { ordinal: u32::MAX, .. }
+                        | crate::ConstructorCheck::Assertion { epoch: crate::ClosureEpoch::Explicit, .. })) {
+                    return Err(ModelError::NotCanonical { table: "legacy.stdlib_absorption.predicate_body", index: i });
+                }
                 for ev in &n.events {
                     match ev {
+                        crate::AbsorbedEvent::ConstructorCheck { target, kind, .. } => {
+                            let actual = match target {
+                                crate::AbsorbedTarget::Interior(n) => a.nodes.get(*n as usize).and_then(|n| n.constructor_check),
+                                crate::AbsorbedTarget::User(f) => self.relations.birth_checks.iter().find(|d| d.function == *f)
+                                    .map(|d| crate::ConstructorCheck::BirthCheck(d.ordinal)).or_else(||
+                                        self.relations.closure_definitions.iter().find(|d| d.function == *f)
+                                            .map(|d| crate::ConstructorCheck::Assertion { epoch: d.epoch, ordinal: d.ordinal })),
+                            };
+                            if actual != Some(*kind) || matches!(kind, crate::ConstructorCheck::Assertion { epoch: crate::ClosureEpoch::Explicit, .. }) {
+                                return Err(ModelError::NotCanonical { table: "legacy.stdlib_absorption.constructor_check", index: i });
+                            }
+                        }
                         crate::AbsorbedEvent::Lifecycle { target,stage,.. } => {
                             let actual = match target {
                                 crate::AbsorbedTarget::Interior(n) => a.nodes.get(*n as usize).and_then(|n| n.lifecycle),
@@ -3008,7 +3089,7 @@ impl ApplicationModel {
                     .or_default()
                     .resolved = true;
             }
-            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none() && a.entry_initialization.is_none() && a.entry_lifecycle.is_none()) {
+            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none() && a.entry_initialization.is_none() && a.entry_lifecycle.is_none() && a.entry_constructor_check.is_none()) {
                 call_sites
                     .entry((a.from.0, a.site))
                     .or_default()

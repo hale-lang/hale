@@ -109,7 +109,8 @@ use crate::symbol::Bundle;
 // 29: fresh field ownership follows canonical nominal alias/generic resolution.
 // 30: declaration-only record confinement and nominal/generic shadowing.
 // 31: complete self lifecycle source work is distinct from quantitative context gaps.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 31;
+// 32: constructor-bound birth predicates and automatic assertion operands.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 32;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -425,7 +426,7 @@ pub fn model_fanout<'a>(
                 crate::model_query::ExecutionSite::ClosureCheck { check,closure } => (4,check,closure),
                 crate::model_query::ExecutionSite::ArgumentDefault { call, argument } => (3, call, argument),
                 crate::model_query::ExecutionSite::Initialization { constructor, parameter } => (1, constructor, parameter),
-                crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => { path.pop(); return None; },
+                crate::model_query::ExecutionSite::ConstructorCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => { path.pop(); return None; },
             };
             by_site.entry(site).or_default().push(n);
         }
@@ -441,7 +442,7 @@ pub fn model_fanout<'a>(
                 return None;
             }
             let site = match crate::model_query::absorption_site(a) {
-                Some(crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. }) => { path.pop(); return None; },
+                Some(crate::model_query::ExecutionSite::ConstructorCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. }) => { path.pop(); return None; },
                 Some(crate::model_query::ExecutionSite::Call(site)) => (0, site, 0),
                 Some(crate::model_query::ExecutionSite::ClosureCheck { check,closure }) => (4,check,closure),
                 Some(crate::model_query::ExecutionSite::ArgumentDefault { call, argument }) => (3, call, argument),
@@ -491,6 +492,7 @@ pub fn model_fanout<'a>(
                 return None;
             }
             let node = a.nodes.get(idx as usize)?;
+            if node.constructor_check.is_some() { return None; }
             seen.push(idx);
             let mut ungrouped: u64 = 0;
             let mut groups: BTreeMap<u32, u64> = BTreeMap::new();
@@ -503,6 +505,7 @@ pub fn model_fanout<'a>(
                     | hale_model::AbsorbedEvent::Deliver { .. }
                     | hale_model::AbsorbedEvent::Truncated
                     | hale_model::AbsorbedEvent::Lifecycle { .. }
+                    | hale_model::AbsorbedEvent::ConstructorCheck { .. }
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         seen.pop();
                         return None;

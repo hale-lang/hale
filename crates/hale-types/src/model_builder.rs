@@ -46,7 +46,7 @@ use hale_model::{
     PublishDisposition, Relations, Seed, SeedId, SelectorForm, Subject,
     SubjectId, Subscribe, Supervises, SupervisedRef, SupervisionPolicy,
     Topic, TopicBound, TopicId, TopicKey, TopicOnFull, TypeDecl as MTypeDecl,
-    TypeDeclId, MODEL_SEMANTICS_V13,
+    TypeDeclId, MODEL_SEMANTICS_V14,
 };
 use hale_syntax::ast::{
     Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
@@ -3050,6 +3050,13 @@ pub fn derive_application_model_over(
                     };
                     events.push(hale_model::AbsorbedEvent::Lifecycle { target, stage:edge.stage, in_loop:edge.loop_depth>0 });
                 }
+                for edge in &nfs.constructor_checks {
+                    let target = if user_key(&edge.target) { hale_model::AbsorbedTarget::User(fid(&edge.target)) } else {
+                        let target = *index.entry(edge.target.clone()).or_insert_with(|| { order.push(edge.target.clone()); (order.len() - 1) as u32 });
+                        hale_model::AbsorbedTarget::Interior(target)
+                    };
+                    events.push(hale_model::AbsorbedEvent::ConstructorCheck { target, kind: edge.kind, in_loop: edge.loop_depth > 0 });
+                }
                 for site2 in &nfs.effect_sites {
                     match &site2.kind {
                         alloc_summary::EffectSiteKind::Publish(
@@ -3132,7 +3139,10 @@ pub fn derive_application_model_over(
                     }
                 }
             }
-            nodes.push(hale_model::AbsorbedNode {
+            nodes.push(hale_model::AbsorbedNode { constructor_check: merged.birth_checks.get(&n)
+                .map(|d| hale_model::ConstructorCheck::BirthCheck(d.ordinal))
+                .or_else(|| merged.closure_assertions.get(&n).filter(|d| d.epoch != hale_model::ClosureEpoch::Explicit)
+                    .map(|d| hale_model::ConstructorCheck::Assertion { epoch: d.epoch, ordinal: d.ordinal })),
                 lifecycle: lifecycle_stages.get(&n).copied(),
                 initializer: merged.initializers.get(&n).map(|p| hale_model::Initializer { kind: p.kind, field: p.field.clone(), ordinal: p.ordinal }),
                 display: disp(&n),
@@ -3151,7 +3161,7 @@ pub fn derive_application_model_over(
             // event lists, and (c) a walk surfaces saturation
             // exactly where knowledge ends — not on entry.
             for k in order.iter().skip(nodes.len()) {
-                nodes.push(hale_model::AbsorbedNode {
+                nodes.push(hale_model::AbsorbedNode { constructor_check: None,
                     lifecycle: lifecycle_stages.get(k).copied(),
                     initializer: merged.initializers.get(k).map(|p| hale_model::Initializer { kind: p.kind, field: p.field.clone(), ordinal: p.ordinal }),
                     display: disp(k),
@@ -3216,7 +3226,7 @@ pub fn derive_application_model_over(
                 for default in fs.initializations.iter().filter(|default| default.initializer.kind == hale_model::InitializerKind::Argument
                     && default.invocation == edge.authored && !user_key(&default.target) && merged.fns.contains_key(&default.target)) {
                     stdlib_absorption.push(hale_model::StdlibAbsorption {
-                entry_constructor_source: None,
+                entry_constructor_check: None, entry_constructor_source: None,
                         from,site,entry_lifecycle: None, entry_initialization:Some(hale_model::Initializer { kind:default.initializer.kind,field:default.initializer.field.clone(),ordinal:default.initializer.ordinal }),
                         entry_dispatch:None,entry_in_loop:default.loop_depth > 0,entry_group:None,
                         entry_provenance:intern_span(&mut records,default.span),entry_bus:None,nodes:absorb_interior(&default.target),
@@ -3267,7 +3277,7 @@ pub fn derive_application_model_over(
             }) {
                 stdlib_absorption.push(
                     hale_model::StdlibAbsorption {
-                entry_constructor_source: None,
+                entry_constructor_check: None, entry_constructor_source: None,
                         from,
                         site,
                         entry_dispatch,
@@ -3290,7 +3300,7 @@ pub fn derive_application_model_over(
             if edge.initializer.kind == hale_model::InitializerKind::Argument { continue; }
             if user_key(&edge.target) || !merged.fns.contains_key(&edge.target) { continue; }
             stdlib_absorption.push(hale_model::StdlibAbsorption {
-                entry_constructor_source: None,
+                entry_constructor_check: None, entry_constructor_source: None,
                 from: fid(key), site: edge.ordinal,
                 entry_lifecycle: None, entry_initialization: Some(hale_model::Initializer { kind: edge.initializer.kind, field: edge.initializer.field.clone(), ordinal: edge.initializer.ordinal }),
                 entry_dispatch: None, entry_in_loop: edge.loop_depth > 0,
@@ -3303,10 +3313,22 @@ pub fn derive_application_model_over(
         for edge in &body.lifecycle_evaluations {
             if user_key(&edge.target) || !merged.fns.contains_key(&edge.target) { continue; }
             stdlib_absorption.push(hale_model::StdlibAbsorption {
-                entry_constructor_source: edge.invocation,
+                entry_constructor_check: None, entry_constructor_source: edge.invocation,
                 from:fid(key),site:edge.ordinal,entry_lifecycle:Some(edge.stage),entry_initialization:None,
                 entry_dispatch:None,entry_in_loop:edge.loop_depth>0,entry_group:None,
                 entry_provenance:intern_span(&mut records,edge.span),entry_bus:None,nodes:absorb_interior(&edge.target),
+            });
+        }
+    }
+    for (key, body) in merged.fns.iter().filter(|(key,_)| user_key(key)) {
+        for edge in &body.constructor_checks {
+            if user_key(&edge.target) || !merged.fns.contains_key(&edge.target) { continue; }
+            stdlib_absorption.push(hale_model::StdlibAbsorption {
+                entry_constructor_check: Some(edge.kind), entry_constructor_source: edge.invocation,
+                from: fid(key), site: edge.constructor, entry_lifecycle: None, entry_initialization: None,
+                entry_dispatch: None, entry_in_loop: edge.loop_depth > 0, entry_group: None,
+                entry_provenance: intern_span(&mut records, edge.span), entry_bus: None,
+                nodes: absorb_interior(&edge.target),
             });
         }
     }
@@ -3321,7 +3343,7 @@ pub fn derive_application_model_over(
             }
             let Some(hk) = merged.resolve(Some(locus), handler) else { continue };
             stdlib_absorption.push(hale_model::StdlibAbsorption {
-                entry_constructor_source: None,
+                entry_constructor_check: None, entry_constructor_source: None,
                 from: p.function,
                 site: p.site,
                 entry_dispatch: None,
@@ -3339,6 +3361,12 @@ pub fn derive_application_model_over(
     // foreign invocation context at every actual source entry; numeric queries
     // cannot rely on a user-only call projection to discover that interior.
     for entry in &stdlib_absorption {
+        if entry.entry_constructor_check.is_some() || entry.nodes.iter().any(|n| n.events.iter().any(|e| matches!(e, hale_model::AbsorbedEvent::ConstructorCheck { .. }))) {
+            let kind = HoleKind::UnmodeledLifecycleContext;
+            let hides = kind.implicit_execution_families().unwrap();
+            holes.entry((EntityRef::Function(entry.from), kind, format!("foreign constructor predicate at source entry {} ({:?}, {:?}) has unresolved scheduling, frame and lifetime costs", entry.site, entry.entry_constructor_check, entry.entry_initialization)))
+                .or_insert((hides, None, entry.entry_provenance));
+        }
         if entry.entry_lifecycle.is_some() || entry.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev,hale_model::AbsorbedEvent::Lifecycle { .. }))) {
             let kind=HoleKind::UnmodeledLifecycleContext;let hides=kind.implicit_execution_families().unwrap();
             holes.entry((EntityRef::Function(entry.from),kind,format!("foreign self lifecycle invocation at source entry {} ({:?}, {:?}) has unresolved admission, scheduling, frame and retention context", entry.site, entry.entry_lifecycle, entry.entry_initialization)))
@@ -3432,6 +3460,18 @@ pub fn derive_application_model_over(
         }
     }
     r.lifecycle_evaluations.sort_by_key(|v| (v.from,v.site,v.stage,v.to));
+    for (key, body) in summary.fns.iter().filter(|(key,_)| user_key(key)) {
+        let Some(from) = fid_of(key) else { continue };
+        for edge in &body.constructor_checks {
+            let Some(to) = fid_of(&edge.target) else { continue };
+            r.constructor_checks.push(hale_model::ConstructorCheckEvaluation {
+                source: edge.invocation, from, to, kind: edge.kind, site: edge.constructor,
+                in_loop: edge.loop_depth > 0, unbounded: edge.in_unbounded_loop,
+                provenance: intern_span(&mut records, edge.span),
+            });
+        }
+    }
+    r.constructor_checks.sort_by_key(|v| (v.from, v.site, v.kind, v.to));
     // Project the existing source account. No plan or artifact feeds the model.
     for (owner, hooks) in &summary.protocol_hooks {
         if owner.universe != crate::placement::SiteUniverse::User { continue; }
@@ -4079,6 +4119,9 @@ pub fn derive_application_model_over(
         let mut m = hale_model::RelationSet(0);
         for a in &stdlib_absorption {
             for n in &a.nodes {
+                if n.constructor_check.is_some() {
+                    m = m.union(hale_model::RelationSet::CALLS).union(hale_model::RelationSet::EFFECTS).union(hale_model::RelationSet::COSTS);
+                }
                 for ev in &n.events {
                     match ev {
                         hale_model::AbsorbedEvent::CallHole(_) => {
@@ -4343,7 +4386,7 @@ pub fn derive_application_model_over(
             stdlib_absorption,
         },
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V13,
+            semantics: MODEL_SEMANTICS_V14,
             entrypoint,
         },
         entities: e,
@@ -4496,6 +4539,14 @@ pub fn render_internal(m: &ApplicationModel) -> String {
             if c.in_loop { " loop" } else { "" },
             if c.unbounded { " unbounded" } else { "" },
         ));
+    }
+    if !r.constructor_checks.is_empty() {
+        s.push_str(&format!("constructor_checks ({}):\n", r.constructor_checks.len()));
+        for edge in &r.constructor_checks {
+            s.push_str(&format!("  {} -[may evaluate {} at constructor {}]-> {}{}{}\n",
+                fn_name(edge.from), edge.kind, edge.site, fn_name(edge.to),
+                if edge.in_loop { " loop" } else { "" }, if edge.unbounded { " unbounded" } else { "" }));
+        }
     }
     s.push_str(&format!(
         "dead_interface_calls ({}):\n",

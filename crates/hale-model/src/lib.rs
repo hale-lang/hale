@@ -239,7 +239,7 @@ pub use application::{
     Analyses, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
     certificate_row_verdict, document_verdict, DocumentVerdict,
-    Relations, WeightRow, MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, DispatchGate,
+    Relations, WeightRow, MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, MODEL_SEMANTICS_V14, DispatchGate,
 };
 pub use capability::Capabilities;
 pub use claim_ir::{
@@ -250,7 +250,7 @@ pub use claim_ir::{
     BusSelector, TopicIrRef,
 };
 pub use entity::{LifecycleStage, LifecycleGuard,
-    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, ClosureEpoch, FunctionKind, Initializer, InitializerKind, Group, InterfaceDecl,
+    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, ClosureEpoch, ConstructorCheck, FunctionKind, Initializer, InitializerKind, Group, InterfaceDecl,
     LocusStorage, StorageProjection, RecognitionMode, FlowClass, FlowOwner, FlowRelease, LocusDecl, LocusInstance, LocusParam, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };
@@ -266,7 +266,7 @@ pub use keys::{
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use surface::{RowType, Surface, SurfaceRow};
-pub use relation::{LifecycleDefinition, LifecycleEvaluation, BirthCheckDefinition, CostDimension, CostSite,
+pub use relation::{ConstructorCheckEvaluation, LifecycleDefinition, LifecycleEvaluation, BirthCheckDefinition, CostDimension, CostSite,
     AffinedTo, ArgumentEvaluation, ClosureDefinition, ClosureCheck, ClosureEvaluation, Call, Construction, ConstructorTarget, Initialization, CoreSet, DeadInterfaceCall, DeclaredIn, DeclaresPublish, DispatchKind, GroupMember,
     GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, SelectorForm, Subscribe,
     Supervises, SupervisedRef, SupervisionPolicy, TopicBinding,

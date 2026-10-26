@@ -69,6 +69,7 @@ enum V {
 /// spans identically to the evaluator.
 #[derive(Clone, Debug)]
 enum StepIr {
+    ConstructorCheck { kind: hale_model::ConstructorCheck, provenance: Option<ProvenanceId> },
     Lifecycle { stage:hale_model::LifecycleStage, provenance:Option<ProvenanceId> },
     ParentProtocol { stage:hale_model::ProtocolStage, provenance:ProvenanceId, constructor_provenance:ProvenanceId },
     ClosureEvaluation { provenance:Option<ProvenanceId> },
@@ -413,6 +414,10 @@ fn judge_forbid_reaches_impl(
     }
     for edge in &r.lifecycle_evaluations {
         calls_of.entry(edge.from).or_default().push((crate::model_query::ExecutionSite::Lifecycle { constructor:edge.site,stage:edge.stage },edge.to,StepIr::Lifecycle { stage:edge.stage,provenance:Some(edge.provenance) }));
+    }
+    for edge in &r.constructor_checks {
+        calls_of.entry(edge.from).or_default().push((crate::model_query::ExecutionSite::ConstructorCheck { constructor: edge.site, kind: edge.kind },
+            edge.to, StepIr::ConstructorCheck { kind: edge.kind, provenance: Some(edge.provenance) }));
     }
     for edge in &r.protocol_evaluations {
         let c = &r.protocol_contexts[edge.context as usize];
@@ -994,6 +999,7 @@ fn judge_forbid_reaches_impl(
         // search.
         let mut bus_unknown: Option<(String, String)> = None;
         let mut behavioral_unknown = None;
+        let mut predicate_unknown = None;
         let mut behavioral_mask = hale_model::RelationSet(0);
         if *via_calls { behavioral_mask = behavioral_mask.union(hale_model::RelationSet::CALLS); }
         if *via_bus { behavioral_mask = behavioral_mask.union(hale_model::RelationSet::PUBLISHES); }
@@ -1118,7 +1124,7 @@ fn judge_forbid_reaches_impl(
                                     let a = &absorption[ai as usize];
                                     edges.push((
                                         V::Interior(ai, 0),
-                                        if let Some(stage)=a.entry_lifecycle { StepIr::Lifecycle { stage,provenance:Some(a.entry_provenance) } } else { match &a.entry_initialization {
+                                        if let Some(kind) = a.entry_constructor_check { StepIr::ConstructorCheck { kind, provenance: Some(a.entry_provenance) } } else if let Some(stage)=a.entry_lifecycle { StepIr::Lifecycle { stage,provenance:Some(a.entry_provenance) } } else { match &a.entry_initialization {
                                             Some(default) if default.kind == hale_model::InitializerKind::Argument => StepIr::ArgumentEvaluation { parameter:default.field.clone(),provenance:Some(a.entry_provenance) },
                                             Some(default) => StepIr::Initialization { field: default.field.clone(), provenance: Some(a.entry_provenance) },
                                             None => StepIr::Call {
@@ -1300,6 +1306,10 @@ fn judge_forbid_reaches_impl(
                     V::Interior(ai, ni) => {
                         let node = &absorption[*ai as usize].nodes
                             [*ni as usize];
+                        if predicate_unknown.is_none() && node.constructor_check.is_some()
+                            && behavioral_mask.intersects(hale_model::RelationSet::CALLS.union(hale_model::RelationSet::EFFECTS)) {
+                            predicate_unknown = Some((display(*v), node.constructor_check.unwrap()));
+                        }
                         for ev in &node.events {
                             match ev {
                                 AbsorbedEvent::Call {
@@ -1327,6 +1337,11 @@ fn judge_forbid_reaches_impl(
                                             None => StepIr::Call { dispatch: dispatch.clone(), provenance: None, from_stdlib: true },
                                         },
                                     ));
+                                }
+                                AbsorbedEvent::ConstructorCheck { target, kind, .. } => {
+                                    if !*via_calls { continue; }
+                                    let target = match target { AbsorbedTarget::Interior(n) => V::Interior(*ai, *n), AbsorbedTarget::User(f) => V::User(*f) };
+                                    edges.push((target, StepIr::ConstructorCheck { kind: *kind, provenance: None }));
                                 }
                                 AbsorbedEvent::Lifecycle { target,stage,.. } => {
                                     if !*via_calls { continue; }
@@ -1613,6 +1628,9 @@ fn judge_forbid_reaches_impl(
                         ),
                     ));
                     Verdict::Violated
+                } else if let Some((function, kind)) = predicate_unknown {
+                    diags.push(Diag::ty(row_span, format!("claim `{}` cannot be certified: `{function}` (reachable from `{}`) may reject at {kind}; conditional failure dispatch is unresolved", row.name, src_ref.name.display)));
+                    Verdict::Uncertified
                 } else if let Some((function, hole)) = behavioral_unknown {
                     diags.push(Diag::ty(row_span, format!(
                         "claim `{}` cannot be certified: `{}` (reachable from `{}`) — {}",
@@ -1784,6 +1802,7 @@ fn render_violation_ir(
                 path.push_str(&format!(" -> `{}`", display(*node)));
             }
             Some(StepIr::ParentProtocol { stage,.. }) => { path.push_str(&format!(" -(may enter parent {}; guard {})-> `{}`",stage.as_str(),stage.guard(),display(*node))); }
+            Some(StepIr::ConstructorCheck { kind, .. }) => { path.push_str(&format!(" -(may evaluate {kind})-> `{}`", display(*node))); }
             Some(StepIr::Lifecycle { stage,.. }) => { path.push_str(&format!(" -(may enter {}; guard {})-> `{}`",stage.as_str(),stage.entry_guard().as_str(),display(*node))); }
             Some(StepIr::ClosureEvaluation { .. }) => { path.push_str(&format!(" -(checks closure)-> `{}`",display(*node))); }
             Some(StepIr::ArgumentEvaluation { parameter, .. }) => {
@@ -1846,6 +1865,7 @@ fn render_violation_ir(
                 diags.push(Diag::ty(model_span(*provenance),format!("claim `{}`: this root may enter parent {} (guard: {})",row.name,stage.as_str(),stage.guard())));
                 if constructor_provenance != provenance { diags.push(Diag::ty(model_span(*constructor_provenance),"the nested child construction is here")); }
             }
+            StepIr::ConstructorCheck { kind, provenance } => { if let Some(p) = provenance { diags.push(Diag::ty(model_span(*p), format!("claim `{}`: this construction may evaluate {kind}", row.name))); } }
             StepIr::Lifecycle { stage,provenance } => { if let Some(p)=provenance { diags.push(Diag::ty(model_span(*p),format!("claim `{}`: this construction may enter the {} body (guard: {})",row.name,stage.as_str(),stage.entry_guard().as_str()))); } }
             StepIr::ClosureEvaluation { provenance } => { if let Some(p)=provenance { diags.push(Diag::ty(model_span(*p),format!("claim `{}`: this checkpoint evaluates a closure assertion",row.name))); } }
             StepIr::ArgumentEvaluation { parameter, provenance } => {
@@ -4208,7 +4228,7 @@ pub fn judge_bound(
                             evs.push(Ev::Call {
                                 to: V::User(cr.to),
                                 in_loop: cr.in_loop,
-                                group: match site { crate::model_query::ExecutionSite::Call(site) => Some(site), crate::model_query::ExecutionSite::Initialization { .. } | crate::model_query::ExecutionSite::ArgumentDefault { .. } | crate::model_query::ExecutionSite::ClosureCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => None },
+                                group: match site { crate::model_query::ExecutionSite::Call(site) => Some(site), crate::model_query::ExecutionSite::Initialization { .. } | crate::model_query::ExecutionSite::ArgumentDefault { .. } | crate::model_query::ExecutionSite::ClosureCheck { .. } | crate::model_query::ExecutionSite::ConstructorCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => None },
                                 prov: Some(cr.provenance),
                             });
                         } else {
@@ -4228,7 +4248,7 @@ pub fn judge_bound(
                             evs.push(Ev::Call {
                                 to: V::Interior(ai, 0),
                                 in_loop: a.entry_in_loop,
-                                group: match site { crate::model_query::ExecutionSite::Call(site) => Some(site), crate::model_query::ExecutionSite::Initialization { .. } | crate::model_query::ExecutionSite::ArgumentDefault { .. } | crate::model_query::ExecutionSite::ClosureCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => None },
+                                group: match site { crate::model_query::ExecutionSite::Call(site) => Some(site), crate::model_query::ExecutionSite::Initialization { .. } | crate::model_query::ExecutionSite::ArgumentDefault { .. } | crate::model_query::ExecutionSite::ClosureCheck { .. } | crate::model_query::ExecutionSite::ConstructorCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => None },
                                 prov: Some(a.entry_provenance),
                             });
                         }
@@ -4298,6 +4318,7 @@ pub fn judge_bound(
                 V::Interior(ai, ni) => {
                     let node = &cx.absorption[ai as usize].nodes
                         [ni as usize];
+                    if node.constructor_check.is_some() { evs.push(Ev::Unfollowable(None)); }
                     for ev in &node.events {
                         match ev {
                             AbsorbedEvent::Call {
@@ -4321,7 +4342,7 @@ pub fn judge_bound(
                                     prov: None,
                                 });
                             }
-                            AbsorbedEvent::Lifecycle { .. } => evs.push(Ev::Unfollowable(None)),
+                            AbsorbedEvent::Lifecycle { .. } | AbsorbedEvent::ConstructorCheck { .. } => evs.push(Ev::Unfollowable(None)),
                             AbsorbedEvent::CallHole(_) => {
                                 evs.push(Ev::Unfollowable(None))
                             }
@@ -5316,6 +5337,7 @@ pub fn judge_causes_witnessed(
                     // The handler's own publishes are its node's events.
                     hale_model::AbsorbedEvent::Call { .. }
                     | hale_model::AbsorbedEvent::Lifecycle { .. }
+                    | hale_model::AbsorbedEvent::ConstructorCheck { .. }
                     | hale_model::AbsorbedEvent::Deliver { .. } => {}
                 }
             }

@@ -666,13 +666,14 @@ bytes. Schema 1.23 adds the typed law, hashed classification tags,
 classification capability and `flow_policy` adequacy. Analysis semantics
 11 binds the added judgment and completeness family.
 
-**The topology artifact** (#382 phase 2; current schema 1.36):
+**The topology artifact** (#382 phase 2; current schema 1.37):
 The exporter uses artifact semantics **3**. The in-process canonical model
-uses semantics **13**, and analysis inputs use semantics **31**. These are
+uses semantics **14**, and analysis inputs use semantics **32**. These are
 separate version domains; the artifact's `semantics` field is not the model
 semantics version. Reachability reports use their own schema,
-`hale.reachability-proofs/2`. Schema 1.36 separates represented self lifecycle
-source work from unresolved runtime cost context. Schema 1.35 adds the complete guarded parent
+`hale.reachability-proofs/2`. Schema 1.37 adds exact constructor predicate
+entries; schema 1.36 separates represented self lifecycle source work from
+unresolved runtime cost context. Schema 1.35 adds the complete guarded parent
 protocol accounts; schema 1.34 introduced the guarded self-stage accounts.
 Consumers apply the admission rules for the supported schema and semantics,
 not just a string-label check. Re-export from source when required coverage

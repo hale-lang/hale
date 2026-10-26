@@ -1921,3 +1921,29 @@ runtime admission, completion, native frame, lifetime, incarnation, retained
 resource, or liveness obligation. Numeric budgets still refuse the unresolved
 lifecycle context. Potential lifecycle work remains separate from synchronous
 caller-frame traversal.
+
+### Constructor predicate source entries
+
+Birth checks and automatic closure assertion operands participate in source
+reachability from each construction that may evaluate them. An operand that
+performs a forbidden effect produces a violation with the predicate and helper
+path. The predicate entry keeps its constructor ordinal, clause kind, epoch and
+loop context in a namespace separate from calls and explicit checkpoints.
+
+These are possible source entries. They establish neither successful admission,
+execution order, a native stack frame nor eventual evaluation. Conditional
+failure dispatch, recovery, scheduling and lifetime coverage remain explicit;
+a pure operand alone does not certify a constructor or its quantitative budget.
+Imported and standard-library predicate bodies use the same execution facts.
+Topology schema 1.37 includes `relations.constructor_checks`; admission requires
+exactly the represented constructors' birth predicates and automatic assertions.
+Model semantics 14 and analysis semantics 32 distinguish this account from older
+evidence, including source-bound reachability proof replay.
+
+Foreign predicate metadata retains conditional failure uncertainty at the actual
+interior vertex. A valid `avoiding` gate can exclude it. Known operand paths
+remain traversable and a concrete forbidden effect wins over uncertainty.
+Each enclosing source entry separately retains runtime cost coverage; compact
+artifacts conservatively project interior failure uncertainty to that entry.
+The compact projection therefore cannot recover the source model's interior
+barrier precision. Native scheduling and failure dispatch remain unproved.

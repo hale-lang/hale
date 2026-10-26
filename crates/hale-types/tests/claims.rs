@@ -958,8 +958,7 @@ fn a_program_publish_to_a_stdlib_sink_reaches_a_syscall() {
 /// print is the sink's, inside the module the law masks.
 #[test]
 fn raw_log_delivery_through_a_sink_holds_the_structured_logging_law() {
-    let ds = diags(
-        r#"
+    let source = r#"
     main locus App {
         params { sink: std::log::StdoutSink = std::log::StdoutSink { }; }
         bus { publish "log.app" of type std::log::LogEvent; }
@@ -970,9 +969,17 @@ fn raw_log_delivery_through_a_sink_holds_the_structured_logging_law() {
             "log.app" <- std::log::LogEvent { level: 1, msg: "raw", path: "app", fields: "", ts: 0 };
         }
     }
-"#,
-    );
+"#;
+    let ds = diags(source);
     assert!(ds.is_empty(), "{ds:?}");
+    // The gate excludes the real foreign vertex and its unresolved failure
+    // context. Without that gate, a quiet source effect remains uncertified.
+    let quiet = source.replace(LOGS_STRUCTURED, "quiet: forbid reaches(program, effects(secret_use));");
+    let ds = diags(&quiet);
+    assert!(ds.iter().any(|d| d.contains("conditional failure dispatch is unresolved")), "{ds:?}");
+    // Known writes must still win over that uncertainty.
+    let ds = diags(&source.replace(" avoiding std::log::*", ""));
+    assert!(ds.iter().any(|d| d.contains("violated") && d.contains("StdoutSink::on_event")), "{ds:?}");
 }
 
 /// A gate over the target's stdlib module masks the target, and the

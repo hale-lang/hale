@@ -254,6 +254,20 @@ pub struct ClosureEvaluation {
     pub provenance: ProvenanceId,
 }
 
+/// Possible evaluation of a birth predicate or automatic assertion under an
+/// original constructor. This is distinct from explicit closure checkpoints.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ConstructorCheckEvaluation {
+    pub source: Option<hale_graph::ids::SiteId>,
+    pub from: FunctionId,
+    pub to: FunctionId,
+    pub kind: crate::ConstructorCheck,
+    pub site: u32,
+    pub in_loop: bool,
+    pub unbounded: bool,
+    pub provenance: ProvenanceId,
+}
+
 /// The declaration constructed by an expression. Records retain their type
 /// ownership and acquire no locus lifecycle or instance semantics.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

@@ -906,12 +906,14 @@ pub enum ExecutionSite {
     ArgumentDefault { call: u32, argument: u32 },
     ClosureCheck { check:u32, closure:u32 },
     Lifecycle { constructor:u32, stage:hale_model::LifecycleStage },
+    ConstructorCheck { constructor: u32, kind: hale_model::ConstructorCheck },
 }
 
 /// An absorbed entry's call or constructor identity. Deliveries belong to
 /// the separate publish namespace and are projected by the bus queries.
 pub fn absorption_site(entry: &hale_model::StdlibAbsorption) -> Option<ExecutionSite> {
     if entry.entry_bus.is_some() { return None; }
+    if let Some(kind) = entry.entry_constructor_check { return Some(ExecutionSite::ConstructorCheck { constructor: entry.site, kind }); }
     if let Some(stage)=entry.entry_lifecycle { return Some(ExecutionSite::Lifecycle { constructor:entry.site,stage }); }
     Some(match &entry.entry_initialization {
         Some(parameter) if parameter.kind == hale_model::InitializerKind::Argument => ExecutionSite::ArgumentDefault { call: entry.site, argument: parameter.ordinal },
@@ -944,6 +946,10 @@ pub fn executions(model: &ApplicationModel) -> impl Iterator<Item = ExecutionRef
     }).chain(model.relations.lifecycle_evaluations.iter().map(|edge| ExecutionRef {
         from:edge.from,to:edge.to,site:ExecutionSite::Lifecycle { constructor:edge.site,stage:edge.stage },
         in_loop:edge.in_loop,unbounded:edge.unbounded,provenance:edge.provenance,dispatch:None,
+    })).chain(model.relations.constructor_checks.iter().map(|edge| ExecutionRef {
+        from: edge.from, to: edge.to,
+        site: ExecutionSite::ConstructorCheck { constructor: edge.site, kind: edge.kind },
+        in_loop: edge.in_loop, unbounded: edge.unbounded, provenance: edge.provenance, dispatch: None,
     })).chain(model.relations.calls.iter().map(|call| ExecutionRef {
         from: call.from, to: call.to, site: ExecutionSite::Call(call.site),
         in_loop: call.in_loop, unbounded: call.unbounded, provenance: call.provenance, dispatch: Some(&call.dispatch),

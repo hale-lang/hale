@@ -118,8 +118,8 @@ impl ComponentModel {
             )?);
         }
         let mut calls: Vec<(String, String)> = Vec::new();
-        for rel in ["calls", "calls_via_stdlib", "initializes", "argument_evaluations", "closure_evaluations", "lifecycle_evaluations"] {
-            if matches!(rel, "initializes" | "argument_evaluations" | "closure_evaluations" | "lifecycle_evaluations") && v["relations"].get(rel).is_none() { continue; }
+        for rel in ["calls", "calls_via_stdlib", "initializes", "argument_evaluations", "closure_evaluations", "lifecycle_evaluations", "constructor_checks"] {
+            if matches!(rel, "initializes" | "argument_evaluations" | "closure_evaluations" | "lifecycle_evaluations" | "constructor_checks") && v["relations"].get(rel).is_none() { continue; }
             for (i, e) in req_arr(
                 &v["relations"][rel],
                 &format!("relations.{}", rel),

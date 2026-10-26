@@ -471,6 +471,14 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         };
         unknowns.entry(fn_display(f)).or_default().insert(reason);
     }
+    // The compact artifact cannot serialize a foreign interior vertex. Keep
+    // its intrinsic failure uncertainty at the enclosing artifact entry; the
+    // source model retains that residue at the actual predicate for via masks.
+    for a in &m.analyses.stdlib_absorption {
+        if a.nodes.iter().any(|n| n.constructor_check.is_some()) {
+            unknowns.entry(fn_display(a.from)).or_default().insert("unmodeled_initialization".to_string());
+        }
+    }
     for d in &r.dead_interface_calls {
         if !v1.contains(&d.from) {
             continue;
@@ -585,6 +593,17 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         model.push_str("    \"lifecycle_evaluations\": [\n");
         for v in &r.lifecycle_evaluations {
             model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"stage\": {}, \"guard\": {}, \"site\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(v.from)),quote(&fn_display(v.to)),quote(v.stage.as_str()),quote(v.guard.as_str()),v.site,v.in_loop,v.unbounded));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+    }
+    if !r.constructor_checks.is_empty() {
+        model.push_str("    \"constructor_checks\": [\n");
+        for v in &r.constructor_checks {
+            let (kind, epoch, clause) = match v.kind {
+                hale_model::ConstructorCheck::BirthCheck(ordinal) => ("birth_check", "birth", ordinal),
+                hale_model::ConstructorCheck::Assertion { epoch, ordinal } => ("assertion", epoch.as_str(), ordinal),
+            };
+            model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"kind\": {}, \"epoch\": {}, \"clause\": {}, \"site\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(v.from)),quote(&fn_display(v.to)),quote(kind),quote(epoch),clause,v.site,v.in_loop,v.unbounded));
         }
         trim_trailing_comma(&mut model); model.push_str("    ],\n");
     }

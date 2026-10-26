@@ -516,7 +516,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V13,
+            semantics: MODEL_SEMANTICS_V14,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -546,7 +546,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
             lifecycle_contexts: None,
             recovery: Default::default(),
             dispatch_plan: Default::default(),
-            stdlib_absorption: vec![StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+            stdlib_absorption: vec![StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
                 entry_initialization: None,
                 from: FunctionId(0),
@@ -555,7 +555,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
                 entry_in_loop: true,
                 entry_group: None,
                 entry_provenance: p,
-                nodes: vec![AbsorbedNode { lifecycle: None,
+                nodes: vec![AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "std::pay::charge".to_string(),
@@ -1047,7 +1047,7 @@ fn main() {
         .first_mut()
         .expect("absorption");
     let frontier = a.nodes.len() as u32;
-    a.nodes.push(hale_model::AbsorbedNode { lifecycle: None,
+    a.nodes.push(hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
         initializer: None,
         decl: String::new(),
         display: "std::deep::beyond".to_string(),
@@ -1679,7 +1679,7 @@ fn main() {
     let mut m = base.clone();
     let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
     m.analyses.stdlib_absorption[0].nodes.push(
-        hale_model::AbsorbedNode { lifecycle: None,
+        hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
             initializer: None,
             decl: String::new(),
             display: "std::x::Ledger::charge_a".to_string(),
@@ -2746,7 +2746,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V13,
+            semantics: MODEL_SEMANTICS_V14,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -2783,7 +2783,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
             // The stdlib alternative of the SAME authored dispatch
             // (site 0), carrying a summary-global group id that
             // differs from the local ordinal.
-            stdlib_absorption: vec![StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+            stdlib_absorption: vec![StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
                 entry_initialization: None,
                 from: FunctionId(0),
@@ -2795,7 +2795,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
                 entry_in_loop: false,
                 entry_group: Some(7),
                 entry_provenance: p,
-                nodes: vec![AbsorbedNode { lifecycle: None,
+                nodes: vec![AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "std::pay::charge".to_string(),
@@ -3326,7 +3326,7 @@ fn main() {
                    display: &str| {
         let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
         m.analyses.stdlib_absorption[0].nodes.push(
-            hale_model::AbsorbedNode { lifecycle: None,
+            hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                 initializer: None,
                 decl: String::new(),
                 display: display.to_string(),

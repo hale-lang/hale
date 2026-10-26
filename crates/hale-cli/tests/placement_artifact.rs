@@ -761,6 +761,7 @@ fn main() { App { }; }
     let (_, mut previous) = artifact_with_outcome("prior_epoch_without_authored_hook",
         &source.replace("main locus App { run() { construct(); } }", "main locus App { }"), false);
     previous["schema"] = json!("1.29");
+    previous["relations"].as_object_mut().unwrap().remove("constructor_checks");
     topology_law::validate_law_account(&previous, "prior explicit epoch account").unwrap();
 }
 
@@ -965,4 +966,52 @@ fn main() { construct(); }
     let rows = bounded["law"]["rows"].as_array().unwrap();
     assert!(rows.iter().any(|r| r["family"]=="budget" && r["verdict"]=="uncertified"));
     assert!(rows.iter().any(|r| r["family"]=="certificate" && r["verdict"]=="holds"));
+}
+
+#[test]
+fn constructor_predicate_account_is_exact_and_distinct_from_calls() {
+    let source = r#"
+fn operand() -> Int { println("operand"); return 0; }
+locus Marker { }
+locus Child {
+    closure rejected { epoch inline; }
+    birth_check { operand() == 0 } -> violate rejected;
+    closure audit { operand() ~~ 0 within 0; epoch birth; }
+}
+fn construct() { Marker { }; Child { }; }
+main locus App { run() { construct(); } }
+fn main() { App { }; }
+"#;
+    let (_, v) = artifact("constructor_predicates", source);
+    topology_law::validate_law_account(&v, "constructor predicates").unwrap();
+    assert_eq!(v["schema"], "1.37");
+    let entries = v["relations"]["constructor_checks"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e["from"] == "construct" && e["site"] == 1 && e["epoch"] == "birth"));
+    assert_eq!(entries[0]["kind"], "birth_check");
+    assert_eq!(entries[1]["kind"], "assertion");
+    let component = fleet_model::ComponentModel::decode(&v, "constructor predicates").unwrap();
+    for entry in entries { assert!(component.calls.contains(&(entry["from"].as_str().unwrap().to_string(), entry["to"].as_str().unwrap().to_string()))); }
+    for mutation in 0..15 {
+        let mut changed = v.clone();
+        match mutation {
+            0 => { changed["relations"].as_object_mut().unwrap().remove("constructor_checks"); }
+            1 => changed["relations"]["constructor_checks"].as_array_mut().unwrap().clear(),
+            2 => changed["relations"]["constructor_checks"][0]["site"] = json!(0),
+            3 => changed["relations"]["constructor_checks"][0]["clause"] = json!(999),
+            4 => changed["relations"]["constructor_checks"][0]["epoch"] = json!("explicit"),
+            5 => changed["relations"]["constructor_checks"][0]["kind"] = json!("assertion"),
+            6 => changed["relations"]["constructor_checks"][0]["to"] = json!("operand"),
+            7 => changed["relations"]["constructor_checks"][0]["from"] = json!("main"),
+            8 => changed["relations"]["constructor_checks"][0]["loop"] = json!(true),
+            9 => changed["relations"]["constructor_checks"][0]["unbounded"] = json!(true),
+            10 => changed["relations"]["constructor_checks"][0]["extra"] = json!(true),
+            11 => { let extra=changed["relations"]["constructor_checks"][0].clone(); changed["relations"]["constructor_checks"].as_array_mut().unwrap().push(extra); }
+            12 => changed["schema"] = json!("1.36"),
+            13 => changed["relations"]["constructor_checks"] = json!({}),
+            _ => changed["relations"]["constructor_checks"].as_array_mut().unwrap().swap(0, 1),
+        }
+        restamp_law(&mut changed);
+        assert!(topology_law::validate_law_account(&changed, "predicate mutation").is_err(), "mutation {mutation}");
+    }
 }

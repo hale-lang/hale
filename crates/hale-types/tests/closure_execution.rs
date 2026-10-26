@@ -184,7 +184,7 @@ fn checkpoint_operands_follow_closure_declaration_order_before_label_order() {
 }
 
 #[test]
-fn construction_cannot_certify_across_unmodeled_automatic_epochs() {
+fn construction_exposes_automatic_operand_work_without_certifying_runtime_costs() {
     use hale_types::alloc_summary::EffectSiteKind;
     for epoch in ["birth", "dissolve", "tick", "duration(10ms)"] {
         let source = format!(r#"
@@ -219,7 +219,7 @@ fn main() {{ App {{ }}; }}
         assert!(caller.body_evaluations().next().is_some(), "the omitted n default is still ordinary execution");
         assert!(caller.closure_evaluations.is_empty(), "automatic work must not masquerade as an explicit checkpoint");
         let reports = s.demand_effect_certificates().unwrap();
-        assert_eq!(reports.iter().find(|(r, _)| r.subject == "construct").unwrap().0.result, Verdict::Uncertified, "{epoch}");
+        assert_eq!(reports.iter().find(|(r, _)| r.subject == "construct").unwrap().0.result, Verdict::Violated, "{epoch}");
         assert_eq!(reports.iter().find(|(r, _)| r.subject == "idle").unwrap().0.result, Verdict::Holds, "{epoch}");
         let model = s.demand_model().unwrap();
         model.validate().unwrap();
@@ -231,10 +231,12 @@ fn main() {{ App {{ }}; }}
         let table = hale_types::claim_lowering::lower_claims(&bundle, model);
         let evidence = hale_types::evidence::derive_certificate_evidence_over(&bundle, &table, model, reports, summary);
         let budget = table.rows.iter().find(|r| matches!(r.law, hale_model::ClaimIr::QuantBudget { .. })).unwrap().ordinal;
-        assert_eq!(hale_types::judgment::judge_certificates(&table, model, &evidence, &[budget])[0].verdict, Verdict::Uncertified, "{epoch}");
+        let certificate_results = hale_types::judgment::judge_certificates(&table, model, &evidence, &[0]);
+        let budget_result = certificate_results.iter().find(|r| r.ordinal == budget).unwrap();
+        assert_eq!(budget_result.verdict, Verdict::Uncertified, "{epoch}: {budget_result:?}");
         let quiet = table.rows.iter().find(|r| r.name == "quiet").unwrap().ordinal;
-        let (_, rows) = hale_types::judgment::judge_forbid_reaches(&table, model, &[quiet]);
-        assert_eq!(rows[0].verdict, Verdict::Uncertified, "{epoch}");
+        let (_, rows) = hale_types::judgment::judge_forbid_reaches(&table, model, &[0]);
+        assert_eq!(rows.iter().find(|r| r.ordinal == quiet).unwrap().verdict, Verdict::Violated, "{epoch}");
     }
 }
 
@@ -252,7 +254,7 @@ fn main() { App { }; }
 "#;
     let s = entries::load_files(&[("main.hl", source)], Config::check(true, false));
     let reports = s.demand_effect_certificates().unwrap();
-    for (name, result) in [("caller", Verdict::Uncertified), ("known", Verdict::Violated), ("idle", Verdict::Holds)] {
+    for (name, result) in [("caller", Verdict::Violated), ("known", Verdict::Violated), ("idle", Verdict::Holds)] {
         assert_eq!(reports.iter().find(|(r, _)| r.subject == name).unwrap().0.result, result, "{name}");
     }
     let rows = s.demand_effects().unwrap();

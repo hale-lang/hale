@@ -115,8 +115,8 @@ pub enum HoleKind {
     /// Constructor evaluation reaches a parameter default outside the
     /// represented executable-body horizon.
     UnmodeledInitialization,
-    /// All possible self lifecycle source bodies are represented by exact
-    /// constructor/hook edges. Admission, native frames, scheduling and
+    /// Self lifecycle or constructor predicate source bodies are represented
+    /// by exact entries. Admission, native frames, scheduling and
     /// retained lifetime remain unknown to quantitative judgments.
     UnmodeledLifecycleContext,
     /// A generic locus template has no single concrete flow discipline.

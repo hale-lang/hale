@@ -553,7 +553,7 @@ impl Artifact {
                 who
             )
         };
-        for rel in ["calls", "calls_via_stdlib", "initializes", "argument_evaluations", "closure_evaluations", "lifecycle_evaluations"] {
+        for rel in ["calls", "calls_via_stdlib", "initializes", "argument_evaluations", "closure_evaluations", "lifecycle_evaluations", "constructor_checks"] {
             for (i, row) in art.v["relations"][rel]
                 .as_array()
                 .into_iter()
@@ -1142,6 +1142,12 @@ fn build_graph(
         for row in art.rows(&["relations", "lifecycle_evaluations"]) {
             let (Some(from),Some(to),Some(stage))=(row["from"].as_str(),row["to"].as_str(),row["stage"].as_str()) else { continue };
             edges.push(Edge { from:from.to_string(),to:to.to_string(),highlight:false,label:format!("may enter {stage} ({})",row["guard"].as_str().unwrap_or_default()),kind:EdgeKind::Call });
+        }
+
+        for row in art.rows(&["relations", "constructor_checks"]) {
+            let (Some(from), Some(to)) = (row["from"].as_str(), row["to"].as_str()) else { continue };
+            edges.push(Edge { from: from.to_string(), to: to.to_string(), highlight: false,
+                label: format!("may evaluate {} {}", row["epoch"].as_str().unwrap_or_default(), row["kind"].as_str().unwrap_or_default()), kind: EdgeKind::Call });
         }
 
         for row in art.rows(&["relations", "closure_evaluations"]) {

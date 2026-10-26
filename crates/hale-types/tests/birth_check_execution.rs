@@ -132,11 +132,11 @@ fn graph_phase_claims_retain_the_predicate_helper_path() {
     proofs[&rows[0].ordinal].validate().unwrap();
 }
 #[test]
-fn constructor_claims_fail_closed_over_the_unresolved_invocation_context() {
+fn constructor_predicate_work_remains_known_before_runtime_context_closes() {
     let source = SOURCE.replace("@phase_effects(birth: {})", "").replace("fn main() { Child { }; }", "@effects(none: {stdio}) fn construct() { Child { }; }\n@effects(none: {stdio}) fn unrelated() { }\nfn main() { construct(); }");
     let s = snapshot(&source);
     let reports = s.demand_effect_certificates().unwrap();
-    assert_eq!(reports.iter().find(|(r, _)| r.subject == "construct").unwrap().0.result, Verdict::Uncertified);
+    assert_eq!(reports.iter().find(|(r, _)| r.subject == "construct").unwrap().0.result, Verdict::Violated);
     assert_eq!(reports.iter().find(|(r, _)| r.subject == "unrelated").unwrap().0.result, Verdict::Holds);
     let m = s.demand_model().unwrap();
     m.validate().unwrap();
@@ -190,4 +190,83 @@ fn main() { probe(); }
     assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(function)
         && h.kind == HoleKind::UnmodeledInitialization && h.reason.contains("birth check")),
         "represented birth work must not erase the independent predicate obligation");
+}
+
+#[test]
+fn constructor_predicate_entries_keep_their_own_namespace_and_witness() {
+    let source = r#"
+fn operand() -> Int { println("checked"); return 0; }
+type Marker { }
+locus Child {
+    params { n: Int = 0; }
+    closure broken { captures: n; epoch inline; }
+    birth_check { operand() < 0 } -> violate broken;
+}
+fn construct() { let marker = Marker { }; Child { }; }
+group constructors = { construct };
+main locus App { claims { quiet: forbid reaches(constructors, effects(stdio)); } }
+fn main() { construct(); App { }; }
+"#;
+    let s = snapshot(source); let m = s.demand_model().unwrap(); m.validate().unwrap();
+    let edge = &m.relations.constructor_checks[0];
+    assert_eq!(edge.site, 1);
+    assert_eq!(edge.kind, hale_model::ConstructorCheck::BirthCheck(0));
+    assert!(edge.source.is_some());
+    assert_eq!(m.entities.functions[edge.from.index()].display, "construct");
+    assert_eq!(m.entities.functions[edge.to.index()].kind, FunctionKind::BirthCheck);
+    let table = hale_types::claim_lowering::lower_claims(&s.bundle(), m);
+    let (pre, rows, proofs) = hale_types::judgment::judge_forbid_reaches_with_certificates(&table, m, &[0]);
+    assert!(pre.is_empty()); assert_eq!(rows[0].verdict, Verdict::Violated);
+    assert!(rows[0].diags.iter().any(|d| d.message.contains("may evaluate birth check 0") && d.message.contains("operand")));
+    proofs[&rows[0].ordinal].validate().unwrap();
+    for mutation in 0..5 {
+        let mut changed = m.clone();
+        match mutation {
+            0 => changed.relations.constructor_checks.clear(),
+            1 => changed.relations.constructor_checks[0].site = 0,
+            2 => changed.relations.constructor_checks[0].source = None,
+            3 => changed.relations.constructor_checks[0].in_loop = true,
+            _ => changed.relations.constructor_checks[0].kind = hale_model::ConstructorCheck::BirthCheck(1),
+        }
+        assert!(changed.validate().is_err(), "mutation {mutation}");
+    }
+}
+
+#[test]
+fn foreign_predicate_entries_bind_body_kind_source_and_context() {
+    let source = r#"
+fn probe() { let builder = std::bytes::BytesBuilder { }; }
+fn main() { probe(); }
+"#;
+    let s = snapshot(source); let m = s.demand_model().unwrap(); m.validate().unwrap();
+    let index = m.analyses.stdlib_absorption.iter().position(|a| a.entry_constructor_check.is_some()).unwrap();
+    let entry = &m.analyses.stdlib_absorption[index];
+    assert_eq!(entry.entry_constructor_check, Some(hale_model::ConstructorCheck::BirthCheck(0)));
+    assert_eq!(entry.nodes[0].constructor_check, entry.entry_constructor_check);
+    assert!(entry.entry_constructor_source.is_some());
+    assert!(entry.entry_lifecycle.is_none() && entry.entry_initialization.is_none());
+    assert!(!m.capabilities.exact_calls && !m.capabilities.exact_effects && !m.capabilities.exact_costs);
+    for capability in 0..3 {
+        let mut forged = m.clone();
+        match capability {
+            0 => forged.capabilities.exact_calls = true,
+            1 => forged.capabilities.exact_effects = true,
+            _ => forged.capabilities.exact_costs = true,
+        }
+        assert!(forged.validate().is_err(), "predicate coverage cannot claim exactness: {capability}");
+    }
+
+    for mutation in 0..6 {
+        let mut changed = m.clone();
+        let a = &mut changed.analyses.stdlib_absorption[index];
+        match mutation {
+            0 => a.entry_constructor_check = None,
+            1 => a.nodes[0].constructor_check = None,
+            2 => a.entry_constructor_check = Some(hale_model::ConstructorCheck::BirthCheck(1)),
+            3 => a.entry_constructor_source = None,
+            4 => a.entry_lifecycle = Some(hale_model::LifecycleStage::Birth),
+            _ => changed.holes.retain(|h| h.at != EntityRef::Function(entry.from) || h.kind != HoleKind::UnmodeledLifecycleContext),
+        }
+        assert!(changed.validate().is_err(), "mutation {mutation}");
+    }
 }

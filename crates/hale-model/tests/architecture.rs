@@ -69,7 +69,7 @@ fn tiny_model() -> ApplicationModel {
 
     ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V13,
+            semantics: MODEL_SEMANTICS_V14,
             entrypoint: "App".to_string(),
         },
         entities: Entities {
@@ -1939,7 +1939,7 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
     ] {
         let mut m = tiny_model();
         m.analyses.stdlib_absorption.push(
-            hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+            hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
                 entry_initialization: None,
                 from: FunctionId(0),
@@ -1948,7 +1948,7 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
                 entry_in_loop: false,
                 entry_group: None,
                 entry_provenance: ProvenanceId(0),
-                nodes: vec![hale_model::AbsorbedNode { lifecycle: None,
+                nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "interior".to_string(),
@@ -2001,7 +2001,7 @@ fn failure_handlers_obey_ordinary_coverage_and_owner_completeness_laws() {
 #[test]
 fn old_and_unknown_model_semantics_are_refused() {
     let mut m = tiny_model();
-    for version in [MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, 0, MODEL_SEMANTICS_V13 + 1] {
+    for version in [MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, 0, MODEL_SEMANTICS_V14 + 1] {
         m.header.semantics = version;
         assert_eq!(m.validate(), Err(ModelError::UnsupportedModelSemantics { actual: version }));
     }

@@ -913,12 +913,12 @@ law:
 
 ### Topology Artifact Format
 
-The current exporter writes schema **1.36** and artifact semantics **3**.
+The current exporter writes schema **1.37** and artifact semantics **3**.
 For example, these selected header fields appear in a fresh export:
 
 ```json
 {
-  "schema": "1.36",
+  "schema": "1.37",
   "semantics": 3,
   "shape_hash": "<fnv1a-64 over the model half>"
 }
@@ -939,10 +939,10 @@ The versions describe different things:
 
 | Version | Current value | Meaning |
 |---|---|---|
-| Topology `schema` | `1.36` | Serialized fields and admission rules. |
+| Topology `schema` | `1.37` | Serialized fields and admission rules. |
 | Topology `semantics` | `3` | Interpretation of artifact rows. |
-| In-process model semantics | `13` | Canonical model invariants; separate from topology `semantics`. |
-| Analysis semantics | `31` | Meaning of the analyses and evidence inputs. |
+| In-process model semantics | `14` | Canonical model invariants; separate from topology `semantics`. |
+| Analysis semantics | `32` | Meaning of the analyses and evidence inputs. |
 | Reachability proof schema | `hale.reachability-proofs/2` | Separate certificate report format. |
 
 Key artifact rules:
@@ -1003,3 +1003,21 @@ A known self lifecycle body contributes its source calls and effects even
 when its runtime admission and retained lifetime are unresolved. Those
 runtime gaps still block quantitative conclusions. Missing source bodies or
 unknown execution inside a hook continue to produce `uncertified` results.
+
+### Constructor predicate source entries
+
+Birth checks and automatic closure assertion operands participate in source
+reachability from each construction that may evaluate them. An operand that
+performs a forbidden effect produces a violation with the predicate and helper
+path. The predicate entry keeps its constructor ordinal, clause kind, epoch and
+loop context in a namespace separate from calls and explicit checkpoints.
+
+These are possible source entries. They establish neither successful admission,
+execution order, a native stack frame nor eventual evaluation. Conditional
+failure dispatch, recovery, scheduling and lifetime coverage remain explicit;
+a pure operand alone does not certify a constructor or its quantitative budget.
+Imported and standard-library predicate bodies use the same execution facts.
+Topology schema 1.37 includes `relations.constructor_checks`; admission requires
+exactly the represented constructors' birth predicates and automatic assertions.
+Model semantics 14 and analysis semantics 32 distinguish this account from older
+evidence, including source-bound reachability proof replay.

@@ -1023,6 +1023,9 @@ pub struct FnSummary {
     /// Constructor entry into a known lifecycle body. Its frame/domain/lifetime
     /// context is separate from authored calls and remains coverage-sensitive.
     pub lifecycle_evaluations: Vec<LifecycleEvaluationEdge>,
+    /// Possible birth predicates and automatic assertion operands of a real
+    /// construction. Runtime opportunity and quantitative context stay separate.
+    pub constructor_checks: Vec<ConstructorCheckEdge>,
     /// Contextual parent work. Inline defaults attach to their triggering root.
     pub protocol_evaluations: Vec<crate::protocol_execution::ProtocolEvaluation>,
     /// Statically known implicit-self declaration for this body. Defaults
@@ -1154,6 +1157,18 @@ pub struct LifecycleEvaluationEdge {
     pub in_unbounded_loop: bool,
 }
 
+/// A possible predicate evaluation bound to its original constructor.
+#[derive(Debug, Clone)]
+pub struct ConstructorCheckEdge {
+    pub target: FnKey,
+    pub kind: hale_model::ConstructorCheck,
+    pub invocation: Option<SiteId>,
+    pub constructor: u32,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
 /// A read-only execution view for consumers which need no origin-specific metadata.
 #[derive(Clone, Copy, Debug)]
 pub struct BodyEvaluation<'a> {
@@ -1209,6 +1224,8 @@ impl FnSummary {
     /// entries are not assumed to use the caller's native stack or lifetime.
     pub fn effect_evaluations(&self) -> impl Iterator<Item = BodyEvaluation<'_>> {
         self.body_evaluations().chain(self.lifecycle_evaluations.iter().map(|edge| BodyEvaluation {
+            target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop,
+        })).chain(self.constructor_checks.iter().map(|edge| BodyEvaluation {
             target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop,
         })).chain(self.protocol_evaluations.iter().map(|edge| BodyEvaluation {
             target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop,
@@ -1774,6 +1791,7 @@ impl AllocSummary {
                 projected.initializations.retain(|edge| is_own(&edge.target));
                 projected.closure_evaluations.retain(|edge| is_own(&edge.target));
                 projected.lifecycle_evaluations.retain(|edge| is_own(&edge.target));
+                projected.constructor_checks.retain(|edge| is_own(&edge.target));
                 projected.protocol_evaluations.retain(|edge| is_own(&edge.target) && is_own(&edge.constructor_function));
                 projected.effect_sites.retain(|site| match &site.kind {
                     EffectSiteKind::Spawn(_) if foreign_births.contains(&site.span) => false,
@@ -3942,6 +3960,7 @@ pub fn summarize_within(
                 initializations: Vec::new(),
                 closure_evaluations: Vec::new(),
                 lifecycle_evaluations: Vec::new(),
+                constructor_checks: Vec::new(),
                 protocol_evaluations: Vec::new(),
                 closure_owner: closure_owners.get(key).and_then(|owner| owner.declaration_id()),
                 loops: w.loops,
@@ -4316,6 +4335,11 @@ pub fn summarize_within(
             }
             for (target, clause) in &summary.birth_checks {
                 if constructor.lifecycle_owner.as_ref() == Some(&clause.owner) {
+                    fs.constructor_checks.push(ConstructorCheckEdge {
+                        target: target.clone(), kind: hale_model::ConstructorCheck::BirthCheck(clause.ordinal),
+                        invocation: constructor.site, constructor: ordinal as u32, span: constructor.span,
+                        loop_depth: constructor.loop_depth, in_unbounded_loop: constructor.in_unbounded_loop,
+                    });
                     fs.effect_sites.push(EffectSite {
                         kind: EffectSiteKind::BirthCheckInvocation { constructor: ordinal as u32, target: target.clone() },
                         loop_depth: constructor.loop_depth, span: constructor.span,
@@ -4324,6 +4348,11 @@ pub fn summarize_within(
             }
             for (target, closure) in &summary.closure_assertions {
                 if constructor.lifecycle_owner.as_ref() == Some(&closure.owner) && closure.epoch != hale_model::ClosureEpoch::Explicit {
+                    fs.constructor_checks.push(ConstructorCheckEdge {
+                        target: target.clone(), kind: hale_model::ConstructorCheck::Assertion { epoch: closure.epoch, ordinal: closure.ordinal },
+                        invocation: constructor.site, constructor: ordinal as u32, span: constructor.span,
+                        loop_depth: constructor.loop_depth, in_unbounded_loop: constructor.in_unbounded_loop,
+                    });
                     fs.effect_sites.push(EffectSite {
                         kind: EffectSiteKind::AutomaticClosure { constructor: ordinal as u32, target: target.clone(), epoch: closure.epoch },
                         loop_depth: constructor.loop_depth,

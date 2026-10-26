@@ -797,7 +797,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
     m.relations.calls.retain(|c| c.from != handler);
     for site in 0..2u32 {
         m.analyses.stdlib_absorption.push(
-            hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+            hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
                 entry_initialization: None,
                 from: handler,
@@ -806,7 +806,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
                 entry_in_loop: false,
                 entry_group: None,
                 entry_provenance: hale_model::ProvenanceId(0),
-                nodes: vec![hale_model::AbsorbedNode { lifecycle: None,
+                nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "std::x::apply".to_string(),
@@ -849,7 +849,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
     m.relations.calls.retain(|c| c.from != handler);
     for _ in 0..2u32 {
         m.analyses.stdlib_absorption.push(
-            hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+            hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
                 entry_initialization: None,
                 from: handler,
@@ -862,7 +862,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
                 entry_in_loop: false,
                 entry_group: Some(7),
                 entry_provenance: hale_model::ProvenanceId(0),
-                nodes: vec![hale_model::AbsorbedNode { lifecycle: None,
+                nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "std::x::apply".to_string(),
@@ -910,7 +910,7 @@ fn interior_dispatch_alternatives_take_the_max() {
     // One entry whose INTERIOR dispatches to two conformers, both
     // re-emerging at the publishing callback.
     m.analyses.stdlib_absorption.push(
-        hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+        hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
             entry_bus: None,
                 entry_initialization: None,
             from: handler,
@@ -919,7 +919,7 @@ fn interior_dispatch_alternatives_take_the_max() {
             entry_in_loop: false,
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
-            nodes: vec![hale_model::AbsorbedNode { lifecycle: None,
+            nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                 initializer: None,
                 decl: String::new(),
                 display: "std::http::Router::dispatch".to_string(),
@@ -976,7 +976,7 @@ fn an_interior_edge_is_followed() {
     let emitter = fn_id(&m, "Emitter::emit");
     m.relations.calls.retain(|c| c.from != handler);
     m.analyses.stdlib_absorption.push(
-        hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+        hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
             entry_bus: None,
                 entry_initialization: None,
             from: handler,
@@ -987,7 +987,7 @@ fn an_interior_edge_is_followed() {
             entry_provenance: hale_model::ProvenanceId(0),
             nodes: vec![
                 // node 0 calls node 1…
-                hale_model::AbsorbedNode { lifecycle: None,
+                hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "std::x::outer".to_string(),
@@ -1002,7 +1002,7 @@ fn an_interior_edge_is_followed() {
                     }],
                 },
                 // …which re-emerges at the publishing callback.
-                hale_model::AbsorbedNode { lifecycle: None,
+                hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                     initializer: None,
                     decl: String::new(),
                     display: "std::x::inner".to_string(),
@@ -1051,7 +1051,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
         .map(|c| c.site)
         .expect("the handler calls its emitter");
     m.analyses.stdlib_absorption.push(
-        hale_model::StdlibAbsorption { entry_constructor_source: None, entry_lifecycle: None,
+        hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
             entry_bus: None,
                 entry_initialization: None,
             from: handler,
@@ -1060,7 +1060,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
             entry_in_loop: false,
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
-            nodes: vec![hale_model::AbsorbedNode { lifecycle: None,
+            nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
                 initializer: None,
                 decl: String::new(),
                 display: "std::x::apply".to_string(),

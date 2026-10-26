@@ -107,6 +107,25 @@ impl ClosureEpoch {
     }
 }
 
+/// A constructor may evaluate a real predicate under its runtime opportunity.
+/// These source entries imply neither immediate execution nor a caller frame.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum ConstructorCheck {
+    /// The source birth-check clause, in declaration order.
+    BirthCheck(u32),
+    /// An assertion evaluated at a runtime epoch, not an explicit checkpoint.
+    Assertion { epoch: ClosureEpoch, ordinal: u32 },
+}
+
+impl std::fmt::Display for ConstructorCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BirthCheck(ordinal) => write!(f, "birth check {ordinal}"),
+            Self::Assertion { epoch, ordinal } => write!(f, "{} assertion {ordinal}", epoch.as_str()),
+        }
+    }
+}
+
 /// The declaration form owning an executable default.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum InitializerKind {
