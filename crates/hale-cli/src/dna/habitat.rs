@@ -1790,6 +1790,16 @@ pub(crate) fn loopback_port(url: &str) -> Option<u16> {
     (port >= 1 && u32::from(port) + u32::from(HEAD_BLOCK) <= 65535).then_some(port)
 }
 
+/// The fixed ports a body's senses scrape endpoints listen on, every
+/// interface, beside the habitat's head and face (`dna/core/senses.hl`:
+/// spine, node, head). A head block is never placed over them: on the
+/// host's network the body holds them, and a face given one could not bind.
+const SENSES_PORTS: [u16; 3] = [9464, 9465, 9466];
+
+fn overlaps_senses(base: u16) -> bool {
+    SENSES_PORTS.iter().any(|p| *p >= base && u32::from(*p) < u32::from(base) + u32::from(HEAD_BLOCK))
+}
+
 fn block_free(base: u16) -> bool {
     (0..5).all(|i| std::net::TcpListener::bind(("127.0.0.1", base + i)).is_ok())
 }
@@ -1807,7 +1817,7 @@ fn head_block(root: &Path, taken: &[u16]) -> Result<u16, String> {
     let start = u32::from(u16::from_be_bytes([h[0], h[1]])) % 200;
     for i in 0..blocks {
         let base = HEAD_BLOCK_FROM + (((start + i) % blocks) as u16) * HEAD_BLOCK;
-        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || !block_free(base) {
+        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || overlaps_senses(base) || !block_free(base) {
             continue;
         }
         let ok = Command::new("git").arg("-C").arg(root).args(["config", "--local", "dna.head.url", &format!("http://127.0.0.1:{base}")]).status().is_ok_and(|s| s.success());
@@ -3091,6 +3101,13 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A head block never covers the senses' fixed scrape ports.
+    #[test]
+    fn a_head_block_is_never_placed_over_the_senses_ports() {
+        assert!(overlaps_senses(9464) && overlaps_senses(9459) && overlaps_senses(9466));
+        assert!(!overlaps_senses(9456) && !overlaps_senses(9467) && !overlaps_senses(8800));
+    }
 
     /// D8: a genome's manifest lists its codebases with phase 3's attach
     /// fields; one without a name or a repository is refused.
