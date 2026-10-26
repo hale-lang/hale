@@ -25,6 +25,9 @@ const POINTER: &str = "remote.json";
 /// name the habitat is reached by (`ADDRESS`).
 pub(super) const LISTEN_ENV: &str = "HALE_DNA_HABITAT_LISTEN";
 pub(super) const ADDRESS_ENV: &str = "HALE_DNA_HABITAT_ADDRESS";
+/// The record a run of `hale habitat` on the machine must find there
+/// before it stops or removes anything (`down`): the pointer's identity.
+pub(super) const EXPECT_ENV: &str = "HALE_DNA_HABITAT_EXPECT";
 
 /// What the person's environment carries to the containers on the
 /// habitat's machine, as a local `up` hands it to its body and face.
@@ -157,12 +160,53 @@ fn listen_address(host: &str) -> Result<String, String> {
 /// machine's docker (`docker save | docker load`), or pulled from the
 /// published images when the one of this toolchain's version answers as
 /// this toolchain does. Nothing is compiled there.
-fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
-    if t.run(&format!("docker image inspect {} >/dev/null 2>&1 && echo yes || true", sq(tag)))?.trim() == "yes" {
-        return Ok(format!("{:<8}{tag} (on {} already)", "image", t.host));
+/// How the toolchain image reaches the machine, from the platforms
+/// (`<os>/<arch>`) of the machine's docker, of the tag there ("" when it
+/// has none) and of the tag here ("" when this docker has none): a tag of
+/// another platform is never used or sent, since the machine could not run
+/// it without emulation; the published image is pulled for the machine's
+/// platform instead.
+#[derive(Debug, PartialEq)]
+enum ImageRoute {
+    There,
+    Send,
+    Pull { mismatch: Option<String> },
+}
+
+fn image_route(machine: &str, there: &str, here: &str) -> ImageRoute {
+    if !there.is_empty() && there == machine {
+        return ImageRoute::There;
     }
-    let here = Command::new("docker").args(["image", "inspect", tag]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
-    if here {
+    if !here.is_empty() && here == machine {
+        return ImageRoute::Send;
+    }
+    let other = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
+    ImageRoute::Pull { mismatch: other }
+}
+
+/// `<os>/<arch>` of a docker answer, `amd64` and `x86_64` alike.
+fn platform(os: &str, arch: &str) -> String {
+    let arch = match arch.trim() {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        a => a,
+    };
+    format!("{}/{arch}", os.trim())
+}
+
+fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
+    let machine = t.run("docker version --format '{{.Server.Os}} {{.Server.Arch}}'")?;
+    let (os, arch) = machine.trim().split_once(' ').unwrap_or(("", ""));
+    let machine = platform(os, arch);
+    let there = t.run(&format!("docker image inspect --format '{{{{.Os}}}} {{{{.Architecture}}}}' {} 2>/dev/null || true", sq(tag)))?;
+    let there = there.trim().split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
+    let here = Command::new("docker").args(["image", "inspect", "--format", "{{.Os}} {{.Architecture}}", tag]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let here = here.split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
+    let route = image_route(&machine, &there, &here);
+    if route == ImageRoute::There {
+        return Ok(format!("{:<8}{tag} (on {} already, {machine})", "image", t.host));
+    }
+    if route == ImageRoute::Send {
         super::progress(&format!("sending the image {tag} to {}", t.host));
         let mut save = Command::new("docker").args(["save", tag]).stdout(Stdio::piped()).spawn().map_err(|e| format!("docker save: {e}"))?;
         let stdout = save.stdout.take().ok_or("docker save: no output")?;
@@ -171,15 +215,19 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
         if !saved.success() || !loaded.success() {
             return Err(format!("the image {tag} could not be sent to {}", t.host));
         }
-        return Ok(format!("{:<8}{tag} (sent from this machine)", "image"));
+        return Ok(format!("{:<8}{tag} (sent from this machine, {machine})", "image"));
     }
+    let mismatch = match route {
+        ImageRoute::Pull { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
+        _ => String::new(),
+    };
     let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
-    super::progress(&format!("pulling {published} on {}", t.host));
+    super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
     let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let theirs = t.run(&format!("docker pull -q {p} >/dev/null 2>&1 && docker run --rm --entrypoint hale {p} --version", p = sq(&published))).map(|s| s.trim().to_string()).unwrap_or_default();
+    let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
     if theirs.is_empty() || theirs != ours {
         return Err(format!(
-            "no image of this toolchain reaches {}: {tag} is neither there nor in this machine's docker, and {published} {} (`hale habitat image build` builds it here, `--image <tag>` names another)",
+            "no image of this toolchain for {machine} reaches {}: {tag} is neither there nor in this machine's docker for that platform{mismatch}, and {published} {} (`hale habitat image build` on a {machine} machine builds it, `--image <tag>` names another)",
             t.host,
             if theirs.is_empty() { "could not be pulled there".to_string() } else { format!("is another build ({})", theirs.lines().last().unwrap_or("")) }
         ));
@@ -203,6 +251,7 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
         ("HALE_HABITAT_IMAGE", image.to_string()),
         (LISTEN_ENV, p["listen"].as_str().unwrap_or("127.0.0.1").to_string()),
         (ADDRESS_ENV, p["host"].as_str().unwrap_or("").to_string()),
+        (EXPECT_ENV, p["identity"].as_str().unwrap_or("").to_string()),
     ];
     for k in FORWARDED {
         if let Ok(v) = std::env::var(k) {
@@ -455,6 +504,22 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // the habitat there must be the one this pointer names, by its
+    // record's identity, before anything there is stopped or removed; the
+    // run there checks it again (`HALE_DNA_HABITAT_EXPECT`), so a habitat
+    // made there in between is never what it acts on
+    let expected = p["identity"].as_str().unwrap_or("").to_string();
+    let found = match remote_state(&t, &m) {
+        Ok((_, _, identity)) => identity,
+        Err(why) => {
+            eprintln!("hale habitat down: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Some(why) = teardown_refusal(&t.host, &expected, &found) {
+        eprintln!("hale habitat down: {why}");
+        return ExitCode::from(1);
+    }
     let mut a: Vec<&str> = vec!["down"];
     a.extend(args.iter().map(String::as_str));
     let mut cmd = t.ssh(confirm);
@@ -492,6 +557,23 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Why the habitat on `host` must not be stopped or removed through a
+/// pointer to the record `expected` when the record there is `found`
+/// ("" for none): another record there, or none.
+fn teardown_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
+    let short = |id: &str| format!("{}…", &id[..12.min(id.len())]);
+    if expected.is_empty() {
+        return Some(format!("this machine's pointer names no record of the habitat on {host}; nothing there is touched (`hale habitat up --host {host}` reconnects it)"));
+    }
+    if found.is_empty() {
+        return Some(format!("the habitat on {host} holds no record (the pointer's is {}): nothing there is touched; remove {} to forget the pointer", short(expected), pointer_path().display()));
+    }
+    if found != expected {
+        return Some(format!("the habitat on {host} is not the one this machine points at (its record is {}, the pointer's {}); nothing there is touched", short(found), short(expected)));
+    }
+    None
+}
+
 /// `up` asked without `--host` of a machine that points at a habitat on
 /// another.
 pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {
@@ -508,6 +590,27 @@ pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_of_another_platform_is_never_used_or_sent() {
+        assert_eq!(image_route("linux/amd64", "linux/amd64", ""), ImageRoute::There);
+        assert_eq!(image_route("linux/amd64", "", "linux/amd64"), ImageRoute::Send);
+        assert_eq!(image_route("linux/amd64", "", "linux/arm64"), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
+        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64"), ImageRoute::Send);
+        assert_eq!(image_route("linux/arm64", "", ""), ImageRoute::Pull { mismatch: None });
+        assert_eq!(platform("linux", "x86_64"), "linux/amd64");
+        assert_eq!(platform("linux", "aarch64"), "linux/arm64");
+    }
+
+    #[test]
+    fn a_habitat_is_torn_down_only_through_its_own_pointer() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        assert_eq!(teardown_refusal("rack-a.lan", &a, &a), None);
+        assert!(teardown_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
+        assert!(teardown_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
+        assert!(teardown_refusal("rack-a.lan", "", &b).is_some());
+    }
 
     #[test]
     fn a_remote_word_is_quoted_whole() {
@@ -529,6 +632,7 @@ mod tests {
         assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && exec docker run --rm --network host --user '1000':'1000' --group-add '998'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_LISTEN=192.168.1.20'") && line.contains("-e 'HALE_DNA_HABITAT_ADDRESS=rack-a.lan'"), "{line}");
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
+        assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");
         assert!(line.ends_with("'hale-habitat:abc' habitat 'up' '--name' 'x'"), "{line}");
     }
 }

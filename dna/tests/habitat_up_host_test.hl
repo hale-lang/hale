@@ -279,6 +279,26 @@ fn main() {
         ).stdout,
     );
 
+    // ---- a stale pointer (another record's identity) tears nothing down
+    let kept_pointer = std::io::fs::read_file(pointer) or "";
+    let real = std::json::find_string_field(kept_pointer, "identity");
+    std::io::fs::write_file(
+        pointer,
+        std::str::replace(
+            kept_pointer,
+            real,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+    )
+    or discard;
+    let stale = in_dir(scratch, config, toolchain() + "\nhabitat\ndown");
+    std::test::assert(
+        stale.code != 0 && std::str::contains(stale.stderr, "is not the one this machine points at")
+            && std::str::contains(containers_under(home), " face "),
+        "a pointer to another record stops nothing there: " + stale.stdout + stale.stderr,
+    );
+    std::io::fs::write_file(pointer, kept_pointer) or discard;
+
     // ---- down --forget: planned there, confirmed by the name typed here,
     // nothing left on either side, the pointer last
     let planned = in_dir(scratch, config, toolchain() + "\nhabitat\ndown\n--forget\n--plan");

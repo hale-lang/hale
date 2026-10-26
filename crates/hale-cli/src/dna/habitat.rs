@@ -2282,6 +2282,19 @@ fn drain_window() -> std::time::Duration {
 /// compose down`), leaving only its volumes; `up` brings it back.
 /// `--forget` removes it whole, planned first (forget.rs).
 fn down(args: &[String]) -> ExitCode {
+    // run there through a pointer (`up --host`): the habitat here must be
+    // the record the pointer names, or nothing is stopped or removed
+    if let Some(expected) = std::env::var(remote::EXPECT_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        let found = manifest_pin(&genome_dir().join("hale.toml")).ok().flatten().unwrap_or_default();
+        if found != expected {
+            eprintln!(
+                "hale habitat down: the habitat here holds the record {}, not the {} the pointer named; nothing is touched",
+                if found.is_empty() { "none".to_string() } else { format!("{}…", &found[..12.min(found.len())]) },
+                format!("{}…", &expected[..12.min(expected.len())])
+            );
+            return ExitCode::from(1);
+        }
+    }
     match args {
         [] => {}
         [f] if f == "--forget" => return forget::forget(false),

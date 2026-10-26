@@ -119,7 +119,10 @@ in the habitat's vault, as a local `up` draws it. The toolchain image is put
 there first: there already, sent from the admin machine's docker (`docker
 save | docker load`), or pulled as the published image of this toolchain's
 version when that image's `hale --version` answers as the admin's does;
-nothing is compiled there. Then the same `hale habitat up` runs there in
+nothing is compiled there, and an image of a platform other than the
+machine's docker (`<os>/<arch>`) is never used or sent: the published
+image is pulled for the machine's platform instead, or the run is refused
+naming both. Then the same `hale habitat up` runs there in
 that image, as the login's user, on the host's network, with the user's
 data directory (`~/.local/share/hale`: the habitat, its genome, record
 and vault) and the docker socket mounted, and with
@@ -137,7 +140,10 @@ Every verb on the admin machine reaches the habitat's head through the
 pointer (`--head`, `HALE_DNA_HEAD_URL` and `head.url` resolve as they do
 locally). `status` prints the pointer and asks the head
 (`Commands::index`, `Commands::allocations`). `down` and `down --forget`
-run there over SSH, in the image: `--forget` plans there and is confirmed
+run there over SSH, in the image, only on the record the pointer names:
+the identity there is read first, and the run there checks it again
+(`HALE_DNA_HABITAT_EXPECT`), so a habitat made there again from another
+machine is never stopped or removed through a stale pointer. `--forget` plans there and is confirmed
 there by the habitat's name typed at the person's terminal, which SSH
 carries (refused off a terminal), and the pointer is removed last, once
 the habitat there holds no record. The verbs that act on a genome on the
