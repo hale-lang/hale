@@ -1089,12 +1089,15 @@ sync.
   `oidc` a head serves nothing without a verified token: `/api/*`
   answers 401, `/` redirects to `/auth/login`. A session comes from OpenID Connect's
   authorization-code flow against `dna.oidc.issuer` (https, or plain
-  http to `127.0.0.1` or `localhost` exactly — the URL's host is parsed,
-  userinfo refused, never matched by prefix): the head discovers the
-  issuer's endpoints, refuses a discovery document whose
+  http to `127.0.0.1` or `localhost` exactly, or to exactly the address
+  the habitat declares, `HALE_DNA_HABITAT_ADDRESS`: a habitat on another
+  machine of the LAN is named by its DNS and runs no TLS, `spec/habitat.md`
+  § A habitat on another machine — the URL's host is parsed, userinfo
+  refused, never matched by prefix, and no other host is admitted): the
+  head discovers the issuer's endpoints, refuses a discovery document whose
   `authorization_endpoint` or `token_endpoint` is not https (plain http
-  only when the issuer itself is on this machine; `discovery_refusal`,
-  #635), sends the browser to its authorize endpoint with a random
+  only when the issuer itself is on this machine or the habitat's declared
+  address; `discovery_refusal`, #635), sends the browser to its authorize endpoint with a random
   `state` and `nonce` (`std::os::getrandom`), and exchanges the
   returned code at the token endpoint itself with the client's secret
   (`dna.oidc.client`, its secret the vault's `oidc-client-<client>`,
@@ -1139,8 +1142,9 @@ sync.
   the session becomes a bearer; a caller's own bearer is not asked.
   An OIDC child is ready when it refuses an unauthenticated read carrying the digest of the
   proof the face gave it (`X-Hale-Child`), so a process squatting on the
-  child's port is never handed a token. **An issuer on the loopback is
-  anyone's who can bind its port**, so its key is pinned: a head under
+  child's port is never handed a token. **An issuer on the loopback (or on
+  the habitat's declared address) is anyone's who can bind its port**, so
+  its key is pinned: a head under
   a loopback issuer does not start without `dna.oidc.key` (the issuer's
   SubjectPublicKeyInfo) and trusts that key alone. In local mode the stub
   signs under a key made for the launch, its client secret is the
@@ -6709,6 +6713,10 @@ otherwise.
 | `HALE_DNA_ONESHOT` | off | A `hale dna run` application returns after the ping instead of staying up. |
 | `HALE_DNA_API=<url>` | `http://127.0.0.1:8793` | The head API a leg's verbs (`hale dna work …`) talk to when `--api` is not given. |
 | `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
+| `HALE_DNA_HABITAT_LISTEN=<addr>` | `127.0.0.1` | The address a habitat declares its face, head and OIDC stub on: what the `face` service binds (`HALE_DNA_LISTEN_HOST`) and where `up` probes them. Not set by hand: `hale habitat up --host <name>` sets it on every container it runs on that machine to the address `<name>` resolves to on the admin machine. |
+| `HALE_DNA_HABITAT_EXPECT=<record>` | unset | The record a `hale habitat down` run on a habitat's machine through a pointer must find there: when it is set and the habitat's genome pins another record, or none, nothing is stopped or removed. Not set by hand: `hale habitat down` on the admin machine sets it to the pointer's identity, after checking the same over SSH. |
+| `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |
+| `HALE_HABITAT_SSH_CONFIG=<file>` | unset | An SSH config file `hale habitat up --host` and the verbs of a habitat on another machine hand `ssh -F`; unset, `ssh` reads the person's own. |
 | `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
 | `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
@@ -6718,7 +6726,7 @@ otherwise.
 | `HALE_DNA_TASK_POLICY=<path>` | unset | The policy for task administration commands. |
 | `HALE_DNA_RPC_SOCKET=<path>` | the record's socket under `XDG_RUNTIME_DIR/hale/dna` (else `.hale/dna`) | Where the head serves its surface (`HeadCommands`, GH #1417) over `unix::Rpc`; the capabilities name it to the legs. |
 | `HALE_DNA_ORG_DRAFTS=1` | off | Lets the api accept organization-source drafts (`1` only). |
-| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
+| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine, or on exactly the habitat's declared address (`HALE_DNA_HABITAT_ADDRESS`), only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
 | `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |
 | `HALE_DNA_OIDC_MEMBER=<subject>=<member>` | unset | Which member a subject is. |
 | `HALE_DNA_OIDC_KEY=<pin>` | unset | The pin of the issuer's signing key. |

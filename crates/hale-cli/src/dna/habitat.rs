@@ -23,6 +23,9 @@ mod sapling;
 #[path = "forget.rs"]
 mod forget;
 
+#[path = "remote.rs"]
+mod remote;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -64,6 +67,7 @@ pub(super) fn trusts_nursery(source: &str) -> bool {
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat [--head <url>] up [--no-body] [--profile local] [--backends own|operator] [--name <name>] [--image <tag>]
+       hale habitat up --host <name> [--user <user>] [--port <n>] [--name <name>] [--image <tag>] [--backends own|operator]
        hale habitat image build [<checkout>]
        hale habitat [--head <url>] graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
@@ -122,6 +126,27 @@ up                   birth the habitat the first time, from the genome the
                      `habitat.profile` row and kept: `status`, the head's
                      Commands::index and the operator face show it. The
                      hosted profile is not built.
+up --host <name>     run the habitat on another machine, one with docker and
+                     nothing else: reach it over SSH as the person's own
+                     login (--user and --port, else the SSH config's;
+                     HALE_HABITAT_SSH_CONFIG names a config file for
+                     `ssh -F`), put the toolchain image there (there
+                     already, sent from this machine's docker, or pulled
+                     as the published image of this toolchain's version
+                     when it answers as this toolchain does; nothing is
+                     compiled there), run `up` there in that image, wait
+                     on its head and face at http://<name>:<port>, and keep
+                     a pointer here (the name, the host, the head's URL and
+                     launch token, the record's identity) in place of a
+                     habitat. The face and head bind the address <name>
+                     resolves to here. Every verb here reaches the head
+                     through the pointer; `status` asks it, `down` runs
+                     there over SSH (`--forget` planned and confirmed
+                     there by the name typed at this terminal, the pointer
+                     removed last), and `migrate`, `handover` and `graft
+                     <dir>`, which act on a genome here, are refused. Run
+                     again, it finds the same habitat there by its
+                     record's identity and changes nothing.
 image build [<dir>]  build the habitat toolchain image once from the local
                      checkout at <dir> (`.` by default) as context and print
                      its tag.
@@ -351,6 +376,8 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             print!("{}", usage_text());
             ExitCode::SUCCESS
         }
+        Some(verb @ ("migrate" | "handover")) if remote::pointer().is_some() => remote::refuse_local(verb).unwrap_or(ExitCode::from(2)),
+        Some("graft") if remote::pointer().is_some() && args.get(1).is_some_and(|a| Path::new(a).is_dir() || a.contains('/')) => remote::refuse_local("graft <dir>").unwrap_or(ExitCode::from(2)),
         Some("migrate") => migrate(args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))),
         Some("up") => up(&args[1..]),
         Some("image") => image_cmd(&args[1..]),
@@ -379,8 +406,14 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("model-probe") => sapling::model_map_cmd(&args[1..], true),
         Some("apply") => sapling::apply_cmd(&args[1..]),
         Some("forge") => sapling::forge_cmd(&args[1..]),
-        Some("status") if args.len() == 1 => status(),
-        Some("down") => down(&args[1..]),
+        Some("status") if args.len() == 1 => match remote::pointer() {
+            Some(p) => remote::status(&p),
+            None => status(),
+        },
+        Some("down") => match remote::pointer() {
+            Some(p) => remote::down(&p, &args[1..]),
+            None => down(&args[1..]),
+        },
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
             let root = args.get(2).map(PathBuf::from).unwrap_or_else(crate::verbs::test::test_vault_root);
             match crate::verbs::test::sweep_dead_test_vaults(&root) {
@@ -471,7 +504,7 @@ pub(crate) fn head_endpoint() -> Option<String> {
             return Some(u);
         }
     }
-    head_url_at(&genome).as_deref().and_then(loopback_port).map(|base| format!("http://127.0.0.1:{}", base + 1))
+    head_url_at(&genome).as_deref().and_then(loopback_port).map(|base| format!("http://{}:{}", habitat_address(), base + 1))
 }
 
 pub(crate) fn head_token() -> String {
@@ -490,10 +523,7 @@ pub(super) fn head_is_up() -> bool {
     }
     let Some(url) = head_endpoint() else { return false };
     if let Some(port) = loopback_port(&url) {
-        return std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            std::time::Duration::from_millis(500),
-        ).is_ok();
+        return std::net::TcpStream::connect_timeout(&listen_socket(port), std::time::Duration::from_millis(500)).is_ok();
     }
     true
 }
@@ -1306,12 +1336,40 @@ fn up(args: &[String]) -> ExitCode {
     let mut asked: Option<String> = None;
     let mut asked_name: Option<String> = None;
     let mut asked_image: Option<String> = None;
+    let mut on_host: Option<String> = None;
+    let mut ssh_user: Option<String> = None;
+    let mut ssh_port: Option<u16> = None;
+    // what `up` on the habitat's machine is handed of these flags
+    let mut passed: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--no-body" => no_body = true,
+            "--no-body" => {
+                no_body = true;
+                passed.push("--no-body".to_string());
+            }
+            "--host" if i + 1 < args.len() => {
+                on_host = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--user" if i + 1 < args.len() => {
+                ssh_user = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--port" if i + 1 < args.len() => {
+                match args[i + 1].parse::<u16>() {
+                    Ok(p) if p > 0 => ssh_port = Some(p),
+                    _ => {
+                        eprintln!("hale habitat up: `--port {}` is not a port", args[i + 1]);
+                        return ExitCode::from(2);
+                    }
+                }
+                i += 1;
+            }
             "--backends" if i + 1 < args.len() => {
                 asked = Some(args[i + 1].clone());
+                passed.push("--backends".to_string());
+                passed.push(args[i + 1].clone());
                 i += 1;
             }
             "--profile" if i + 1 < args.len() => {
@@ -1332,6 +1390,29 @@ fn up(args: &[String]) -> ExitCode {
             }
         }
         i += 1;
+    }
+    if on_host.is_none() && (ssh_user.is_some() || ssh_port.is_some()) {
+        eprintln!("hale habitat up: `--user` and `--port` are the SSH login of `--host <name>`\n{}", usage_text());
+        return ExitCode::from(2);
+    }
+    if let Some(host) = on_host {
+        if no_body || profile != "local" {
+            eprintln!("hale habitat up --host: a habitat on another machine is the `local` profile with its body and face (no `--no-body`)");
+            return ExitCode::from(2);
+        }
+        let kept = remote::pointer();
+        let name = match asked_name.clone().or_else(|| kept.as_ref().and_then(|p| p["name"].as_str().map(str::to_string))) {
+            Some(n) if habitat_name_ok(&n) => n,
+            Some(n) => {
+                eprintln!("hale habitat up: `{n}` is not a habitat name (a DNS label: lowercase letters, digits and `-`, at most 63)");
+                return ExitCode::from(2);
+            }
+            None => DEFAULT_HABITAT_NAME.to_string(),
+        };
+        return remote::up(&host, ssh_user.as_deref(), ssh_port, &name, asked_image.as_deref(), &passed);
+    }
+    if let Some(p) = remote::pointer() {
+        return remote::refuse_local_up(&p);
     }
     if profile != "local" {
         eprintln!("hale habitat up: the `{profile}` profile is not built: only `local` (docker compose on this machine) is; the hosted one runs on the backends a platform already runs (GH #1653)");
@@ -1555,8 +1636,8 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
         let mut body = serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project(), "name": name });
         if with_body {
             let base = head_block(genome, &granted_bases(genome))?;
-            let face_url = format!("http://127.0.0.1:{base}");
-            let head_url = format!("http://127.0.0.1:{}", base + 1);
+            let face_url = format!("http://{}:{base}", habitat_address());
+            let head_url = format!("http://{}:{}", habitat_address(), base + 1);
             std::fs::write(head_url_file(), format!("{head_url}\n")).map_err(|e| format!("write {}: {e}", head_url_file().display()))?;
             body["face"] = serde_json::json!(face_url);
             body["head"] = serde_json::json!(head_url);
@@ -1700,11 +1781,23 @@ pub(crate) fn head_url_at(root: &Path) -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
-/// The port of a loopback head URL, `None` for any other address.
+/// The port of a head URL on this machine (the loopback, or the address the
+/// habitat is recorded at), `None` for any other address.
 pub(crate) fn loopback_port(url: &str) -> Option<u16> {
-    let rest = url.strip_prefix("http://127.0.0.1:").or_else(|| url.strip_prefix("http://localhost:"))?;
+    let recorded = format!("http://{}:", habitat_address());
+    let rest = url.strip_prefix("http://127.0.0.1:").or_else(|| url.strip_prefix("http://localhost:")).or_else(|| url.strip_prefix(recorded.as_str()))?;
     let port: u16 = rest.trim_end_matches('/').parse().ok()?;
     (port >= 1 && u32::from(port) + u32::from(HEAD_BLOCK) <= 65535).then_some(port)
+}
+
+/// The fixed ports a body's senses scrape endpoints listen on, every
+/// interface, beside the habitat's head and face (`dna/core/senses.hl`:
+/// spine, node, head). A head block is never placed over them: on the
+/// host's network the body holds them, and a face given one could not bind.
+const SENSES_PORTS: [u16; 3] = [9464, 9465, 9466];
+
+fn overlaps_senses(base: u16) -> bool {
+    SENSES_PORTS.iter().any(|p| *p >= base && u32::from(*p) < u32::from(base) + u32::from(HEAD_BLOCK))
 }
 
 fn block_free(base: u16) -> bool {
@@ -1724,7 +1817,7 @@ fn head_block(root: &Path, taken: &[u16]) -> Result<u16, String> {
     let start = u32::from(u16::from_be_bytes([h[0], h[1]])) % 200;
     for i in 0..blocks {
         let base = HEAD_BLOCK_FROM + (((start + i) % blocks) as u16) * HEAD_BLOCK;
-        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || !block_free(base) {
+        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || overlaps_senses(base) || !block_free(base) {
             continue;
         }
         let ok = Command::new("git").arg("-C").arg(root).args(["config", "--local", "dna.head.url", &format!("http://127.0.0.1:{base}")]).status().is_ok_and(|s| s.success());
@@ -1802,11 +1895,27 @@ fn ensure_profile_head(genome: &Path, backends: &str, name: &str, face_url: &str
 }
 
 /// The address the habitat declares its person-facing listeners on: the
-/// loopback for a local habitat. The one knob for it; the face service's
-/// bind (`HALE_DNA_LISTEN_HOST`) and, on macOS, its published ports follow
-/// it.
-fn habitat_listen_host() -> &'static str {
-    "127.0.0.1"
+/// loopback for a local habitat; the host's interface for a habitat on
+/// another machine, which `up --host` hands every container it runs there
+/// (`HALE_DNA_HABITAT_LISTEN`). The one knob for it; the face service's
+/// bind (`HALE_DNA_LISTEN_HOST`), its probes and, on macOS, its published
+/// ports follow it.
+fn habitat_listen_host() -> String {
+    std::env::var(remote::LISTEN_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+/// The host the habitat's face and head are recorded at (their URLs, on
+/// its `habitat.profile` row and in `head.url`): the loopback for a local
+/// habitat, the host's name for one on another machine
+/// (`HALE_DNA_HABITAT_ADDRESS`, which `up --host` hands its containers).
+fn habitat_address() -> String {
+    std::env::var(remote::ADDRESS_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+/// The socket address the habitat's listener on `port` is probed at.
+fn listen_socket(port: u16) -> std::net::SocketAddr {
+    let ip: std::net::IpAddr = habitat_listen_host().parse().unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
+    std::net::SocketAddr::new(ip, port)
 }
 
 /// Renders the habitat's `body` and `face` services into its allocation's
@@ -1815,8 +1924,8 @@ fn habitat_listen_host() -> &'static str {
 /// their probes.
 fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: Option<&str>) -> Result<Vec<String>, String> {
     let base = head_block(genome, &granted_bases(genome))?;
-    let face_url = format!("http://127.0.0.1:{base}");
-    let head_url = format!("http://127.0.0.1:{}", base + 1);
+    let face_url = format!("http://{}:{base}", habitat_address());
+    let head_url = format!("http://{}:{}", habitat_address(), base + 1);
     std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
     std::fs::write(head_url_file(), format!("{head_url}\n")).map_err(|e| format!("write {}: {e}", head_url_file().display()))?;
     ensure_profile_head(genome, backends, name, &face_url, &head_url)?;
@@ -1884,7 +1993,10 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     // container, which is safe only because compose publishes their ports
     // on the declared address alone (`ports.yaml` below), never on the
     // host's other interfaces.
-    let face_listen = if is_macos { "0.0.0.0" } else { declared };
+    let face_listen = if is_macos { "0.0.0.0".to_string() } else { declared.clone() };
+    // The host the face, head and identity stub are recorded under, which
+    // the head answers as and the stub names its issuer and endpoints by.
+    let declared_at = habitat_address();
     let net_or_hosts = if is_macos {
         "    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n".to_string()
     } else {
@@ -1933,7 +2045,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     // The body drains onto the habitat's own memory and nerves (its lease
@@ -1951,7 +2063,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
@@ -2020,7 +2132,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         body_ok = body_state().is_some();
         face_ok = face_running().is_some()
             && std::net::TcpStream::connect_timeout(
-                &std::net::SocketAddr::from(([127, 0, 0, 1], base)),
+                &listen_socket(base),
                 std::time::Duration::from_millis(250),
             )
             .is_ok()
@@ -2103,7 +2215,7 @@ fn status() -> ExitCode {
     }
     println!("{:<8}{}", "body", body_state().unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
     match head_url_at(&genome).as_deref().and_then(loopback_port) {
-        Some(port) => println!("{:<8}http://127.0.0.1:{port}/ ({})", "face", face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string())),
+        Some(port) => println!("{:<8}http://{}:{port}/ ({})", "face", habitat_address(), face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string())),
         None => println!("{:<8}not assigned: `hale habitat up` assigns its address", "face"),
     }
     if face_running().is_some() {
@@ -2170,6 +2282,19 @@ fn drain_window() -> std::time::Duration {
 /// compose down`), leaving only its volumes; `up` brings it back.
 /// `--forget` removes it whole, planned first (forget.rs).
 fn down(args: &[String]) -> ExitCode {
+    // run there through a pointer (`up --host`): the habitat here must be
+    // the record the pointer names, or nothing is stopped or removed
+    if let Some(expected) = std::env::var(remote::EXPECT_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        let found = manifest_pin(&genome_dir().join("hale.toml")).ok().flatten().unwrap_or_default();
+        if found != expected {
+            eprintln!(
+                "hale habitat down: the habitat here holds the record {}, not the {} the pointer named; nothing is touched",
+                if found.is_empty() { "none".to_string() } else { format!("{}…", &found[..12.min(found.len())]) },
+                format!("{}…", &expected[..12.min(expected.len())])
+            );
+            return ExitCode::from(1);
+        }
+    }
     match args {
         [] => {}
         [f] if f == "--forget" => return forget::forget(false),
@@ -2989,6 +3114,13 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A head block never covers the senses' fixed scrape ports.
+    #[test]
+    fn a_head_block_is_never_placed_over_the_senses_ports() {
+        assert!(overlaps_senses(9464) && overlaps_senses(9459) && overlaps_senses(9466));
+        assert!(!overlaps_senses(9456) && !overlaps_senses(9467) && !overlaps_senses(8800));
+    }
 
     /// D8: a genome's manifest lists its codebases with phase 3's attach
     /// fields; one without a name or a repository is refused.

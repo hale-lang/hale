@@ -213,9 +213,19 @@ locus StubIssuer {
                     body: "incomplete authorization request",
                 };
             }
-            // a code goes back to a head on this machine only
+            // a code goes back to a head on this machine only, or to the
+            // habitat's own head on the address it declares
+            let declared = if std::env::var_exists("HALE_DNA_HABITAT_ADDRESS") {
+                std::str::trim(std::env::var("HALE_DNA_HABITAT_ADDRESS"))
+            } else {
+                ""
+            };
             if !std::str::starts_with(redirect, "http://127.0.0.1:")
                 && !std::str::starts_with(redirect, "http://localhost:")
+                && (
+                    len(declared) == 0
+                        || !std::str::starts_with(redirect, "http://" + declared + ":")
+                )
             {
                 return std::http::Response {
                     status: 400,

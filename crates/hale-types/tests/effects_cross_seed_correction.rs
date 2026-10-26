@@ -109,7 +109,7 @@ fn pinned(seed: &str, rows_before: usize, rows_now: usize, expected: &str) {
     assert_eq!((before, now), (rows_before, rows_now), "dna/{seed}: the manifest's row counts");
 }
 
-/// The six seeds pinned below are the only ones whose manifest the
+/// The seven seeds pinned below are the only ones whose manifest the
 /// correction changes.
 #[test]
 fn no_other_seed_changes() {
@@ -120,7 +120,7 @@ fn no_other_seed_changes() {
             corrected.push(seed);
         }
     }
-    assert_eq!(corrected, ["api", "host", "host/verb", "operations", "organization_runtime", "organization_source"]);
+    assert_eq!(corrected, ["api", "host", "host/verb", "operations", "organization_runtime", "organization_source", "ui"]);
 }
 
 /// The live-effects gate refuses on the same classes, seed by seed,
@@ -221,6 +221,7 @@ fn api() {
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
+        OidcBearer::principal  does={syscall,block,time,env,alloc}
         applied_at  does={syscall,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
         habitat_graft  does={syscall,block,env,alloc}
@@ -234,6 +235,7 @@ fn api() {
         index_answers  does={syscall,block,env}
         launch_token  does={syscall,block,alloc,stdio}
         observe_row  does={syscall,block,env,alloc}
+        oidc_ui  does={syscall,block,env,alloc,stdio}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
         ",
@@ -394,7 +396,7 @@ fn host() {
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         oidc_issuer  does={syscall,block,alloc}
         organism_here  does={syscall,block,time,env,alloc}
-        organism_secrets  does={syscall,block,alloc}
+        organism_secrets  does={syscall,block,env,alloc}
         own_nerves  does={syscall,block,env,alloc}
         owner_of_person_here  does={syscall,env,alloc}
         owners_here  does={syscall,env,alloc}
@@ -491,6 +493,25 @@ fn organization_source() {
         OrganizationSource::birth  does={syscall,block,env,alloc}
         OrganizationSource::remove_scratch  does={syscall,block,alloc}
         OrganizationSource::scratch  does={syscall,block,alloc}
+        ",
+    );
+}
+
+/// ui: the identity checks it reaches through the core
+/// (`dna::issuer_loopback`, `dna::endpoint_allowed`) admit the habitat's
+/// declared address, read from `HALE_DNA_HABITAT_ADDRESS`, so the rows
+/// that call them gain `env`, which only the renames-aware walk sees.
+#[test]
+fn ui() {
+    pinned(
+        "ui",
+        27,
+        27,
+        "
+        Ui::bearer_subject  does={syscall,block,time,env,alloc}
+        Ui::begin_sign_in  does={syscall,block,time,entropy,env,alloc}
+        Ui::discovered  does={syscall,block,time,env,alloc}
+        Ui::token_subject  does={syscall,block,time,env,alloc}
         ",
     );
 }

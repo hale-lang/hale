@@ -1,7 +1,7 @@
 // dna/oidc/serve — the stub OpenID provider as a program (GH #989):
 // `serve <port> [client]`, on the face's listen address (127.0.0.1 unless
-// `HALE_DNA_LISTEN_HOST` names another). `dna/face/start.sh` starts it for
-// local mode: the client's secret is the vault's
+// `HALE_DNA_LISTEN_HOST` names another), its issuer under the habitat's
+// declared address. `dna/face/start.sh` starts it for local mode: the client's secret is the vault's
 // `oidc-client-<client>` (GH #989: the organism's bootstrap provisions it;
 // this only consumes it, and refuses to start without it), and the key
 // made for the launch — a PEM file (0600) named by
@@ -15,12 +15,21 @@
 import ".." as oidc;
 
 // Where the stub listens: the address the face's listeners bind
-// (`HALE_DNA_LISTEN_HOST`, as `dna::listen_host` reads it), else the
-// loopback. A person's browser follows its `/authorize`, so it binds where
-// the face does.
+// (`HALE_DNA_LISTEN_HOST`), else the loopback.
 fn listen_host() -> String {
     let named = if std::env::var_exists("HALE_DNA_LISTEN_HOST") {
         std::str::trim(std::env::var("HALE_DNA_LISTEN_HOST"))
+    } else {
+        ""
+    };
+    return if len(named) > 0 { named } else { "127.0.0.1" };
+}
+
+// The host its issuer and endpoints are recorded under: the address the
+// habitat declares (`HALE_DNA_HABITAT_ADDRESS`), else the loopback.
+fn issuer_host() -> String {
+    let named = if std::env::var_exists("HALE_DNA_HABITAT_ADDRESS") {
+        std::str::trim(std::env::var("HALE_DNA_HABITAT_ADDRESS"))
     } else {
         ""
     };
@@ -51,7 +60,7 @@ fn main() {
         );
         std::process::exit(2);
     }
-    let base = "http://127.0.0.1:" + to_string(port);
+    let base = "http://" + issuer_host() + ":" + to_string(port);
     println("hale dna oidc: ", base, " (stub provider; client ", client, ")");
     std::http::Server {
         host: listen_host(),

@@ -1161,6 +1161,7 @@ fn dna_fixture_set_is_complete() {
             "habitat_pairing_test.hl",
             "habitat_placement_test.hl",
             "habitat_saplings_test.hl",
+            "habitat_up_host_test.hl",
             "habitat_up_test.hl",
             "handed_task_test.hl",
             "handoff_test.hl",

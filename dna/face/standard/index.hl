@@ -61,7 +61,8 @@ locus IndexReader {
         head: api::Client = api::client(
             HeadIndex,
             http::Client {
-                base: "http://127.0.0.1:" + to_string(self.head_port) + "/api/hale/v1/head/surface",
+                base: "http://" + dna::listen_dial_host() + ":" + to_string(self.head_port)
+                    + "/api/hale/v1/head/surface",
                 principals: self.visitor,
             },
         );

@@ -1,0 +1,341 @@
+// dna/tests/habitat_up_host_test.hl — the habitat on another machine
+// (`hale habitat up --host`).
+//
+// From this machine, `up --host <name>` reaches the habitat's machine over
+// the person's own SSH login, runs the same `hale habitat up` there in the
+// toolchain image, waits on the head and the face at the recorded URL
+// (`http://<name>:<port>`), and keeps a pointer here: the name, the host,
+// the head's URL and its launch token, the record's identity. `status` here
+// reads the pointer and asks the head; a second `up --host` finds the same
+// habitat there and changes nothing; `down --forget`, planned and confirmed
+// by the habitat's name typed at a terminal, runs there and leaves nothing
+// on either side, the pointer removed last. CI has no second machine, so
+// the machine is an sshd in a container of the fixture's own, on the
+// loopback, its user's home a directory under the fixture's scratch root
+// (the same path inside and out) and its docker the daemon here, through
+// the socket. SSH itself is not what this tests: the login is a key of the
+// fixture's, named in an SSH config handed over by HALE_HABITAT_SSH_CONFIG.
+// Without docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, with the fixture's SSH config; the head signs in
+// through the habitat's OIDC stub, as a person's does.
+fn in_dir(dir: String, config: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        1200,
+        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL && exec \"$@\"\nsh\n"
+            + dir + "\n" + config + "\n" + argv,
+    );
+}
+
+// The shell command line `line` run in `dir` at a terminal, with `typed`
+// typed at it.
+fn at_terminal(dir: String, config: String, typed: String, line: String) -> dna::RunResult {
+    return in_dir(
+        dir,
+        config,
+        "sh\n-c\nprintf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null\nsh\n" + typed + "\n" + line,
+    );
+}
+
+// The face and body containers whose compose project runs from under
+// `root`: their ids and services, a line each, sorted.
+fn containers_under(root: String) -> String {
+    return dna::run_tool(
+        "sh\n-c\ndocker ps -aq | xargs -r docker inspect --format '{{.Id}} {{index .Config.Labels \"com.docker.compose.service\"}} {{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' | grep -F \" $1\" | sort\nsh\n"
+            + root,
+    ).stdout;
+}
+
+// The volumes of compose projects whose name is among those running from
+// under `root` (none once forgotten).
+fn volumes_named(project: String) -> String {
+    if len(project) == 0 { return ""; }
+    return dna::run_tool(
+        "docker\nvolume\nls\n-q\n--filter\nlabel=com.docker.compose.project=" + project,
+    ).stdout;
+}
+
+fn sshd_files(dir: String) {
+    std::io::fs::write_file(
+        dir + "/Dockerfile",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/docker.sh",
+        "#!/bin/sh\nif [ -z \"$DOCKER_API_VERSION\" ]; then\n  max=\"$(/usr/bin/docker version 2>&1 | sed -n 's/.*Maximum supported API version is \\([0-9.]*\\).*/\\1/p' | head -n 1)\"\n  [ -n \"$max\" ] && export DOCKER_API_VERSION=\"$max\"\nfi\nexec /usr/bin/docker \"$@\"\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/entry.sh",
+        "set -e\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nDOCKER_GID=\"$(stat -c %g /var/run/docker.sock 2>/dev/null || echo \"${DOCKER_GID:-0}\")\"\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+    ) or discard;
+}
+
+fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: String) -> String {
+    return "services:\n  sshd:\n    build: .\n    image: hale-dna-test-sshd:1\n    environment:\n      HOST_UID: \""
+        + uid + "\"\n      HOST_HOME: \"" + home + "\"\n      DOCKER_GID: \"" + gid
+        + "\"\n    ports: [\"127.0.0.1:" + to_string(port) + ":22\"]\n    volumes:\n      - \""
+        + socket + ":/var/run/docker.sock\"\n      - \"" + home + ":" + home + "\"\n";
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0
+        || dna::run_tool("sh\n-c\ncommand -v script").code != 0
+        || !std::io::fs::file_exists("/proc/version")
+    {
+        eprintln(
+            "habitat_up_host_test: not exercised (docker compose, script or Linux is missing)",
+        );
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_up_host_test: not exercised (outside `hale test`, the pointer would be the developer's)",
+        );
+        return;
+    }
+    if !std::env::var_exists("HALE_HABITAT_IMAGE") {
+        eprintln("habitat_up_host_test: not exercised (no habitat toolchain image)");
+        return;
+    }
+    let endpoint = dna::trim_nl(
+        dna::run_tool("docker\ncontext\ninspect\n--format\n{{.Endpoints.docker.Host}}").stdout,
+    );
+    if endpoint != "unix:///var/run/docker.sock" {
+        eprintln(
+            "habitat_up_host_test: not exercised (the machine's containers reach the daemon at /var/run/docker.sock, and this one is at "
+                + endpoint + ")",
+        );
+        return;
+    }
+    let socket = "/var/run/docker.sock";
+    let scratch = dna::scratch_root("habitat-up-host");
+    dna::reap_on_exit(scratch);
+
+    // ---- the machine: an sshd of the fixture's own, its user's key ours
+    let port = dna::free_port(0);
+    let sshd = scratch + "/sshd";
+    let home = scratch + "/home";
+    std::io::fs::mkdir(sshd) or discard;
+    std::io::fs::mkdir(home) or discard;
+    sshd_files(sshd);
+    let uid = dna::trim_nl(dna::run_tool("id\n-u").stdout);
+    let gid = dna::trim_nl(dna::run_tool("stat\n-c\n%g\n" + socket).stdout);
+    std::io::fs::write_file(sshd + "/compose.yaml", sshd_compose(port, home, socket, uid, gid))
+    or discard;
+    let project = "dna-up-host-" + to_string(std::process::pid());
+    let compose = "docker\ncompose\n-p\n" + project + "\n--project-directory\n" + sshd;
+    let up = dna::run_tool_timeout(600, compose + "\nup\n-d\n--build");
+    std::test::assert_eq_int(up.code, 0, "the machine's sshd is up: " + up.stderr);
+    let key = scratch + "/login";
+    let made = dna::run_tool("ssh-keygen\n-q\n-t\ned25519\n-N\n\n-f\n" + key);
+    std::test::assert_eq_int(made.code, 0, "the person's login key: " + made.stderr);
+    let mut answered = false;
+    let mut tries = 0;
+    while !answered && tries < 60 {
+        answered = len(dna::ssh_host_key("localhost", port)) > 0;
+        if !answered { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(answered, "the machine answers SSH on " + to_string(port));
+    let container = dna::trim_nl(dna::run_tool(compose + "\nps\n-q\nsshd").stdout);
+    let public = dna::trim_nl(std::io::fs::read_file(key + ".pub") or "");
+    let auth = dna::run_tool(
+        "docker\nexec\n-u\nhale\n" + container
+            + "\nsh\n-c\nmkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && printf '%s\\n' \"$1\" >> \"$HOME/.ssh/authorized_keys\" && chmod 600 \"$HOME/.ssh/authorized_keys\"\nsh\n"
+            + public,
+    );
+    std::test::assert_eq_int(auth.code, 0, "the login is authorized there: " + auth.stderr);
+    let config = scratch + "/ssh_config";
+    std::io::fs::write_file(
+        config,
+        "Host localhost\n  HostName 127.0.0.1\n  Port " + to_string(port)
+            + "\n  User hale\n  IdentityFile "
+            + key
+            + "\n  IdentitiesOnly yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n",
+    )
+    or discard;
+    let pointer = dna::local_habitat_dir() + "/remote.json";
+    let there = home + "/.local/share/hale/habitat/local";
+
+    // ---- up --host: the habitat born there, its head answering at the
+    // recorded URL, this machine holding only the pointer
+    let started = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\nup\n--host\nlocalhost\n--name\nremote-one",
+    );
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "habitat remote-one on localhost")
+            && std::str::contains(started.stdout, "head    http://localhost:")
+            && std::str::contains(started.stdout, "pointed at from this machine"),
+        "up --host brings the habitat up there and points at it: " + started.stdout
+            + started.stderr,
+    );
+    let p = std::io::fs::read_file(pointer) or "";
+    let head = std::json::find_string_field(p, "head");
+    std::test::assert(
+        std::str::starts_with(head, "http://localhost:")
+            && std::json::find_string_field(p, "name") == "remote-one"
+            && len(std::json::find_string_field(p, "identity")) >= 40,
+        "the pointer names the habitat, its head's URL and its record: " + p,
+    );
+    std::test::assert(
+        std::io::fs::file_exists(there + "/genome/hale.toml")
+            && !std::io::fs::file_exists(dna::local_habitat_dir() + "/genome"),
+        "the genome is there, and none here",
+    );
+    let before = containers_under(home);
+    std::test::assert(
+        std::str::contains(before, " face ") && std::str::contains(before, " body "),
+        "its body and face run there as compose services: " + before,
+    );
+
+    // ---- status through the pointer: the head answers
+    let status = in_dir(scratch, config, toolchain() + "\nhabitat\nstatus");
+    std::test::assert(
+        status.code == 0
+            && std::str::contains(status.stdout, "habitat remote-one on localhost")
+            && std::str::contains(status.stdout, "head    " + head + " (up)")
+            && std::str::contains(status.stdout, "allocations, as the head answers:"),
+        "status reads the pointer and asks the head: " + status.stdout + status.stderr,
+    );
+    // the identity stub's issuer and endpoints are recorded under the
+    // habitat's declared address (`localhost`, not the 127.0.0.1 it binds),
+    // so a browser on this machine signs in at the face it reaches
+    let face_url = std::json::find_string_field(p, "face");
+    let base = std::str::parse_int(
+        face_url[(std::str::index_of(face_url, "localhost:") + 10)..len(face_url)],
+    )
+    or 0;
+    let issuer = "http://localhost:" + to_string(base + 3);
+    let discovery = dna::run_tool(
+        "curl\n-sf\n" + issuer + "/.well-known/openid-configuration",
+    ).stdout;
+    std::test::assert(
+        std::json::find_string_field(discovery, "issuer") == issuer
+            && std::str::starts_with(
+                std::json::find_string_field(discovery, "authorization_endpoint"),
+                issuer + "/",
+            )
+            && std::str::starts_with(
+                std::json::find_string_field(discovery, "token_endpoint"),
+                issuer + "/",
+            ),
+        "the stub's discovery document names the declared address: " + issuer + " " + discovery,
+    );
+    let migrate = in_dir(scratch, config, toolchain() + "\nhabitat\nmigrate");
+    std::test::assert(
+        migrate.code == 2 && std::str::contains(migrate.stderr, "runs on localhost"),
+        "a verb of the genome here is refused while the habitat runs there: " + migrate.stderr,
+    );
+
+    // ---- a second up --host: the same habitat, nothing changed
+    let again = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\nup\n--host\nlocalhost\n--name\nremote-one",
+    );
+    std::test::assert(
+        again.code == 0 && std::str::contains(again.stdout, "reconnected"),
+        "a second up --host reconnects: " + again.stdout + again.stderr,
+    );
+    // every container the first `up` left runs on, not made again (the
+    // body brings its senses' store up in its own time)
+    let after = containers_under(home);
+    let mut kept = true;
+    let mut rest = before;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) > 0 && !std::str::contains(after, line) { kept = false; }
+    }
+    std::test::assert(
+        kept && std::json::find_string_field(std::io::fs::read_file(pointer) or "", "head") == head,
+        "and changes nothing: its containers and its head's URL are the same: " + before + " -> "
+            + after,
+    );
+    let other = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\nup\n--host\nlocalhost\n--name\nanother",
+    );
+    std::test::assert(
+        other.code != 0 && std::str::contains(other.stderr, "points at the habitat `remote-one`"),
+        "a pointer names one habitat: " + other.stderr,
+    );
+    let projects = dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\ndocker ps -aq | xargs -r docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}} {{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' | grep -F \" $1\" | cut -d' ' -f1 | sort -u | head -n 1\nsh\n"
+                + home,
+        ).stdout,
+    );
+
+    // ---- a stale pointer (another record's identity) tears nothing down
+    let kept_pointer = std::io::fs::read_file(pointer) or "";
+    let real = std::json::find_string_field(kept_pointer, "identity");
+    std::io::fs::write_file(
+        pointer,
+        std::str::replace(
+            kept_pointer,
+            real,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+    )
+    or discard;
+    let stale = in_dir(scratch, config, toolchain() + "\nhabitat\ndown");
+    std::test::assert(
+        stale.code != 0 && std::str::contains(stale.stderr, "is not the one this machine points at")
+            && std::str::contains(containers_under(home), " face "),
+        "a pointer to another record stops nothing there: " + stale.stdout + stale.stderr,
+    );
+    std::io::fs::write_file(pointer, kept_pointer) or discard;
+
+    // ---- down --forget: planned there, confirmed by the name typed here,
+    // nothing left on either side, the pointer last
+    let planned = in_dir(scratch, config, toolchain() + "\nhabitat\ndown\n--forget\n--plan");
+    std::test::assert(
+        planned.code == 0
+            && std::str::contains(planned.stdout, "the plan to forget the habitat `remote-one`")
+            && std::io::fs::file_exists(pointer),
+        "the plan is printed, nothing touched: " + planned.stdout + planned.stderr,
+    );
+    let refused = in_dir(scratch, config, toolchain() + "\nhabitat\ndown\n--forget");
+    std::test::assert(
+        refused.code == 2 && std::io::fs::file_exists(pointer),
+        "off a terminal it refuses: " + refused.stderr,
+    );
+    let forgot = at_terminal(
+        scratch,
+        config,
+        "remote-one",
+        toolchain() + " habitat down --forget",
+    );
+    std::test::assert(
+        forgot.code == 0
+            && std::str::contains(forgot.stdout, "the habitat `remote-one` is forgotten"),
+        "typed back, the habitat there is forgotten: " + forgot.stdout + forgot.stderr,
+    );
+    std::test::assert(
+        !std::io::fs::file_exists(pointer)
+            && !std::io::fs::file_exists(dna::local_habitat_dir() + "/head.url"),
+        "the pointer is gone here",
+    );
+    std::test::assert(
+        len(dna::trim_nl(containers_under(home))) == 0
+            && !std::io::fs::file_exists(there + "/genome")
+            && len(dna::trim_nl(volumes_named(projects))) == 0,
+        "nothing is left there: " + containers_under(home) + volumes_named(projects),
+    );
+
+    dna::run_tool(compose + "\ndown\n-v");
+    dna::scratch_done(scratch);
+}

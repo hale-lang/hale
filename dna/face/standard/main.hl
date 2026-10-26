@@ -120,7 +120,7 @@ fn refusal(status: Int, code: String, message: String) -> std::http::Response {
 // One whole exchange with the head: `text` sent, the answer read to the
 // close and parsed to its status, head lines and body.
 fn buffered(head_port: Int, text: String) -> Answer {
-    let fd = std::io::tcp::connect("127.0.0.1", head_port) or - 1;
+    let fd = std::io::tcp::connect(dna::listen_dial_host(), head_port) or - 1;
     if fd < 0 { return Answer { }; }
     let armed = std::io::tcp::__set_recv_timeout_ns(fd, RELAY_RECV_NS);
     let up = std::io::tcp::Stream { conn_fd: fd };
@@ -194,7 +194,7 @@ locus Face {
                 "an answer is written to its connection, and this request has none",
             );
         }
-        let fd = std::io::tcp::connect("127.0.0.1", self.head_port) or - 1;
+        let fd = std::io::tcp::connect(dna::listen_dial_host(), self.head_port) or - 1;
         if fd < 0 {
             return refusal(502, "head_unreachable", "the head does not answer on the loopback");
         }
