@@ -76,6 +76,11 @@ An unresolved type parameter also cannot inherit a record's purity merely
 by sharing its name. Unknown callbacks and default execution still need their
 own coverage.
 
+Method calls on an array element follow the element's known type, including
+uniform array literals. The index expression is checked too: indexing with an
+OS-only call still requires that capability on the selected target. An unknown
+element type cannot supply a method or effect guarantee.
+
 ### Concurrency & Thread Placement Checks
 
 | Check | Severity | Condition Flagged |

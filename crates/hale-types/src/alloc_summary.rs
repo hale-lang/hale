@@ -6779,8 +6779,9 @@ impl<'a> Walker<'a> {
     /// silently-dropped unresolved edges: a struct-literal receiver
     /// (`B { }.work()`), a chained field (`self.mid.inner.work()`),
     /// a call result (`make_b().work()`), and a uniform if/else
-    /// value. Anything genuinely untypeable at this layer (an index
-    /// result, a match value, a foreign expression) returns `None`
+    /// value, and an index into an array with a known element type.
+    /// Anything genuinely untypeable at this layer (a match value or
+    /// a foreign expression) returns `None`
     /// and downstream soundness judgments fail closed on the edge.
     /// Used to spot growing-`@form` receivers (D2) and to resolve
     /// handle-method call edges (`record_call`).
@@ -6861,6 +6862,7 @@ impl<'a> Walker<'a> {
                 _ => None,
             },
             Expr::If(ifs) => self.if_locus_type(ifs),
+            Expr::Index { receiver, .. } => self.iter_elem_type(receiver),
             // `mws.get(i) or raise` — the disposition unwraps the
             // fallible; the VALUE'S type is the inner call's.
             Expr::Or { inner, .. } => self.receiver_type_name(inner),

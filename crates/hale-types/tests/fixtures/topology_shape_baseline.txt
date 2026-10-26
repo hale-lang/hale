@@ -119,7 +119,7 @@ crates/hale-cli/tests/fleet_compose.rs#4 1456c8b60a301cd0
 crates/hale-cli/tests/fleet_compose.rs#5 8a7e45ebac37c965
 crates/hale-cli/tests/fleet_cross_tier.rs#4 72311fd0509b0f61
 crates/hale-cli/tests/fleet_model_soundness.rs#2 1b26681f1549e434
-crates/hale-cli/tests/fleet_model_soundness.rs#3 fa54507421bfc810
+crates/hale-cli/tests/fleet_model_soundness.rs#3 6e9958a7796d64a2
 crates/hale-cli/tests/fleet_sign.rs#1 ef80a17ad9f76c4d
 crates/hale-cli/tests/fleet_sign.rs#2 3a6c5e7f3d73eae1
 crates/hale-cli/tests/hale_test_runner.rs#2 17fb40fb6ead80b5
@@ -293,7 +293,7 @@ crates/hale-codegen/tests/birth_order_trap.rs#2 9ac523e9760c37bd
 crates/hale-codegen/tests/birth_order_trap.rs#3 9ac523e9760c37bd
 crates/hale-codegen/tests/bounded_collections.rs#0 45685356d1b1f55e
 crates/hale-codegen/tests/bounded_collections.rs#1 c3f02b2c9bcc2ab4
-crates/hale-codegen/tests/bounded_collections.rs#10 52df0c4dc4c5d100
+crates/hale-codegen/tests/bounded_collections.rs#10 c738172d15dedefd
 crates/hale-codegen/tests/bounded_collections.rs#11 3f90d9776321ae4f
 crates/hale-codegen/tests/bounded_collections.rs#13 3bad41be7e8295db
 crates/hale-codegen/tests/bounded_collections.rs#14 b1798b41525040c6
@@ -1010,10 +1010,10 @@ crates/hale-codegen/tests/interface_dispatch.rs#3 a4090fc8e1fa7b2d
 crates/hale-codegen/tests/interface_dispatch.rs#4 285f0924b50eff73
 crates/hale-codegen/tests/interface_dispatch.rs#5 5f83c94176b1d081
 crates/hale-codegen/tests/interface_dispatch.rs#6 51393d7060428862
-crates/hale-codegen/tests/interface_in_composites.rs#0 bf8be9415da445c4
+crates/hale-codegen/tests/interface_in_composites.rs#0 0b9161181c4b8b63
 crates/hale-codegen/tests/interface_in_composites.rs#1 bf8be9415da445c4
-crates/hale-codegen/tests/interface_in_composites.rs#2 3bc10c7ef7e10940
-crates/hale-codegen/tests/interface_in_composites.rs#3 cfae718bcf9c58fb
+crates/hale-codegen/tests/interface_in_composites.rs#2 d8c29aa5c05ef158
+crates/hale-codegen/tests/interface_in_composites.rs#3 fcf9d598e666d6e9
 crates/hale-codegen/tests/interface_in_form_vec.rs#0 7736f6185b849f89
 crates/hale-codegen/tests/interface_in_form_vec.rs#1 c95400a6bae095f1
 crates/hale-codegen/tests/interface_in_form_vec.rs#2 9f9c3cb015ff7942
@@ -1096,7 +1096,7 @@ crates/hale-codegen/tests/locus_field_reorder.rs#3 9ac6d3e2d78bd11d
 crates/hale-codegen/tests/locus_field_store.rs#0 7bf857bf908336ba
 crates/hale-codegen/tests/locus_field_store.rs#2 46c465442ac71504
 crates/hale-codegen/tests/locus_field_store.rs#3 4f23ba441cb4b452
-crates/hale-codegen/tests/locus_field_store.rs#4 ecc72c0c932a36bf
+crates/hale-codegen/tests/locus_field_store.rs#4 2cf6b6cda0234e2a
 crates/hale-codegen/tests/locus_let_lifecycle.rs#0 1af8b50d325aa3a0
 crates/hale-codegen/tests/locus_let_lifecycle.rs#1 09f062edc21a9a3a
 crates/hale-codegen/tests/locus_let_lifecycle.rs#2 77f9d4877e4957b0

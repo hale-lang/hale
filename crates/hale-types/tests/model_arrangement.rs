@@ -3,9 +3,9 @@
 //! § 2.4), held to the three identity contracts the design keeps apart.
 //!
 //! 1. **Shape identity.** The arrangement is outside the shape half, so
-//!    `shape_hash` does not read it: each program's hash is the value the
-//!    builder before the switch (#1315) stamped, and clearing the
-//!    arrangement leaves it where it is.
+//!    `shape_hash` does not read it. The fixed hashes include the shared
+//!    initializer/execution facts introduced by #1327; clearing the
+//!    arrangement leaves each hash where it is.
 //! 2. **Observation entity ids.** `obs_entity_ids` stamps subjects, locus
 //!    declarations and bindings, never instances: the digest is the old
 //!    build's, and clearing the arrangement leaves it where it is.
@@ -90,10 +90,11 @@ fn obs(m: &ApplicationModel) -> String {
     format!("{:016x}", hale_model::obs_ids::digest(&hale_model::obs_ids::obs_entity_ids(m)))
 }
 
-/// Contracts 1 and 2: the hashes are the old build's, and neither reads
-/// the arrangement (clearing its tables moves neither).
-fn identities_hold(m: &ApplicationModel, old_shape: &str, old_obs: &str) {
-    assert_eq!(shape(m), old_shape, "contract 1: shape_hash is the one #1315's builder stamped");
+/// Contracts 1 and 2: neither identity reads the arrangement. Shape
+/// pins include the current executable default bodies; observation pins
+/// retain the original entity inventory. Clearing arrangement moves neither.
+fn identities_hold(m: &ApplicationModel, expected_shape: &str, old_obs: &str) {
+    assert_eq!(shape(m), expected_shape, "contract 1: shape_hash pins the current executable source facts");
     assert_eq!(obs(m), old_obs, "contract 2: the obs-id digest is the one #1315's builder stamped");
     let mut bare = m.clone();
     bare.entities.locus_instances.clear();
@@ -101,7 +102,7 @@ fn identities_hold(m: &ApplicationModel, old_shape: &str, old_obs: &str) {
     bare.relations.placed_in.clear();
     bare.relations.owns.clear();
     bare.relations.affined_to.clear();
-    assert_eq!(shape(&bare), old_shape, "contract 1: shape_hash does not read the arrangement");
+    assert_eq!(shape(&bare), expected_shape, "contract 1: shape_hash does not read the arrangement");
     assert_eq!(obs(&bare), old_obs, "contract 2: the obs ids do not read the arrangement");
 }
 
@@ -135,7 +136,7 @@ fn the_arrangement_is_rooted_at_the_deployed_main() {
     let (side, w, leaf) = (format!("{app}.side"), format!("{app}.w"), format!("{app}.w.leaf"));
     remapped(m, &[(app, Some(0), None), (&side, Some(1), None), (&w, Some(2), None), (&leaf, Some(3), None)]);
     assert!(m.entities.thread_domains.is_empty(), "no domain is the imported root's: {:?}", m.entities.thread_domains);
-    identities_hold(m, "ac9ffc19e280a6f2", "eb9f93ef2d701a6e");
+    identities_hold(m, "c8e14f85e87e9ab6", "eb9f93ef2d701a6e");
 }
 
 const M3: &str = r#"
@@ -177,7 +178,7 @@ fn the_wrongly_inferred_twin_is_removed() {
     let m = model(&s);
     remapped(m, &[("App", Some(0), Some(0)), ("App.a", Some(1), Some(1)), ("App.l", Some(2), None), ("App.z", Some(3), Some(2))]);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.a Reader - main 0", "2 App.z Tail - main 0"]);
-    identities_hold(m, "87629485bc24b57d", "76ab966fa69b16ae");
+    identities_hold(m, "4c0d46c8bd61a7a5", "76ab966fa69b16ae");
 }
 
 /// U-4 (M-2): the projection is user-only. The table places the stdlib
@@ -266,7 +267,7 @@ fn aliased_and_contract_typed_fields_are_added() {
             "4 App.z Tail - main 0",
         ]
     );
-    identities_hold(m, "59a01f7667f8dbf9", "10ad616cf9728b3e");
+    identities_hold(m, "53a634ba338961c5", "10ad616cf9728b3e");
 }
 
 /// M-9: below a held row whose source the producer cannot link the
@@ -285,7 +286,7 @@ fn nothing_is_arranged_below_an_unlinked_held_row() {
             ("App.h.roles.k", Some(3), None),
         ],
     );
-    identities_hold(m, "61b5aeea6b3720f1", "af7c2c5ce5fa9bea");
+    identities_hold(m, "de993ef75d1e36c9", "af7c2c5ce5fa9bea");
 }
 
 /// M-7: the entry's implicit construction adds no row of its own. A
@@ -298,7 +299,7 @@ fn the_entry_adds_no_arrangement_row_of_its_own() {
     let m = model(&claims_only);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.l Leaf - main 0"]);
     assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
-    identities_hold(m, "09f0e56b070be72d", "ccc8c3ec47f273ff");
+    identities_hold(m, "d143c2e55dc8e0e2", "ccc8c3ec47f273ff");
 
     let with_side = snapshot(
         "locus Side { }\nlocus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\n\
@@ -310,7 +311,7 @@ fn the_entry_adds_no_arrangement_row_of_its_own() {
         locus_holes(m),
         ["Side instance born outside the arrangement: owner and placement resolve at runtime"]
     );
-    identities_hold(m, "d41addd316edbb9f", "db323984f4298dfa");
+    identities_hold(m, "4893a43a725fdf00", "db323984f4298dfa");
 }
 
 /// The model's `replica` column is the replica row's own index, never an
@@ -335,7 +336,7 @@ fn a_replica_index_stays_on_its_own_row() {
             "4 App.v[1].inner Leaf - pinned:App.v[1] 3",
         ]
     );
-    identities_hold(m, "e1db47d63e2839d3", "b7e5edf4a6b220ce");
+    identities_hold(m, "c040340f245425b3", "b7e5edf4a6b220ce");
 }
 
 /// Contract 3's construction templates: a path has no construction
@@ -388,7 +389,7 @@ fn main() { build(true); }
     for decl in ["RouterV1", "RouterV2"] {
         assert!(holes.contains(&format!("{decl} {disagree}")), "{decl}: {holes:?}");
     }
-    identities_hold(m, "7a3dab914ecdbe5c", "23e954518d6a8109");
+    identities_hold(m, "7d6131dcd57088b2", "23e954518d6a8109");
 }
 
 /// U-5: the model projects `affined_to` from the table's resolved domain
@@ -432,7 +433,7 @@ fn the_affinity_column_is_projected() {
         &dump[at..at + dump[at..].find("dispatch_plan").unwrap()],
         "affined_to (3):\n  pinned:App.w[0] cpus [5]\n  pinned:App.w[1] cpus [6]\n  pool:io cpus [2,3]\n"
     );
-    identities_hold(m, "6e7cb77bb037547e", "6f7ec26b0442cb4d");
+    identities_hold(m, "d520083a3016e2a7", "6f7ec26b0442cb4d");
 }
 
 /// U-5: a program with no affinity dumps no `affined_to` lines.

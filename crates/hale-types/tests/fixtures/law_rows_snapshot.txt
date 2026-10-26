@@ -114,7 +114,7 @@ crates/hale-types/tests/claims_edges.rs#2	iso	forbid reaches(a_side, b_side)	Vio
 crates/hale-types/tests/claims_edges.rs#20	iso	forbid reaches(a_side, b_side)	Holds	None
 crates/hale-types/tests/claims_edges.rs#21	no_spend	forbid reaches(a_side, effects(money))	Violated	None
 crates/hale-types/tests/claims_edges.rs#22	none	bound llm <= 0 on paths from planners	Violated	None
-crates/hale-types/tests/claims_edges.rs#23	iso	forbid reaches(a_side, b_side)	Uncertified	None
+crates/hale-types/tests/claims_edges.rs#23	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/claims_edges.rs#24	no_sms	forbid reaches(callers, texting)	Violated	None
 crates/hale-types/tests/claims_edges.rs#25	iso	forbid reaches(srcs, sinks)	Violated	None
 crates/hale-types/tests/claims_edges.rs#26	boundary	only edges ops -> core { publish Allowed }	Violated	None

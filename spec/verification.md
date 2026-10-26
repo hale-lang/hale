@@ -899,10 +899,13 @@ summarized set; an unanalyzed body RETAINS its `UnanalyzedBody`
 residue and an analyzed body carries none; and (rounds 14–15)
 `LocusDecl::analyzable` DERIVES from the CLOSED ownership
 account: every function carries its canonical `owner`
-(`Some` for methods, hooks, modes, and failure handlers; `None`
-for free functions), `member_of` must be a total, exclusive
-partition agreeing with it exactly (a free fn appears in no row;
-every other kind in exactly one, at its owner), and a locus is
+(`Some` for locus-owned bodies, including parameter defaults;
+`None` for free functions, data-field defaults and argument defaults
+of free functions). Data-field defaults retain their separate typed
+record owner. `member_of` must be a total, exclusive partition of
+locus-owned bodies agreeing with `owner` exactly (a body with no
+locus owner appears in no row; every locus-owned body in exactly one,
+at its owner), and a locus is
 analyzable iff every executable owned member, including failure
 handlers, is analyzed, an empty set vacuously so — so a
 membership row can be neither deleted nor moved to launder
@@ -2326,7 +2329,7 @@ assume the others in a build:
     silence nothing in any program that reaches them.
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
   own fns and loci, judged the same way: one row per declaration (a fn,
-  a method, an authored hook, a mode), keyed by its site and printed
+  a method, an authored hook, a mode, a failure handler or a default body), keyed by its site and printed
   under its name, so two declarations sharing a name (a program the
   check refuses as a duplicate top-level name) are two rows. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in

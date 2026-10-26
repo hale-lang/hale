@@ -201,7 +201,11 @@ fn secret_use_identity_survives_unrelated_effect_declarations() {
         }
         fn main() { App { }; }
     ";
-    let es = errors(src);
+    // Select a function that calls the signing method: its class identity
+    // is independent of the Signer constructor's lifecycle coverage.
+    let method = src.replace("group plugins = { Plugin };",
+        "fn plugin_sign(p: Plugin, m: Bytes) -> Bytes { return p.sneak(m); } group plugins = { plugin_sign };");
+    let es = errors(&method);
     assert!(
         es.iter().any(|m| m.contains("blocked") && m.contains("violated")),
         "`secret_use` must still match regardless of declaration \

@@ -636,14 +636,15 @@ fn the_star_family_works_as_a_claim_sink() {
     );
 }
 
-/// Projection vacuity: a group of fn-less loci passes the
+/// Projection vacuity: a locus with no fields or bodies has no executable
+/// default initializer either. A group of these fn-less loci passes the
 /// decl-grain guard but projects to no executable vertices — a
 /// claim over it proves nothing and must refuse, at either
 /// endpoint.
 #[test]
 fn a_projection_empty_group_is_an_error_at_either_endpoint() {
     let base = r#"
-        locus Store { params { cap: Int = 8; } }
+        locus Store { }
         locus A { fn go(n: Int) -> Int { return n; } }
         group data = { Store };
         group a_side = { A };
@@ -706,7 +707,7 @@ fn a_projection_empty_group_is_an_error_at_either_endpoint() {
 // while the forbidden path executed at runtime. The summarizer now
 // TYPES those receivers, so each shape resolves to a real edge and
 // the claim reports a real witness. The fail-closed backstop
-// remains for what stays genuinely untypeable (an index result).
+// remains for what stays genuinely untypeable (a match-valued receiver).
 
 fn typing_fixture(go_body: &str) -> String {
     format!(
@@ -908,10 +909,10 @@ fn wrapper_effect_and_bound_carriers_resolve() {
 // The fail-closed backstop, for what stays genuinely untypeable
 // =====================================================================
 
-/// An INDEX-result receiver has no declared type at this layer —
-/// the backstop still refuses to certify over it.
+/// Indexing a typed array now has a target. Keep the same source as
+/// a positive witness, and use a match value as the unresolved control.
 #[test]
-fn an_index_receiver_still_fails_closed() {
+fn an_index_receiver_resolves_and_a_match_receiver_still_fails_closed() {
     let src = r#"
         locus B { fn work(n: Int) -> Int { return n * 2; } }
         locus A {
@@ -929,10 +930,14 @@ fn an_index_receiver_still_fails_closed() {
         fn main() { App { }; }
     "#;
     let ds = diags(src);
+    assert!(ds.iter().any(|m| m.contains("claim `iso` violated") && m.contains("B::work")), "{ds:?}");
+    let opaque = src.replace("let xs = [B { }];", "let x = match n { 0 -> B { }, _ -> B { } };")
+        .replace("xs[0].work(n)", "x.work(n)");
+    let ds = diags(&opaque);
     assert!(
         ds.iter().any(|m| m.contains("claim `iso` cannot be certified")
             && m.contains("receiver the compiler cannot type")),
-        "an index receiver must fail closed: {:?}",
+        "an unresolved match receiver must fail closed: {:?}",
         ds
     );
 }

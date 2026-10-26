@@ -72,10 +72,9 @@ main locus OmsApp { params { o: Oms = Oms { }; } }
 fn main() { OmsApp { }; }
 "#;
 
-/// The middle component's handler calls through an index-result
-/// receiver, which stays untypeable — its outgoing edges are
-/// incomplete, so nothing downstream of it can be proved absent.
-const B_UNKNOWN: &str = r#"
+/// The indexed base now has a known target; `unknown_middle` replaces
+/// it with a match value to retain a genuinely incomplete receiver.
+const B_INDEXED: &str = r#"
 import "../lib" as t;
 locus Sink { params { n: Int = 0; } fn work(v: Int) -> Int { return v * 2; } }
 locus Oms {
@@ -89,6 +88,11 @@ locus Oms {
 main locus OmsApp { params { o: Oms = Oms { }; } }
 fn main() { OmsApp { }; }
 "#;
+
+fn unknown_middle() -> String {
+    B_INDEXED.replace("let xs = [Sink { }];", "let x = match i.id { 0 -> Sink { }, _ -> Sink { } };")
+        .replace("xs[0].work(i.id)", "x.work(i.id)")
+}
 
 const C: &str = r#"
 import "../lib" as t;
@@ -174,7 +178,9 @@ fn a_path_through_stdlib_survives_composition() {
 /// F-3: a hole the source can walk to blocks certification.
 #[test]
 fn a_reachable_unknown_makes_an_absence_uncertified() {
-    let r = fixture("unknown", B_UNKNOWN);
+    // Array indexing is now resolved by shared element facts. A match
+    // value remains outside that receiver horizon and supplies a real hole.
+    let r = fixture("unknown", &unknown_middle());
     // Nothing routes b -> c, so the modeled graph has no path. The
     // old answer was `holds`.
     let (out, code) = check(&r, &[INTENT]);
@@ -211,8 +217,9 @@ fn a_reachable_unknown_makes_an_absence_uncertified() {
 /// unknown, the absence is real and certified.
 #[test]
 fn an_unreachable_unknown_does_not_poison_the_fleet() {
-    let r = fixture("unrelated", B_UNKNOWN);
+    let r = fixture("unrelated", &unknown_middle());
     let (out, code) = check(&r, &[]);
+    assert!(middle_artifact(&r).contains("untyped_receiver_call"), "the unreachable control still owes a real hole");
     assert_eq!(
         code, 0,
         "with nothing routed from strategy, the unknown in the middle \

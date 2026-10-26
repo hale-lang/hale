@@ -67,7 +67,12 @@ fn seen(target: &Path) -> Seen {
                     .unwrap_or_else(|_| panic!("{} loads", target.display()));
                 let m = snap.demand_model().expect("the model");
                 let dump = hale_types::model_builder::render_internal(m);
-                let dumped = dump[dump.find("dispatch_plan (").expect("the dump's section")..].to_string();
+                let section = &dump[dump.find("dispatch_plan (").expect("the dump's section")..];
+                // Other model sections may follow the dispatch rows. Compare
+                // this projection alone, retaining every subject and column.
+                let dumped = section.lines().enumerate()
+                    .take_while(|(index, line)| *index == 0 || line.starts_with("  "))
+                    .map(|(_, line)| format!("{line}\n")).collect::<String>();
                 let top = snap.demand_scope().unwrap();
                 let subjects = snap
                     .demand_bus_graph()

@@ -462,12 +462,10 @@ fn a_heavy_alternative_still_violates_the_bound() {
 // `@budget(alloc_per_call)`: the guard the #382 fix left dead
 // =====================================================================
 
-/// CANARY — an untyped-receiver method call must refuse a zero-alloc
-/// budget. The #382 root fix wrote this message but only widened the
-/// `indirect` guard in the OTHER walkers; the budget's own guard
-/// still let a wrapper certify.
+/// CANARY — an indexed receiver counts its callee's allocation. A
+/// genuinely unresolved receiver still refuses the budget closed (#382).
 #[test]
-fn an_untyped_receiver_call_refuses_an_alloc_budget() {
+fn an_indexed_receiver_counts_and_an_untyped_receiver_refuses_an_alloc_budget() {
     let src = r#"
 type P { a: Int; }
 locus Maker {
@@ -484,6 +482,10 @@ fn zero(n: Int) -> Int {
 fn main() { }
 "#;
     let ds = diags(src);
+    assert!(ds.iter().any(|m| m.contains("budget") && m.contains("counts 3 arena allocation")), "{ds:?}");
+    let opaque = src.replace("let xs = [Maker { }];", "let x = match n { 0 -> Maker { }, _ -> Maker { } };")
+        .replace("xs[0].make(n)", "x.make(n)");
+    let ds = diags(&opaque);
     assert!(
         ds.iter().any(|m| m.contains("budget")
             && m.contains("receiver the compiler cannot type")),

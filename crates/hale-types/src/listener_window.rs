@@ -739,11 +739,8 @@ impl<'a> Window<'a> {
             Some(l) => format!("`{l}::{}`", k.fn_name),
             None => format!("`{}`", k.fn_name),
         };
-        if row.effects.contains(EffectSet::BLOCK) {
+        if row.known.contains(EffectSet::BLOCK) {
             return Some((show(&row.key), "it may block: a wait, a sleep or a read, here or in what it calls"));
-        }
-        if row.unknown {
-            return Some((show(&row.key), "it reaches a call the blocking analysis cannot name"));
         }
         let effects = self.effects?;
         if let Some(k) = self.cycle(&row.key) {
@@ -775,6 +772,12 @@ impl<'a> Window<'a> {
             if let Some(r) = effects.rows.get(k) {
                 stack.extend(r.targets.iter());
             }
+        }
+        // Preserve a source witness (for example a recovery operation)
+        // before reporting incomplete effects as a generic unknown call.
+        // Unknown coverage still refuses the window even without such a witness.
+        if row.unknown {
+            return Some((show(&row.key), "it reaches a call the blocking analysis cannot name"));
         }
         None
     }

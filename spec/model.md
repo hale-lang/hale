@@ -854,7 +854,11 @@ that no other table holds:
   call/effect horizon as other bodies. Calls through locus type aliases use the canonical
   locus resolver and retain the template declaration of a generic target.
   Function-valued fields retain value dispatch when their declared type is
-  a function alias or a generic parameter. A receiver typed by a lexical generic
+  a function alias or a generic parameter. Indexed array receivers use the
+  summary's existing element-type facts: declared arrays and uniform literals
+  retain their element's method target. The index expression is still evaluated
+  and contributes its own calls and capabilities. Unknown element types retain
+  their opaque-receiver gap. A receiver typed by a lexical generic
   parameter still has no single concrete dispatch target and retains an
   opaque-receiver hole; its spelling cannot bind to a same-named global
   locus. This does not establish which runtime

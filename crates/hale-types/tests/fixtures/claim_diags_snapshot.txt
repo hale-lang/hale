@@ -229,7 +229,9 @@ Claim [64..70] claim `no_spend`: the forbidden destination `charge` is declared 
 --- crates/hale-types/tests/claims_edges.rs#22 ---
 Claim [411..415] claim `none` violated: heaviest path from `planners` carries 1 `llm` sites, limit 0 — path: `Planner::plan` -> `Bridge::hop` -> `ask`
 --- crates/hale-types/tests/claims_edges.rs#23 ---
-Claim [354..357] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls `work` on a receiver the compiler cannot type, so the walk cannot follow the edge. An unresolvable edge fails closed — bind the receiver to a typed field or local so the call resolves
+Claim [354..357] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `B::work`
+Claim [172..185] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [15..16] claim `iso`: the forbidden destination `B` is declared here
 --- crates/hale-types/tests/claims_edges.rs#24 ---
 Claim [542..548] claim `no_sms` violated: `callers` reaches `texting` — witness: `A::go` -> `notify` -(dispatches Notifier.send)-> `Sms::send`
 Claim [380..389] claim `no_sms`: the boundary into `texting` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
@@ -278,10 +280,10 @@ Claim [70..75] claim `iso`: the forbidden destination `Email` is declared here
 --- crates/hale-types/tests/interface_dispatch.rs#11 ---
 Claim [688..696] claim `one_call` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::plan` -> `Deep::ask` -> `model_call`
 --- crates/hale-types/tests/interface_dispatch.rs#12 ---
-Claim [116..120] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts an unbounded number of arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [116..120] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts 3 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [151..162] counts against `zero`'s alloc budget: an array literal
 Claim [152..161] counts against `zero`'s alloc budget: a `Maker` instantiation
-Claim [176..189] counts against `zero`'s alloc budget: `make` is a method call on a receiver the compiler cannot type — its target, and so its allocation count, is not knowable here
+Claim [68..78] counts against `zero`'s alloc budget: a `P` instantiation
 --- crates/hale-types/tests/interface_dispatch.rs#13 ---
 Claim [158..162] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [110..120] counts against `zero`'s alloc budget: a `P` instantiation
