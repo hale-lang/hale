@@ -676,7 +676,7 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
         oi = oi + 1;
     }
     let c = pq::PgConn {
-        host: owner.host,
+        host: reach_host(owner.host),
         port: owner.port,
         user: owner.user,
         password: owner.password,
@@ -916,7 +916,7 @@ fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
     }
     let d = parse_dsn(std::env::var(env_name));
     if !d.ok { return env_name + ": " + d.why; }
-    c.host = d.host;
+    c.host = reach_host(d.host);
     c.port = d.port;
     c.user = d.user;
     c.password = d.password;

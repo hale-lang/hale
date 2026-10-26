@@ -6703,6 +6703,7 @@ otherwise.
 | `HALE_DNA_ONESHOT` | off | A `hale dna run` application returns after the ping instead of staying up. |
 | `HALE_DNA_API=<url>` | `http://127.0.0.1:8793` | The head API a leg's verbs (`hale dna work …`) talk to when `--api` is not given. |
 | `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
+| `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
 | `HALE_DNA_COMMAND_POLICY=<path>` | unset | The explicit authority policy the native command lanes and the governance verbs require; with none, they refuse. |
 | `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |

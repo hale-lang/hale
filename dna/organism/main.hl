@@ -41,7 +41,7 @@ main locus Organism {
         // 0 = run until killed; otherwise the number of 100ms ticks.
         ticks: Int = 0;
         nerves: nats::NatsConn = nats::NatsConn {
-            url: dna::nerves_spine_url(),
+            url: dna::reach_url(dna::nerves_spine_url()),
             user: "spine",
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "organism",

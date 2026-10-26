@@ -1233,7 +1233,7 @@ main locus Host {
         // organization's durable `heart`, handed over as it arrived
         // (`untyped`): the host declares no application's events.
         nerves: nats::NatsConn = nats::NatsConn {
-            url: dna::nerves_spine_url(),
+            url: dna::reach_url(dna::nerves_spine_url()),
             // GH #989: the spine's account, sealed: presented on CONNECT alone
             user: "spine",
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
@@ -1938,7 +1938,7 @@ main locus Host {
     fn nerves_read_now() -> Bool {
         if !self.nerves_on || exit_code(self.org) != -2 { return false; }
         let c = nats::NatsClient {
-            url: dna::nerves_spine_url(),
+            url: dna::reach_url(dna::nerves_spine_url()),
             user: "spine",
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node-probe",
@@ -1958,7 +1958,7 @@ main locus Host {
             0
         };
         let c = nats::NatsClient {
-            url: dna::nerves_spine_url(),
+            url: dna::reach_url(dna::nerves_spine_url()),
             user: "spine",
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node-probe",

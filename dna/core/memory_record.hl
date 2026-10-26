@@ -116,7 +116,7 @@ locus RecordSigner {
 fn dial_from_text(c: pq::PgConn, dsn: String) -> String {
     let d = parse_dsn(dsn);
     if !d.ok { return "the DSN: " + d.why; }
-    c.host = d.host;
+    c.host = reach_host(d.host);
     c.port = d.port;
     c.user = d.user;
     c.password = d.password;

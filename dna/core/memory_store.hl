@@ -1385,7 +1385,7 @@ fn parse_dsn(s: String) -> Dsn {
 // value a factory hands back into a field.
 fn pq_conn(d: Dsn) -> pq::PgConn {
     return pq::PgConn {
-        host: d.host,
+        host: reach_host(d.host),
         port: d.port,
         user: d.user,
         password: d.password,

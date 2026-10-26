@@ -247,7 +247,7 @@ fn index_last_reading(j: dna::Journal, name: String) -> IndexReading {
 fn index_answers(url: String) -> Bool {
     let port = std::str::parse_int(index_after_last(url, ":")) or 0;
     if port < 1 || port > 65535 { return false; }
-    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    let fd = std::io::tcp::connect(dna::loopback_host(), port) or - 1;
     if fd < 0 { return false; }
     std::io::tcp::close_fd(fd);
     return true;

@@ -79,6 +79,18 @@ unhealthy or `restarting` is degraded, anything else or no container is
 down) and the head and the face by whether their address accepts a
 connection. A provider in memory (`MemProvider`) stands in for it in tests.
 
+An allocation on this machine is recorded where it is published,
+`127.0.0.1:<port>`, and each process derives the address it dials from that
+record and where it runs (`dna::reach_url`, `dna::loopback_host`); nothing
+rewrites a connection as it is made. On Linux `body` and `face` share the
+host's network (`network_mode: host`), so the recorded address is theirs as
+it is the admin machine's. On macOS, where a container cannot share the
+host's network, they run on the project's network and the render sets
+`HALE_DNA_LOOPBACK_HOST=host.docker.internal` on both: a port published on
+the machine's loopback is dialled there. A listener in a service's own
+container (the face's head and its API child, the OIDC stub) is dialled at
+`127.0.0.1` in both.
+
 The **`ssh` provider** places on the machines of the LAN, each a host
 added by the name it was added under (`hale habitat host add <name>`),
 resolved by the LAN's DNS and reached over plain SSH on its port (22

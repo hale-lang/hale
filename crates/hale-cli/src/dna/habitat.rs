@@ -1882,8 +1882,11 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         let sock_gid = std::fs::metadata(&sock).map(|m| m.gid()).unwrap_or(gid);
         format!("    user: \"{uid}:{gid}\"\n    group_add:\n      - \"{sock_gid}\"\n")
     };
-    let preload = if is_macos {
-        "      LD_PRELOAD: \"/usr/local/lib/libhale_loopback.so\"\n"
+    // Where these services reach a port published on this machine's
+    // loopback (`dna::loopback_host`): on the host's network that is
+    // 127.0.0.1 itself; on the project's network (macOS) it is the host.
+    let loopback = if is_macos {
+        "      HALE_DNA_LOOPBACK_HOST: \"host.docker.internal\"\n"
     } else {
         ""
     };
@@ -1914,7 +1917,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
     services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n"));
-    services_block.push_str(preload);
+    services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n  face:\n    image: \"{image}\"\n"));
     services_block.push_str(&build_spec);
@@ -1924,7 +1927,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
     services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n"));
-    services_block.push_str(preload);
+    services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
 

@@ -57,14 +57,14 @@ fn own_nerves(root: String) -> String {
 fn exchange_client(url: String, user: String, vault: String, name: String) -> nats::NatsClient {
     if std::secret::Credential { vault: vault }.ready() {
         return nats::NatsClient {
-            url: url,
+            url: dna::reach_url(url),
             user: user,
             credential: std::secret::Credential { vault: vault },
             name: name,
             timeout: 3s,
         };
     }
-    return nats::NatsClient { url: url, name: name, timeout: 3s };
+    return nats::NatsClient { url: dna::reach_url(url), name: name, timeout: 3s };
 }
 
 // A header's value in a NATS header block ("" when absent).

@@ -744,7 +744,7 @@ fn forgejo_exec(script: String) -> dna::RunResult {
 fn forgejo_healthy(secs: Int) -> Bool {
     let deadline = std::time::now() + secs;
     while std::time::now() <= deadline {
-        let u = std::http::parse_url(dna::forgejo_address() + "/api/healthz") or {
+        let u = std::http::parse_url(dna::reach_url(dna::forgejo_address()) + "/api/healthz") or {
             return false;
         };
         let r = std::http::request(
