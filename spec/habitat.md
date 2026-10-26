@@ -93,12 +93,56 @@ the machine's loopback is dialled there. A listener in a service's own
 container (the face's head and its API child, the OIDC stub) is dialled at
 `127.0.0.1` in both.
 
-Nothing the habitat runs binds every interface of the host. The listeners a
-person reaches, the face, the head and the OIDC stub, bind the address the
-habitat declares (`127.0.0.1` for a local habitat), handed to the `face`
-service as `HALE_DNA_LISTEN_HOST`; the head's API child binds `127.0.0.1`.
-On macOS they bind `0.0.0.0` inside the `face` container, on the project's
-network, and compose publishes their ports on the declared address alone.
+Nothing the habitat runs binds every interface of the host. The face and
+the head, the listeners a person reaches, bind the address the habitat
+declares (`HALE_DNA_HABITAT_LISTEN`: `127.0.0.1` for a local habitat, the
+host's interface for one on another machine, below), handed to the `face`
+service as `HALE_DNA_LISTEN_HOST`; the head's API child and the OIDC stub
+bind `127.0.0.1`, the stub because its issuer is
+`http://127.0.0.1:<port>` and a sign-in through it is a browser's on the
+habitat's own machine. On macOS the face, the head and the stub bind
+`0.0.0.0` inside the `face` container, on the project's network, and
+compose publishes their ports on the declared address alone.
+
+### A habitat on another machine
+
+`hale habitat up --host <name> [--user <user>] [--port <n>]` runs the
+habitat on a machine of the LAN that has docker and nothing else. The
+admin machine reaches it over SSH as the person's own login (`--user` and
+`--port`, else the SSH config's; `HALE_HABITAT_SSH_CONFIG` names a config
+file for `ssh -F`), never with the habitat's keypair, which is drawn there,
+in the habitat's vault, as a local `up` draws it. The toolchain image is put
+there first: there already, sent from the admin machine's docker (`docker
+save | docker load`), or pulled as the published image of this toolchain's
+version when that image's `hale --version` answers as the admin's does;
+nothing is compiled there. Then the same `hale habitat up` runs there in
+that image, as the login's user, on the host's network, with the user's
+data directory (`~/.local/share/hale`: the habitat, its genome, record
+and vault) and the docker socket mounted, and with
+`HALE_DNA_HABITAT_LISTEN` (the address `<name>` resolves to on the admin
+machine) and `HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind
+that address and are recorded at `http://<name>:<port>`. The admin machine
+waits on the head and the face at the recorded URL, then keeps a pointer in
+its local habitat's directory in place of a habitat: `remote.json` (the
+name, the host, the login, the image, the head's and face's URLs, the
+record's identity), `head.url`, and the head's launch token
+(`face-state/head.token`, 0600). A machine points at one habitat, and one
+that runs a habitat of its own points at none.
+
+Every verb on the admin machine reaches the habitat's head through the
+pointer (`--head`, `HALE_DNA_HEAD_URL` and `head.url` resolve as they do
+locally). `status` prints the pointer and asks the head
+(`Commands::index`, `Commands::allocations`). `down` and `down --forget`
+run there over SSH, in the image: `--forget` plans there and is confirmed
+there by the habitat's name typed at the person's terminal, which SSH
+carries (refused off a terminal), and the pointer is removed last, once
+the habitat there holds no record. The verbs that act on a genome on the
+admin machine and have no route through the head, `migrate`, `handover`
+and `graft <dir>`, are refused while the pointer names another machine.
+`up --host` again finds the habitat there by its record's identity (one
+whose identity differs is refused, nothing changed), runs the same
+idempotent `up`, which changes nothing, and writes the pointer again.
+`up` without `--host` on a machine that points elsewhere is refused.
 
 `body` and `face` mount the host's docker socket because the habitat is the
 compose provider from inside its containers: `body` brings up, restarts,
@@ -565,6 +609,7 @@ socket), so the habitat's head must be up.
 
 | Verb | Behaviour |
 |---|---|
+| `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. |
 | `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, built from the embedded `Dockerfile` and `hale.pin` unless `--image <tag>` or `HALE_HABITAT_IMAGE` names an existing local image), waiting on their probes. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's surface as the person this account maps to. |

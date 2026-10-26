@@ -237,6 +237,14 @@ fn listen_host() -> String {
     return if len(named) > 0 { named } else { "127.0.0.1" };
 }
 
+// Where a process dials a listener of its own container that binds
+// `listen_host()`: that address, or the loopback when it binds every
+// interface.
+fn listen_dial_host() -> String {
+    let h = listen_host();
+    return if h == "0.0.0.0" { "127.0.0.1" } else { h };
+}
+
 // `host` as this process reaches it: this machine's loopback (`127.0.0.1`,
 // `localhost`) is the host `HALE_DNA_LOOPBACK_HOST` names when it names
 // one; any other host, or any host where it names none, is itself.
