@@ -225,6 +225,18 @@ fn loopback_host() -> String {
     return if len(named) > 0 { named } else { "127.0.0.1" };
 }
 
+const LISTEN_HOST_ENV: String = "HALE_DNA_LISTEN_HOST";
+
+// The address a listener a person reaches (the face, the head) binds:
+// `HALE_DNA_LISTEN_HOST`, which the habitat's compose render sets from the
+// address the habitat declares, else the loopback. Nothing binds every
+// interface unless the render says so (inside a container on its
+// project's network, published on the declared address alone).
+fn listen_host() -> String {
+    let named = std::str::trim(env_or_empty(LISTEN_HOST_ENV));
+    return if len(named) > 0 { named } else { "127.0.0.1" };
+}
+
 // `host` as this process reaches it: this machine's loopback (`127.0.0.1`,
 // `localhost`) is the host `HALE_DNA_LOOPBACK_HOST` names when it names
 // one; any other host, or any host where it names none, is itself.

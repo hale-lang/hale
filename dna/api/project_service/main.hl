@@ -226,7 +226,7 @@ fn serve(cfg: HeadConfig, banner: String, auth: ui::Ui) {
     HeadMain {
         slots: slots,
         srv: std::http::Server {
-            host: "0.0.0.0",
+            host: dna::listen_host(),
             port: cfg.port,
             ready_signal: banner,
             handler: Head { cfg: cfg, slots: slots, auth: auth },

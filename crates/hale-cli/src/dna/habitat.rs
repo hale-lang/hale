@@ -1801,6 +1801,14 @@ fn ensure_profile_head(genome: &Path, backends: &str, name: &str, face_url: &str
     Ok(())
 }
 
+/// The address the habitat declares its person-facing listeners on: the
+/// loopback for a local habitat. The one knob for it; the face service's
+/// bind (`HALE_DNA_LISTEN_HOST`) and, on macOS, its published ports follow
+/// it.
+fn habitat_listen_host() -> &'static str {
+    "127.0.0.1"
+}
+
 /// Renders the habitat's `body` and `face` services into its allocation's
 /// `compose.yaml` and `ports.yaml` (alongside the embedded `Dockerfile` and
 /// `hale.pin`), brings them up with `docker compose up -d`, and waits on
@@ -1868,6 +1876,15 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
 
     let is_macos = cfg!(target_os = "macos");
+    let declared = habitat_listen_host();
+    // The address the face's person-facing listeners (the face, the head,
+    // the OIDC stub) bind, `HALE_DNA_LISTEN_HOST`. On the host's network
+    // (Linux) it is the habitat's declared address itself. On the
+    // project's network (macOS) they bind every interface of the
+    // container, which is safe only because compose publishes their ports
+    // on the declared address alone (`ports.yaml` below), never on the
+    // host's other interfaces.
+    let face_listen = if is_macos { "0.0.0.0" } else { declared };
     let net_or_hosts = if is_macos {
         "    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n".to_string()
     } else {
@@ -1926,7 +1943,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
@@ -1956,7 +1973,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         let mut p = format!("{base_ports}\n# habitat-body-and-face\n  face:\n    ports:\n");
         for offset in 0..HEAD_BLOCK {
             let port = base + offset;
-            p.push_str(&format!("      - \"127.0.0.1:{port}:{port}\"\n"));
+            p.push_str(&format!("      - \"{declared}:{port}:{port}\"\n"));
         }
         p
     } else if base_ports.trim() == "services:" {

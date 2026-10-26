@@ -93,6 +93,13 @@ the machine's loopback is dialled there. A listener in a service's own
 container (the face's head and its API child, the OIDC stub) is dialled at
 `127.0.0.1` in both.
 
+Nothing the habitat runs binds every interface of the host. The listeners a
+person reaches, the face, the head and the OIDC stub, bind the address the
+habitat declares (`127.0.0.1` for a local habitat), handed to the `face`
+service as `HALE_DNA_LISTEN_HOST`; the head's API child binds `127.0.0.1`.
+On macOS they bind `0.0.0.0` inside the `face` container, on the project's
+network, and compose publishes their ports on the declared address alone.
+
 `body` and `face` mount the host's docker socket because the habitat is the
 compose provider from inside its containers: `body` brings up, restarts,
 observes and probes the allocations of every organism the habitat carries

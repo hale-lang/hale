@@ -307,7 +307,7 @@ locus Face {
 fn serve_face(port: Int, web: assets::WebAssets, head_port: Int) {
     FaceMain {
         srv: std::http::Server {
-            host: "0.0.0.0",
+            host: dna::listen_host(),
             port: port,
             ready_signal: "hale dna face: http://127.0.0.1:" + to_string(port) + "/",
             handler: Face { web: web, head_port: head_port },
