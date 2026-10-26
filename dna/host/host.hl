@@ -546,6 +546,24 @@ fn build_cache_keep(entry: String, work: String, cache: String) {
 // The outcome of a seed build: the binary's path, or "" and why not.
 type SeedBuild { bin: String = ""; why: String = ""; }
 
+// Why `hale build <seed_dir>` failed, as the build said it: its exit
+// status and the last lines of its stderr (an operator reads the cause in
+// the body's log, not only that it failed). A build killed by a signal
+// (the kernel's OOM killer, a supervisor) says nothing itself: its status
+// says so.
+fn build_failure(seed_dir: String, b: dna::RunResult) -> String {
+    let said = dna::trim_nl(
+        dna::run_tool("sh\n-c\nprintf '%s' \"$1\" | tail -n 20\nsh\n" + b.stderr).stdout,
+    );
+    let status = if b.code > 128 && b.code < 160 {
+        "killed by signal " + to_string(b.code - 128)
+    } else {
+        "exit " + to_string(b.code)
+    };
+    return "`hale build " + seed_dir + "` failed (" + status + ")"
+        + (if len(said) > 0 { ":\n" + said } else { ", and said nothing" });
+}
+
 // A seed is built ONCE per content fingerprint (see `build_cache_dir`
 // above): every start and every restart of an organism whose sources
 // did not move re-emitted the IR for the whole vendored core, 3.8s of
@@ -569,7 +587,7 @@ fn build_seed_at(hale: String, root: String, seed_dir: String, cache: String) ->
         let bin = root + "/.hale/dna/build" + (if rel == "." { "" } else { "/" + rel }) + "/"
             + name;
         let b = dna::run_tool(hale + "\nbuild\n" + seed_dir + "\n-o\n" + bin);
-        if b.code != 0 { return SeedBuild { why: "`hale build " + seed_dir + "` failed" }; }
+        if b.code != 0 { return SeedBuild { why: build_failure(seed_dir, b) }; }
         if !std::io::fs::file_exists(bin) { return SeedBuild { why: "no binary at " + bin }; }
         return SeedBuild { bin: bin };
     }
@@ -582,7 +600,13 @@ fn build_seed_at(hale: String, root: String, seed_dir: String, cache: String) ->
     let b = dna::run_tool(hale + "\nbuild\n" + seed_dir + "\n-o\n" + work + "/" + name);
     if b.code != 0 || !std::io::fs::file_exists(work + "/" + name) {
         dna::run_tool("rm\n-rf\n" + work);
-        return SeedBuild { why: "`hale build " + seed_dir + "` failed" };
+        return SeedBuild {
+            why: if b.code != 0 {
+                build_failure(seed_dir, b)
+            } else {
+                "no binary at " + work + "/" + name
+            },
+        };
     }
     build_cache_keep(entry, work, cache);
     if !std::io::fs::file_exists(hit) { return SeedBuild { why: "no binary at " + hit }; }
@@ -1594,6 +1618,7 @@ main locus Host {
     fn quit(code: Int) {
         self.stop_started();
         self.stop_fence();
+        self.give_back("exit " + to_string(code));
         std::process::exit(code);
     }
     fn stop_body(code: Int) {
@@ -1604,7 +1629,33 @@ main locus Host {
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
+        self.give_back("exit " + to_string(code));
         std::process::exit(code);
+    }
+    // The body lease given back as this node ends, its organization and
+    // what it started already gone: every exit of a node that holds it,
+    // not only a drain, so a node that cannot run (a genome that does not
+    // build) leaves no lease behind for each start its supervisor makes.
+    // A lease this node no longer holds (fenced, taken over) is not
+    // touched: the release is a compare-and-swap on its token.
+    fn give_back(why: String) {
+        if self.lease.token <= 0 { return; }
+        if body_release(self.root, self.lease, self.memory) {
+            let released = append_as(
+                self.root,
+                "body.released",
+                self.holder,
+                "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\", \"why\": "
+                    + quote(why) + owner_json(self.root) + "}",
+                "host",
+                self.memory,
+            );
+            let s = sync_record(self.root, self.memory);
+            self.say(
+                "body lease given back (token " + to_string(self.lease.token) + ", " + why + ")",
+            );
+        }
+        self.lease = BodyLease { };
     }
     fn seed_dir() -> String {
         if self.seed == "." || self.seed == "" { return self.root; }

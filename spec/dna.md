@@ -1465,7 +1465,13 @@ sync.
 - **Stopping.** A node is its program's `main locus`, and SIGTERM
   drains it (GH #1039): its supervision reads `draining`, stops the
   organization (which drains the same way), gives the lease back and
-  ends. `hale dna run` and `dev` give the node a 30 s grace for it
+  ends. A node that ends on its own, as a genome that does not build
+  ends it, gives the lease back the same way (`body.released {why:
+  "exit <code>"}`) once what it started is gone, so a supervisor that
+  starts it again does not leave a lease behind for each start; a lease
+  it no longer holds is not touched (the release is a compare-and-swap
+  on its token). A seed build that fails says why: its exit status (or
+  the signal that ended it) and the last lines of its stderr. `hale dna run` and `dev` give the node a 30 s grace for it
   (`LOTUS_DRAIN_GRACE_MS`, unless the environment already sets one).
   The core imports no NATS, because a program holding pond's
   connection drains on SIGTERM: an API that imports the core keeps the
