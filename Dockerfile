@@ -18,6 +18,17 @@
 # that carries llvm-18/clang-18 in apt, and it matches the `ubuntu-latest`
 # runner the CI builds + tests on (tests.yml / release.yml). Debian
 # bookworm ships LLVM 14-16 only, so it can't build or run this.
+#
+# Where `hale` comes from is HALE_FROM: `source` (the default: the builder
+# stage compiles it, for `hale habitat image build`, a habitat compose's
+# `build:` and the published image) or `artifact` (a hale built already,
+# CI's: the build context is a directory holding exactly `hale` and
+# `libhale_ts_shim.a` from `cargo build --release --workspace`, and nothing
+# is compiled here). An artifact must have been built against this base's
+# glibc or an older one (CI builds on the ubuntu-24.04 runner); a
+# `dynamic-llvm` build's libLLVM-18.so.1 is `libllvm18`, which clang-18
+# brings. BuildKit builds only the stages the chosen one needs.
+ARG HALE_FROM=source
 
 # ---- builder: full LLVM-18 dev to compile the compiler ----
 FROM ubuntu:24.04 AS builder
@@ -44,7 +55,7 @@ COPY . .
 RUN cargo build --release --workspace
 
 # ---- runtime: NO llvm dev libs; LLVM is statically linked into hale ----
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04 AS runtime-base
 
 # clang-18 compiles the embedded C runtime + links programs; libc6-dev
 # supplies the headers/crt objects clang needs at link time. libssl-dev is
@@ -70,8 +81,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Both on PATH so std::env::current_exe finds the sibling .a.
+FROM runtime-base AS hale-source
 COPY --from=builder /src/target/release/hale              /usr/local/bin/hale
 COPY --from=builder /src/target/release/libhale_ts_shim.a /usr/local/bin/libhale_ts_shim.a
+
+# A hale built already: refused here when the base cannot run it (a newer
+# glibc, a shared library it lacks).
+FROM runtime-base AS hale-artifact
+COPY hale libhale_ts_shim.a /usr/local/bin/
+RUN if ldd /usr/local/bin/hale | grep -q 'not found'; then ldd /usr/local/bin/hale; exit 1; fi \
+    && hale --version
+
+FROM hale-${HALE_FROM} AS runtime
 
 RUN printf '#!/bin/sh\nuid="$(id -u)"\nif [ "$uid" != "0" ]; then\n  grep -v "^[^:]*:[^:]*:$uid:" /etc/passwd > /tmp/.passwd.$$ 2>/dev/null && cat /tmp/.passwd.$$ > /etc/passwd 2>/dev/null; rm -f /tmp/.passwd.$$\n  printf "%%s:x:%%s:%%s::%%s:/bin/sh\\n" "${USER:-hale}" "$uid" "$(id -g)" "${HOME:-/tmp}" >> /etc/passwd 2>/dev/null || true\nfi\nexec hale "$@"\n' > /usr/local/bin/hale-entrypoint \
     && chmod +x /usr/local/bin/hale-entrypoint

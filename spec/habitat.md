@@ -68,9 +68,11 @@ habitat's allocation directory (`allocations/<key>/`), building the image
 from `https://github.com/hale-lang/hale.git#<pin>` unless `--image <tag>` or
 `HALE_HABITAT_IMAGE=<tag>` (flag over environment) names an existing local
 image (`hale habitat image build [<checkout>]` builds it once from a local
-checkout). Both services mount the habitat directory, the local vault
-directory and the host's docker socket, with the head's HTTP surface and the
-face published on their loopback ports. It applies a render with `docker
+checkout; the `Dockerfile`'s `HALE_FROM=artifact` packages a `hale` and
+`libhale_ts_shim.a` built already instead, as CI does). Both services mount
+the habitat directory, the local vault directory and the host's docker
+socket, with the head's HTTP surface and the face published on their
+loopback ports. It applies a render with `docker
 compose -p <project> --project-directory <dir> -f <file>… up -d --wait
 [<service>…]`, with `COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat
 brings up, the habitat's own and each tenant's, is brought up this way. It
