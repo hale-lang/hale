@@ -39,7 +39,8 @@ fn forgejo_port() -> Int {
     return port;
 }
 
-// The habitat's Forgejo, as its API and its repositories are reached.
+// The habitat's Forgejo, where it is published on this machine: the address
+// its rows record; a caller dials it through `reach_url`.
 fn forgejo_address() -> String { return "http://127.0.0.1:" + to_string(forgejo_port()); }
 
 fn forgejo_compose_text(port: Int) -> String {
@@ -117,7 +118,7 @@ locus ForgejoApi {
     params { address: String = ""; token_slot: String = ""; }
     @effects(is: { secret_use })
     fn call(method: String, path: String, body: String) -> ForgejoReply {
-        let u = std::http::parse_url(self.address + "/api/v1" + path) or {
+        let u = std::http::parse_url(reach_url(self.address) + "/api/v1" + path) or {
             return ForgejoReply { why: "not a forge address: " + self.address };
         };
         let r = std::http::request(std::http::ClientRequest {
@@ -202,7 +203,7 @@ locus ForgejoForge {
     fn name() -> String { return "forgejo " + self.repo + " at " + self.address; }
     @effects(is: { secret_use })
     fn call(method: String, path: String, body: String) -> ForgejoReply {
-        let u = std::http::parse_url(self.address + "/api/v1" + path) or {
+        let u = std::http::parse_url(reach_url(self.address) + "/api/v1" + path) or {
             return ForgejoReply { why: "not a forge address: " + self.address };
         };
         let r = std::http::request(std::http::ClientRequest {

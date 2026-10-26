@@ -1512,6 +1512,7 @@ fn serve_with_people(
     let socket = head_socket(root);
     if mode == "oidc" {
         let auth = oidc_ui(record, port, "hale dna api");
+        let token = launch_token(root + "/.hale/dna");
         Head {
             root: root,
             socket: socket,
@@ -1531,7 +1532,7 @@ fn serve_with_people(
                 },
             },
             http_port: commands_port(),
-            bearer: OidcBearer { auth: oidc_ui(record, port, "hale dna api") },
+            bearer: OidcBearer { auth: oidc_ui(record, port, "hale dna api"), token: token },
             served: served_socket(socket),
             srv: std::http::Server {
                 host: "127.0.0.1",

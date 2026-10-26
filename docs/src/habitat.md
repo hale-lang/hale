@@ -26,7 +26,7 @@ Unlike an application organism that supervises a user-written application heart,
 
 - **Fixed Genome and Law:** The habitat's genome is embedded in the `hale` binary with fixed positions (`placement`, `backends`, `identity`, `admission` from the `habitat` nursery pack) and the `standard` nursery pack as its law.
 - **Root Bootstrap (`hale habitat up`):** The habitat is the sole organism born without a parent. Running `hale habitat up` supports two profiles:
-  - `local` (built today): Provisions a long-lived Docker Compose project (`hale-habitat-local-<hash>`) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, starts the habitat's own head and browser face, and supervises the habitat body via a `systemd --user` service (or in-process with `--foreground`). By default (`--backends own`), it manages its own Postgres, NATS, and Prometheus containers; with `--backends operator`, it adopts the external servers named by `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER`.
+  - `local` (built today): Provisions a long-lived Docker Compose project (`hale-habitat-local-<hash>`) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, and starts the habitat's backing services alongside its own `body` (`hale dna dev`) and browser `face` (`hale dna head`) as services of that Compose project (built from the embedded `Dockerfile` and `hale.pin`, or from a prebuilt local image via `--image <tag>` / `HALE_HABITAT_IMAGE` and `hale habitat image build`). By default (`--backends own`), it manages its own Postgres, NATS, Prometheus, and Forgejo containers; with `--backends operator`, it adopts the external servers named by `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER`. The `body` and `face` containers mount the host's Docker socket so the habitat can run and probe every organism's services; that socket is root on the host, so a habitat is trusted as the machine's administrator is.
   - `hosted` (roadmap): Connects to an existing platform's managed Postgres, NATS, Vault, and OIDC identity provider.
 - **Child Birth via `hale habitat graft`:** Every other organism is born as a child of the habitat via `hale habitat graft`. During a graft:
   - The child's `record.genesis` row records the habitat's record identity as its parent.
@@ -46,7 +46,7 @@ In habitat commands, a **host** always refers to a physical or virtual machine w
 
 | Provider / Verb | Behavior |
 | --- | --- |
-| **`compose` provider (`local` profile)** | Produces the `local` host (advertising `compose`, plus `systemd-user` when user systemd is available) and runs all habitat and child organism allocations (`memory-<id>`, `nerves-<id>`, `senses-<id>`) on the local machine. |
+| **`compose` provider (`local` profile)** | Produces the `local` host (advertising `compose`) and runs all habitat and child organism allocations (`memory-<id>`, `nerves-<id>`, `senses-<id>`, `forge`, and the habitat's `body` and `face`) as Docker Compose services on the local machine. |
 | `hale habitat host add <name> [--user <u>] [--port <n>]` | Probes a LAN machine over SSH using the habitat's vault-held SSH keypair, pins the first-seen host key in the record (refusing any subsequent host-key mismatch), prints the habitat's public key line to append to `~/.ssh/authorized_keys` on `<name>`, and marks the host `pending-key`. |
 | `hale habitat host probe <name>` | Re-probes `<name>` over SSH. Once `~/.ssh/authorized_keys` is updated, transitions the host from `pending-key` to `ready` and records its capabilities (`docker compose`, `systemd-user`, OS, and CPU architecture). |
 | `hale habitat host remove <name> [--plan]` | Removes a registered host from the habitat record, planned first: on a host with allocations the plan lists each one and what stops or is deleted there, and the removal waits for the host's name typed back at a terminal (`--plan` prints the plan and exits). |
@@ -90,7 +90,7 @@ hale habitat up
 hale habitat status
 ```
 
-`hale habitat up` initializes the root habitat organism (if not already initialized), starts its Postgres (`memory`), NATS JetStream (`nerves`), and Prometheus (`senses`) containers under a single Docker Compose project, registers the `local` host, and starts the habitat body as a `systemd --user` service (pass `--foreground` to run in the foreground instead). `status` prints the genome, body status, active allocations, and operator face URL:
+`hale habitat up` initializes the root habitat organism (if not already initialized), starts its Postgres (`memory`), NATS JetStream (`nerves`), Prometheus (`senses`), and Forgejo (`forge`) containers alongside the habitat's `body` and `face` containers under a single Docker Compose project, registers the `local` host, and records the head's URL on the profile row and in `head.url` (override on any `hale habitat` or `hale dna` verb with `--head <url>` or `HALE_DNA_HEAD_URL`). `status` prints the genome, body status, active allocations, and operator face URL:
 
 ```text
 face    http://127.0.0.1:<port>/ (up, ...)
@@ -305,7 +305,7 @@ Financial operations follow four structural rules:
 | **Deliberate cross-record publication (`connect` & `handoff`)** | **Built:** `hale dna connect` and `hale dna handoff` ([Memory and the record](./dna/memory.md)) |
 | **Sealed protected evidence (`customer`, `confidential`)** | **Built:** `hale dna receipt` encrypted in Postgres memory ([Memory and the record](./dna/memory.md)) |
 | **Deployment profiles (`local`, `remote-body`)** | **Built:** `hale habitat graft --profile local\|remote-body` and `hale dna profile` ([Getting started](./dna/getting-started.md)) |
-| **Root habitat organism (`hale habitat up`, `status`, `down`)** | **Built** for the `local` profile (`systemd --user` or `--foreground`); `hosted` profile is **not built** |
+| **Root habitat organism (`hale habitat up`, `status`, `down`)** | **Built** for the `local` profile (Docker Compose `body` and `face` services); `hosted` profile is **not built** |
 | **Habitat child birth & role allocation (`hale habitat graft`)** | **Built:** Allocates `[dna] needs` (`memory`, `nerves`, `senses`, heart `database`), links parent genesis, and proposes `standard` pack |
 | **Habitat standard & operator browser face (`/index`, `/app/`)** | **Built:** Started automatically by `hale habitat up` ([The head and the face](./dna/head.md)) |
 | **Hosts, `compose` provider, and `ssh` host registration** | **Built:** `compose` provider places on `local`; `hale habitat host add\|probe\|remove` registers LAN hosts over SSH and placing allocations on them is **built** (`hale habitat place`, `apply`, `graft --host`) |

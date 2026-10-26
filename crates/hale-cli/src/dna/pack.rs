@@ -95,6 +95,101 @@ fn index_of(text: &str, what: &str) -> Result<(Vec<Entry>, Vec<Sapling>), String
     Ok((idx.pack, idx.sapling))
 }
 
+fn stage_key(s: &str) -> String {
+    openssl::sha::sha256(s.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+pub(super) fn staged_nursery_dir(source: &str) -> PathBuf {
+    PathBuf::from(super::local_habitat_dir()).join("nurseries").join(stage_key(source))
+}
+
+pub(super) fn staged_repo_dir(repo: &str) -> PathBuf {
+    PathBuf::from(super::local_habitat_dir()).join("nurseries").join("repos").join(stage_key(repo))
+}
+
+fn relative_pack_path(path: &str) -> Result<&Path, String> {
+    let p = Path::new(path);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "nursery.toml: pack path `{path}` must stay under the nursery root"
+        ));
+    }
+    Ok(p)
+}
+
+fn stage_nursery_into(root: &Path, entries: &[Entry], hab: &Path, dst: &Path) -> Result<(), String> {
+    let _ = fs::remove_dir_all(dst);
+    fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    fs::copy(root.join("nursery.toml"), dst.join("nursery.toml"))
+        .map_err(|e| format!("{}: {e}", dst.join("nursery.toml").display()))?;
+    for e in entries {
+        let rel = relative_pack_path(&e.path)?;
+        let src = root.join(rel);
+        if src.starts_with(hab) || src.starts_with(dst) {
+            continue;
+        }
+        if src.is_file() {
+            let target = dst.join(rel);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+            }
+            fs::copy(&src, &target).map_err(|err| format!("{}: {err}", target.display()))?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn stage_local_repo(repo: &str) {
+    let hab = PathBuf::from(super::local_habitat_dir());
+    if !hab.is_dir() || repo.starts_with("toolchain:") {
+        return;
+    }
+    let hab = hab.canonicalize().unwrap_or(hab);
+    let src = Path::new(repo);
+    if !src.exists() || src.starts_with(&hab) {
+        return;
+    }
+    let dst = staged_repo_dir(repo);
+    let _ = fs::remove_dir_all(&dst);
+    if let Some(parent) = dst.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = Command::new("git")
+        .args(["clone", "-q", "--mirror", repo])
+        .arg(&dst)
+        .output();
+}
+
+fn stage_local_nursery(
+    from: &str,
+    root: &Path,
+    entries: &[Entry],
+    saplings: &[Sapling],
+) -> Result<(), String> {
+    let hab = PathBuf::from(super::local_habitat_dir());
+    if !hab.is_dir() {
+        return Ok(());
+    }
+    let hab = hab.canonicalize().unwrap_or(hab);
+    if root.starts_with(&hab) {
+        return Ok(());
+    }
+    let canon = root.display().to_string();
+    let dst = staged_nursery_dir(&canon);
+    stage_nursery_into(root, entries, &hab, &dst)?;
+    if from != canon {
+        let alias = staged_nursery_dir(from);
+        stage_nursery_into(root, entries, &hab, &alias)?;
+    }
+    for s in saplings {
+        stage_local_repo(&s.repo);
+    }
+    Ok(())
+}
+
 /// The nursery `--from` names, or the toolchain's.
 pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let Some(from) = from else {
@@ -111,7 +206,14 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
         let root = local.canonicalize().map_err(|e| format!("{from}: {e}"))?;
         let text = fs::read_to_string(root.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
         let (entries, saplings) = index_of(&text, from)?;
+        stage_local_nursery(from, &root, &entries, &saplings)?;
         return Ok(Nursery { entries, saplings, source: root.display().to_string(), root: Some(root) });
+    }
+    let staged = staged_nursery_dir(from);
+    if staged.is_dir() {
+        let text = fs::read_to_string(staged.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
+        let (entries, saplings) = index_of(&text, from)?;
+        return Ok(Nursery { entries, saplings, source: from.to_string(), root: Some(staged) });
     }
     // a git repository: cloned once into the cache, fetched, and read at
     // the revision named (the default branch's head without one)
@@ -406,6 +508,26 @@ mod tests {
         assert!(v.digest.starts_with("sha256:") && v.digest.len() == 71, "{}", v.digest);
         assert!(v.packs.iter().all(|p| n.entries.iter().any(|e| &e.name == p)), "its packs are the nursery's");
         assert!(index_of("[[sapling]]\nname = \"a/b\"\nrepo = \"r\"\nrevision = \"v\"\ndigest = \"sha256:x\"\n", "t").is_err(), "a malformed sapling is refused");
+    }
+
+    #[test]
+    fn staging_a_nursery_with_a_nested_habitat_copies_only_declared_packs() {
+        let dir = std::env::temp_dir().join(format!("hale_nursery_stage_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("packs")).unwrap();
+        let hab = dir.join(".habitat");
+        let dst = hab.join("nurseries").join("abc");
+        fs::create_dir_all(&hab).unwrap();
+        fs::write(dir.join("nursery.toml"), "[[pack]]\nname = \"ops\"\nversion = \"1\"\npath = \"packs/ops.pack\"\n").unwrap();
+        fs::write(dir.join("packs/ops.pack"), "open ops/dev | Decides: ops.\n").unwrap();
+        fs::write(hab.join("sentinel"), "do not copy").unwrap();
+        let (entries, _) = index_of(&fs::read_to_string(dir.join("nursery.toml")).unwrap(), "t").unwrap();
+        stage_nursery_into(&dir, &entries, &hab, &dst).unwrap();
+        assert!(dst.join("nursery.toml").is_file());
+        assert!(dst.join("packs/ops.pack").is_file());
+        assert!(!dst.join(".habitat").exists());
+        assert!(relative_pack_path("../outside.pack").is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

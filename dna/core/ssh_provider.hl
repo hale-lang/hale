@@ -117,6 +117,10 @@ fn habitat_public_key(root: String) -> String {
 fn ssh_host_key(address: String, port: Int) -> String {
     let first = ssh_keyscan(address, port);
     if len(first) > 0 { return first; }
+    if address == "localhost" {
+        let lo = ssh_keyscan("127.0.0.1", port);
+        if len(lo) > 0 { return lo; }
+    }
     let resolved = run_tool("getent\nahosts\n" + address);
     let mut rest = resolved.stdout;
     let mut tried = "";

@@ -15,7 +15,7 @@ Every DNA component maps to a specific software service or source module in your
 
 | Component | Infrastructure / Role | Source / Habitat Location | Chapter |
 | --- | --- | --- | --- |
-| **Habitat** | Local or hosted control plane (Docker Compose + systemd units) that provisions and supervises organisms | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local` | [The Habitat](../habitat.md) |
+| **Habitat** | Local or hosted control plane (Docker Compose) that provisions and supervises organisms | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local` | [The Habitat](../habitat.md) |
 | **Genome** | Git repository containing application source, organization config (`dna/org/`), and vendored core (`vendor/dna`); nodes pull from the forge's default branch | Repository root; host Git wrapper in `dna/host/genome.hl` | [Shaping and Governing](./shaping.md) |
 | **Record** | Append-only audit log (`record_rows` table in PostgreSQL schema `dna_<identity>`), storing one signed row per governance or mutation event | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the Record](./memory.md) |
 | **Memory** | Operational PostgreSQL state store (schema `dna_<identity>`, with `owner`, `spine`, and `head` DB roles) holding the daily `ledger`, organizational `graph`, and sealed `receipt` evidence | `dna/core/memory_spine.hl`, `dna/host/memory.hl`; habitat service `memory-<id>` | [Memory and the Record](./memory.md) |

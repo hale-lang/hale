@@ -74,7 +74,7 @@ Because the local habitat is itself a DNA organism, `hale habitat up` starts the
 ```sh
 $ hale habitat status
 ...
-face    http://127.0.0.1:8864/ (up, systemd user unit ...-face.service)
+face    http://127.0.0.1:8864/ (up, compose service face)
 ```
 
 - **Habitat Index (`/index`):** Lists every organism grafted from the habitat under **Organisms**, showing its name, state (`up` while its face responds, `grafted` otherwise), face URL, and head URL (each organism receives a dedicated block of loopback ports stored in `dna.head.url` at graft time).

@@ -208,3 +208,59 @@ fn placed_address(key: String, role: String) -> String {
     if len(port) == 0 || len(p.address) == 0 { return ""; }
     return p.address + ":" + port;
 }
+
+const LOOPBACK_HOST_ENV: String = "HALE_DNA_LOOPBACK_HOST";
+
+// The host this process reaches this machine's loopback at. An allocation
+// published on this machine is recorded where it is published,
+// `127.0.0.1:<port>`, and that is its address on the admin machine and in a
+// habitat service on the host's network (Linux, `network_mode: host`). A
+// habitat service on its compose project's network (macOS, where a
+// container cannot share the host's network) reaches the same port at the
+// host the compose render names, `HALE_DNA_LOOPBACK_HOST`
+// (`host.docker.internal`). A listener in the process's own container is
+// dialled at `127.0.0.1` always, never through this.
+fn loopback_host() -> String {
+    let named = std::str::trim(env_or_empty(LOOPBACK_HOST_ENV));
+    return if len(named) > 0 { named } else { "127.0.0.1" };
+}
+
+const LISTEN_HOST_ENV: String = "HALE_DNA_LISTEN_HOST";
+
+// The address a listener a person reaches (the face, the head) binds:
+// `HALE_DNA_LISTEN_HOST`, which the habitat's compose render sets from the
+// address the habitat declares, else the loopback. Nothing binds every
+// interface unless the render says so (inside a container on its
+// project's network, published on the declared address alone).
+fn listen_host() -> String {
+    let named = std::str::trim(env_or_empty(LISTEN_HOST_ENV));
+    return if len(named) > 0 { named } else { "127.0.0.1" };
+}
+
+// `host` as this process reaches it: this machine's loopback (`127.0.0.1`,
+// `localhost`) is the host `HALE_DNA_LOOPBACK_HOST` names when it names
+// one; any other host, or any host where it names none, is itself.
+fn reach_host(host: String) -> String {
+    let named = std::str::trim(env_or_empty(LOOPBACK_HOST_ENV));
+    if len(named) == 0 || (host != "127.0.0.1" && host != "localhost") { return host; }
+    return named;
+}
+
+// A recorded `scheme://[user@]host[:port][/path]` as this process reaches
+// it: its host through `reach_host`, the rest as recorded.
+fn reach_url(url: String) -> String {
+    let sep = std::str::index_of(url, "://");
+    if sep < 0 { return url; }
+    let lead = url[0..(sep + 3)];
+    let rest = url[(sep + 3)..len(url)];
+    let slash = std::str::index_of(rest, "/");
+    let authority = if slash < 0 { rest } else { rest[0..slash] };
+    let tail = if slash < 0 { "" } else { rest[slash..len(rest)] };
+    let at = std::str::index_of(authority, "@");
+    let user = if at < 0 { "" } else { authority[0..(at + 1)] };
+    let hostport = if at < 0 { authority } else { authority[(at + 1)..len(authority)] };
+    let colon = std::str::index_of(hostport, ":");
+    let host = if colon < 0 { hostport } else { hostport[0..colon] };
+    let port = if colon < 0 { "" } else { hostport[colon..len(hostport)] };
+    return lead + user + reach_host(host) + port + tail;
+}

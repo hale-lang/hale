@@ -254,11 +254,28 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
         } else {
             out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the tree its graft checked", "kept"));
         }
-    } else if !store.join(".git").is_dir() {
-        std::fs::create_dir_all(store.parent().unwrap_or(&store)).map_err(|e| format!("create {}: {e}", store.display()))?;
-        git(&["clone", "-q", "--no-checkout", &repo, &store.to_string_lossy()], None).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
-    } else if !begun {
-        git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
+    } else {
+        let fetch_repo = if !Path::new(&repo).exists() && crate::dna::pack::staged_repo_dir(&repo).is_dir() {
+            crate::dna::pack::staged_repo_dir(&repo).display().to_string()
+        } else {
+            repo.clone()
+        };
+        if !store.join(".git").is_dir() {
+            std::fs::create_dir_all(store.parent().unwrap_or(&store)).map_err(|e| format!("create {}: {e}", store.display()))?;
+            git(&["clone", "-q", "--no-checkout", &fetch_repo, &store.to_string_lossy()], None).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
+            if fetch_repo != repo {
+                let _ = git(&["remote", "set-url", "origin", &repo], Some(&store));
+            }
+        } else if !begun {
+            if fetch_repo != repo {
+                let _ = git(&["remote", "set-url", "origin", &fetch_repo], Some(&store));
+            }
+            let fetched = git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"));
+            if fetch_repo != repo {
+                let _ = git(&["remote", "set-url", "origin", &repo], Some(&store));
+            }
+            fetched?;
+        }
     }
     // the digest is checked at every graft that has not begun; one that
     // began goes on at the revision it was checked at (a tree the toolchain
@@ -370,8 +387,21 @@ fn applied_lines(v: &serde_json::Value) -> Vec<String> {
 /// followed to its end: what the graft said (`said`) and whether it ended
 /// well (`ok`, else `code` and `why`); `None` when no head is up.
 pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_json::Value> {
-    if !head_socket().is_some_and(|p| p.exists()) {
+    if !super::head_is_up() {
         return None;
+    }
+    for src in trusted_nurseries() {
+        if Path::new(&src).is_dir() {
+            let _ = crate::dna::pack::nursery(Some(&src));
+        }
+    }
+    if let Some(pin) = pinned(name) {
+        if let Some(src) = pin["nursery"].as_str().filter(|s| *s != "toolchain" && Path::new(s).is_dir()) {
+            let _ = crate::dna::pack::nursery(Some(src));
+        }
+        if let Some(repo) = pin["repo"].as_str() {
+            crate::dna::pack::stage_local_repo(repo);
+        }
     }
     let v = match head_call("Commands::graft", serde_json::json!({ "sapling": name, "host": host, "library": library })) {
         Ok(v) => v,
@@ -379,13 +409,38 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     };
     let Some(log) = v["log"].as_str().filter(|l| !l.is_empty()).map(PathBuf::from) else { return Some(v) };
     // the graft runs on in the head's keeping: its log, until its exit
+    super::progress(&format!("grafting `{name}`"));
+    let live = std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let mut streamed = 0usize;
     let exit = log.with_extension("log.exit");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
-    while !exit.is_file() && std::time::Instant::now() < deadline {
+    let mut code = String::new();
+    while std::time::Instant::now() < deadline {
+        if live {
+            if let Ok(s) = std::fs::read_to_string(&log) {
+                if s.len() > streamed && s.is_char_boundary(streamed) {
+                    print!("{}", &s[streamed..]);
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    streamed = s.len();
+                }
+            }
+        }
+        if let Ok(t) = std::fs::read_to_string(&exit) {
+            let trimmed = t.trim();
+            if !trimmed.is_empty() {
+                code = trimmed.to_string();
+                break;
+            }
+        }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    let said = std::fs::read_to_string(&log).unwrap_or_default();
-    let code = std::fs::read_to_string(&exit).ok().map(|t| t.trim().to_string()).unwrap_or_default();
+    let full = std::fs::read_to_string(&log).unwrap_or_default();
+    let said = if streamed <= full.len() && full.is_char_boundary(streamed) {
+        full[streamed..].to_string()
+    } else {
+        full
+    };
     Some(if code == "0" {
         serde_json::json!({ "ok": true, "said": said })
     } else {
@@ -536,38 +591,20 @@ pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
     }
 }
 
-/// The socket the habitat's head serves its commands on, as
-/// `dna/api/main.hl`'s `head_socket` names it for the habitat's record.
-fn head_socket() -> Option<PathBuf> {
-    if let Some(given) = std::env::var("HALE_DNA_RPC_SOCKET").ok().filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(given));
-    }
-    let genome = genome_dir();
-    let id = manifest_pin(&genome.join("hale.toml")).ok().flatten()?;
-    let name = format!("{}.sock", &id[..12.min(id.len())]);
-    let dir = match std::env::var("XDG_RUNTIME_DIR").ok().filter(|v| !v.is_empty()) {
-        Some(r) => format!("{r}/hale/dna"),
-        None => genome.join(".hale/dna").display().to_string(),
-    };
-    // an AF_UNIX path has room for 103 bytes
-    if dir.len() + 1 + name.len() > 103 {
-        let uid = unsafe { libc::getuid() };
-        return Some(PathBuf::from(format!("/tmp/hale-{uid}/{name}")));
-    }
-    Some(PathBuf::from(dir).join(name))
-}
-
-/// One call of the habitat head's surface over its socket: the value it
-/// answered, or why there was none.
+/// One call of the habitat head's surface: the value it answered, or why
+/// there was none.
 pub(super) fn head_call(member: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let socket = head_socket().filter(|p| p.exists()).ok_or("the habitat's head is not up (`hale habitat up` starts it)")?;
-    let line = crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-nursery" })).map_err(|e| format!("the habitat's head did not answer: {e}"))?;
-    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-    if reply["ok"] != serde_json::json!(true) {
-        let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
-        return Err(format!("the habitat's head refused {member}: {why}"));
+    if let Some(socket) = std::env::var("HALE_DNA_RPC_SOCKET").ok().filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.exists()) {
+        let line = crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-nursery" })).map_err(|e| format!("the habitat's head did not answer: {e}"))?;
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        if reply["ok"] != serde_json::json!(true) {
+            let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
+            return Err(format!("the habitat's head refused {member}: {why}"));
+        }
+        return Ok(reply["value"].clone());
     }
-    Ok(reply["value"].clone())
+    let url = super::head_endpoint().ok_or_else(|| "the habitat's head is not up (`hale habitat up` starts it)".to_string())?;
+    super::http_surface_call(&url, member, &payload)
 }
 
 /// `hale habitat nursery add <source> | refresh | list | ratify <sapling>`.
@@ -580,6 +617,9 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                 Ok(p) if p.is_dir() => p.display().to_string(),
                 _ => source.clone(),
             };
+            if Path::new(&source).is_dir() {
+                let _ = crate::dna::pack::nursery(Some(&source));
+            }
             match head_call("Commands::add_nursery", serde_json::json!({ "source": source })) {
                 Ok(v) if v["ok"] == serde_json::json!(true) => {
                     println!("{:<8}{source}: the Board trusts it", "nursery");
@@ -891,7 +931,7 @@ pub(super) fn forge_cmd(args: &[String]) -> std::process::ExitCode {
         eprintln!("{usage}");
         return ExitCode::from(2);
     };
-    if !no_head && head_socket().is_some_and(|p| p.exists()) {
+    if !no_head && super::head_is_up() {
         return match head_call("Commands::allocate_forge", serde_json::json!({ "organism": organism, "provider": provider, "repo": repo, "key_vault": key_vault })) {
             Ok(v) if v["ok"] == serde_json::json!(true) => {
                 println!("{}", v["why"].as_str().unwrap_or(""));

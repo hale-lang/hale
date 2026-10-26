@@ -19,24 +19,25 @@ Most `hale dna` commands accept an optional `[project]` directory path and defau
 The local habitat provisions and manages every organism's infrastructure (Postgres memory, NATS JetStream nerves, and Prometheus senses store) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`.
 
 ```text
-usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator] [--name <name>]
-       hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+usage: hale habitat [--head <url>] up [--no-body] [--image <tag>] [--profile local] [--backends own|operator] [--name <name>]
+       hale habitat image build [<checkout>]
+       hale habitat [--head <url>] graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
-       hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
-       hale habitat place <key>/<role> <host>
-       hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
-       hale habitat model-probe <organism> <mode>.<size>
-       hale habitat apply [<host>] [--fresh]
-       hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
-       hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
-       hale habitat handover [organism]
-       hale habitat host add <name> [--user <user>] [--port <n>]
-       hale habitat host probe <name>
-       hale habitat host remove <name> [--plan]
-       hale habitat organism remove <name> [--plan]
-       hale habitat brief
-       hale habitat status
+       hale habitat [--head <url>] graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
+       hale habitat [--head <url>] place <key>/<role> <host>
+       hale habitat [--head <url>] model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
+       hale habitat [--head <url>] model-probe <organism> <mode>.<size>
+       hale habitat [--head <url>] apply [<host>] [--fresh]
+       hale habitat [--head <url>] nursery add <dir|git-url> | refresh | list | ratify <sapling>
+       hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
+       hale habitat [--head <url>] handover [organism]
+       hale habitat [--head <url>] host add <name> [--user <user>] [--port <n>]
+       hale habitat [--head <url>] host probe <name>
+       hale habitat [--head <url>] host remove <name> [--plan]
+       hale habitat [--head <url>] organism remove <name> [--plan]
+       hale habitat [--head <url>] brief
+       hale habitat [--head <url>] status
        hale habitat down [--forget [--plan]]
        hale habitat migrate [organism]
        hale habitat sweep <root> | --test-vaults [<root>]
@@ -44,7 +45,8 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
 
 | Subcommand | Description |
 | --- | --- |
-| `up` | Initializes the habitat on first run from the embedded genome (the only organism born without a parent; proposes the `habitat` and `standard` nursery packs), brings up all recorded allocations via the `compose` provider, migrates schemas behind the current toolchain, records placement (`local` host, policy, head, and face), and starts the habitat body (as a `systemd --user` unit, or in-process with `--foreground`; `--no-body` provisions without starting the body). `--backends own` (default) provisions Docker Compose services; `--backends operator` adopts `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER`. Idempotent. |
+| `up` | Initializes the habitat on first run from the embedded genome (the only organism born without a parent; proposes the `habitat` and `standard` nursery packs), brings up all recorded allocations via the `compose` provider, migrates schemas behind the current toolchain, records placement (`local` host, policy, head, and face) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its Docker Compose project (built from the embedded `Dockerfile` and `hale.pin`, or from a prebuilt image with `--image <tag>` / `HALE_HABITAT_IMAGE`; `--no-body` provisions without starting `body` or `face`). `--backends own` (default) provisions Docker Compose services; `--backends operator` adopts `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER`. Idempotent. |
+| `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile` (`hale-habitat:<pin>`) and prints the tag on stdout. |
 | `graft <dir>` | Births a new organism as a child of the habitat (`record.genesis` names the habitat record as parent), allocates required roles (`[dna] needs` in `hale.toml`: `memory` and `nerves` always, `senses` unless omitted, plus optional `database` for a Hale heart passed as `HALE_DNA_DATABASE_DSN`), and proposes the `standard` pack (`--no-pack` skips it). Pass `--attach` for an existing application or repository, `--profile remote-body --remote <url> [--body <user@host>]` for a remote body, and `--with <pack> [--set k=v]… [--as <who>]` to plan a nursery pack on top of the initial `holes` Reviews. |
 | `graft <sapling>` | Fetches a pinned sapling by bare name into `<habitat>/saplings/<name>`, verifies its file digest, grafts it as a child of the habitat, proposes its packs (`--set` values forwarded), and records the sapling name, revision, and digest. |
 | `nursery add \| refresh \| list \| ratify` | `add <dir\|git-url>` trusts a nursery (`Commands::add_nursery`). `refresh` re-reads all nurseries (pinning newly seen saplings and filing newer revisions of existing saplings for the Board without moving grafted organisms). `ratify <sapling>` pins a filed revision. `list` displays all trusted nurseries and saplings. |

@@ -34,8 +34,15 @@ import "../operations" as ops;
 import "../ui" as ui;
 
 locus OidcBearer {
-    params { auth: ui::Ui = ui::Ui { }; }
+    params {
+        auth: ui::Ui = ui::Ui { };
+        token: String = "";
+    }
     fn principal(token: String) -> std::api::Principal {
+        if len(self.token) > 0 && token_matches(token, self.token) {
+            let uid = std::process::uid();
+            return std::api::Principal { mode: "bearer", name: "uid:" + to_string(uid), uid: uid };
+        }
         let sub = self.auth.token_subject(token);
         if len(sub) == 0 { return std::api::Principal { mode: "bearer", name: "" }; }
         return std::api::Principal { mode: "bearer", name: "oidc:" + sub };

@@ -432,9 +432,6 @@ locus ComposeProvider {
         }
         let mut offers = "";
         if run_tool("docker\ncompose\nversion").code == 0 { offers = "compose"; }
-        if run_tool("systemctl\n--user\nshow-environment").code == 0 {
-            offers = offers + (if len(offers) > 0 { " " } else { "" }) + "systemd-user";
-        }
         return Host {
             name: host,
             provider: "compose",
@@ -592,7 +589,8 @@ fn containers_state(what: String, seen: String) -> AllocationState {
 }
 
 // An allocation served at a loopback `address` (`http://127.0.0.1:<port>`):
-// up while something accepts connections there.
+// up while something accepts connections there, as this process reaches
+// this machine's loopback (`loopback_host`).
 fn observe_address(address: String) -> AllocationState {
     let at = std::str::index_of(address, "127.0.0.1:");
     if at < 0 { return AllocationState { detail: "no address assigned yet" }; }
@@ -600,7 +598,7 @@ fn observe_address(address: String) -> AllocationState {
     let slash = std::str::index_of(rest, "/");
     let port = std::str::parse_int(if slash < 0 { rest } else { rest[0..slash] }) or 0;
     if port < 1 || port > 65535 { return AllocationState { detail: "no port in " + address }; }
-    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    let fd = std::io::tcp::connect(loopback_host(), port) or - 1;
     if fd < 0 { return AllocationState { detail: "nothing answers at " + address }; }
     std::io::tcp::close_fd(fd);
     return AllocationState { state: "up", detail: "answers at " + address };

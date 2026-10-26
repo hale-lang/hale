@@ -36,16 +36,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
-// Whether `log` comes to say `text` within `secs`.
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
-}
-
 // The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
 fn face_of(status: String) -> String {
     let at = std::str::index_of(status, "face    http://");
@@ -102,11 +92,15 @@ fn last_line(text: String) -> String {
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
-        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY entry.sh /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/docker.sh",
+        "#!/bin/sh\nif [ -z \"$DOCKER_API_VERSION\" ]; then\n  max=\"$(/usr/bin/docker version 2>&1 | sed -n 's/.*Maximum supported API version is \\([0-9.]*\\).*/\\1/p' | head -n 1)\"\n  [ -n \"$max\" ] && export DOCKER_API_VERSION=\"$max\"\nfi\nexec /usr/bin/docker \"$@\"\n",
     ) or discard;
     std::io::fs::write_file(
         dir + "/entry.sh",
-        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nid hale >/dev/null 2>&1 || adduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+        "set -e\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nDOCKER_GID=\"$(stat -c %g /var/run/docker.sock 2>/dev/null || echo \"${DOCKER_GID:-0}\")\"\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nid hale >/dev/null 2>&1 || adduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
     ) or discard;
 }
 
@@ -169,22 +163,21 @@ fn main() {
         );
         return;
     }
-    let socket = endpoint[7..len(endpoint)];
+    let socket = if std::io::fs::file_exists("/proc/version") {
+        endpoint[7..len(endpoint)]
+    } else {
+        "/var/run/docker.sock"
+    };
     let scratch = dna::scratch_root("habitat-placement");
     dna::reap_on_exit(scratch);
     let genome = dna::local_habitat_dir() + "/genome";
 
     // ---- the habitat, up with its head
-    let log = scratch + "/up.log";
-    let started = in_dir(
-        scratch,
-        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
-    );
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup");
     std::test::assert(
-        len(dna::trim_nl(started.stdout)) > 0
-            && logged(log, "body    the habitat's body runs in this process", 600),
-        "the habitat is born and its body runs: " + text_of(log),
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
     );
     let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
     std::test::assert(

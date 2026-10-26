@@ -32,16 +32,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
-// Whether `log` comes to say `text` within `secs`.
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
-}
-
 // The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
 fn face_of(status: String) -> String {
     let at = std::str::index_of(status, "face    http://");
@@ -103,16 +93,11 @@ fn main() {
     let scratch = dna::scratch_root("habitat-operator-face");
     dna::reap_on_exit(scratch);
 
-    let log = scratch + "/up.log";
-    let started = in_dir(
-        scratch,
-        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground --name operator-face >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
-    );
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup\n--name\noperator-face");
     std::test::assert(
-        len(dna::trim_nl(started.stdout)) > 0
-            && logged(log, "body    the habitat's body runs in this process", 600),
-        "the habitat is born and its body runs: " + text_of(log),
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
     );
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     let face = face_of(status);

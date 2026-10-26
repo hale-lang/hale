@@ -423,6 +423,24 @@ jobs:
         # so the archive is a few hundred MB, not ~100MB per test binary.
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      - name: Build the habitat toolchain image
+        # From the hale this job just built, never compiled again inside
+        # docker: the Dockerfile's `artifact` source copies `hale` and
+        # `libhale_ts_shim.a` from a context holding only them. This
+        # runner is the image base's release (ubuntu 24.04), so its glibc
+        # runs there; the image's build refuses a binary it cannot load.
+        run: |
+          set -eux
+          ctx="$RUNNER_TEMP/habitat-image"
+          mkdir -p "$ctx"
+          cp target/release/hale target/release/libhale_ts_shim.a "$ctx/"
+          tag="hale-habitat:ci-${GITHUB_SHA::12}"
+          DOCKER_BUILDKIT=1 docker build --build-arg HALE_FROM=artifact -t "$tag" -f Dockerfile "$ctx"
+          rm -rf "$ctx"
+          printf '%s\n' "$tag" > target/release/habitat-image.tag
+          docker save "$tag" | zstd -T0 -o target/release/habitat-image.tar.zst
+          ls -lh target/release/habitat-image.tar.zst
+
       - &build-archive
         name: cargo nextest archive
         # The test binaries, the binaries they run (`hale`, through

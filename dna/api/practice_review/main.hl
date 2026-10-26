@@ -109,6 +109,7 @@ fn head_up(
     let knowledge_commands = api::LocalKnowledgeCommands { root: root };
     if mode == "oidc" {
         let auth = api::oidc_ui(record, port, "hale dna practice-review api");
+        let token = api::launch_token(root + "/.hale/dna");
         PracticeReviewHead {
             root: root,
             port: port,
@@ -120,6 +121,7 @@ fn head_up(
             http_port: api::commands_port(),
             bearer: api::OidcBearer {
                 auth: api::oidc_ui(record, port, "hale dna practice-review api"),
+                token: token,
             },
             commands: api::Commands {
                 admission: api::CommandAdmission {

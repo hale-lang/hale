@@ -7,7 +7,7 @@
 //! record and memory, its organisms, the vault slots, its Forgejo, its
 //! hosts and what it runs on each over SSH) and this machine's side here
 //! (the body and face to stop, the compose projects and the volumes no
-//! record item names, the habitat's directory, its systemd units, and the
+//! record item names, the habitat's directory, and the
 //! notes an earlier forget kept). Nothing is touched until the person types
 //! the habitat's name back at a terminal; there is no other way to confirm.
 //! An execution that fails stops at that item and says which were done and
@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 
 use super::{
     body_state, docker, face_running, genome_dir, local_habitat_dir, local_habitat_project,
-    name_file, stop_processes, unit_path, Docker, DEFAULT_HABITAT_NAME,
+    memory_volume_exists, name_file, stop_processes, Docker, DEFAULT_HABITAT_NAME,
 };
 use crate::dna::{host_run, manifest_pin};
 
@@ -209,17 +209,24 @@ fn ours(project: &str, remote: &[String]) -> bool {
             .any(|r| project == r || project.starts_with(&format!("{r}-")))
 }
 
+enum Started {
+    Stopped(String),
+    CreatedContainer(String),
+    CreatedNetwork(String),
+}
+
 /// The plan, and the memories started to read it.
 struct Plan {
     items: Vec<Value>,
-    started: Vec<String>,
+    started: Vec<Started>,
 }
 
-/// The memories of the habitat's project that are stopped (a `down` stops
-/// them): the habitat's and each organism's on this machine, started so
-/// their records can be read for the plan, and waited for. Nothing else is
-/// touched; they are stopped again when nothing is removed.
-fn start_memories() -> Vec<String> {
+/// The memories of the habitat's project that are not running (a `down`
+/// stops or removes them): the habitat's and each organism's on this
+/// machine, started so their records can be read for the plan, and waited
+/// for. Nothing else is touched; they are stopped or removed again when
+/// nothing is removed.
+fn start_memories() -> Vec<Started> {
     let project = local_habitat_project();
     let out = listed(&[
         "ps",
@@ -230,22 +237,114 @@ fn start_memories() -> Vec<String> {
         "{{.ID}} {{.State}} {{.Label \"com.docker.compose.service\"}}",
     ])
     .unwrap_or_default();
-    let stopped: Vec<String> = out
-        .lines()
-        .filter_map(|l| {
-            let mut w = l.split(' ');
-            let (id, state, service) = (w.next()?, w.next()?, w.next()?);
-            (state != "running" && service.starts_with("memory-")).then(|| id.to_string())
-        })
-        .collect();
+    let mut running = Vec::new();
+    let mut stopped = Vec::new();
+    for l in out.lines() {
+        let mut w = l.split(' ');
+        let (Some(id), Some(state), Some(service)) = (w.next(), w.next(), w.next()) else {
+            continue;
+        };
+        if !service.starts_with("memory-") {
+            continue;
+        }
+        if state == "running" {
+            running.push(service.to_string());
+        } else {
+            stopped.push((id.to_string(), service.to_string()));
+        }
+    }
     let mut started = Vec::new();
-    for id in stopped {
+    let mut wait_ids = Vec::new();
+    for (id, service) in stopped {
         if let Docker::Answered(_) = docker(&["start", &id]) {
-            started.push(id);
+            running.push(service);
+            wait_ids.push(id.clone());
+            started.push(Started::Stopped(id));
+        }
+    }
+    if let Ok(es) = std::fs::read_dir(PathBuf::from(local_habitat_dir()).join("allocations")) {
+        let prior_nets: Vec<String> = listed(&[
+            "network",
+            "ls",
+            "--filter",
+            &format!("label=com.docker.compose.project={project}"),
+            "--format",
+            "{{.Name}}",
+        ])
+        .unwrap_or_default()
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+        for e in es.flatten() {
+            let dir = e.path();
+            let Some(key) = dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let service = format!("memory-{key}");
+            if running.contains(&service)
+                || !dir.join("compose.yaml").is_file()
+                || !dir.join("ports.yaml").is_file()
+                || !memory_volume_exists(key)
+            {
+                continue;
+            }
+            if Command::new("env")
+                .args([
+                    "COMPOSE_IGNORE_ORPHANS=1",
+                    "docker",
+                    "compose",
+                    "-p",
+                    &project,
+                    "--project-directory",
+                ])
+                .arg(&dir)
+                .arg("-f")
+                .arg(dir.join("compose.yaml"))
+                .arg("-f")
+                .arg(dir.join("ports.yaml"))
+                .args(["up", "-d", "--wait", &service])
+                .output()
+                .is_ok_and(|o| o.status.success())
+            {
+                let ids = listed(&[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("label=com.docker.compose.project={project}"),
+                    "--filter",
+                    &format!("label=com.docker.compose.service={service}"),
+                    "--format",
+                    "{{.ID}}",
+                ])
+                .unwrap_or_default();
+                for id in ids.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                    started.push(Started::CreatedContainer(id.to_string()));
+                }
+            }
+        }
+        if started
+            .iter()
+            .any(|s| matches!(s, Started::CreatedContainer(_)))
+        {
+            let now_nets = listed(&[
+                "network",
+                "ls",
+                "--filter",
+                &format!("label=com.docker.compose.project={project}"),
+                "--format",
+                "{{.Name}}",
+            ])
+            .unwrap_or_default();
+            for net in now_nets.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                if !prior_nets.iter().any(|p| p == net) {
+                    started.push(Started::CreatedNetwork(net.to_string()));
+                }
+            }
         }
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    for id in &started {
+    for id in &wait_ids {
         while std::time::Instant::now() < deadline {
             let health = listed(&[
                 "inspect",
@@ -258,6 +357,25 @@ fn start_memories() -> Vec<String> {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    if !started.is_empty() {
+        let genome = genome_dir();
+        if genome.join("hale.toml").is_file() {
+            let _ = super::super::memory_derive(&genome);
+        }
+        if let Ok(es) = std::fs::read_dir(PathBuf::from(local_habitat_dir()).join("allocations")) {
+            for e in es.flatten() {
+                if let Ok(text) = std::fs::read_to_string(e.path().join("allocation.json")) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                        if let Some(root) = v["root"].as_str().map(Path::new) {
+                            if root != genome && root.join("hale.toml").is_file() {
+                                let _ = super::super::memory_derive(root);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     started
@@ -454,29 +572,6 @@ fn audit() -> Result<Plan, String> {
             70,
         ));
     }
-    let units: Vec<String> = [
-        unit_path(),
-        unit_path().with_file_name(super::face_unit_name()),
-    ]
-    .iter()
-    .filter(|p| p.is_file())
-    .map(|p| p.display().to_string())
-    .collect();
-    if !units.is_empty() {
-        items.push(item(
-            "habitat",
-            "",
-            format!(
-                "its systemd user units, {}: disabled, their files removed",
-                units.join(", ")
-            ),
-            format!("{} file(s)", units.len()),
-            "yes: `hale habitat up` writes them again",
-            "unit-rm",
-            units.join("\n"),
-            70,
-        ));
-    }
 
     // the notes an earlier forget kept
     for n in notes() {
@@ -625,28 +720,6 @@ fn execute_local(i: &Value, name: &str) -> Result<(), String> {
                     remove_all(&e.path())?;
                 }
             }
-            Ok(())
-        }
-        "unit-rm" => {
-            for path in args {
-                let unit = Path::new(path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let _ = Command::new("systemctl")
-                    .args(["--user", "disable", "--now"])
-                    .arg(&unit)
-                    .output();
-                match std::fs::remove_file(path) {
-                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                        return Err(format!("remove {path}: {e}"))
-                    }
-                    _ => {}
-                }
-            }
-            let _ = Command::new("systemctl")
-                .args(["--user", "daemon-reload"])
-                .output();
             Ok(())
         }
         "note-keep" | "unreachable" => {
@@ -826,10 +899,20 @@ fn bound(items: &[Value]) -> Vec<[String; 6]> {
         .collect()
 }
 
-/// The memories started only to read the records, stopped again.
-fn settle(started: &[String]) {
-    for id in started {
-        let _ = docker(&["stop", id]);
+/// The memories started only to read the records, stopped or removed again.
+fn settle(started: &[Started]) {
+    for s in started {
+        match s {
+            Started::Stopped(id) => {
+                let _ = docker(&["stop", id]);
+            }
+            Started::CreatedContainer(id) => {
+                let _ = docker(&["rm", "-f", id]);
+            }
+            Started::CreatedNetwork(net) => {
+                let _ = docker(&["network", "rm", net]);
+            }
+        }
     }
 }
 
@@ -875,7 +958,8 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     // refused when what it would remove changed while they read it
     match audit() {
         Ok(now) if bound(&now.items) == bound(&plan.items) => {}
-        Ok(_) => {
+        Ok(now) => {
+            settle(&now.started);
             settle(&plan.started);
             eprintln!("hale habitat down --forget: what forgetting the habitat would remove changed since its plan was printed (plan_changed); nothing was removed: run it again to plan from what is there now");
             return ExitCode::from(1);

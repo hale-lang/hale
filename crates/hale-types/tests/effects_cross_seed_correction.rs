@@ -200,6 +200,11 @@ fn api() {
     // record's text linear in its size), whose calls the survey reads as
     // pure: two encoders of records whose fields are all non-string
     // scalars did nothing else, and leave the manifest on both sides.
+    // The probes of an allocation's address (`observe_row`, through the
+    // core's `observe_address`) and of an organism's face
+    // (`index_answers`) dial `dna::loopback_host()`, which reads
+    // `HALE_DNA_LOOPBACK_HOST`: both gain `env` through the core, which
+    // only the renames-aware walk sees.
     pinned(
         "api",
         665,
@@ -226,8 +231,9 @@ fn api() {
         habitat_organism_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_organism_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         host_removal_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        index_answers  does={syscall,block,env}
         launch_token  does={syscall,block,alloc,stdio}
-        observe_row  does={syscall,block,alloc}
+        observe_row  does={syscall,block,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
         ",
@@ -251,8 +257,8 @@ fn host() {
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     pinned(
         "host",
-        568,
-        575,
+        570,
+        577,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}

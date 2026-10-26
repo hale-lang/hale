@@ -138,7 +138,8 @@ fn genome_push_url(
         root,
         "-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username=" + user
             + "; echo \"password=$(cat '" + dir + "/token')\"; }; f\npush\n-q\n"
-            + (if force { "-f\n" } else { "" }) + url + "\n" + src + ":refs/heads/" + branch,
+            + (if force { "-f\n" } else { "" }) + dna::reach_url(url) + "\n" + src + ":refs/heads/"
+            + branch,
     );
     dna::run_tool("rm\n-rf\n" + dir);
     if r.code == 0 { return ""; }

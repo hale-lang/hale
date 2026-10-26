@@ -122,6 +122,31 @@ fn env_or(name: String, fallback: String) -> String {
     return if std::env::var_exists(name) { std::env::var(name) } else { fallback };
 }
 
+// A recorded `scheme://[user@]host[:port][/path]` as this process reaches
+// it, by the core's rule (`dna::reach_url`; this program imports no core):
+// the store and the nerves are published on the machine's loopback and
+// recorded at `127.0.0.1:<port>`, which a process in a habitat service on
+// its project's network (macOS) dials at `HALE_DNA_LOOPBACK_HOST`; unset,
+// and for any other host, the URL is dialled as recorded.
+fn reach_url(url: String) -> String {
+    let named = std::str::trim(env_or("HALE_DNA_LOOPBACK_HOST", ""));
+    let sep = std::str::index_of(url, "://");
+    if len(named) == 0 || sep < 0 { return url; }
+    let lead = url[0..(sep + 3)];
+    let rest = url[(sep + 3)..len(url)];
+    let slash = std::str::index_of(rest, "/");
+    let authority = if slash < 0 { rest } else { rest[0..slash] };
+    let tail = if slash < 0 { "" } else { rest[slash..len(rest)] };
+    let at = std::str::index_of(authority, "@");
+    let user = if at < 0 { "" } else { authority[0..(at + 1)] };
+    let hostport = if at < 0 { authority } else { authority[(at + 1)..len(authority)] };
+    let colon = std::str::index_of(hostport, ":");
+    let host = if colon < 0 { hostport } else { hostport[0..colon] };
+    let port = if colon < 0 { "" } else { hostport[colon..len(hostport)] };
+    if host != "127.0.0.1" && host != "localhost" { return url; }
+    return lead + user + named + port + tail;
+}
+
 main locus Reflexes {
     params {
         store: String = "";
@@ -241,10 +266,10 @@ fn main() {
         std::process::exit(2);
     }
     Reflexes {
-        store: env_or("HALE_DNA_SENSES_URL", ""),
+        store: reach_url(env_or("HALE_DNA_SENSES_URL", "")),
         tick_ms: std::str::parse_int(env_or("HALE_DNA_REFLEX_TICK_MS", "5000")) or 5000,
         nerves: nats::NatsConn {
-            url: url,
+            url: reach_url(url),
             user: "reflexes",
             credential: std::secret::Credential { vault: vault },
             name: "reflexes",

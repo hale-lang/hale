@@ -30,17 +30,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     );
 }
 
-fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
-
-fn logged(log: String, text: String, secs: Int) -> Bool {
-    let deadline = std::time::now() + dna::wait_secs(secs);
-    while std::time::now() <= deadline {
-        if std::str::contains(text_of(log), text) { return true; }
-        std::time::sleep(500ms);
-    }
-    return false;
-}
-
 fn face_of(status: String) -> String {
     let at = std::str::index_of(status, "face    http://");
     if at < 0 { return ""; }
@@ -126,20 +115,15 @@ fn main() {
     let genome = dna::local_habitat_dir() + "/genome";
 
     // ---- the habitat, up with its head
-    let log = scratch + "/up.log";
-    let started = in_dir(
-        scratch,
-        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
     );
     std::test::assert(
-        len(dna::trim_nl(started.stdout)) > 0
-            && logged(log, "body    the habitat's body runs in this process", 600),
-        "the habitat is born and its body runs: " + text_of(log),
-    );
-    std::test::assert(
-        std::str::contains(text_of(log), "sapling voice at "),
-        "up reads the toolchain's nursery: voice is pinned: " + text_of(log),
+        std::str::contains(started.stdout, "sapling voice at "),
+        "up reads the toolchain's nursery: voice is pinned: " + started.stdout,
     );
     let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
     // the body runs before its head answers (the head's API child is built
@@ -164,8 +148,8 @@ fn main() {
     git(src, "commit\n-q\n-m\nanother tree");
     let other = dna::trim_nl(git(src, "rev-parse\nHEAD").stdout);
 
-    let nursery = scratch + "/nursery";
-    std::io::fs::mkdir(nursery) or discard;
+    std::io::fs::mkdir(scratch + "/nursery") or discard;
+    let nursery = dna::trim_nl(dna::run_tool("realpath\n" + scratch + "/nursery").stdout);
     std::io::fs::mkdir(nursery + "/packs") or discard;
     std::io::fs::write_file(
         nursery + "/packs/crew.pack",

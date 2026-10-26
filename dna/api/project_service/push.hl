@@ -165,7 +165,7 @@ locus NervesWatch {
         self.org = "";
         if len(p.org) == 0 { return; }
         self.retry_at = now + NERVES_RETRY_SECS;
-        self.client.url = self.nerves_url(p.root, p.org);
+        self.client.url = dna::reach_url(self.nerves_url(p.root, p.org));
         self.client.user = "head";
         // the head's account, sealed: its password is the vault's and is
         // revealed on CONNECT alone; none in the vault, no connection

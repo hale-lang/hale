@@ -128,6 +128,13 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
             cmd.env("HALE_DNA_MEMORY_DSN_HEAD", head);
         }
     }
+    if let Some(u) = habitat::head_flag() {
+        cmd.env("HALE_DNA_HEAD_URL", u);
+    } else if !named("HALE_DNA_HEAD_URL") {
+        if let Some(u) = habitat::head_flag_or_local_url() {
+            cmd.env("HALE_DNA_HEAD_URL", u);
+        }
+    }
     Ok((cmd, root))
 }
 
@@ -223,7 +230,7 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
 
 /// What `memory-migrate` found (GH #985): the spine's and the head's DSNs
 /// once the schema is applied, or no database to apply it to.
-enum MemoryPlan {
+pub(crate) enum MemoryPlan {
     Roles { spine: String, head: String, owners: Vec<String> },
     NoDatabase(String),
 }
@@ -245,7 +252,7 @@ fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
 /// GH #1653: the roles' DSNs derived from memory that is already there and
 /// migrated: nothing brought up, no schema applied. A schema that is behind
 /// is the store's refusal when it opens, naming `hale habitat migrate`.
-fn memory_derive(dir: &Path) -> Result<MemoryPlan, String> {
+pub(crate) fn memory_derive(dir: &Path) -> Result<MemoryPlan, String> {
     memory_roles(dir, &["--derive".to_string()])
 }
 
@@ -576,15 +583,35 @@ fn project_arg(args: &[String], any_positional: bool) -> (PathBuf, Vec<String>) 
     (dir, rest)
 }
 
-pub fn run(args: &[String]) -> ExitCode {
+pub fn run(raw_args: &[String]) -> ExitCode {
     // `--help` / `-h` right after a verb asks what `hale dna` takes and
     // starts nothing: `hale dna dev --help` used to read the flag as the
     // project directory and bring the seed's compose up (GH #817's rule
     // — the first argument after a subcommand — at the verb level).
     // the head's own help, on stdout
-    if args.first().map(String::as_str) == Some("head") {
-        return head::head_cmd(&args[1..]);
+    if raw_args.first().map(String::as_str) == Some("head") {
+        return head::head_cmd(&raw_args[1..]);
     }
+    let mut cleaned = Vec::new();
+    let mut it = raw_args.iter();
+    while let Some(a) = it.next() {
+        if a == "--head" {
+            let Some(u) = it.next().filter(|s| !s.is_empty() && !s.starts_with('-')) else {
+                eprintln!("hale dna: `--head` takes a URL");
+                return ExitCode::from(2);
+            };
+            habitat::set_head_flag(u.clone());
+        } else if let Some(u) = a.strip_prefix("--head=") {
+            if u.is_empty() {
+                eprintln!("hale dna: `--head` takes a URL");
+                return ExitCode::from(2);
+            }
+            habitat::set_head_flag(u.to_string());
+        } else {
+            cleaned.push(a.clone());
+        }
+    }
+    let args = cleaned.as_slice();
     if matches!(args.first().map(String::as_str), Some(v) if !v.starts_with('-'))
         && matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h"))
     {
@@ -1156,6 +1183,14 @@ fn work_exec(dir: &Path, args: &[String]) -> ExitCode {
     };
     let mut cmd = Command::new(&leg);
     cmd.args(args).current_dir(dir);
+    let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    if let Some(u) = habitat::head_flag() {
+        cmd.env_remove("HALE_DNA_API").env("HALE_DNA_HEAD_URL", u);
+    } else if !named("HALE_DNA_API") && !named("HALE_DNA_HEAD_URL") {
+        if let Some(u) = habitat::head_flag_or_local_url() {
+            cmd.env("HALE_DNA_HEAD_URL", u);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1229,10 +1264,16 @@ fn embedded_digest_cmd(rest: &[String]) -> ExitCode {
 fn print_embedded_provenance(dir: &Path) {
     use std::io::Write as _;
     let mut line = format!("embedded dna: {} (hale {TOOLCHAIN})", hale_dna::embedded_short());
-    let root = dir
+    let mut root = dir
         .canonicalize()
         .map(|d| crate::shared::workspace::find_workspace_root_pub(&d).unwrap_or(d))
         .unwrap_or_else(|_| dir.to_path_buf());
+    if dir == Path::new(".") && (!root.join("dna").is_dir() || (!root.join(ORG_SEED).is_dir() && manifest_pin(&root.join("hale.toml")).ok().flatten().is_none())) {
+        let hgenome = PathBuf::from(local_habitat_dir()).join("genome");
+        if hgenome.join("hale.toml").is_file() {
+            root = hgenome;
+        }
+    }
     if let Some(was) = materialized_digest(&root) {
         if was != hale_dna::EMBEDDED_DIGEST {
             let short: String = was.chars().take(16).collect();
@@ -2691,7 +2732,13 @@ fn probe_catalog() -> String {{
 /// The project root and its DNA entrypoint (from `[environments.local]`).
 fn project(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let start = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
+    let mut root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
+    if dir == Path::new(".") && (!root.join("dna").is_dir() || (!root.join(ORG_SEED).is_dir() && manifest_pin(&root.join("hale.toml")).ok().flatten().is_none())) {
+        let hgenome = PathBuf::from(local_habitat_dir()).join("genome");
+        if hgenome.join("hale.toml").is_file() {
+            root = hgenome;
+        }
+    }
     let manifest = root.join("hale.toml");
     let (envs, _) = crate::pkg::read_claims_config(&manifest)?;
     let seed = envs
@@ -3276,6 +3323,12 @@ fn seat_initializer(root: &Path, declare_trust: bool) -> Result<String, String> 
     let have = git(root, &["config", "--local", "--get-all", "dna.unix.member"]).unwrap_or_default();
     if !have.lines().any(|l| l.trim() == entry) {
         git(root, &["config", "--local", "--add", "dna.unix.member", &entry])?;
+    }
+    if uid != "0" {
+        let root_entry = format!("uid:0={name}");
+        if !have.lines().any(|l| l.trim() == root_entry) {
+            let _ = git(root, &["config", "--local", "--add", "dna.unix.member", &root_entry]);
+        }
     }
     // the trust the record declares, wherever git reads it from
     let trust = git(root, &["config", "--get", "dna.trust"]).unwrap_or_default().trim().to_string();

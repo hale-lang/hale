@@ -18,12 +18,23 @@
 # that carries llvm-18/clang-18 in apt, and it matches the `ubuntu-latest`
 # runner the CI builds + tests on (tests.yml / release.yml). Debian
 # bookworm ships LLVM 14-16 only, so it can't build or run this.
+#
+# Where `hale` comes from is HALE_FROM: `source` (the default: the builder
+# stage compiles it, for `hale habitat image build`, a habitat compose's
+# `build:` and the published image) or `artifact` (a hale built already,
+# CI's: the build context is a directory holding exactly `hale` and
+# `libhale_ts_shim.a` from `cargo build --release --workspace`, and nothing
+# is compiled here). An artifact must have been built against this base's
+# glibc or an older one (CI builds on the ubuntu-24.04 runner); a
+# `dynamic-llvm` build's libLLVM-18.so.1 is `libllvm18`, which clang-18
+# brings. BuildKit builds only the stages the chosen one needs.
+ARG HALE_FROM=source
 
 # ---- builder: full LLVM-18 dev to compile the compiler ----
 FROM ubuntu:24.04 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates build-essential \
+      curl ca-certificates build-essential git \
       llvm-18-dev libpolly-18-dev libzstd-dev \
       clang-18 libclang-18-dev zlib1g-dev \
       libssl-dev pkg-config \
@@ -44,7 +55,7 @@ COPY . .
 RUN cargo build --release --workspace
 
 # ---- runtime: NO llvm dev libs; LLVM is statically linked into hale ----
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04 AS runtime-base
 
 # clang-18 compiles the embedded C runtime + links programs; libc6-dev
 # supplies the headers/crt objects clang needs at link time. libssl-dev is
@@ -54,24 +65,74 @@ FROM ubuntu:24.04 AS runtime
 # lld-18 supplies `wasm-ld-18`, which codegen invokes to link `--target
 # wasm32` builds (codegen.rs resolve_tool finds the `-18` suffix, so no bare
 # symlink is needed). The rest are `hale`'s own dynamic deps (ldd): libffi,
-# libtinfo, libzstd, zlib, libstdc++.
+# libtinfo, libzstd, zlib, libstdc++, plus git, curl, ssh, openssl and the
+# docker + compose CLI so a habitat's body and face run inside compose.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git openssh-client openssl \
+      docker.io docker-compose-v2 \
       clang-18 lld-18 libc6-dev libssl-dev \
       libffi8 libtinfo6 libzstd1 zlib1g-dev libstdc++6 \
     && ln -s /usr/bin/clang-18 /usr/bin/clang \
+    && ln -sf /usr/bin/clang-18 /usr/bin/cc \
+    && mkdir -p /private/var/folders \
+    && ln -s /private/var/folders /var/folders \
+    && ln -s /tmp /private/tmp \
+    && git config --system safe.directory '*' \
     && rm -rf /var/lib/apt/lists/*
 
 # Both on PATH so std::env::current_exe finds the sibling .a.
+FROM runtime-base AS hale-source
 COPY --from=builder /src/target/release/hale              /usr/local/bin/hale
 COPY --from=builder /src/target/release/libhale_ts_shim.a /usr/local/bin/libhale_ts_shim.a
+
+# A hale built already: refused here when the base cannot run it (a newer
+# glibc, a shared library it lacks).
+# Modes set here, never taken from the artifact: a habitat's body and face
+# run as the host user's uid, and must read and run both.
+FROM runtime-base AS hale-artifact
+COPY --chmod=0755 hale /usr/local/bin/hale
+COPY --chmod=0644 libhale_ts_shim.a /usr/local/bin/libhale_ts_shim.a
+RUN if ldd /usr/local/bin/hale | grep -q 'not found'; then ldd /usr/local/bin/hale; exit 1; fi \
+    && hale --version
+
+FROM hale-${HALE_FROM} AS runtime
+
+# Whichever source it came from, a uid that is not root (a habitat's body
+# and face run as the host user's) runs `hale` and reads the shim it links
+# every program with: refused here, at the image's build, rather than as a
+# link failure inside a running body.
+RUN setpriv --reuid=65534 --regid=65534 --clear-groups sh -c \
+      'test -x /usr/local/bin/hale && test -r /usr/local/bin/libhale_ts_shim.a && hale --version >/dev/null' \
+    || { ls -l /usr/local/bin/hale /usr/local/bin/libhale_ts_shim.a; exit 1; }
+
+RUN printf '#!/bin/sh\nuid="$(id -u)"\nif [ "$uid" != "0" ]; then\n  grep -v "^[^:]*:[^:]*:$uid:" /etc/passwd > /tmp/.passwd.$$ 2>/dev/null && cat /tmp/.passwd.$$ > /etc/passwd 2>/dev/null; rm -f /tmp/.passwd.$$\n  printf "%%s:x:%%s:%%s::%%s:/bin/sh\\n" "${USER:-hale}" "$uid" "$(id -g)" "${HOME:-/tmp}" >> /etc/passwd 2>/dev/null || true\nfi\nexec hale "$@"\n' > /usr/local/bin/hale-entrypoint \
+    && chmod +x /usr/local/bin/hale-entrypoint
 
 # Fail the build if a trivial program can't compile+link+run in the final
 # image. Uses the canonical locus form (println is a lifecycle builtin, not
 # a bare free fn) so this exercises the real codegen + clang link path. Then
-# build the same program for wasm32 to prove the lld-18/wasm-ld path works.
+# build the same program for wasm32 to prove the lld-18/wasm-ld path works,
+# and pre-build the embedded DNA host and head seeds into /var/cache/hale so
+# `hale dna dev` and `hale dna head` inside a habitat container start without
+# compiling on first boot.
+ENV XDG_CACHE_HOME=/var/cache
 RUN printf 'locus H {\n  birth() { println("ok"); }\n}\nfn main() { H { }; }\n' > /tmp/t.hl \
     && hale build /tmp/t.hl && /tmp/t \
     && hale build /tmp/t.hl --target wasm32 --wrap-main && test -f /tmp/t.wasm \
-    && rm -f /tmp/t /tmp/t.hl /tmp/t.wasm /tmp/t.mjs
+    && rm -f /tmp/t /tmp/t.hl /tmp/t.wasm /tmp/t.mjs \
+    && hale iris --build-only >/dev/null \
+    && cache="$(hale iris --where)" \
+    && rm -rf /var/cache/hale/runtime \
+    && find "$cache" -type f -executable -delete \
+    && hale build --target-cpu baseline "$cache/iris/consumer/fuse-hl" \
+    && pids="" \
+    && for seed in dna/host dna/host/verb dna/api/practice_review dna/api/project_service dna/face/standard dna/oidc/serve dna/reflexes; do \
+         hale build --target-cpu baseline "$cache/$seed" & pids="$pids $!"; \
+       done \
+    && for p in $pids; do wait "$p"; done \
+    && chmod -R a+rwX /var/cache/hale \
+    && chmod a+rw /etc/passwd \
+    && printf '#!/bin/sh\nuid="$(id -u)"\nif [ "$uid" != "0" ]; then\n  grep -v "^[^:]*:[^:]*:$uid:" /etc/passwd > /tmp/.passwd.$$ 2>/dev/null && cat /tmp/.passwd.$$ > /etc/passwd 2>/dev/null; rm -f /tmp/.passwd.$$\n  printf "%%s:x:%%s:%%s::%%s:/bin/sh\\n" "${USER:-hale}" "$uid" "$(id -g)" "${HOME:-/tmp}" >> /etc/passwd 2>/dev/null || true\nfi\nif [ -z "$DOCKER_API_VERSION" ] && [ -S /var/run/docker.sock ]; then\n  api="$(curl --unix-socket /var/run/docker.sock -s http://localhost/version 2>/dev/null | sed -n '\''s/.*"ApiVersion":"\([^"]*\)".*/\\1/p'\'' | head -n 1)"\n  [ -n "$api" ] && export DOCKER_API_VERSION="$api"\nfi\nif [ "$1" = "hale" ]; then\n  shift\nfi\nexec hale "$@"\n' > /usr/local/bin/hale-entrypoint \
+    && chmod +x /usr/local/bin/hale-entrypoint
 
-ENTRYPOINT ["hale"]
+ENTRYPOINT ["/usr/local/bin/hale-entrypoint"]

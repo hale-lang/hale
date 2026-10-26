@@ -1465,7 +1465,13 @@ sync.
 - **Stopping.** A node is its program's `main locus`, and SIGTERM
   drains it (GH #1039): its supervision reads `draining`, stops the
   organization (which drains the same way), gives the lease back and
-  ends. `hale dna run` and `dev` give the node a 30 s grace for it
+  ends. A node that ends on its own, as a genome that does not build
+  ends it, gives the lease back the same way (`body.released {why:
+  "exit <code>"}`) once what it started is gone, so a supervisor that
+  starts it again does not leave a lease behind for each start; a lease
+  it no longer holds is not touched (the release is a compare-and-swap
+  on its token). A seed build that fails says why: its exit status (or
+  the signal that ended it) and the last lines of its stderr. `hale dna run` and `dev` give the node a 30 s grace for it
   (`LOTUS_DRAIN_GRACE_MS`, unless the environment already sets one).
   The core imports no NATS, because a program holding pond's
   connection drains on SIGTERM: an API that imports the core keeps the
@@ -6465,12 +6471,12 @@ visitor's session, so the generated client of the head's rows needs no token
 of its own.
 
 **The habitat's face.** The habitat is an organism, so its face is this
-one: `hale habitat up` starts `hale dna head` on the habitat's genome, the
-standard face over the habitat's own head, beside the habitat's body (a
-second systemd user unit, or with `--foreground` a child of the process
-that execs the body), its head's state in `face-state` under the habitat's
-directory; `hale habitat status` prints its address on a `face` line, and
-`down` stops it with its API child. The habitat's index is the same page
+one: `hale habitat up` starts `face` (`hale dna head` on the habitat's
+genome, the standard face over the habitat's own head) beside `body`
+(`hale dna dev <genome> --no-iris`) as services of the habitat's compose
+project, its head's state in `face-state` under the habitat's directory;
+`hale habitat status` prints its address on a `face` line, and `down`
+takes the compose project down. The habitat's index is the same page
 and the same `Commands::index` row, with one more section in the answer: a
 record that grafted organisms lists them under **Organisms** (the
 `organisms` array, empty and then no section in any other record). Each
@@ -6652,7 +6658,7 @@ otherwise.
 | `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` | unset | The spine role's DSN, printed by `memory migrate` and handed to the process that is the spine. |
 | `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` | unset | The head role's DSN, handed to the head and to nothing else. |
 | `HALE_DNA_APPLICATION_ID=<identity>` | set by `hale dna dev` | The attach handover (GH #1653): the record's identity, the application id a habitat-scoped heart presents to its head. |
-| `HALE_DNA_HEAD_URL=<url>` | set by `hale dna dev` | The attach handover: the head the heart reaches (`git config dna.head.url`, `http://127.0.0.1:8792` by default). |
+| `HALE_DNA_HEAD_URL=<url>` | set by `hale dna dev` | The attach handover: the head the heart reaches (`git config dna.head.url`, `http://127.0.0.1:8792` by default). Also read by `hale habitat` and `hale dna` verbs as the head URL when `--head <url>` is not given (precedence: `--head`, `HALE_DNA_HEAD_URL`, `<habitat>/head.url`, `habitat.profile`). |
 | `HALE_DNA_OIDC_ISSUER=<url>` | set by `hale dna dev` | The attach handover: the OIDC issuer the heart's service client asks (`dna.oidc.issuer`, `http://127.0.0.1:8794` by default). |
 | `HALE_DNA_OIDC_CLIENT=<id>` | set by `hale dna dev` | The attach handover: the heart's service client id, mapped at graft as `dna.oidc.service <id>=<id>`. |
 | `HALE_DNA_OIDC_CLIENT_VAULT=<slot>` | set by `hale dna dev` | The attach handover: the vault slot holding the service client's secret (`oidc-service-<id>`), never the secret. |
@@ -6663,6 +6669,7 @@ otherwise.
 | `HALE_DNA_BROKER_NODE_USER=<user>` | set for a heart the habitat allocated `broker` | The attach handover: the user the heart's nodes connect as, `heart-<id>-node`. |
 | `HALE_DNA_BROKER_NODE_VAULT=<slot>` | set for a heart the habitat allocated `broker` | The attach handover: the vault slot of the nodes' broker password, `nats-<org>-heart-node`, which the heart passes a node at enrollment. |
 | `HALE_DNA_HABITAT=<dir>` | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local` | The local habitat's directory, named outright (GH #1653): a test's or a DNA suite slice's habitat; the developer's stays the default. A test never inherits it: `hale test` sets each file's to the habitat beside its vault, and the CLI tests' `hale()` its process's, whatever the caller exported. |
+| `HALE_HABITAT_IMAGE=<tag>` | built from `Dockerfile` and `hale.pin` | An existing local docker image for the habitat's `body` and `face` compose services, skipping the `Dockerfile` build (`--image <tag>` on `hale habitat up` takes precedence). `hale habitat image build [<checkout>]` builds it once from a local checkout and `hale test` and the DNA suite pass its tag to fixture children. |
 | `HALE_DNA_TEST_HABITAT=<dir>` | unset | Set by the DNA suite for a slice whose fixtures graft (GH #1653): the slice's habitat, born once with no body, which `dna::test_habitat` hands a fixture; unset, a test file births a habitat of its own. |
 | `HALE_DNA_TEST_HABITAT_VAULT=<dir>` | unset | Set beside `HALE_DNA_TEST_HABITAT`: the vault the slice's habitat was born with, whose entries `dna::test_habitat` lends into the fixture's own vault. |
 | `HALE_DNA_DATABASE_DSN=<dsn>` | set for a heart whose genome declares `database` | The heart's own database, a tenant of the organism's memory server provisioned at graft (GH #1653): a DSN naming the role `heart_<id>` and its vault slot `postgres-heart_<id>`, never a password. `hale dna dev` hands it to the host, and the heart inherits it. |
@@ -6702,6 +6709,8 @@ otherwise.
 | `HALE_DNA_ONESHOT` | off | A `hale dna run` application returns after the ping instead of staying up. |
 | `HALE_DNA_API=<url>` | `http://127.0.0.1:8793` | The head API a leg's verbs (`hale dna work …`) talk to when `--api` is not given. |
 | `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
+| `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
+| `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
 | `HALE_DNA_COMMAND_POLICY=<path>` | unset | The explicit authority policy the native command lanes and the governance verbs require; with none, they refuse. |
 | `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |

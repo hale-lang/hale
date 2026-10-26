@@ -362,10 +362,29 @@ fn main() {
         println!("cargo:rustc-env=HALE_STALE_SRC_COUNT=0");
         println!("cargo:rustc-env=HALE_STALE_ROOT=");
         println!("cargo:rustc-env=HALE_TOOLCHAIN_SHA256=");
+        println!("cargo:rustc-env=HALE_HABITAT_PIN=");
         return;
     };
     toolchain_digest(root);
     stale_src_hash(root);
+    println!("cargo:rerun-if-changed={}", root.join("Dockerfile").display());
+    println!("cargo:rerun-if-changed={}", root.join("hale.pin").display());
+    let pin = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .or_else(|| {
+            fs::read_to_string(root.join("hale.pin"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_default();
+    println!("cargo:rustc-env=HALE_HABITAT_PIN={pin}");
 
     // macOS: LLVM 18+ links against zstd, but the homebrew
     // `llvm@18` formula ships its libs in

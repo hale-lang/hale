@@ -564,6 +564,75 @@ exit 124 if $expired;
 exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);
 "#;
 
+/// The habitat toolchain image built once from the local checkout (`hale
+/// habitat image build`) and passed to every fixture through the child's
+/// `Command::env` (`HALE_HABITAT_IMAGE`), so no fixture ever builds rustc
+/// or LLVM inside docker.
+fn habitat_image() -> Option<String> {
+    static IMAGE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IMAGE
+        .get_or_init(|| {
+            if let Ok(tag) = std::env::var("HALE_HABITAT_IMAGE") {
+                let tag = tag.trim().to_string();
+                if !tag.is_empty() {
+                    return Some(tag);
+                }
+            }
+            let has_compose = Command::new("docker")
+                .args(["compose", "version"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !has_compose {
+                return None;
+            }
+            if let Some(dir) = PathBuf::from(env!("CARGO_BIN_EXE_hale")).parent() {
+                if let Ok(tag) = std::fs::read_to_string(dir.join("habitat-image.tag")) {
+                    let tag = tag.trim().to_string();
+                    if !tag.is_empty() {
+                        let archive = dir.join("habitat-image.tar.zst");
+                        let present = Command::new("docker")
+                            .args(["image", "inspect", &tag])
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !present && archive.is_file() {
+                            let _ = Command::new("sh")
+                                .arg("-c")
+                                .arg(format!("zstd -dc {:?} | docker load >/dev/null", archive.display()))
+                                .status();
+                        }
+                        if Command::new("docker")
+                            .args(["image", "inspect", &tag])
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false)
+                        {
+                            return Some(tag);
+                        }
+                    }
+                }
+            }
+            let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+                .args(["habitat", "image", "build"])
+                .arg(repo_root())
+                .output()
+                .ok()?;
+            assert!(
+                out.status.success(),
+                "hale habitat image build failed:\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+        })
+        .clone()
+}
+
 /// Run one fixture, returning what it cost or why it failed. `hale test
 /// --json` is what carries the cost: the text form reports only the
 /// pass/fail summary, and the wall time of the child here would fold
@@ -571,6 +640,9 @@ exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);
 fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>, habitat: Option<&SliceHabitat>) -> Result<FixtureTiming, String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
     cmd.arg("test").arg("--json").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+    if let Some(img) = habitat_image() {
+        cmd.env("HALE_HABITAT_IMAGE", img);
+    }
     // GH #1653: the slice's habitat, born once, which a fixture grafts its
     // organisms into (`dna::test_habitat`, `dna::grafted`)
     if let Some(h) = habitat {

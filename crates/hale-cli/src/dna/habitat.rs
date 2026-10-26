@@ -23,6 +23,37 @@ mod sapling;
 #[path = "forget.rs"]
 mod forget;
 
+static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
+const HABITAT_PIN: &str = env!("HALE_HABITAT_PIN");
+
+pub(super) fn set_head_flag(url: String) {
+    let _ = HEAD_FLAG.set(url);
+}
+
+pub(super) fn head_flag() -> Option<String> {
+    HEAD_FLAG.get().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
+}
+
+pub(super) fn head_flag_or_local_url() -> Option<String> {
+    if let Some(u) = head_flag() {
+        return Some(u);
+    }
+    if let Some(u) = std::env::var("HALE_DNA_HEAD_URL").ok().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty()) {
+        return Some(u);
+    }
+    std::fs::read_to_string(head_url_file()).ok().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
+}
+
+pub(crate) fn default_habitat_image_tag(pin: &str) -> String {
+    format!("hale-habitat:{}", &pin[..12.min(pin.len())])
+}
+
+pub(crate) fn default_habitat_image() -> String {
+    default_habitat_image_tag(HABITAT_PIN)
+}
+
 /// Whether the habitat's Board trusts the nursery `source`
 /// (`habitat.nursery`, `hale habitat nursery add`).
 pub(super) fn trusts_nursery(source: &str) -> bool {
@@ -32,24 +63,25 @@ pub(super) fn trusts_nursery(source: &str) -> bool {
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
-    r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator] [--name <name>]
-       hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+    r#"usage: hale habitat [--head <url>] up [--no-body] [--profile local] [--backends own|operator] [--name <name>] [--image <tag>]
+       hale habitat image build [<checkout>]
+       hale habitat [--head <url>] graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
-       hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
-       hale habitat place <key>/<role> <host>
-       hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
-       hale habitat model-probe <organism> <mode>.<size>
-       hale habitat apply [<host>] [--fresh]
-       hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
-       hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
+       hale habitat [--head <url>] graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
+       hale habitat [--head <url>] place <key>/<role> <host>
+       hale habitat [--head <url>] model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
+       hale habitat [--head <url>] model-probe <organism> <mode>.<size>
+       hale habitat [--head <url>] apply [<host>] [--fresh]
+       hale habitat [--head <url>] nursery add <dir|git-url> | refresh | list | ratify <sapling>
+       hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
-       hale habitat host add <name> [--user <user>] [--port <n>]
-       hale habitat host probe <name>
-       hale habitat host remove <name> [--plan]
-       hale habitat organism remove <name> [--plan]
-       hale habitat brief
-       hale habitat status
+       hale habitat [--head <url>] host add <name> [--user <user>] [--port <n>]
+       hale habitat [--head <url>] host probe <name>
+       hale habitat [--head <url>] host remove <name> [--plan]
+       hale habitat [--head <url>] organism remove <name> [--plan]
+       hale habitat [--head <url>] brief
+       hale habitat [--head <url>] status
        hale habitat down [--forget [--plan]]
        hale habitat migrate [organism]
        hale habitat sweep <root> | --test-vaults [<root>]
@@ -67,16 +99,18 @@ up                   birth the habitat the first time, from the genome the
                      `law` items), the one organism born without a parent;
                      then bring every recorded allocation up through the
                      compose provider, migrating any whose recorded schema
-                     version is behind this toolchain's; record its
-                     placement (the host `local` with what it offers, the
-                     profile's policy, its head and face on that host, rows
-                     of its record); and start the habitat's body: a systemd
-                     user unit named for the habitat, or, with
-                     --foreground, in this process, and its face (the
-                     standard face over its own head; `status` prints its
-                     address); --no-body births it and
-                     brings its allocations up and starts no body (what a
-                     test's habitat needs to graft into). Idempotent. Its
+                     version is behind this toolchain's; render its own
+                     `body` and `face` services into its compose project
+                     (built from the embedded Dockerfile at `hale.pin`, or
+                     `--image <tag>` / `HALE_HABITAT_IMAGE=<tag>`), bring
+                     them up with `docker compose up -d`, wait on their
+                     probes, and record its placement (the host `local` with
+                     what it offers, the profile's policy, its head and face
+                     on that host, rows of its record) and the head's
+                     address (on its `habitat.profile` row and in
+                     `head.url`); --no-body births it and brings its
+                     backing allocations up and starts no body or face (what
+                     a test's habitat needs to graft into). Idempotent. Its
                      backends are chosen at its birth and kept: `own` (the
                      default) provisions memory, the nerves and the senses'
                      store as its project's allocations; `operator` adopts
@@ -88,6 +122,12 @@ up                   birth the habitat the first time, from the genome the
                      `habitat.profile` row and kept: `status`, the head's
                      Commands::index and the operator face show it. The
                      hosted profile is not built.
+image build [<dir>]  build the habitat toolchain image once from the local
+                     checkout at <dir> (`.` by default) as context and print
+                     its tag.
+--head <url>         reach the habitat's head at <url> (`HALE_DNA_HEAD_URL`
+                     names the same thing; precedence: `--head`,
+                     `HALE_DNA_HEAD_URL`, then the recorded address).
 graft <dir>          birth an organism as the habitat's child, the one way an
                      organism other than the habitat is born: its record's
                      genesis names the habitat's record as its parent, the
@@ -221,7 +261,7 @@ organism remove <name>
 brief                the Board's hat as a prompt, with the habitat's live
                      state: its hosts, its allocations and their pulse, its
                      organisms, its saplings, and what waits for the Board.
-                     The head's read Commands::brief, asked over its socket
+                     The head's read Commands::brief, asked of the head
                      as the person this account maps to; an agent pairing
                      with that person asks the same row over MCP (the
                      endpoint `status` prints). It reads the record
@@ -233,8 +273,9 @@ status               the habitat, its genome and body, its face and, while
                      against this toolchain's, and how a heart's declared
                      migration last ran.
 down                 stop the habitat's body, its face and every service of
-                     its project; nothing is removed, and `up` brings them
-                     back. --forget removes the habitat whole, planned
+                     its compose project (`compose down`); its volumes are
+                     kept, and `up` brings them back. --forget removes the
+                     habitat whole, planned
                      first: its record and memory, each grafted organism
                      (its record, genome repository, forge repository and
                      allocations by host), the compose projects and their
@@ -280,6 +321,31 @@ is not.
 }
 
 pub(crate) fn run(args: &[String]) -> ExitCode {
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--head" {
+            let Some(url) = args.get(i + 1).filter(|u| !u.is_empty()) else {
+                eprintln!("hale habitat: `--head` takes a URL\n{}", usage_text());
+                return ExitCode::from(2);
+            };
+            let _ = HEAD_FLAG.set(url.trim_end_matches('/').to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(url) = args[i].strip_prefix("--head=") {
+            if url.is_empty() {
+                eprintln!("hale habitat: `--head` takes a URL\n{}", usage_text());
+                return ExitCode::from(2);
+            }
+            let _ = HEAD_FLAG.set(url.trim_end_matches('/').to_string());
+            i += 1;
+            continue;
+        }
+        cleaned.push(args[i].clone());
+        i += 1;
+    }
+    let args = &cleaned[..];
     match args.first().map(String::as_str) {
         Some("--help" | "-h") => {
             print!("{}", usage_text());
@@ -287,6 +353,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
         Some("migrate") => migrate(args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))),
         Some("up") => up(&args[1..]),
+        Some("image") => image_cmd(&args[1..]),
         Some("graft") => graft(&args[1..]),
         Some("handover") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -338,29 +405,131 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
     }
 }
 
+/// `hale habitat image build [<checkout>]`: build the habitat toolchain
+/// image once from the local checkout as context.
+fn image_cmd(args: &[String]) -> ExitCode {
+    let usage = "usage: hale habitat image build [<checkout>]";
+    let dir = match (args.first().map(String::as_str), args.get(1), args.len()) {
+        (Some("build"), None, 1) => PathBuf::from("."),
+        (Some("build"), Some(d), 2) if !d.starts_with('-') => PathBuf::from(d),
+        _ => {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        }
+    };
+    let dockerfile = dir.join("Dockerfile");
+    if !dockerfile.is_file() {
+        eprintln!("hale habitat image build: no Dockerfile in {}", dir.display());
+        return ExitCode::from(1);
+    }
+    let tag = std::env::var("HALE_HABITAT_IMAGE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(default_habitat_image);
+    let status = Command::new("docker")
+        .args(["build", "-t", &tag, "-f"])
+        .arg(&dockerfile)
+        .arg(&dir)
+        .stdout(std::process::Stdio::from(std::io::stderr()))
+        .status();
+    match status {
+        Ok(s) if s.success() => {
+            println!("{tag}");
+            ExitCode::SUCCESS
+        }
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat image build: docker: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 // ---------------------------------------------------------------
 // hosts: a thin client of the habitat head's commands (phase 4)
 // ---------------------------------------------------------------
 
-/// The socket the habitat's head serves its commands on, as
-/// `dna/api/main.hl`'s `head_socket` names it for the habitat's record.
-fn head_socket_of(genome: &Path) -> Option<PathBuf> {
+pub(crate) fn head_url_file() -> PathBuf {
+    PathBuf::from(local_habitat_dir()).join("head.url")
+}
+
+/// The habitat head's HTTP address: `--head <url>`, then `HALE_DNA_HEAD_URL`,
+/// then the local habitat's `head.url` state file, then the `habitat.profile`
+/// row in its record, then `dna.head.url` + 1.
+pub(crate) fn head_endpoint() -> Option<String> {
+    if let Some(u) = head_flag_or_local_url() {
+        return Some(u);
+    }
+    let genome = genome_dir();
+    if !IN_HEAD_ENDPOINT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let found = rows_of(&genome)
+            .iter()
+            .rev()
+            .find(|r| r["kind"] == "habitat.profile")
+            .and_then(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()))
+            .and_then(|b| b["head"].as_str().map(|s| s.trim().trim_end_matches('/').to_string()))
+            .filter(|s| !s.is_empty());
+        IN_HEAD_ENDPOINT.store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(u) = found {
+            return Some(u);
+        }
+    }
+    head_url_at(&genome).as_deref().and_then(loopback_port).map(|base| format!("http://127.0.0.1:{}", base + 1))
+}
+
+pub(crate) fn head_token() -> String {
+    std::fs::read_to_string(face_state_dir().join("head.token"))
+        .or_else(|_| std::fs::read_to_string(genome_dir().join(".hale/dna/head.token")))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether the habitat's head is reachable (over an explicit
+/// `HALE_DNA_RPC_SOCKET` or at `head_endpoint()`).
+pub(super) fn head_is_up() -> bool {
     if let Some(given) = std::env::var("HALE_DNA_RPC_SOCKET").ok().filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(given));
+        return Path::new(&given).exists();
     }
-    let id = manifest_pin(&genome.join("hale.toml")).ok().flatten()?;
-    let name = format!("{}.sock", &id[..12.min(id.len())]);
-    let runtime = std::env::var("XDG_RUNTIME_DIR").ok().filter(|v| !v.is_empty());
-    let dir = match runtime {
-        Some(r) => format!("{r}/hale/dna"),
-        None => genome.join(".hale/dna").display().to_string(),
-    };
-    // an AF_UNIX path has room for 103 bytes
-    if dir.len() + 1 + name.len() > 103 {
-        let uid = unsafe { libc::getuid() };
-        return Some(PathBuf::from(format!("/tmp/hale-{uid}/{name}")));
+    let Some(url) = head_endpoint() else { return false };
+    if let Some(port) = loopback_port(&url) {
+        return std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::time::Duration::from_millis(500),
+        ).is_ok();
     }
-    Some(PathBuf::from(dir).join(name))
+    true
+}
+
+/// One call of the habitat head's surface over HTTP (`POST <endpoint>/call/<member>`).
+pub(super) fn http_surface_call(endpoint: &str, member: &str, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let url = format!("{}/call/{member}", endpoint.trim_end_matches('/'));
+    let body_str = payload.to_string();
+    let token = head_token();
+    let mut cmd = Command::new("curl");
+    cmd.args(["-s", "-w", "\n%{http_code}", "-X", "POST", "-H", "Content-Type: application/json", "-H", "Hale-Surface-Digest: "]);
+    if !token.is_empty() {
+        cmd.args(["-H", &format!("Authorization: Bearer {token}")]);
+    }
+    cmd.args(["--data-binary", &body_str, &url]);
+    let out = cmd.output().map_err(|e| format!("the habitat's head did not answer: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (body, code_str) = text.rsplit_once('\n').unwrap_or((&text, "0"));
+    let status: u16 = code_str.trim().parse().unwrap_or(0);
+    if status == 0 {
+        return Err("the habitat's head is not up (`hale habitat up` starts it)".to_string());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    if status == 200 {
+        if parsed.get("value").is_some() && parsed.get("id").is_some() {
+            return Ok(parsed["value"].clone());
+        }
+        return Ok(parsed);
+    }
+    let why = parsed["refusal"]["reason"]
+        .as_str()
+        .or_else(|| parsed["error"]["message"].as_str())
+        .or_else(|| parsed["error"].as_str())
+        .unwrap_or_else(|| body.trim())
+        .to_string();
+    Err(format!("the habitat's head refused {member}: {why}"))
 }
 
 fn host(args: &[String]) -> ExitCode {
@@ -517,29 +686,17 @@ fn print_report(v: &serde_json::Value) {
     }
 }
 
-/// `member` of the habitat head's commands called over its socket with
+/// `member` of the habitat head's commands called over its surface with
 /// `payload`: the value it answered, or the exit status after saying why
 /// there is none.
 fn host_call(member: &str, payload: serde_json::Value) -> Result<serde_json::Value, ExitCode> {
-    let genome = genome_dir();
-    let Some(socket) = head_socket_of(&genome).filter(|p| p.exists()) else {
-        eprintln!("hale habitat host: the habitat's head is not up (`hale habitat up` starts it)");
-        return Err(ExitCode::from(1));
-    };
-    let line = match crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-host" })) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("hale habitat host: the habitat's head did not answer: {e}");
-            return Err(ExitCode::from(1));
+    match sapling::head_call(member, payload) {
+        Ok(v) => Ok(v),
+        Err(why) => {
+            eprintln!("hale habitat host: {why}");
+            Err(ExitCode::from(1))
         }
-    };
-    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-    if reply["ok"] != serde_json::json!(true) {
-        let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
-        eprintln!("hale habitat host: the habitat's head refused {member}: {why}");
-        return Err(ExitCode::from(1));
     }
-    Ok(reply["value"].clone())
 }
 
 /// `hale habitat host remove <name> [--plan]`: the removal's plan
@@ -1052,32 +1209,29 @@ fn genome_dir() -> PathBuf {
     PathBuf::from(local_habitat_dir()).join("genome")
 }
 
-/// The systemd user unit the habitat's body runs as, named for the
-/// habitat's project, so a test's habitat is never the developer's unit.
-fn unit_name() -> String {
-    format!("{}.service", local_habitat_project())
+/// The state of `service` in the habitat's compose project when running.
+fn service_status(service: &str) -> Option<String> {
+    let project = local_habitat_project();
+    let Docker::Answered(out) = docker(&[
+        "ps",
+        "--filter",
+        &format!("label=com.docker.compose.project={project}"),
+        "--filter",
+        &format!("label=com.docker.compose.service={service}"),
+        "--filter",
+        "status=running",
+        "--format",
+        "{{.Status}}",
+    ]) else {
+        return None;
+    };
+    let status = out.lines().next().unwrap_or("").trim();
+    (!status.is_empty()).then(|| status.to_string())
 }
 
-fn unit_path() -> PathBuf {
-    let config = std::env::var("XDG_CONFIG_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{}/.config", std::env::var("HOME").unwrap_or_default()));
-    PathBuf::from(config).join("systemd/user").join(unit_name())
-}
-
-fn pid_file() -> PathBuf {
-    PathBuf::from(local_habitat_dir()).join("body.pid")
-}
-
-/// The habitat's body as it runs: `unit`, `foreground <pid>`, or `None`.
+/// The habitat's body as it runs in the habitat's compose project, or `None`.
 fn body_state() -> Option<String> {
-    if let Ok(pid) = std::fs::read_to_string(pid_file()) {
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
-                return Some(format!("up (pid {pid}, in the foreground)"));
-            }
-        }
-    }
-    let active = Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(unit_name()).status().is_ok_and(|s| s.success());
-    active.then(|| format!("up (systemd user unit {})", unit_name()))
+    service_status("body").map(|s| format!("up (compose service body, {s})"))
 }
 
 fn backends_file() -> PathBuf {
@@ -1147,15 +1301,14 @@ fn backends_of(asked: Option<&str>) -> Result<String, String> {
 }
 
 fn up(args: &[String]) -> ExitCode {
-    let mut foreground = false;
     let mut no_body = false;
     let mut profile = "local".to_string();
     let mut asked: Option<String> = None;
     let mut asked_name: Option<String> = None;
+    let mut asked_image: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--foreground" => foreground = true,
             "--no-body" => no_body = true,
             "--backends" if i + 1 < args.len() => {
                 asked = Some(args[i + 1].clone());
@@ -1167,6 +1320,10 @@ fn up(args: &[String]) -> ExitCode {
             }
             "--name" if i + 1 < args.len() => {
                 asked_name = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--image" if i + 1 < args.len() => {
+                asked_image = Some(args[i + 1].clone());
                 i += 1;
             }
             other => {
@@ -1194,12 +1351,6 @@ fn up(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Some(state) = body_state() {
-        if foreground {
-            eprintln!("hale habitat up: the habitat's body is already {state}; `hale habitat down` stops it");
-            return ExitCode::from(1);
-        }
-    }
     let name = match name_of(asked_name.as_deref()) {
         Ok(n) => n,
         Err(why) => {
@@ -1207,7 +1358,7 @@ fn up(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match bring_up(&backends, &name) {
+    match bring_up(&backends, &name, !no_body) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -1219,7 +1370,6 @@ fn up(args: &[String]) -> ExitCode {
         }
     }
     let genome = genome_dir();
-    let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "hale".into());
     // GH #1653: born and its allocations up, its body not started: what a
     // test's habitat needs to graft into
     if no_body {
@@ -1230,43 +1380,27 @@ fn up(args: &[String]) -> ExitCode {
         println!("{:<8}not started (--no-body): `hale habitat up` starts it", "body");
         return ExitCode::SUCCESS;
     }
-    if foreground {
-        match start_face(&me, &genome, true) {
-            Ok(line) => println!("{line}"),
-            Err(e) => eprintln!("hale habitat up: the habitat's face did not start: {e}"),
+    match start_body_and_face(&genome, &backends, &name, asked_image.as_deref()) {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
         }
-        if let Err(e) = place(&genome, &backends) {
+        Err(e) => {
             eprintln!("hale habitat up: {e}");
             return ExitCode::from(1);
         }
-        let _ = std::fs::write(pid_file(), format!("{}\n", std::process::id()));
-        println!("{:<8}the habitat's body runs in this process (`hale dna dev {}`)", "body", genome.display());
-        use std::os::unix::process::CommandExt;
-        let e = Command::new(&me).args(["dna", "dev"]).arg(&genome).arg("--no-iris").env("HALE_DNA_COMPOSE", "off").current_dir(&genome).exec();
-        eprintln!("hale habitat up: cannot run {me}: {e}");
-        return ExitCode::from(1);
-    }
-    match start_face(&me, &genome, false) {
-        Ok(line) => println!("{line}"),
-        Err(e) => eprintln!("hale habitat up: the habitat's face did not start: {e}"),
     }
     if let Err(e) = place(&genome, &backends) {
         eprintln!("hale habitat up: {e}");
         return ExitCode::from(1);
     }
-    if let Some(state) = body_state() {
-        println!("{:<8}{state}", "body");
-        return ExitCode::SUCCESS;
-    }
-    match start_unit(&me, &genome, &backends) {
-        Ok(line) => {
-            println!("{line}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("hale habitat up: {e}; `hale habitat up --foreground` runs the body in this process");
-            ExitCode::from(1)
-        }
+    ExitCode::SUCCESS
+}
+
+pub(super) fn progress(msg: &str) {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprintln!("... {msg}");
     }
 }
 
@@ -1277,6 +1411,7 @@ fn up(args: &[String]) -> ExitCode {
 /// record written when the record does not already say it (`habitat-place`,
 /// dna/host/placement.hl). What it recorded, a line each, printed.
 fn place(genome: &Path, backends: &str) -> Result<(), String> {
+    progress("recording placement and refreshing nurseries");
     let said = host_run("habitat-place", genome, &[backends.to_string()]).map_err(|e| format!("the habitat's placement was not recorded: {e}"))?;
     print!("{said}");
     // what its nurseries offer, read into its record (a newer revision of a
@@ -1293,7 +1428,7 @@ fn place(genome: &Path, backends: &str) -> Result<(), String> {
 /// upgrade), and every tenant's recorded allocation brought up. A tenant is
 /// never migrated here: `up` runs under ongoing work, and an organism's
 /// allocation moves at its upgrade or with `hale habitat migrate`.
-fn bring_up(backends: &str, name: &str) -> Result<Vec<String>, String> {
+fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, String> {
     let genome = genome_dir();
     let mut out = vec![format!("habitat local at {} (compose project {}; {backends} backends)", local_habitat_dir(), local_habitat_project())];
     // born whole once its identity is pinned and no birth is pending: a
@@ -1301,6 +1436,7 @@ fn bring_up(backends: &str, name: &str) -> Result<Vec<String>, String> {
     // resumed from them (memory that is merely down is never mistaken for
     // a birth that did not happen)
     if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() && !birth_pending().exists() {
+        progress("migrating the habitat's memory and nerves");
         out.extend(migrate_lines(&genome)?);
     } else {
         std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
@@ -1310,7 +1446,7 @@ fn bring_up(backends: &str, name: &str) -> Result<Vec<String>, String> {
         if !name_file().exists() {
             std::fs::write(name_file(), format!("{name}\n")).map_err(|e| format!("write {}: {e}", name_file().display()))?;
         }
-        out.extend(birth(&genome, backends, name)?);
+        out.extend(birth(&genome, backends, name, with_body)?);
     }
     let own = allocation_dir(&genome);
     let versions = toolchain_versions(&genome);
@@ -1357,7 +1493,7 @@ fn birth_done(step: &str) -> Result<(), String> {
 /// failing after the identity was pinned) is resumed by the next `up`: a
 /// pin whose record never reached memory is a birth that did not happen,
 /// and is drawn again.
-fn birth(genome: &Path, backends: &str, name: &str) -> Result<Vec<String>, String> {
+fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(genome).map_err(|e| format!("create {}: {e}", genome.display()))?;
     for f in hale_dna::HABITAT_FILES {
         let rel = f.path.strip_prefix("dna/habitat/").unwrap_or(f.path);
@@ -1384,6 +1520,7 @@ fn birth(genome: &Path, backends: &str, name: &str) -> Result<Vec<String>, Strin
     // whether the record was born is memory's to say, never a local
     // marker's: a genesis memory holds is resumed, never drawn again
     let manifest = genome.join("hale.toml");
+    progress("birthing the habitat's genome, memory, and nerves");
     match genesis_state(genome)? {
         Genesis::Unpinned => {
             out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
@@ -1413,10 +1550,19 @@ fn birth(genome: &Path, backends: &str, name: &str) -> Result<Vec<String>, Strin
         out.push(format!("recorded {n} allocation row(s) in the habitat's record"));
     }
     if !have.contains(&"profile") {
-        // its profile: the backends it was born on and its name, a row as
-        // every provisioning choice is (never a DSN or a URL)
+        // its profile: the backends it was born on, its name, and when its
+        // body and face come up with it, its face's and head's addresses
+        let mut body = serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project(), "name": name });
+        if with_body {
+            let base = head_block(genome, &granted_bases(genome))?;
+            let face_url = format!("http://127.0.0.1:{base}");
+            let head_url = format!("http://127.0.0.1:{}", base + 1);
+            std::fs::write(head_url_file(), format!("{head_url}\n")).map_err(|e| format!("write {}: {e}", head_url_file().display()))?;
+            body["face"] = serde_json::json!(face_url);
+            body["head"] = serde_json::json!(head_url);
+        }
         let profile = PathBuf::from(local_habitat_dir()).join(".profile-row.jsonl");
-        let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project(), "name": name }).to_string() });
+        let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": body.to_string() });
         std::fs::write(&profile, format!("{row}\n")).map_err(|e| format!("write {}: {e}", profile.display()))?;
         let landed = host_run("record-seed", genome, &[profile.display().to_string(), String::new()]);
         let _ = std::fs::remove_file(&profile);
@@ -1490,7 +1636,7 @@ fn genesis_state(genome: &Path) -> Result<Genesis, String> {
 /// the habitat's project: false only when docker answers that it has no
 /// such volume; anything else (no docker, no daemon, an error) is taken as
 /// "it may", so nothing is drawn again on a guess.
-fn memory_volume_exists(key: &str) -> bool {
+pub(super) fn memory_volume_exists(key: &str) -> bool {
     let name = format!("{}_memory-{key}", local_habitat_project());
     match Command::new("docker").args(["volume", "inspect", &name]).output() {
         Ok(o) if !o.status.success() => !String::from_utf8_lossy(&o.stderr).to_lowercase().contains("no such volume"),
@@ -1529,40 +1675,6 @@ fn unpin(manifest: &Path) -> Result<(), String> {
         t.remove("record");
     }
     std::fs::write(manifest, doc.to_string()).map_err(|e| format!("write {}: {e}", manifest.display()))
-}
-
-fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String> {
-    let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()));
-    let mut vault = std::env::var("HALE_VAULT_DIR").ok().filter(|v| !v.is_empty()).map(|v| format!("Environment=HALE_VAULT_DIR={v}\n")).unwrap_or_default();
-    // `operator` backends reach the unit through a file of the habitat's,
-    // mode 600, as a provisioned body's env file does: never on the unit's
-    // own lines
-    if backends == "operator" {
-        let env = PathBuf::from(local_habitat_dir()).join("backends.env");
-        let text = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().map(|k| format!("{k}={}\n", std::env::var(k).unwrap_or_default())).collect::<String>();
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&env).map_err(|e| format!("write {}: {e}", env.display()))?;
-        f.write_all(text.as_bytes()).map_err(|e| format!("write {}: {e}", env.display()))?;
-        vault.push_str(&format!("EnvironmentFile={}\n", env.display()));
-    }
-    let unit = format!(
-        "[Unit]\nDescription=hale habitat (local) at {dir}\nAfter=network-online.target\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_HABITAT={dir}\nEnvironment=HALE_DNA_COMPOSE=off\n{vault}ExecStart={me} dna dev {g} --no-iris\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec={stop}\n\n[Install]\nWantedBy=default.target\n",
-        dir = local_habitat_dir(),
-        g = genome.display(),
-        // `systemctl stop` waits for the body's drain, which reaches its
-        // backends before `down` stops them
-        stop = drain_window().as_secs()
-    );
-    let path = unit_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(&path, unit).map_err(|e| format!("write {}: {e}", path.display()))?;
-    let systemctl = |args: &[&str]| Command::new("systemctl").arg("--user").args(args).output().map_err(|e| format!("systemctl: {e}")).and_then(|o| if o.status.success() { Ok(()) } else { Err(format!("systemctl --user {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim())) });
-    systemctl(&["daemon-reload"])?;
-    systemctl(&["enable", "--now", &unit_name()])?;
-    Ok(format!("{:<8}up (systemd user unit {}, {})", "body", unit_name(), path.display()))
 }
 
 // ---------------------------------------------------------------
@@ -1629,129 +1741,328 @@ fn granted_bases(genome: &Path) -> Vec<u16> {
     rows_of(genome).iter().filter(|r| r["kind"] == "habitat.grafted").filter_map(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())).filter_map(|b| b["face"].as_str().and_then(loopback_port)).collect()
 }
 
-fn face_pid_file() -> PathBuf {
-    PathBuf::from(local_habitat_dir()).join("face.pid")
-}
-
 fn face_state_dir() -> PathBuf {
     PathBuf::from(local_habitat_dir()).join("face-state")
 }
 
-fn face_unit_name() -> String {
-    format!("{}-face.service", local_habitat_project())
+/// The habitat's face as it runs in the habitat's compose project, or `None`.
+fn face_running() -> Option<String> {
+    service_status("face").map(|s| format!("compose service face, {s}"))
 }
 
-/// The habitat's face as it runs: a pid, a unit, or `None`.
-fn face_running() -> Option<String> {
-    if let Ok(pid) = std::fs::read_to_string(face_pid_file()) {
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            if alive(pid) {
-                return Some(format!("pid {pid}"));
+fn docker_socket_path() -> String {
+    if cfg!(target_os = "macos") {
+        return "/var/run/docker.sock".to_string();
+    }
+    if let Ok(h) = std::env::var("DOCKER_HOST") {
+        if let Some(s) = h.trim().strip_prefix("unix://") {
+            return s.to_string();
+        }
+    }
+    if let Ok(o) = Command::new("docker").args(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]).output() {
+        if o.status.success() {
+            if let Some(s) = String::from_utf8_lossy(&o.stdout).trim().strip_prefix("unix://") {
+                return s.to_string();
             }
         }
     }
-    Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(face_unit_name()).status().is_ok_and(|s| s.success()).then(|| format!("systemd user unit {}", face_unit_name()))
+    "/var/run/docker.sock".to_string()
 }
 
-/// The habitat's face, the standard face over the habitat's own head
-/// (`hale dna head` on its genome), started when it is not up: as a second
-/// systemd user unit, or, with `foreground`, as a child of this process
-/// that outlives its exec. Its head's state is the habitat's `face-state`.
-fn start_face(me: &str, genome: &Path, foreground: bool) -> Result<String, String> {
+/// Ensures the habitat's `habitat.profile` row records the head and face
+/// addresses (`head` and `face`), writing an updated row if it was born
+/// before they were assigned (`--no-body`).
+fn ensure_profile_head(genome: &Path, backends: &str, name: &str, face_url: &str, head_url: &str) -> Result<(), String> {
+    let latest = rows_of(genome)
+        .into_iter()
+        .rev()
+        .find(|r| r["kind"] == "habitat.profile")
+        .and_then(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()));
+    if latest.as_ref().is_some_and(|b| b["head"].as_str() == Some(head_url) && b["face"].as_str() == Some(face_url)) {
+        return Ok(());
+    }
+    let profile = PathBuf::from(local_habitat_dir()).join(".profile-row.jsonl");
+    let row = serde_json::json!({
+        "kind": "habitat.profile",
+        "entity": "local",
+        "body": serde_json::json!({
+            "profile": "local",
+            "backends": backends,
+            "project": local_habitat_project(),
+            "name": name,
+            "face": face_url,
+            "head": head_url,
+        }).to_string()
+    });
+    std::fs::write(&profile, format!("{row}\n")).map_err(|e| format!("write {}: {e}", profile.display()))?;
+    let landed = host_run("record-seed", genome, &[profile.display().to_string(), String::new()]);
+    let _ = std::fs::remove_file(&profile);
+    landed?;
+    Ok(())
+}
+
+/// The address the habitat declares its person-facing listeners on: the
+/// loopback for a local habitat. The one knob for it; the face service's
+/// bind (`HALE_DNA_LISTEN_HOST`) and, on macOS, its published ports follow
+/// it.
+fn habitat_listen_host() -> &'static str {
+    "127.0.0.1"
+}
+
+/// Renders the habitat's `body` and `face` services into its allocation's
+/// `compose.yaml` and `ports.yaml` (alongside the embedded `Dockerfile` and
+/// `hale.pin`), brings them up with `docker compose up -d`, and waits on
+/// their probes.
+fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: Option<&str>) -> Result<Vec<String>, String> {
     let base = head_block(genome, &granted_bases(genome))?;
-    if let Some(state) = face_running() {
-        return Ok(format!("{:<8}up ({state}, http://127.0.0.1:{base}/)", "face"));
-    }
+    let face_url = format!("http://127.0.0.1:{base}");
+    let head_url = format!("http://127.0.0.1:{}", base + 1);
+    std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
+    std::fs::write(head_url_file(), format!("{head_url}\n")).map_err(|e| format!("write {}: {e}", head_url_file().display()))?;
+    ensure_profile_head(genome, backends, name, &face_url, &head_url)?;
     std::fs::create_dir_all(face_state_dir()).map_err(|e| format!("create {}: {e}", face_state_dir().display()))?;
-    if foreground {
-        use std::os::unix::process::CommandExt;
-        let log = PathBuf::from(local_habitat_dir()).join("face.log");
-        let out = std::fs::File::create(&log).map_err(|e| format!("write {}: {e}", log.display()))?;
-        let err = out.try_clone().map_err(|e| e.to_string())?;
-        let child = Command::new(me)
-            .args(["dna", "head"])
-            .arg(genome)
-            .env("HALE_DNA_HEAD_STATE", face_state_dir())
-            .stdin(std::process::Stdio::null())
-            .stdout(out)
-            .stderr(err)
-            .process_group(0)
-            .spawn()
-            .map_err(|e| format!("cannot run {me} dna head: {e}"))?;
-        std::fs::write(face_pid_file(), format!("{}\n", child.id())).map_err(|e| format!("write {}: {e}", face_pid_file().display()))?;
-        return Ok(format!("{:<8}starting (pid {}, http://127.0.0.1:{base}/; its log {})", "face", child.id(), log.display()));
+
+    let dir = allocation_dir(genome).ok_or("the habitat's genome pins no record identity")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let pin = HABITAT_PIN.trim();
+    std::fs::write(dir.join("Dockerfile"), HABITAT_DOCKERFILE).map_err(|e| format!("write {}: {e}", dir.join("Dockerfile").display()))?;
+    std::fs::write(dir.join("hale.pin"), format!("{pin}\n")).map_err(|e| format!("write {}: {e}", dir.join("hale.pin").display()))?;
+
+    let env_image = std::env::var("HALE_HABITAT_IMAGE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let override_image = asked_image.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).or(env_image);
+    let image = override_image.clone().unwrap_or_else(|| default_habitat_image_tag(pin));
+    let build_spec = if override_image.is_some() {
+        String::new()
+    } else {
+        format!("    build:\n      context: \"https://github.com/hale-lang/hale.git#{pin}\"\n")
+    };
+
+    let hab_dir = local_habitat_dir();
+    let vault = super::vault_local_dir().unwrap_or_else(|| PathBuf::from(&hab_dir).join("vault"));
+    if !vault.exists() {
+        let _ = std::fs::create_dir_all(&vault);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
+        }
     }
-    let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()));
-    let vault = std::env::var("HALE_VAULT_DIR").ok().filter(|v| !v.is_empty()).map(|v| format!("Environment=HALE_VAULT_DIR={v}\n")).unwrap_or_default();
-    let unit = format!(
-        "[Unit]\nDescription=hale habitat (local) face at {dir}\nAfter=network-online.target {body}\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_HABITAT={dir}\nEnvironment=HALE_DNA_HEAD_STATE={state}\n{vault}ExecStart={me} dna head {g}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
-        dir = local_habitat_dir(),
-        body = unit_name(),
-        g = genome.display(),
-        state = face_state_dir().display()
-    );
-    let path = unit_path().with_file_name(face_unit_name());
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
+        PathBuf::from(&hab_dir).parent().and_then(|p| p.parent()).map(|p| p.display().to_string()).unwrap_or_else(|| hab_dir.clone())
+    });
+    let user = std::env::var("USER").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "hale".to_string());
+    let sock = docker_socket_path();
+
+    let mut mounts = vec![format!("      - \"{hab_dir}:{hab_dir}\"")];
+    let vault_str = vault.display().to_string();
+    if vault_str != hab_dir && !vault_str.starts_with(&format!("{hab_dir}/")) {
+        mounts.push(format!("      - \"{vault_str}:{vault_str}\""));
     }
-    std::fs::write(&path, unit).map_err(|e| format!("write {}: {e}", path.display()))?;
-    let systemctl = |args: &[&str]| Command::new("systemctl").arg("--user").args(args).output().map_err(|e| format!("systemctl: {e}")).and_then(|o| if o.status.success() { Ok(()) } else { Err(format!("systemctl --user {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim())) });
-    systemctl(&["daemon-reload"])?;
-    systemctl(&["enable", "--now", &face_unit_name()])?;
-    Ok(format!("{:<8}up (systemd user unit {}, http://127.0.0.1:{base}/)", "face", face_unit_name()))
+    mounts.push(format!("      - \"{sock}:/var/run/docker.sock\""));
+    let mounts_yaml = mounts.join("\n");
+
+    let mut env_file_spec = String::new();
+    if backends == "operator" {
+        let env_path = PathBuf::from(&hab_dir).join("backends.env");
+        let text = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"]
+            .iter()
+            .map(|k| format!("{k}={}\n", std::env::var(k).unwrap_or_default()))
+            .collect::<String>();
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&env_path).map_err(|e| format!("write {}: {e}", env_path.display()))?;
+        f.write_all(text.as_bytes()).map_err(|e| format!("write {}: {e}", env_path.display()))?;
+        env_file_spec = format!("    env_file:\n      - \"{}\"\n", env_path.display());
+    }
+
+    let is_macos = cfg!(target_os = "macos");
+    let declared = habitat_listen_host();
+    // The address the face's person-facing listeners (the face, the head,
+    // the OIDC stub) bind, `HALE_DNA_LISTEN_HOST`. On the host's network
+    // (Linux) it is the habitat's declared address itself. On the
+    // project's network (macOS) they bind every interface of the
+    // container, which is safe only because compose publishes their ports
+    // on the declared address alone (`ports.yaml` below), never on the
+    // host's other interfaces.
+    let face_listen = if is_macos { "0.0.0.0" } else { declared };
+    let net_or_hosts = if is_macos {
+        "    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n".to_string()
+    } else {
+        "    network_mode: \"host\"\n".to_string()
+    };
+    let user_spec = if is_macos {
+        String::new()
+    } else {
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        use std::os::unix::fs::MetadataExt;
+        let sock_gid = std::fs::metadata(&sock).map(|m| m.gid()).unwrap_or(gid);
+        format!("    user: \"{uid}:{gid}\"\n    group_add:\n      - \"{sock_gid}\"\n")
+    };
+    // Where these services reach a port published on this machine's
+    // loopback (`dna::loopback_host`): on the host's network that is
+    // 127.0.0.1 itself; on the project's network (macOS) it is the host.
+    let loopback = if is_macos {
+        "      HALE_DNA_LOOPBACK_HOST: \"host.docker.internal\"\n"
+    } else {
+        ""
+    };
+    let mut forwarded_env = String::new();
+    if let Docker::Answered(ver) = docker(&["version", "--format", "{{.Server.APIVersion}}"]) {
+        let ver = ver.trim();
+        if !ver.is_empty() && !ver.contains(['"', '\n', '\r']) {
+            forwarded_env.push_str(&format!("      DOCKER_API_VERSION: \"{ver}\"\n"));
+        }
+    }
+    for k in ["HALE_DNA_DISCOVER", "HALE_DNA_TRUSTED_LOCAL", "HALE_DNA_WAIT_SCALE", "HALE_DNA_FORGE", "LOTUS_DRAIN_GRACE_MS", "HALE_DNA_SUITE_TAG"] {
+        if let Ok(v) = std::env::var(k) {
+            if !v.is_empty() && !v.contains(['"', '\n', '\r']) {
+                forwarded_env.push_str(&format!("      {k}: \"{v}\"\n"));
+            }
+        }
+    }
+
+    let drain_secs = drain_window().as_secs();
+    let g = genome.display();
+    let fstate = face_state_dir().display().to_string();
+    let mut services_block = String::from("# habitat-body-and-face\n  body:\n");
+    services_block.push_str(&format!("    image: \"{image}\"\n"));
+    services_block.push_str(&build_spec);
+    services_block.push_str("    init: true\n");
+    services_block.push_str(&user_spec);
+    services_block.push_str(&net_or_hosts);
+    services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
+    services_block.push_str(&env_file_spec);
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_COMPOSE: \"off\"\n"));
+    services_block.push_str(loopback);
+    services_block.push_str(&forwarded_env);
+    // The body drains onto the habitat's own memory and nerves (its lease
+    // goes back in memory) when it stops: it depends on them, so compose
+    // stops it, within its grace, before them whatever stops the project
+    // (`compose down`, a body `hale habitat down` did not find running).
+    let key = dir.file_name().map(|k| k.to_string_lossy().into_owned()).unwrap_or_default();
+    let present = std::fs::read_to_string(dir.join("compose.yaml")).unwrap_or_default();
+    let backends_of_body: Vec<String> = ["memory", "nerves"].iter().map(|r| format!("{r}-{key}")).filter(|svc| !key.is_empty() && present.contains(&format!("\n  {svc}:\n"))).collect();
+    let depends = if backends_of_body.is_empty() { String::new() } else { format!("    depends_on:\n{}", backends_of_body.iter().map(|svc| format!("      - \"{svc}\"\n")).collect::<String>()) };
+    services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n{depends}  face:\n    image: \"{image}\"\n"));
+    services_block.push_str(&build_spec);
+    services_block.push_str("    init: true\n");
+    services_block.push_str(&user_spec);
+    services_block.push_str(&net_or_hosts);
+    services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
+    services_block.push_str(&env_file_spec);
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n"));
+    services_block.push_str(loopback);
+    services_block.push_str(&forwarded_env);
+    services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
+
+    let compose_path = dir.join("compose.yaml");
+    let existing_compose = std::fs::read_to_string(&compose_path).unwrap_or_else(|_| "services:\n".to_string());
+    let base_compose = if let Some((before, after)) = existing_compose.split_once("# habitat-body-and-face\n") {
+        if let Some(vol_idx) = after.find("\nvolumes:\n") {
+            format!("{before}{}", &after[vol_idx + 1..])
+        } else {
+            before.to_string()
+        }
+    } else {
+        existing_compose
+    };
+    let new_compose = if let Some((services_part, volumes_part)) = base_compose.split_once("\nvolumes:\n") {
+        format!("{}\n{services_block}volumes:\n{volumes_part}", services_part.trim_end())
+    } else {
+        format!("{}\n{services_block}", base_compose.trim_end())
+    };
+    std::fs::write(&compose_path, new_compose).map_err(|e| format!("write {}: {e}", compose_path.display()))?;
+
+    let ports_path = dir.join("ports.yaml");
+    let existing_ports = std::fs::read_to_string(&ports_path).unwrap_or_else(|_| "services:\n".to_string());
+    let base_ports = existing_ports.split("# habitat-body-and-face\n").next().unwrap_or(&existing_ports).trim_end().to_string();
+    let new_ports = if is_macos {
+        let mut p = format!("{base_ports}\n# habitat-body-and-face\n  face:\n    ports:\n");
+        for offset in 0..HEAD_BLOCK {
+            let port = base + offset;
+            p.push_str(&format!("      - \"{declared}:{port}:{port}\"\n"));
+        }
+        p
+    } else if base_ports.trim() == "services:" {
+        "services: {}\n".to_string()
+    } else {
+        format!("{base_ports}\n")
+    };
+    std::fs::write(&ports_path, new_ports).map_err(|e| format!("write {}: {e}", ports_path.display()))?;
+
+    progress("starting body and face compose services");
+    let mut cmd = Command::new("env");
+    cmd.args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+        .arg(local_habitat_project())
+        .arg("--project-directory")
+        .arg(&dir)
+        .arg("-f")
+        .arg(&compose_path)
+        .arg("-f")
+        .arg(&ports_path)
+        // their backends are the habitat's allocations, brought up by
+        // their provider: `depends_on` orders the stop, never this start
+        .args(["up", "-d", "--no-deps", "body", "face"]);
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        cmd.stderr(std::process::Stdio::inherit());
+    }
+    let ran = cmd.output().map_err(|e| format!("docker compose: {e}"))?;
+    if !ran.status.success() {
+        return Err(format!("docker compose up -d body face: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+    }
+
+    progress("waiting for the habitat's body and face probes");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut body_ok = false;
+    let mut face_ok = false;
+    while std::time::Instant::now() < deadline {
+        body_ok = body_state().is_some();
+        face_ok = face_running().is_some()
+            && std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], base)),
+                std::time::Duration::from_millis(250),
+            )
+            .is_ok()
+            && head_is_up();
+        if body_ok && face_ok {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    if !body_ok {
+        return Err("the habitat's body service did not stay up".to_string());
+    }
+    if !face_ok {
+        return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within 180s"));
+    }
+    Ok(vec![
+        format!("{:<8}up (compose service face, {face_url}/)", "face"),
+        format!("{:<8}up (compose service body)", "body"),
+    ])
 }
 
 /// Phase 4: the habitat's face (and the head behind it) restarted, after
-/// its own memory or nerves moved: a unit by systemd, a child of `up
-/// --foreground` stopped and started again as one.
+/// its own memory or nerves moved.
 fn restart_face() -> Result<String, String> {
     let genome = genome_dir();
-    let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "hale".into());
-    let unit = Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(face_unit_name()).status().is_ok_and(|s| s.success());
-    if unit {
-        let ok = Command::new("systemctl").args(["--user", "restart"]).arg(face_unit_name()).status().is_ok_and(|s| s.success());
-        return if ok { Ok(format!("{:<8}restarted (systemd user unit {})", "face", face_unit_name())) } else { Err(format!("systemctl --user restart {} failed", face_unit_name())) };
+    let dir = allocation_dir(&genome).ok_or("the habitat's genome pins no record identity")?;
+    let ran = Command::new("env")
+        .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+        .arg(local_habitat_project())
+        .arg("--project-directory")
+        .arg(&dir)
+        .arg("-f")
+        .arg(dir.join("compose.yaml"))
+        .arg("-f")
+        .arg(dir.join("ports.yaml"))
+        .args(["restart", "face"])
+        .output()
+        .map_err(|e| format!("docker compose restart face: {e}"))?;
+    if !ran.status.success() {
+        return Err(format!("docker compose restart face: {}", String::from_utf8_lossy(&ran.stderr).trim()));
     }
-    let mut said = Vec::new();
-    stop_face(&mut said);
-    start_face(&me, &genome, true)
-}
-
-/// The habitat's face stopped: its launcher, and the children the head kept
-/// in the habitat's face state (the API child), which a stopped head leaves.
-fn stop_face(said: &mut Vec<String>) {
-    if let Ok(pid) = std::fs::read_to_string(face_pid_file()) {
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            if alive(pid) {
-                unsafe { libc::kill(pid, libc::SIGTERM) };
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-                while alive(pid) && std::time::Instant::now() < deadline {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                if alive(pid) {
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
-                said.push(format!("stopped the habitat's face (pid {pid})"));
-            }
-        }
-        let _ = std::fs::remove_file(face_pid_file());
-    }
-    if Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(face_unit_name()).status().is_ok_and(|s| s.success())
-        && Command::new("systemctl").args(["--user", "stop"]).arg(face_unit_name()).status().is_ok_and(|s| s.success())
-    {
-        said.push(format!("stopped the habitat's face (systemd user unit {})", face_unit_name()));
-    }
-    if let Ok(dir) = std::fs::read_dir(face_state_dir().join("children")) {
-        for e in dir.flatten() {
-            if e.path().extension().is_some_and(|x| x == "pid") {
-                if let Some(pid) = std::fs::read_to_string(e.path()).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
-                    if alive(pid) {
-                        unsafe { libc::kill(pid, libc::SIGTERM) };
-                    }
-                }
-            }
-        }
-    }
+    Ok(format!("{:<8}restarted (compose service face)", "face"))
 }
 
 /// `hale habitat brief`: the head's `Commands::brief`, printed.
@@ -1855,12 +2166,8 @@ fn drain_window() -> std::time::Duration {
     std::time::Duration::from_millis(grace + 15000)
 }
 
-fn alive(pid: i32) -> bool {
-    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
-}
-
-/// `hale habitat down`: the habitat's processes stopped and every service
-/// of its project stopped; nothing is removed, and `up` brings it back.
+/// `hale habitat down`: the habitat's compose project taken down (`docker
+/// compose down`), leaving only its volumes; `up` brings it back.
 /// `--forget` removes it whole, planned first (forget.rs).
 fn down(args: &[String]) -> ExitCode {
     match args {
@@ -1877,7 +2184,8 @@ fn down(args: &[String]) -> ExitCode {
         eprintln!("hale habitat down: {why}");
         return ExitCode::from(1);
     }
-    let ids = match docker(&["ps", "-q", "--filter", &format!("label=com.docker.compose.project={}", local_habitat_project())]) {
+    let project = local_habitat_project();
+    let ids = match docker(&["ps", "-a", "-q", "--filter", &format!("label=com.docker.compose.project={project}")]) {
         Docker::Answered(out) => out.lines().map(str::to_string).filter(|l| !l.is_empty()).collect::<Vec<_>>(),
         Docker::Absent => Vec::new(),
         Docker::Failed(why) => {
@@ -1885,14 +2193,14 @@ fn down(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if !ids.is_empty() {
-        let mut a = vec!["stop"];
-        a.extend(ids.iter().map(String::as_str));
-        if let Docker::Failed(why) = docker(&a) {
+    if !ids.is_empty() || !said.is_empty() {
+        if let Docker::Failed(why) = docker(&["compose", "-p", &project, "down", "--remove-orphans"]) {
             eprintln!("hale habitat down: {why}");
             return ExitCode::from(1);
         }
-        said.push(format!("stopped {} service(s) of {}", ids.len(), local_habitat_project()));
+        if !ids.is_empty() {
+            said.push(format!("stopped {} service(s) of {project}", ids.len()));
+        }
     }
     if said.is_empty() {
         println!("the habitat is already down");
@@ -1905,37 +2213,45 @@ fn down(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The habitat's processes stopped: its face, then its body (drained onto
-/// its backends, which are left running), whether in the foreground or a
-/// systemd user unit. What was stopped is said in `said`.
+/// The habitat's face and body services stopped first: its face, then its
+/// body (drained onto its backends while they are still running). What was
+/// stopped is said in `said`.
 fn stop_processes(said: &mut Vec<String>) -> Result<(), String> {
-    stop_face(said);
-    if let Ok(pid) = std::fs::read_to_string(pid_file()) {
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            if alive(pid) && unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
-                // the body drains on SIGTERM, onto its backends: wait for it
-                // (the pid file stays while it lives), and only then stop them
-                let deadline = std::time::Instant::now() + drain_window();
-                while alive(pid) && std::time::Instant::now() < deadline {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-                if alive(pid) {
-                    eprintln!("hale habitat: the habitat's body (pid {pid}) did not drain within {}s; killed", drain_window().as_secs());
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                    while alive(pid) {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                }
-                said.push(format!("stopped the habitat's body (pid {pid}), drained"));
-            }
+    let project = local_habitat_project();
+    for (service, timeout, msg) in [
+        ("face", None, "stopped the habitat's face (compose service face)"),
+        ("body", Some(drain_window().as_secs().to_string()), "stopped the habitat's body (compose service body), drained"),
+    ] {
+        let Docker::Answered(out) = docker(&[
+            "ps",
+            "-q",
+            "--filter",
+            &format!("label=com.docker.compose.project={project}"),
+            "--filter",
+            &format!("label=com.docker.compose.service={service}"),
+            // a body between restarts is stopped (and drained) here too,
+            // never left for `compose down` to stop beside its backends
+            "--filter",
+            "status=running",
+            "--filter",
+            "status=restarting",
+        ]) else {
+            continue;
+        };
+        let ids: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        if ids.is_empty() {
+            continue;
         }
-        let _ = std::fs::remove_file(pid_file());
-    }
-    if Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(unit_name()).status().is_ok_and(|s| s.success()) {
-        match Command::new("systemctl").args(["--user", "stop"]).arg(unit_name()).status() {
-            Ok(s) if s.success() => said.push(format!("stopped the habitat's body (systemd user unit {})", unit_name())),
-            _ => return Err(format!("systemctl --user stop {} failed", unit_name())),
+        let mut args = vec!["stop"];
+        if let Some(ref t) = timeout {
+            args.push("-t");
+            args.push(t.as_str());
         }
+        args.extend(ids);
+        if let Docker::Failed(why) = docker(&args) {
+            return Err(why);
+        }
+        said.push(msg.to_string());
     }
     Ok(())
 }

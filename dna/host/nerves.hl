@@ -74,7 +74,7 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     let url = dna::nerves_server_url(server);
     if derive { return answer(nerves_urls(root, org, url)); }
     let c = nats::NatsClient {
-        url: url,
+        url: dna::reach_url(url),
         user: "owner",
         credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
         name: "dna-owner",
@@ -238,7 +238,7 @@ fn nerves_drop_verb(root: String) -> Answer {
         );
     }
     let c = nats::NatsClient {
-        url: dna::nerves_server_url(owner),
+        url: dna::reach_url(dna::nerves_server_url(owner)),
         user: "owner",
         credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
         name: "dna-owner",
