@@ -553,7 +553,7 @@ impl Artifact {
                 who
             )
         };
-        for rel in ["calls", "calls_via_stdlib"] {
+        for rel in ["calls", "calls_via_stdlib", "initializes", "argument_evaluations", "closure_evaluations", "lifecycle_evaluations", "constructor_checks"] {
             for (i, row) in art.v["relations"][rel]
                 .as_array()
                 .into_iter()
@@ -977,6 +977,10 @@ fn build_graph(
 ) -> Result<RenderGraph, String> {
     let loci = art.loci();
     let fns = art.fns();
+    // These are validated type owners, not display prefixes or lifecycle loci.
+    let type_owners: std::collections::BTreeMap<String, String> = art.rows(&["law", "fn_universe"]).iter().filter_map(|row|
+        Some((row["display"].as_str()?.to_string(), row["owner_type"].as_str()?.to_string()))).collect();
+
     let declared_topics = art.topics();
     let publishes = art.publishes();
     let subscribes = art.subscribes();
@@ -999,7 +1003,7 @@ fn build_graph(
     for locus in &loci {
         let lines: Vec<FnLine> = fns
             .iter()
-            .filter(|f| owner_of(&loci, f) == Some(locus.as_str()))
+            .filter(|f| !type_owners.contains_key(*f) && owner_of(&loci, f) == Some(locus.as_str()))
             .filter(|f| keep_fn(f))
             .map(|f| FnLine {
                 full: f.clone(),
@@ -1013,9 +1017,14 @@ fn build_graph(
             highlight: false,
         });
     }
+    for owner in type_owners.values().collect::<std::collections::BTreeSet<_>>() {
+        let lines: Vec<FnLine> = fns.iter().filter(|f| type_owners.get(*f) == Some(owner)).filter(|f| keep_fn(f))
+            .map(|f| FnLine { full: f.clone(), label: fn_label(art, f, &f[owner.len() + 2..], with_chips), highlight: false }).collect();
+        if !lines.is_empty() { boxes.push(LocusBox { name: format!("{owner} [type]"), lines, highlight: false }); }
+    }
     let free: Vec<FnLine> = fns
         .iter()
-        .filter(|f| owner_of(&loci, f).is_none())
+        .filter(|f| owner_of(&loci, f).is_none() && !type_owners.contains_key(*f))
         .filter(|f| keep_fn(f))
         .map(|f| FnLine {
             full: f.clone(),
@@ -1109,6 +1118,43 @@ fn build_graph(
                 highlight: false,
             });
         }
+        for row in art.rows(&["relations", "initializes"]) {
+            edges.push(Edge {
+                from: row["from"].as_str().unwrap_or_default().to_string(),
+                to: row["to"].as_str().unwrap_or_default().to_string(),
+                kind: EdgeKind::Call,
+                label: format!("initializes {}", row["field"].as_str().unwrap_or_default()),
+                highlight: false,
+            });
+        }
+        for row in art.rows(&["relations", "argument_evaluations"]) {
+            let (Some(from),Some(to))=(row["from"].as_str(),row["to"].as_str()) else { continue };
+            edges.push(Edge { from:from.to_string(),to:to.to_string(),highlight:false,
+                label:format!("defaults {}",row["parameter"].as_str().unwrap_or_default()),kind:EdgeKind::Call });
+        }
+
+        for row in art.rows(&["relations", "protocol_evaluations"]) {
+            let Some(context) = row["context"].as_u64().and_then(|i| art.v["relations"]["protocol_contexts"].get(i as usize)) else { continue };
+            let (Some(from), Some(to), Some(stage)) = (context["from"].as_str(), row["to"].as_str(), row["stage"].as_str()) else { continue };
+            edges.push(Edge { from:from.to_string(),to:to.to_string(),highlight:false,
+                label:format!("may enter parent {stage} ({})",row["guard"].as_str().unwrap_or_default()),kind:EdgeKind::Call });
+        }
+        for row in art.rows(&["relations", "lifecycle_evaluations"]) {
+            let (Some(from),Some(to),Some(stage))=(row["from"].as_str(),row["to"].as_str(),row["stage"].as_str()) else { continue };
+            edges.push(Edge { from:from.to_string(),to:to.to_string(),highlight:false,label:format!("may enter {stage} ({})",row["guard"].as_str().unwrap_or_default()),kind:EdgeKind::Call });
+        }
+
+        for row in art.rows(&["relations", "constructor_checks"]) {
+            let (Some(from), Some(to)) = (row["from"].as_str(), row["to"].as_str()) else { continue };
+            edges.push(Edge { from: from.to_string(), to: to.to_string(), highlight: false,
+                label: format!("may evaluate {} {}", row["epoch"].as_str().unwrap_or_default(), row["kind"].as_str().unwrap_or_default()), kind: EdgeKind::Call });
+        }
+
+        for row in art.rows(&["relations", "closure_evaluations"]) {
+            let (Some(from),Some(to))=(row["from"].as_str(),row["to"].as_str()) else { continue };
+            edges.push(Edge { from:from.to_string(),to:to.to_string(),highlight:false,label:"checks closure".to_string(),kind:EdgeKind::Call });
+        }
+
         for (from, to) in art.calls(true) {
             edges.push(Edge {
                 from,
@@ -2014,6 +2060,7 @@ fn render_svg(g: &RenderGraph, theme: SvgTheme) -> String {
             .and_then(|t| topic_pos.iter().find(|(n, _)| n == t))
     };
     let find_unk = |a: &str| unk_pos.iter().find(|(n, _)| n == a);
+    let mut gutter_labels: Vec<i64> = Vec::new();
     for e in &g.edges {
         let (color, dash) = match e.kind {
             EdgeKind::Publish => ("#2f855a", ""),
@@ -2083,7 +2130,22 @@ fn render_svg(g: &RenderGraph, theme: SvgTheme) -> String {
         // the chord; call labels sit in the left gutter.
         let (mx, my) = if bulge_left {
             let bx = x1.min(x2) - bulge;
-            (bx.max(PAD), (y1 + y2) / 2 - 4)
+            let ideal = (y1 + y2) / 2 - 4;
+            // Adjacent omitted parameters share a caller and have chord
+            // midpoints only half a text line apart. Place gutter labels
+            // in the nearest free text lane, in stable edge order.
+            let mut label_y = ideal;
+            for distance in 0..=g.edges.len() as i64 {
+                if let Some(candidate) = [ideal + distance * LINE_H, ideal - distance * LINE_H]
+                    .into_iter().find(|candidate| *candidate >= title_h + LINE_H
+                        && *candidate < height - PAD
+                        && gutter_labels.iter().all(|used| (*candidate - *used).abs() >= LINE_H)) {
+                    label_y = candidate;
+                    break;
+                }
+            }
+            gutter_labels.push(label_y);
+            (bx.max(PAD), label_y)
         } else {
             let frac_num: i64 = match e.kind {
                 EdgeKind::Publish => 30,

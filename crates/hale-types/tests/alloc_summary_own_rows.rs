@@ -101,6 +101,7 @@ fn without_runtime(p: &Program) -> Program {
         TopDecl::Fn(f) => !is_runtime_pos(f.name.span.start.0),
         TopDecl::Locus(l) => !is_runtime_pos(l.name.span.start.0),
         TopDecl::Interface(n) => !is_runtime_pos(n.name.span.start.0),
+        TopDecl::Type(t) => !is_runtime_pos(t.name.span.start.0),
         _ => true,
     });
     p
@@ -236,10 +237,16 @@ fn the_resource_budget_counts_the_programs_own_fd_sites() {
 /// type kept.
 #[test]
 fn a_call_into_the_copy_is_the_unresolved_call() {
-    let checked = measure("dna/api").map(|(own, alone, n)| (own == alone, n));
-    let (same, n) = checked.expect("dna/api has a summary");
+    let (own, alone, n) = measure("dna/api").expect("dna/api has a summary");
     assert!(n > 0, "dna/api calls into the copy");
-    assert!(same, "dna/api's own rows are its program-alone summary");
+    let first_difference = own.iter().zip(&alone).find(|(a, b)| a != b).map(|((field, a), (_, b))| {
+        let offset = a.bytes().zip(b.bytes()).take_while(|(a, b)| a == b).count();
+        let start = offset.saturating_sub(80);
+        format!("{field} at byte {offset}: own {:?}; alone {:?}",
+            String::from_utf8_lossy(&a.as_bytes()[start..a.len().min(offset + 240)]),
+            String::from_utf8_lossy(&b.as_bytes()[start..b.len().min(offset + 240)]))
+    });
+    assert!(own == alone, "dna/api's own rows are its program-alone summary: {first_difference:?}");
 }
 
 /// The api runtime a serving program carries is stdlib source appended to

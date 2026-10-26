@@ -1,0 +1,10 @@
+fn observe() -> Int { println("phase operand"); return 0; }
+locus Worker {
+    params { n: Int = 0; }
+    closure audit { observe() + self.n ~~ self.n within 0; epoch birth; }
+}
+group workers = { Worker };
+main locus App {
+    claims { quiet: forbid reaches(workers, effects(stdio)) during birth; }
+}
+fn main() { Worker { }; App { }; }

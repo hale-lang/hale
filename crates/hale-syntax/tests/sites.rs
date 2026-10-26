@@ -43,6 +43,8 @@ locus Worker {
         publish Tick;
     }
     closure steady { self.n ~~ self.n within 0; }
+    closure birth_failed { epoch inline; }
+    birth_check { false } -> violate birth_failed;
     birth { let x = 1; }
     mode bulk() -> Int { return self.n; }
     on_failure(c: Worker, err: ClosureViolation) { }
@@ -68,6 +70,8 @@ fn one_of_each_kind_in_pre_order() {
     let expected = vec![
         Topic,
         Type,
+        Field, // Point.x
+        Field, // Point.y
         Const,
         Unit,
         UnitEquation,
@@ -83,6 +87,8 @@ fn one_of_each_kind_in_pre_order() {
         Subscribe,
         Publish,
         Closure,
+        Closure, // birth_failed
+        BirthCheck,
         Lifecycle,
         Let, // let x
         Mode,
@@ -118,9 +124,9 @@ fn one_of_each_kind_in_pre_order() {
     let seen: BTreeSet<SiteKind> = expected.iter().copied().collect();
     let all: BTreeSet<SiteKind> = [
         Locus, Fn, Topic, Type, Interface, Closure, Lifecycle, Mode, Failure,
-        Perspective, Const, Group, Module, Param, PlacementEntry,
+        Perspective, Const, Group, Module, Param, Field, PlacementEntry,
         BindingEntry, Publish, Subscribe, Let, LetTuple, Assign, For, Send,
-        StructLiteral, Call, Use, Binder, Unit, UnitEquation,
+        StructLiteral, Call, Use, Binder, Unit, UnitEquation, BirthCheck,
     ]
     .into_iter()
     .collect();
@@ -214,7 +220,7 @@ fn corpus_walk_reaches_every_identity_field() {
     }
     eprintln!("{} programs, {} sites: {:?}", programs.len(), total, by_kind);
     // Vacuity: every kind turns up somewhere in the corpus.
-    assert_eq!(by_kind.len(), 29, "kinds seen: {:?}", by_kind.keys());
+    assert_eq!(by_kind.len(), 31, "kinds seen: {:?}", by_kind.keys());
 }
 
 /// The same over the syntax crate's own desugars, which synthesize
@@ -234,4 +240,26 @@ fn desugared_corpus_walk_reaches_every_identity_field() {
         total += number_and_check(&prog.origin, &mut p);
     }
     eprintln!("{} desugared programs, {} sites", programs.len(), total);
+}
+
+#[test]
+fn birth_checks_have_distinct_sites_before_their_predicates() {
+    let mut p = hale_syntax::parse_source(r#"locus Child {
+        closure rejected { epoch inline; }
+        birth_check { first() } -> violate rejected;
+        birth_check { second() } -> violate rejected(payload());
+    }"#).unwrap();
+    let mut next = 0;
+    for_each_site_mut(&mut p, &mut |_, _, id| { *id = NodeId(next); next += 1; });
+    let mut checks = Vec::new();
+    let mut calls = Vec::new();
+    for_each_site(&p, &mut |kind, _, id| match kind {
+        SiteKind::BirthCheck => checks.push(id),
+        SiteKind::Call => calls.push(id),
+        _ => {}
+    });
+    assert_eq!(checks.len(), 2);
+    assert_eq!(calls.len(), 3);
+    assert!(checks[0] < calls[0] && calls[0] < checks[1] && checks[1] < calls[1]);
+    assert_ne!(checks[0].0, checks[1].0);
 }

@@ -76,6 +76,16 @@ fn a_branch_valued_receiver_carrier_fires() {
     );
 }
 
+#[test]
+fn an_array_literal_element_receiver_carrier_fires() {
+    fires("return [B { }][0].work(n);", "indexed literal receiver");
+}
+
+#[test]
+fn a_local_array_element_receiver_carrier_fires() {
+    fires("let bs = [B { }]; return bs[n].work(n);", "indexed local receiver");
+}
+
 /// The control: the same shapes reaching a NON-carrier stay
 /// certifiable — typing receivers must not turn every method call
 /// into a violation.

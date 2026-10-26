@@ -289,96 +289,28 @@ fn phase_effects_diags(
 ) {
     let table = &EffectClassTable::of(programs);
     for p in programs {
-        for item in &p.items {
+        for item in flat_decls(&p.items) {
             let TopDecl::Locus(l) = item else { continue };
             let Some(pe) = &l.phase_effects else { continue };
             for (phase, allowed) in &pe.phases {
-                // Which member fn is this phase? Lifecycle names map
-                // to the method of the same name; anything else is a
-                // handler/method name.
-                // A phase names either a LIFECYCLE hook (`birth`,
-                // `run`, `drain`, `dissolve`, `accept`, `release` —
-                // stored as LocusMember::Lifecycle and keyed by name
-                // in the summary) or a member fn / handler.
-                let member = l
-                    .members
-                    .iter()
-                    .find_map(|m| match m {
-                        LocusMember::Fn(fd) if fd.name.name == *phase => {
-                            Some((fd.name.span, fd.id))
-                        }
-                        // An omitted `run` is the implicit hook below,
-                        // not a declared one (`LifecycleDecl::synthesized`).
-                        LocusMember::Lifecycle(lc)
-                            if lifecycle_name(lc.kind) == *phase && !lc.synthesized =>
-                        {
-                            Some((lc.span, lc.id))
-                        }
-                        _ => None,
-                    });
-                let Some((span, member)) = member else {
-                    // A phase naming nothing on this locus used to be
-                    // skipped in silence — so `@phase_effects(disolve:
-                    // {})` declared a contract that was never checked,
-                    // and the author had no way to tell. Every other
-                    // form of incompleteness in this system fails
-                    // closed; a typo'd phase must too.
-                    //
-                    // But the six LIFECYCLE names are always
-                    // meaningful, declared or not: a locus with only
-                    // `params` still has a birth, and
-                    // `@phase_effects(birth: {alloc}, run: {})` — the
-                    // canonical no-alloc-after-init line — must not
-                    // error just because the hook is implicit.
-                    const LIFECYCLE: &[&str] = &[
-                        "birth", "accept", "release", "run", "drain",
-                        "dissolve",
-                    ];
-                    if LIFECYCLE.contains(&phase.as_str()) {
-                        continue;
-                    }
-                    let mut candidates: Vec<String> = Vec::new();
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Fn(fd) => {
-                                candidates.push(fd.name.name.clone())
-                            }
-                            LocusMember::Lifecycle(lc) if !lc.synthesized => candidates
-                                .push(lifecycle_name(lc.kind).to_string()),
-                            _ => {}
-                        }
-                    }
-                    let hint = crate::stdlib_surface::nearest_name(
-                        phase,
-                        candidates.iter().map(|s| s.as_str()),
-                    )
-                    .map(|s| format!(" — did you mean `{}`?", s))
-                    .unwrap_or_else(|| {
-                        if candidates.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                " — this locus has {}",
-                                candidates
-                                    .iter()
-                                    .map(|c| format!("`{}`", c))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
-                        }
-                    });
-                    out.push(Diag::ty(
-                        l.name.span,
-                        format!(
-                            "`@phase_effects` names phase `{}`, which \
-                             locus `{}` does not declare{}. The contract \
-                             would never be checked.",
-                            phase, l.name.name, hint
-                        ),
-                    ));
+                let roots: Vec<_> = summary.source_phases.iter()
+                    .filter(|(_, source)| source.owner.matches(crate::placement::SiteUniverse::User, l.id, &l.name.name) && source.phase == *phase)
+                    .collect();
+                if roots.is_empty() {
+                    // Only a genuinely bodyless lifecycle phase is vacuous.
+                    // Automatic assertions supply roots without an authored hook.
+                    const LIFECYCLE: &[&str] = &["birth", "accept", "release", "run", "drain", "dissolve"];
+                    if LIFECYCLE.contains(&phase.as_str()) { continue; }
+                    let candidates: BTreeSet<_> = summary.source_phases.values()
+                        .filter(|source| source.owner.matches(crate::placement::SiteUniverse::User, l.id, &l.name.name)).map(|source| source.phase.as_str()).collect();
+                    let hint = crate::stdlib_surface::nearest_name(phase, candidates.iter().copied())
+                        .map(|candidate| format!(" — did you mean `{}`?", candidate))
+                        .unwrap_or_else(|| if candidates.is_empty() { String::new() } else {
+                            format!(" — this locus has {}", candidates.iter().map(|name| format!("`{}`", name)).collect::<Vec<_>>().join(", "))
+                        });
+                    out.push(Diag::ty(l.name.span, format!("`@phase_effects` names phase `{}`, which locus `{}` does not declare{}. The contract would never be checked.", phase, l.name.name, hint)));
                     continue;
-                };
-                let key = FnKey::method(DeclId::user(member), l.name.name.clone(), phase.clone());
+                }
                 // The frontier/graph classes: anything NOT allowed.
                 // #392 §8: DECLARED user classes join the closed set
                 // — a phase contract is closed over the live class
@@ -414,18 +346,30 @@ fn phase_effects_diags(
                 );
                 let phase_before = out.len();
                 let cert_start = out.len();
-                for class in classes {
-                    if admitted(&allowed, class) {
-                        continue;
+                for (key, source) in &roots {
+                    for &class in &classes {
+                        if admitted(&allowed, class) { continue; }
+                        let before = out.len();
+                        check_class(summary, key, source.span, class, ffi, table, out);
+                        for d in out.diags.iter_mut().skip(before) {
+                            d.message = format!("phase `{}`: {}", phase, d.message);
+                        }
                     }
-                    let before = out.len();
-                    check_class(summary, &key, span, class, ffi, table, out);
-                    // Re-label the generic message with the phase.
-                    for d in out.diags.iter_mut().skip(before) {
-                        d.message = format!(
-                            "phase `{}`: {}",
-                            phase, d.message
-                        );
+                }
+                // Check all concrete work before joining contextual unknowns:
+                // a quiet assertion must not hide a forbidden effect in a hook
+                // (or another assertion) sharing this phase.
+                let mut result = if out.len() > phase_before { Verdict::Violated } else { Verdict::Holds };
+                if result == Verdict::Holds {
+                    for (key, source) in &roots {
+                        if !summary.fns.contains_key(*key) {
+                            out.push(Diag::ty(source.span, format!("phase `{phase}` uncertified: source body `{}` is unavailable", key.display())));
+                            result = Verdict::Uncertified;
+                            continue;
+                        }
+                        let before = out.len();
+                        let body = recovery_certificate_result(summary, key, l.name.span, before, out);
+                        if body != Verdict::Holds { result = body; }
                     }
                 }
                 ranges.push((rows.len(), cert_start, out.len()));
@@ -441,11 +385,7 @@ fn phase_effects_diags(
                         l.name.name,
                         phase
                     ),
-                    result: if out.len() > phase_before {
-                        Verdict::Violated
-                    } else {
-                        Verdict::Holds
-                    },
+                    result,
                 });
             }
         }
@@ -861,6 +801,7 @@ fn effect_report_three_way_over(
                             summary, key, *span, *c, &ffi, table,
                             &mut sink,
                         );
+                        let result = recovery_certificate_result(summary, &key, *span, before, &mut sink);
                         ranges.push((rows.len(), before, sink.len()));
                         rows.push(LoweredCertificate {
                             subject: key.display(),
@@ -869,11 +810,7 @@ fn effect_report_three_way_over(
                                 key.display(),
                                 table.display(*c)
                             ),
-                            result: if sink.len() > before {
-                        Verdict::Violated
-                    } else {
-                        Verdict::Holds
-                    },
+                            result,
                         });
                     }
                 }
@@ -937,6 +874,7 @@ fn effect_report_three_way_over(
                             );
                         }
                     }
+                    let result = recovery_certificate_result(summary, &key, *span, only_before, &mut sink);
                     ranges.push((rows.len(), only_before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
@@ -945,16 +883,13 @@ fn effect_report_three_way_over(
                             set.join(", "),
                             key.display()
                         ),
-                        result: if sink.len() > only_before {
-                        Verdict::Violated
-                    } else {
-                        Verdict::Holds
-                    },
+                        result,
                     });
                 }
                 EffectAssert::PublishSet(allowed) => {
                     let before = sink.len();
                     check_publish_set(summary, key, *span, allowed, &mut sink);
+                    let result = recovery_certificate_result(summary, &key, *span, before, &mut sink);
                     ranges.push((rows.len(), before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
@@ -963,16 +898,13 @@ fn effect_report_three_way_over(
                             allowed.join(", "),
                             key.display()
                         ),
-                        result: if sink.len() > before {
-                        Verdict::Violated
-                    } else {
-                        Verdict::Holds
-                    },
+                        result,
                     });
                 }
                 EffectAssert::NoPanic => {
                     let before = sink.len();
                     check_no_panic(programs, key, *span, &mut sink);
+                    let result = recovery_certificate_result_with_policy(summary, &key, *span, before, &mut sink, false);
                     ranges.push((rows.len(), before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
@@ -980,11 +912,7 @@ fn effect_report_three_way_over(
                             "forbid reaches({{{}}}, panic)",
                             key.display()
                         ),
-                        result: if sink.len() > before {
-                        Verdict::Violated
-                    } else {
-                        Verdict::Holds
-                    },
+                        result,
                     });
                 }
                 EffectAssert::Causes(classes) => {
@@ -1050,6 +978,100 @@ fn assemble_groups(
             (row, ds)
         })
         .collect()
+}
+
+/// The shared body walk distinguishes unknown recovery work from a
+/// concrete effect violation. Every categorical certificate reads this
+/// same site inventory, including phase certificates.
+fn recovery_certificate_result(summary: &AllocSummary, key: &FnKey, span: Span, before: usize, diags: &mut DiagSink) -> Verdict {
+    recovery_certificate_result_with_policy(summary, key, span, before, diags, true)
+}
+
+fn recovery_certificate_result_with_policy(summary: &AllocSummary, key: &FnKey, span: Span, before: usize, diags: &mut DiagSink, source_effects_only: bool) -> Verdict {
+    if diags.len() > before {
+        return Verdict::Violated;
+    }
+    if let Some((chain, site_span, site_fn)) = missing_parent_execution(summary, key) {
+        diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches {chain}; the parent-protocol source context account has not been supplied", key.display())));
+        diags.push_flagged(Diag::ty(site_span,"the construction requiring contextual parent execution facts is here"),is_stdlib_fn(&site_fn));
+        return Verdict::Uncertified;
+    }
+    let gap = crate::model_graph::search([key.clone()], |at| {
+        crate::model_graph::Visit::<_, (), ()>::edges(summary.fns.get(at).into_iter()
+            .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))) .collect())
+    }, |at| summary.fns.get(at).is_some_and(|body| !summary.lifecycle_source_complete(body)
+        || (summary.no_source_failure_handlers() && !summary.constructor_predicate_source_complete(body))),
+        |_| false, None, crate::model_graph::HolePolicy::Halt);
+    if let crate::model_graph::Search::Found { hit, .. } = gap {
+        diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches `{}`; lifecycle source execution is incomplete", key.display(), hit.display())));
+        return Verdict::Uncertified;
+    }
+    if let Some((chain, site_span, site_fn)) = automatic_closure_gap(summary, key) {
+        diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches {chain}; implicit execution scheduling, frame, lifetime and failure context are not modeled", key.display())));
+        diags.push_flagged(Diag::ty(site_span, "the construction or default root requiring implicit execution coverage is here"), is_stdlib_fn(&site_fn));
+        return Verdict::Uncertified;
+    }
+    if let Some((chain, site_span, site_fn)) = find_effect_site(summary, key, |kind| match kind {
+        alloc_summary::EffectSiteKind::Recovery(op) => Some(format!("recovery {op:?}")),
+        _ => None,
+    }) {
+        diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches {chain}; recovery's implicit lifecycle calls, publishes and allocations are not modeled", key.display())));
+        diags.push_flagged(Diag::ty(site_span, "the recovery operation is here"), is_stdlib_fn(&site_fn));
+        return Verdict::Uncertified;
+    }
+    let mut context_gap=|probe:&Probe<'_>| match probe {
+        Probe::Unresolved(_,edge) if edge.closure_context_unknown => Some("closure checkpoint needs an unresolved caller implicit-self context".to_string()),
+        _=>None,
+    };
+    if let Some(path)=callgraph::witness_path(summary,key,&mut context_gap) {
+        let chain=callgraph::render_witness(key,&path);
+        diags.push(Diag::ty(span,format!("effect assertion uncertified: `{}` reaches {chain}; the caller's closure execution is not modeled",key.display())));
+        if let Some(leaf)=path.last() { diags.push_flagged(Diag::ty(leaf.span,"the contextual closure checkpoint is here"),is_stdlib_fn(&leaf.in_fn)); }
+        return Verdict::Uncertified;
+    }
+    match summary.structural_failure_path(key) {
+        Ok(Some(_)) if source_effects_only && summary.no_source_failure_handlers() => {}
+        Ok(Some(trace)) => {
+            let path = trace.path.iter().map(FnKey::display).collect::<Vec<_>>().join(" -> ");
+            let source=if trace.birth_check { format!("birth check for `{}` may reject",trace.closure) } else if trace.assertion { format!("closure assertion `{}` may fail",trace.closure) } else { format!("`violate {}`",trace.closure) };
+            diags.push(Diag::ty(span, format!("effect assertion uncertified: `{path}` reaches {source}; implicit failure-handler dispatch and recovery execution are not modeled")));
+            diags.push_flagged(Diag::ty(trace.span,if trace.birth_check { "the conditional birth check is evaluated here" } else if trace.assertion { "the conditional assertion is evaluated here" } else { "the structural failure is raised here" }), trace.foreign);
+            return Verdict::Uncertified;
+        }
+        Err(reason) => {
+            diags.push(Diag::ty(span, format!("effect assertion uncertified: {reason}")));
+            return Verdict::Uncertified;
+        }
+        Ok(None) => {}
+    }
+    Verdict::Holds
+}
+
+/// A bare allocation summary has no parent-context account. Known forbidden
+/// work remains a violation; absent required source facts cannot grant Holds.
+/// Unreached stdlib declarations do not make an otherwise unrelated program
+/// depend on their parent protocols.
+pub(crate) fn missing_parent_execution(summary: &AllocSummary, key: &FnKey) -> Option<(String, Span, FnKey)> {
+    if summary.parent_execution_supplied || !summary.protocol_hooks.values().flatten().any(|hook|
+        !hook.empty && !hook.synthesized && (summary.is_own(&hook.key)
+            || summary.reached.as_ref().is_some_and(|reached| reached.contains(&hook.key)))) { return None; }
+    find_effect_site(summary,key,|kind| match kind {
+        alloc_summary::EffectSiteKind::Spawn(child) => Some(format!("construction of `{child}`")),
+        _ => None,
+    })
+}
+
+/// The same scoped source witness for ordinary certificates and contracted
+/// stdlib entries in the canonical model. No artifact or lifecycle plan is read.
+pub(crate) fn automatic_closure_gap(summary: &AllocSummary, key: &FnKey) -> Option<(String, Span, FnKey)> {
+    let predicates_closed = summary.no_source_failure_handlers() && summary.constructor_predicate_source_complete_from(key);
+    let protocols_closed = summary.no_source_failure_handlers() && summary.protocol_source_complete_from(key);
+    find_effect_site(summary, key, |kind| match kind {
+        alloc_summary::EffectSiteKind::AutomaticClosure { target, epoch, .. } if !predicates_closed => Some(format!("automatic {} closure `{}`", epoch.as_str(), target.display())),
+        alloc_summary::EffectSiteKind::BirthCheckInvocation { target, .. } if !predicates_closed => Some(format!("birth check `{}`", target.display())),
+        alloc_summary::EffectSiteKind::ProtocolInvocation { target, stage, reason } if !protocols_closed => Some(format!("parent {} protocol{}; {}", stage.map(|s| s.as_str()).unwrap_or("accept/release"), target.as_ref().map(|t| format!(" `{}`", t.display())).unwrap_or_default(), reason.as_str())),
+        _ => None,
+    })
 }
 
 /// GH #265 coherence: ONE dispatcher over the effect classes. Every
@@ -1548,6 +1570,16 @@ fn find_effect_site(
                 }
             }
         }
+        for edge in fs.effect_evaluations() {
+            *steps += 1;
+            if *steps > callgraph::MAX_STEPS { break; }
+            if !seen.insert(edge.target.clone()) { continue; }
+            if let Some((mut tail, sp)) = walk(summary, edge.target, path, seen, steps, matches_kind) {
+                let mut out = vec![callgraph::WitnessStep { in_fn: key.clone(), span: edge.span, label: edge.target.display() }];
+                out.append(&mut tail);
+                return Some((out, sp));
+            }
+        }
         None
     }
     let mut path = Vec::new();
@@ -1612,12 +1644,12 @@ fn find_recursion(summary: &AllocSummary, root: &FnKey) -> Option<String> {
     ) -> Option<String> {
         let fs = summary.fns.get(key)?;
         path.push(key.clone());
-        for edge in &fs.calls {
+        for (callee, _) in fs.frame_targets() {
             *steps += 1;
             if *steps > callgraph::MAX_STEPS {
                 break;
             }
-            if let alloc_summary::Callee::Resolved(callee) = &edge.callee {
+            {
                 if path.contains(callee) {
                     let cyc: Vec<String> = path
                         .iter()

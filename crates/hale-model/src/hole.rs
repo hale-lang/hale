@@ -44,12 +44,16 @@ impl RelationSet {
     /// costs I cannot see" the budget engines saturate on.
     pub const COSTS: RelationSet = RelationSet(1 << 12);
 
+    /// Concrete type-wide flow classification; templates need a
+    /// substitution before this family can be closed.
+    pub const FLOW_CLASSIFICATION: RelationSet = RelationSet(1 << 13);
+
     /// Every DEFINED family bit. A hides mask outside this set
     /// names a family no judgment or capability knows — accepting
     /// it would create a valid-but-invisible hole and defeat the
     /// rule that adding a family is a reviewed schema change
     /// (round 7).
-    pub const ALL_KNOWN: RelationSet = RelationSet((1 << 13) - 1);
+    pub const ALL_KNOWN: RelationSet = RelationSet((1 << 14) - 1);
 
     pub const fn union(self, other: RelationSet) -> RelationSet {
         RelationSet(self.0 | other.0)
@@ -93,13 +97,48 @@ pub enum HoleKind {
     /// implement (decode-side honesty: refuse to pretend).
     UnsupportedArtifactSemantics,
     /// A declared executable body the behavior analysis did not
-    /// walk (an `on_failure` handler; module-scoped bodies were too
-    /// until the summary collected them, F.40 phase 3). The
+    /// walk (for example, a body whose canonical summary is unavailable). The
     /// declaration EXISTS as an entity; its calls,
     /// publishes, and effects are unknown — this hole is what
     /// keeps `exact_calls`/`exact_effects` honest until the
     /// summary covers the body family.
     UnanalyzedBody,
+    /// Recovery is typed, but its implicit lifecycle calls, publishes,
+    /// allocations and execution context are not yet modeled. Whole-body
+    /// scope deliberately supplies no invented call-site ordinal.
+    UnmodeledRecovery,
+    /// Failure dispatch can invoke existing handler bodies outside the
+    /// represented call graph. This leaves execution/effects/costs open,
+    /// not the inventory of authored publish sites. A handler's own
+    /// missing body or publish facts retain their independent holes.
+    UnmodeledFailureDispatch,
+    /// Constructor evaluation reaches a parameter default outside the
+    /// represented executable-body horizon.
+    UnmodeledInitialization,
+    /// Self lifecycle or constructor predicate source bodies are represented
+    /// by exact entries. Admission, native frames, scheduling and
+    /// retained lifetime remain unknown to quantitative judgments.
+    UnmodeledLifecycleContext,
+    /// The complete source inventory declares no failure handler. Native
+    /// failure reporting/exit costs remain outside source callback coverage.
+    UnmodeledFailureContext,
+    /// A generic locus template has no single concrete flow discipline.
+    GenericFlowTemplate,
+}
+
+impl HoleKind {
+    /// The required coverage mask for an implicit-execution gap. Publish
+    /// sites are source facts; unknown invocation of a known body does not
+    /// invent a new site. Recovery work retains its broader existing gap.
+    pub fn implicit_execution_families(&self) -> Option<RelationSet> {
+        let execution = RelationSet::CALLS.union(RelationSet::EFFECTS).union(RelationSet::COSTS);
+        match self {
+            Self::UnmodeledFailureDispatch | Self::UnmodeledInitialization => Some(execution),
+            Self::UnmodeledRecovery => Some(execution.union(RelationSet::PUBLISHES)),
+            Self::UnmodeledLifecycleContext | Self::UnmodeledFailureContext => Some(RelationSet::COSTS),
+            _ => None,
+        }
+    }
 }
 
 /// One hole: where, why, at which authored position, and —
@@ -177,6 +216,9 @@ pub fn allowed_hole_families(
     let sub = RelationSet::SUBSCRIBES;
     let e = RelationSet::EFFECTS;
     match (at, kind) {
+        (EntityRef::LocusDecl(_), K::GenericFlowTemplate) => Some((
+            RelationSet::FLOW_CLASSIFICATION, RelationSet::FLOW_CLASSIFICATION,
+        )),
         // An unfollowable call also hides the EFFECTS beyond it —
         // the builder emits CALLS ∪ EFFECTS for the call-hole
         // kinds, the call walks select by CALLS, and the
@@ -206,6 +248,8 @@ pub fn allowed_hole_families(
         // (the subject's subscriber set), so the fn-grain shape
         // stops at what the engines consume — and an unanalyzed
         // body hides ALL of what it could contain (round 9).
+        (EntityRef::Function(_), K::UnmodeledRecovery | K::UnmodeledFailureDispatch | K::UnmodeledInitialization | K::UnmodeledLifecycleContext | K::UnmodeledFailureContext) =>
+            kind.implicit_execution_families().map(|hidden| (hidden, hidden)),
         (EntityRef::Function(_), K::UnanalyzedBody) => {
             Some((c.union(p).union(e), c.union(p).union(e)))
         }

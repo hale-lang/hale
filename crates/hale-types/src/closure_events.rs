@@ -14,7 +14,7 @@
 //! Lowering reads the same typed list (`ClosureDecl::persists_through`),
 //! so what the laws accept is what runs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use hale_syntax::ast::{
     flat_decls, ClosureClause, ClosureDecl, LocusDecl, LocusMember, RecoveryEvent, RecoveryEvents, RecoveryOp, TopDecl,
@@ -101,12 +101,9 @@ pub fn closure_event_rows<'b>(bundle: &Bundle<'b>) -> ClosureEventRows<'b> {
     ClosureEventRows { rows }
 }
 
-/// What the reach law reads beside the clauses: the handler rows (who
-/// applies which recovery to a child of which type), the typed bodies
-/// (each recovery statement outside a handler, with the locus the
-/// checker typed its receiver as), the entry row (whether the world is
-/// closed), and the bundle's declarations (whose generic params a
-/// handler's child may be).
+/// What the reach law reads beside the clauses: handler routing for
+/// diagnostic context, typed recovery receivers from every body, the
+/// entry row (whether the world is closed), and the bundle's sites.
 struct Reach<'r, 'b> {
     clauses: &'r ClosureEventRows<'b>,
     handlers: &'r HandlerRouting,
@@ -262,18 +259,28 @@ fn event_of(op: RecoveryOp) -> Option<RecoveryEvent> {
     }
 }
 
-/// The events a handler row applies to its child: its ops', and
-/// `quarantine` when a restart states a `for` bound (a spent bound
-/// quarantines).
-fn handler_events(row: &HandlerRow) -> BTreeSet<RecoveryEvent> {
-    let mut out: BTreeSet<RecoveryEvent> = row.ops.iter().filter_map(|op| event_of(*op)).collect();
-    if row.bounds.iter().any(|b| matches!(b.op, RecoveryOp::Restart | RecoveryOp::RestartInPlace)) {
-        out.insert(RecoveryEvent::Quarantine);
+/// Whether a typed statement belongs to this handler. Minted bodies join
+/// by declaration identity. Only an unminted bundle uses source containment.
+fn in_handler(handler: &HandlerRow, body: hale_syntax::ast::NodeId, row: &RecoveryRow) -> bool {
+    if !row.in_handler || row.parent_name.as_deref() != Some(handler.parent.as_str()) {
+        return false;
     }
-    out
+    match handler.id {
+        Some(id) if !body.is_none() => id.index == body.0,
+        _ => handler.span.start.0 <= row.statement.start.0 && row.statement.end.0 <= handler.span.end.0,
+    }
 }
 
-/// The events a recovery statement outside the handlers applies.
+/// The events a handler's typed statements may apply to this locus.
+/// Its signature alone does not identify the recovery receiver.
+fn handler_events(handler: &HandlerRow, typed: &TypedBodies, locus: &LocusDecl) -> BTreeSet<RecoveryEvent> {
+    typed.recoveries()
+        .filter(|(body, row)| in_handler(handler, *body, row) && receives(row, locus))
+        .flat_map(|(_, row)| statement_events(row))
+        .collect()
+}
+
+/// The events a recovery statement applies to its typed receiver.
 fn statement_events(row: &RecoveryRow) -> BTreeSet<RecoveryEvent> {
     let mut out: BTreeSet<RecoveryEvent> = event_of(row.op).into_iter().collect();
     if row.bounded && matches!(row.op, RecoveryOp::Restart | RecoveryOp::RestartInPlace) {
@@ -318,7 +325,7 @@ fn receives(row: &RecoveryRow, locus: &LocusDecl) -> bool {
 /// name, whose witness is every handler and recovery statement that
 /// names the locus with the events it applies (or the locus, when none
 /// does). A spent `restart(c) for N` bound is `quarantine`. A recovery
-/// statement outside the handlers names the locus the checker typed its
+/// statement in any body names the locus the checker typed its
 /// receiver as, whatever the receiver is (a param, a local, a field of
 /// another value, a call's result); a generic body's, as each of its
 /// specializations types it.
@@ -326,35 +333,16 @@ fn receives(row: &RecoveryRow, locus: &LocusDecl) -> bool {
 /// Not judged when the world is not closed (the entry row has no entry,
 /// as rule 9 asks: a library checked alone has no parents), for an
 /// imported locus, or for an event some recovery applies to a child no
-/// row names: a generic supervisor's handler's child (its parent's type
-/// parameter), or a statement whose receiver the checker typed as no
+/// row names: a statement whose receiver the checker typed as no
 /// locus (a value of a type parameter in a body no specialization was
 /// walked for).
 fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
     if reach.entry.entry().is_none() {
         return;
     }
-    let generics: BTreeMap<&str, Vec<&str>> = reach
-        .bundle
-        .programs
-        .values()
-        .flat_map(|p| flat_decls(&p.items))
-        .filter_map(|d| match d {
-            TopDecl::Locus(l) => Some((l.name.name.as_str(), l.generics.iter().map(|g| g.name.name.as_str()).collect())),
-            _ => None,
-        })
-        .collect();
-    let is_type_param = |parent: Option<&str>, child: &ChildRef| match (parent, child) {
-        (Some(p), ChildRef::External(n)) => generics.get(p).is_some_and(|gs| gs.contains(&n.as_str())),
-        _ => false,
-    };
-    // The events some recovery applies to a child the rows cannot name.
+    // Only typed receivers contribute events. A handler's signature or
+    // deduplicated op vocabulary does not identify their targets.
     let mut unnamed: BTreeSet<RecoveryEvent> = BTreeSet::new();
-    for row in reach.handlers.rows() {
-        if is_type_param(Some(&row.parent), &row.child) {
-            unnamed.extend(handler_events(row));
-        }
-    }
     // A generic body's statement is named by its specializations' rows:
     // the template's walk types a value of a type parameter as nothing.
     let specialized: BTreeSet<(u32, u32, u32)> = reach
@@ -376,18 +364,13 @@ fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
         let handlers: Vec<&HandlerRow> =
             reach.handlers.rows().iter().filter(|h| is_locus(&h.child, h.child_decl, locus, site)).collect();
         // One statement once, however many specializations name the locus.
-        let mut statements: Vec<&RecoveryRow> = Vec::new();
-        for (_, s) in reach.typed.recoveries().filter(|(_, s)| receives(s, locus)) {
-            if !statements.iter().any(|seen| seen.statement == s.statement && seen.op == s.op) {
-                statements.push(s);
+        let mut statements: Vec<(hale_syntax::ast::NodeId, &RecoveryRow)> = Vec::new();
+        for (body, s) in reach.typed.recoveries().filter(|(_, s)| receives(s, locus)) {
+            if !statements.iter().any(|(b, seen)| b.0 == body.0 && seen.statement == s.statement && seen.op == s.op) {
+                statements.push((body, s));
             }
         }
-        let applied: BTreeSet<RecoveryEvent> = handlers
-            .iter()
-            .map(|h| handler_events(h))
-            .chain(statements.iter().map(|s| statement_events(s)))
-            .flatten()
-            .collect();
+        let applied: BTreeSet<RecoveryEvent> = statements.iter().flat_map(|(_, s)| statement_events(s)).collect();
         let mut judged: Vec<RecoveryEvent> = Vec::new();
         for n in &row.events.names {
             let Some(event) = n.event else { continue };
@@ -401,10 +384,15 @@ fn unreached_events(reach: &Reach<'_, '_>, out: &mut Vec<Violation>) {
                 .map(|h| WitnessStep {
                     span: h.span,
                     origin: SpanOrigin::Seed,
-                    note: format!("`{}` handles a failing `{l}` here and applies {}", h.parent, spelled(&handler_events(h))),
+                    note: format!("`{}` handles a failing `{l}` here and applies {}", h.parent, spelled(&handler_events(h, reach.typed, locus))),
                 })
                 .collect();
-            witness.extend(statements.iter().map(|s| WitnessStep {
+            // A same-target handler already supplies a witness above. A
+            // recovery in a handler for another type needs its own statement
+            // witness, as does an ordinary method's recovery.
+            witness.extend(statements.iter().filter(|(body, s)| {
+                !handlers.iter().any(|h| in_handler(h, *body, s))
+            }).map(|(_, s)| WitnessStep {
                 span: s.statement,
                 origin: SpanOrigin::Seed,
                 note: format!(

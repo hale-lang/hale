@@ -40,6 +40,8 @@ pub struct Capabilities {
     /// points) are complete for every analyzed function — what the
     /// quantitative `@budget` laws count over (Change 5h).
     pub exact_costs: bool,
+    /// Every represented declaration has a concrete flow discipline.
+    pub exact_flow_classification: bool,
 }
 
 impl Capabilities {
@@ -81,6 +83,7 @@ impl Capabilities {
                 RelationSet::DELIVERY,
             ),
             ("exact_costs", self.exact_costs, RelationSet::COSTS),
+            ("exact_flow_classification", self.exact_flow_classification, RelationSet::FLOW_CLASSIFICATION),
         ]
     }
 }

@@ -1,7 +1,7 @@
 //! `FnKey` is the declaration's identity (F.40 phase 3, C3 rest).
 //!
 //! Every fn-like declaration the allocation summary walks (a free fn, a
-//! locus method, an authored lifecycle hook, a mode) is a row keyed by
+//! locus method, an authored lifecycle hook, a mode or default body) is a row keyed by
 //! its minted site, as the universe that minted it and its index there
 //! (`DeclId`); the (locus name, fn name) pair is the row's display name.
 //! The effect rows, the certificate engines and every other reader that
@@ -58,6 +58,12 @@ fn every_row_is_keyed_by_its_declarations_site() {
             }
             hale_syntax::ast::TopDecl::Locus(l) => {
                 for m in &l.members {
+                    if let hale_syntax::ast::LocusMember::Params(pb) = m {
+                        for param in &pb.params {
+                            expected.push((format!("{}::params::{}", l.name.name, param.name.name), DeclId::user(param.id).expect("minted default")));
+                        }
+                        continue;
+                    }
                     let (name, id) = match m {
                         hale_syntax::ast::LocusMember::Fn(f) => (f.name.name.clone(), f.id),
                         hale_syntax::ast::LocusMember::Lifecycle(lc) if !lc.synthesized => ("birth".to_string(), lc.id),
@@ -99,6 +105,11 @@ fn the_models_functions_carry_their_declarations_site() {
             hale_syntax::ast::TopDecl::Locus(l) => {
                 for m in &l.members {
                     match m {
+                        hale_syntax::ast::LocusMember::Params(pb) => {
+                            for param in &pb.params {
+                                sites.insert(format!("W::params::{}", param.name.name), param.id.0);
+                            }
+                        }
                         hale_syntax::ast::LocusMember::Fn(f) => {
                             sites.insert(format!("W::{}", f.name.name), f.id.0);
                         }

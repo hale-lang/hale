@@ -521,11 +521,13 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let roles = hale_types::roles::role_rows(&bundle);
     let units = hale_types::units::derive_unit_rows(&bundle);
     let surfaces = hale_types::surfaces::surface_rows(&bundle, &entry, &placement, &top.topics);
+    let default_evaluations=ownership.default_evaluations(&ownership.bubble_plans(),Default::default());
     let inputs = CheckInputs {
         top: &top,
         handlers: &handlers,
         flows: &flows,
         ownership: &ownership,
+        default_evaluations: &default_evaluations,
         effects: &effects,
         entry: &entry,
         bindings: &bindings,

@@ -21,6 +21,8 @@ use std::process::Command;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("hale_test_fn_ptr_{}", name));
@@ -197,4 +199,52 @@ fn fn_pointer_with_string_arg_round_trips() {
         "String-arg call didn't propagate; got: {:?}",
         stdout
     );
+}
+
+fn checked_callback_run(source: &str, tag: &str) -> String {
+    let program = hale_syntax::parse_source(source).unwrap();
+    let diagnostics = entries::check_program(&program);
+    assert!(!diagnostics.iter().any(|d| d.is_error()), "{diagnostics:?}");
+    let binary = harness::unique_bin(tag);
+    harness::build_source_asan(source, &binary);
+    let mut command = Command::new(&binary);
+    if cfg!(target_os = "macos") { command.env("ASAN_OPTIONS", "detect_leaks=0"); }
+    let output = command.output().expect("run callback program");
+    let _ = std::fs::remove_file(&binary);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn an_external_locus_callback_uses_the_string_return_abi() {
+    let source = r#"
+fn decorate(value: String) -> String { return "hello " + value; }
+locus Callbacks { params { cb: fn(String) -> String = decorate; } }
+fn invoke(callbacks: Callbacks) -> String { return callbacks.cb("world"); }
+fn main() { let callbacks = Callbacks { }; println(invoke(callbacks)); }
+"#;
+    assert_eq!(checked_callback_run(source, "external_locus_callback_string"), "hello world\n");
+}
+
+#[test]
+fn a_failure_handler_calls_the_failed_childs_callback_field() {
+    let source = r#"
+fn increment(value: Int) -> Int { return value + 1; }
+locus Other {
+    params { n: Int = 0; cb: fn(Int) -> Int = increment; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { violate boom; }
+}
+main locus App {
+    params { other: Other = Other { }; }
+    on_failure(other: Other, error: ClosureViolation) {
+        println(other.cb(41));
+        quarantine(other);
+    }
+    run() { self.other.go(); }
+}
+fn main() { App { }; }
+"#;
+    assert_eq!(checked_callback_run(source, "failure_handler_callback_field"), "42\n");
 }

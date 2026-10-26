@@ -121,80 +121,24 @@ impl Qty {
 /// is charged, aggregates by their declared width where known. The
 /// contract is "the real frame is no larger than this," which is what
 /// makes the resulting bound safe to assert on.
-fn frame_bytes(fd: &FnDecl) -> u64 {
-    const SLOT: u64 = 8; // one register-width slot
-    const CALL_OVERHEAD: u64 = 32; // return addr + saved regs + align
-    let mut n = CALL_OVERHEAD;
-    n += fd.params.len() as u64 * SLOT;
-    /// Declared width of one local of type `t`, in bytes.
-    ///
-    /// GH #767: a fixed-size array local is no longer unconditionally
-    /// a pointer into an arena — a non-escaping `[c; N]` literal is a
-    /// frame slot now — so an array is charged its DECLARED extent,
-    /// `N * width(elem)`. Over-approximating is the contract here
-    /// ("the real frame is no larger than this"), so the charge also
-    /// stands for the arrays that still take the arena path.
-    fn width_of(t: &TypeExpr) -> u64 {
-        const SLOT: u64 = 8;
-        match t {
-            // A Bytes/String local carries a pointer; the buffer is
-            // arena/heap, not stack.
-            TypeExpr::Named { path, .. }
-                if path
-                    .segments
-                    .last()
-                    .map(|s| s.name == "Decimal")
-                    .unwrap_or(false) =>
-            {
-                16
-            }
-            TypeExpr::Array { elem, size, .. } => {
-                let count = match size {
-                    Some(Expr::Literal(Literal::Int(k), _)) if *k > 0 => {
-                        *k as u64
-                    }
-                    // An unsized or computed extent tells us nothing;
-                    // charge the pointer and let the premise tests in
-                    // hale-codegen catch a shape that outgrows it.
-                    _ => return SLOT,
-                };
-                count.saturating_mul(width_of(elem)).max(SLOT)
-            }
+pub(crate) fn local_stack_bytes(ty: Option<&TypeExpr>, value: &Expr) -> u64 {
+    const SLOT: u64 = 8;
+    fn width_of(ty: &TypeExpr) -> u64 {
+        match ty {
+            TypeExpr::Named { path, .. } if path.segments.last().is_some_and(|s| s.name == "Decimal") => 16,
+            TypeExpr::Array { elem, size: Some(Expr::Literal(Literal::Int(count), _)), .. } if *count > 0 =>
+                (*count as u64).saturating_mul(width_of(elem)).max(SLOT),
             _ => SLOT,
         }
     }
-    // Locals: one slot each, plus the known-wide shapes.
-    fn count_block(b: &Block, n: &mut u64) {
-        for st in &b.stmts {
-            match st {
-                Stmt::Let { ty, value, .. } => {
-                    *n += match ty {
-                        Some(t) => width_of(t),
-                        // No ascription: an array-repeat literal still
-                        // declares its extent at the RHS.
-                        None => match value {
-                            Expr::ArrayRepeat { count, .. } if *count > 0 => {
-                                count.saturating_mul(SLOT)
-                            }
-                            Expr::Array(xs, _) if !xs.is_empty() => {
-                                (xs.len() as u64).saturating_mul(SLOT)
-                            }
-                            _ => SLOT,
-                        },
-                    };
-                }
-                Stmt::If(i) => {
-                    count_block(&i.then_block, n);
-                }
-                Stmt::While { body, .. } | Stmt::For { body, .. } => {
-                    count_block(body, n)
-                }
-                _ => {}
-            }
-        }
+    match ty {
+        Some(ty) => width_of(ty),
+        None => match value {
+            Expr::ArrayRepeat { count, .. } if *count > 0 => count.saturating_mul(SLOT),
+            Expr::Array(values, _) if !values.is_empty() => (values.len() as u64).saturating_mul(SLOT),
+            _ => SLOT,
+        },
     }
-    count_block(&fd.body, &mut n);
-    n
 }
 
 /// Per-fn frame sizes for the bundle, keyed like the call graph.
@@ -203,15 +147,15 @@ fn frame_bytes(fd: &FnDecl) -> u64 {
 /// `FrameBytes` cost sites so the migrated `@budget(stack_bytes)`
 /// judgment counts over the model. ONE authority — the estimate is
 /// computed here and called, not re-derived there.
-pub(crate) fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
+pub(crate) fn frame_map(programs: &[&Program], summary: &AllocSummary) -> BTreeMap<FnKey, u64> {
     let mut out = BTreeMap::new();
     for p in programs {
-        for item in &p.items {
+        for item in hale_syntax::ast::flat_decls(&p.items) {
             match item {
                 TopDecl::Fn(fd) => {
                     out.insert(
                         FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone()),
-                        frame_bytes(fd),
+                        summary.fns.get(&FnKey::free_fn(DeclId::user(fd.id), fd.name.name.clone())).map_or(64, |row| row.stack_bytes),
                     );
                 }
                 TopDecl::Locus(l) => {
@@ -222,7 +166,7 @@ pub(crate) fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
                                     DeclId::user(fd.id), l.name.name.clone(),
                                     fd.name.name.clone(),
                                 ),
-                                frame_bytes(fd),
+                                summary.fns.get(&FnKey::method(DeclId::user(fd.id), l.name.name.clone(), fd.name.name.clone())).map_or(64, |row| row.stack_bytes),
                             );
                         }
                     }
@@ -230,6 +174,9 @@ pub(crate) fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
                 _ => {}
             }
         }
+    }
+    for key in summary.initializers.keys() {
+        if let Some(row) = summary.fns.get(key) { out.insert(key.clone(), row.stack_bytes); }
     }
     out
 }
@@ -255,7 +202,7 @@ fn stack_depth(
     if *steps > callgraph::MAX_STEPS {
         return Qty::Unbounded;
     }
-    let own = Qty::Finite(*frames.get(key).unwrap_or(&64));
+    let mut own = Qty::Finite(*frames.get(key).unwrap_or(&64));
     let Some(fs) = summary.fns.get(key) else {
         return own;
     };
@@ -266,6 +213,12 @@ fn stack_depth(
             let sub = stack_depth(summary, frames, callee, path, memo, steps);
             deepest = deepest.max(sub);
         }
+    }
+    // Defaults execute inline; assertions share a generated epoch wrapper.
+    // Sum these conservative body charges and helper peaks. This accounts
+    // for retained locals without asserting one native frame per assertion.
+    for edge in fs.body_evaluations() {
+        own = own.add(stack_depth(summary, frames, edge.target, path, memo, steps));
     }
     path.pop();
     let total = own.add(deepest);
@@ -418,6 +371,15 @@ fn count_dim(
     for q in group_max.into_values() {
         total = total.add(q);
     }
+    for edge in fs.body_evaluations() {
+        *steps += 1;
+        if *steps > callgraph::MAX_STEPS || path.contains(&edge.target) {
+            path.pop();
+            return Qty::Unbounded;
+        }
+        let sub = count_dim(summary, edge.target, dim, fanout_of, carrier_mask, path, steps);
+        total = total.add(if edge.loop_depth > 0 && sub != Qty::Finite(0) { Qty::Unbounded } else { sub });
+    }
     path.pop();
     total
 }
@@ -490,7 +452,7 @@ fn quantitative_report(
     // vanish behind the seed boundary; a call into the stdlib's
     // analysis copy is the unresolved call it has always been here.
     let summary = summary.program_rows();
-    let frames = frame_map(programs);
+    let frames = frame_map(programs, &summary);
     let classes = crate::effect_classes::EffectClassTable::of(programs);
     let mut diags = Vec::new();
     let mut rows = Vec::new();

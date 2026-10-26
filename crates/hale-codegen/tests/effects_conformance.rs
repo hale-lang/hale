@@ -21,6 +21,9 @@
 //! records — rides the observation surface and is a follow-on; the
 //! seam is `std::diag::syscall_count` / `heap_alloc_count`, which
 //! the runtime already exposes for exactly this purpose.
+//!
+//! The wrap counters are Linux-only. A target reporting -1 has no
+//! measurement; equal unavailable sentinels cannot prove zero effects.
 
 #[path = "../../hale-types/tests/support/entries.rs"]
 mod entries;
@@ -67,6 +70,7 @@ fn build_and_run(tag: &str, src: &str) -> (String, bool) {
 /// is the oracle: sample it around the certified call and assert the
 /// delta is zero.
 #[test]
+#[cfg(target_os = "linux")]
 fn no_syscall_claim_holds_at_runtime() {
     let src = r#"
         @no_syscall fn compute(n: Int) -> Int {
@@ -100,6 +104,7 @@ fn no_syscall_claim_holds_at_runtime() {
 /// allocations per call. `std::diag::heap_alloc_count` is the
 /// runtime oracle for that claim.
 #[test]
+#[cfg(target_os = "linux")]
 fn zero_alloc_budget_holds_at_runtime() {
     let src = r#"
         @budget(alloc_per_call = 0) fn scale(n: Int) -> Int {
@@ -132,6 +137,7 @@ fn zero_alloc_budget_holds_at_runtime() {
 /// the effect it's asked about. Without this, a broken counter would
 /// make every conformance test vacuously pass.
 #[test]
+#[cfg(target_os = "linux")]
 fn the_oracle_detects_effects_when_they_happen() {
     let src = r#"
         type Blob { a: Int; b: Int; }
@@ -162,4 +168,18 @@ fn the_oracle_detects_effects_when_they_happen() {
          stdout: {}",
         out
     );
+}
+
+#[test]
+fn counter_availability_matches_the_host_backend() {
+    let (out, ok) = build_and_run("counter_availability", "fn main() { println(\"heap=\", std::diag::heap_alloc_count()); println(\"writes=\", std::diag::syscall_count(\"write\")); }");
+    assert!(ok, "{out}");
+    let count = |prefix: &str| out.lines().find_map(|line| line.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("missing {prefix}: {out}")).parse::<i64>().unwrap();
+    let (heap, writes) = (count("heap="), count("writes="));
+    if cfg!(target_os = "linux") {
+        assert!(heap >= 0 && writes >= 0, "native counters must be available for the conformance oracle: {out}");
+    } else {
+        assert_eq!((heap, writes), (-1, -1), "this backend has no GNU link-wrap counters: {out}");
+    }
 }

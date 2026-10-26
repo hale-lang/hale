@@ -587,7 +587,7 @@ fn assert_traced_in(file: &str, no_bus_devirt: bool) -> Ran {
 fn assert_asan(file: &str) {
     for no_bus_devirt in [false, true] {
         let bin = build(file, true, no_bus_devirt);
-        let ran = run_bin(&bin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+        let ran = run_bin(&bin, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
         let _ = std::fs::remove_file(&bin);
         let hits = sanitizer_hits(&ran);
         assert!(hits.is_empty(), "{file}, no_bus_devirt={no_bus_devirt}: {hits:?}\n{}", report(&ran));
@@ -740,7 +740,7 @@ fn without_the_handler_hold_the_subscriber_is_freed_under_its_handler() {
         let bin = build_with(file, true, true, no_bus_devirt);
         let ran = run_bin(
             &bin,
-            &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1"), ("LOTUS_LIFECYCLE_SKIP", "HandlerHold")],
+            &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1"), ("LOTUS_LIFECYCLE_SKIP", "HandlerHold")],
         );
         let _ = std::fs::remove_file(&bin);
         assert_eq!(judge(file, &ran), "heap-use-after-free", "{file} without the hold, no_bus_devirt={no_bus_devirt}\n{}", report(&ran));

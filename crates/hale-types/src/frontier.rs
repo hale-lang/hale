@@ -92,6 +92,12 @@ pub fn infer_effect_bounds(
         };
         let mut may = EffectSet::PURE;
         let mut known = EffectSet::PURE;
+        if (summary.closure_assertions.contains_key(key) && !summary.no_source_failure_handlers()) || fs.has_unknown_closure_context()
+            || !summary.lifecycle_source_complete(fs) {
+            // Evaluated operands are known below; reporting and dispatch on
+            // comparison failure remain a separate conditional execution gap.
+            may=may.union(EffectSet::UNCLASSIFIED);*unknown=true;
+        }
         // #345: what THIS fn declares it carries. The callee arm below
         // unions a leaf's `carries` when something calls it, but a fn's
         // own classification was invisible to its own inferred set — so
@@ -120,7 +126,18 @@ pub fn infer_effect_bounds(
                     EffectSet::PUBLISH
                 }
                 alloc_summary::EffectSiteKind::Spawn(_) => EffectSet::ALLOC,
+                alloc_summary::EffectSiteKind::Recovery(_) | alloc_summary::EffectSiteKind::AutomaticClosure { .. } | alloc_summary::EffectSiteKind::BirthCheckInvocation { .. } | alloc_summary::EffectSiteKind::LifecycleInvocation { .. } | alloc_summary::EffectSiteKind::ProtocolInvocation { .. } => EffectSet::PURE,
             });
+        }
+        if fs.effect_sites.iter().any(|s| match s.kind {
+            alloc_summary::EffectSiteKind::Recovery(_) => true,
+            alloc_summary::EffectSiteKind::ProtocolInvocation { .. } => !summary.no_source_failure_handlers() || !summary.protocol_source_complete(fs, s),
+            alloc_summary::EffectSiteKind::AutomaticClosure { .. } | alloc_summary::EffectSiteKind::BirthCheckInvocation { .. } =>
+                !summary.no_source_failure_handlers() || !summary.constructor_predicate_source_complete(fs),
+            _ => false,
+        }) {
+            may = EffectSet::UNCLASSIFIED;
+            *unknown = true;
         }
         for edge in &fs.calls {
             match &edge.callee {
@@ -197,12 +214,21 @@ pub fn infer_effect_bounds(
                 }
             }
         }
+        for edge in fs.effect_evaluations() {
+            let (m, kn) = walk(summary, edge.target, ffi, seen, steps, unknown);
+            may = may.union(m);
+            known = known.union(kn);
+        }
         (may, known)
     }
     let mut seen = BTreeSet::new();
     let mut steps = 0u32;
     let mut unknown = false;
-    let (effects, known) = walk(summary, key, ffi, &mut seen, &mut steps, &mut unknown);
+    let (mut effects, known) = walk(summary, key, ffi, &mut seen, &mut steps, &mut unknown);
+    if crate::effects::missing_parent_execution(summary,key).is_some() {
+        effects = EffectSet::UNCLASSIFIED;
+        unknown = true;
+    }
     EffectBounds { effects, known, unknown }
 }
 
@@ -326,6 +352,9 @@ fn collect_published_subjects(
         if let Callee::Resolved(k) = &edge.callee {
             collect_published_subjects(summary, k, out, seen);
         }
+    }
+    for edge in fs.effect_evaluations() {
+        collect_published_subjects(summary, edge.target, out, seen);
     }
 }
 

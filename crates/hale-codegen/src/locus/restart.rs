@@ -544,7 +544,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .collect()
     }
 
-    /// After the params loop of a locus some handler restarts in place:
+    /// After the params loop of a locus a recovery may restart in place:
     /// copy the params as built — the literal's values, defaults as they
     /// evaluated then — into `__built_params`, in the locus's own arena.
     /// The copies are the instance's, never a field's, so a later
@@ -555,11 +555,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        // The locus types some handler restarts in place: a question
-        // over the routing rows' recovery ops, whose walk reaches every
-        // statement (an `if` or `match` used as a value included).
-        // Total: no handler row restarting it in place means none does.
-        if !self.handlers.restarts_in_place(locus_name) {
+        // The typed receiver selects the target, including in helpers
+        // and handlers for other types. Unknown receivers conservatively
+        // retain a snapshot; a handler signature cannot justify skipping it.
+        if !self.typed.may_restart_in_place(locus_name) {
             return Ok(());
         }
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
@@ -801,7 +800,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 RecoveryStep::Birth => {
                     let birth_call =
-                        info.methods.get("birth").copied().filter(|_| !info.empty_lifecycle.contains("birth"));
+                        self.birth_method(info, name, true)?;
                     self.lc_step("Birth", Some(self_arg), Some(name), |cx| {
                         if let Some(birth) = birth_call {
                             cx.builder.build_call(birth, &[self_arg.into()], "restart.birth").map_err(e)?;

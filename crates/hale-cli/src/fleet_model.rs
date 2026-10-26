@@ -49,7 +49,7 @@ pub struct ComponentModel {
     pub shape_hash: String,
     /// `sorts.fns` — the component's vertex universe.
     pub fns: Vec<String>,
-    /// `calls` ∪ `calls_via_stdlib`, (from, to) — the union the
+    /// `calls` ∪ `calls_via_stdlib` ∪ `initializes`, (from, to) — the union the
     /// component's own checker walks.
     pub calls: Vec<(String, String)>,
     /// V1 publish relation, (fn, subject-name).
@@ -118,7 +118,8 @@ impl ComponentModel {
             )?);
         }
         let mut calls: Vec<(String, String)> = Vec::new();
-        for rel in ["calls", "calls_via_stdlib"] {
+        for rel in ["calls", "calls_via_stdlib", "initializes", "argument_evaluations", "closure_evaluations", "lifecycle_evaluations", "constructor_checks"] {
+            if matches!(rel, "initializes" | "argument_evaluations" | "closure_evaluations" | "lifecycle_evaluations" | "constructor_checks") && v["relations"].get(rel).is_none() { continue; }
             for (i, e) in req_arr(
                 &v["relations"][rel],
                 &format!("relations.{}", rel),
@@ -143,6 +144,11 @@ impl ComponentModel {
                     )?,
                 ));
             }
+        }
+        for edge in v["relations"]["protocol_evaluations"].as_array().into_iter().flatten() {
+            let context = edge["context"].as_u64().and_then(|i| v["relations"]["protocol_contexts"].get(i as usize))
+                .ok_or_else(|| format!("{label}: missing parent protocol context"))?;
+            calls.push((req_str(&context["from"], "protocol context.from")?, req_str(&edge["to"], "protocol evaluation.to")?));
         }
         let mut publishes: Vec<(String, String)> = Vec::new();
         for (i, p) in req_arr(

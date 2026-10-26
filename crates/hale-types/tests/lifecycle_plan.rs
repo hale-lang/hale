@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::lifecycle::{
     DomainRole, FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
-    Spine, Status, Template, Terminal, DECISION_LINES,
+    Resource, Spine, Status, Template, Terminal, DECISION_LINES,
 };
 use hale_types::lifecycle::spine::{BIRTH_KINDS, CASCADE_STEPS, RECLAIM_STEPS};
 use hale_types::placement::{Bound, DomainKind, SiteUniverse};
@@ -124,6 +124,40 @@ fn the_plan_is_demanded_once_and_no_check_builds_it() {
     let errors: Vec<String> = s.demand_check().expect("checked").diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(s.builds()["lifecycle_order"], 0, "the check reads no lifecycle plan");
+    assert_eq!(s.builds()["lifecycle_context"], 0);
+    let contexts = s.demand_lifecycle_contexts().expect("source contexts");
+    assert!(std::ptr::eq(contexts, s.demand_lifecycle_contexts().expect("cached contexts")));
+    assert_eq!(s.builds()["lifecycle_context"], 1);
+    assert_eq!(s.builds()["lifecycle_order"], 0, "source contexts derive no emission plan");
+    let model = s.demand_model().expect("source model");
+    let canonical = model.analyses.lifecycle_contexts.as_ref().expect("canonical source contexts");
+    assert_eq!(canonical.contexts.len(), contexts.instances.len());
+    assert_eq!(canonical.domains.iter().map(|d| &d.source).collect::<Vec<_>>(), s.demand_placement().unwrap().domains.iter().collect::<Vec<_>>());
+    for (original, projected) in contexts.instances.iter().zip(&canonical.contexts) {
+        assert_eq!(original.site.template,projected.template);
+        assert_eq!(original.contributions,projected.contributions);
+        assert_eq!(original.bound,projected.bound);
+        assert_eq!(original.site.decl.site,projected.declaration.key.site);
+    }
+    assert_eq!(s.builds()["lifecycle_order"], 0, "model reads no obligation plan");
+    assert_eq!(s.builds()["lifecycle_context"], 1, "model and plan share the source family");
+    canonical.validate(model).expect("valid contexts");
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].contributions[0].own = Some(hale_types::placement::DomainId(u32::MAX));
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })));
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].declaration.key.site.universe = SiteUniverse::StdlibAnalysis;
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })));
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].contributions[0].owner = Some(0);
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })));
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].contributions[0].owner = Some(1);
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })), "two-template ownership cycle");
+    let mut broken = model.clone();
+    let duplicate = broken.analyses.lifecycle_contexts.as_ref().unwrap().contexts[0].clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts.push(duplicate);
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })), "duplicate source template");
     let first: *const LifecyclePlan = plan(&s);
     let again: *const LifecyclePlan = plan(&s);
     assert_eq!(first, again);
@@ -143,6 +177,28 @@ fn the_plans_laws_hold_over_the_corpus() {
         let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
         let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(false, false)) else { continue };
         let Ok(plan) = s.demand_lifecycle() else { continue };
+        let contexts = s.demand_lifecycle_contexts().expect("plan has source contexts");
+        for row in &contexts.instances {
+            assert_eq!(row.universe, row.site.decl.site.universe, "{}: source universe", p.origin);
+            for gap in &row.owner_gaps {
+                if let hale_types::lifecycle_context::OwnerGap::Recursive { candidate } = gap {
+                    assert!(*candidate < contexts.instances.len(), "{}: recursive owner identity", p.origin);
+                }
+            }
+            for contribution in &row.contributions {
+                for domain in [contribution.it, contribution.own].into_iter().flatten() {
+                    assert!((domain.0 as usize) < plan.domains.len(), "{}: domain identity", p.origin);
+                }
+                if let Some(owner) = contribution.owner {
+                    let parent = &contexts.instances[owner];
+                    if let Some(under) = contribution.under {
+                        assert!(under < parent.contributions.len(), "{}: parent context identity", p.origin);
+                    }
+                } else {
+                    assert!(contribution.under.is_none(), "{}: parent context without owner", p.origin);
+                }
+            }
+        }
         programs += 1;
         instances += plan.instances.len();
         rows += plan.obligations.len();
@@ -656,6 +712,46 @@ fn id_of(p: &LifecyclePlan, o: &Obligation) -> ObligationId {
     p.iter().find(|(_, x)| std::ptr::eq(*x, o)).map(|(id, _)| id).expect("in the plan")
 }
 
+/// A mailbox yield can replace a subscriber below the current stack
+/// frame. Its handler holds the instance through its terminal event.
+#[test]
+fn pinned_mailbox_handlers_retain_their_subscribers_until_return() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_pinned_yield_replaces_child.hl"));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    for decl in ["Kid", "Owner"] {
+        for handler in rows(p, decl, K::Handler) {
+            assert_eq!(handler.holder.spine, Spine::QueueDrain);
+            assert_eq!(claimed(p, handler), labels(&["pinned"]));
+            let id = id_of(p, handler);
+            assert!(handler.lifetime.iter().any(|r| r.resource == Resource::Instance
+                && r.until.obligation == id && r.until.point == Point::Ended && r.status == Status::Shipped));
+            let reclaim = p.obligations.iter().find(|r| r.kind == K::Reclaim && r.site == handler.site).expect("reclaim");
+            assert!(reclaim.edges.completion.iter().any(|r| r.event.obligation == id && r.event.point == Point::Ended));
+        }
+        assert!(!rows(p, decl, K::Handler).is_empty(), "{decl} owes a handler");
+    }
+}
+
+/// One literal template can receive cells on both kinds of executor.
+/// Each handler row names only the domains on which that row runs.
+#[test]
+fn a_shared_subscriber_template_keeps_pool_and_mailbox_handler_domains() {
+    let s = snapshot("type Msg { n: Int; }\ntopic Hits { payload: Msg; }\nlocus Leaf { bus { subscribe Hits as on_hit; } fn on_hit(m: Msg) { } }\nlocus Runner { run() { let leaf = Leaf { }; } }\nmain locus App { params { p: Runner = Runner { }; q: Runner = Runner { }; } placement { p: pinned; q: cooperative(pool = side); } }\nfn main() { App { }; }\n");
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let handlers = rows(p, "Leaf", K::Handler);
+    assert_eq!(handlers.len(), 2, "one Leaf template owes both executor rows");
+    for (spine, domain) in [(Spine::PoolRun, "pool:side"), (Spine::QueueDrain, "pinned")] {
+        let handler = handlers.iter().find(|h| h.holder.spine == spine).expect("executor's row");
+        assert_eq!(claimed(p, handler), labels(&[domain]));
+        assert_eq!(handler.runs_on.as_ref().unwrap().rule.status, Status::Shipped);
+        let id = id_of(p, handler);
+        assert!(one(p, "Leaf", K::Reclaim).edges.completion.iter()
+            .any(|r| r.event.obligation == id && r.event.point == Point::Ended));
+    }
+}
+
 /// `Parent { }` built by App's run() on main and by Worker's on pool
 /// `side`: Parent's field default `Leaf { }` is one template with both.
 fn two_parents(leaf: &str, extra: &str, worker_placed: bool) -> String {
@@ -932,6 +1028,35 @@ fn a_resumed_locus_with_no_run_owes_none() {
     for run in runs {
         assert_eq!((run.guard, run.line, run.status), (PathGuard::Restart, Some("13"), Status::Shipped));
         assert_eq!(run.terminals, vec![Terminal::NotStarted(NotStarted::NoRun)]);
+    }
+}
+
+/// C25/C31: teardown delivery uses the instance's bound supervisor,
+/// independently of the lowering context and of type-wide flow policy.
+#[test]
+fn dissolve_failure_delivery_is_shipped_on_reclaim_and_cascade() {
+    for (source, decl) in [
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l04_dissolve_route_reclaim.hl"), "Flowing"),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l04_dissolve_route_cascade.hl"), "Kid"),
+        (include_str!("../../hale-codegen/tests/fixtures/lifecycle/l04_dissolve_bound_supervisors.hl"), "Kid"),
+    ] {
+        let s = snapshot(source);
+        let p = plan(&s);
+        let deliveries: Vec<_> = rows(p, decl, K::FailureDelivery).into_iter()
+            .filter(|row| row.source == Some(FailureSource::Dissolve)).collect();
+        assert!(!deliveries.is_empty());
+        for row in deliveries {
+            assert_eq!((row.line, row.status), (Some("4"), Status::Shipped));
+            assert_eq!(row.guard, PathGuard::FailedInTeardown);
+            for resource in [Resource::Instance, Resource::FailurePayload] {
+                let retention = row.lifetime.iter().find(|r| r.resource == resource).expect("delivery retains child and payload");
+                assert_eq!(retention.until.obligation, id_of(p, row));
+                // Delivery can return or raise a terminal violation;
+                // both retain the child and payload until it has ended.
+                assert_eq!(retention.until.point, Point::Ended);
+                assert_eq!(retention.status, Status::Shipped);
+            }
+        }
     }
 }
 

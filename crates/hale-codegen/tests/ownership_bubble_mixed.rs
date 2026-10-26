@@ -247,7 +247,7 @@ fn without_the_bubble_both_children_are_transient() {
 /// U-1's located refusal: where an instance of the enclosing locus runs
 /// off the owner's thread its birth is a fire-and-forget post, so a
 /// value use of the literal cannot be lowered, and is refused at the
-/// literal with both instances named.
+/// literal by the shared source law before emission.
 #[test]
 fn a_value_use_at_a_mixed_site_is_refused_at_the_literal() {
     let src = MIXED.replace("            I { n: self.k };", "            let c = I { n: self.k };");
@@ -255,17 +255,26 @@ fn a_value_use_at_a_mixed_site_is_refused_at_the_literal() {
     let err = build_opts::build_source(&src, &bin, &build_opts::options())
         .expect_err("a value use at a mixed site must not build");
     let _ = std::fs::remove_file(&bin);
-    let hale_codegen::CodegenError::UnsupportedAt(msg, span) = &err else {
-        panic!("the refusal is located: {err:?}");
+    let snapshot = build_opts::load_seed(&src, build_opts::harness_config(&build_opts::options()))
+        .ok().expect("the mixed fixture loads");
+    let blocked = snapshot.demand_lowering().err().expect("the source law refuses the view");
+    let finding = blocked.because.first().expect("a located source finding");
+    let span = finding.span;
+    let msg = match &err {
+        hale_codegen::CodegenError::Unsupported(msg) => msg,
+        hale_codegen::CodegenError::UnsupportedAt(msg, at) => {
+            assert_eq!(*at, span);
+            msg
+        }
+        _ => panic!("the source refusal reaches the build: {err:?}"),
     };
+    assert_eq!(msg, &finding.message);
     let at = src.find("I { n: self.k }").expect("the literal");
     assert_eq!(span.start.0 as usize, at, "the refusal points at the literal: {msg}");
     assert_eq!(
         msg,
-        "`I { }` is born to `App`, but `Worker` runs both on `App`'s thread and off it (App.a on main; \
-         App.o.w on the pinned thread of App.o; the owner App on main), so its birth is a same-tower \
-         allocation in some instances and a cross-pool post in others; a cross-pool birth is \
-         fire-and-forget, so the literal cannot be used as a value. Write it as a bare statement \
-         (`I { ... };`).",
+        "cross-pool spawn `I{ }` is fire-and-forget: the instance is created on \
+         `App`'s thread and cannot be used here. Write it as a bare statement \
+         (`I { ... };`), not as a value (let-binding, sub-expression, or field).",
     );
 }

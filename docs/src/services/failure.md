@@ -128,6 +128,45 @@ on_failure(c: Book, err: ClosureViolation) {
 > [!TIP]
 > Always use `restart(c) for N;` rather than maintaining a manual retry counter in a parameter field. Both enforce the limit at runtime, but `for N` exports the bound as `retry_bound` in the topology artifact so deployment verification and runtime telemetry can audit retry budgets.
 
+Recovery operations apply to their argument, which may be another child
+held by the supervisor. `hale check` uses each argument's resolved type,
+including in generic handlers, when checking whether a closure's
+`persists_through` or `resets_on` event can occur. The handled child's
+type alone does not establish that an operation applies to it. This is
+a type-level check; it does not prove which instance an alias names or
+whether a conditional recovery executes. The compiler also uses typed
+recovery receivers to retain original parameters for `restart_in_place`,
+including when it is called through a helper. An unresolved receiver
+conservatively retains those snapshots.
+
+A dissolve-epoch closure uses the supervisor route stored when that child
+was constructed, including during flow reclaim and recursive field teardown.
+Two instances of the same supervisor type keep distinct routes. The handler
+completes while the child is still readable, before its arena is reclaimed;
+without a handler, the violation remains a structural failure.
+
+### Inspecting recovery targets
+
+Inspect the represented handler and helper paths with:
+
+```sh
+hale model dump app/
+```
+
+The experimental dump's `first conditional recovery targets` section keeps
+same-type siblings distinct: a helper receiving `App.parent.first` does not
+implicitly target `App.parent.second`. It shows the first represented target
+and its source call path, or reports incomplete inspection. Each search is
+limited to 512 states; reaching that limit is reported explicitly.
+
+These observations are conditional on the represented construction entering
+its handler. They do not prove that a failure occurs, a handler is admitted,
+the target is live, or recovery remains inside a runtime boundary. An empty
+result supplies no containment guarantee. Fields, missing argument bindings,
+implicit lifecycle work and incarnation identity still need separate coverage.
+See [Recovery observations](../the-model.md#recovery-observations) for the
+model's scope. This inspection adds no recovery-containment claim or proof.
+
 ### Handler Threading & Initialization Timing
 
 - **Deferred delivery during parent `params` initialization**: If an earlier sibling parameter fails while the parent is still initializing later parameters in its `params` block, the runtime holds the `ClosureViolation` until all parent `params` are initialized and delivers it immediately before the parent's `birth()`. This guarantees that `on_failure` never reads uninitialized sibling parameters or has its writes clobbered by later defaults.

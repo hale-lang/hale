@@ -48,6 +48,10 @@ use std::sync::Mutex;
 #[path = "../src/topology_law.rs"]
 mod topology_law;
 
+#[allow(dead_code)]
+#[path = "../src/fleet_model.rs"]
+mod component_projection;
+
 use hale_model::VerdictIr;
 
 /// Artifacts the emitter writes and admission refuses today: (the test
@@ -509,4 +513,55 @@ fn every_emitted_law_account_round_trips_through_admission() {
         differences.len(),
         differences.join("\n")
     );
+}
+
+
+#[test]
+fn parent_protocol_artifact_admission_preserves_entries_and_refuses_erasure() {
+    let source = r#"
+locus Child { }
+fn use_child(c: Child = Child { }) { }
+locus Parent { accept(c: Child) { println("accepted"); } fn make() { use_child(); Child { }; } run() { self.make(); } }
+fn main() { Parent { }; }
+"#;
+    let root = std::env::temp_dir().join(format!("hale_parent_account_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("main.hl");
+    let output = root.join("artifact.json");
+    std::fs::write(&path, source).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_hale")).arg("check").arg(&path)
+        .arg(format!("--dump-topology={}", output.display())).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let artifact: Value = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    topology_law::validate_law_account(&artifact, "parent account").unwrap();
+    let component = component_projection::ComponentModel::decode(&artifact, "parent component").unwrap();
+    assert!(component.calls.contains(&("Parent::make".into(), "Parent::accept".into())));
+    assert!(component.calls.contains(&("main".into(), "Parent::run".into())));
+
+    assert_eq!(artifact["relations"]["protocol_contexts"].as_array().unwrap().len(), 2);
+    let mut mutations = Vec::new();
+    for name in ["protocol_definitions", "protocol_constructors", "protocol_contexts", "protocol_evaluations"] {
+        let mut changed = artifact.clone();
+        changed["relations"].as_object_mut().unwrap().remove(name);
+        mutations.push(changed);
+    }
+    let mut changed = artifact.clone();
+    changed["relations"]["protocol_evaluations"].as_array_mut().unwrap().clear();
+    mutations.push(changed);
+    let mut changed = artifact.clone();
+    changed["relations"]["protocol_evaluations"][0]["guard"] = serde_json::json!("run_admission");
+    mutations.push(changed);
+    let mut changed = artifact.clone();
+    changed["relations"]["protocol_contexts"][0]["constructor_function"] = serde_json::json!("main");
+    mutations.push(changed);
+    let mut changed = artifact.clone();
+    changed["schema"] = serde_json::json!("1.34");
+    for name in ["protocol_definitions", "protocol_constructors", "protocol_contexts", "protocol_evaluations"] {
+        changed["relations"].as_object_mut().unwrap().remove(name);
+    }
+    mutations.push(changed);
+    for (i, changed) in mutations.iter().enumerate() {
+        assert!(topology_law::validate_law_account(changed, "parent mutation").is_err(), "mutation {i} was admitted");
+    }
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -78,6 +78,11 @@ pub fn require_endpoint(publishers: bool, group: &str, topic: &str) -> String {
     )
 }
 
+/// `require flow(all G)`.
+pub fn require_flow(group: &str) -> String {
+    format!("require flow(all {})", group)
+}
+
 /// `require sealed(all G)`.
 pub fn require_sealed(group: &str) -> String {
     format!("require sealed(all {})", group)
@@ -96,6 +101,11 @@ pub fn require_no_silent_loss_group(group: &str) -> String {
 /// `require separate_domains(all A, all B)`.
 pub fn require_separate_domains(left: &str, right: &str) -> String {
     format!("require separate_domains(all {}, all {})", left, right)
+}
+
+/// Aggregate declared subscription queue capacity over a group population.
+pub fn queue_slots(group: &str, limit: u64) -> String {
+    format!("bound queue_slots <= {} on instances {}", limit, group)
 }
 
 /// `require attributed(all C)`.

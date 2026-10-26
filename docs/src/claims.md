@@ -72,6 +72,8 @@ For the development workflow of writing architectural claims before implementati
 | **State Encapsulation** | `require sealed(all G);` | Every locus in group `G` is annotated with `@sealed`. |
 | **Effect Attribution** | `require attributed(all C);` | Every function that directly performs built-in effect class `C` also declares a user-defined purpose class via `@effects(is: {...})`. |
 | **Execution Domain Separation** | `require separate_domains(all G1, all G2);` | Every arranged locus instance in `G1` runs on a distinct execution domain (pool or pinned thread) from every arranged instance in `G2`. |
+| **Flow Reclamation Policy** | `require flow(all G);` | Every selected concrete locus type is classified as a flow. Templates are uncertified; this does not prove termination or a live-child bound. |
+| **Queue Reservation Budget** | `bound queue_slots <= N on instances G;` | The total declared subscription queue capacity across all arranged instances selected by `G` is at most `N`. |
 | **Lossless Bus Routing** | `require no_silent_loss(topic T);`<br>`require no_silent_loss(all G);` | No boundary on topic `T` (or on any route touched by group `G`) is configured to silently drop messages (`swallow`, `drop_old`, `drop_new`, `or discard`, transport `drop`). |
 | **Seed Topic Coverage** | `cover topic in seed(alias): subscribed_by(some G);` | Every topic declared in the seed imported as `alias` has at least one subscriber in group `G`. |
 | **Keyed Routing Partition** | `cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G);` | Every permitted key on keyed topic `T` is delivered to **exactly one** arranged subscriber instance in group `G`. |
@@ -104,7 +106,7 @@ claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
                   | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
                   | require_form | cover_form | route_form
-                  | count_form ;
+                  | count_form | queue_slots_form ;
 
 forbid_form       = "forbid" , "reaches" , "(" , claim_set , "," ,
                     claim_set , ")" ,
@@ -121,10 +123,13 @@ edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
+queue_slots_form  = "bound" , "queue_slots" , "<=" , INT_LIT ,
+                    "on" , "instances" , IDENTIFIER ;
 
-require_form      = require_endpoint | require_sealed
+require_form      = require_endpoint | require_sealed | require_flow
                   | require_attributed | require_no_silent_loss
                   | require_separate_domains ;
+require_flow      = "require" , "flow" , "(" , "all" , IDENTIFIER , ")" ;
 require_separate_domains
                   = "require" , "separate_domains" , "(" ,
                     "all" , IDENTIFIER , "," , "all" , IDENTIFIER , ")" ;
@@ -195,7 +200,7 @@ To prevent claims from passing vacuously due to typos or empty sets, `hale check
 - A `role R` member that no `api` surface row requires, unless the group is marked `may_be_empty`.
 - Duplicate group declarations.
 - Any group that resolves to **zero declarations**, unless explicitly suffixed with `may_be_empty`.
-- **Projection vacuity**: A non-empty group whose members contain zero executable methods/hooks/modes (e.g., pure-data loci) when used as a `forbid` or `only edges` endpoint or a `bound` source.
+- **Projection vacuity**: A non-empty group whose members contain zero executable bodies, including defaults (for example, loci with no fields or authored bodies) when used as a `forbid` or `only edges` endpoint or a `bound` source.
 
 ### Role groups
 
@@ -511,6 +516,54 @@ Counts the number of **distinct declared loci** that publish or subscribe to the
 
 ---
 
+### 10. Queue Reservation Budgets
+
+```hale,fragment
+queues: bound queue_slots <= 256 on instances workers;
+```
+
+This sums each selected instance's declared subscription capacities. Four
+worker instances with one `bounded(64, drop_new)` subscription each reserve
+256 slots. Two subscriptions in each worker reserve 512. The existing v1
+checker permits authored subscription bounds on main-queue subscribers;
+off-main mailbox/pool ring limits have a separate runtime contract. Repeated
+constructions count separately even when they run on the same pool.
+
+Include child declarations explicitly in `workers` to count their queues.
+Keys do not discount a registration's reservation. An unbounded subscription
+violates any finite limit; unknown populations or subscriptions prevent
+certification. Empty selections and undeployed declarations are invalid.
+An instantiated locus with no subscriptions contributes zero slots.
+
+The claim budgets declared subscription capacity. Payload bytes, actual
+occupancy, topic-wide limits and work in flight have separate meanings.
+Diagnostics name the contributing instance paths and subscription sites.
+
+This complete example reserves two eight-slot subscriptions on the main
+queue, so its sixteen-slot claim holds:
+
+```hale
+type Message { n: Int; }
+topic Work { payload: Message; }
+locus Worker {
+    params { n: Int = 0; }
+    bus { subscribe Work as on_work bounded(8, drop_new); }
+    fn on_work(message: Message) { self.n = self.n + message.n; }
+}
+group workers = { Worker };
+main locus App {
+    params { first: Worker = Worker { }; second: Worker = Worker { }; }
+    bus { publish Work; }
+    claims { queues: bound queue_slots <= 16 on instances workers; }
+    run() { Work <- Message { n: 1 }; }
+}
+fn main() { App { }; }
+```
+
+Lowering the limit to fifteen violates the claim and reports the contributing
+instances. The `drop_new` overflow policy is a separate concern: a queue
+reservation budget does not establish lossless delivery.
+
 ## Library-Tier Claims
 
 A library seed (a directory with no `main locus`) can declare a top-level `claims { }` block over its own loci, functions, and topics:
@@ -548,10 +601,17 @@ Every claim and lowered function certificate (`@effects`, `@budget`, `@phase_eff
 |---|---|---|
 | `holds` | Proved over all modeled paths. | None (passes build). |
 | `violated` | Disproved; a concrete counterexample path or configuration exists. | Fix the code or configuration identified by the witness. |
-| `uncertified` | Well-formed claim, but the program graph contains an unresolvable edge (indirect call, untyped receiver, computed publish subject). | Refactor the unresolvable call/publish into a statically typed form. |
+| `uncertified` | Well-formed claim, but relevant execution or resource facts are incomplete (for example, an unresolved call, dynamic population or implicit lifecycle context). | Follow the coverage diagnostic; make the required facts explicit where supported. Some gaps require additional compiler coverage. |
 | `invalid` | The claim or group declaration itself is malformed (e.g., undeclared group member or empty group without `may_be_empty`). | Fix the claim or group syntax. |
 
-Both `violated`, `uncertified`, and `invalid` fail `hale check`.
+All three non-`holds` verdicts fail `hale check`.
+
+A typed handler or a visible source path does not by itself close implicit
+failure dispatch, recovery, admission or teardown. Known forbidden source
+paths can still violate a graph claim while those gaps prevent an absence
+certificate. The model dump's conditional recovery targets are inspection
+results, not additional claim verdicts; see
+[Inspecting recovery targets](./services/failure.md#inspecting-recovery-targets).
 
 ### How Indirect Calls, Receivers, and Interfaces Are Resolved
 
@@ -589,7 +649,7 @@ Both `violated`, `uncertified`, and `invalid` fail `hale check`.
 | Unresolved `alias::Name` or `alias::*` | `invalid`: `"does not resolve — no imported declaration matches"` / `"names no import alias"` |
 | Duplicate group or duplicate claim name | `invalid`: `"declared more than once"` |
 | Empty group without `may_be_empty` | `invalid`: `"holds vacuously — say may_be_empty"` |
-| Projection vacuity (group has no executable methods/hooks/modes) | `invalid`: `"projects to no executable … vertices"` |
+| Projection vacuity (group has no executable bodies, including defaults) | `invalid`: `"projects to no executable … vertices"` |
 | Unknown group or undeclared effect class in a claim | `invalid`: `"never declared"` + did-you-mean |
 | `effects(...)` used in `SRC` position of `forbid reaches` | `invalid`: `"sources must be declared groups"` |
 | Built-in effect class used in `bound` (other than `secret_use`) | `invalid`: points to `@budget` dimension spellings |
@@ -728,9 +788,68 @@ hale verify --workspace .
 
 ---
 
+## Reachability certificates and Lean
+
+A selected `forbid reaches` law can export a finite graph certificate and a
+Lean statement over that graph:
+
+```sh
+hale check app --dump-reachability-proofs=Claims.json --dump-reachability-lean=Claims.lean
+hale check app --check-reachability-proofs=Claims.json --check-reachability-lean=Claims.lean
+```
+
+Each flag requires a path, with either `=<path>` or a separate operand. These
+are single-seed flags and cannot be used with `--workspace` or `--matrix`.
+Export preserves the ordinary check's exit status: a forbidden graph path
+still fails the check while exporting its path certificate.
+
+The JSON report accounts for every selected `forbid reaches` law. A holding
+law carries a closed set containing its sources, excluding its targets, and
+containing every selected outgoing successor. A violation carries an explicit
+path from a selected source to a selected target, including zero-length paths.
+The empty-target shortcut carries a separate theorem valid for every edge
+relation. Phase filters, `via` choices, gates, imported groups, adopted
+constitutions, and stdlib interiors keep the judgment's existing meaning.
+
+Invalid or uncertified laws have no mathematical certificate. A traversal
+cutoff also has none, even where a legacy diagnostic labels it `violated`.
+JSON export records these refusals; Lean export refuses to produce a theorem
+bundle. Selection errors and a seed with no selected forbid laws also prevent
+Lean export. Other claim families are listed as excluded and receive no proof
+from this interface.
+
+The replay commands regenerate the canonical report and Lean document from
+current source. They compare the complete documents, including source identity,
+propositions, graph facts, law binding, analysis inputs, coverage and provenance;
+even whitespace changes are refused. These commands do **not** run Lean.
+
+To check the generated statement with the pinned Lean toolchain, use the
+compiler repository's `verification/lean` project:
+
+```sh
+cd verification/lean
+lake build
+lake env lean /absolute/path/to/Claims.lean
+```
+
+The kernel checks the closed-set or path calculation using `by decide`, and
+applies a proved soundness theorem. Generated declarations contain numeric
+identities; source names cannot inject Lean commands. The project also tests
+compiler-generated examples and negative controls with
+`python3 verification/lean/check_generated.py` from the repository root.
+
+The theorem concerns the **supplied graph**. Compiler extraction, group and
+effect selection, completeness of outgoing rows, and correspondence with
+lowering and runtime behavior remain trusted. The JSON report preserves that
+boundary. Its FNV identities detect stale evidence; they are not cryptographic
+signatures. Successful export alone is not evidence that Lean has checked the
+file, or that other claims hold.
+
+---
+
 ## The Topology Artifact (`.hale.topology`)
 
-`hale check` can export the verified program model, inferred effects, and claim verdicts as a deterministic, cryptographically digested JSON artifact (`.hale.topology`):
+`hale check` can export the verified program model, inferred effects, and claim verdicts as a deterministic JSON artifact with integrity and identity digests (`.hale.topology`):
 
 ```sh
 # Export topology to stdout or a file (note: file path requires `=`)
@@ -792,53 +911,50 @@ law:
   + claim quiet: count publishers(topic Out) == 0  [violated]
 ```
 
-### Topology Artifact Schema (`1.21`)
+### Topology Artifact Format
+
+The current exporter writes schema **1.38** and artifact semantics **3**.
+For example, these selected header fields appear in a fresh export:
 
 ```json
 {
-  "schema": "1.21",
-  "semantics": 1,
-  "shape_hash": "<fnv1a-64 over the model half>",
-  "sorts":     { "loci": ["..."], "fns": ["..."], "topics": ["..."] },
-  "sealed":    [ "<@sealed loci>" ],
-  "relations": {
-    "calls": [ {"from": "...", "to": "...", "loop": true, "unbounded": true, "via_interface": "<iface>"} ],
-    "calls_via_stdlib": [ {"from": "...", "to": "...", "loop": true} ],
-    "publishes": ["..."],
-    "subscribes": ["..."]
-  },
-  "groups":    { "<name>": ["<members as declared>"] },
-  "labels":    { "<fn>": ["<declared effect classes>"] },
-  "phases":    { "<fn>": {"phase": "...", "kind": "hook|method"} },
-  "seeds":     { "<alias>": ["<member decls>"] },
-  "effects":   { "<fn>": ["<derived effect classes>"] },
-  "supervision": [ {"locus": "...", "child": "...", "err": "...", "ops": ["..."], "retry_bound": 3} ],
-  "unknowns":  [ {"fn": "...", "reasons": ["indirect_call | untyped_receiver_call:<callee> | uninhabited_interface_call:<iface>.<callee> | computed_publish"]} ],
-  "endpoint_identity": [ {"verb": "...", "fn": "...", "wire": "...", "topic": "..."} ],
-  "sources":   [ {"id": 0, "path": "...", "digest": "..."} ],
-  "provenance": { "calls": ["..."], "publishes": ["..."], "subscribes": ["..."], "decls": {}, "supervision": ["..."] },
-  "topics":    [ {"name": "...", "subject": "...", "shape": "...", "payload_hash": "..."} ],
-  "endpoints": [ {"verb": "publish|subscribe", "subject": "...", "via": "site|declaration"} ],
-  "declares_publish": [ {"locus": "...", "subject": "..."} ],
-  "contracts": [ {"locus": "...", "sealed": false, "params": [], "methods": [], "publishes": [], "subscribes": [], "supervises": [], "instances": []} ],
-  "bindings":  [ "<declared bindings: topic, transport, role>" ],
-  "observe":   [ {"param": "...", "kind": "...", "backend": "...", "host": "...", "port": 0, "path": "..."} ],
-  "claims":    [ {"name": "...", "form": "...", "result": "holds|violated|uncertified|invalid", "ordinal": 0, "source": "Core"} ],
-  "lowered":   [ {"subject": "...", "form": "...", "result": "holds", "ordinal": 0} ],
-  "law":       { "law_digest": "...", "inputs_digest": "...", "fn_universe": [], "loci": [], "groups": [], "topics": [], "subjects": [], "effect_classes": [], "legacy": [], "issues": [], "rows": [] },
-  "capabilities": { "exact_calls": true },
-  "adequacy":  { "reachability": "exact", "boundary": "exact", "endpoint": "exact", "bound": "exact", "certificate": "exact", "causes": "exact", "depends": "exact", "budget": "exact", "placement": "exact" },
-  "evaluation": { "environment": "prod", "roots": [], "closure": [] },
-  "verdict":   "clean | law_failed",
-  "artifact_digest": "<digest over entire document>"
+  "schema": "1.38",
+  "semantics": 3,
+  "shape_hash": "<fnv1a-64 over the model half>"
 }
 ```
 
-Key artifact sections:
+This is an excerpt, not an importable artifact. Export the complete document
+with `--dump-topology`; do not assemble one from this example.
 
-- **`shape_hash` vs. `artifact_digest`**: `shape_hash` hashes only the structural model half (`sorts`, `relations`, `groups`, `labels`, `phases`, `seeds`, `effects`, `supervision`, `unknowns`, `endpoint_identity`). `artifact_digest` hashes the entire JSON document to prevent tampering. Both `hale topology graph` and `hale fleet check` verify `artifact_digest`, `shape_hash`, `law_digest`, and `inputs_digest` before admitting an artifact.
-- **`calls_via_stdlib`**: Collapses any user-to-user call path traversing standard library internals into a single contracted edge so external artifact verifiers can replay reachability without stdlib source.
-- **`lowered`**: Records every function-level `@effects`, `@budget`, and `@phase_effects` contract in its equivalent relational claim form alongside top-level `claims`.
+| Section | Contents |
+|---|---|
+| `sorts`, `relations`, `groups`, `labels`, `phases`, `seeds` | Declaration identities, graph relations, phase membership and selection sets. Execution relations include defaults and guarded lifecycle/parent-protocol accounts when present. |
+| `effects`, `supervision`, `unknowns` | Derived effects, handler policies and unresolved work. A recovery policy is not proof that a particular instance recovers. |
+| `claims`, `lowered`, `law` | Authored and lowered laws, typed operands, origins, verdicts, witnesses and analysis-input bindings. |
+| `capabilities`, `adequacy` | Exactness/degradation for each represented relation and judgment family, including resource reservations and flow policy. These vary with the program; they are not all necessarily exact. |
+| `sources`, `provenance` | Source identities and locations used to explain the model and judgments. |
+
+The versions describe different things:
+
+| Version | Current value | Meaning |
+|---|---|---|
+| Topology `schema` | `1.38` | Serialized fields and admission rules. |
+| Topology `semantics` | `3` | Interpretation of artifact rows. |
+| In-process model semantics | `15` | Canonical model invariants; separate from topology `semantics`. |
+| Analysis semantics | `33` | Meaning of the analyses and evidence inputs. |
+| Reachability proof schema | `hale.reachability-proofs/2` | Separate certificate report format. |
+
+Key artifact rules:
+
+- **`shape_hash` vs. `artifact_digest`**: `shape_hash` identifies the structural model half, including its derived execution accounts. `artifact_digest` covers the serialized document before its final digest field. The law and analysis-input digests bind their own accounts. Consumers check these identities before admission. These FNV digests detect inconsistent or stale data; they do not authenticate an author or protect against someone deliberately recomputing them.
+- **`calls_via_stdlib`**: Contracts user-to-user paths through standard-library interiors for the artifact graph. It does not make the artifact a full compiler `ApplicationModel`.
+- **`lowered`**: Records function-level contracts alongside authored claims; the typed `law` rows retain their bindings and verdicts.
+- **Compatibility**: Consumers validate supported schema and semantics versions and their required accounts. Re-export from source when an older artifact lacks needed execution coverage; changing a version label cannot add those facts.
+
+The exact producer/consumer contract is in
+[`spec/model.md`](https://github.com/hale-lang/hale/blob/main/spec/model.md)
+and [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).
 
 ---
 
@@ -848,3 +964,92 @@ Key artifact sections:
 - **Reusable Claimsets**: [Constitutions](./constitutions.md).
 - **Program Model**: [The Model](./the-model.md).
 - **Multi-Binary Fleet Claims**: [Multi-Binary Services](./services/multi-binary.md#multi-binary-verification-fleet-locus).
+
+
+## Require flow reclamation for selected child types
+
+```hale
+locus Request { }
+group requests = { Request };
+main locus App {
+    accept(request: Request) { }
+    release(request: Request) { }
+    claims { reclaimable: require flow(all requests); }
+    run() { Request { }; }
+}
+fn main() { App { }; }
+```
+
+This policy checks the compiler's type-wide flow classification. A
+`release(child: Request)` clause makes `Request` a flow; a specialized
+`Owner<Request>` clause can do the same. Removing the classifying clause
+or the specialization can turn the claim into a resident-type violation,
+with a related source location at the child declaration. The selected
+locus set must be nonempty. Generic templates are uncertified rather
+than treated as concrete resident types. Constitutions and traveling
+library claims keep their own group bindings.
+
+The claim does not require a deployed instance. Even an unused owner can
+classify a type, and the policy does not identify the accepting owner of
+a particular birth. It does not prove that `run` returns, that every
+flow-field cancellation path is safe, or that live children and retained
+bytes are bounded. Use it to enforce the declared reclamation discipline
+while those separate lifetime and resource obligations are checked on
+their own facts.
+
+### Source effects and lifecycle context
+
+A known self lifecycle body contributes its source calls and effects even
+when its runtime admission and retained lifetime are unresolved. Those
+runtime gaps still block quantitative conclusions. Missing source bodies or
+unknown execution inside a hook continue to produce `uncertified` results.
+
+### Constructor predicate source entries
+
+Birth checks and automatic closure assertion operands participate in source
+reachability from each construction that may evaluate them. An operand that
+performs a forbidden effect produces a violation with the predicate and helper
+path. The predicate entry keeps its constructor ordinal, clause kind, epoch and
+loop context in a namespace separate from calls and explicit checkpoints.
+
+These are possible source entries. They establish neither successful admission,
+execution order, a native stack frame nor eventual evaluation. Conditional
+failure dispatch, recovery, scheduling and lifetime coverage remain explicit;
+a pure operand alone does not certify a constructor or its quantitative budget.
+Imported and standard-library predicate bodies use the same execution facts.
+Topology schema 1.38 includes `relations.constructor_checks`; admission requires
+exactly the represented constructors' birth predicates and automatic assertions.
+Model semantics 15 and analysis semantics 33 distinguish this account from older
+evidence, including source-bound reachability proof replay.
+
+### Source failure coverage and native boundaries
+
+The declaration inventory includes every `on_failure` header before executable
+reachability is projected, including handlers in unused loci and imported
+seeds. When the complete program and bundled source inventory contains no
+handler, a structural failure cannot dispatch another Hale source handler.
+An unavailable inventory is never treated as empty. Any declared handler keeps
+the conservative dispatch gap; this account does not select an instance or
+prove recovery containment.
+
+With that positive empty inventory, complete birth-predicate, automatic
+assertion and nominal parent-protocol bodies can close **source** calls/effects.
+Original constructors, caller/default roots, parent bodies, clause/epoch
+membership and repetition still have to agree. Interface/generic matching,
+missing source identities, unresolved owners/defaults and opaque operations
+retain their independent gaps. Known forbidden work remains a violation.
+
+This is a source graph horizon. It does not promise process silence or classify
+native fatal diagnostics, exit/finalization, allocator/runtime internals or an
+external C environment as Hale source calls. Native failure/reporting costs
+remain explicit as `UnmodeledFailureContext`; admission, scheduling, native
+frames and retained lifetime keep invocation-context costs. `@no_panic` keeps
+its separate possible-failure obligation. A quiet source body is not evidence
+that it cannot fail, that its budget holds, or that teardown is safe.
+
+Topology 1.38 records `relations.failure_sources`: an explicit unavailable
+`null`, or the complete own-handler list, foreign-source handler count and
+source functions the shared failure graph may reach. The artifact hash binds
+this account. Admission requires every represented handler and conditional
+source root, canonical members, and native cost coverage. Model semantics 15
+and analysis semantics 33 distinguish the new source horizon from old evidence.

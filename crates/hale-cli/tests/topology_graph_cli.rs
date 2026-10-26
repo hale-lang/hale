@@ -166,6 +166,14 @@ fn pinned_fixture_matches_the_checked_in_goldens() {
     );
 
     let system_svg = render(&artifact, &["--format", "svg"]);
+    let call_label_ys: Vec<i64> = system_svg.lines()
+        .filter(|line| line.contains(">calls") || line.contains(">initializes ") || line.contains(">may enter "))
+        .map(|line| line.split(" y=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(call_label_ys.len(), 8, "the fixture has three calls, four parameter evaluations and one guarded run entry");
+    for (i, y) in call_label_ys.iter().enumerate() {
+        assert!(call_label_ys[..i].iter().all(|other| (y - other).abs() >= 14), "gutter labels overlap: {call_label_ys:?}");
+    }
     let golden_svg =
         std::fs::read_to_string(fixture("golden-system.svg")).unwrap();
     assert_eq!(
@@ -211,10 +219,10 @@ fn claim_view_highlights_the_named_groups_and_states_the_result() {
         mmd
     );
     // P2 (review round 1): the claim view must NOT hide residue —
-    // the pinned fixture has an indirect_call hole, and the very
+    // the pinned fixture has indirect_call and lifecycle-context holes, and the very
     // view most likely to become a proof slide says so.
     assert!(
-        mmd.contains("1 unresolved"),
+        mmd.contains("2 unresolved") && mmd.contains("main: unmodeled_initialization"),
         "claim view carries the residue card:\n{}",
         mmd
     );
@@ -1010,8 +1018,8 @@ fn main() { App { }; }
 }
 
 /// Focus must actually DROP non-neighbors: focusing Store keeps its
-/// subscribed topic (Cmds) and drops App and Readings, which share
-/// no edge with a focused endpoint.
+/// subscribed topic (Cmds) and its initializing App, while dropping
+/// Worker and Readings, which share no edge with a focused endpoint.
 #[test]
 fn focus_drops_non_neighbors() {
     let dir = workdir("focusdrop");
@@ -1029,10 +1037,11 @@ fn focus_drops_non_neighbors() {
         mmd
     );
     assert!(
-        !mmd.contains("g_App"),
-        "App shares no edge with Store — dropped:\n{}",
+        mmd.contains("g_App") && mmd.contains("initializes total"),
+        "App initializes Store's parameter and is an edge neighbor:\n{}",
         mmd
     );
+    assert!(!mmd.contains("g_Worker"), "Worker is not a Store neighbor:\n{mmd}");
     assert!(
         !mmd.contains("t_Readings"),
         "Readings shares no edge with Store — dropped:\n{}",
@@ -1153,11 +1162,11 @@ fn dead_dispatches_are_not_rendered_as_unresolved() {
     let mixed = dir.join("dead.topology");
     std::fs::write(&mixed, restamp_digest(&body)).unwrap();
 
-    // System view: the unresolved count stays 1 (the genuine hole);
+    // System view: the unresolved count stays 2 (the genuine holes);
     // the dead site gets its own neutral card stating exactness.
     let mmd = render(&mixed, &["--format", "mermaid"]);
     assert!(
-        mmd.contains("1 unresolved"),
+        mmd.contains("2 unresolved") && mmd.contains("main: unmodeled_initialization"),
         "dead dispatch must not inflate the unresolved count:\n{}",
         mmd
     );
@@ -1185,8 +1194,16 @@ fn dead_dispatches_are_not_rendered_as_unresolved() {
     );
 
     // A DEAD-ONLY artifact renders as exact: no unresolved card at
-    // all, and the residue view says so.
-    let body = strip_trailer(&raw).replace(
+    // all, and the residue view says so. Derive it from a source without
+    // an invoked authored lifecycle body, rather than deleting its gap.
+    let closed_source = dir.join("closed.hl");
+    let source = std::fs::read_to_string(fixture("pipeline.hl")).unwrap()
+        .replace("run() { Readings <- Reading { sensor: 1, v: 10 }; }",
+            "fn start() { Readings <- Reading { sensor: 1, v: 10 }; }");
+    std::fs::write(&closed_source, source).unwrap();
+    let closed_artifact = dump_artifact(&dir, &closed_source);
+    let closed_raw = std::fs::read_to_string(closed_artifact).unwrap();
+    let body = strip_trailer(&closed_raw).replace(
         "{\"fn\": \"call_any\", \"reasons\": [\"indirect_call\"]}",
         "{\"fn\": \"call_any\", \"reasons\": [\"uninhabited_interface_call:Notifier.notify\"]}",
     );
@@ -2738,7 +2755,7 @@ fn memberless_locus_flag_is_recomputable() {
 module inner {
     @phase_effects(birth: {})
     locus Hidden {
-        params { n: Int = 0; }
+        params { n: Int; }
     }
 }
 main locus App {
@@ -2982,15 +2999,11 @@ fn main() { App { }; }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Round 12: the coverage bit cannot be upgraded — `analyzed` is
-/// anchored to the HASHED summary universe (a walked body is
-/// summarized), so flipping an unanalyzed body's bit to manufacture
-/// a Holds certificate contradicts `sorts.fns`. The unanalyzed body
-/// is an `on_failure` handler's, the one kind the behavior analysis
-/// does not walk (a module-scoped fn was one until the summary
-/// collected module-nested bodies, F.40 phase 3, E3a part C).
+/// Coverage bits remain anchored to the hashed summary universe for
+/// analyzed failure handlers too: dropping the summary bit cannot leave
+/// an analyzed body or manufacture a different certificate account.
 #[test]
-fn coverage_upgrade_is_refused() {
+fn failure_handler_coverage_mismatch_is_refused() {
     let dir = workdir("covupgrade");
     let src = dir.join("app.hl");
     std::fs::write(
@@ -3017,7 +3030,7 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let needle = "\"display\": \"Parent::on_failure(Child,ClosureViolation)\", \
-                  \"analyzed\": false, \"summarized\": false";
+                  \"analyzed\": true, \"summarized\": true";
     assert!(raw.contains(needle), "failure handler coverage:\n{}", raw);
     let upgraded = raw.replacen(
         needle,
@@ -3432,7 +3445,7 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(v["schema"], "1.21");
+    assert_eq!(v["schema"], hale_types::topology::TOPOLOGY_SCHEMA);
     let adequacy =
         v["adequacy"].as_object().expect("adequacy object");
     assert!(
@@ -3442,13 +3455,14 @@ fn main() { App { }; }
     );
     assert_eq!(
         adequacy.len(),
-        9,
-        "five older families plus causes, depends, budget and placement: {:?}",
+        11,
+        "five older families plus causes, depends, budget, placement, resource and flow_policy: {:?}",
         adequacy
     );
     assert!(adequacy.contains_key("depends"), "{:?}", adequacy);
     assert!(adequacy.contains_key("budget"), "{:?}", adequacy);
     assert!(adequacy.contains_key("placement"), "{:?}", adequacy);
+    assert!(adequacy.contains_key("resource"), "{:?}", adequacy);
 
     // …and an artifact that omits it is refused, restamped or not.
     let cut = raw.replacen(",\n    \"causes\": \"exact\"", "", 1);

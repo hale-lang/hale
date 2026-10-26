@@ -46,9 +46,13 @@ fn diff_one(
     origin: &str,
     snapshot: &mut Vec<String>,
 ) -> Result<usize, String> {
-    let program = hale_syntax::parse_source(src)
+    let mut program = hale_syntax::parse_source(src)
         .map_err(|_| format!("{}: parse", origin))?;
-    let bundle = bundle_of(src, &program);
+    // Both arms need declaration identities. An unminted reference arm
+    // cannot join constructor targets to their parameter-default bodies.
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    let mut bundle = bundle_of(src, &program);
+    bundle.snapshot = ids;
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
@@ -73,7 +77,11 @@ fn diff_one(
     // comparison: the certificate ENGINES were never the thing
     // being migrated, so they can still disagree.
     let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
-    let summary = hale_types::alloc_summary::derive_alloc_summary(&bundle);
+    // The engines require the same contextual source family as production.
+    // Allocation facts alone deliberately leave parent execution unavailable.
+    let reference = hale_frontend::snapshot::Snapshot::from_program(program.clone(), bundle.import_renames.clone(),
+        hale_frontend::snapshot::Config::check(true, false)).unwrap_or_else(|_| panic!("reference source snapshot"));
+    let summary = reference.demand_protocol_execution().unwrap();
     let mut old_lowered = hale_types::effects::certificate_rows(&programs_v, &summary);
     old_lowered.extend(hale_types::budget_check::certificate_rows(
         &programs_v,
@@ -129,6 +137,18 @@ fn diff_one(
             {
                 continue;
             }
+            // A missing report cannot invent an implicit lifecycle phase for
+            // an undeclared name. The canonical phase account now retains this
+            // static invalidity, while the old engine emitted no row at all.
+            let invalid_phase = c.result == Verdict::Invalid && table.rows.iter().any(|row| {
+                let hale_model::ClaimIr::PhaseEffects { locus: (Some(locus), _), phases } = &row.law else { return false };
+                model.entities.loci[locus.index()].display == c.subject
+                    && phases.iter().zip(row.certificate_forms()).any(|((phase, _), (_, form))|
+                        form == c.form && !matches!(phase.as_str(), "birth" | "accept" | "release" | "run" | "drain" | "dissolve")
+                            && !model.relations.phase_of.iter().any(|p| model.entities.functions[p.function.index()].owner == Some(*locus)
+                                && model.entities.phases[p.phase.index()].name == *phase))
+            });
+            if invalid_phase { continue; }
             return Err(format!(
                 "{}: lowered row has no legacy counterpart:\n  \
                  new: {:?} {:?} {:?}",
@@ -148,7 +168,22 @@ fn diff_one(
         // held vacuously.
         let class_carveout =
             c.result == Verdict::Invalid && old_result == Verdict::Holds;
-        if old_result != c.result && !class_carveout {
+        // Analysis semantics 14: the old counting engine measures only
+        // explicit work. The model may refuse its would-be bound when
+        // failure/recovery dispatch is unresolved. Require the exact
+        // typed budget and a reachable canonical gap for this correction.
+        let recovery_budget_carveout = old_result == Verdict::Holds && c.result == Verdict::Uncertified
+            && table.rows.iter().any(|row| {
+                if row.budget_lowered_form().as_deref() != Some(c.form.as_str()) { return false; }
+                let (function, delivery) = match &row.law {
+                    hale_model::ClaimIr::AllocBudget { at: (Some(f), _), .. } => (*f, false),
+                    hale_model::ClaimIr::QuantBudget { at: (Some(f), _), dim, .. } => (*f, matches!(dim, hale_model::QuantDimIr::Fanout)),
+                    _ => return false,
+                };
+                model.entities.functions[function.index()].display == c.subject
+                    && hale_types::model_query::recovery_cost_gap(&model, function, delivery).is_some()
+            });
+        if old_result != c.result && !class_carveout && !recovery_budget_carveout {
             return Err(format!(
                 "{}: lowered row diverges:\n  old: {:?} {:?} {:?}\n  \
                  new: {:?} {:?} {:?}",
@@ -323,10 +358,20 @@ fn main() { App { }; }
             hale_types::evidence::analysis_inputs_digest()
         )
     );
-    // capabilities + adequacy: this program is fully analyzable.
+    // All source work is represented; the known violation survives. The
+    // unresolved run context withdraws the budget account independently.
     assert_eq!(v["capabilities"]["exact_calls"], true);
     assert_eq!(v["adequacy"]["reachability"], "exact");
     assert_eq!(v["adequacy"]["certificate"], "exact");
+    assert_eq!(v["adequacy"]["budget"], "degraded");
+    assert!(v["unknowns"].as_array().unwrap().iter().any(|u|
+        u["fn"] == "main" && u["reasons"].as_array().unwrap().iter().any(|r| r == "unmodeled_lifecycle_context")));
+    let closed = src.replace("run() { println(self.a.go(1)); }", "fn start() { println(self.a.go(1)); }");
+    let closed_program = hale_syntax::parse_source(&closed).unwrap();
+    let closed: serde_json::Value = serde_json::from_str(&entries::dump_topology(&bundle_of(&closed, &closed_program))).unwrap();
+    assert_eq!(closed["capabilities"]["exact_calls"], true);
+    assert_eq!(closed["adequacy"]["reachability"], "exact");
+    assert_eq!(closed["adequacy"]["certificate"], "exact");
 }
 
 /// `law_digest` covers the law rows and their issues, and nothing
@@ -387,12 +432,15 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let closed = src.replace("run()", "fn start()");
+    let program = hale_syntax::parse_source(&closed).expect("parse");
+    let bundle = bundle_of(&closed, &program);
     let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     assert_eq!(v["capabilities"]["exact_publishes"], false);
+    assert_eq!(v["capabilities"]["exact_calls"], true,
+        "the computed publish, independently of lifecycle context, is the missing relation");
     for fam in [
         "reachability",
         "boundary",
@@ -424,8 +472,9 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let closed = src.replace("run()", "fn start()");
+    let program = hale_syntax::parse_source(&closed).expect("parse");
+    let bundle = bundle_of(&closed, &program);
     let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
@@ -475,7 +524,7 @@ fn main() { App { }; }
     let art = entries::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
-    assert_eq!(v["semantics"], 2);
+    assert_eq!(v["semantics"], hale_types::topology::MODEL_SEMANTICS);
     // The three-level story: the legacy `lowered` row preserves
     // the ENGINE's replay (a vacuous holds), the typed law row
     // carries the MACHINE verdict (invalid — a cyclic class is not
@@ -763,9 +812,11 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let closed = src.replace("run()", "fn start()");
+    let program = hale_syntax::parse_source(&closed).expect("parse");
+    let bundle = bundle_of(&closed, &program);
     let mut model = derive_application_model(&bundle);
+    assert!(model.holes.is_empty(), "the only gap will be the subscriber mutation");
     let sid = model
         .entities
         .subjects
@@ -1007,11 +1058,12 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bundle = bundle_of(src, &program);
+    let closed = src.replace("run()", "fn start()");
+    let program = hale_syntax::parse_source(&closed).expect("parse");
+    let bundle = bundle_of(&closed, &program);
     let mut model = derive_application_model(&bundle);
+    assert!(model.holes.is_empty(), "fixture starts with complete execution coverage");
     model.capabilities.exact_effects = false;
-    model.holes.clear();
     model.validate().expect("a withdrawn claim is lawful");
     let adequacy: std::collections::BTreeMap<_, _> =
         hale_types::topology_projection::family_adequacy(&model)
@@ -1242,4 +1294,12 @@ fn main() { App { }; }
          artifact: {}",
         forbid
     );
+}
+
+#[test]
+fn lowered_initializer_certificates_compare_in_the_same_declaration_universe() {
+    let fixture = hale_corpus::all().into_iter().find(|p| p.origin == "crates/hale-types/tests/structural_failure_coverage.rs#1")
+        .expect("the constructor/default failure regression remains in the corpus");
+    let compared = diff_one(&fixture.source, &fixture.origin, &mut Vec::new()).unwrap();
+    assert!(compared >= 3, "all three effect assertions participate in the comparison");
 }

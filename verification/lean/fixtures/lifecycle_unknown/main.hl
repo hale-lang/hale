@@ -1,0 +1,14 @@
+locus Child {
+    birth() { let value = 1; }
+}
+fn construct() { Child { }; }
+group constructors = { construct };
+main locus App {
+    claims {
+        quiet: forbid reaches(constructors, effects(stdio));
+    }
+}
+fn main() {
+    construct();
+    App { };
+}

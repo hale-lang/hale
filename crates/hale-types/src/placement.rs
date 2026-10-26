@@ -109,36 +109,8 @@ use crate::typed_bodies::TypingRecord;
 
 // ------------------------------------------------------------ identity
 
-/// Which store minted a site. The two stores number independently, each
-/// from seed 0 and index 0, so a `SiteId` names a site only with its
-/// universe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SiteUniverse {
-    /// The snapshot's identities: the seed's files and the imports linked
-    /// in.
-    User,
-    /// The stdlib analysis copy's ([`crate::stdlib_bodies::identities`]).
-    StdlibAnalysis,
-}
-
-/// A site the table names: the universe that minted it and its id there.
-/// Every site in the table is one. Equality, ordering and hashing compare
-/// the universe first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SiteRef {
-    pub universe: SiteUniverse,
-    pub id: SiteId,
-}
-
-impl SiteRef {
-    pub fn user(id: SiteId) -> SiteRef {
-        SiteRef { universe: SiteUniverse::User, id }
-    }
-
-    pub fn stdlib(id: SiteId) -> SiteRef {
-        SiteRef { universe: SiteUniverse::StdlibAnalysis, id }
-    }
-}
+pub use hale_model::construction::{SiteUniverse, SiteRef, InstanceKey, Origin, Step, Template, Bound,
+    BUILT_IN_A_LOOP, DomainId, CoreSet, DomainKind, Domain};
 
 /// Provenance (kind, span, origin) of a site, from the store its universe
 /// names and from no other. `user` is the snapshot's identities, `stdlib`
@@ -148,59 +120,6 @@ pub fn provenance<'a>(site: SiteRef, user: &'a Snapshot, stdlib: &'a Snapshot) -
         SiteUniverse::User => user.site(site.id),
         SiteUniverse::StdlibAnalysis => stdlib.site(site.id),
     }
-}
-
-/// Static instance identity: the scope that constructs the tree, the
-/// field path from its top, the replica. A key names a template, never a
-/// runtime occurrence.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InstanceKey {
-    pub origin: Origin,
-    /// The fields from the origin's top; empty is the top itself.
-    pub path: Vec<Step>,
-    /// `Some(i)` on a `replicas = K > 1` field and on every row nested
-    /// under it.
-    pub replica: Option<u32>,
-}
-
-/// The scope that constructs a static tower.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Origin {
-    /// A literal: one of the root's (`App { … }`), one template per
-    /// literal site with the root at `[]`, or one the entry `fn main`
-    /// builds directly ([`PlacementTable::entry_literals`]), its locus at
-    /// `[]`.
-    Construction(SiteRef),
-    /// An adapter literal in the root's `bindings { }`, by its binding
-    /// entry's site (the adapter literal has no site of its own): built
-    /// once, in the bindings prelude, however often the root is
-    /// constructed.
-    Binding(SiteRef),
-    /// The entry itself, constructing a root no literal builds: the
-    /// root's implicit template, by the entry's site (the top-level user
-    /// `fn main`'s when there is one, else the root declaration's). Its
-    /// tower is enumerated exactly as under a literal, from the
-    /// declaration's defaults, and its bound is `Once`: the entry runs
-    /// once per process.
-    Entry(SiteRef),
-}
-
-/// One field of a key's path.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Step {
-    pub field: String,
-    /// The literal taken, when the field's initializer chooses among
-    /// literals; `None` when it has one.
-    pub alternative: Option<SiteRef>,
-}
-
-/// Where an instance comes from: a template of the static tower, or a
-/// literal outside it (a method or fn body, a let-bound literal, an
-/// accepted child), every occurrence of which shares the literal's rows.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Template {
-    Static(InstanceKey),
-    Dynamic { literal: SiteRef },
 }
 
 /// The locus declaration an instance realizes: an override literal's,
@@ -253,31 +172,6 @@ impl std::hash::Hash for DeclRef {
 
 // ------------------------------------------------------------- bounds
 
-/// How many occurrences of a template can be live at once.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Bound {
-    /// At most one.
-    Once,
-    /// At most `n`.
-    AtMost(u32),
-    /// No static bound; the reason, which a count over the table renders
-    /// as its uncertainty.
-    Unbounded(String),
-}
-
-/// The reason a literal written inside a loop is unbounded.
-const BUILT_IN_A_LOOP: &str = "built in a loop";
-
-impl Bound {
-    /// The literal is written inside a loop, so one site builds an
-    /// occurrence per iteration. Distinct from a literal in a scope that
-    /// runs many times (a factory called in a loop, a locus body), each
-    /// run of which builds one occurrence at its own site.
-    pub fn built_in_a_loop(&self) -> bool {
-        matches!(self, Bound::Unbounded(why) if why == BUILT_IN_A_LOOP)
-    }
-}
-
 /// One literal of the root declaration: a construction template. In an
 /// [`Expanded`]'s `built_by`, a literal that builds one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,33 +183,6 @@ pub struct Construction {
 }
 
 // ------------------------------------------------------------ domains
-
-/// A domain's index in [`PlacementTable::domains`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DomainId(pub u32);
-
-/// A resolved set of logical CPUs, sorted and deduplicated: a `cores`
-/// spec expanded, or a `node` / `l3` affinity resolved against the
-/// root's `topology { }`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CoreSet(pub Vec<i64>);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DomainKind {
-    /// The program's main thread; adds no thread.
-    Main,
-    /// One worker per name. A pool carries at most one affinity (rule 16).
-    Pool { name: String, async_io: bool, affinity: Option<CoreSet> },
-    /// One thread per anchor (per replica); the anchor's origin is the
-    /// scope that creates it.
-    Pinned { anchor: InstanceKey, affinity: Option<CoreSet>, numa_node: Option<i64> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Domain {
-    pub id: DomainId,
-    pub kind: DomainKind,
-}
 
 // --------------------------------------------------------------- rows
 
@@ -370,6 +237,11 @@ pub struct InstanceRow {
     /// held row whose source is no template's row (a parameter, a field
     /// of `self`, a dynamic literal), which has nothing below it.
     pub built_by: Option<InstanceKey>,
+    /// Positive construction evidence for a fresh field literal. Held values,
+    /// projected aliases and template tops have no field construction here.
+    /// This is distinct from `owner`, which can also name a holder of a value
+    /// constructed elsewhere. It records the pointer source used at birth.
+    pub construction_supervisor: Option<crate::ownership::SupervisionOverride>,
 }
 
 /// The root lowering deploys: the entry.
@@ -608,9 +480,66 @@ pub struct PlacementTable {
     pub dynamic: Vec<DynamicSite>,
     /// What the producer could not decide, each with its policy.
     pub holes: Vec<Hole>,
+    /// User literal indices are preserved by the lowering merge. Stdlib
+    /// analysis IDs must never enter this index: their numbers can overlap.
+    construction_supervisors: BTreeMap<u32, BTreeSet<crate::ownership::SupervisionOverride>>,
 }
 
 impl PlacementTable {
+    /// The original row a held projection was constructed as. Holding a value
+    /// does not retarget its supervisor. A broken/cyclic source chain is unknown.
+    pub fn construction_source<'t>(&'t self, key: &'t InstanceKey) -> Option<&'t InstanceKey> {
+        if self.instances.get(key)?.built_by.is_none() { return Some(key); }
+        let mut cursor = key;
+        let mut seen = BTreeSet::new();
+        while seen.insert(cursor) {
+            let row = self.instances.get(cursor)?;
+            match &row.built_by {
+                Some(source) => cursor = source,
+                None => return Some(cursor),
+            }
+        }
+        None
+    }
+
+    fn construction_supervision_index(&self) -> BTreeMap<u32, BTreeSet<crate::ownership::SupervisionOverride>> {
+        let mut out: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        for row in self.instances.values().filter(|row| row.built_by.is_none()) {
+            if let (Some(literal), Some(source)) = (row.literal, row.construction_supervisor) {
+                if literal.universe == SiteUniverse::User {
+                    out.entry(literal.id.index).or_default().insert(source);
+                }
+            }
+        }
+        out
+    }
+
+    /// Check the lowering index against the construction column. This is a
+    /// consistency invariant; it never upgrades unknown rows to known ones.
+    pub fn validate_construction_supervision(&self) -> Result<(), &'static str> {
+        if self.instances.values().any(|row| row.literal.is_some() && row.owner.is_some()
+            && row.built_by.is_none() && row.construction_supervisor.is_none()) {
+            return Err("a fresh field construction supervisor source is missing");
+        }
+        if self.instances.values().any(|row| row.construction_supervisor.is_some_and(|s|
+            s == crate::ownership::SupervisionOverride::Enclosing || row.literal.is_none()
+                || row.owner.is_none() || row.built_by.is_some())) {
+            return Err("a field construction supervisor has no fresh field construction");
+        }
+        if self.construction_supervisors != self.construction_supervision_index() {
+            return Err("the construction supervisor index disagrees with its source rows");
+        }
+        Ok(())
+    }
+
+    /// A positive source for a user literal; absence leaves dynamic/foreign
+    /// construction to the ownership context rule, never to an assumed parent.
+    pub fn construction_supervisor_at(&self, id: NodeId) -> Result<Option<crate::ownership::SupervisionOverride>, &'static str> {
+        let Some(sources) = self.construction_supervisors.get(&id.0) else { return Ok(None) };
+        if sources.len() != 1 { return Err("one literal has conflicting construction supervisor sources"); }
+        Ok(sources.first().copied())
+    }
+
     /// The main domain.
     pub const MAIN: DomainId = DomainId(0);
 
@@ -1016,6 +945,7 @@ fn build<'a>(
     b.entry_literals(&scopes);
     b.handoffs();
     b.dynamic_sites(&scopes);
+    b.table.construction_supervisors = b.table.construction_supervision_index();
     b.table
 }
 
@@ -1700,6 +1630,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                         owner_relative: OwnerRelative::SameAsOwner,
                         guarded: false,
                         built_by: None,
+                        construction_supervisor: None,
                     },
                 );
                 if let Some(d) = realized {
@@ -1739,6 +1670,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 owner_relative: OwnerRelative::SameAsOwner,
                 guarded: false,
                 built_by: None,
+                construction_supervisor: None,
             },
         );
         if !args_known {
@@ -1839,6 +1771,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                     owner_relative: OwnerRelative::SameAsOwner,
                     guarded: holder.guarded || r.guarded,
                     built_by: Some(k),
+                    construction_supervisor: None,
                 },
             );
         }
@@ -1947,6 +1880,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                                         owner_relative,
                                         guarded: owner.guarded,
                                         built_by: None,
+                                        construction_supervisor: None,
                                     },
                                 );
                                 continue;
@@ -2102,6 +2036,11 @@ impl<'d, 'a> Builder<'d, 'a> {
                                 owner_relative,
                                 guarded,
                                 built_by: None,
+                                construction_supervisor: literal.map(|_| if written_here.is_some() {
+                                    crate::ownership::SupervisionOverride::FieldHolder
+                                } else {
+                                    crate::ownership::SupervisionOverride::ParamsInitializer
+                                }),
                             },
                         );
                         if let Some(lit) = source {

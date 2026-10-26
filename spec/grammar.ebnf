@@ -472,7 +472,8 @@ claims_block      = "claims" , "{" , { claim_entry } , "}" ;
 claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
                   | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
-                  | require_form | cover_form | route_form | count_form ;
+                  | require_form | cover_form | route_form | count_form
+                  | queue_slots_form ;
 forbid_form       = "forbid" , "reaches" , "(" , claim_set , "," ,
                     claim_set , ")" ,
                     { via_clause | during_clause | avoiding_clause } ;
@@ -490,7 +491,9 @@ only_edges_form   = "only" , "edges" , IDENTIFIER , "->" ,
 edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
-require_form      = require_endpoint | require_sealed
+queue_slots_form  = "bound" , "queue_slots" , "<=" , INT_LIT ,
+                    "on" , "instances" , IDENTIFIER ;
+require_form      = require_endpoint | require_sealed | require_flow
                   | require_attributed | require_no_silent_loss
                   | require_separate_domains ;
 
@@ -504,6 +507,10 @@ require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
    whether an endpoint exists anywhere in the group, this asks
    whether every member holds. See `spec/verification.md` § Secrets. *)
 require_sealed    = "require" , "sealed" ,
+                    "(" , "all" , IDENTIFIER , ")" ;
+
+(* Concrete child type policy; not an eventual completion guarantee. *)
+require_flow      = "require" , "flow" ,
                     "(" , "all" , IDENTIFIER , ")" ;
 
 (* GH #1327 section 5: all arranged instances of the two groups

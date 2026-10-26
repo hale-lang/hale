@@ -105,7 +105,7 @@
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Shipped (pool-placed owner, on its worker, L5)
 //! 2     Closures Run                             Pending (no option chosen)
 //! 3     Accept Birth Run Dissolve                Shipped (birth, L4); Pending (no option chosen)
-//! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
+//! 4     FailureDelivery Reclaim                  Shipped (bound instance route, C25 and C31)
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; Shipped (L4)
 //! 7     WaitAbort PoolJoin ReaderStop            Shipped
@@ -178,15 +178,8 @@ pub fn run_is_called(body_empty: bool, flow: bool) -> bool {
 /// universe that minted it.
 pub use crate::placement::{DeclRef, InstanceKey, Origin, SiteRef, Step, Template};
 
-/// A row's static identity: the declaration built and the template
-/// that builds it. Two specializations of one generic share
-/// [`DeclRef::site`] and differ in [`DeclRef::lowered`], so they are
-/// two source sites with two sets of rows.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SourceSite {
-    pub decl: DeclRef,
-    pub template: Template,
-}
+/// Source declaration specialization and construction template, owned upstream.
+pub use crate::lifecycle_context::SourceSite;
 
 /// The runtime level: one live object and one incarnation of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -445,9 +438,9 @@ pub enum ObligationKind {
     RunAdmission,
     /// `run()`'s execution, from start to return.
     Run,
-    /// A bus handler's execution on a pool's worker, from its start to
-    /// its return, once per delivered cell: its subscriber, which another
-    /// thread can reclaim, is retained until it returns (line 19, R52).
+    /// A bus handler's execution on a pool worker or pinned mailbox,
+    /// from start to return, once per delivered cell. Its subscriber
+    /// survives concurrent reclaim and nested yields (line 19, R52).
     Handler,
     /// The run end: await phase 0, the restart loop, the per-child
     /// reclaim decision (a kept failed child stays, GH #1069).
@@ -1091,8 +1084,8 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "the failure route bound at birth, in every spine",
         kinds: &[K::FailureDelivery, K::Reclaim],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "C25" }, "a dissolve-epoch violation under the reclaim spine"),
-            (Status::KnownOpen { inventory_row: "C31" }, "a dissolve-epoch violation in a cascade lowered in fn main"),
+            (Status::Shipped, "a dissolve-epoch violation under the reclaim spine"),
+            (Status::Shipped, "a dissolve-epoch violation in a cascade lowered in fn main"),
         ],
     },
     DecisionLine {
@@ -1231,7 +1224,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
             (
                 Status::Shipped,
-                "a bus handler on a pool's worker holds its subscriber until it returns, so the subscriber's physical reclaim completes after it (R52, phase 4's R1)",
+                "a bus handler on a pool worker or pinned mailbox holds its subscriber until it returns; nested mailbox releases wait for the outermost frame (R52)",
             ),
         ],
     },

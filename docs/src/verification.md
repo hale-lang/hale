@@ -1,8 +1,14 @@
 # Verification & Model-Checking Reference
 
-Hale verifies programs at two levels:
-1. **Runtime substrate verification:** The C runtime (`lotus`) concurrency primitives are exhaustively model-checked with [GenMC](https://github.com/MPI-SWS/genmc).
-2. **Compile-time whole-program verification:** `hale check` enforces data-race freedom, bus topology checks, thread-placement rules, arena memory bounds, transitive effect contracts, and architectural `claims`.
+Hale uses three complementary forms of verification:
+
+1. **Compile-time program checks:** `hale check` checks topology, placement, allocation behavior, effect contracts and architectural `claims` over the compiler's represented program facts.
+2. **Independent graph certificates:** Selected reachability claims can export finite-graph certificates and Lean statements for kernel checking.
+3. **Runtime protocol models:** GenMC checks C11 concurrency models of `lotus` primitives; a finite TLA+ pilot checks the mailbox/classic-pool wake handshake under explicit bounds and fairness assumptions.
+
+These checks have different scopes. A graph theorem does not prove compiler
+extraction or native execution correct, and a protocol model does not cover
+every runtime execution. The boundaries are described below.
 
 For the exhaustive specification of every static check, see [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).
 
@@ -49,11 +55,31 @@ These checks run automatically on every `hale check` and `hale build`:
 | **Subject type mismatch** | Error | Two declarations or bindings disagree on a topic's payload type |
 | **Intra-locus re-entrant publish** | Error | Direct synchronous self-publish cycle with no queued hop |
 | **No locus-return** | Error | A locus method returns a managed locus value (violating single-tree ownership / CQRS) |
-| **Codec purity** | Error | A bus codec's `encode`/`decode` reaches `syscall`, `block`, or `publish` |
+| **Codec purity** | Error | A bus codec's `encode`/`decode` reaches state mutation, parent admission/tracking, structural failure, scheduler/recovery actions, `syscall`, `block`, or `publish`, or lacks a complete execution/confinement account |
 | **`ring_layout` conformance** | Error | A foreign shared-memory ring layout has overlapping fields or invalid offsets |
 | **Orphan topic** | Warning | A topic has publishers but no subscribers (or vice versa) in a closed binary |
 | **Bus queue cycle** | Warning | A publish-subscribe cycle across loci that can spin indefinitely |
 | **Unthrottled publish loop** | Warning | Publishing inside an unbounded loop without a sleep/yield/blocking gate |
+
+Codec purity follows implicit work as well as explicit calls. Constructing a
+child can evaluate omitted defaults, enter lifecycle bodies, or invoke its
+parent's `accept`/`release` callbacks. Even an empty `accept` can update the
+parent's child tracking. Keep that work outside codecs, whose methods may run
+concurrently on several threads. Local data transformations and classified
+allocation remain allowed; an unresolved callback or receiver-confinement
+question cannot establish that a codec is safe.
+
+Local record fields use their declared value semantics even when the record
+comes from the stdlib and its executable bodies are outside the analysis
+horizon. This does not establish confinement for a locus held inside a record.
+An unresolved type parameter also cannot inherit a record's purity merely
+by sharing its name. Unknown callbacks and default execution still need their
+own coverage.
+
+Method calls on an array element follow the element's known type, including
+uniform array literals. The index expression is checked too: indexing with an
+OS-only call still requires that capability on the selected target. An unknown
+element type cannot supply a method or effect guarantee.
 
 ### Concurrency & Thread Placement Checks
 
@@ -93,6 +119,14 @@ On any program with a long-running `run()` loop or bus handler, `hale check` ana
 - **`@budget(alloc_per_call = N)`:** Hard compile error if a function or its transitive callees perform more than `N` arena allocations per invocation (`N = 0` certifies a zero-allocation hot path).
 - **`--check-resource-budget budget.toml`:** Static ceiling gate on OS threads, cooperative pools, file descriptors, and bus subjects spawned by `main`.
 
+### Declared Queue Reservations
+
+The claim `bound queue_slots <= N on instances G` sums the subscription
+capacities of arranged instances selected by `G`. Repeated instances count
+separately; unknown populations prevent certification. This budgets declared
+queue slots, not payload bytes, current occupancy, work in flight or total
+retained memory. See [Queue Reservation Budgets](./claims.md#10-queue-reservation-budgets).
+
 ---
 
 ## 4. Transitive Effect Contracts & Architectural Claims
@@ -122,6 +156,11 @@ claims {
 ```
 
 When a claim fails, `hale check` prints the exact **witness path** in your source identifiers. Topology models can be exported and diffed in CI using `hale check --dump-topology` and `--check-topology <baseline>`. See **[Architectural Claims & Topology Proofs](./claims.md)**.
+
+The policy `require flow(all G)` checks that every selected concrete locus
+type has the shared flow reclamation classification. It does not establish
+that a run returns or that the number of live children is bounded. See
+[Flow Reclamation Policy](./claims.md#require-flow-reclamation-for-selected-child-types).
 
 ---
 
@@ -189,3 +228,62 @@ When a closure invariant fails, execution immediately transitions the locus into
 1. **Sound over-approximation (fails closed):** Whenever the static analyzer encounters an unresolvable call or unclassified symbol, it refuses certification (`uncertified` or build error) rather than assuming safety.
 2. **Closed-world horizon:** Static guarantees hold up to explicit external boundaries (`@ffi("c")`, network/IPC sockets, OS filesystems).
 3. **Source-level cost models:** `@budget(alloc_per_call = N)` and resource budgets count source-level arena operations and placement declarations prior to LLVM inlining.
+
+Runtime counter measurements complement these static checks on particular
+executions. `std::diag::heap_alloc_count` and `syscall_count` require the
+Linux native counter backend without sanitizers. A reading of `-1` means
+the counter is unavailable, including on macOS; subtracting two unavailable
+readings cannot establish that an operation had zero effects.
+
+## 8. Independent Proof Checks
+
+### Reachability Certificates and Lean
+
+For selected `forbid reaches` laws, export the canonical report and generated
+Lean document, then replay both against the current source:
+
+```sh
+hale check app --dump-reachability-proofs=Claims.json --dump-reachability-lean=Claims.lean
+hale check app --check-reachability-proofs=Claims.json --check-reachability-lean=Claims.lean
+```
+
+Export and replay do not run Lean. To check the actual generated proposition
+with the pinned toolchain, run from a Hale compiler checkout:
+
+```sh
+cd verification/lean
+lake build
+lake env lean /absolute/path/to/Claims.lean
+```
+
+A path certificate proves a forbidden path in the supplied graph; it is not
+a passing claim. Invalid or uncertified laws have no theorem, and other claim
+families are excluded. Source extraction, selection, completeness and
+correspondence with native behavior remain trusted. See
+[Reachability Certificates and Lean](./claims.md#reachability-certificates-and-lean)
+and the [compiler-to-kernel guide](https://github.com/hale-lang/hale/blob/main/verification/lean/README.md)
+for replay rules, negative controls and the independent checker.
+
+### TLA+ Wake-Handshake Pilot
+
+The [TLA+ guide](https://github.com/hale-lang/hale/blob/main/verification/tla/README.md)
+gives the pinned TLC command, runtime mapping and required negative controls.
+The finite model has two producers and checks eventual delivery and shutdown
+after ingress quiescence, with weak fairness and explicit visibility
+assumptions. It excludes full-ring backpressure, posts racing shutdown,
+arbitrary handler behavior and several other runtime paths. Runtime source
+fingerprints detect drift; they do not prove refinement. This pilot adds no
+general termination, latency, lifecycle-safety or durability claim to Hale.
+
+### Lifecycle source effects
+
+The compiler includes a constructed locus's nonempty `birth`, `run`, `drain`
+and `dissolve` bodies in its source call and effect account. If every body and
+entry is known, pure lifecycle work can satisfy an effect prohibition. A
+forbidden effect inside a hook still fails it; an unresolved callback still
+prevents certification.
+
+This source account does not establish when a hook runs or how long its
+storage stays live. Resource budgets retain the missing runtime context.
+Automatic assertions, failure dispatch and parent protocol work also retain
+their separate coverage requirements.

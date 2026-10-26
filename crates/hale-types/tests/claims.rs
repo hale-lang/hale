@@ -676,10 +676,9 @@ fn logging_program(body: &str, claims: &str) -> String {
     .replace("BODY", body)
 }
 
-/// Pass: the program logs through `std::log`, a sink of which prints;
-/// the module is the gate, so no path avoids it.
+/// Every known terminal write is gated; represented construction closes source effects.
 #[test]
-fn a_program_that_logs_through_std_log_holds_the_law() {
+fn logging_construction_has_complete_source_effect_coverage() {
     let ds = diags(&logging_program(
         "let c = std::log::ConsoleSink { }; c.write(\"three\");",
         LOGS_STRUCTURED,
@@ -869,10 +868,9 @@ fn a_program_that_only_logs_reaches_a_syscall_through_its_sink() {
     );
 }
 
-/// The gate still holds the structured-logs law: the sink is in
-/// `std::log`, which the law masks.
+/// The logger gate masks every known print in the complete source account.
 #[test]
-fn the_structured_logs_law_still_holds_through_the_sink() {
+fn structured_logging_holds_with_represented_lifecycle_source() {
     let ds = diags(&only_logs(
         "sink: std::log::StdoutSink = std::log::StdoutSink { };",
         "logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;",
@@ -880,10 +878,10 @@ fn the_structured_logs_law_still_holds_through_the_sink() {
     assert!(ds.is_empty(), "{ds:?}");
 }
 
-/// A sink the program never builds receives nothing: with no sink, the
-/// logger's events go nowhere and the claim holds.
+/// Without a sink, the logger has no source syscall path. Runtime lifetime
+/// and scheduling remain separate quantitative obligations.
 #[test]
-fn a_sink_the_program_never_builds_is_no_path() {
+fn an_absent_sink_has_no_logger_source_syscall_path() {
     let ds = diags(&only_logs("", "c: forbid reaches(app, effects(syscall));"));
     assert!(ds.is_empty(), "{ds:?}");
 }
@@ -959,9 +957,8 @@ fn a_program_publish_to_a_stdlib_sink_reaches_a_syscall() {
 /// `log.**` itself is logging through a sink, and the law holds. The
 /// print is the sink's, inside the module the law masks.
 #[test]
-fn a_program_publishing_a_log_event_holds_the_structured_logs_law() {
-    let ds = diags(
-        r#"
+fn raw_log_delivery_through_a_sink_holds_the_structured_logging_law() {
+    let source = r#"
     main locus App {
         params { sink: std::log::StdoutSink = std::log::StdoutSink { }; }
         bus { publish "log.app" of type std::log::LogEvent; }
@@ -972,9 +969,20 @@ fn a_program_publishing_a_log_event_holds_the_structured_logs_law() {
             "log.app" <- std::log::LogEvent { level: 1, msg: "raw", path: "app", fields: "", ts: 0 };
         }
     }
-"#,
-    );
-    assert!(!ds.iter().any(|m| m.contains("logs_structured")), "{ds:?}");
+"#;
+    let ds = diags(source);
+    assert!(ds.is_empty(), "{ds:?}");
+    // The gate excludes the real foreign vertex and its unresolved failure
+    // context. Without that gate, a quiet source effect remains uncertified.
+    let quiet = source.replace(LOGS_STRUCTURED, "quiet: forbid reaches(program, effects(secret_use));");
+    let ds = diags(&quiet);
+    assert!(ds.is_empty(), "no source handler exists: {ds:?}");
+    let with_handler = quiet + "\nlocus ChildForHandler { closure bad { epoch inline; } }\nlocus Dormant { on_failure(c: ChildForHandler, e: ClosureViolation) { } }\n";
+    let ds = diags(&with_handler);
+    assert!(ds.iter().any(|d| d.contains("conditional failure dispatch is unresolved")), "{ds:?}");
+    // Known writes must still win over that uncertainty.
+    let ds = diags(&source.replace(" avoiding std::log::*", ""));
+    assert!(ds.iter().any(|d| d.contains("violated") && d.contains("StdoutSink::on_event")), "{ds:?}");
 }
 
 /// A gate over the target's stdlib module masks the target, and the
@@ -1001,5 +1009,6 @@ fn a_gate_over_the_target_s_stdlib_module_is_refused() {
     .replace("main locus App", "group app = { App };\n    main locus App"));
     assert!(ds.iter().any(|m| m.contains("`avoiding std::log::*` overlaps `sinks`")), "{ds:?}");
 
-    assert!(diags(&logging_program("let _ = n;", LOGS_STRUCTURED)).is_empty());
+    let ds = diags(&logging_program("let _ = n;", LOGS_STRUCTURED));
+    assert!(ds.is_empty(), "{ds:?}");
 }

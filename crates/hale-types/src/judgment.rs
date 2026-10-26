@@ -69,6 +69,12 @@ enum V {
 /// spans identically to the evaluator.
 #[derive(Clone, Debug)]
 enum StepIr {
+    ConstructorCheck { kind: hale_model::ConstructorCheck, provenance: Option<ProvenanceId> },
+    Lifecycle { stage:hale_model::LifecycleStage, provenance:Option<ProvenanceId> },
+    ParentProtocol { stage:hale_model::ProtocolStage, provenance:ProvenanceId, constructor_provenance:ProvenanceId },
+    ClosureEvaluation { provenance:Option<ProvenanceId> },
+    Initialization { field: String, provenance: Option<ProvenanceId> },
+    ArgumentEvaluation { parameter:String,provenance:Option<ProvenanceId> },
     Call {
         /// (interface display, method) when the edge is a dispatch
         /// alternative.
@@ -252,6 +258,27 @@ pub fn judge_forbid_reaches(
     model: &ApplicationModel,
     source_bases: &[u32],
 ) -> (Vec<Diag>, Vec<Judged>) {
+    judge_forbid_reaches_impl(table, model, source_bases, None)
+}
+
+/// Capture facts from the same projection and traversal used by check.
+/// Missing entries mean no proof (invalidity, holes or a traversal ceiling).
+pub fn judge_forbid_reaches_with_certificates(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> (Vec<Diag>, Vec<Judged>, BTreeMap<u32, crate::reachability_proof::GraphProof>) {
+    let mut proofs = BTreeMap::new();
+    let (pre, judged) = judge_forbid_reaches_impl(table, model, source_bases, Some(&mut proofs));
+    (pre, judged, proofs)
+}
+
+fn judge_forbid_reaches_impl(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+    mut proofs: Option<&mut BTreeMap<u32, crate::reachability_proof::GraphProof>>,
+) -> (Vec<Diag>, Vec<Judged>) {
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -341,7 +368,7 @@ pub fn judge_forbid_reaches(
     // the legacy contraction — the absorption replaces them here).
     let mut calls_of: BTreeMap<
         FunctionId,
-        Vec<(u32, FunctionId, StepIr)>,
+        Vec<(crate::model_query::ExecutionSite, FunctionId, StepIr)>,
     > = BTreeMap::new();
     for c in &r.calls {
         let step = match &c.dispatch {
@@ -371,13 +398,38 @@ pub fn judge_forbid_reaches(
             }
             DispatchKind::ViaStdlib => continue,
         };
-        calls_of.entry(c.from).or_default().push((c.site, c.to, step));
+        calls_of.entry(c.from).or_default().push((crate::model_query::ExecutionSite::Call(c.site), c.to, step));
     }
-    for v in calls_of.values_mut() {
-        v.sort_by_key(|(site, to, _)| (*site, *to));
+    for edge in &r.initializes {
+        calls_of.entry(edge.from).or_default().push((
+            crate::model_query::ExecutionSite::Initialization { constructor: edge.site, parameter: edge.member },
+            edge.to, StepIr::Initialization { field: edge.field.clone(), provenance: Some(edge.provenance) },
+        ));
     }
+    for edge in &r.argument_evaluations {
+        calls_of.entry(edge.from).or_default().push((
+            crate::model_query::ExecutionSite::ArgumentDefault { call:edge.site,argument:edge.argument },
+            edge.to,StepIr::ArgumentEvaluation { parameter:edge.parameter.clone(),provenance:Some(edge.provenance) },
+        ));
+    }
+    for edge in &r.lifecycle_evaluations {
+        calls_of.entry(edge.from).or_default().push((crate::model_query::ExecutionSite::Lifecycle { constructor:edge.site,stage:edge.stage },edge.to,StepIr::Lifecycle { stage:edge.stage,provenance:Some(edge.provenance) }));
+    }
+    for edge in &r.constructor_checks {
+        calls_of.entry(edge.from).or_default().push((crate::model_query::ExecutionSite::ConstructorCheck { constructor: edge.site, kind: edge.kind },
+            edge.to, StepIr::ConstructorCheck { kind: edge.kind, provenance: Some(edge.provenance) }));
+    }
+    for edge in &r.protocol_evaluations {
+        let c = &r.protocol_contexts[edge.context as usize];
+        calls_of.entry(c.from).or_default().push((crate::model_query::ExecutionSite::ParentProtocol { context:edge.context,stage:edge.stage },
+            edge.to, StepIr::ParentProtocol { stage:edge.stage,provenance:c.provenance,constructor_provenance:c.constructor_provenance }));
+    }
+    for edge in &r.closure_evaluations {
+        calls_of.entry(edge.from).or_default().push((crate::model_query::ExecutionSite::ClosureCheck { check:edge.site,closure:edge.closure },edge.to,StepIr::ClosureEvaluation { provenance:Some(edge.provenance) }));
+    }
+    for v in calls_of.values_mut() { v.sort_by_key(|(site, to, _)| (*site, *to)); }
     // (from fn) → absorption entries (site, index).
-    let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
+    let mut absorb_of: BTreeMap<FunctionId, Vec<(crate::model_query::ExecutionSite, u32)>> =
         BTreeMap::new();
     // (from fn, publish site) → delivery entries: the program's publish
     // reaching a stdlib subscriber it builds.
@@ -391,7 +443,7 @@ pub fn judge_forbid_reaches(
         absorb_of
             .entry(a.from)
             .or_default()
-            .push((a.site, ai as u32));
+            .push((crate::model_query::absorption_site(a).unwrap(), ai as u32));
     }
     // Subscription rows grouped by their subject PATTERN, sorted —
     // the evaluator's subscribers_of iterates the graph's subject
@@ -467,6 +519,10 @@ pub fn judge_forbid_reaches(
         FunctionId,
         Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
     > = BTreeMap::new();
+    // Implicit failure/recovery work has no authored position in the
+    // explicit call graph. Preserve known paths before refusing an
+    // otherwise closed absence, just as for incomplete subscriber sets.
+    let mut behavioral_holes: BTreeMap<FunctionId, Vec<_>> = BTreeMap::new();
     // Holes anchored at NON-function entities participate too —
     // subject grain (covering patterns, round 4) AND topic grain
     // (round 5) — through the ONE shared BusHoles index.
@@ -478,6 +534,10 @@ pub fn judge_forbid_reaches(
                     .union(hale_model::RelationSet::PUBLISHES)
                     .union(hale_model::RelationSet::EFFECTS);
                 if !h.hides.intersects(walk_families) {
+                    continue;
+                }
+                if h.kind.implicit_execution_families().is_some() {
+                    behavioral_holes.entry(f).or_default().push(h);
                     continue;
                 }
                 let hole = match &h.kind {
@@ -874,8 +934,47 @@ pub fn judge_forbid_reaches(
                 DstIr::Effects(class_atoms(&c.name))
             }
         };
+        let is_dst =
+            |v: &V| match v {
+                V::User(f) => match &dst_test {
+                    DstIr::Group(g, _) => g.contains(f),
+                    DstIr::Effects(atoms) => direct_of(*f)
+                        .iter()
+                        .any(|c| atoms.contains(c)),
+                },
+                // The evaluator applies direct_effects to EVERY
+                // visited FnKey, stdlib included — an effects(C)
+                // destination can be satisfied inside a stdlib body
+                // (review: stdlib effect sinks).
+                V::Interior(a, n) => match &dst_test {
+                    DstIr::Group(_, std) => std.contains(
+                        absorption[*a as usize].nodes[*n as usize].decl.as_str(),
+                    ),
+                    DstIr::Effects(atoms) => absorption[*a as usize]
+                        .nodes[*n as usize]
+                        .direct_effects
+                        .iter()
+                        .any(|c| atoms.contains(c)),
+                },
+            };
+        let is_masked =
+            |v: &V| match v {
+                V::User(f) => mask.is_some_and(|m| m.contains(f)),
+                V::Interior(a, n) => mask_std.contains(
+                    absorption[*a as usize].nodes[*n as usize].decl.as_str(),
+                ),
+            };
         if let DstIr::Group(g, std) = &dst_test {
             if g.is_empty() && std.is_empty() {
+                if let Some(sink) = proofs.as_deref_mut() {
+                    // Empty targets prove the claim independently of every edge;
+                    // this is not an explored reachable cone.
+                    sink.insert(row.ordinal, graph_proof(
+                        model, roots.iter().copied().map(V::User), &is_dst, &is_masked,
+                        &BTreeSet::new(), &BTreeSet::new(),
+                        crate::reachability_proof::Certificate::NoTargets,
+                    ));
+                }
                 out.push(Judged {
                     ordinal: row.ordinal,
                     verdict: Verdict::Holds,
@@ -899,13 +998,23 @@ pub fn judge_forbid_reaches(
         // downgrades a would-be Holds to Uncertified after the
         // search.
         let mut bus_unknown: Option<(String, String)> = None;
+        let mut behavioral_unknown = None;
+        let mut predicate_unknown = None;
+        let mut behavioral_mask = hale_model::RelationSet(0);
+        if *via_calls { behavioral_mask = behavioral_mask.union(hale_model::RelationSet::CALLS); }
+        if *via_bus { behavioral_mask = behavioral_mask.union(hale_model::RelationSet::PUBLISHES); }
+        if matches!(dst_test, DstIr::Effects(_)) { behavioral_mask = behavioral_mask.union(hale_model::RelationSet::EFFECTS); }
         let ordered_roots = fnkey_sorted(&roots);
-        let search = model_graph::search(
-            ordered_roots.iter().map(|f| V::User(*f)),
+        let mut successors =
             |v: &V| {
                 let mut edges: Vec<(V, StepIr)> = Vec::new();
                 match v {
                     V::User(f) => {
+                        if behavioral_unknown.is_none() {
+                            behavioral_unknown = behavioral_holes.get(f).into_iter().flatten()
+                                .find(|hole| hole.hides.intersects(behavioral_mask))
+                                .map(|hole| (*f, *hole));
+                        }
                         if *via_calls {
                             if let Some(h) = earliest_hole(
                                 f,
@@ -990,7 +1099,7 @@ pub fn judge_forbid_reaches(
                                 .get(f)
                                 .map(|x| x.as_slice())
                                 .unwrap_or(&[]);
-                            let mut items: Vec<(u32, u8, usize)> =
+                            let mut items: Vec<(crate::model_query::ExecutionSite, u8, usize)> =
                                 Vec::new();
                             for (i, (site, _, _)) in
                                 direct.iter().enumerate()
@@ -1015,21 +1124,15 @@ pub fn judge_forbid_reaches(
                                     let a = &absorption[ai as usize];
                                     edges.push((
                                         V::Interior(ai, 0),
-                                        StepIr::Call {
-                                            dispatch: a
-                                                .entry_dispatch
-                                                .clone(),
-                                            // The AUTHORED entry
-                                            // call — a hit at an
-                                            // interior node crosses
-                                            // here, and the
-                                            // evaluator points at
-                                            // it.
-                                            provenance: Some(
-                                                a.entry_provenance,
-                                            ),
-                                            from_stdlib: false,
-                                        },
+                                        if let Some(kind) = a.entry_constructor_check { StepIr::ConstructorCheck { kind, provenance: Some(a.entry_provenance) } } else if let Some(stage)=a.entry_lifecycle { StepIr::Lifecycle { stage,provenance:Some(a.entry_provenance) } } else { match &a.entry_initialization {
+                                            Some(default) if default.kind == hale_model::InitializerKind::Argument => StepIr::ArgumentEvaluation { parameter:default.field.clone(),provenance:Some(a.entry_provenance) },
+                                            Some(default) => StepIr::Initialization { field: default.field.clone(), provenance: Some(a.entry_provenance) },
+                                            None => StepIr::Call {
+                                                dispatch: a.entry_dispatch.clone(),
+                                                provenance: Some(a.entry_provenance),
+                                                from_stdlib: false,
+                                            },
+                                        } },
                                     ));
                                 }
                             }
@@ -1203,10 +1306,15 @@ pub fn judge_forbid_reaches(
                     V::Interior(ai, ni) => {
                         let node = &absorption[*ai as usize].nodes
                             [*ni as usize];
+                        if predicate_unknown.is_none() && !model.no_source_failure_handlers() && node.constructor_check.is_some()
+                            && behavioral_mask.intersects(hale_model::RelationSet::CALLS.union(hale_model::RelationSet::EFFECTS)) {
+                            predicate_unknown = Some((display(*v), node.constructor_check.unwrap()));
+                        }
                         for ev in &node.events {
                             match ev {
                                 AbsorbedEvent::Call {
                                     target,
+                                    initialization,
                                     dispatch,
                                     ..
                                 } => {
@@ -1223,13 +1331,22 @@ pub fn judge_forbid_reaches(
                                     };
                                     edges.push((
                                         tv,
-                                        StepIr::Call {
-                                            dispatch: dispatch
-                                                .clone(),
-                                            provenance: None,
-                                            from_stdlib: true,
+                                        match initialization {
+                                            Some(default) if default.kind == hale_model::InitializerKind::Argument => StepIr::ArgumentEvaluation { parameter:default.field.clone(),provenance:None },
+                                            Some(default) => StepIr::Initialization { field: default.field.clone(), provenance: None },
+                                            None => StepIr::Call { dispatch: dispatch.clone(), provenance: None, from_stdlib: true },
                                         },
                                     ));
+                                }
+                                AbsorbedEvent::ConstructorCheck { target, kind, .. } => {
+                                    if !*via_calls { continue; }
+                                    let target = match target { AbsorbedTarget::Interior(n) => V::Interior(*ai, *n), AbsorbedTarget::User(f) => V::User(*f) };
+                                    edges.push((target, StepIr::ConstructorCheck { kind: *kind, provenance: None }));
+                                }
+                                AbsorbedEvent::Lifecycle { target,stage,.. } => {
+                                    if !*via_calls { continue; }
+                                    let target=match target { AbsorbedTarget::Interior(n)=>V::Interior(*ai,*n),AbsorbedTarget::User(f)=>V::User(*f) };
+                                    edges.push((target,StepIr::Lifecycle { stage:*stage,provenance:None }));
                                 }
                                 AbsorbedEvent::CallHole(k) => {
                                     if !*via_calls {
@@ -1425,40 +1542,48 @@ pub fn judge_forbid_reaches(
                         Visit::edges(edges)
                     }
                 }
+            };
+        let capture = proofs.is_some();
+        let mut proof_closed = BTreeSet::new();
+        let mut proof_edges = BTreeSet::new();
+        let search = model_graph::search(
+            ordered_roots.iter().map(|f| V::User(*f)),
+            |v: &V| {
+                let visit = successors(v);
+                if capture {
+                    proof_closed.insert(*v);
+                    // Include every selected successor, even one the search
+                    // might fail to enqueue. Closure must catch that error.
+                    proof_edges.extend(visit.edges.iter()
+                        .filter(|(next, _)| !is_masked(next)).map(|(next, _)| (*v, *next)));
+                }
+                visit
             },
-            |v: &V| match v {
-                V::User(f) => match &dst_test {
-                    DstIr::Group(g, _) => g.contains(f),
-                    DstIr::Effects(atoms) => direct_of(*f)
-                        .iter()
-                        .any(|c| atoms.contains(c)),
-                },
-                // The evaluator applies direct_effects to EVERY
-                // visited FnKey, stdlib included — an effects(C)
-                // destination can be satisfied inside a stdlib body
-                // (review: stdlib effect sinks).
-                V::Interior(a, n) => match &dst_test {
-                    DstIr::Group(_, std) => std.contains(
-                        absorption[*a as usize].nodes[*n as usize].decl.as_str(),
-                    ),
-                    DstIr::Effects(atoms) => absorption[*a as usize]
-                        .nodes[*n as usize]
-                        .direct_effects
-                        .iter()
-                        .any(|c| atoms.contains(c)),
-                },
-            },
-            |v: &V| match v {
-                V::User(f) => mask.is_some_and(|m| m.contains(f)),
-                V::Interior(a, n) => mask_std.contains(
-                    absorption[*a as usize].nodes[*n as usize].decl.as_str(),
-                ),
-            },
+            &is_dst,
+            &is_masked,
             Some(crate::callgraph::MAX_STEPS),
             HolePolicy::Halt,
         );
         let verdict = match search {
             model_graph::Search::Found { hit, parent } => {
+                if let Some(sink) = proofs.as_deref_mut() {
+                    let mut path = vec![hit];
+                    let mut at = hit;
+                    while let Some((previous, _)) = parent.get(&at) {
+                        path.push(*previous);
+                        at = *previous;
+                    }
+                    path.reverse();
+                    let ids = vertex_ids(model);
+                    let certificate = crate::reachability_proof::Certificate::Path {
+                        source: ids[&path[0]],
+                        path: path.iter().skip(1).map(|v| ids[v]).collect(),
+                    };
+                    sink.insert(row.ordinal, graph_proof(
+                        model, ordered_roots.iter().copied().map(V::User),
+                        &is_dst, &is_masked, &proof_closed, &proof_edges, certificate,
+                    ));
+                }
                 render_violation_ir(
                     row,
                     &src_ref.name.display,
@@ -1503,6 +1628,19 @@ pub fn judge_forbid_reaches(
                         ),
                     ));
                     Verdict::Violated
+                } else if let Some((function, kind)) = predicate_unknown {
+                    diags.push(Diag::ty(row_span, format!("claim `{}` cannot be certified: `{function}` (reachable from `{}`) may reject at {kind}; conditional failure dispatch is unresolved", row.name, src_ref.name.display)));
+                    Verdict::Uncertified
+                } else if let Some((function, hole)) = behavioral_unknown {
+                    diags.push(Diag::ty(row_span, format!(
+                        "claim `{}` cannot be certified: `{}` (reachable from `{}`) — {}",
+                        row.name, display(V::User(function)), src_ref.name.display, hole.reason,
+                    )));
+                    let coverage = if hole.kind == hale_model::HoleKind::UnmodeledInitialization {
+                        "unmodeled implicit execution is reached here"
+                    } else { "unmodeled failure/recovery execution is reached here" };
+                    diags.push(Diag::ty(model_span(hole.provenance), coverage));
+                    Verdict::Uncertified
                 } else if let Some((vd, subj)) = &bus_unknown {
                     // No known counterexample, but a subscriber set
                     // in the composition is incomplete.
@@ -1550,6 +1688,18 @@ pub fn judge_forbid_reaches(
                 }
             }
         };
+        if verdict == Verdict::Holds {
+            if let Some(sink) = proofs.as_deref_mut() {
+                let ids = vertex_ids(model);
+                let certificate = crate::reachability_proof::Certificate::Closed {
+                    closed: proof_closed.iter().map(|v| ids[v]).collect(),
+                };
+                sink.insert(row.ordinal, graph_proof(
+                    model, ordered_roots.iter().copied().map(V::User),
+                    &is_dst, &is_masked, &proof_closed, &proof_edges, certificate,
+                ));
+            }
+        }
         out.push(Judged {
             ordinal: row.ordinal,
             verdict,
@@ -1558,6 +1708,44 @@ pub fn judge_forbid_reaches(
         });
     }
     (pre, out)
+}
+
+fn vertex_ids(model: &ApplicationModel) -> BTreeMap<V, u32> {
+    let users = (0..model.entities.functions.len()).map(|i| V::User(FunctionId(i as u32)));
+    let interiors = model.analyses.stdlib_absorption.iter().enumerate().flat_map(|(a, entry)| {
+        (0..entry.nodes.len()).map(move |n| V::Interior(a as u32, n as u32))
+    });
+    users.chain(interiors).enumerate().map(|(id, v)| (v, id as u32)).collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn graph_proof(
+    model: &ApplicationModel,
+    roots: impl Iterator<Item = V>,
+    is_dst: &impl Fn(&V) -> bool,
+    is_masked: &impl Fn(&V) -> bool,
+    expanded: &BTreeSet<V>,
+    edges: &BTreeSet<(V, V)>,
+    certificate: crate::reachability_proof::Certificate,
+) -> crate::reachability_proof::GraphProof {
+    use crate::reachability_proof::{GraphProof, Vertex};
+    let ids = vertex_ids(model);
+    let vertices = ids.iter().map(|(v, id)| {
+        let (identity, display, provenance) = match v {
+            V::User(f) => {
+                let function = &model.entities.functions[f.index()];
+                (format!("function:{}", f.0), function.display.clone(), Some(function.provenance.0))
+            }
+            V::Interior(a, n) => {
+                let node = &model.analyses.stdlib_absorption[*a as usize].nodes[*n as usize];
+                (format!("stdlib:{}:{}:{}", a, n, node.decl), node.display.clone(), None)
+            }
+        };
+        Vertex { id: *id, identity, display, provenance, expanded: expanded.contains(v) }
+    }).collect();
+    let sources = roots.filter(|v| !is_masked(v)).map(|v| ids[&v]).collect();
+    let targets = ids.iter().filter(|(v, _)| !is_masked(v) && is_dst(v)).map(|(_, id)| *id).collect();
+    GraphProof { vertices, sources, targets, edges: edges.iter().map(|(a,b)| (ids[a], ids[b])).collect(), certificate }
 }
 
 fn dst_display(dst: &SetIr) -> String {
@@ -1613,6 +1801,16 @@ fn render_violation_ir(
             Some(StepIr::Call { .. }) => {
                 path.push_str(&format!(" -> `{}`", display(*node)));
             }
+            Some(StepIr::ParentProtocol { stage,.. }) => { path.push_str(&format!(" -(may enter parent {}; guard {})-> `{}`",stage.as_str(),stage.guard(),display(*node))); }
+            Some(StepIr::ConstructorCheck { kind, .. }) => { path.push_str(&format!(" -(may evaluate {kind})-> `{}`", display(*node))); }
+            Some(StepIr::Lifecycle { stage,.. }) => { path.push_str(&format!(" -(may enter {}; guard {})-> `{}`",stage.as_str(),stage.entry_guard().as_str(),display(*node))); }
+            Some(StepIr::ClosureEvaluation { .. }) => { path.push_str(&format!(" -(checks closure)-> `{}`",display(*node))); }
+            Some(StepIr::ArgumentEvaluation { parameter, .. }) => {
+                path.push_str(&format!(" -(defaults {parameter})-> `{}`", display(*node)));
+            }
+            Some(StepIr::Initialization { field, .. }) => {
+                path.push_str(&format!(" -(initializes {field})-> `{}`", display(*node)));
+            }
             Some(StepIr::Bus { subject, .. }) => {
                 path.push_str(&format!(
                     " -(publishes \"{}\")-> `{}`",
@@ -1661,6 +1859,23 @@ fn render_violation_ir(
                         };
                         diags.push(Diag::ty(model_span(*pid), msg));
                     }
+                }
+            }
+            StepIr::ParentProtocol { stage, provenance, constructor_provenance } => {
+                diags.push(Diag::ty(model_span(*provenance),format!("claim `{}`: this root may enter parent {} (guard: {})",row.name,stage.as_str(),stage.guard())));
+                if constructor_provenance != provenance { diags.push(Diag::ty(model_span(*constructor_provenance),"the nested child construction is here")); }
+            }
+            StepIr::ConstructorCheck { kind, provenance } => { if let Some(p) = provenance { diags.push(Diag::ty(model_span(*p), format!("claim `{}`: this construction may evaluate {kind}", row.name))); } }
+            StepIr::Lifecycle { stage,provenance } => { if let Some(p)=provenance { diags.push(Diag::ty(model_span(*p),format!("claim `{}`: this construction may enter the {} body (guard: {})",row.name,stage.as_str(),stage.entry_guard().as_str()))); } }
+            StepIr::ClosureEvaluation { provenance } => { if let Some(p)=provenance { diags.push(Diag::ty(model_span(*p),format!("claim `{}`: this checkpoint evaluates a closure assertion",row.name))); } }
+            StepIr::ArgumentEvaluation { parameter, provenance } => {
+                if let Some(provenance) = provenance {
+                    diags.push(Diag::ty(model_span(*provenance),format!("claim `{}`: this call evaluates omitted argument `{parameter}`",row.name)));
+                }
+            }
+            StepIr::Initialization { field, provenance } => {
+                if let Some(provenance) = provenance {
+                    diags.push(Diag::ty(model_span(*provenance), format!("claim `{}`: this constructor evaluates omitted default `{field}`", row.name)));
                 }
             }
             StepIr::Bus {
@@ -1797,10 +2012,10 @@ pub fn judge_only_edges(
     // Per-fn call rows / publish rows by site; holes.
     let mut calls_of: BTreeMap<
         FunctionId,
-        Vec<(u32, FunctionId, ProvenanceId)>,
+        Vec<(crate::model_query::ExecutionSite, FunctionId, ProvenanceId)>,
     > = BTreeMap::new();
-    for c in &r.calls {
-        if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+    for c in crate::model_query::executions(model) {
+        if c.contracted() {
             continue;
         }
         calls_of
@@ -2077,7 +2292,7 @@ pub fn judge_only_edges(
                 Edge(FunctionId, ProvenanceId),
                 Hole(&'x FnHole),
             }
-            let mut evs: Vec<(u32, u8, CallEv)> = Vec::new();
+            let mut evs: Vec<(crate::model_query::ExecutionSite, u8, CallEv)> = Vec::new();
             for (site, to, cprov) in
                 calls_of.get(f).into_iter().flatten()
             {
@@ -2089,7 +2304,7 @@ pub fn judge_only_edges(
                 if !hides.intersects(hale_model::RelationSet::CALLS) {
                     continue;
                 }
-                evs.push((site.unwrap_or(u32::MAX), 1, CallEv::Hole(h)));
+                evs.push((crate::model_query::ExecutionSite::Call(site.unwrap_or(u32::MAX)), 1, CallEv::Hole(h)));
             }
             evs.sort_by_key(|(site, tie, _)| (*site, *tie));
             for (_, _, ev) in evs {
@@ -3525,15 +3740,15 @@ pub fn judge_bound(
     // Adjacency (calls with loop/group, publishes, subscriptions by
     // canonical spelling), and per-fn labels for the carrier test.
     struct CallRow {
-        site: u32,
+        site: crate::model_query::ExecutionSite,
         to: FunctionId,
         in_loop: bool,
         provenance: ProvenanceId,
     }
     let mut calls_of: BTreeMap<FunctionId, Vec<CallRow>> =
         BTreeMap::new();
-    for c in &r.calls {
-        if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+    for c in crate::model_query::executions(model) {
+        if c.contracted() {
             continue;
         }
         calls_of.entry(c.from).or_default().push(CallRow {
@@ -3546,7 +3761,7 @@ pub fn judge_bound(
     for v in calls_of.values_mut() {
         v.sort_by_key(|cr| (cr.site, cr.to));
     }
-    let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
+    let mut absorb_of: BTreeMap<FunctionId, Vec<(crate::model_query::ExecutionSite, u32)>> =
         BTreeMap::new();
     // (from fn, publish site) → delivery entries: the program's publish
     // reaching a stdlib subscriber it builds.
@@ -3560,7 +3775,7 @@ pub fn judge_bound(
         absorb_of
             .entry(a.from)
             .or_default()
-            .push((a.site, ai as u32));
+            .push((crate::model_query::absorption_site(a).unwrap(), ai as u32));
     }
     let mut pubs_of: BTreeMap<
         FunctionId,
@@ -3858,7 +4073,7 @@ pub fn judge_bound(
         // ---- the DFS (the evaluator's site_count, over V) ----
         struct Ctx<'x> {
             calls_of: &'x BTreeMap<FunctionId, Vec<CallRow>>,
-            absorb_of: &'x BTreeMap<FunctionId, Vec<(u32, u32)>>,
+            absorb_of: &'x BTreeMap<FunctionId, Vec<(crate::model_query::ExecutionSite, u32)>>,
             deliveries_of: &'x BTreeMap<(FunctionId, u32), Vec<u32>>,
             pubs_of: &'x BTreeMap<
                 FunctionId,
@@ -3978,7 +4193,7 @@ pub fn judge_bound(
                         .get(&f)
                         .map(|x| x.as_slice())
                         .unwrap_or(&[]);
-                    let mut items: Vec<(u32, u8, usize)> = Vec::new();
+                    let mut items: Vec<(crate::model_query::ExecutionSite, u8, usize)> = Vec::new();
                     for (i, cr) in direct.iter().enumerate() {
                         items.push((cr.site, 0, i));
                     }
@@ -3992,7 +4207,7 @@ pub fn judge_bound(
                     for (i, h) in holes.iter().enumerate() {
                         if let FnHole::Unfollowable(site, _) = h {
                             items.push((
-                                site.unwrap_or(u32::MAX),
+                                crate::model_query::ExecutionSite::Call(site.unwrap_or(u32::MAX)),
                                 2,
                                 i,
                             ));
@@ -4013,7 +4228,7 @@ pub fn judge_bound(
                             evs.push(Ev::Call {
                                 to: V::User(cr.to),
                                 in_loop: cr.in_loop,
-                                group: Some(site),
+                                group: match site { crate::model_query::ExecutionSite::Call(site) => Some(site), crate::model_query::ExecutionSite::Initialization { .. } | crate::model_query::ExecutionSite::ArgumentDefault { .. } | crate::model_query::ExecutionSite::ClosureCheck { .. } | crate::model_query::ExecutionSite::ConstructorCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => None },
                                 prov: Some(cr.provenance),
                             });
                         } else {
@@ -4033,7 +4248,7 @@ pub fn judge_bound(
                             evs.push(Ev::Call {
                                 to: V::Interior(ai, 0),
                                 in_loop: a.entry_in_loop,
-                                group: Some(site),
+                                group: match site { crate::model_query::ExecutionSite::Call(site) => Some(site), crate::model_query::ExecutionSite::Initialization { .. } | crate::model_query::ExecutionSite::ArgumentDefault { .. } | crate::model_query::ExecutionSite::ClosureCheck { .. } | crate::model_query::ExecutionSite::ConstructorCheck { .. } | crate::model_query::ExecutionSite::Lifecycle { .. } | crate::model_query::ExecutionSite::ParentProtocol { .. } => None },
                                 prov: Some(a.entry_provenance),
                             });
                         }
@@ -4103,6 +4318,7 @@ pub fn judge_bound(
                 V::Interior(ai, ni) => {
                     let node = &cx.absorption[ai as usize].nodes
                         [ni as usize];
+                    if node.constructor_check.is_some() { evs.push(Ev::Unfollowable(None)); }
                     for ev in &node.events {
                         match ev {
                             AbsorbedEvent::Call {
@@ -4126,6 +4342,7 @@ pub fn judge_bound(
                                     prov: None,
                                 });
                             }
+                            AbsorbedEvent::Lifecycle { .. } | AbsorbedEvent::ConstructorCheck { .. } => evs.push(Ev::Unfollowable(None)),
                             AbsorbedEvent::CallHole(_) => {
                                 evs.push(Ev::Unfollowable(None))
                             }
@@ -4811,7 +5028,9 @@ pub fn judge_certificates(
 /// `judge_certificates` judges rows against evidence the effects
 /// engine produced, and that engine emits its own diagnostics in
 /// check; re-emitting them here would duplicate, which is the thing
-/// being deleted. `Unmigrated` rows keep their existing single
+/// being deleted. Model-derived recovery refusals supplement that stream
+/// because the legacy engine cannot observe those coverage gaps.
+/// `Unmigrated` rows keep their existing single
 /// authority (`frontier`, `quantitative`, `budget_check`).
 ///
 /// It judges over a model the caller already holds: the
@@ -4846,7 +5065,7 @@ pub fn claim_law_diags_over(
     // same selection's (`CheckInputs::laws`). The table still carries
     // them for the artifact, whose law account must show every
     // issue in one document.
-    let evidence = crate::evidence::derive_certificate_evidence_over(
+    let (evidence, recovery_reports) = crate::evidence::derive_certificate_evidence_with_recovery_reports_over(
         bundle, &table, model, effects, summary,
     );
     let (pre, judged) = crate::topology_projection::judge_all(
@@ -4879,6 +5098,8 @@ pub fn claim_law_diags_over(
                 | hale_model::JudgmentFamily::Boundary
                 | hale_model::JudgmentFamily::Endpoint
                 | hale_model::JudgmentFamily::Placement
+                | hale_model::JudgmentFamily::Resource
+                | hale_model::JudgmentFamily::FlowPolicy
                 | hale_model::JudgmentFamily::Bound
                 | hale_model::JudgmentFamily::Causes
                 | hale_model::JudgmentFamily::Depends
@@ -4888,6 +5109,17 @@ pub fn claim_law_diags_over(
         }
         if let Some(j) = judged.get(&row.ordinal) {
             out.extend(j.diags.iter().cloned());
+        }
+    }
+    // The legacy effect reporter remains the single reporter of its own
+    // findings. Add only the model-derived certificate refusals it could not
+    // see. Anchor them on the user's law, not an unheld/foreign span's offsets;
+    // the evidence/artifact retains the exact model witness separately.
+    for report in recovery_reports {
+        if judged.get(&report.ordinal).is_some_and(|j| j.verdict != Verdict::Holds) {
+            if let Some(row) = table.rows.iter().find(|row| row.ordinal == report.ordinal) {
+                out.push(Diag::ty(claim_row_span(&table, &source_bases, row), report.message));
+            }
         }
     }
     crate::stdlib_bodies::demangle_imports(&mut out, &bundle.import_renames);
@@ -4909,39 +5141,45 @@ pub fn claim_law_diags_over(
 ///
 /// …plus `@effects(causes: …)` on a function,
 /// `@effects(depends: …)` on a locus, and `@budget(...)`, which are
-/// annotation-carried but judged here since Changes 5f–5h. Other annotations are
-/// deliberately NOT a claim surface: their rows are the certificate
-/// family, whose diagnostics belong to the effects engine.
+/// annotation-carried but judged here since Changes 5f–5h. Other annotations
+/// normally stay in the certificate engine's check stream. When recovery
+/// coverage is relevant, pointwise effect/phase assertions also request the
+/// model so its additional refusals reach the check path. Proven recovery
+/// absence preserves the existing no-model demand gate.
 ///
 /// The demand rule's question: a check demands the model only when
 /// this answers yes.
 pub fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
-    fn judged_annotation(fd: &FnDecl) -> bool {
+    fn judged_annotation(fd: &FnDecl, recovery: bool) -> bool {
         fd.effects
             .iter()
             .any(|a| matches!(a, EffectAssert::Causes(_)))
             // Change 5h: `@budget` is judged here now too.
             || fd.budget.is_some()
             || !fd.quantities.is_empty()
+            || (recovery && fd.effects.iter().any(|a| matches!(a,
+                EffectAssert::Forbid(_) | EffectAssert::Only(_) | EffectAssert::PublishSet(_) | EffectAssert::NoPanic)))
     }
-    fn walk(items: &[TopDecl]) -> bool {
+    fn walk(items: &[TopDecl], recovery: bool) -> bool {
         items.iter().any(|item| match item {
             TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
-            TopDecl::Fn(f) => judged_annotation(f),
+            TopDecl::Fn(f) => judged_annotation(f, recovery),
             TopDecl::Locus(l) => {
                 l.depends.is_some()
+                    || (recovery && l.phase_effects.is_some())
                     || l.members.iter().any(|m| match m {
                         LocusMember::Claims(_) => true,
-                        LocusMember::Fn(f) => judged_annotation(f),
+                        LocusMember::Fn(f) => judged_annotation(f, recovery),
                         _ => false,
                     })
             }
-            TopDecl::Module(m) => walk(&m.items),
+            TopDecl::Module(m) => walk(&m.items, recovery),
             _ => false,
         })
     }
-    bundle.programs.values().any(|p| walk(&p.items))
+    let recovery = crate::typed_bodies::needs_recovery_call_operands(&bundle.snapshot);
+    bundle.programs.values().any(|p| walk(&p.items, recovery))
 }
 
 
@@ -5098,13 +5336,15 @@ pub fn judge_causes_witnessed(
                     }
                     // The handler's own publishes are its node's events.
                     hale_model::AbsorbedEvent::Call { .. }
+                    | hale_model::AbsorbedEvent::Lifecycle { .. }
+                    | hale_model::AbsorbedEvent::ConstructorCheck { .. }
                     | hale_model::AbsorbedEvent::Deliver { .. } => {}
                 }
             }
         }
     }
     let mut callees: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
-    for c in &r.calls {
+    for c in crate::model_query::executions(model) {
         callees.entry(c.from.0).or_default().push(c.to);
     }
 
@@ -5521,7 +5761,7 @@ pub fn judge_depends_witnessed(
     // are these?".
     let mut callers_of: BTreeMap<u32, Vec<FunctionId>> =
         BTreeMap::new();
-    for c in &r.calls {
+    for c in crate::model_query::executions(model) {
         callers_of.entry(c.to.0).or_default().push(c.from);
     }
     // …and through the stdlib: a user fn that reaches a user fn
@@ -5571,7 +5811,7 @@ pub fn judge_depends_witnessed(
             .collect();
         let mut callees: BTreeMap<u32, Vec<FunctionId>> =
             BTreeMap::new();
-        for c in &r.calls {
+        for c in crate::model_query::executions(model) {
             callees.entry(c.from.0).or_default().push(c.to);
         }
         for a in &model.analyses.stdlib_absorption {

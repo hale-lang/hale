@@ -1,0 +1,18 @@
+fn before() -> Bool {
+    println("predicate");
+    return false;
+}
+locus Worker {
+    closure rejected { epoch inline; }
+    birth_check { before() } -> violate rejected;
+}
+group workers = { Worker };
+main locus App {
+    claims {
+        quiet: forbid reaches(workers, effects(stdio)) during birth;
+    }
+}
+fn main() {
+    Worker { };
+    App { };
+}

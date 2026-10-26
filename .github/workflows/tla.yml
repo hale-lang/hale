@@ -1,0 +1,99 @@
+name: claims proof pilots
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tla.yml'
+      - 'verification/tla/**'
+      - 'verification/lean/**'
+      - 'crates/hale-codegen/runtime/lotus_arena.c'
+      - 'crates/hale-types/**'
+      - 'crates/hale-syntax/**'
+      - 'crates/hale-model/**'
+      - 'crates/hale-frontend/**'
+      - 'crates/hale-stdlib/**'
+      - 'crates/hale-graph/**'
+      - 'crates/hale-cli/src/verbs/check/**'
+      - 'crates/hale-cli/src/shared/options.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tla.yml'
+      - 'verification/tla/**'
+      - 'verification/lean/**'
+      - 'crates/hale-codegen/runtime/lotus_arena.c'
+      - 'crates/hale-types/**'
+      - 'crates/hale-syntax/**'
+      - 'crates/hale-model/**'
+      - 'crates/hale-frontend/**'
+      - 'crates/hale-stdlib/**'
+      - 'crates/hale-graph/**'
+      - 'crates/hale-cli/src/verbs/check/**'
+      - 'crates/hale-cli/src/shared/options.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-wake-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wake-handshake:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download pinned TLC
+        run: |
+          mkdir -p target/verification
+          curl --fail --location --silent --show-error \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
+            --output target/verification/tla2tools.jar
+      - name: Check source alignment, temporal properties and negative controls
+        run: python3 verification/tla/check.py --jar target/verification/tla2tools.jar
+      - name: Retain TLC results and counterexamples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: temporal-wake-results
+          path: target/verification/tla/*.log
+          if-no-files-found: ignore
+
+  graph-certificate-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: verification/lean
+          build: 'true'
+          test: 'false'
+          lint: 'false'
+          use-mathlib-cache: 'false'
+          leanchecker: 'true'
+          leanchecker-args: GraphCertificates
+          axiom-audit: 'true'
+          axiom-audit-root: GraphCertificates
+          axiom-audit-allow: propext,Quot.sound
+      - name: Check compiler-produced certificates and negative controls
+        run: python3 verification/lean/check_generated.py
+      - name: Retain compiler proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graph-certificate-evidence
+          path: target/verification/lean/
+          if-no-files-found: ignore

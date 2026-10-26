@@ -1,0 +1,17 @@
+fn observe() {
+    println("hook ran");
+}
+locus Child {
+    birth() { observe(); }
+}
+fn construct() { Child { }; }
+group constructors = { construct };
+main locus App {
+    claims {
+        quiet: forbid reaches(constructors, effects(stdio));
+    }
+}
+fn main() {
+    construct();
+    App { };
+}

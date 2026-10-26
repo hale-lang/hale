@@ -27,7 +27,6 @@ use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
-use crate::typed_bodies::OmittedView;
 use crate::Bundle;
 
 /// The rows the laws read.
@@ -44,9 +43,9 @@ pub struct LoweringLawInputs<'a> {
     /// to an owner on another thread. Asked for only when the placement
     /// table runs something off the main thread.
     pub ownership: &'a dyn Fn() -> Option<&'a OwnershipGraph>,
-    /// The typed-body table's `omitted_args` column: which defaults each
-    /// call leaves to be expanded at it.
-    pub omitted: OmittedView<'a>,
+    /// The source family's default contexts. Gaps remain available to
+    /// execution consumers; this law reads its locus-bearing rows only.
+    pub default_evaluations: &'a crate::ownership_graph::DefaultEvaluations,
 }
 
 /// What a law on the shared finding type ([`Law`]) reads: the bundle and
@@ -115,7 +114,7 @@ fn module_nested_main_is_not_the_entry(rows: &LawRows<'_, '_, '_>, out: &mut Vec
 /// so it may only be a bare statement; used as a value (let-bound, an
 /// argument, a field, a sub-expression) it is refused.
 ///
-/// Read off the ownership graph's cross-pool bubble plan, keyed
+/// Read off the ownership graph's possible cross-pool routes, keyed
 /// (enclosing locus, child locus) as lowering keys it while it lowers a
 /// literal, at every place lowering lowers one: a literal in a locus's
 /// own member bodies under that locus, and a literal in a default under
@@ -144,7 +143,7 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
         return;
     }
     let Some(ownership) = (inputs.ownership)() else { return };
-    let crosspool = ownership.bubble_plans().crosspool;
+    let crosspool = &inputs.default_evaluations.possible_posts;
     if crosspool.is_empty() {
         return;
     }
@@ -215,8 +214,12 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
         }
     }
     let mut params_reported: BTreeSet<(ExpandedLiteral, usize)> = BTreeSet::new();
-    let mut roots_reported: BTreeSet<(ExpandedLiteral, u32, u32)> = BTreeSet::new();
-    for expansion in ownership.expansions(&crosspool, inputs.omitted) {
+    let mut roots_reported: BTreeSet<(ExpandedLiteral, Option<hale_graph::ids::SiteId>, u32, u32)> = BTreeSet::new();
+    for evaluation in &inputs.default_evaluations.rows {
+        let Some(context) = evaluation.context else { continue };
+        let expansion = crate::ownership_graph::Expansion {
+            literal:evaluation.literal,context,root:evaluation.root,root_site:evaluation.root_site,per_use:evaluation.per_use,
+        };
         let site = ownership.literal(expansion.literal);
         let (child, span, bare) = (&site.child_ty, site.span, site.bare_statement);
         let (params_field, holder) = match expansion.literal {
@@ -224,7 +227,7 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
                 let s = &ownership.sites[i];
                 (s.params_field.as_deref().filter(|_| s.params_default), Some(s.enclosing_decl))
             }
-            ExpandedLiteral::Free(_) | ExpandedLiteral::Other(_) => (None, None),
+            ExpandedLiteral::Free(_) | ExpandedLiteral::Other(_) | ExpandedLiteral::Binding(_) => (None, None),
         };
         let context = &ownership.declarations[expansion.context].name;
         let Some(owner) = crosspool.get(&(context.clone(), child.clone())) else { continue };
@@ -232,7 +235,7 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
         if let Some(position) = expansion.per_use {
             // Every locus is a context here, so the root says it once.
             if (bare && params_field.is_none())
-                || !roots_reported.insert((expansion.literal, root.start.0, root.end.0))
+                || !roots_reported.insert((expansion.literal, expansion.root_site, root.start.0, root.end.0))
             {
                 continue;
             }
@@ -261,7 +264,7 @@ fn cross_pool_spawn_used_as_a_value(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Vi
                 ),
             ));
         } else if let Some(arg) = &site.arg_default {
-            if bare || !roots_reported.insert((expansion.literal, root.start.0, root.end.0)) {
+            if bare || !roots_reported.insert((expansion.literal, expansion.root_site, root.start.0, root.end.0)) {
                 continue;
             }
             let (callee, param) = (&arg.fn_name, &arg.param);

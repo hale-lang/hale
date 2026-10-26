@@ -90,8 +90,22 @@ the model: runtime is automatic; stdlib is explicit.
 
   | Family | Surface | Backing |
   |---|---|---|
-  | `lotus_recpool_fixed_*` | `create(cap, cell_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One contiguous block of `cap × cell_stride` bytes. Each cell carries an INLINE `lotus_arena_t` + `lotus_arena_chunk_t` header at its front followed by `cell_bytes` of payload — the cell IS the child's arena. Bitmap (`uint64_t[ceil(cap/64)]`) tracks occupancy; acquire scans the lowest unset bit via `__builtin_ctzll`. Release clears the bit so the slot is reusable. The returned arena has `fixed_size=1`, so `lotus_arena_alloc` returns NULL on overflow (caller routes to the closure-violation channel). |
-  | `lotus_recpool_slab_*` | `create(cap, slab_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One `lotus_arena_t` with an initial chunk of `slab_bytes` and `fixed_size=1` so it never grows. Every `acquire` returns the SAME arena pointer — children share the bump space and per-child release is a no-op. The whole slab frees at parent dissolve via `lotus_arena_destroy(slab_arena)`. `cap` is recorded but not enforced at the C layer (codegen's birth-cap check bounds concurrent children; the slab is a memory budget). |
+  | `lotus_recpool_fixed_*` | `create(cap, cell_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One contiguous block of `cap × cell_stride` bytes. Each cell carries an INLINE `lotus_arena_t` + `lotus_arena_chunk_t` header at its front followed by `cell_bytes` of payload — the cell IS the child's arena. An atomic bitmap (`uint64_t[ceil(cap/64)]`) tracks occupancy; acquire claims a free bit with compare-and-exchange before initializing the cell. Release clears the bit with release ordering so the next acquiring domain can safely reinitialize it. Exhausted acquire returns NULL. The returned arena has `fixed_size=1`, so `lotus_arena_alloc` returns NULL on overflow (caller routes to the closure-violation channel). |
+  | `lotus_recpool_slab_*` | `create(cap, slab_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One `lotus_arena_t` with an initial chunk of `slab_bytes` and `fixed_size=1` so it never grows. Each successful `acquire` reserves one of `cap` concurrent slots with an atomic counter and returns the SAME arena pointer — children share the bump space. Exhaustion returns NULL. `release` returns one reservation; it does not reset the bump position or free bytes. The whole slab frees at parent dissolve via `lotus_arena_destroy(slab_arena)`. |
+
+  Both reservation mechanisms apply across all child types accepted by one
+  owner instance. Lowering checks acquisition before the child header,
+  owner-side params construction, registration, `accept` or `birth` can expose a child.
+  Cross-domain create requests may already have evaluated and serialized
+  params at the caller; pending requests are outside this reservation cap.
+  Exhaustion or pool allocation failure exits through
+  `RecognitionPoolUnavailable`; it does not create an arena-less child or
+  invoke an `on_failure` recovery policy. Creation rejects zero capacities
+  and overflowing storage sizes. The runtime reservation operations support
+  acquisition/release across domains; this does not make arbitrary shared
+  slab payload accesses concurrent-safe. Reclaim owes exactly one release
+  for every successful acquire, and owner destruction must follow child
+  reclamation. These are separate lifecycle obligations.
 
   Both families return `lotus_arena_t*` from `acquire` so child
   body code stays projection-class-agnostic per the F.22
@@ -140,7 +154,12 @@ the model: runtime is automatic; stdlib is explicit.
   cross-pool owner (e.g. a `main locus` registry collecting
   entities spawned on a worker pool) is served by an async handoff
   over the bus queue: the child is born on the owner's thread and
-  reclaimed by the owner's same-thread cascade, so a cross-pool
+  reclaimed there, by its empty flow run's completion or by the
+  owner's cascade for a resident. Even an omitted or empty flow
+  `run()` invokes the ordinary run wrapper after birth; it performs
+  drain, the actual accepting owner's release bookend when present,
+  dissolve and reclaim. Completed children leave that owner's
+  tracker and return their structs to its recycler. A cross-pool
   `I{}` is **fire-and-forget** — it may only be a bare statement;
   using the instance as a value is rejected at compile time. Which
   of the two an `I{}` is follows the placement table per instance
@@ -2091,20 +2110,15 @@ zero_copy binding produces.
   `notes/f40-lifecycle-inventory.md` lists the raising sites as
   rows C36–C40.
 
-  One site is misrouted, not misplaced. It is a
-  dissolve-epoch closure that fails under a flow child's
-  run-completion reclaim. The reclaim spine
-  (`synthesize_reclaim_fns`, `crates/hale-codegen/src/codegen.rs`)
-  lowers the closure with the reclaimed child as `current_self`.
-  `resolve_failure_route` therefore asks the child's own type for
-  a handler of its own type and normally finds none. The owner's
-  handler is not selected at all, and the violation takes the
-  bare report-and-exit. The defect is "owner handler not
-  selected", not "owner handler called on a foreign thread". It
-  becomes the second kind only if the route is fixed without this
-  decision: the reclaim then calls the owner's handler in place on
-  the reclaiming thread. Inventory row C25 records the site;
-  inventory Decisions line 4 chooses the route.
+  Dissolve-epoch closure failures read the supervisor and handler stored on
+  the actual child at construction (`__parent_self` / `__parent_on_failure`).
+  The reclaim spine and recursive field cascade use that binding even when
+  lowered under the child itself or in `fn main`. The existing delivery
+  protocol then posts to a live supervisor's domain and waits for completion,
+  or uses its shutdown rule if that domain has ended. The child and violation
+  remain alive through delivery; dissolve failures cannot be held past reclaim.
+  An absent handler retains the structural report-and-exit behavior.
+  Inventory rows C25/C31 and decision line 4 record this correspondence.
 
   The joins make progress. A dissolving parent joins a pinned child
   through `lotus_pinned_join` (`emit_deferred_entry_teardown`,
@@ -2222,12 +2236,15 @@ owes its eager spine at each of its teardowns: line 19's three
 cross-pool and shutdown fixtures are derived that way.
 The six started-run retention fixtures use the derived plan, including
 the edge from each run's end to its reclaim's completion. A subscriber
-a pool hosts owes a `Handler` row the same way (line 19, inventory row
-R52): one per delivered cell, as many as the run delivers, its
+a pool or pinned mailbox hosts owes a `Handler` row the same way
+(line 19, inventory row R52): one per delivered cell, as many as the run delivers, its
 instance retained until each ends, and the reclaim's completion after
 the end of every one that began before it (`l19_handler_cell_retained.hl`);
 the worker's hold, which a classic worker may carry to its next cell,
-ends no earlier, and no later than the carry's bounds (line 19 below). A posted run
+ends no earlier, and no later than the carry's bounds (line 19 below).
+Pinned handlers name `QueueDrain`; pool handlers name `PoolRun`. A template
+used on both has a separate row for each executor and its relevant domains.
+A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
@@ -2333,13 +2350,13 @@ its `KNOWN_OPEN` table, which is empty today.
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
   route, and the owner and the payload are retained until the
-  delivery completes. Not yet shipped in two places. The reclaim
-  spine resolves the route with the reclaimed child as the parent
-  (inventory row C25, `l04_dissolve_route_reclaim.hl`), and a
-  dissolve cascade lowered in `fn main`, where no locus is `self`,
-  resolves none (row C31, `l04_dissolve_route_cascade.hl`); in both,
-  a dissolve-epoch violation takes the report and the structural
-  exit, and the owner's handler is never selected.
+  delivery completes. Shipped in the reclaim and recursive field cascades
+  (inventory rows C25/C31). `l04_dissolve_route_reclaim.hl` and
+  `l04_dissolve_route_cascade.hl` require exactly one handler delivery and
+  complete teardown. `l04_dissolve_bound_supervisors.hl` distinguishes two
+  instances of the same supervisor declaration and a decoy outer handler;
+  the ASan gate reads heap-backed parent and child data in both dispatch modes.
+
 - **Line 5, `accept`'s position.** `accept(c)` runs once the
   child's region exists and its params are built, and before its
   subscriptions and its `birth()`. Its result is not read: it
@@ -2545,8 +2562,8 @@ its `KNOWN_OPEN` table, which is empty today.
 - **Line 10, dissolve-epoch closures, then `dissolve()`.** In every
   spine a locus's dissolve-epoch closures run before its
   `dissolve()`, so a violation there is delivered while the user's
-  cleanup has not yet run. Shipped (`l10_dissolve_closures_first.hl`;
-  today its violation also shows line 4's cascade route).
+  cleanup has not yet run. Shipped (`l10_dissolve_closures_first.hl`); the handler completes before
+  the user's cleanup, and the fixture requires successful teardown.
 - **Line 11, a let-bound literal.** `birth()` and `run()` happen at
   the construction site; `drain()` and `dissolve()` happen together
   at the enclosing scope's exit. Shipped (`l11_let_bound_drain.hl`).
@@ -2888,14 +2905,26 @@ its `KNOWN_OPEN` table, which is empty today.
   keeps its storage until that handler returns. Its drain and dissolve
   still run beside the handler. Every locus a pool hosts is a placed
   field of the main locus or nested under one, so main can reclaim it
-  while its worker runs a handler. The main queue's handlers and a
-  pinned thread's take no hold: their subscribers are reclaimed on
-  the thread that runs them, between handlers, or after the pinned
-  thread's join. A yield inside a pinned thread's handler departs
-  from this today: it drains the thread's mailbox, so an owner's
-  handler it runs can replace the suspended handler's subscriber,
-  which is reclaimed under it (`l19_pinned_yield_replaces_child.hl`,
-  known open, R52). A cell still queued for a subscriber whose reclaim
+  while its worker runs a handler. A pinned mailbox handler takes
+  the same hold before checking the cell's subscriber incarnation.
+  A yield can run another mailbox handler which replaces the suspended
+  handler's subscriber. Drain and dissolve still run at replacement;
+  physical release waits until the outermost mailbox handler returns,
+  after its delivery region and hold end. Waiting inside the nested
+  replacement would prevent the suspended frame from returning.
+  Outermost mailbox handlers may carry a ticket across consecutive
+  cells for the same subscriber with the pool worker's 64-cell and
+  reclaim-waiter bounds. Nested frames end their own tickets; retired
+  storage forces release at the outer boundary. A carry ends before
+  replay-idle waits, mailbox parks, shutdown return and the end of a
+  nonblocking mailbox drain, and before a posted failure is delivered.
+  Main's queue takes no handler ticket: its handlers do not nest and
+  physical release follows their return. The pinned regression
+  (`l19_pinned_yield_replaces_child.hl`) forces replacement with a
+  same-thread gate and reads the old heap-backed name under ASan in
+  both dispatch modes. Removing the hold restores the invalid read;
+  removing storage retirement while retaining the hold restores a
+  deadlock. A cell still queued for a subscriber whose reclaim
   has deregistered it is dropped unrun when its worker reaches it
   (GH #703); the worker takes the hold before it looks, so it either
   drops the cell or the reclaim waits for its handler. A subscriber
@@ -3092,8 +3121,8 @@ place while the params are open; for `Cancellation`, a reclaim
 cancels no queued run, which only a fixture whose cells no worker
 will dequeue may use); two name a hold, not a kind: `RunHold`, where
 a reclaim does not wait for its child's started runs, and
-`HandlerHold`, where a pool worker links no hold on a handler's
-subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
+`HandlerHold`, where a pool worker or pinned mailbox links no hold on a
+handler's subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan

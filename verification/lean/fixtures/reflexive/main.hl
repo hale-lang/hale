@@ -1,0 +1,4 @@
+fn operation(n: Int) -> Int { return n; }
+group operations = { operation };
+main locus App { claims { isolated: forbid reaches(operations, operations); } }
+fn main() { App { }; println(operation(1)); }

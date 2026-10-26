@@ -581,6 +581,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         if !self.user_types.contains_key(target_name)
             && !self.user_loci.contains_key(target_name)
+            // A generic parent's layout may precede its nested child's.
+            // Both concrete declarations are already inventoried, and the
+            // template identity above establishes which literal is renamed.
+            // Requiring the child's completed LLVM layout here would leave
+            // the deferred default spelled with an unemittable template.
+            && !self.pending_locus_names.contains(target_name)
         {
             return None;
         }

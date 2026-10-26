@@ -1,0 +1,11 @@
+locus Child { }
+locus Parent {
+    accept(c: Child) { } release(c: Child) { println("released"); }
+    fn make() { Child { }; }
+}
+fn construct(parent: Parent) { parent.make(); }
+group constructors = { construct };
+main locus App {
+    claims { quiet: forbid reaches(constructors, effects(stdio)); }
+}
+fn main() { let parent = Parent { }; construct(parent); App { }; }

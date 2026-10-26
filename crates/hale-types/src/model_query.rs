@@ -30,12 +30,60 @@
 //! cannot tell the two spellings apart. Nothing in this module
 //! decides anything from it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::{
     ApplicationModel, Entities, EntityRef, FunctionId, RelationSet,
     SubjectId,
 };
+
+/// Declaration-grain flow classifications, with their original model
+/// witnesses. These sets say nothing about which declarations are
+/// instantiated, whether their runs terminate, or how many children
+/// remain live. In particular a generic template is not a resident.
+#[derive(Debug)]
+pub struct FlowClasses<'a> {
+    /// Concrete types selecting run-completion reclamation, with their
+    /// classifying release clauses. The witnesses need not name the
+    /// owner of a particular birth: flow membership is type-wide.
+    pub flows: Vec<(hale_model::LocusDeclId, &'a [hale_model::FlowRelease])>,
+    /// Concrete types absent from the completed flow inventory.
+    pub residents: Vec<hale_model::LocusDeclId>,
+    /// Generic declarations with no single asserted classification.
+    pub templates: Vec<hale_model::LocusDeclId>,
+    /// Unknown classification at a selected declaration.
+    pub holes: Vec<&'a hale_model::Hole>,
+    /// A withdrawn capability with no typed account of its gaps.
+    pub unvouched: bool,
+}
+
+/// Project the selected declarations' canonical flow property. The
+/// input IDs belong to this validated model. No source walk, lifecycle
+/// plan, instance count, or inferred termination premise participates.
+pub fn flow_classes<'a>(
+    model: &'a ApplicationModel,
+    declarations: &BTreeSet<hale_model::LocusDeclId>,
+) -> FlowClasses<'a> {
+    let mut out = FlowClasses {
+        flows: Vec::new(),
+        residents: Vec::new(),
+        templates: Vec::new(),
+        holes: model.holes.iter().filter(|h| {
+            h.hides.intersects(RelationSet::FLOW_CLASSIFICATION)
+                && matches!(h.at, EntityRef::LocusDecl(id) if declarations.contains(&id))
+        }).collect(),
+        unvouched: !model.capabilities.exact_flow_classification
+            && !model.holes.iter().any(|h| h.hides.intersects(RelationSet::FLOW_CLASSIFICATION)),
+    };
+    for &decl in declarations {
+        match &model.entities.loci[decl.index()].flow {
+            hale_model::FlowClass::Resident => out.residents.push(decl),
+            hale_model::FlowClass::Flow { releases } => out.flows.push((decl, releases)),
+            hale_model::FlowClass::GenericTemplate => out.templates.push(decl),
+        }
+    }
+    out
+}
 
 /// One arranged instance and its execution domain, with both model
 /// records retained for a judgment's witness. Domain identity is the
@@ -120,6 +168,86 @@ pub fn instance_domains<'a>(
         })
         .collect();
     out
+}
+
+/// One subscription registration's declared capacity in one instance.
+/// Distinct sites and replicas are distinct reservations, even when
+/// they share a subject, handler, or execution domain.
+#[derive(Debug)]
+pub struct QueueReservation<'a> {
+    /// The exact instance and its declaration.
+    pub realization: &'a hale_model::Realizes,
+    /// The subscription site and its authored capacity.
+    pub subscription: &'a hale_model::Subscribe,
+}
+
+/// Instance-qualified queue reservations and the limits of that account.
+#[derive(Debug)]
+pub struct QueueReservations<'a> {
+    /// One row per selected instance and subscription site.
+    pub registrations: Vec<QueueReservation<'a>>,
+    /// Selected declarations with no represented instance.
+    pub unrepresented: Vec<hale_model::LocusDeclId>,
+    /// Relevant unknown population or subscription knowledge.
+    pub holes: Vec<&'a hale_model::Hole>,
+    /// An unvouched relation without a typed account of its gaps
+    /// cannot support a closed projection merely because no hole was
+    /// recorded. Canonical producers supply that account as holes.
+    pub unvouched: Vec<&'static str>,
+}
+
+/// Join subscription capacities to every selected arranged instance.
+/// This accounts for declared slots, independent of key filtering and
+/// placement. It does not estimate payload bytes or queue occupancy.
+pub fn queue_reservations<'a>(
+    model: &'a ApplicationModel,
+    declarations: &BTreeSet<hale_model::LocusDeclId>,
+) -> QueueReservations<'a> {
+    let owners: BTreeMap<_, _> = model.relations.member_of.iter()
+        .filter(|row| declarations.contains(&row.locus))
+        .map(|row| (row.function, row.locus)).collect();
+    let subscriptions: Vec<_> = model.relations.subscribes.iter()
+        .filter(|row| owners.contains_key(&row.handler)).collect();
+    let mut by_declaration: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for subscription in &subscriptions {
+        by_declaration.entry(owners[&subscription.handler]).or_default().push(*subscription);
+    }
+    let instances: Vec<_> = model.relations.realizes.iter()
+        .filter(|row| declarations.contains(&row.decl)).collect();
+    let represented: BTreeSet<_> = instances.iter().map(|row| row.decl).collect();
+    let instance_ids: BTreeSet<_> = instances.iter().map(|row| row.instance).collect();
+    let seeds: BTreeSet<_> = model.relations.declared_in.iter()
+        .filter(|row| matches!(row.entity, EntityRef::LocusDecl(id) if declarations.contains(&id)))
+        .map(|row| row.seed).collect();
+    let needed = RelationSet::OWNS.union(RelationSet::CARDINALITY).union(RelationSet::SUBSCRIBES);
+    let holes = model.holes.iter().filter(|hole| hole.hides.intersects(needed))
+        .filter(|hole| match hole.at {
+            EntityRef::LocusDecl(id) => declarations.contains(&id),
+            EntityRef::LocusInstance(id) => instance_ids.contains(&id),
+            EntityRef::Function(id) => owners.contains_key(&id),
+            // Missing registrations have no known owning locus. A
+            // route with no known selected subscriber may hide one.
+            EntityRef::Subject(_) | EntityRef::Topic(_) => true,
+            EntityRef::Seed(id) => seeds.contains(&id),
+            _ => false,
+        }).collect();
+    let mut registrations = Vec::new();
+    for realization in instances {
+        if let Some(subscriptions) = by_declaration.get(&realization.decl) {
+            for subscription in subscriptions {
+                registrations.push(QueueReservation { realization, subscription });
+            }
+        }
+    }
+    QueueReservations {
+        registrations,
+        unrepresented: declarations.difference(&represented).copied().collect(),
+        holes,
+        unvouched: model.capabilities.vouched_families().into_iter()
+            .filter(|(_, exact, family)| !exact && family.intersects(needed))
+            .filter(|(_, _, family)| !model.holes.iter().any(|hole| hole.hides.intersects(*family)))
+            .map(|(name, _, _)| name).collect(),
+    }
 }
 
 /// Which side of an endpoint a judgment is walking.
@@ -477,4 +605,398 @@ pub fn render_effect_classes(
     user.sort();
     out.extend(user.into_iter().map(|(_, c)| c.clone()));
     out
+}
+
+
+/// Selected declarations' storage configuration, including missing rows.
+/// This projects canonical summary facts stored on the model. It neither
+/// treats an unshipped mode as enforced nor turns cap arithmetic into a
+/// retained-child, byte, population or restart-overlap proof.
+pub fn storage_policies<'a>(
+    model: &'a ApplicationModel,
+    declarations: &BTreeSet<hale_model::LocusDeclId>,
+) -> Vec<(hale_model::LocusDeclId, Option<&'a hale_model::LocusStorage>)> {
+    declarations.iter().map(|&id| (id, model.entities.loci[id.index()].storage.as_ref())).collect()
+}
+
+
+/// Typed recovery observations for a body, together with observations whose
+/// body has no model anchor. Unanchored observations are never silently
+/// discarded by a scoped caller. This query does not resolve instance
+/// targets, call arguments, field state or conditional execution.
+pub struct RecoveryObservations<'a> {
+    pub actions: Vec<&'a hale_model::recovery::RecoveryAction>,
+    pub unanchored: Vec<&'a hale_model::recovery::RecoveryAction>,
+    pub user_inventory_available: bool,
+    pub stdlib_inventory_available: bool,
+}
+
+pub fn recovery_observations(model: &ApplicationModel, body: EntityRef) -> RecoveryObservations<'_> {
+    let inventory = &model.analyses.recovery;
+    let mut actions = Vec::new();
+    let mut unanchored = Vec::new();
+    for row in inventory.user.iter().chain(inventory.stdlib.iter()).flatten() {
+        match row.body {
+            Some(anchor) if anchor == body => actions.push(row),
+            None => unanchored.push(row),
+            _ => {}
+        }
+    }
+    RecoveryObservations {
+        actions, unanchored,
+        user_inventory_available: inventory.user.is_some(),
+        stdlib_inventory_available: inventory.stdlib.is_some(),
+    }
+}
+
+/// A reachable failure/recovery execution gap, with a path through modeled
+/// function calls (and delivery when the cost dimension includes it).
+#[derive(Debug)]
+pub struct RecoveryCostGap<'a> {
+    /// The original typed gap and its failure/recovery source witness.
+    pub hole: &'a hale_model::Hole,
+    /// The source function through the gap's function, inclusive.
+    pub path: Vec<FunctionId>,
+}
+
+/// Coverage only: never re-count a budget or infer recovery targets.
+/// Fan-out includes possible bus delivery; local per-call dimensions
+/// follow explicit and contracted calls. Unanchored recovery facts are
+/// already represented by the model's conservative function-grain gaps.
+pub fn recovery_cost_gap(model: &ApplicationModel, root: FunctionId, include_delivery: bool) -> Option<RecoveryCostGap<'_>> {
+    implicit_execution_gap(model, root, include_delivery, hale_model::RelationSet::COSTS)
+}
+
+/// Select the facts required by the actual question. A missing native frame
+/// cannot withdraw a represented source effect account; it still withdraws
+/// the quantitative account. All families use this one traversal.
+pub fn implicit_execution_gap(model: &ApplicationModel, root: FunctionId, include_delivery: bool, required: hale_model::RelationSet) -> Option<RecoveryCostGap<'_>> {
+    use crate::model_graph::{self, HolePolicy, Search, Visit};
+    let gaps: BTreeMap<_, _> = model.holes.iter().filter_map(|h| match h.at {
+        EntityRef::Function(f) if h.kind.implicit_execution_families().is_some() && h.hides.intersects(required) => Some((f, h)),
+        _ => None,
+    }).collect();
+    if gaps.is_empty() { return None; }
+    let mut outgoing: BTreeMap<FunctionId, BTreeSet<FunctionId>> = BTreeMap::new();
+    for (from, to) in executions(model).map(|edge| (edge.from, edge.to)) {
+        outgoing.entry(from).or_default().insert(to);
+    }
+    if include_delivery {
+        for publish in &model.relations.publishes {
+            for sub in &model.relations.subscribes {
+                if may_deliver(&model.entities, publish, sub) {
+                    outgoing.entry(publish.function).or_default().insert(sub.handler);
+                }
+            }
+        }
+    }
+    // The represented function graph is finite. No search ceiling may
+    // turn an unexplored suffix into a missing gap.
+    let found = model_graph::search([root], |f| {
+        Visit::<_, (), ()>::edges(outgoing.get(f).into_iter().flatten().map(|to| (*to, ())).collect())
+    }, |f| gaps.contains_key(f), |_| false, None, HolePolicy::Halt);
+    match found {
+        Search::Found { hit, parent } => {
+            let mut path = vec![hit];
+            let mut at = hit;
+            while let Some((from, ())) = parent.get(&at) { path.push(*from); at = *from; }
+            path.reverse();
+            Some(RecoveryCostGap { hole: gaps[&hit], path })
+        }
+        _ => None,
+    }
+}
+
+/// A supplied, type-correct invocation premise over static arranged instances.
+/// This does not establish admission, failure dispatch, dynamic identities or
+/// incarnations. Parameter type correctness belongs to the premise's producer.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecoveryInvocation {
+    pub function: FunctionId,
+    pub receiver: Option<hale_model::LocusInstanceId>,
+    pub arguments: Vec<Option<hale_model::LocusInstanceId>>,
+}
+
+/// Why an operand cannot be bound to an actual instance. A field's current
+/// value is deliberately distinct from an ownership/arrangement path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryBindingGap {
+    Unavailable,
+    InvalidInvocation,
+    UnknownOperand,
+    FieldState,
+    MissingReceiver,
+    ParameterArity,
+    OmittedArgument,
+    ReceiverType,
+}
+
+/// Resolve only immutable roots under the supplied invocation. The premise
+/// must later come from failure/call dispatch; this is parameter substitution,
+/// not a containment verdict or evidence that a branch executes.
+pub fn bind_recovery_operand(
+    model: &ApplicationModel,
+    invocation: &RecoveryInvocation,
+    operand: &hale_model::recovery::RecoveryOperand,
+) -> Result<hale_model::LocusInstanceId, RecoveryBindingGap> {
+    use hale_model::recovery::RecoveryRoot;
+    if invocation.function.index() >= model.entities.functions.len()
+        || invocation.receiver.iter().chain(invocation.arguments.iter().flatten())
+            .any(|id| id.index() >= model.entities.locus_instances.len())
+    { return Err(RecoveryBindingGap::InvalidInvocation); }
+    if invocation.receiver.is_some_and(|id| model.entities.functions[invocation.function.index()].owner
+        != Some(model.entities.locus_instances[id.index()].decl)) {
+        return Err(RecoveryBindingGap::InvalidInvocation);
+    }
+    if !operand.fields.is_empty() { return Err(RecoveryBindingGap::FieldState); }
+    match operand.root {
+        RecoveryRoot::CurrentLocus { declaration } => {
+            let receiver = invocation.receiver.ok_or(RecoveryBindingGap::MissingReceiver)?;
+            if model.entities.functions[invocation.function.index()].owner != Some(declaration)
+                || model.entities.locus_instances[receiver.index()].decl != declaration {
+                return Err(RecoveryBindingGap::ReceiverType);
+            }
+            Ok(receiver)
+        }
+        RecoveryRoot::Parameter { body, ordinal, arity } => {
+            if body != EntityRef::Function(invocation.function) || arity as usize != invocation.arguments.len() {
+                return Err(RecoveryBindingGap::ParameterArity);
+            }
+            invocation.arguments.get(ordinal as usize).copied().flatten().ok_or(RecoveryBindingGap::UnknownOperand)
+        }
+        RecoveryRoot::Unresolved => Err(RecoveryBindingGap::UnknownOperand),
+    }
+}
+
+/// The operand whose binding is unavailable. Uncertainty on one argument
+/// need not erase a known, unrelated recovery operand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryBindingInput { Receiver, Argument(u32) }
+
+/// A call-site operand gap, scoped to its actual parameter position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryCallGap {
+    pub input: RecoveryBindingInput,
+    pub reason: RecoveryBindingGap,
+}
+
+/// One possible helper invocation and the unknowns that prevented fully
+/// binding it. Alternatives retain the source typing context index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundRecoveryCall {
+    pub invocation: RecoveryInvocation,
+    pub context: usize,
+    pub gaps: Vec<RecoveryCallGap>,
+}
+
+/// Substitute a canonical call's actual operands once. Targets are taken
+/// from the existing call relation. An unavailable binding is an error,
+/// never an empty successor set. No AST, type-name join or graph traversal.
+pub fn bind_recovery_call(
+    model: &ApplicationModel,
+    call_index: usize,
+    caller: &RecoveryInvocation,
+) -> Result<Vec<BoundRecoveryCall>, RecoveryBindingGap> {
+    let call = model.relations.calls.get(call_index).ok_or(RecoveryBindingGap::InvalidInvocation)?;
+    if call.from != caller.function || call.to.index() >= model.entities.functions.len() {
+        return Err(RecoveryBindingGap::InvalidInvocation);
+    }
+    let binding = model.analyses.recovery.calls.as_ref().and_then(|rows| rows.get(call_index))
+        .ok_or(RecoveryBindingGap::Unavailable)?;
+    if binding.from != call.from || binding.to != call.to || binding.site != call.site
+        || binding.provenance != call.provenance || binding.contexts.is_empty() {
+        return Err(RecoveryBindingGap::Unavailable);
+    }
+    if binding.contexts.iter().any(|row| row.arguments.len() > row.parameter_arity as usize) {
+        return Err(RecoveryBindingGap::Unavailable);
+    }
+    Ok(binding.contexts.iter().enumerate().map(|(context, row)| {
+        let mut gaps = Vec::new();
+        let read = |input, operand: &hale_model::recovery::RecoveryOperand, gaps: &mut Vec<RecoveryCallGap>| {
+            match bind_recovery_operand(model, caller, operand) {
+                Ok(instance) => Some(instance),
+                Err(reason) => { gaps.push(RecoveryCallGap { input, reason }); None }
+            }
+        };
+        let owner = model.entities.functions[call.to.index()].owner;
+        let mut receiver = if owner.is_some() {
+            match &row.receiver {
+                Some(operand) => read(RecoveryBindingInput::Receiver, operand, &mut gaps),
+                None => { gaps.push(RecoveryCallGap { input: RecoveryBindingInput::Receiver, reason: RecoveryBindingGap::MissingReceiver }); None }
+            }
+        } else { None };
+        if let (Some(instance), Some(owner)) = (receiver, owner) {
+            if model.entities.locus_instances[instance.index()].decl != owner {
+                gaps.push(RecoveryCallGap { input: RecoveryBindingInput::Receiver, reason: RecoveryBindingGap::ReceiverType });
+                receiver = None;
+            }
+        }
+        let mut arguments: Vec<_> = row.arguments.iter().enumerate().map(|(index, operand)| {
+            read(RecoveryBindingInput::Argument(index as u32), operand, &mut gaps)
+        }).collect();
+        for index in arguments.len()..row.parameter_arity as usize {
+            gaps.push(RecoveryCallGap { input: RecoveryBindingInput::Argument(index as u32), reason: RecoveryBindingGap::OmittedArgument });
+        }
+        arguments.resize(row.parameter_arity as usize, None);
+        BoundRecoveryCall { invocation: RecoveryInvocation { function: call.to, receiver, arguments }, context, gaps }
+    }).collect())
+}
+
+/// Why a construction context cannot supply a handler invocation. A known
+/// unhandled failure is distinct from unavailable construction/routing facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryEntryGap {
+    Unavailable,
+    InvalidContext,
+    Unhandled,
+    Unknown(hale_model::recovery::RecoveryFailureGap),
+}
+
+/// A handler frame conditional on the represented construction occurrence
+/// raising a ClosureViolation. This is not evidence that the occurrence is
+/// live, its branch executes, or params settlement/admission has completed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionalRecoveryEntry {
+    pub invocation: RecoveryInvocation,
+    pub context: usize,
+    pub guarded: bool,
+    pub construction_path: Vec<Option<hale_model::ProvenanceId>>,
+    pub provenance: hale_model::ProvenanceId,
+}
+
+/// Substitute the failing child and actual constructed-field supervisor into
+/// the canonical handler identity. Roots, held values and unbound specializations
+/// stay explicit; no field path, ownership edge or type name invents a frame.
+/// A behavioral consumer must account for EVERY construction context, not select
+/// a favorable one, and discharge runtime admission separately.
+pub fn recovery_handler_invocation(
+    model: &ApplicationModel,
+    failed: hale_model::LocusInstanceId,
+    context: usize,
+) -> Result<ConditionalRecoveryEntry, RecoveryEntryGap> {
+    use hale_model::recovery::RecoveryFailureDispatch;
+    let entries = model.analyses.recovery.failure_entries.as_ref().ok_or(RecoveryEntryGap::Unavailable)?;
+    let row = entries.get(failed.index()).filter(|r| r.failed == failed).ok_or(RecoveryEntryGap::InvalidContext)?;
+    let source = row.contexts.get(context).ok_or(RecoveryEntryGap::InvalidContext)?;
+    let (supervisor, handler) = match source.dispatch {
+        RecoveryFailureDispatch::Handled { supervisor, handler, .. } => (supervisor, handler),
+        RecoveryFailureDispatch::Unhandled { .. } => return Err(RecoveryEntryGap::Unhandled),
+        RecoveryFailureDispatch::Unknown(gap) => return Err(RecoveryEntryGap::Unknown(gap)),
+    };
+    let parent = model.entities.locus_instances.get(supervisor.index()).ok_or(RecoveryEntryGap::InvalidContext)?;
+    let function = model.entities.functions.get(handler.index()).ok_or(RecoveryEntryGap::InvalidContext)?;
+    if function.kind != hale_model::FunctionKind::FailureHandler || function.owner != Some(parent.decl)
+        || failed.index() >= model.entities.locus_instances.len() || source.construction.is_none() {
+        return Err(RecoveryEntryGap::InvalidContext);
+    }
+    Ok(ConditionalRecoveryEntry {
+        invocation: RecoveryInvocation { function: handler, receiver: Some(supervisor), arguments: vec![Some(failed), None] },
+        context, guarded: source.guarded, construction_path: source.construction_path.clone(), provenance: source.provenance,
+    })
+}
+
+
+/// Invocation order spaces remain distinct: an initialization is not an
+/// authored call and cannot borrow its ordinal or argument bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExecutionSite {
+    Call(u32),
+    ParentProtocol { context: u32, stage: hale_model::ProtocolStage },
+    Initialization { constructor: u32, parameter: u32 },
+    ArgumentDefault { call: u32, argument: u32 },
+    ClosureCheck { check:u32, closure:u32 },
+    Lifecycle { constructor:u32, stage:hale_model::LifecycleStage },
+    ConstructorCheck { constructor: u32, kind: hale_model::ConstructorCheck },
+}
+
+/// An absorbed entry's call or constructor identity. Deliveries belong to
+/// the separate publish namespace and are projected by the bus queries.
+pub fn absorption_site(entry: &hale_model::StdlibAbsorption) -> Option<ExecutionSite> {
+    if entry.entry_bus.is_some() { return None; }
+    if let Some(kind) = entry.entry_constructor_check { return Some(ExecutionSite::ConstructorCheck { constructor: entry.site, kind }); }
+    if let Some(stage)=entry.entry_lifecycle { return Some(ExecutionSite::Lifecycle { constructor:entry.site,stage }); }
+    Some(match &entry.entry_initialization {
+        Some(parameter) if parameter.kind == hale_model::InitializerKind::Argument => ExecutionSite::ArgumentDefault { call: entry.site, argument: parameter.ordinal },
+        Some(parameter) => ExecutionSite::Initialization { constructor: entry.site, parameter: parameter.ordinal },
+        None => ExecutionSite::Call(entry.site),
+    })
+}
+
+/// A read-only view of the canonical invocation relations.
+pub struct ExecutionRef<'a> {
+    pub from: FunctionId,
+    pub to: FunctionId,
+    pub site: ExecutionSite,
+    pub in_loop: bool,
+    pub unbounded: bool,
+    pub provenance: hale_model::ProvenanceId,
+    pub dispatch: Option<&'a hale_model::DispatchKind>,
+}
+impl ExecutionRef<'_> {
+    pub fn contracted(&self) -> bool { self.dispatch == Some(&hale_model::DispatchKind::ViaStdlib) }
+}
+
+/// The single endpoint projection shared by execution graph consumers.
+/// Constructor evaluations retain their typed origin and site namespace.
+pub fn executions(model: &ApplicationModel) -> impl Iterator<Item = ExecutionRef<'_>> {
+    model.relations.protocol_evaluations.iter().map(|edge| {
+        let c = &model.relations.protocol_contexts[edge.context as usize];
+        ExecutionRef { from: c.from, to: edge.to, site: ExecutionSite::ParentProtocol { context: edge.context, stage: edge.stage },
+            in_loop: c.in_loop, unbounded: c.unbounded, provenance: c.provenance, dispatch: None }
+    }).chain(model.relations.lifecycle_evaluations.iter().map(|edge| ExecutionRef {
+        from:edge.from,to:edge.to,site:ExecutionSite::Lifecycle { constructor:edge.site,stage:edge.stage },
+        in_loop:edge.in_loop,unbounded:edge.unbounded,provenance:edge.provenance,dispatch:None,
+    })).chain(model.relations.constructor_checks.iter().map(|edge| ExecutionRef {
+        from: edge.from, to: edge.to,
+        site: ExecutionSite::ConstructorCheck { constructor: edge.site, kind: edge.kind },
+        in_loop: edge.in_loop, unbounded: edge.unbounded, provenance: edge.provenance, dispatch: None,
+    })).chain(model.relations.calls.iter().map(|call| ExecutionRef {
+        from: call.from, to: call.to, site: ExecutionSite::Call(call.site),
+        in_loop: call.in_loop, unbounded: call.unbounded, provenance: call.provenance, dispatch: Some(&call.dispatch),
+    })).chain(model.relations.initializes.iter().map(|edge| ExecutionRef {
+        from: edge.from, to: edge.to,
+        site: ExecutionSite::Initialization { constructor: edge.site, parameter: edge.member },
+        in_loop: edge.in_loop, unbounded: edge.unbounded, provenance: edge.provenance, dispatch: None,
+    })).chain(model.relations.argument_evaluations.iter().map(|edge| ExecutionRef {
+        from: edge.from, to: edge.to, site: ExecutionSite::ArgumentDefault { call:edge.site,argument:edge.argument },
+        in_loop:edge.in_loop,unbounded:edge.unbounded,provenance:edge.provenance,dispatch:None,
+    })).chain(model.relations.closure_evaluations.iter().map(|edge| ExecutionRef {
+        from:edge.from,to:edge.to,site:ExecutionSite::ClosureCheck { check:edge.site,closure:edge.closure },
+        in_loop:edge.in_loop,unbounded:edge.unbounded,provenance:edge.provenance,dispatch:None,
+    }))
+}
+
+/// Source-template candidates for a guarded lifecycle entry. These rows do
+/// not prove admission, scheduling, an occurrence identity or runtime ancestry.
+pub struct LifecycleContextCandidates<'a> {
+    pub inventory_available: bool,
+    pub source_available: bool,
+    pub guard: hale_model::LifecycleGuard,
+    pub contexts: Vec<(usize, &'a hale_model::construction::LifecycleContext)>,
+}
+
+/// Join original constructor identities, never names, spans or source ordinals.
+/// Foreign entries retain their user-side constructor identity while their
+/// body and declaration identities stay in the foreign analysis namespace.
+pub fn lifecycle_entry_contexts(
+    model: &ApplicationModel,
+    from: FunctionId,
+    constructor: u32,
+    stage: hale_model::LifecycleStage,
+) -> LifecycleContextCandidates<'_> {
+    let own = model.relations.lifecycle_evaluations.iter().find(|v|
+        v.from==from && v.site==constructor && v.stage==stage);
+    let foreign = model.analyses.stdlib_absorption.iter().find(|v|
+        v.from==from && v.site==constructor && v.entry_lifecycle==Some(stage));
+    let source = own.and_then(|v| v.source).or_else(|| foreign.and_then(|v| v.entry_constructor_source));
+    let owner = own.and_then(|v| model.entities.functions[v.to.index()].owner);
+    let inventory=model.analyses.lifecycle_contexts.as_ref();
+    let contexts=inventory.into_iter().flat_map(|v| v.contexts.iter().enumerate()).filter(|(_,c)|
+        source.is_some_and(|source| c.construction_site==Some(hale_model::construction::SiteRef::user(source)))
+        && match (owner,&c.declaration.binding) {
+            (Some(owner),hale_model::construction::DeclarationBinding::Declared(actual))=>owner==*actual,
+            (None,hale_model::construction::DeclarationBinding::Foreign)=>foreign.is_some(),
+            _=>false,
+        }).collect();
+    LifecycleContextCandidates { inventory_available:inventory.is_some(),source_available:source.is_some(),guard:stage.entry_guard(),contexts }
 }

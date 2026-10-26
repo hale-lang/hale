@@ -27,6 +27,7 @@ Thumbs.db
 
 # Rust build artifacts
 /target/
+/verification/lean/.lake/
 # Cargo.lock IS committed (binary workspace, reproducible builds).
 
 # mdbook build output. Each doorway (and the archived book)

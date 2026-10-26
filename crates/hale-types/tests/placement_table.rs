@@ -359,15 +359,13 @@ fn an_alias_realizes_the_declaration_it_names() {
     assert_eq!(twig.domain, h.domain);
 }
 
-/// Case 6: a generic locus as a params field is refused by the checker
-/// (`generic_monomorph_agreement.rs` pins the build's refusal too), so
-/// the shape never reaches a consumer. The table, total over a program
-/// that does not typecheck, still keys the two specializations apart.
+/// Case 6: completed generic locus defaults are admitted and keep their
+/// concrete specializations distinct for every placement consumer.
 #[test]
-fn a_generic_locus_field_is_refused_before_any_consumer() {
+fn a_generic_locus_field_is_admitted_with_distinct_concrete_specializations() {
     let s = check(&fixture("generic.hl"));
     let e = errors(&s);
-    assert!(e.iter().any(|m| m.contains("param `c`: declared `Cache_Int_String`")), "{e:?}");
+    assert!(e.is_empty(), "{e:?}");
     let t = table(&s);
     let c = one(t, "c").1.realizes.clone().unwrap();
     let d = one(t, "d").1.realizes.clone().unwrap();

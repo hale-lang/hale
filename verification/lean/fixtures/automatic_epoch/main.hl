@@ -1,0 +1,11 @@
+locus Worker {
+    params { n: Int = 0; }
+    closure audit { self.n ~~ 0 within 0; epoch birth; }
+}
+fn construct() { Worker { }; }
+group builders = { construct };
+main locus App {
+    claims { quiet: forbid reaches(builders, effects(stdio)); }
+    run() { construct(); }
+}
+fn main() { App { }; }

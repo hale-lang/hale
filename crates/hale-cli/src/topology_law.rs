@@ -27,10 +27,13 @@
 //! records `ClaimIr` holds. `tests/law_account_round_trip.rs` holds
 //! the reader to the emitter over every artifact the corpus emits.
 
+#[path = "topology_protocol.rs"]
+mod protocol;
+
 use hale_model::claim_form as form;
 use hale_model::JudgmentFamily;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 // ------------------------------------------------------------------
 // primitive decoders (exact shapes; unknown fields rejected)
@@ -181,10 +184,12 @@ pub enum Law {
     RequireSealed {
         group: Ref,
     },
+    RequireFlow { group: Ref },
     RequireSeparateDomains {
         left: Ref,
         right: Ref,
     },
+    QueueSlots { group: Ref, limit: u64 },
     RequireNoSilentLossTopic {
         topic: Ref,
     },
@@ -272,6 +277,9 @@ pub struct RefContext {
     /// coverage recomputes from THIS, never from display-prefix
     /// recovery.
     pub fn_owner: std::collections::BTreeMap<String, String>,
+    /// Data-default bodies are owned by types, never by a manufactured locus.
+    pub fn_type_owner: BTreeMap<String, String>,
+    pub types: Vec<(String, String)>,
     /// The legacy analyzable universe (`sorts.fns`) — the old
     /// engines never saw subjects outside it, so a certificate row
     /// on such a subject carries no report and judges
@@ -422,7 +430,7 @@ impl RefContext {
                         "law.fn_universe[*]",
                         &["name", "display", "analyzed",
                           "summarized", "kind"],
-                        &["owner"],
+                        &["owner", "owner_type", "owner_function", "initializer_field", "initializer_ordinal"],
                     )?;
                     let analyzed = e["analyzed"]
                         .as_bool()
@@ -436,13 +444,37 @@ impl RefContext {
                     if !matches!(
                         kind,
                         "hook" | "method" | "free" | "mode"
-                            | "failure"
+                            | "failure" | "parameter_default" | "field_default" | "argument_default" | "closure_assertion" | "birth_check"
                     ) {
                         return Err(format!(
                             "law.fn_universe[*].kind `{}` is \
                              outside the closed vocabulary",
                             kind
                         ));
+                    }
+                    if kind == "birth_check" && (!matches!(v["schema"].as_str(),Some("1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) || !analyzed || !summarized || e["owner"].as_str().is_none_or(str::is_empty)) {
+                        return Err("birth checks require topology schema 1.32, locus ownership and complete body coverage".into());
+                    }
+                    if kind == "closure_assertion" && (!matches!(v["schema"].as_str(), Some("1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) || !analyzed || !summarized) {
+                        return Err("closure assertions require topology schema 1.29 and complete body coverage".into());
+                    }
+                    if matches!(kind, "parameter_default" | "field_default" | "argument_default") {
+                        let owner = match kind { "argument_default" => "owner_function", "field_default" => "owner_type", _ => "owner" };
+                        let schema_ok = if kind == "argument_default" { matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) } else if kind == "field_default" { matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) }
+                            else { matches!(v["schema"].as_str(), Some("1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) };
+                        if !schema_ok || !analyzed || !summarized || e[owner].as_str().is_none_or(str::is_empty)
+                            || e["initializer_field"].as_str().is_none_or(str::is_empty)
+                            || e["initializer_ordinal"].as_u64().is_none_or(|n| n > u32::MAX as u64) {
+                            return Err(format!("{kind} bodies require their schema and a complete declaration identity"));
+                        }
+                    } else if e.get("initializer_field").is_some() || e.get("initializer_ordinal").is_some() {
+                        return Err("only default bodies may carry initializer metadata".into());
+                    }
+                    if (kind == "argument_default") != e.get("owner_function").is_some() {
+                        return Err("only argument-default bodies have a callable owner".into());
+                    }
+                    if (kind == "field_default") != e.get("owner_type").is_some() {
+                        return Err("only field-default bodies have a type owner".into());
                     }
                     // Coverage laws (rounds 11–12): a summarized
                     // body was walked — and a WALKED body is
@@ -466,7 +498,7 @@ impl RefContext {
                             e["display"].as_str().unwrap_or("?")
                         ));
                     }
-                    if kind == "failure" && analyzed {
+                    if kind == "failure" && analyzed && !matches!(v["schema"].as_str(), Some("1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
                         return Err(format!(
                             "law.fn_universe: failure handler \
                              `{}` marked analyzed",
@@ -482,7 +514,7 @@ impl RefContext {
                         e["display"].as_str().unwrap_or("");
                     match e.get("owner") {
                         None => {
-                            if kind != "free" {
+                            if !matches!(kind, "free" | "field_default" | "argument_default") {
                                 return Err(format!(
                                     "law.fn_universe: `{}` \
                                      ({}) carries no owner",
@@ -491,7 +523,7 @@ impl RefContext {
                             }
                         }
                         Some(o) => {
-                            if kind == "free" {
+                            if matches!(kind, "free" | "field_default") {
                                 return Err(format!(
                                     "law.fn_universe: free fn \
                                      `{}` carries an owner",
@@ -572,6 +604,9 @@ impl RefContext {
                     ))
                 })
                 .collect(),
+            fn_type_owner: v["law"]["fn_universe"].as_array().into_iter().flatten().filter_map(|e|
+                Some((e["display"].as_str()?.to_string(), e["owner_type"].as_str()?.to_string()))).collect(),
+            types: if matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { pairs(&v["law"]["types"], "law.types")? } else { Vec::new() },
             sorts_fns: v["sorts"]["fns"]
                 .as_array()
                 .into_iter()
@@ -646,6 +681,40 @@ impl RefContext {
             Ok(())
         };
         unique_pairs(&cx.fn_universe, "law.fn_universe")?;
+        for row in v["law"]["fn_universe"].as_array().unwrap().iter().filter(|r| r["kind"] == "argument_default") {
+            let owner = row["owner_function"].as_str().unwrap();
+            let parent = v["law"]["fn_universe"].as_array().unwrap().iter().find(|r| r["display"] == owner)
+                .ok_or("argument default names an absent callable owner")?;
+            if parent.get("initializer_field").is_some() || row.get("owner") != parent.get("owner")
+                || row["name"] != format!("{}::args::{}",parent["name"].as_str().unwrap(),row["initializer_field"].as_str().unwrap())
+                || row["display"] != format!("{}::args::{}",owner,row["initializer_field"].as_str().unwrap()) {
+                return Err("argument default identity or locus ownership disagrees with its callable owner".into());
+            }
+        }
+
+        unique_pairs(&cx.types, "law.types")?;
+        let type_rows = match v["sorts"].get("types") {
+            None => &[][..],
+            Some(rows) => rows.as_array().ok_or("sorts.types must be an array")?.as_slice(),
+        };
+        let type_names = type_rows.iter().map(|row| row.as_str().ok_or("sorts.types must contain strings"))
+            .collect::<Result<Vec<_>, _>>()?;
+        if type_names.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err("sorts.types must be sorted and unique".into());
+        }
+        let type_sort: BTreeSet<_> = type_names.into_iter().collect();
+        if type_sort != cx.types.iter().map(|(_, display)| display.as_str()).collect() {
+            return Err("law.types does not equal the hashed type universe".into());
+        }
+        for (function, owner) in &cx.fn_type_owner {
+            let row = v["law"]["fn_universe"].as_array().unwrap().iter().find(|row| row["display"] == *function).unwrap();
+            let (raw, display) = cx.types.iter().find(|(_, display)| display == owner).ok_or("field default names an absent type owner")?;
+            let field = row["initializer_field"].as_str().unwrap();
+            if row["name"] != format!("{raw}::fields::{field}") || row["display"] != format!("{display}::fields::{field}") {
+                return Err("field default identity disagrees with its type owner".into());
+            }
+        }
+
         {
             let mut raws = BTreeSet::new();
             let mut disps = BTreeSet::new();
@@ -812,7 +881,7 @@ impl RefContext {
                 .fn_owner
                 .iter()
                 .filter(|(d, o)| {
-                    *o == disp && !cx.fn_failure.contains(*d)
+                    *o == disp && (matches!(v["schema"].as_str(), Some("1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) || !cx.fn_failure.contains(*d))
                 })
                 .map(|(d, _)| d)
                 .collect();
@@ -1814,8 +1883,9 @@ pub fn has_unresolved(law: &Law) -> bool {
         Law::RequireEndpoint { group, topic, .. } => {
             r(group) || r(topic)
         }
-        Law::RequireSealed { group } => r(group),
+        Law::RequireSealed { group } | Law::RequireFlow { group } => r(group),
         Law::RequireSeparateDomains { left, right } => r(left) || r(right),
+        Law::QueueSlots { group, .. } => r(group),
         Law::RequireNoSilentLossTopic { topic } => r(topic),
         Law::RequireNoSilentLossGroup { group } => r(group),
         Law::RequireAttributed { class } => c(class),
@@ -2009,6 +2079,10 @@ pub fn decode_law(
                 topic: cx.topic(&law["topic"], "topic")?,
             })
         }
+        Some("require_flow") => {
+            only_keys(law, "require_flow", &["kind", "group"], &[])?;
+            Ok(Law::RequireFlow { group: cx.group(&law["group"], "group")? })
+        }
         Some("require_sealed") => {
             only_keys(
                 law,
@@ -2018,6 +2092,13 @@ pub fn decode_law(
             )?;
             Ok(Law::RequireSealed {
                 group: cx.group(&law["group"], "group")?,
+            })
+        }
+        Some("queue_slots") => {
+            only_keys(law, "queue_slots", &["kind", "group", "limit"], &[])?;
+            Ok(Law::QueueSlots {
+                group: cx.group(&law["group"], "group")?,
+                limit: law["limit"].as_u64().ok_or_else(|| "queue_slots.limit must be a nonnegative integer".to_string())?,
             })
         }
         Some("require_separate_domains") => {
@@ -2300,6 +2381,8 @@ pub fn family_of(law: &Law) -> JudgmentFamily {
         Law::ForbidReaches { .. } => JudgmentFamily::Reachability,
         Law::OnlyEdges { .. } => JudgmentFamily::Boundary,
         Law::RequireSeparateDomains { .. } => JudgmentFamily::Placement,
+        Law::QueueSlots { .. } => JudgmentFamily::Resource,
+        Law::RequireFlow { .. } => JudgmentFamily::FlowPolicy,
         Law::RequireEndpoint { .. }
         | Law::RequireSealed { .. }
         | Law::RequireNoSilentLossTopic { .. }
@@ -2363,6 +2446,8 @@ pub fn render_claims_form(law: &Law) -> Option<String> {
             form::require_endpoint(*publishers, &group.display, &topic.display)
         }
         Law::RequireSealed { group } => form::require_sealed(&group.display),
+        Law::RequireFlow { group } => form::require_flow(&group.display),
+        Law::QueueSlots { group, limit } => form::queue_slots(&group.display, *limit),
         Law::RequireSeparateDomains { left, right } => {
             form::require_separate_domains(&left.display, &right.display)
         }
@@ -2494,6 +2579,11 @@ pub fn validate_law_account(
     use hale_model::JudgmentFamily as JF;
     use hale_model::VerdictIr;
     let is_verdict = |x: &str| VerdictIr::from_word(x).is_some();
+    if !matches!(v["schema"].as_str(), Some("1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) && v["unknowns"].as_array().into_iter().flatten().any(|row|
+        row["reasons"].as_array().into_iter().flatten().any(|reason| reason == "unmodeled_failure_dispatch"))
+    {
+        return Err(format!("{label}: failure-dispatch residue requires topology schema 1.25"));
+    }
     if !v["law"].is_object()
         || !v["law"]["law_digest"].is_string()
         || !v["law"]["inputs_digest"].is_string()
@@ -2548,6 +2638,14 @@ pub fn validate_law_account(
     }
     let cx = RefContext::from_artifact(v)
         .map_err(|e| format!("{}: {}", label, e))?;
+    validate_failure_source_account(v).map_err(|error| format!("{label}: {error}"))?;
+    validate_initialization_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
+    validate_argument_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
+    protocol::validate(v, &cx).map_err(|error| format!("{label}: {error}"))?;
+    validate_lifecycle_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
+    validate_birth_check_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
+    validate_closure_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
+    validate_constructor_check_account(v).map_err(|error| format!("{label}: {error}"))?;
     let origin_ok = |origin: &str, family: JF| -> bool {
         match family {
             // `depends:` is an annotation on a LOCUS, `causes:` one
@@ -2710,7 +2808,13 @@ pub fn validate_law_account(
             )
         })?;
         let fam = family_of(&decoded);
-        if fam == JF::Placement && v["schema"] != "1.20" && v["schema"] != "1.21" {
+        if fam == JF::Resource && !matches!(v["schema"].as_str(), Some("1.22" | "1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
+            return Err(format!("{}: resource laws require schema 1.22", label));
+        }
+        if fam == JF::FlowPolicy && !matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
+            return Err(format!("{}: flow-policy laws require schema 1.23", label));
+        }
+        if fam == JF::Placement && !matches!(v["schema"].as_str(), Some("1.20" | "1.21" | "1.22" | "1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] carries \
                  require_separate_domains, which requires schema 1.20 or later",
@@ -2889,24 +2993,17 @@ pub fn validate_law_account(
                     }
                     let r =
                         cert["result"].as_str().unwrap_or("?");
-                    // Round 10: an IMPLICIT lifecycle phase (no
-                    // hook fn in the function universe) has a
-                    // SYNTHETIC certificate — no hook body
-                    // performs no effects, so the only truthful
-                    // result is `holds`, with no diagnostics.
+                    // Only a bodyless lifecycle phase is vacuous. Automatic
+                    // assertions and modes participate through the exported
+                    // source phase relation, independently of callable names.
                     if let Law::PhaseEffects { locus, phases } =
                         &decoded
                     {
                         if let Some((ph, _)) = phases.get(k) {
-                            let hook = format!(
-                                "{}::{}",
-                                locus.display, ph
-                            );
-                            let explicit = cx
-                                .fn_universe
-                                .iter()
-                                .any(|(_, d)| *d == hook);
-                            if !explicit
+                            let explicit = cx.fn_owner.iter().any(|(function, owner)|
+                                *owner == locus.display && v["phases"][function]["phase"] == *ph);
+                            let lifecycle = matches!(ph.as_str(), "birth" | "accept" | "release" | "run" | "drain" | "dissolve");
+                            if !explicit && lifecycle
                                 && (r != "holds" || cert_ev != 0)
                             {
                                 return Err(format!(
@@ -2918,6 +3015,9 @@ pub fn validate_law_account(
                                      holds",
                                     label, i, k, ph
                                 ));
+                            }
+                            if !explicit && !lifecycle && r == "holds" {
+                                return Err(format!("{label}: a phase without a represented source body cannot carry holds"));
                             }
                         }
                     }
@@ -3061,6 +3161,8 @@ pub fn validate_law_account(
                 | JF::Endpoint
                 | JF::Bound
                 | JF::Placement
+                | JF::Resource
+                | JF::FlowPolicy
                 | JF::Causes
                 | JF::Depends
         ) && matches!(verdict, "violated" | "uncertified")
@@ -3109,6 +3211,8 @@ pub fn validate_law_account(
             fam,
             JF::Reachability | JF::Boundary | JF::Endpoint | JF::Bound
                 | JF::Placement
+                | JF::Resource
+                | JF::FlowPolicy
         ) {
             claims_tier_ordinals
                 .push(row["ordinal"].as_u64().unwrap_or(0));
@@ -3276,6 +3380,32 @@ pub fn validate_law_account(
             ));
         }
     }
+    // Classifications default to resident in 1.23. A template tag is
+    // explicit uncertainty; it contradicts an exact classification flag.
+    if let Some(classes) = v.get("flow_classes") {
+        if !matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
+            return Err(format!("{}: flow_classes requires schema 1.23", label));
+        }
+        let rows = classes.as_array().ok_or("flow_classes must be an array")?;
+        let mut previous: Option<&str> = None;
+        for class in rows {
+            only_keys(class, "flow_classes", &["locus", "class"], &[])?;
+            let locus = class["locus"].as_str().ok_or("flow_classes.locus missing")?;
+            if previous.is_some_and(|p| p >= locus) {
+                return Err("flow_classes must be sorted and unique".into());
+            }
+            previous = Some(locus);
+            if !v["sorts"]["loci"].as_array().is_some_and(|loci| loci.iter().any(|l| l.as_str() == Some(locus))) {
+                return Err("flow_classes references an unknown locus".into());
+            }
+            match class["class"].as_str() {
+                Some("flow") => {},
+                Some("template") if v["capabilities"]["exact_flow_classification"] == false => {},
+                Some("template") => return Err("flow template contradicts exact_flow_classification".into()),
+                _ => return Err("flow_classes.class must be flow or template".into()),
+            }
+        }
+    }
     // Capabilities: the EXACT flag set; adequacy recomputed.
     const CAP_FLAGS: &[(&str, u32)] = &[
         ("exact_calls", 1 << 0),
@@ -3290,11 +3420,14 @@ pub fn validate_law_account(
         ("exact_delivery_guarantees", 1 << 11),
         ("exact_costs", 1 << 12),
     ];
+    let flags_123: Vec<_> = CAP_FLAGS.iter().copied()
+        .chain([("exact_flow_classification", 1 << 13)]).collect();
+    let cap_flags = if matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { &flags_123[..] } else { CAP_FLAGS };
     let caps = v["capabilities"].as_object().ok_or_else(|| {
         format!("{}: capabilities must be an object", label)
     })?;
-    if caps.len() != CAP_FLAGS.len()
-        || CAP_FLAGS.iter().any(|(k, _)| {
+    if caps.len() != cap_flags.len()
+        || cap_flags.iter().any(|(k, _)| {
             !caps.get(*k).is_some_and(|x| x.is_boolean())
         })
     {
@@ -3302,11 +3435,11 @@ pub fn validate_law_account(
             "{}: malformed artifact — capabilities must carry \
              exactly the {} known boolean flags",
             label,
-            CAP_FLAGS.len()
+            cap_flags.len()
         ));
     }
     let mut vouched: u32 = 0;
-    for (k, bit) in CAP_FLAGS {
+    for (k, bit) in cap_flags {
         if caps[*k] == true {
             vouched |= bit;
         }
@@ -3365,8 +3498,12 @@ pub fn validate_law_account(
         JF::Budget,
         JF::Placement,
     ];
+    let migrated_122: Vec<_> = MIGRATED_120.iter().copied().chain([JF::Resource]).collect();
+    let migrated_123: Vec<_> = migrated_122.iter().copied().chain([JF::FlowPolicy]).collect();
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[JF] = match schema {
+        "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38" | "1.28" | "1.27" | "1.26" | "1.25" | "1.24" | "1.23" => &migrated_123,
+        "1.22" => &migrated_122,
         // 1.21 added the `observe` section (GH #1592).
         "1.21" | "1.20" => MIGRATED_120,
         // 1.18 added the per-locus `contracts` section (GH #527
@@ -3489,6 +3626,8 @@ pub fn validate_law_account(
                         | JF::Endpoint
                         | JF::Bound
                         | JF::Placement
+                | JF::Resource
+                | JF::FlowPolicy
                 )
             ) {
                 let name = r["name"].as_str().unwrap_or("");
@@ -3552,5 +3691,527 @@ pub fn validate_law_account(
         ));
     }
     let _ = BTreeSet::<u8>::new();
+    Ok(())
+}
+
+
+fn validate_initialization_account(v: &Value, cx: &RefContext) -> Result<(), String> {
+    let current = matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38"));
+    let tables = ["initializers", "parameter_defaults", "constructions", "initializes"];
+    let present = tables.iter().any(|name| v["relations"].get(*name).is_some())
+        || v["unknowns"].as_array().into_iter().flatten().any(|row|
+            row["reasons"].as_array().into_iter().flatten().any(|reason| reason == "unmodeled_initialization"));
+    if present && !matches!(v["schema"].as_str(), Some("1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
+        return Err("initializer execution tables require topology schema 1.26 or later".into());
+    }
+    if !current && (v["relations"].get("initializers").is_some() || v["sorts"].get("types").is_some() || v["law"].get("types").is_some()) {
+        return Err("typed default and type-owner tables require topology schema 1.27".into());
+    }
+    if current && v["relations"].get("parameter_defaults").is_some() {
+        return Err("schema 1.27 uses the unified initializer table".into());
+    }
+    let rows = |name: &str| -> Result<Vec<&Value>, String> {
+        match v["relations"].get(name) {
+            None => Ok(Vec::new()),
+            Some(value) => value.as_array().map(|rows| rows.iter().collect()).ok_or_else(|| format!("relations.{name} must be an array")),
+        }
+    };
+    let string = |row: &Value, key: &str| -> Result<String, String> {
+        row[key].as_str().filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("initialization {key} must be a nonempty string"))
+    };
+    let ordinal = |row: &Value, key: &str| -> Result<u32, String> {
+        row[key].as_u64().filter(|n| *n <= u32::MAX as u64).map(|n| n as u32).ok_or_else(|| format!("initialization {key} must be a u32"))
+    };
+    let boolean = |row: &Value, key: &str| -> Result<bool, String> {
+        row[key].as_bool().ok_or_else(|| format!("initialization {key} must be a boolean"))
+    };
+    let owner = |row: &Value| -> Result<(String, String), String> {
+        let (kind, name) = if current {
+            only_keys(&row["owner"], "initializer owner", &["kind", "name"], &[])?;
+            (string(&row["owner"], "kind")?, string(&row["owner"], "name")?)
+        } else { ("locus".to_string(), string(row, "locus")?) };
+        let known = match kind.as_str() {
+            "locus" => cx.loci.iter().any(|(_, display, _)| *display == name),
+            "type" => cx.types.iter().any(|(_, display)| *display == name),
+            "function" if matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) => cx.fn_universe.iter().any(|(_,display)| *display == name),
+            _ => false,
+        };
+        if !known { return Err("initializer owner names an absent declaration or kind".into()); }
+        Ok((kind, name))
+    };
+    let mut expected_definitions = BTreeSet::new();
+    for row in v["law"]["fn_universe"].as_array().into_iter().flatten().filter(|row| matches!(row["kind"].as_str(), Some("parameter_default" | "field_default" | "argument_default"))) {
+        let (kind, category, owner_key) = match row["kind"].as_str() { Some("argument_default") => ("argument", "function", "owner_function"), Some("field_default") => ("field", "type", "owner_type"), _ => ("parameter", "locus", "owner") };
+        expected_definitions.insert((string(row, "display")?, kind.to_string(), (category.to_string(), string(row, owner_key)?), string(row, "initializer_field")?, ordinal(row, "initializer_ordinal")?));
+    }
+    let mut definitions = BTreeMap::new();
+    let mut definition_rows = BTreeSet::new();
+    let mut member_names = BTreeSet::new();
+    let mut member_ordinals = BTreeSet::new();
+    for row in rows(if current { "initializers" } else { "parameter_defaults" })? {
+        if current { only_keys(row, "relations.initializers[*]", &["function", "kind", "owner", "field", "member"], &[])?; }
+        else { only_keys(row, "relations.parameter_defaults[*]", &["function", "locus", "field", "parameter"], &[])?; }
+        let (function, field, member) = (string(row, "function")?, string(row, "field")?, ordinal(row, if current { "member" } else { "parameter" })?);
+        let owner = owner(row)?;
+        let kind = if current { string(row, "kind")? } else { "parameter".to_string() };
+        if (kind.as_str(), owner.0.as_str()) != ("field", "type") && (kind.as_str(), owner.0.as_str()) != ("parameter", "locus") && (kind.as_str(), owner.0.as_str()) != ("argument", "function") {
+            return Err("initializer kind disagrees with declaration ownership".into());
+        }
+        if !definition_rows.insert((function.clone(), kind, owner.clone(), field.clone(), member))
+            || !member_names.insert((owner.clone(), field.clone())) || !member_ordinals.insert((owner.clone(), member)) {
+            return Err("duplicate default declaration identity".into());
+        }
+        definitions.insert(function, (owner, field, member));
+    }
+    if definition_rows != expected_definitions { return Err("initializer table differs from executable-body coverage".into()); }
+    let mut constructors = BTreeMap::new();
+    let mut expected = BTreeSet::new();
+    for row in rows("constructions")? {
+        if current { only_keys(row, "relations.constructions[*]", &["function", "owner", "site", "supplied", "loop", "unbounded"], &[])?; }
+        else { only_keys(row, "relations.constructions[*]", &["function", "locus", "site", "supplied", "loop", "unbounded"], &[])?; }
+        let (function, site, owner) = (string(row, "function")?, ordinal(row, "site")?, owner(row)?);
+        if owner.0 == "function" { return Err("a callable cannot be a constructor target".into()); }
+        let (in_loop, unbounded) = (boolean(row, "loop")?, boolean(row, "unbounded")?);
+        if !cx.fn_summarized.contains(&function) { return Err("constructor names an absent body".into()); }
+        let supplied: Vec<String> = row["supplied"].as_array().ok_or("constructor supplied fields must be an array")?.iter()
+            .map(|field| field.as_str().filter(|s| !s.is_empty()).map(str::to_string).ok_or("constructor supplied field must be a nonempty string"))
+            .collect::<Result<_, _>>()?;
+        if supplied.windows(2).any(|pair| pair[0] >= pair[1]) { return Err("constructor supplied fields must be sorted and unique".into()); }
+        if constructors.insert((function.clone(), site), (owner.clone(), in_loop, unbounded)).is_some() { return Err("duplicate constructor identity".into()); }
+        for (target, (declaration, field, member)) in &definitions {
+            if declaration == &owner && supplied.binary_search(field).is_err() { expected.insert((function.clone(), site, *member, target.clone())); }
+        }
+    }
+    let mut actual = BTreeSet::new();
+    for row in rows("initializes")? {
+        if current { only_keys(row, "relations.initializes[*]", &["from", "to", "owner", "field", "site", "member", "loop", "unbounded"], &[])?; }
+        else { only_keys(row, "relations.initializes[*]", &["from", "to", "locus", "field", "site", "parameter", "loop", "unbounded"], &[])?; }
+        let (from, to, field, owner) = (string(row, "from")?, string(row, "to")?, string(row, "field")?, owner(row)?);
+        let (site, member) = (ordinal(row, "site")?, ordinal(row, if current { "member" } else { "parameter" })?);
+        let flags = (boolean(row, "loop")?, boolean(row, "unbounded")?);
+        if definitions.get(&to) != Some(&(owner.clone(), field, member)) || constructors.get(&(from.clone(), site)) != Some(&(owner, flags.0, flags.1)) {
+            return Err("initialization does not match its constructor and default declaration".into());
+        }
+        if !actual.insert((from, site, member, to)) { return Err("duplicate initialization edge".into()); }
+    }
+    if actual != expected { return Err("initializations do not equal the omitted defaults of represented constructors".into()); }
+    Ok(())
+}
+
+
+/// Structural admission of the compiler's named-call omission account.
+/// This does not evaluate Hale laws or reconstruct an ApplicationModel.
+fn validate_argument_account(v: &Value, cx: &RefContext) -> Result<(), String> {
+    let present = ["argument_calls","argument_evaluations"].iter().any(|k| v["relations"].get(*k).is_some());
+    if present && !matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { return Err("argument evaluation tables require topology schema 1.28".into()); }
+    let rows = |name: &str| -> Result<Vec<&Value>,String> {
+        match v["relations"].get(name) { None => Ok(Vec::new()), Some(v) => v.as_array().map(|a| a.iter().collect()).ok_or_else(|| format!("relations.{name} must be an array")) }
+    };
+    let string = |r:&Value,k:&str| r[k].as_str().filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("argument evaluation {k} must be a nonempty string"));
+    let ordinal = |r:&Value,k:&str| r[k].as_u64().filter(|n| *n <= u32::MAX as u64).map(|n| n as u32).ok_or_else(|| format!("argument evaluation {k} must be a u32"));
+    let flags = |r:&Value| -> Result<(bool,bool),String> { Ok((r["loop"].as_bool().ok_or("argument loop must be a boolean")?,r["unbounded"].as_bool().ok_or("argument unbounded must be a boolean")?)) };
+    let mut definitions=BTreeMap::new();let mut by_owner:BTreeMap<String,Vec<_>>=BTreeMap::new();
+    for row in v["law"]["fn_universe"].as_array().unwrap().iter().filter(|r| r["kind"] == "argument_default") {
+        let function=string(row,"display")?;let owner=string(row,"owner_function")?;let parameter=string(row,"initializer_field")?;let position=ordinal(row,"initializer_ordinal")?;
+        if position == u32::MAX { return Err("argument signature arity overflows".into()); }
+        definitions.insert(function.clone(),(owner.clone(),parameter.clone(),position));by_owner.entry(owner).or_default().push((function,parameter,position));
+    }
+    let mut calls=BTreeMap::new();let mut expected=BTreeSet::new();
+    for row in rows("argument_calls")? {
+        only_keys(row,"relations.argument_calls[*]",&["from","callee","site","supplied","loop","unbounded"],&[])?;
+        let from=string(row,"from")?;let callee=string(row,"callee")?;let site=ordinal(row,"site")?;let supplied=ordinal(row,"supplied")?;let flags=flags(row)?;
+        let defaults=by_owner.get(&callee).ok_or("argument call names no default-bearing callable")?;
+        if !cx.fn_summarized.contains(&from) || !v["relations"]["calls"].as_array().into_iter().flatten().any(|r| r["from"] == from && r["to"] == callee && r.get("via_interface").is_none()) {
+            return Err("argument call is not a represented named execution".into());
+        }
+        let arity = defaults.iter().map(|(_,_,n)| *n).max().unwrap().checked_add(1).ok_or("argument signature arity overflows")?;
+        let represented=v["relations"]["calls"].as_array().unwrap().iter().find(|r| r["from"] == from && r["to"] == callee && r.get("via_interface").is_none()).unwrap();
+        if (flags.0 && represented["loop"] != true) || (flags.1 && represented["unbounded"] != true) {
+            return Err("argument call loop facts exceed its represented call".into());
+        }
+        if supplied > arity { return Err("argument call supplies more arguments than its signature".into()); }
+        if calls.insert((from.clone(),site),(callee.clone(),flags)).is_some() { return Err("duplicate argument call identity".into()); }
+        for (target,_,position) in defaults { if *position >= supplied { expected.insert((from.clone(),site,callee.clone(),*position,target.clone())); } }
+    }
+    let mut actual=BTreeSet::new();
+    for row in rows("argument_evaluations")? {
+        only_keys(row,"relations.argument_evaluations[*]",&["from","to","callee","site","argument","parameter","loop","unbounded"],&[])?;
+        let from=string(row,"from")?;let to=string(row,"to")?;let callee=string(row,"callee")?;let site=ordinal(row,"site")?;let argument=ordinal(row,"argument")?;let parameter=string(row,"parameter")?;let flags=flags(row)?;
+        if definitions.get(&to) != Some(&(callee.clone(),parameter,argument)) || calls.get(&(from.clone(),site)) != Some(&(callee.clone(),flags)) {
+            return Err("argument evaluation disagrees with its call or declared parameter".into());
+        }
+        if !actual.insert((from,site,callee,argument,to)) { return Err("duplicate argument evaluation".into()); }
+    }
+    if actual != expected { return Err("argument evaluations do not equal the omitted suffix of named calls".into()); }
+    Ok(())
+}
+
+
+/// Validate a closure execution account without interpreting Hale laws or
+/// reconstructing its canonical ApplicationModel.
+fn validate_closure_account(v: &Value, cx: &RefContext) -> Result<(), String> {
+    let names=["closure_definitions","closure_checks","closure_evaluations"];
+    if names.iter().any(|k| v["relations"].get(*k).is_some()) && !matches!(v["schema"].as_str(), Some("1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
+        return Err("closure execution tables require topology schema 1.29".into());
+    }
+    let rows=|name:&str| -> Result<Vec<&Value>,String> {
+        match v["relations"].get(name) { None=>Ok(Vec::new()),Some(v)=>v.as_array().map(|a| a.iter().collect()).ok_or_else(|| format!("relations.{name} must be an array")) }
+    };
+    let text=|row:&Value,key:&str| row[key].as_str().filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("closure {key} must be a nonempty string"));
+    let ordinal=|row:&Value,key:&str| row[key].as_u64().filter(|n| *n<u32::MAX as u64).map(|n| n as u32).ok_or_else(|| format!("closure {key} must be a finite u32 ordinal"));
+    let flags=|row:&Value| -> Result<(bool,bool),String> {
+        let looped=row["loop"].as_bool().ok_or("closure loop must be a boolean")?;
+        let unbounded=row["unbounded"].as_bool().ok_or("closure unbounded must be a boolean")?;
+        if unbounded && !looped { return Err("unbounded closure checkpoint must be looped".into()); }
+        Ok((looped,unbounded))
+    };
+    let universe=v["law"]["fn_universe"].as_array().unwrap();
+    let mut definitions=BTreeMap::new();let mut positions=BTreeSet::new();let mut labels=BTreeSet::new();
+    for row in rows("closure_definitions")? {
+        only_keys(row,"relations.closure_definitions[*]",&["function","owner","name","epoch","closure"],&[])?;
+        let function=text(row,"function")?;let owner=text(row,"owner")?;let name=text(row,"name")?;let epoch=text(row,"epoch")?;let position=ordinal(row,"closure")?;
+        let body=universe.iter().find(|r| r["display"]==function).ok_or("closure definition names no function")?;
+        let (raw_owner,_,_)=cx.loci.iter().find(|(_,display,_)| *display==owner).ok_or("closure definition names no locus owner")?;
+        if body["kind"]!="closure_assertion" || body["owner"]!=owner || !cx.fn_summarized.contains(&function)
+            || body["name"]!=format!("{raw_owner}::closures::{name}") || function!=format!("{owner}::closures::{name}")
+            || !matches!(epoch.as_str(),"birth"|"dissolve"|"tick"|"duration"|"explicit")
+            || !positions.insert((owner.clone(),position)) || !labels.insert((owner.clone(),name)) {
+            return Err("closure definition, canonical identity, epoch and owner must agree".into());
+        }
+        if definitions.insert(function,(owner,epoch,position)).is_some() { return Err("duplicate closure definition".into()); }
+    }
+    for (function, (_, epoch, _)) in &definitions {
+        let phase = v["phases"].get(function);
+        if epoch == "explicit" {
+            if phase.is_some() { return Err("explicit closure assertions inherit checkpoint phases and have no independent source phase".into()); }
+        } else {
+            let phase = phase.ok_or("automatic assertion requires its declared source phase")?;
+            only_keys(phase, "automatic assertion phase", &["phase", "kind"], &[])?;
+            if phase["phase"] != *epoch || phase["kind"] != "hook" {
+                return Err("automatic assertion source phase must agree with its epoch and substrate role".into());
+            }
+        }
+    }
+    let expected_bodies:BTreeSet<_>=universe.iter().filter(|r| r["kind"]=="closure_assertion").map(|r| r["display"].as_str().unwrap().to_string()).collect();
+    if definitions.keys().cloned().collect::<BTreeSet<_>>()!=expected_bodies { return Err("every closure assertion requires exactly one definition".into()); }
+    let mut expected_phases: BTreeSet<String> = universe.iter().filter(|row|
+        matches!(row["kind"].as_str(), Some("hook" | "method" | "mode" | "failure" | "birth_check")))
+        .map(|row| row["display"].as_str().unwrap().to_string()).collect();
+    expected_phases.extend(definitions.iter().filter(|(_, (_, epoch, _))| epoch != "explicit").map(|(function, _)| function.clone()));
+    let actual_phases: BTreeSet<String> = v["phases"].as_object().into_iter().flat_map(|map| map.keys().cloned()).collect();
+    if actual_phases != expected_phases {
+        return Err("source phase account must cover exactly the phase-bearing bodies".into());
+    }
+    for body in universe.iter().filter(|body| expected_phases.contains(body["display"].as_str().unwrap())) {
+        let phase = &v["phases"][body["display"].as_str().unwrap()];
+        only_keys(phase, "source phase", &["phase", "kind"], &[])?;
+        let role = if body["kind"] == "method" { "method" } else { "hook" };
+        if phase["phase"].as_str().is_none_or(|name| name.is_empty()) || phase["kind"] != role {
+            return Err("source phase and body role must agree".into());
+        }
+    }
+    let mut checks=BTreeMap::new();let mut expected=BTreeSet::new();
+    for row in rows("closure_checks")? {
+        only_keys(row,"relations.closure_checks[*]",&["function","owner","site","loop","unbounded"],&[])?;
+        let function=text(row,"function")?;let owner=text(row,"owner")?;let site=ordinal(row,"site")?;let flags=flags(row)?;
+        let body=universe.iter().find(|r| r["display"]==function).ok_or("closure checkpoint names no function")?;
+        if cx.fn_owner.get(&function)!=Some(&owner) || !cx.fn_summarized.contains(&function) || body.get("initializer_field").is_some() {
+            return Err("closure checkpoint must have its actual implicit-self body owner".into());
+        }
+        if checks.insert((function.clone(),site),flags).is_some() { return Err("duplicate closure checkpoint".into()); }
+        for (target,(declared,epoch,position)) in &definitions {
+            if *declared==owner && epoch=="explicit" { expected.insert((function.clone(),site,*position,target.clone())); }
+        }
+    }
+    let mut actual=BTreeSet::new();
+    for row in rows("closure_evaluations")? {
+        only_keys(row,"relations.closure_evaluations[*]",&["from","to","site","closure","loop","unbounded"],&[])?;
+        let from=text(row,"from")?;let to=text(row,"to")?;let site=ordinal(row,"site")?;let closure=ordinal(row,"closure")?;let flags=flags(row)?;
+        let key=(from.clone(),site,closure,to);
+        if !expected.contains(&key) || checks.get(&(from,site))!=Some(&flags) || !actual.insert(key) {
+            return Err("closure evaluation must preserve its exact checkpoint and assertion account".into());
+        }
+    }
+    if actual!=expected { return Err("closure evaluations do not equal the explicit assertions of represented checkpoints".into()); }
+    // A current-input artifact cannot evade the coverage law by relabeling
+    // its envelope as 1.29. Old-input artifacts already require a re-dump.
+    {
+        let automatic_owners: BTreeSet<_> = definitions.values().filter(|(_,epoch,_)| epoch != "explicit")
+            .map(|(owner,_,_)| owner.as_str()).collect();
+        for construction in rows("constructions")? {
+            if construction["owner"]["kind"] == "locus"
+                && construction["owner"]["name"].as_str().is_some_and(|owner| automatic_owners.contains(owner))
+                && !source_invocation_context_covered(v, construction["function"].as_str().unwrap_or("")) {
+                return Err("automatic closure construction requires scoped invocation-context coverage".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Source clause accounts are admitted directly; no artifact-to-model path.
+fn validate_birth_check_account(v: &Value, cx: &RefContext) -> Result<(), String> {
+    let universe = v["law"]["fn_universe"].as_array().unwrap();
+    let rows: Vec<&Value> = match v["relations"].get("birth_checks") {
+        None => Vec::new(),
+        Some(rows) => {
+            if !matches!(v["schema"].as_str(),Some("1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { return Err("birth-check definitions require topology schema 1.32".into()); }
+            rows.as_array().ok_or("birth_checks must be an array")?.iter().collect()
+        }
+    };
+    let expected: BTreeSet<_> = universe.iter().filter(|b| b["kind"] == "birth_check")
+        .map(|b| b["display"].as_str().unwrap()).collect();
+    let mut actual = BTreeSet::new();
+    let mut positions = BTreeSet::new();
+    let mut owners = BTreeSet::new();
+    let mut previous = None;
+    let has_gap = |function: &str, kind: &str| v["unknowns"].as_array().into_iter().flatten().any(|u|
+        u["fn"] == function && u["reasons"].as_array().into_iter().flatten().any(|reason| reason == kind));
+    for row in rows {
+        only_keys(row, "relations.birth_checks[*]", &["function", "owner", "closure", "clause"], &[])?;
+        let text = |name: &str| row[name].as_str().filter(|s| !s.is_empty()).ok_or("birth check fields must be nonempty strings");
+        let function = text("function")?;
+        let owner = text("owner")?;
+        text("closure")?;
+        let ordinal = row["clause"].as_u64().filter(|n| *n < u32::MAX as u64).ok_or("birth check clause must be a finite u32 ordinal")?;
+        let (index, body) = universe.iter().enumerate().find(|(_, b)| b["display"] == function).ok_or("birth check names no source body")?;
+        let (raw_owner, _, _) = cx.loci.iter().find(|(_, display, _)| *display == owner).ok_or("birth check names no locus owner")?;
+        if !expected.contains(function) || !actual.insert(function) || !positions.insert((owner, ordinal))
+            || previous.is_some_and(|old| old >= index) || body["owner"] != owner
+            || body["name"] != format!("{raw_owner}::birth_checks::{ordinal}")
+            || function != format!("{owner}::birth_checks::{ordinal}")
+            || !cx.fn_summarized.contains(function) {
+            return Err("birth check identity, clause order and locus ownership must agree".into());
+        }
+        previous = Some(index);
+        let phase = &v["phases"][function];
+        if phase["phase"] != "birth" || phase["kind"] != "hook" {
+            return Err("birth checks require exactly their birth source phase".into());
+        }
+        if !has_gap(function, if failure_handlers_absent(v) { "unmodeled_failure_context" } else { "unmodeled_failure_dispatch" }) {
+            return Err("conditional birth rejection requires scoped failure-dispatch coverage".into());
+        }
+        owners.insert(owner);
+    }
+    if actual != expected { return Err("every birth check requires exactly one source definition".into()); }
+    for construction in v["relations"]["constructions"].as_array().into_iter().flatten() {
+        if construction["owner"]["kind"] == "locus"
+            && construction["owner"]["name"].as_str().is_some_and(|owner| owners.contains(owner))
+            && !source_invocation_context_covered(v, construction["function"].as_str().unwrap_or("")) {
+            return Err("birth-check construction requires scoped invocation-context coverage".into());
+        }
+    }
+    Ok(())
+}
+
+/// The self lifecycle source account, independent of authored call ordinals.
+fn validate_lifecycle_account(v: &Value, cx: &RefContext) -> Result<(), String> {
+    let universe=v["law"]["fn_universe"].as_array().unwrap();
+    let stages=["birth","run","drain","dissolve"];
+    let expected_bodies:BTreeSet<&str>=universe.iter().filter(|b| b["kind"]=="hook"
+        && v["phases"][b["display"].as_str().unwrap()]["phase"].as_str().is_some_and(|s| stages.contains(&s)))
+        .map(|b| b["display"].as_str().unwrap()).collect();
+    let present=v["relations"].get("lifecycle_definitions").is_some() || v["relations"].get("lifecycle_evaluations").is_some();
+    if !matches!(v["schema"].as_str(), Some("1.36" | "1.37" | "1.38")) && v["unknowns"].as_array().into_iter().flatten().any(|u|
+        u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_lifecycle_context")) {
+        return Err("self lifecycle source closure requires topology schema 1.36; re-export from source".into());
+    }
+    if (present || !expected_bodies.is_empty()) && !matches!(v["schema"].as_str(), Some("1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
+        return Err("guarded self lifecycle accounts require topology schema 1.34".into());
+    }
+    let rows=|name:&str| -> Result<Vec<&Value>,String> {
+        match v["relations"].get(name) { None=>Ok(Vec::new()),Some(rows)=>rows.as_array().map(|a| a.iter().collect()).ok_or_else(|| format!("{name} must be an array")) }
+    };
+    let text=|row:&Value,key:&str| row[key].as_str().filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("lifecycle {key} must be nonempty"));
+    let number=|row:&Value,key:&str| row[key].as_u64().filter(|n| *n<u32::MAX as u64).map(|n| n as u32).ok_or_else(|| format!("lifecycle {key} must be a finite u32"));
+    let flags=|row:&Value| -> Result<(bool,bool),String> {
+        let looped=row["loop"].as_bool().ok_or("lifecycle loop must be a boolean")?;
+        let unbounded=row["unbounded"].as_bool().ok_or("lifecycle unbounded must be a boolean")?;
+        if unbounded && !looped { return Err("unbounded lifecycle entry must be looped".into()); }
+        Ok((looped,unbounded))
+    };
+    let mut definitions=BTreeMap::new();let mut positions=BTreeSet::new();let mut uncertain_owners=BTreeSet::new();
+    for row in rows("lifecycle_definitions")? {
+        only_keys(row,"relations.lifecycle_definitions[*]",&["function","owner","stage","empty"],&[])?;
+        let function=text(row,"function")?;let owner=text(row,"owner")?;let stage=text(row,"stage")?;
+        let empty=row["empty"].as_bool().ok_or("lifecycle empty must be a boolean")?;
+        let body=universe.iter().find(|b| b["display"]==function).ok_or("lifecycle definition names no function")?;
+        let (raw_owner,_,_)=cx.loci.iter().find(|(_,display,_)| *display==owner).ok_or("lifecycle definition names no locus")?;
+        if !expected_bodies.contains(function.as_str()) || body["owner"]!=owner || !cx.fn_summarized.contains(&function)
+            || !stages.contains(&stage.as_str()) || body["name"]!=format!("{raw_owner}::{stage}")
+            || function!=format!("{owner}::{stage}") || !positions.insert((owner.clone(),stage.clone()))
+            || v["phases"][&function]["phase"]!=stage || v["phases"][&function]["kind"]!="hook" {
+            return Err("lifecycle definition identity, stage and locus ownership must agree".into());
+        }
+        if empty && (v["effects"][&function].as_array().is_some_and(|a| !a.is_empty())
+            || ["calls","initializes","lifecycle_evaluations","constructor_checks"].iter().any(|name| v["relations"][name].as_array().into_iter().flatten().any(|r| r["from"]==function))
+            || v["relations"]["publishes"].as_array().into_iter().flatten().any(|r| r["fn"]==function)
+            || v["relations"]["constructions"].as_array().into_iter().flatten().any(|r| r["function"]==function)) {
+            return Err("an empty lifecycle body cannot hide represented execution".into());
+        }
+        if !empty { uncertain_owners.insert(owner.clone()); }
+        if definitions.insert(function,(owner,stage,empty)).is_some() { return Err("duplicate lifecycle definition".into()); }
+    }
+    if definitions.keys().map(String::as_str).collect::<BTreeSet<_>>()!=expected_bodies {
+        return Err("every authored self lifecycle body requires exactly one definition".into());
+    }
+    let mut expected=BTreeMap::new();
+    for c in rows("constructions")? {
+        if c["owner"]["kind"]!="locus" { continue; }
+        let owner=c["owner"]["name"].as_str().unwrap_or("");let function=text(c,"function")?;let site=number(c,"site")?;let repetition=flags(c)?;
+        if uncertain_owners.contains(owner) && !v["unknowns"].as_array().into_iter().flatten().any(|u| u["fn"]==function
+            && u["reasons"].as_array().into_iter().flatten().any(|r|
+                if matches!(v["schema"].as_str(), Some("1.36" | "1.37" | "1.38")) { r == "unmodeled_lifecycle_context" } else { r == "unmodeled_initialization" })) {
+            return Err("self lifecycle construction requires scoped invocation-context coverage".into());
+        }
+        for (target,(declared,stage,empty)) in &definitions {
+            if declared==owner && !empty { expected.insert((function.clone(),site,stage.clone(),target.clone()),repetition); }
+        }
+    }
+    let mut actual=BTreeSet::new();
+    for row in rows("lifecycle_evaluations")? {
+        only_keys(row,"relations.lifecycle_evaluations[*]",&["from","to","stage","guard","site","loop","unbounded"],&[])?;
+        let stage=text(row,"stage")?;
+        let kind=match stage.as_str() { "birth"=>hale_model::LifecycleStage::Birth,"run"=>hale_model::LifecycleStage::Run,"drain"=>hale_model::LifecycleStage::Drain,"dissolve"=>hale_model::LifecycleStage::Dissolve,_=>return Err("invalid lifecycle stage".into()) };
+        let guard=kind.entry_guard().as_str();
+        if row["guard"]!=guard { return Err("lifecycle guard must match its source stage".into()); }
+        let key=(text(row,"from")?,number(row,"site")?,stage,text(row,"to")?);
+        if expected.get(&key)!=Some(&flags(row)?) || !actual.insert(key) {
+            return Err("lifecycle entry must preserve its exact constructor, body and repetition context".into());
+        }
+    }
+    if actual!=expected.keys().cloned().collect() { return Err("lifecycle entries do not equal the represented constructors' guarded nonempty lifecycle hooks".into()); }
+    Ok(())
+}
+
+
+/// Constructor predicates use constructor ordinals, separate from authored
+/// call and explicit-checkpoint sites. Their bodies are possible source work.
+fn validate_constructor_check_account(v: &Value) -> Result<(), String> {
+    let rows = |name: &str| -> Result<Vec<&Value>, String> {
+        match v["relations"].get(name) {
+            None => Ok(Vec::new()),
+            Some(value) => value.as_array().map(|a| a.iter().collect())
+                .ok_or_else(|| format!("{name} must be an array")),
+        }
+    };
+    if !matches!(v["schema"].as_str(), Some("1.37" | "1.38")) {
+        if v["relations"].get("constructor_checks").is_some() {
+            return Err("constructor predicate entries require topology schema 1.37".into());
+        }
+        return Ok(());
+    }
+    let text = |row: &Value, key: &str| row[key].as_str().filter(|s| !s.is_empty())
+        .map(str::to_string).ok_or_else(|| format!("constructor predicate {key} must be nonempty"));
+    let number = |row: &Value, key: &str| row[key].as_u64().filter(|n| *n < u32::MAX as u64)
+        .map(|n| n as u32).ok_or_else(|| format!("constructor predicate {key} must be a finite u32"));
+    let flags = |row: &Value| -> Result<(bool, bool), String> {
+        let looped = row["loop"].as_bool().ok_or("constructor predicate loop must be a boolean")?;
+        let unbounded = row["unbounded"].as_bool().ok_or("constructor predicate unbounded must be a boolean")?;
+        if unbounded && !looped { return Err("unbounded constructor predicate must be looped".into()); }
+        Ok((looped, unbounded))
+    };
+    let mut definitions = BTreeMap::new();
+    for row in rows("birth_checks")? {
+        definitions.insert(text(row, "function")?, (text(row, "owner")?, "birth_check".to_string(), "birth".to_string(), number(row, "clause")?));
+    }
+    for row in rows("closure_definitions")? {
+        if row["epoch"] == "explicit" { continue; }
+        definitions.insert(text(row, "function")?, (text(row, "owner")?, "assertion".to_string(), text(row, "epoch")?, number(row, "closure")?));
+    }
+    let mut expected = BTreeMap::new();
+    for construction in rows("constructions")? {
+        if construction["owner"]["kind"] != "locus" { continue; }
+        let from = text(construction, "function")?;
+        let owner = construction["owner"]["name"].as_str().unwrap_or("");
+        let site = number(construction, "site")?;
+        let repetition = flags(construction)?;
+        for (target, (declared, kind, epoch, clause)) in &definitions {
+            if declared == owner {
+                expected.insert((from.clone(), site, target.clone()), (kind.clone(), epoch.clone(), *clause, repetition));
+            }
+        }
+    }
+    let universe = v["law"]["fn_universe"].as_array().unwrap();
+    let position = |name: &str| universe.iter().position(|r| r["display"] == name).ok_or("constructor predicate names no source function");
+    let mut previous = None;
+    let mut actual = BTreeSet::new();
+    for row in rows("constructor_checks")? {
+        only_keys(row, "relations.constructor_checks[*]", &["from", "to", "site", "kind", "epoch", "clause", "loop", "unbounded"], &[])?;
+        let key = (text(row, "from")?, number(row, "site")?, text(row, "to")?);
+        let metadata = (text(row, "kind")?, text(row, "epoch")?, number(row, "clause")?, flags(row)?);
+        let kind_rank = match metadata.0.as_str() { "birth_check" => 0u8, "assertion" => 1, _ => return Err("invalid constructor predicate kind".into()) };
+        let epoch_rank = match metadata.1.as_str() { "birth" => 0u8, "dissolve" => 1, "tick" => 2, "duration" => 3, _ => return Err("invalid constructor predicate epoch".into()) };
+        let order = (position(&key.0)?, key.1, kind_rank, epoch_rank, metadata.2, position(&key.2)?);
+        if previous.is_some_and(|p| p >= order) { return Err("constructor predicate entries must be in canonical order".into()); }
+        previous = Some(order);
+        if expected.get(&key) != Some(&metadata) || !actual.insert(key) {
+            return Err("constructor predicate entry must preserve its exact constructor, body, kind, epoch, clause and repetition".into());
+        }
+    }
+    if actual != expected.keys().cloned().collect() {
+        return Err("constructor predicate entries do not equal the represented constructors' source predicates".into());
+    }
+    Ok(())
+}
+
+
+fn failure_handlers_absent(v: &Value) -> bool {
+    let a = &v["relations"]["failure_sources"];
+    v["schema"] == "1.38" && a["handlers"].as_array().is_some_and(Vec::is_empty)
+        && a["foreign_handlers"].as_u64() == Some(0)
+}
+
+fn source_invocation_context_covered(v: &Value, function: &str) -> bool {
+    v["unknowns"].as_array().into_iter().flatten().any(|u| u["fn"] == function
+        && u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_initialization"
+            || (failure_handlers_absent(v) && r == "unmodeled_lifecycle_context")))
+}
+
+fn validate_failure_source_account(v: &Value) -> Result<(), String> {
+    let account = v["relations"].get("failure_sources");
+    let native_rows: Vec<_> = v["unknowns"].as_array().into_iter().flatten().filter(|u|
+        u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_failure_context")).collect();
+    if v["schema"] != "1.38" {
+        if account.is_some() || !native_rows.is_empty() {
+            return Err("source failure accounts require topology schema 1.38".into());
+        }
+        return Ok(());
+    }
+    let account = account.ok_or("schema 1.38 requires an explicit source failure account (null when unavailable)")?;
+    if account.is_null() {
+        if !native_rows.is_empty() { return Err("native failure cost coverage needs a complete empty source handler inventory".into()); }
+        return Ok(());
+    }
+    only_keys(account, "relations.failure_sources", &["handlers", "foreign_handlers", "may_fail"], &[])?;
+    let universe = v["law"]["fn_universe"].as_array().unwrap();
+    let names = |key: &str| -> Result<Vec<String>, String> {
+        let mut previous = None;
+        account[key].as_array().ok_or("failure source members must be arrays")?.iter().map(|value| {
+            let name = value.as_str().ok_or("failure source members must be function names")?;
+            let position = universe.iter().position(|f| f["display"] == name).ok_or("failure source names no source function")?;
+            if previous.is_some_and(|p| p >= position) { return Err("failure source members must be canonically sorted and unique".into()); }
+            previous = Some(position);
+            Ok(name.to_string())
+        }).collect()
+    };
+    let handlers = names("handlers")?;
+    let may_fail = names("may_fail")?;
+    account["foreign_handlers"].as_u64().filter(|n| *n <= u32::MAX as u64).ok_or("foreign handler count must be a finite u32")?;
+    let expected: Vec<_> = universe.iter().filter(|f| f["kind"] == "failure").map(|f| f["display"].as_str().unwrap().to_string()).collect();
+    if handlers != expected { return Err("complete source failure inventory must retain every declared handler".into()); }
+    if universe.iter().filter(|f| matches!(f["kind"].as_str(), Some("birth_check" | "closure_assertion")))
+        .any(|f| !may_fail.iter().any(|name| f["display"] == *name)) {
+        return Err("complete source failure inventory must retain every conditional source root".into());
+    }
+    if !failure_handlers_absent(v) && !native_rows.is_empty() {
+        return Err("native failure cost coverage needs a complete empty source handler inventory".into());
+    }
+    for row in &native_rows {
+        if !may_fail.iter().any(|name| row["fn"] == *name) { return Err("native failure cost coverage must anchor a represented possible failure".into()); }
+    }
+    if failure_handlers_absent(v) && may_fail.iter().any(|name| !native_rows.iter().any(|row| row["fn"] == *name)) {
+        return Err("every possible source failure must retain native failure cost coverage".into());
+    }
     Ok(())
 }

@@ -212,6 +212,35 @@ pub enum Owner {
     Placement(String),
 }
 
+/// The construction context that overrides the enclosing method's supervisor.
+/// This selects a pointer source, not a runtime instance or an allocation owner.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum SupervisionOverride {
+    FieldHolder,
+    ParamsInitializer,
+    Enclosing,
+}
+
+impl Owner {
+    /// Runtime-context selection for an instantiation. `Some(None)` is a
+    /// holder without an authored literal (for example a synthesized prelude),
+    /// distinct from no holder. Lowering supplies context availability; it
+    /// does not infer supervision from allocation ownership alone.
+    pub fn supervision_override(
+        &self,
+        holder: Option<Option<ExprId>>,
+        params_initializer: bool,
+    ) -> SupervisionOverride {
+        match (self, holder) {
+            (Owner::Field { owner, .. }, Some(Some(literal))) if *owner == literal => SupervisionOverride::FieldHolder,
+            (Owner::Placement(_), Some(_)) => SupervisionOverride::FieldHolder,
+            (Owner::Field { owner, .. }, None) if *owner == ExprId::DECLARED && params_initializer => SupervisionOverride::ParamsInitializer,
+            (Owner::Placement(_), None) if params_initializer => SupervisionOverride::ParamsInitializer,
+            _ => SupervisionOverride::Enclosing,
+        }
+    }
+}
+
 /// The finer question a FACTORY CALL site can answer on both sides.
 /// The flags there decide one bit — "does this frame register a GH
 /// #402 / #793 temporary for the value" — and, when it does, at what
@@ -1762,14 +1791,16 @@ pub fn resolve_owners(
     // locus-typed field from a record-typed one, so it runs second.
     let mut locus_fields: BTreeMap<String, BTreeMap<String, FieldKind>> =
         BTreeMap::new();
+    let declared = crate::handler_routing::DeclaredNames::of(&[program]);
     refine_field_kinds(
         &program.items,
+        &declared,
         &loci,
         &provisional,
         import_renames,
         &mut locus_fields,
     );
-    let mut accepts = collect_accepts(program, import_renames);
+    let mut accepts = collect_accepts(program, &declared, import_renames);
     for (owner, children) in admitted {
         accepts.entry(owner.clone()).or_default().extend(children.iter().cloned());
     }
@@ -1866,6 +1897,7 @@ fn collect_loci(
 
 fn refine_field_kinds(
     items: &[TopDecl],
+    declared: &crate::handler_routing::DeclaredNames,
     loci: &BTreeSet<String>,
     provisional: &BTreeMap<String, BTreeMap<String, FieldKind>>,
     renames: &[(Vec<String>, String)],
@@ -1875,6 +1907,7 @@ fn refine_field_kinds(
     #[allow(clippy::too_many_arguments)]
     fn go(
         items: &[TopDecl],
+        declared: &crate::handler_routing::DeclaredNames,
         loci: &BTreeSet<String>,
         ifaces: &BTreeSet<String>,
         provisional: &BTreeMap<String, BTreeMap<String, FieldKind>>,
@@ -1902,7 +1935,7 @@ fn refine_field_kinds(
                                 let kind = if generic {
                                     FieldKind::Holder
                                 } else {
-                                    param_field_kind(pd.ty.as_ref(), &pd.init, loci, ifaces, renames)
+                                    param_field_kind(pd.ty.as_ref(), &pd.init, declared, loci, ifaces, renames)
                                 };
                                 fs.insert(pd.name.name.clone(), kind);
                             }
@@ -1911,13 +1944,13 @@ fn refine_field_kinds(
                     out.insert(l.name.name.clone(), fs);
                 }
                 TopDecl::Module(m) => {
-                    go(&m.items, loci, ifaces, provisional, renames, out)
+                    go(&m.items, declared, loci, ifaces, provisional, renames, out)
                 }
                 _ => {}
             }
         }
     }
-    go(items, loci, &ifaces, provisional, renames, out);
+    go(items, declared, loci, &ifaces, provisional, renames, out);
 }
 
 /// locus -> the child locus type its `accept(c: C)` declares, named by
@@ -1928,11 +1961,11 @@ fn refine_field_kinds(
 /// locus makes no entry.
 fn collect_accepts(
     program: &Program,
+    declared: &crate::handler_routing::DeclaredNames,
     renames: &[(Vec<String>, String)],
 ) -> BTreeMap<String, BTreeSet<String>> {
-    use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
+    use crate::handler_routing::{child_locus_name, ChildRef};
     use hale_syntax::ast::LifecycleKind;
-    let declared = DeclaredNames::of(&[program]);
     let mut out = BTreeMap::new();
     for item in hale_syntax::ast::flat_decls(&program.items) {
         let TopDecl::Locus(l) = item else { continue };
@@ -1942,7 +1975,7 @@ fn collect_accepts(
                 continue;
             }
             let Some(p) = lc.params.first() else { continue };
-            if let ChildRef::Locus(name) = child_locus_name(&p.ty, &declared, renames) {
+            if let ChildRef::Locus(name) = child_locus_name(&p.ty, declared, renames) {
                 out.entry(l.name.name.clone()).or_insert_with(BTreeSet::new).insert(name);
             }
         }
@@ -1973,50 +2006,37 @@ fn interface_names(items: &[TopDecl]) -> BTreeSet<String> {
 fn param_field_kind(
     ty: Option<&TypeExpr>,
     init: &ParamInit,
+    declared: &crate::handler_routing::DeclaredNames,
     loci: &BTreeSet<String>,
     ifaces: &BTreeSet<String>,
     renames: &[(Vec<String>, String)],
 ) -> FieldKind {
-    let names = |path: &QualifiedName| -> Vec<String> {
-        let mut v = Vec::new();
-        let segs = qname_segs(path);
-        if let Some(n) = resolve_path(&segs, renames) {
-            v.push(n);
-        }
-        if let Some(last) = path.segments.last() {
-            v.push(last.name.clone());
-        }
-        v.push(qname_joined(path));
-        v
-    };
     // GH #1566 follow-up: an array or tuple of a locus type holds its
     // elements as the owner's children, as a locus-typed field holds
     // its one (an element of an interface or a perspective type has no
     // recorded teardown of its own, and stays a value)
-    fn of_loci(t: &TypeExpr, is_locus: &dyn Fn(&QualifiedName) -> bool) -> bool {
+    fn of_loci(t: &TypeExpr, is_locus: &dyn Fn(&TypeExpr) -> bool) -> bool {
         match t {
-            TypeExpr::Named { path, generic_args, .. } => generic_args.is_empty() && is_locus(path),
+            TypeExpr::Named { .. } => is_locus(t),
             TypeExpr::Array { elem, .. } => of_loci(elem, is_locus),
             // GH #1569: a tuple with a locus part holds it, beside parts
             // of other types (`(W, Int)`)
-            TypeExpr::Tuple(ts, _) => ts.iter().any(|t| matches!(t, TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() && is_locus(path))),
+            TypeExpr::Tuple(ts, _) => ts.iter().any(|t| matches!(t, TypeExpr::Named { .. }) && is_locus(t)),
             _ => false,
         }
     }
-    let is_locus = |path: &QualifiedName| names(path).iter().any(|n| loci.contains(n));
+    let is_locus = |ty: &TypeExpr| crate::handler_routing::resolve_named_type(ty, declared, renames)
+        .is_some_and(|(_, declaration)| loci.contains(&declaration));
     if let Some(t) = ty {
         return match t {
             TypeExpr::Array { .. } | TypeExpr::Tuple(..) if of_loci(t, &is_locus) => FieldKind::Holder,
             TypeExpr::Perspective { .. } => FieldKind::Holder,
-            TypeExpr::Named { path, .. } => {
-                // `std::http::RouteHandler` is declared as
-                // `__StdHttpRouteHandler`, so the bare last segment
-                // finds neither the locus nor the interface — the
-                // stdlib's own field initialisers looked like plain
-                // values until this resolved the path.
-                if names(path)
-                    .iter()
-                    .any(|n| loci.contains(n) || ifaces.contains(n))
+            TypeExpr::Named { .. } => {
+                // Field ownership uses the same nominal alias/import/generic
+                // resolver as handler routing. The written alias is not the
+                // declaration whose instances a field holds.
+                if crate::handler_routing::resolve_named_type(t, declared, renames)
+                    .is_some_and(|(_, declaration)| loci.contains(&declaration) || ifaces.contains(&declaration))
                 {
                     FieldKind::Holder
                 } else {
@@ -2026,10 +2046,14 @@ fn param_field_kind(
             _ => FieldKind::Value,
         };
     }
-    // An inferred param: the initialiser's shape decides.
+    // An inferred param: the initialiser's shape decides, through the
+    // same nominal resolver used for a written type.
+    let literal_locus = |path: &QualifiedName| is_locus(&TypeExpr::Named {
+        path: path.clone(), generic_args: Vec::new(), span: path.span,
+    });
     match init {
         ParamInit::Value(Expr::Struct { path, .. }) => {
-            if names(path).iter().any(|n| loci.contains(n)) {
+            if literal_locus(path) {
                 FieldKind::Holder
             } else {
                 FieldKind::Value
@@ -2039,11 +2063,11 @@ fn param_field_kind(
         // declared one (codegen's `default_literal_type`)
         ParamInit::Value(Expr::Array(parts, _))
             if !parts.is_empty()
-                && parts.iter().all(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) =>
+                && parts.iter().all(|p| matches!(p, Expr::Struct { path, .. } if literal_locus(path))) =>
         {
             FieldKind::Holder
         }
-        ParamInit::Value(Expr::Tuple(parts, _)) if parts.iter().any(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) => {
+        ParamInit::Value(Expr::Tuple(parts, _)) if parts.iter().any(|p| matches!(p, Expr::Struct { path, .. } if literal_locus(path))) => {
             FieldKind::Holder
         }
         _ => FieldKind::Value,
@@ -2081,14 +2105,6 @@ fn resolve_path(
 
 fn qname_segs(q: &QualifiedName) -> Vec<String> {
     q.segments.iter().map(|s| s.name.clone()).collect()
-}
-
-fn qname_joined(q: &QualifiedName) -> String {
-    q.segments
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect::<Vec<_>>()
-        .join("::")
 }
 
 // -------------------------------------------------------------------

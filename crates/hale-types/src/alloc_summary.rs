@@ -20,7 +20,7 @@
 //! - **loops** — `for`-range (bounded if the range is a const literal),
 //!   `for`-iter (runtime collection), `while`, `while true`;
 //! - **entry classification** — `run()` / lifecycle hooks / `main` are
-//!   one-shot; bus handlers are per-message (unbounded).
+//!   one-shot; bus and failure handlers may fire repeatedly (unbounded).
 //!
 //! The escape tagging is intentionally a first approximation: it catches
 //! allocations *syntactically* in an escape position and the common
@@ -96,6 +96,16 @@ impl FnKey {
     /// The row of the member of `locus` declared at `decl`.
     pub fn method(decl: Option<DeclId>, locus: impl Into<String>, name: impl Into<String>) -> Self {
         Self { locus: Some(locus.into()), fn_name: name.into(), decl }
+    }
+    /// An executable failure handler, never entered in the callable-name map.
+    /// Minted declarations join by `decl`; the signature only distinguishes
+    /// unminted handlers and labels diagnostics.
+    pub(crate) fn failure_handler(decl: Option<DeclId>, locus: impl Into<String>, params: &[Param]) -> Self {
+        let signature = params.iter().map(|p| match &p.ty {
+            TypeExpr::Named { path, .. } => path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+            _ => "?".to_string(),
+        }).collect::<Vec<_>>().join(",");
+        Self::method(decl, locus, format!("on_failure({signature})"))
     }
     pub fn display(&self) -> String {
         match &self.locus {
@@ -738,6 +748,12 @@ pub enum Callee {
 /// One call edge out of a body.
 #[derive(Debug, Clone)]
 pub struct CallEdge {
+    /// The actual authored invocation. Synthesized callback work has none;
+    /// its operands cannot be borrowed from the triggering source call.
+    pub authored: Option<hale_graph::ids::SiteId>,
+    /// This intrinsic checkpoint needs an implicit-self context supplied by
+    /// a caller. The source declaration cannot classify its execution.
+    pub closure_context_unknown: bool,
     /// GH #1490 (step 4): what each argument may carry of the caller's
     /// `self` and parameters ([`Taint`]).
     pub(crate) arg_taints: Vec<Taint>,
@@ -876,15 +892,22 @@ pub struct CallEdge {
 }
 
 impl CallEdge {
+    /// Named invocations carry declaration defaults; function values and
+    /// interface dispatch do not carry an argument-default signature.
+    pub fn evaluates_argument_defaults(&self) -> bool {
+        self.authored.is_some() && !self.indirect && self.via_local.is_none()
+            && self.via_value.is_none() && self.via_interface.is_none()
+    }
+
     /// The shared fail-closed test for an `Unresolved` method call —
     /// the #382 backstop, in one place for all five walkers. True when
-    /// the receiver was written but could not be typed (an index
-    /// result, a match value, a foreign expression: the callee is a
+    /// the receiver has no resolved concrete type (an index result,
+    /// a match value, a foreign expression or a scoped type parameter:
+    /// the callee is a
     /// method of SOME bundle locus reached through an expression the
-    /// walk cannot see through, possibly a wrapper). Every judgment
-    /// that traverses calls refuses such an edge — unknown ⇒
-    /// violation — so fn-level certificates and bundle-level claims
-    /// agree.
+    /// walk cannot see through, possibly a wrapper). Call-graph
+    /// consumers retain this dispatch uncertainty; each certificate or
+    /// judgment supplies its typed verdict.
     ///
     /// Deliberately NOT included: an unresolved dispatch through an
     /// uninhabited interface (`via_interface` on an `Unresolved`
@@ -940,12 +963,13 @@ pub struct LoopInfo {
 }
 
 /// How a body is reached. One-shot entries run once per locus instance;
-/// `BusHandler` fires per message (unbounded). Non-entry fns carry `None`.
+/// Bus and failure handlers can fire repeatedly (unbounded). Non-entry fns carry `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     Main,
     Run,
     BusHandler,
+    FailureHandler,
     Birth,
     Accept,
     Release,
@@ -955,13 +979,14 @@ pub enum EntryKind {
 
 impl EntryKind {
     fn one_shot(&self) -> bool {
-        !matches!(self, EntryKind::BusHandler)
+        !matches!(self, EntryKind::BusHandler | EntryKind::FailureHandler)
     }
     fn label(&self) -> &'static str {
         match self {
             EntryKind::Main => "main",
             EntryKind::Run => "run",
             EntryKind::BusHandler => "bus-handler",
+            EntryKind::FailureHandler => "failure-handler",
             EntryKind::Birth => "birth",
             EntryKind::Accept => "accept",
             EntryKind::Release => "release",
@@ -974,10 +999,38 @@ impl EntryKind {
 /// The per-fn summary.
 #[derive(Debug, Clone)]
 pub struct FnSummary {
+    /// Primitive state actions from the existing body walk, plus contextual
+    /// parent tracking supplied by the shared execution inventory.
+    pub purity_sites: Vec<crate::purity::PuritySite>,
+    /// Source calls to declared scalar conversions, excluding generic,
+    /// local-value and caller-rebound default contexts. Operands are walked.
+    pub value_conversions: BTreeSet<SiteId>,
     pub key: FnKey,
+    /// The existing conservative frame charge, accumulated by the body walk
+    /// so nested expression blocks and initializer locals are not omitted.
+    pub stack_bytes: u64,
     pub entry: Option<EntryKind>,
     pub sites: Vec<AllocSite>,
     pub calls: Vec<CallEdge>,
+    /// Constructor invocations, including the fields supplied at this
+    /// particular site. Omitted defaults execute; overridden defaults do not.
+    pub constructions: Vec<ConstructionSite>,
+    /// Evaluation of omitted constructor and argument defaults. These are execution edges,
+    /// distinct from authored function calls and their ordinals.
+    pub initializations: Vec<InitializationEdge>,
+    /// Evaluations performed by a closure epoch, distinct from authored calls.
+    pub closure_evaluations: Vec<ClosureEvaluationEdge>,
+    /// Constructor entry into a known lifecycle body. Its frame/domain/lifetime
+    /// context is separate from authored calls and remains coverage-sensitive.
+    pub lifecycle_evaluations: Vec<LifecycleEvaluationEdge>,
+    /// Possible birth predicates and automatic assertion operands of a real
+    /// construction. Runtime opportunity and quantitative context stay separate.
+    pub constructor_checks: Vec<ConstructorCheckEdge>,
+    /// Contextual parent work. Inline defaults attach to their triggering root.
+    pub protocol_evaluations: Vec<crate::protocol_execution::ProtocolEvaluation>,
+    /// Statically known implicit-self declaration for this body. Defaults
+    /// evaluate in their caller context and deliberately carry no owner here.
+    pub closure_owner: Option<DeclId>,
     pub loops: Vec<LoopInfo>,
     /// GH #265: non-call effect sites in this fn's own body — effects
     /// carried by SYNTAX rather than by a stdlib call, so a leaf
@@ -1020,6 +1073,124 @@ pub struct FnSummary {
     pub frame: Option<Frame>,
 }
 
+/// A source constructor, resolved in the body's own declaration universe.
+/// A missing target is unresolved, never a declaration inferred from a span.
+#[derive(Debug, Clone)]
+pub struct ConstructionSite {
+    pub site: Option<SiteId>,
+    pub target: Option<DeclId>,
+    /// Resolved locus owner, including name-only analysis inputs. Canonical
+    /// execution and lowering still require its real declaration identity.
+    pub lifecycle_owner: Option<crate::lifecycle_hooks::LifecycleOwner>,
+    pub supplied: BTreeSet<String>,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
+/// A constructor's evaluation of one omitted member default, in declaration order.
+#[derive(Debug, Clone)]
+pub struct InitializationEdge {
+    pub target: FnKey,
+    pub initializer: InitializerKey,
+    /// Actual constructor or call identity, selected by the default kind.
+    pub invocation: Option<SiteId>,
+    pub ordinal: u32,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
+/// A closure assertion's source identity, owner and runtime epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureKey {
+    pub owner: crate::lifecycle_hooks::LifecycleOwner,
+    pub name: String,
+    pub epoch: hale_model::ClosureEpoch,
+    pub ordinal: u32,
+    pub span: Span,
+}
+
+/// One executable birth-check clause, identified independently of its locus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BirthCheckKey {
+    pub owner: crate::lifecycle_hooks::LifecycleOwner,
+    pub closure: String,
+    pub ordinal: u32,
+    pub span: Span,
+}
+
+/// A real executable declaration's membership in a named source phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePhase {
+    /// The locus that owns this body, in its original identity universe.
+    pub owner: crate::lifecycle_hooks::LifecycleOwner,
+    /// Hook, mode, method or automatic epoch name.
+    pub phase: String,
+    /// Substrate-driven bodies (hooks, modes, failure handlers and automatic
+    /// assertions); ordinary methods retain their source-slice classification.
+    pub hook: bool,
+    /// The actual declaration's source location.
+    pub span: Span,
+}
+
+/// One explicit checkpoint evaluates each matching assertion in declaration order.
+#[derive(Debug, Clone)]
+pub struct ClosureEvaluationEdge {
+    pub target: FnKey,
+    pub invocation: Option<SiteId>,
+    pub ordinal: u32,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
+/// A constructor can enter a real self lifecycle body without an authored call.
+#[derive(Debug, Clone)]
+pub struct LifecycleEvaluationEdge {
+    pub target: FnKey,
+    pub stage: hale_model::LifecycleStage,
+    pub invocation: Option<SiteId>,
+    pub ordinal: u32,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
+/// A possible predicate evaluation bound to its original constructor.
+#[derive(Debug, Clone)]
+pub struct ConstructorCheckEdge {
+    pub target: FnKey,
+    pub kind: hale_model::ConstructorCheck,
+    pub invocation: Option<SiteId>,
+    pub constructor: u32,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
+/// A read-only execution view for consumers which need no origin-specific metadata.
+#[derive(Clone, Copy, Debug)]
+pub struct BodyEvaluation<'a> {
+    pub target: &'a FnKey,
+    pub span: Span,
+    pub loop_depth: u32,
+    pub in_unbounded_loop: bool,
+}
+
+/// A declared default body, distinct from every callable function.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InitializerKey {
+    pub owner: DeclId,
+    pub kind: InitializerKind,
+    pub field: String,
+    pub ordinal: u32,
+}
+
+/// Which declaration owns the default. This is a typed source fact, not a
+/// classification recovered from an executable body's display spelling.
+pub use hale_model::InitializerKind;
+
 /// What a free fn's body allocates into (E3b): the scratch-local
 /// classification lowering reads (`crate::alloc_routing`'s
 /// `scratch_local` row, the same producer over the declarations the
@@ -1039,6 +1210,46 @@ pub enum Frame {
 }
 
 impl FnSummary {
+    /// A checkpoint whose implicit self is supplied by an unevaluated caller
+    /// context. Its behavior cannot be classified from this declaration alone.
+    pub fn has_unknown_closure_context(&self) -> bool {
+        self.calls.iter().any(|call| call.closure_context_unknown)
+    }
+    /// Non-call execution bodies, retaining the source site's repetition facts.
+    pub fn body_evaluations(&self) -> impl Iterator<Item = BodyEvaluation<'_>> {
+        self.initializations.iter().map(|edge| BodyEvaluation { target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop })
+            .chain(self.closure_evaluations.iter().map(|edge| BodyEvaluation { target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop }))
+    }
+    /// Execution bodies an effect/reachability walk may enter. Lifecycle
+    /// entries are not assumed to use the caller's native stack or lifetime.
+    pub fn effect_evaluations(&self) -> impl Iterator<Item = BodyEvaluation<'_>> {
+        self.body_evaluations().chain(self.lifecycle_evaluations.iter().map(|edge| BodyEvaluation {
+            target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop,
+        })).chain(self.constructor_checks.iter().map(|edge| BodyEvaluation {
+            target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop,
+        })).chain(self.protocol_evaluations.iter().map(|edge| BodyEvaluation {
+            target: &edge.target, span: edge.span, loop_depth: edge.loop_depth, in_unbounded_loop: edge.in_unbounded_loop,
+        }))
+    }
+    /// Edges with an established caller frame, used for native-stack cycles.
+    pub fn frame_targets(&self) -> impl Iterator<Item = (&FnKey, Span)> {
+        self.calls.iter().filter_map(|edge| match &edge.callee {
+            Callee::Resolved(target) => Some((target, edge.span)), Callee::Unresolved(_) => None,
+        }).chain(self.body_evaluations().map(|edge| (edge.target, edge.span)))
+    }
+    /// Resolved execution successors, keeping constructor evaluations out of
+    /// the authored call inventory and its operand-binding namespace.
+    pub fn execution_targets(&self) -> impl Iterator<Item = (&FnKey, Span)> {
+        self.execution_edges().map(|(target, span, _, _)| (target, span))
+    }
+    /// Resolved executable successors with the source site's repetition facts.
+    /// Initializer and call bodies share traversal, never ordinal allocation.
+    pub fn execution_edges(&self) -> impl Iterator<Item = (&FnKey, Span, u32, bool)> {
+        self.calls.iter().filter_map(|edge| match &edge.callee {
+            Callee::Resolved(target) => Some((target, edge.span, edge.loop_depth, edge.in_unbounded_loop)),
+            Callee::Unresolved(_) => None,
+        }).chain(self.effect_evaluations().map(|edge| (edge.target, edge.span, edge.loop_depth, edge.in_unbounded_loop)))
+    }
     /// The fn frees the allocations its body keeps at its return: a
     /// scratch-local free fn that is not recursive. Its `Local` sites
     /// reclaim at [`ReclaimScope::FnReturn`], and it is a frame with a
@@ -1085,6 +1296,29 @@ pub enum EffectSiteKind {
     /// A locus instantiation (`Child { ... }`) — an arena creation
     /// plus, depending on placement, a thread spawn or a pool post.
     Spawn(String),
+    /// A recovery operation whose implicit lifecycle work is not modeled.
+    Recovery(RecoveryOp),
+    /// Construction may enter a birth-check clause; scheduling and
+    /// lifetime context are not yet an executable invocation relation.
+    BirthCheckInvocation { constructor: u32, target: FnKey },
+    /// The body is known; scheduling/admission, frame, retention and generated
+    /// wrapper work are not closed by the source entry edge alone.
+    LifecycleInvocation { constructor: u32, target: FnKey, stage: hale_model::LifecycleStage },
+    /// Parent protocol work at a source construction or inline-default root.
+    ProtocolInvocation {
+        target: Option<FnKey>,
+        stage: Option<crate::protocol_execution::ProtocolStage>,
+        reason: crate::protocol_execution::ProtocolGap,
+    },
+    /// Construction can enter this automatic epoch. The assertion body is
+    /// known, but its scheduling, retained lifetime and failure context are
+    /// not yet represented as an executable edge. This is coverage, not a
+    /// direct effect or an ordinary call (in particular, not a stack charge).
+    AutomaticClosure {
+        constructor: u32,
+        target: FnKey,
+        epoch: hale_model::ClosureEpoch,
+    },
 }
 
 /// A distilled view of a locus's storage shape (GH #18 item 1, Phase D —
@@ -1098,16 +1332,55 @@ pub enum EffectSiteKind {
 ///   `@form(hashmap)` grow.
 ///
 /// D1 only *captures* this — no verdict reads it yet (that's D2).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LocusShape {
     pub name: String,
     pub capacity_slots: Vec<SlotShape>,
     pub form: Option<FormShape>,
-    /// `: projection recognition(cap = N, …)` — a hard static cap on
-    /// *child-entity* count (fed by `accept`). Recorded for completeness;
-    /// the value-allocation proof reads the capacity-data slots, not this
-    /// (entity-count bounding is a separate analysis).
-    pub recognition_cap: Option<u64>,
+    /// Effective storage projection, including recognition cap and mode.
+    /// This is the same row lowering reads. Child population and retained
+    /// bytes require separate lifetime and instance accounting.
+    pub projection: StorageProjectionRow,
+}
+
+/// Effective storage facts extracted with a declaration's shape. The
+/// model and lowering share these values instead of reading annotations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StorageProjectionRow {
+    /// Explicit projection or the effective rich/chunked default.
+    pub class: ProjectionClass,
+    /// Presence of the declaration's accept hook.
+    pub accepts_children: bool,
+}
+impl Default for StorageProjectionRow {
+    fn default() -> Self {
+        Self {
+            class: ProjectionClass::Rich,
+            accepts_children: false,
+        }
+    }
+}
+
+impl Default for LocusShape {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            capacity_slots: Vec::new(),
+            form: None,
+            projection: StorageProjectionRow::default(),
+        }
+    }
+}
+
+impl LocusShape {
+    /// Declared recognition capacity, independent of allocator support.
+    /// A cap by itself is not a retained-child or byte bound.
+    pub fn recognition_cap(&self) -> Option<u64> {
+        match self.projection.class {
+            ProjectionClass::Recognition(Some(params)) => Some(params.cap),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1125,9 +1398,49 @@ pub struct FormShape {
     pub cap: Option<i64>,
 }
 
+/// All failure-handler headers, before executable reachability projection.
+/// Complete means the bundled source store was supplied alongside every seed.
+#[derive(Debug, Clone, Default)]
+pub struct FailureHandlerCensus {
+    pub complete: bool,
+    pub declarations: Vec<FnKey>,
+}
+impl FailureHandlerCensus {
+    /// Absence is independent of receiver identity only when there are no
+    /// source handlers anywhere in the complete declaration inventory.
+    pub fn is_empty_closed(&self) -> bool { self.complete && self.declarations.is_empty() }
+}
+
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
+    /// Missing is unavailable, never an empty source callback inventory.
+    pub failure_handlers: Option<FailureHandlerCensus>,
+    /// Source phase membership, produced with the declaration inventory.
+    /// Automatic assertion epochs are phase roots even without an authored
+    /// hook. Invocation and scheduling remain separate execution facts.
+    pub source_phases: BTreeMap<FnKey, SourcePhase>,
+    /// Self lifecycle declaration metadata, including empty/synthesized and
+    /// shadowed bundled declarations needed by the merged lowering view.
+    /// This inventory does not restore shadowed executable summary rows.
+    pub lifecycle_hooks: crate::lifecycle_hooks::LifecycleHooks,
+    /// Parent admission/release declaration metadata, with the same source
+    /// universes and shadowing boundary as `lifecycle_hooks`.
+    pub protocol_hooks: crate::protocol_execution::ProtocolHooks,
+    /// The contextual source family supplied its account. This marks the
+    /// required input as available, not complete admission/runtime coverage.
+    pub parent_execution_supplied: bool,
+    /// Source constructor defaults represented as executable bodies. Their
+    /// keys are parameter or field declaration sites, never callable-name entries.
+    pub initializers: BTreeMap<FnKey, InitializerKey>,
+    /// Closure assertion bodies, keyed by their actual declaration sites.
+    pub closure_assertions: BTreeMap<FnKey, ClosureKey>,
+    /// Birth-time predicates, with real clause identities and declaration order.
+    pub birth_checks: BTreeMap<FnKey, BirthCheckKey>,
+    /// One cached reverse witness forest for explicit violations and
+    /// conditional assertion failures. None is unavailable; Some(empty)
+    /// reports no represented source. It is not runtime admission.
+    pub structural_failures: Option<BTreeMap<FnKey, StructuralFailureStep>>,
     /// iris handoff P2.2: loci only ever instantiated eagerly.
     pub eager_only_loci: BTreeSet<String>,
     /// Flow loci: the types some `release(c: T)` clause names, the
@@ -1232,9 +1545,9 @@ pub struct AllocSummary {
     pub appended_runtime_loci: BTreeSet<String>,
     /// The appended runtime's interfaces, likewise.
     pub appended_runtime_interfaces: BTreeSet<String>,
-    /// The program's bodies that are no fn's row, each summarized as a
-    /// member of its declaration ([`DeclarationBody`]). No judgment reads
-    /// them; the declaration dependents relation reads their call edges.
+    /// Bodies outside callable functions, summarized once as declaration
+    /// members. The dependency relation reads program bodies; structural
+    /// failure coverage also reads omitted locus defaults in either universe.
     pub declaration_bodies: Vec<DeclarationBody>,
     /// The scratch-local free fns (GH #1148, `alloc_routing`'s
     /// classifier), by name: classified once, here, over the
@@ -1247,26 +1560,30 @@ pub struct AllocSummary {
 }
 
 /// A body of the program the reveal rule reads (`secret_reveal`) that is
-/// no fn's row: an `on_failure` handler, a params block's initializers, a
+/// no fn's row: a params block's initializers, a
 /// constant's value, a `birth_check`, a perspective's members, a
 /// synthesized hook, each wherever it is declared (a `module { }`'s
 /// included), and every subexpression a walk does not descend into (a
 /// callee that is no name). Each is walked as a row is, and kept
-/// beside the rows rather than among them, so the judgments over the rows
-/// see what they saw; the declaration dependents relation
+/// beside callable rows. Parameter defaults also supply the source execution
+/// graph's initializer nodes; the declaration dependents relation
 /// (`hale_frontend::dependents`) reads its call edges as the declaration's
 /// own (F.40 phase 3, X2), so a helper the body calls has the declaration
 /// for a reader.
 #[derive(Debug, Clone)]
 pub struct DeclarationBody {
     /// The declaration the body is a member of, by its site: the locus
-    /// for its `on_failure` or params, the perspective for its fn, the
+    /// for its params, the perspective for its fn, the
     /// declaration of the body a subexpression sits in.
     pub declaration: SiteId,
-    /// What the body is (`on_failure`, `params`, `const`, `birth_check`,
+    /// What the body is (`params`, `const`, `birth_check`,
     /// `stable_when`, `fn` (a perspective's), `lifecycle` (a synthesized
     /// hook), `subexpression`).
     pub position: &'static str,
+    /// The source store that minted `declaration`; stdlib site numbers are
+    /// independent of program site numbers.
+    pub universe: SiteUniverse,
+    pub initializer: Option<InitializerKey>,
     pub summary: FnSummary,
 }
 
@@ -1410,6 +1727,9 @@ impl AllocSummary {
         let mut value_order: Vec<u32> = Vec::new();
         let mut emitted: BTreeSet<u32> = BTreeSet::new();
         let mut fns: BTreeMap<FnKey, FnSummary> = BTreeMap::new();
+        let excluded_default_owners: BTreeSet<DeclId> = if runtime_own { BTreeSet::new() } else {
+            self.initializers.iter().filter(|(key, _)| !is_own(key)).map(|(_, default)| default.owner).collect()
+        };
         for f in self.fns.values().filter(|f| is_own(&f.key)) {
             let mut calls: Vec<CallEdge> = Vec::with_capacity(f.calls.len());
             for c in &f.calls {
@@ -1465,7 +1785,39 @@ impl AllocSummary {
                 }
                 calls.push(e);
             }
-            fns.insert(f.key.clone(), FnSummary { calls, ..f.clone() });
+            let mut projected = FnSummary { calls, ..f.clone() };
+            if !runtime_own {
+                // This view is the program alone. Source-only constructor
+                // bindings into the copy disappear with that source horizon,
+                // just as resolved foreign calls collapse above. The model's
+                // program_rows view retains them for its explicit absorption
+                // and invocation-context accounts.
+                let outside = |owner: DeclId| owner.universe == SiteUniverse::StdlibAnalysis
+                    || excluded_default_owners.contains(&owner);
+                let mut foreign_births = Vec::new();
+                for construction in &mut projected.constructions {
+                    if construction.target.is_some_and(outside) { construction.target = None; }
+                    if construction.lifecycle_owner.as_ref().is_some_and(|owner|
+                        owner.universe == SiteUniverse::StdlibAnalysis || !self.own_locus_of(&owner.name, false)) {
+                        foreign_births.push(construction.span);
+                        construction.lifecycle_owner = None;
+                    }
+                }
+                projected.initializations.retain(|edge| is_own(&edge.target));
+                projected.closure_evaluations.retain(|edge| is_own(&edge.target));
+                projected.lifecycle_evaluations.retain(|edge| is_own(&edge.target));
+                projected.constructor_checks.retain(|edge| is_own(&edge.target));
+                projected.protocol_evaluations.retain(|edge| is_own(&edge.target) && is_own(&edge.constructor_function));
+                projected.effect_sites.retain(|site| match &site.kind {
+                    EffectSiteKind::Spawn(_) if foreign_births.contains(&site.span) => false,
+                    EffectSiteKind::ProtocolInvocation { target: Some(target), .. } => is_own(target),
+                    EffectSiteKind::LifecycleInvocation { target, .. }
+                    | EffectSiteKind::BirthCheckInvocation { target, .. }
+                    | EffectSiteKind::AutomaticClosure { target, .. } => is_own(target),
+                    _ => true,
+                });
+            }
+            fns.insert(f.key.clone(), projected);
         }
         // The program alone numbers its function-value dispatches after
         // all of its interface dispatches, each in the fns' order.
@@ -1486,12 +1838,29 @@ impl AllocSummary {
                 self.fns.values().filter(|f| self.appended_runtime.contains(&f.key)).map(|f| f.decl_index).collect();
             gone.sort_unstable();
             for f in fns.values_mut() {
-                f.decl_index -= gone.partition_point(|g| *g < f.decl_index);
+                // Declaration-only bodies have no ordinary body-order slot.
+                // Preserve that sentinel when closing up the source order.
+                if f.decl_index != usize::MAX {
+                    f.decl_index -= gone.partition_point(|g| *g < f.decl_index);
+                }
             }
         }
         let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
+            failure_handlers: self.failure_handlers.clone(),
+            parent_execution_supplied: self.parent_execution_supplied,
+            protocol_hooks: self.protocol_hooks.iter().filter(|(owner, _)| owner.universe == SiteUniverse::User && (runtime_own || own_locus(&owner.name)))
+                .map(|(owner, hooks)| (owner.clone(), hooks.clone())).collect(),
+            lifecycle_hooks: self.lifecycle_hooks.iter().filter(|(owner, _)| owner.universe == SiteUniverse::User && (runtime_own || own_locus(&owner.name)))
+                .map(|(owner, hooks)| (owner.clone(), hooks.clone())).collect(),
+            source_phases: self.source_phases.iter().filter(|(key, _)| own_key(key)).map(|(key, phase)| (key.clone(), phase.clone())).collect(),
+            // Keep foreign path nodes: an own caller can reach a violation
+            // inside an analysis-copy body that this view contracts away.
+            structural_failures: self.structural_failures.clone(),
+            closure_assertions: self.closure_assertions.iter().filter(|(k, _)| own_key(k)).map(|(k,v)| (k.clone(),v.clone())).collect(),
+            birth_checks: self.birth_checks.iter().filter(|(k, _)| own_key(k)).map(|(k,v)| (k.clone(),v.clone())).collect(),
+            initializers: self.initializers.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             flow_loci: self.flow_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
@@ -1509,7 +1878,7 @@ impl AllocSummary {
             analysis_copy: BTreeSet::new(),
             analysis_copy_loci: BTreeSet::new(),
             analysis_copy_interfaces: BTreeSet::new(),
-            declaration_bodies: self.declaration_bodies.clone(),
+            declaration_bodies: self.declaration_bodies.iter().filter(|b| b.universe == SiteUniverse::User).cloned().collect(),
             analysis_copy_values: BTreeSet::new(),
             appended_runtime: BTreeSet::new(),
             appended_runtime_loci: BTreeSet::new(),
@@ -1570,7 +1939,7 @@ impl AllocSummary {
     }
 
     /// Fns reached under an unbounded-multiplicity context — the call-graph
-    /// half of the bound solver. Seeded with bus handlers (per-message),
+    /// half of the bound solver. Seeded with bus and failure handlers,
     /// then a fixed point: a resolved callee is invoked unboundedly if its
     /// caller is, or the call edge is inside an unbounded loop. Only the
     /// fns the program reaches ([`AllocSummary::reached`]) seed it or
@@ -1591,7 +1960,7 @@ impl AllocSummary {
             .fns
             .values()
             .filter(runs)
-            .filter(|f| f.entry == Some(EntryKind::BusHandler))
+            .filter(|f| matches!(f.entry, Some(EntryKind::BusHandler | EntryKind::FailureHandler)))
             .map(|f| f.key.clone())
             .collect();
         loop {
@@ -1976,7 +2345,7 @@ impl AllocSummary {
         // seed's fns runs to exit. This only narrows: a program whose own
         // fns hold no hook or handler stays run-to-exit whatever the
         // stdlib's loci it starts.
-        let long_lived = |f: &FnSummary| matches!(f.entry, Some(EntryKind::Run) | Some(EntryKind::BusHandler));
+        let long_lived = |f: &FnSummary| matches!(f.entry, Some(EntryKind::Run | EntryKind::BusHandler | EntryKind::FailureHandler));
         let has_long_lived_entry = own().any(long_lived)
             && self.startable.as_ref().is_none_or(|started| {
                 self.fns.values().any(|f| {
@@ -2051,7 +2420,7 @@ impl AllocSummary {
         for shape in own_shapes.iter().copied() {
             if shape.capacity_slots.is_empty()
                 && shape.form.is_none()
-                && shape.recognition_cap.is_none()
+                && shape.recognition_cap().is_none()
             {
                 continue;
             }
@@ -2067,12 +2436,12 @@ impl AllocSummary {
                 let cap = form.cap.map(|c| format!(", cap={}", c)).unwrap_or_default();
                 out.push_str(&format!("    form  @form({}{})\n", form.name, cap));
             }
-            if let Some(cap) = shape.recognition_cap {
+            if let Some(cap) = shape.recognition_cap() {
                 out.push_str(&format!("    proj  recognition(cap={})\n", cap));
             }
         }
         if !own_shapes.iter().all(|s| {
-            s.capacity_slots.is_empty() && s.form.is_none() && s.recognition_cap.is_none()
+            s.capacity_slots.is_empty() && s.form.is_none() && s.recognition_cap().is_none()
         }) {
             out.push('\n');
         }
@@ -2082,7 +2451,7 @@ impl AllocSummary {
                 tags.push(format!(
                     "entry: {} ({})",
                     e.label(),
-                    if e.one_shot() { "one-shot" } else { "per-message" }
+                    if e.one_shot() { "one-shot" } else if e == EntryKind::BusHandler { "per-message" } else { "per-failure" }
                 ));
             }
             if unbounded.contains(&f.key) {
@@ -2465,20 +2834,64 @@ pub fn summarize_within(
         scopes.iter().position(|s| std::ptr::eq(*s, ids)).expect("every program's identities are a scope")
     };
     let mut scope_fns: Vec<BTreeSet<String>> = vec![BTreeSet::new(); scopes.len()];
+    let mut scope_value_constructors = vec![BTreeSet::new(); scopes.len()];
+    // Collect alias declarations in the existing scope inventory. Resolution
+    // uses the same alias/qualified-path resolver as handler routing, keeping
+    // the template identity of generic loci rather than parsing a suffix.
+    let mut scope_types = vec![crate::handler_routing::DeclaredNames::default(); scopes.len()];
+    let mut scope_nominals = vec![BTreeSet::<String>::new(); scopes.len()];
     {
-        fn collect_fns(items: &[TopDecl], out: &mut BTreeSet<String>) {
+        fn collect_names(items: &[TopDecl], out: &mut BTreeSet<String>, types: &mut crate::handler_routing::DeclaredNames, nominals: &mut BTreeSet<String>, conversions: &mut BTreeSet<String>, foreign: bool) {
             for item in items {
                 match item {
                     TopDecl::Fn(f) => {
                         out.insert(f.name.name.clone());
                     }
-                    TopDecl::Module(m) => collect_fns(&m.items, out),
+                    TopDecl::Locus(l) => {
+                        nominals.insert(l.name.name.clone());
+                        types.loci.insert(l.name.name.clone());
+                        types.decls.entry(l.name.name.clone()).or_insert(if foreign {
+                            crate::handler_routing::DeclAt::Stdlib(l.id)
+                        } else { crate::handler_routing::DeclAt::Program(l.id) });
+                    }
+                    TopDecl::Type(t) => {
+                        nominals.insert(t.name.name.clone());
+                        if matches!(t.body, TypeDeclBody::Scalar(_)) { conversions.insert(t.name.name.clone()); }
+                        if matches!(t.body, TypeDeclBody::Struct(_)) {
+                            types.records.entry(t.name.name.clone()).or_insert(if foreign {
+                                crate::handler_routing::DeclAt::Stdlib(t.id)
+                            } else { crate::handler_routing::DeclAt::Program(t.id) });
+                        }
+                        if t.generics.is_empty() {
+                            if let TypeDeclBody::Alias(target) = &t.body {
+                                types.aliases.insert(t.name.name.clone(), target.clone());
+                            }
+                        }
+                    }
+                    TopDecl::Interface(i) => { nominals.insert(i.name.name.clone()); }
+                    TopDecl::Perspective(p) => { nominals.insert(p.name.name.clone()); }
+                    TopDecl::Module(m) => collect_names(&m.items, out, types, nominals, conversions, foreign),
                     _ => {}
                 }
             }
         }
         for (program, ids) in identified {
-            collect_fns(&program.items, &mut scope_fns[scope_index(ids)]);
+            let scope = scope_index(ids);
+            collect_names(&program.items, &mut scope_fns[scope], &mut scope_types[scope], &mut scope_nominals[scope], &mut scope_value_constructors[scope], crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, *ids)));
+        }
+        // The stdlib surface is visible in every seed; its private aliases
+        // remain in its own scope, just as its bare free-fn names do.
+        if let Some(ids) = crate::stdlib_bodies::identities() {
+            if let Some(scope) = scopes.iter().position(|s| std::ptr::eq(*s, ids)) {
+                let loci = scope_types[scope].loci.clone();
+                let decls = scope_types[scope].decls.clone();
+                let records = scope_types[scope].records.clone();
+                for types in &mut scope_types {
+                    types.loci.extend(loci.iter().cloned());
+                    for (name, decl) in &records { types.records.entry(name.clone()).or_insert(*decl); }
+                    for (name, decl) in &decls { types.decls.entry(name.clone()).or_insert(*decl); }
+                }
+            }
         }
     }
     let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
@@ -2511,6 +2924,7 @@ pub fn summarize_within(
                 TopDecl::Fn(f) => declared_by_program.insert(f.name.name.clone()),
                 TopDecl::Locus(l) => declared_by_program.insert(l.name.name.clone()),
                 TopDecl::Interface(i) => declared_by_program.insert(i.name.name.clone()),
+                TopDecl::Type(t) => declared_by_program.insert(t.name.name.clone()),
                 _ => false,
             };
         }
@@ -2530,6 +2944,7 @@ pub fn summarize_within(
                 TopDecl::Fn(f) => declared_by_program.contains(&f.name.name),
                 TopDecl::Locus(l) => declared_by_program.contains(&l.name.name),
                 TopDecl::Interface(i) => declared_by_program.contains(&i.name.name),
+                TopDecl::Type(t) => declared_by_program.contains(&t.name.name),
                 _ => false,
             }
     };
@@ -2549,6 +2964,7 @@ pub fn summarize_within(
                         TopDecl::Fn(f) => {
                             beyond_items.insert(f.id.0, top);
                         }
+                        TopDecl::Type(t) => { beyond_items.insert(t.id.0, top); }
                         TopDecl::Locus(l) => {
                             beyond_items.insert(l.id.0, top);
                             beyond_loci.insert(l.name.name.clone(), top);
@@ -2569,9 +2985,16 @@ pub fn summarize_within(
     // bindings). A body's place in the list is its `decl_index`.
     type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>, Vec<(String, StrTy)>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
+    let mut fn_generics: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
+    let mut nominal_generics: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     // What a call spelling (locus, name) resolves to: the row of the last
     // declaration of the name.
     let mut known: Known = BTreeMap::new();
+    let mut closure_assertions=BTreeMap::new();
+    let mut birth_checks=BTreeMap::new();
+    let mut source_phases=BTreeMap::new();
+    let mut lifecycle_hooks=crate::lifecycle_hooks::LifecycleHooks::new();
+    let mut protocol_hooks=crate::protocol_execution::ProtocolHooks::new();
     // GH #1490 (step 3): the fns and methods that return a String, and
     // the String fields of every struct type and locus, so a `+` is
     // read as a concatenation by its operands' declared types.
@@ -2870,7 +3293,37 @@ pub fn summarize_within(
         // snapshot's rows, which the effects engine adds
         // (`add_sync_forms`), so nothing here reads a `sync =` argument.
         let copy_forms = is_stdlib_copy(ids).then(crate::stdlib_bodies::forms).flatten();
-        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
+        for item in flat_decls(&program.items) {
+            // Lowering retains the bundled declarations in its merged source.
+            // Their declaration metadata survives executable-body shadowing;
+            // universe-qualified identities keep both copies distinct.
+            if let TopDecl::Locus(l) = item {
+                let owner = crate::lifecycle_hooks::LifecycleOwner::new(universe, l.id, l.name.name.clone());
+                let hooks = lifecycle_hooks.entry(owner.clone()).or_default();
+                let protocols = protocol_hooks.entry(owner).or_default();
+                for member in &l.members {
+                    if let LocusMember::Lifecycle(lc) = member {
+                        if let Some(stage) = crate::protocol_execution::stage_of(lc.kind) {
+                            let child = lc.params.first().filter(|_| lc.params.len() == 1)
+                                .and_then(|p| crate::handler_routing::resolve_named_type(&p.ty, &scope_types[scope_index(ids)], if is_stdlib_copy(ids) { &[] } else { import_renames }));
+                            protocols.push(crate::protocol_execution::ProtocolHook {
+                                key: FnKey::method(DeclId::of(universe, lc.id), l.name.name.clone(), stage.as_str()), stage,
+                                parameter: lc.params.first().and_then(|p| DeclId::of(universe, p.name.id)),
+                                child: child.as_ref().map(|c| c.0.clone()),
+                                interface: child.as_ref().is_some_and(|c| interface_names.contains(&c.1)),
+                                empty: crate::lifecycle::body_is_empty(&lc.body), synthesized: lc.synthesized, span: lc.span,
+                            });
+                        }
+                        if let Some(stage) = crate::lifecycle_hooks::stage(lc.kind) {
+                            hooks.push(crate::lifecycle_hooks::LifecycleHook {
+                                key: FnKey::method(DeclId::of(universe, lc.id), l.name.name.clone(), stage.as_str()), stage,
+                                empty: crate::lifecycle::body_is_empty(&lc.body), synthesized: lc.synthesized, span: lc.span,
+                            });
+                        }
+                    }
+                }
+            }
+            if shadowed(ids, item) { continue; }
             match item {
                 TopDecl::Fn(decl) => {
                     let beyond = outside(ids, decl.id);
@@ -2878,6 +3331,7 @@ pub fn summarize_within(
                         runtime_ids.insert(decl.id);
                     }
                     let key = FnKey::free_fn(DeclId::of(universe, decl.id), decl.name.name.clone());
+                    fn_generics.insert(key.clone(), decl.generics.iter().map(|g| g.name.name.clone()).collect());
                     {
                         let c = carried_by(&decl.effects, &classes);
                         if c.0 != 0 {
@@ -2894,6 +3348,8 @@ pub fn summarize_within(
                     bodies.push((key, &decl.body, entry, None, unless_beyond(beyond, || param_var_types(&decl.params)), unless_beyond(beyond, || fn_typed_params(&decl.params)), unless_beyond(beyond, || param_var_elem_types(&decl.params)), ids, (decl.hot, false), decl.id, param_names(&decl.params), unless_beyond(beyond, || param_str_types(&decl.params))));
                 }
                 TopDecl::Type(td) => {
+                    if in_runtime(&td.name) { runtime_ids.insert(td.id); }
+                    nominal_generics.insert(td.name.name.clone(),td.generics.iter().map(|g| g.name.name.clone()).collect());
                     if let TypeDeclBody::Struct(fields) = &td.body {
                         str_fields.insert(td.name.name.clone(), struct_str_fields(fields));
                         // The stdlib's analysis copy is no declaration the
@@ -2925,6 +3381,7 @@ pub fn summarize_within(
                 TopDecl::Locus(l) => {
                     let beyond = outside(ids, l.id);
                     let locus = l.name.name.clone();
+                    nominal_generics.insert(locus.clone(), l.generics.iter().map(|g| g.name.name.clone()).collect());
                     if is_stdlib_copy(ids) {
                         analysis_copy_loci.insert(locus.clone());
                     }
@@ -2962,7 +3419,15 @@ pub fn summarize_within(
                         .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
                     subscriptions.insert(locus.clone(), handlers.clone());
+                    let mut record_phase = |key: &FnKey, phase: &str, hook: bool, span: Span| {
+                        let owner = crate::lifecycle_hooks::LifecycleOwner::new(universe, l.id, locus.clone());
+                        source_phases.insert(key.clone(), SourcePhase { owner, phase: phase.to_string(), hook, span });
+                    };
+                    let mut closure_ordinal=0u32;
+                    let mut birth_check_ordinal=0u32;
                     for member in &l.members {
+                        let ordinal=closure_ordinal;
+                        if matches!(member,LocusMember::Closure(_)) { closure_ordinal+=1; }
                         match member {
                             // A `mode` body was never collected, so
                             // its callees were invisible to the
@@ -2981,6 +3446,8 @@ pub fn summarize_within(
                                     locus.clone(),
                                     name.to_string(),
                                 );
+                                record_phase(&key, name, true, md.span);
+                                note_params(&key,&md.params,&mut param_info);
                                 silence(&key, md.unbounded, &md.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
@@ -3001,6 +3468,8 @@ pub fn summarize_within(
                             LocusMember::Fn(decl) => {
                                 let key =
                                     FnKey::method(DeclId::of(universe, decl.id), locus.clone(), decl.name.name.clone());
+                                record_phase(&key, &decl.name.name, false, decl.name.span);
+                                fn_generics.insert(key.clone(), decl.generics.iter().map(|g| g.name.name.clone()).collect());
                                 let c = carried_by(&decl.effects, &classes);
                                 if c.0 != 0 {
                                     carries.insert(key.clone(), c);
@@ -3031,13 +3500,30 @@ pub fn summarize_within(
                                     unless_beyond(beyond, || param_str_types(&decl.params)),
                                 ));
                             }
+                            // Failure handlers are executable, repeatedly invoked bodies.
+                            // Keep the declaration identity, but do not register a callable
+                            // spelling: several handlers can share one locus and none is a
+                            // method a source call can select by name.
+                            LocusMember::Failure(fd) => {
+                                let key = FnKey::failure_handler(DeclId::of(universe, fd.id), locus.clone(), &fd.params);
+                                record_phase(&key, "on_failure", true, fd.span);
+                                bodies.push((
+                                    key, &fd.body, Some(EntryKind::FailureHandler), Some(locus.clone()),
+                                    unless_beyond(beyond, || param_var_types(&fd.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&fd.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&fd.params)),
+                                    ids, (false, false), l.id, param_names(&fd.params),
+                                    unless_beyond(beyond, || param_str_types(&fd.params)),
+                                ));
+                            }
                             // The empty `run` a locus that declares none
                             // is given has no body to summarize, and the
                             // summary's keys are the model's functions:
                             // it lists the hooks the author wrote.
                             LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let (name, entry) = lifecycle_key(lc.kind);
-                                let key = FnKey::method(DeclId::of(universe, lc.id), locus.clone(), name);
+                                let key = FnKey::method(DeclId::of(universe, lc.id), locus.clone(), name.clone());
+                                record_phase(&key, &name, true, lc.span);
                                 silence(&key, lc.unbounded, &lc.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
@@ -3055,6 +3541,31 @@ pub fn summarize_within(
                                     unless_beyond(beyond, || param_str_types(&lc.params)),
                                 ));
                             }
+                            LocusMember::BirthCheck(bc) => {
+                                let ordinal = birth_check_ordinal;
+                                birth_check_ordinal += 1;
+                                let key = FnKey::method(DeclId::of(universe, bc.id), locus.clone(), format!("birth_checks::{ordinal}"));
+                                record_phase(&key, "birth", true, bc.span);
+                                birth_checks.insert(key, BirthCheckKey {
+                                    owner: crate::lifecycle_hooks::LifecycleOwner::new(universe, l.id, locus.clone()),
+                                    closure: bc.closure_name.name.clone(), ordinal, span: bc.span,
+                                });
+                            }
+                            LocusMember::Closure(c) if c.assertion.is_some() => {
+                                let key=FnKey::method(DeclId::of(universe,c.id),locus.clone(),format!("closures::{}",c.name.name));
+                                let epoch=match c.epoch() {
+                                    EpochSpec::Birth => hale_model::ClosureEpoch::Birth,
+                                    EpochSpec::Dissolve => hale_model::ClosureEpoch::Dissolve,
+                                    EpochSpec::Tick => hale_model::ClosureEpoch::Tick,
+                                    EpochSpec::Duration(_) => hale_model::ClosureEpoch::Duration,
+                                    EpochSpec::Explicit => hale_model::ClosureEpoch::Explicit,
+                                    EpochSpec::Inline => continue,
+                                };
+                                if epoch != hale_model::ClosureEpoch::Explicit {
+                                    record_phase(&key, epoch.as_str(), true, c.span);
+                                }
+                                closure_assertions.insert(key,ClosureKey { owner:crate::lifecycle_hooks::LifecycleOwner::new(universe,l.id,locus.clone()),name:c.name.name.clone(),epoch,ordinal,span:c.span });
+                            }
                             _ => {}
                         }
                     }
@@ -3064,21 +3575,41 @@ pub fn summarize_within(
         }
     }
 
-    // The program's bodies that are no row ([`DeclarationBody`]), with
-    // what a row's walk is given: the stdlib's analysis copy has none the
-    // relation reads.
+    // Declaration bodies reuse the same walk. Foreign constructor defaults
+    // supply execution facts; editor dependencies select the program universe.
     let mut member_bodies: Vec<(SiteId, MemberBody, &crate::snapshot::Snapshot)> = Vec::new();
+    let mut unminted_assertions = Vec::new();
     for (program, ids) in identified {
-        if is_stdlib_copy(ids) {
-            continue;
-        }
         let mut found = Vec::new();
-        for item in flat_decls(&program.items) {
+        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             member_bodies_of(item, &mut found);
         }
-        for (decl, body) in found {
+        for (decl, mut body) in found {
+            if outside(ids, decl) { continue; }
+            // Other foreign declaration bodies are outside the editor's
+            // dependency inventory. Parameter defaults also supply source
+            // execution facts and must retain their separate universe.
+            if is_stdlib_copy(ids) {
+                if let Some(initializer) = &mut body.initializer {
+                    initializer.owner.universe = SiteUniverse::StdlibAnalysis;
+                    if let Some(key) = &mut body.key.decl { key.universe = SiteUniverse::StdlibAnalysis; }
+                } else if body.position == "closure" || body.position == "birth_check" {
+                    if let Some(key)=&mut body.key.decl { key.universe=SiteUniverse::StdlibAnalysis; }
+                } else { continue; }
+            }
+            if let Some(initializer) = &body.initializer {
+                if initializer.kind == InitializerKind::Argument {
+                    if let Some(parent) = known.values().find(|k| k.decl == Some(initializer.owner)) {
+                        if let Some(generics) = fn_generics.get(parent).cloned() { fn_generics.insert(body.key.clone(),generics); }
+                    }
+                }
+            }
             if let Some(site) = ids.site_id(decl) {
                 member_bodies.push((site, body, ids));
+            } else if body.position == "closure" || body.position == "birth_check" {
+                // Name-only analysis still executes these source expressions.
+                // It has no editor declaration-body row or native identity.
+                unminted_assertions.push((body, ids));
             }
         }
     }
@@ -3121,6 +3652,11 @@ pub fn summarize_within(
         BTreeMap::new();
     let mut locus_elem_types: BTreeMap<String, BTreeMap<String, String>> =
         BTreeMap::new();
+    // Plain-record declarations are a language surface even when their
+    // executable bodies are outside this summary. Keep their confinement
+    // shapes separate from call/constructor resolution and respect each
+    // universe's nominal shadowing.
+    let mut confinement_records = vec![BTreeMap::new(); scopes.len()];
     {
         fn elem_type_name(te: &TypeExpr) -> Option<String> {
             match te {
@@ -3132,6 +3668,7 @@ pub fn summarize_within(
             items: &[TopDecl],
             structs: &mut BTreeMap<String, BTreeMap<String, String>>,
             elems: &mut BTreeMap<String, BTreeMap<String, String>>,
+            records: &mut BTreeMap<String, RecordConfinementShape>,
         ) {
             for item in items {
                 match item {
@@ -3144,6 +3681,10 @@ pub fn summarize_within(
                                     m.insert(f.name.name.clone(), tn);
                                 }
                             }
+                            records.insert(td.name.name.clone(), RecordConfinementShape {
+                                fields: m.clone(),
+                                parameters: td.generics.iter().map(|g| g.name.name.clone()).collect(),
+                            });
                             structs.insert(td.name.name.clone(), m);
                         }
                     }
@@ -3214,18 +3755,41 @@ pub fn summarize_within(
                         }
                     }
                     TopDecl::Module(md) => {
-                        collect_maps(&md.items, structs, elems)
+                        collect_maps(&md.items, structs, elems, records)
                     }
                     _ => {}
                 }
             }
         }
-        for program in programs {
-            collect_maps(
-                &program.items,
-                &mut struct_field_types,
-                &mut locus_elem_types,
-            );
+        for (program, ids) in identified {
+            let mut records = BTreeMap::new();
+            let mut fields = BTreeMap::new();
+            let mut elements = BTreeMap::new();
+            collect_maps(&program.items, &mut fields, &mut elements, &mut records);
+            struct_field_types.extend(fields);
+            locus_elem_types.extend(elements);
+            confinement_records[scope_index(ids)].extend(records);
+        }
+        let copy_scope = crate::stdlib_bodies::identities()
+            .and_then(|ids| scopes.iter().position(|s| std::ptr::eq(*s, ids)));
+        let standard_records = if let Some(scope) = copy_scope {
+            confinement_records[scope].clone()
+        } else {
+            let mut records = BTreeMap::new();
+            // The same declaration producer, without adding a single
+            // executable summary/default/call row for these declarations.
+            if let Some(program) = crate::stdlib_bodies::program() {
+                collect_maps(&program.items, &mut BTreeMap::new(), &mut BTreeMap::new(), &mut records);
+            }
+            records
+        };
+        for (scope, records) in confinement_records.iter_mut().enumerate() {
+            if Some(scope) == copy_scope { continue; }
+            let mut visible: BTreeMap<_, _> = standard_records.iter()
+                .filter(|(name, _)| !scope_nominals[scope].contains(*name))
+                .map(|(name, fields)| (name.clone(), fields.clone())).collect();
+            visible.extend(std::mem::take(records));
+            *records = visible;
         }
     }
 
@@ -3294,6 +3858,21 @@ pub fn summarize_within(
 
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
+    summary.failure_handlers = Some(FailureHandlerCensus {
+        complete: identified.iter().any(|(_, ids)| is_stdlib_copy(ids)),
+        declarations: bodies.iter().filter(|body| body.2 == Some(EntryKind::FailureHandler))
+            .map(|body| body.0.clone()).collect(),
+    });
+    summary.source_phases=source_phases;
+    summary.lifecycle_hooks=lifecycle_hooks;
+    summary.protocol_hooks=protocol_hooks;
+    summary.closure_assertions=closure_assertions;
+    summary.birth_checks=birth_checks;
+    let mut closure_owners:BTreeMap<FnKey,crate::lifecycle_hooks::LifecycleOwner>=bodies.iter()
+        .filter_map(|body| body.0.locus.as_ref().map(|name| (body.0.clone(),
+            crate::lifecycle_hooks::LifecycleOwner::new(if is_stdlib_copy(body.7) { SiteUniverse::StdlibAnalysis } else { SiteUniverse::User },body.9,name.clone())))).collect();
+    for (key,definition) in &summary.closure_assertions { closure_owners.insert(key.clone(),definition.owner.clone()); }
+    for (key,definition) in &summary.birth_checks { closure_owners.insert(key.clone(),definition.owner.clone()); }
     summary.eager_only_loci = eager_only_loci;
     summary.flow_loci = flow_loci;
     summary.analysis_copy_loci = analysis_copy_loci;
@@ -3313,6 +3892,7 @@ pub fn summarize_within(
                 params: &[String],
                 str_params: &[(String, StrTy)],
                 ids: &crate::snapshot::Snapshot,
+                inline_body: bool,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
@@ -3324,7 +3904,16 @@ pub fn summarize_within(
             .as_ref()
             .and_then(|l| locus_inline_arrays.get(l))
             .unwrap_or(&empty_inline_arrays);
+        let generic_types = fn_generics.get(key).into_iter().flatten()
+            .chain(enclosing_locus.as_ref().and_then(|l| nominal_generics.get(l)).into_iter().flatten())
+            .cloned().collect();
         let mut w = Walker {
+            purity_sites: Vec::new(),
+            value_conversions: BTreeSet::new(),
+            scalar_constructors: &scope_value_constructors[scope_index(ids)],
+            allow_value_constructors: !inline_body,
+            stack_bytes: (if inline_body { 0u64 } else { 32u64 }).saturating_add((params.len() as u64).saturating_mul(8)),
+            generic_types,
             fn_params: fn_params.to_vec(),
             locals: vec![params.iter().map(|p| (p.clone(), Local::Unresolved)).collect()],
             sites: Vec::new(),
@@ -3332,6 +3921,7 @@ pub fn summarize_within(
             violates: Vec::new(),
             locus_types: &locus_type_names,
             calls: Vec::new(),
+            constructions: Vec::new(),
             skipped: Vec::new(),
             loops: Vec::new(),
             escaping: &escaping,
@@ -3340,6 +3930,8 @@ pub fn summarize_within(
             starts: BTreeSet::new(),
             stores: &walked_stores,
             scope_fns: &scope_fns[scope_index(ids)],
+            scope_types: &scope_types[scope_index(ids)],
+            import_renames: if is_stdlib_copy(ids) { &[] } else { import_renames },
             rename_map: if is_stdlib_copy(ids) { &no_renames } else { &rename_map },
             loop_stack: Vec::new(),
             infinite_stack: Vec::new(),
@@ -3351,6 +3943,7 @@ pub fn summarize_within(
             field_types,
             all_field_types: &locus_field_types,
             all_struct_fields: &struct_field_types,
+            confinement_records: &confinement_records[scope_index(ids)],
             all_elem_types: &locus_elem_types,
             fn_ret_types: &fn_ret_types,
             string_rets: &string_rets,
@@ -3377,10 +3970,20 @@ pub fn summarize_within(
         let starts = std::mem::take(&mut w.starts);
         (
             FnSummary {
+                purity_sites: w.purity_sites,
+                value_conversions: w.value_conversions,
                 key: key.clone(),
+                stack_bytes: w.stack_bytes,
                 entry,
                 sites: w.sites,
                 calls: w.calls,
+                constructions: w.constructions,
+                initializations: Vec::new(),
+                closure_evaluations: Vec::new(),
+                lifecycle_evaluations: Vec::new(),
+                constructor_checks: Vec::new(),
+                protocol_evaluations: Vec::new(),
+                closure_owner: closure_owners.get(key).and_then(|owner| owner.declaration_id()),
                 loops: w.loops,
                 effect_sites: w.effect_sites,
                 violates: w.violates,
@@ -3400,7 +4003,7 @@ pub fn summarize_within(
     // no row, then every subexpression a walk skipped, under the key and
     // the parameters of the body it sits in.
     type Pending<'i> =
-        (SiteId, &'static str, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, Vec<String>, Vec<(String, StrTy)>);
+        (SiteId, &'static str, Option<InitializerKey>, FnKey, Block, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, Vec<String>, Vec<(String, StrTy)>);
     let mut pending: Vec<Pending> = Vec::new();
     let skipped_block = |es: Vec<Expr>| Block {
         span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
@@ -3416,7 +4019,7 @@ pub fn summarize_within(
             continue;
         }
         let (row, starts, skipped) =
-            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
+            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, false, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts.clone());
         if !starts.is_empty() {
             summary.starts.insert(key.clone(), starts);
@@ -3432,6 +4035,7 @@ pub fn summarize_within(
                 pending.push((
                     site,
                     "subexpression",
+                    None,
                     key.clone(),
                     skipped_block(skipped),
                     param_types.clone(),
@@ -3445,10 +4049,21 @@ pub fn summarize_within(
         }
         summary.fns.insert(key.clone(), row);
     }
+    for (m, ids) in unminted_assertions {
+        let (row, starts, _) = walk(&m.key, &m.body, None, &m.key.locus,
+            &param_var_types(m.params), &fn_typed_params(m.params),
+            &param_var_elem_types(m.params), &param_names(m.params),
+            &param_str_types(m.params), ids, true, (false, false, usize::MAX));
+        starts_of.insert(m.key.clone(), starts.clone());
+        if !starts.is_empty() { summary.starts.insert(m.key.clone(), starts); }
+        own.insert(m.key.clone());
+        summary.fns.insert(m.key, row);
+    }
     for (site, m, ids) in member_bodies {
         pending.push((
             site,
             m.position,
+            m.initializer,
             m.key,
             m.body,
             param_var_types(m.params),
@@ -3461,50 +4076,52 @@ pub fn summarize_within(
     }
     let mut next = 0;
     while next < pending.len() {
-        let (site, position, key, body, param_types, fn_params, param_elems, ids, params, str_params) = pending[next].clone();
+        let (site, position, initializer, key, body, param_types, fn_params, param_elems, ids, params, str_params) = pending[next].clone();
         next += 1;
-        let (body_summary, _, skipped) =
-            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, &str_params, ids, (false, false, usize::MAX));
-        summary.declaration_bodies.push(DeclarationBody { declaration: site, position, summary: body_summary });
+        let (body_summary, starts, skipped) =
+            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, &str_params, ids, initializer.is_some() || position == "birth_check", (false, false, usize::MAX));
+        if initializer.is_some() || position == "closure" || position == "birth_check" {
+            starts_of.insert(key.clone(), starts.clone());
+            if !starts.is_empty() { summary.starts.insert(key.clone(), starts); }
+        }
+        summary.declaration_bodies.push(DeclarationBody {
+            declaration: site, position, initializer,
+            universe: if is_stdlib_copy(ids) { SiteUniverse::StdlibAnalysis } else { SiteUniverse::User },
+            summary: body_summary,
+        });
         if !skipped.is_empty() {
-            pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params, str_params));
+            pending.push((site, "subexpression", None, key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params, str_params));
         }
     }
-    // GH #540: an expression evaluated outside any body above — a
-    // parameter default (built at the CALL site), a struct field default,
-    // a closure assertion — can build a locus too. Walk each for its
-    // slot stores alone; its rows are no declaration body.
-    {
-        let mut defaults: Vec<(FnKey, Block, &[Param], &crate::snapshot::Snapshot)> = Vec::new();
-        for (program, ids) in identified {
-            if is_stdlib_copy(ids) {
-                continue;
-            }
-            let mut found = Vec::new();
-            for item in flat_decls(&program.items) {
-                default_bodies_of(item, &mut found);
-            }
-            defaults.extend(found.into_iter().map(|(k, b, p)| (k, b, p, *ids)));
-        }
-        let mut next = 0;
-        while next < defaults.len() {
-            let (key, body, params, ids) = (defaults[next].0.clone(), defaults[next].1.clone(), defaults[next].2, defaults[next].3);
-            next += 1;
-            let (_, _, skipped) = walk(
-                &key,
-                &body,
-                None,
-                &key.locus,
-                &param_var_types(params),
-                &fn_typed_params(params),
-                &param_var_elem_types(params),
-                &param_names(params),
-                &param_str_types(params),
-                ids,
-                (false, false, usize::MAX),
-            );
-            if !skipped.is_empty() {
-                defaults.push((key, skipped_block(skipped), params, ids));
+    // Defaults are executable bodies with their parameter/field binding
+    // identities. Keep the editor's declaration-body view, but resolve the
+    // executable copy exactly once alongside other bodies.
+    for body in summary.declaration_bodies.iter().filter(|body| body.initializer.is_some() || body.position == "closure" || body.position == "birth_check") {
+        let key = body.summary.key.clone();
+        if let Some(default)=&body.initializer { summary.initializers.insert(key.clone(), default.clone()); }
+        summary.fns.insert(key.clone(), body.summary.clone());
+        if body.universe == SiteUniverse::StdlibAnalysis { summary.analysis_copy.insert(key.clone()); }
+        else { own.insert(key.clone()); }
+        let runtime_owner = body.initializer.as_ref().is_some_and(|d| d.owner.universe == SiteUniverse::User && runtime_ids.contains(&NodeId(d.owner.index)));
+        if runtime_owner || key.locus.as_ref().is_some_and(|l| summary.appended_runtime_loci.contains(l)) { summary.appended_runtime.insert(key); }
+    }
+    let mut defaults: BTreeMap<DeclId, Vec<(FnKey, InitializerKey)>> = BTreeMap::new();
+    // Declaration-body order is parameter declaration order, not field-name
+    // order. Two omitted defaults both execute, even at the same constructor.
+    for body in summary.declaration_bodies.iter().filter(|body| body.initializer.is_some()) {
+        let initializer = body.initializer.as_ref().unwrap();
+        defaults.entry(initializer.owner).or_default().push((body.summary.key.clone(), initializer.clone()));
+    }
+    for fs in summary.fns.values_mut() {
+        for (ordinal, construction) in fs.constructions.iter().enumerate() {
+            for (target, initializer) in construction.target.and_then(|owner| defaults.get(&owner)).into_iter().flatten() {
+                if initializer.kind != InitializerKind::Argument && !construction.supplied.contains(&initializer.field) {
+                    fs.initializations.push(InitializationEdge {
+                        target: target.clone(), initializer: initializer.clone(), invocation: construction.site,
+                        ordinal: ordinal as u32, span: construction.span,
+                        loop_depth: construction.loop_depth, in_unbounded_loop: construction.in_unbounded_loop,
+                    });
+                }
             }
         }
     }
@@ -3633,7 +4250,7 @@ pub fn summarize_within(
     let mut next_group: u32 = 0;
     // The rows first, so their groups are numbered as before the
     // declaration bodies were summarized beside them.
-    let rows = summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().map(|b| &mut b.summary));
+    let rows = summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().filter(|b| b.initializer.is_none() && b.position != "closure" && b.position != "birth_check").map(|b| &mut b.summary));
     for fs in rows {
         let mut rewritten: Vec<CallEdge> =
             Vec::with_capacity(fs.calls.len());
@@ -3697,6 +4314,87 @@ pub fn summarize_within(
         })
         .collect();
     resolve_function_values(&mut summary, &value_scopes, &known, next_group);
+    // Reuse the one resolved call account. Defaults are not extra authored
+    // calls, and a function-value or interface signature carries no omitted
+    // argument expansion in lowering. Each named invocation evaluates its
+    // own omitted suffix before entering the callee body.
+    for fs in summary.fns.values_mut() {
+        for (ordinal, call) in fs.calls.iter().enumerate() {
+            if !call.evaluates_argument_defaults() { continue; }
+            let Callee::Resolved(callee) = &call.callee else { continue };
+            for (target, initializer) in callee.decl.and_then(|owner| defaults.get(&owner)).into_iter().flatten() {
+                if initializer.kind == InitializerKind::Argument && initializer.ordinal as usize >= call.arity {
+                    fs.initializations.push(InitializationEdge {
+                        target: target.clone(), initializer: initializer.clone(), invocation: call.authored,
+                        ordinal: ordinal as u32, span: call.span, loop_depth: call.loop_depth,
+                        in_unbounded_loop: call.in_unbounded_loop,
+                    });
+                }
+            }
+        }
+    }
+    for fs in summary.fns.values_mut() {
+        // Join the resolved source constructor to the assertion's real owner.
+        // Keep this obligation even when the assertion's body is outside the
+        // reachable stdlib horizon. Neither display names nor lifecycle plans
+        // determine identity. Explicit checkpoints have their own exact edges.
+        for (ordinal, constructor) in fs.constructions.iter().enumerate() {
+            for hook in constructor.lifecycle_owner.as_ref().and_then(|owner| summary.lifecycle_hooks.get(owner)).into_iter().flatten()
+                .filter(|hook| !hook.synthesized && !hook.empty) {
+                fs.effect_sites.push(EffectSite {
+                    kind: EffectSiteKind::LifecycleInvocation { constructor: ordinal as u32, target: hook.key.clone(), stage: hook.stage },
+                    loop_depth: constructor.loop_depth, span: constructor.span,
+                });
+                // Every authored stage contributes possible source work under
+                // its runtime opportunity. Admission, retention and scheduling
+                // stay open; these are never ordinary caller-frame edges.
+                fs.lifecycle_evaluations.push(LifecycleEvaluationEdge {
+                    target: hook.key.clone(), stage: hook.stage, invocation: constructor.site,
+                    ordinal: ordinal as u32, span: constructor.span, loop_depth: constructor.loop_depth,
+                    in_unbounded_loop: constructor.in_unbounded_loop,
+                });
+            }
+            for (target, clause) in &summary.birth_checks {
+                if constructor.lifecycle_owner.as_ref() == Some(&clause.owner) {
+                    fs.constructor_checks.push(ConstructorCheckEdge {
+                        target: target.clone(), kind: hale_model::ConstructorCheck::BirthCheck(clause.ordinal),
+                        invocation: constructor.site, constructor: ordinal as u32, span: constructor.span,
+                        loop_depth: constructor.loop_depth, in_unbounded_loop: constructor.in_unbounded_loop,
+                    });
+                    fs.effect_sites.push(EffectSite {
+                        kind: EffectSiteKind::BirthCheckInvocation { constructor: ordinal as u32, target: target.clone() },
+                        loop_depth: constructor.loop_depth, span: constructor.span,
+                    });
+                }
+            }
+            for (target, closure) in &summary.closure_assertions {
+                if constructor.lifecycle_owner.as_ref() == Some(&closure.owner) && closure.epoch != hale_model::ClosureEpoch::Explicit {
+                    fs.constructor_checks.push(ConstructorCheckEdge {
+                        target: target.clone(), kind: hale_model::ConstructorCheck::Assertion { epoch: closure.epoch, ordinal: closure.ordinal },
+                        invocation: constructor.site, constructor: ordinal as u32, span: constructor.span,
+                        loop_depth: constructor.loop_depth, in_unbounded_loop: constructor.in_unbounded_loop,
+                    });
+                    fs.effect_sites.push(EffectSite {
+                        kind: EffectSiteKind::AutomaticClosure { constructor: ordinal as u32, target: target.clone(), epoch: closure.epoch },
+                        loop_depth: constructor.loop_depth,
+                        span: constructor.span,
+                    });
+                }
+            }
+        }
+        for call in &mut fs.calls {
+            call.closure_context_unknown=!closure_owners.contains_key(&fs.key) && !call.receiver_present && !call.indirect && matches!(&call.callee,Callee::Unresolved(name) if name=="check_closures");
+        }
+        for (ordinal,call) in fs.calls.iter().enumerate() {
+            if call.receiver_present || call.indirect || !matches!(&call.callee,Callee::Unresolved(name) if name=="check_closures") { continue; }
+            for (target,closure) in &summary.closure_assertions {
+                if closure.epoch==hale_model::ClosureEpoch::Explicit && closure_owners.get(&fs.key)==Some(&closure.owner) {
+                    fs.closure_evaluations.push(ClosureEvaluationEdge { target:target.clone(),invocation:call.authored,ordinal:ordinal as u32,span:call.span,loop_depth:call.loop_depth,in_unbounded_loop:call.in_unbounded_loop });
+                }
+            }
+        }
+        fs.closure_evaluations.sort_by_key(|edge| (edge.ordinal,summary.closure_assertions[&edge.target].ordinal));
+    }
     summary.by_name = known.clone();
     // The reclaim boundary of a scratch-local fn (GH #1208). The
     // classification is lowering's (`alloc_routing`), run once, here,
@@ -3860,6 +4558,7 @@ pub fn summarize_within(
             }
             let Some(f) = summary.fns.get(&k) else { continue };
             calls.push(&f.calls);
+            work.extend(f.effect_evaluations().map(|edge| edge.target.clone()));
             pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
         }
         summary.reached = Some(reached);
@@ -3870,16 +4569,25 @@ pub fn summarize_within(
     // it calls a body outside it, and no locus the program reaches or
     // starts is outside it (a started locus's hooks and handlers are rows
     // the judgments read).
-    if !beyond_keys.is_empty() {
+    if !beyond_items.is_empty() {
         let inside = |f: &&FnSummary| !beyond_keys.contains_key(&f.key);
-        let rows = summary.fns.values().filter(inside).chain(summary.declaration_bodies.iter().map(|b| &b.summary));
-        let mut beyond: BTreeSet<usize> = rows
+        let rows: Vec<_> = summary.fns.values().filter(inside).chain(summary.declaration_bodies.iter().filter(|b| b.initializer.is_none() && b.position != "closure" && b.position != "birth_check").map(|b| &b.summary)).collect();
+        let mut beyond: BTreeSet<usize> = rows.iter()
             .flat_map(|f| &f.calls)
             .filter_map(|c| match &c.callee {
                 Callee::Resolved(k) => beyond_keys.get(k).copied(),
                 Callee::Unresolved(_) => None,
             })
             .collect();
+        // A constructor can name an imported or aliased declaration even
+        // when the legacy display-name `starts` inventory cannot. Ask its
+        // resolved source identity before treating an absent foreign
+        // initializer body as outside the executable graph.
+        beyond.extend(rows.iter().flat_map(|f| &f.constructions).filter_map(|site| {
+            let target = site.target?;
+            (target.universe == SiteUniverse::StdlibAnalysis)
+                .then(|| beyond_items.get(&target.index).copied()).flatten()
+        }));
         // And a fn the program reaches through a call whose receiver the
         // walk could not type is a row, so what it does counts.
         beyond.extend(summary.reached.iter().flatten().filter_map(|k| beyond_keys.get(k).copied()));
@@ -3893,7 +4601,214 @@ pub fn summarize_within(
     let param_order: BTreeMap<FnKey, Vec<String>> =
         bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
     resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
+    for body in summary.declaration_bodies.iter_mut().filter(|body| body.initializer.is_some() || body.position == "closure" || body.position == "birth_check") {
+        if let Some(row) = summary.fns.get(&body.summary.key) { body.summary = row.clone(); }
+    }
+    summary.structural_failures = Some(derive_structural_failure_paths(&summary));
     Ok(summary)
+}
+
+/// A witness forest over the summary's already-resolved call graph. A seed
+/// records its source universe explicitly; display names do not classify it.
+#[derive(Debug, Clone)]
+pub enum StructuralFailureStep {
+    /// The comparison may route a structural failure at this assertion.
+    Assertion { closure:String,span:Span,foreign:bool },
+    /// The birth predicate may reject the newly constructed locus.
+    BirthCheck { closure:String,span:Span,foreign:bool },
+    Direct { closure: String, span: Span, foreign: bool },
+    Through { callee: FnKey, span: Span },
+    /// Execution of an omitted default is not an authored function call.
+    Initializer { callee: FnKey, initializer: InitializerKey, span: Span },
+}
+
+/// A failure witness. The path may reach a violation or a conditional
+/// assertion; it does not prove a guard fires or a handler is admitted.
+#[derive(Debug, Clone)]
+pub struct StructuralFailureTrace {
+    pub path: Vec<FnKey>,
+    pub initializers: Vec<InitializerKey>,
+    pub closure: String,
+    pub span: Span,
+    pub foreign: bool,
+    /// The terminal is a conditional assertion rather than an explicit violate.
+    pub assertion: bool,
+    /// The terminal is a conditional birth check rather than a comparison.
+    pub birth_check: bool,
+}
+
+impl AllocSummary {
+    /// A positive complete declaration census, not a conclusion from which
+    /// handler bodies happened to be reached or routed.
+    pub fn no_source_failure_handlers(&self) -> bool {
+        self.structural_failures.is_some() && self.failure_handlers.as_ref().is_some_and(FailureHandlerCensus::is_empty_closed)
+    }
+
+    /// The shared source failure producer also consumes late parent entries.
+    pub(crate) fn refresh_failure_paths(&mut self) {
+        self.structural_failures = Some(derive_structural_failure_paths(self));
+    }
+
+    /// A native invocation-context marker can close source coverage only when
+    /// its nominal parent body and original constructor/root are represented.
+    pub fn protocol_source_complete(&self, body: &FnSummary, site: &EffectSite) -> bool {
+        use crate::protocol_execution::ProtocolGap;
+        let EffectSiteKind::ProtocolInvocation { target: Some(target), stage: Some(stage), reason: ProtocolGap::InvocationContext } = &site.kind else { return false };
+        let markers = body.effect_sites.iter().filter(|s| s.span == site.span && s.loop_depth == site.loop_depth
+            && matches!(&s.kind, EffectSiteKind::ProtocolInvocation { target: Some(t), stage: Some(p), reason: ProtocolGap::InvocationContext } if t == target && p == stage)).count();
+        let entries: Vec<_> = body.protocol_evaluations.iter().filter(|e| &e.target == target && e.stage == *stage
+            && e.span == site.span && e.loop_depth == site.loop_depth).collect();
+        let unique: BTreeSet<_> = entries.iter().map(|e| (e.root_source, e.constructor_source, &e.owner, &e.child)).collect();
+        self.parent_execution_supplied && markers == entries.len() && unique.len() == entries.len() && self.fns.contains_key(target)
+            && body.protocol_evaluations.iter().any(|edge| &edge.target == target && edge.stage == *stage
+                && edge.span == site.span && edge.loop_depth == site.loop_depth
+                && self.protocol_hooks.get(&edge.owner).is_some_and(|hooks| hooks.iter().any(|hook|
+                    hook.key == *target && hook.stage == *stage && !hook.empty && !hook.synthesized && !hook.interface))
+                && self.fns.get(&edge.constructor_function).and_then(|f| f.constructions.get(edge.constructor as usize))
+                    .is_some_and(|c| c.site == Some(edge.constructor_source) && c.span == edge.constructor_span))
+    }
+
+    pub fn protocol_source_complete_from(&self, root: &FnKey) -> bool {
+        use crate::model_graph::{self, Visit, HolePolicy, Search};
+        matches!(model_graph::search([root.clone()], |at| {
+            Visit::<_, (), ()>::edges(self.fns.get(at).into_iter()
+                .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))).collect())
+        }, |at| self.fns.get(at).is_none_or(|body| body.effect_sites.iter().any(|site|
+            matches!(site.kind, EffectSiteKind::ProtocolInvocation { .. }) && !self.protocol_source_complete(body, site))),
+            |_| false, None, HolePolicy::Halt), Search::NotFound)
+    }
+
+    pub fn constructor_predicate_source_complete_from(&self, root: &FnKey) -> bool {
+        use crate::model_graph::{self, Visit, HolePolicy, Search};
+        matches!(model_graph::search([root.clone()], |at| {
+            Visit::<_, (), ()>::edges(self.fns.get(at).into_iter()
+                .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))).collect())
+        }, |at| self.fns.get(at).is_none_or(|body| !self.constructor_predicate_source_complete(body)),
+            |_| false, None, HolePolicy::Halt), Search::NotFound)
+    }
+
+    /// Every constructor's possible predicates have exact analyzed source
+    /// bodies and entries. No admission, native frame or invocation bound is
+    /// established by this qualitative account.
+    pub fn constructor_predicate_source_complete(&self, body: &FnSummary) -> bool {
+        let mut expected = BTreeSet::new();
+        for (site, constructor) in body.constructions.iter().enumerate() {
+            let Some(owner) = &constructor.lifecycle_owner else { continue };
+            if !self.lifecycle_hooks.contains_key(owner) { return false; }
+            let definitions = self.birth_checks.iter().filter(|(_, d)| &d.owner == owner)
+                .map(|(key, d)| (key, hale_model::ConstructorCheck::BirthCheck(d.ordinal)))
+                .chain(self.closure_assertions.iter().filter(|(_, d)| &d.owner == owner && d.epoch != hale_model::ClosureEpoch::Explicit)
+                    .map(|(key, d)| (key, hale_model::ConstructorCheck::Assertion { epoch: d.epoch, ordinal: d.ordinal })));
+            for (target, kind) in definitions {
+                if !self.fns.contains_key(target) { return false; }
+                expected.insert((site as u32, kind, target));
+                if !body.constructor_checks.iter().any(|edge| edge.constructor == site as u32
+                    && edge.kind == kind && &edge.target == target && edge.invocation == constructor.site
+                    && edge.span == constructor.span && edge.loop_depth == constructor.loop_depth
+                    && edge.in_unbounded_loop == constructor.in_unbounded_loop) { return false; }
+            }
+        }
+        body.constructor_checks.len() == expected.len() && body.constructor_checks.iter()
+            .all(|edge| expected.contains(&(edge.constructor, edge.kind, &edge.target)))
+    }
+
+    /// Qualitative self lifecycle work is closed only when each constructor's
+    /// complete hook inventory has its exact source edge and analyzed body.
+    /// This says nothing about admission, stack frames or retained lifetime.
+    pub fn lifecycle_source_complete(&self, body: &FnSummary) -> bool {
+        let mut expected = BTreeSet::new();
+        for (ordinal, constructor) in body.constructions.iter().enumerate() {
+            let Some(owner) = &constructor.lifecycle_owner else { continue };
+            let Some(hooks) = self.lifecycle_hooks.get(owner) else { return false };
+            for hook in hooks.iter().filter(|h| !h.empty && !h.synthesized) {
+                if !self.fns.contains_key(&hook.key) { return false; }
+                expected.insert((ordinal as u32, hook.stage, &hook.key));
+                if !body.lifecycle_evaluations.iter().any(|edge| edge.ordinal == ordinal as u32
+                    && edge.stage == hook.stage && edge.target == hook.key
+                    && edge.invocation == constructor.site && edge.span == constructor.span
+                    && edge.loop_depth == constructor.loop_depth
+                    && edge.in_unbounded_loop == constructor.in_unbounded_loop) { return false; }
+            }
+        }
+        body.lifecycle_evaluations.len() == expected.len()
+            && body.lifecycle_evaluations.iter().all(|edge| expected.contains(&(edge.ordinal, edge.stage, &edge.target)))
+    }
+
+    /// Read the one cached forest, preserving unavailable/broken coverage as
+    /// an error rather than manufacturing an empty successor set.
+    pub fn structural_failure_path(&self, root: &FnKey) -> Result<Option<StructuralFailureTrace>, &'static str> {
+        let forest = self.structural_failures.as_ref().ok_or("structural failure coverage is unavailable")?;
+        if !forest.contains_key(root) { return Ok(None); }
+        let mut path = vec![root.clone()];
+        let mut initializers = Vec::new();
+        let mut at = root;
+        for _ in 0..=forest.len() {
+            match forest.get(at).ok_or("structural failure witness has a missing successor")? {
+                StructuralFailureStep::Direct { closure, span, foreign } => return Ok(Some(StructuralFailureTrace {
+                    path, initializers, closure: closure.clone(), span: *span, foreign: *foreign,assertion:false,birth_check:false,
+                })),
+                StructuralFailureStep::Assertion { closure,span,foreign } => return Ok(Some(StructuralFailureTrace {
+                    path,initializers,closure:closure.clone(),span:*span,foreign:*foreign,assertion:true,birth_check:false,
+                })),
+                StructuralFailureStep::BirthCheck { closure,span,foreign } => return Ok(Some(StructuralFailureTrace {
+                    path,initializers,closure:closure.clone(),span:*span,foreign:*foreign,assertion:false,birth_check:true,
+                })),
+                StructuralFailureStep::Through { callee, .. } => { path.push(callee.clone()); at = callee; }
+                StructuralFailureStep::Initializer { callee, initializer, .. } => {
+                    initializers.push(initializer.clone());
+                    path.push(callee.clone());
+                    at = callee;
+                }
+            }
+        }
+        Err("structural failure witness contains a cycle")
+    }
+}
+
+/// One finite reverse reachability pass, reusing the shared graph engine.
+/// This consumes existing body/call rows and records no second syntax survey.
+fn derive_structural_failure_paths(summary: &AllocSummary) -> BTreeMap<FnKey, StructuralFailureStep> {
+    use crate::model_graph::{self, HolePolicy, Visit};
+    let mut found: BTreeMap<_, _> = summary.fns.iter().filter_map(|(key, fs)| {
+        let (closure, span) = fs.violates.first()?;
+        Some((key.clone(), StructuralFailureStep::Direct { closure: closure.clone(), span: *span, foreign: !summary.is_own(key) }))
+    }).collect();
+    for (key,assertion) in &summary.closure_assertions {
+        if summary.fns.contains_key(key) { found.entry(key.clone()).or_insert_with(|| StructuralFailureStep::Assertion { closure:assertion.name.clone(),span:assertion.span,foreign:!summary.is_own(key) }); }
+    }
+    for (key,clause) in &summary.birth_checks {
+        if summary.fns.contains_key(key) { found.entry(key.clone()).or_insert_with(|| StructuralFailureStep::BirthCheck { closure:clause.closure.clone(),span:clause.span,foreign:!summary.is_own(key) }); }
+    }
+    if found.is_empty() { return found; }
+    let mut reverse: BTreeMap<FnKey, Vec<(FnKey, Span, Option<InitializerKey>)>> = BTreeMap::new();
+    for (caller, fs) in &summary.fns {
+        for edge in &fs.calls {
+            if let Callee::Resolved(callee) = &edge.callee {
+                reverse.entry(callee.clone()).or_default().push((caller.clone(), edge.span, None));
+            }
+        }
+        for edge in &fs.initializations {
+            reverse.entry(edge.target.clone()).or_default().push((caller.clone(), edge.span, Some(edge.initializer.clone())));
+        }
+        // Every qualitative source successor can raise a failure. Defaults
+        // keep their richer witness above; duplicate reverse endpoints are
+        // harmless and the forest still selects one deterministic witness.
+        for edge in fs.effect_evaluations() {
+            reverse.entry(edge.target.clone()).or_default().push((caller.clone(),edge.span,None));
+        }
+    }
+    let roots: Vec<_> = found.keys().cloned().collect();
+    let _ = model_graph::search(roots, |callee| {
+        let edges: Vec<_> = reverse.get(callee).into_iter().flatten().map(|(caller, span, initializer)| {
+            found.entry(caller.clone()).or_insert_with(|| match initializer {
+                Some(initializer) => StructuralFailureStep::Initializer { callee: callee.clone(), initializer: initializer.clone(), span: *span },
+                None => StructuralFailureStep::Through { callee: callee.clone(), span: *span },
+            });
+            (caller.clone(), ())
+        }).collect();
+        Visit::<_, (), ()>::edges(edges)
+    }, |_| false, |_| false, None, HolePolicy::Halt);
+    found
 }
 
 /// GH #1490 (step 4): each locus's bus handlers.
@@ -4248,6 +5163,7 @@ fn loci_started_from_main(
                 Callee::Unresolved(_) => {}
             }
         }
+        work.extend(f.effect_evaluations().map(|edge| edge.target.clone()));
     }
     Some(started)
 }
@@ -4261,13 +5177,7 @@ fn recursive_fns(fns: &BTreeMap<FnKey, FnSummary>) -> BTreeSet<FnKey> {
     let succ: Vec<Vec<usize>> = keys
         .iter()
         .map(|k| {
-            fns[*k]
-                .calls
-                .iter()
-                .filter_map(|c| match &c.callee {
-                    Callee::Resolved(t) => index_of.get(t).copied(),
-                    Callee::Unresolved(_) => None,
-                })
+            fns[*k].frame_targets().filter_map(|(target, _)| index_of.get(target).copied())
                 .collect()
         })
         .collect();
@@ -4371,71 +5281,9 @@ fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
 struct MemberBody<'p> {
     key: FnKey,
     position: &'static str,
+    initializer: Option<InitializerKey>,
     body: Block,
     params: &'p [Param],
-}
-
-/// GH #540: the expressions of `item` that are evaluated outside every
-/// body the summary walks: each parameter default of a fn, method, hook,
-/// mode, failure handler or perspective fn, each struct field default and
-/// each closure assertion. A default is built where its fn is CALLED, so
-/// a locus literal in one is a store like any other. Each is a block of
-/// its expressions under the key of the member it sits in.
-fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Param])>) {
-    let block = |es: Vec<&Expr>| Block {
-        span: es.iter().map(|e| e.span()).reduce(|a, b| a.merge(b)).unwrap_or(Span::new(0, 0)),
-        stmts: es.into_iter().map(|e| Stmt::Expr(e.clone())).collect(),
-        tail: None,
-    };
-    let param_defaults = |params: &'p [Param]| -> Vec<&'p Expr> { params.iter().filter_map(|p| p.default.as_ref()).collect() };
-    let field_defaults = |td: &'p TypeDecl| -> Vec<&'p Expr> {
-        match &td.body {
-            TypeDeclBody::Struct(fields) => fields.iter().filter_map(|f| f.default.as_ref()).collect(),
-            _ => Vec::new(),
-        }
-    };
-    let mut push = |key: FnKey, es: Vec<&Expr>, params: &'p [Param]| {
-        if !es.is_empty() {
-            out.push((key, block(es), params));
-        }
-    };
-    match item {
-        TopDecl::Fn(f) => push(FnKey::free_fn(DeclId::user(f.id), f.name.name.clone()), param_defaults(&f.params), &f.params),
-        TopDecl::Type(td) => push(FnKey::free_fn(DeclId::user(td.id), td.name.name.clone()), field_defaults(td), &[]),
-        TopDecl::Locus(l) => {
-            let locus = &l.name.name;
-            let method = |id: NodeId, name: &str| FnKey::method(DeclId::user(id), locus.clone(), name);
-            for m in &l.members {
-                match m {
-                    LocusMember::Fn(f) => push(method(f.id, &f.name.name), param_defaults(&f.params), &f.params),
-                    LocusMember::Lifecycle(lc) => {
-                        push(method(lc.id, &lifecycle_key(lc.kind).0), param_defaults(&lc.params), &lc.params)
-                    }
-                    LocusMember::Mode(md) => push(method(md.id, "mode"), param_defaults(&md.params), &md.params),
-                    LocusMember::Failure(fd) => push(method(fd.id, "on_failure"), param_defaults(&fd.params), &fd.params),
-                    LocusMember::Closure(c) => push(
-                        method(c.id, &c.name.name),
-                        c.assertion.iter().flat_map(|a| [&a.left, &a.right, &a.tolerance]).collect(),
-                        &[],
-                    ),
-                    LocusMember::Type(td) => push(method(td.id, &td.name.name), field_defaults(td), &[]),
-                    _ => {}
-                }
-            }
-        }
-        TopDecl::Perspective(p) => {
-            for m in &p.members {
-                if let PerspectiveMember::Fn(f) = m {
-                    push(
-                        FnKey::method(DeclId::user(f.id), p.name.name.clone(), f.name.name.clone()),
-                        param_defaults(&f.params),
-                        &f.params,
-                    );
-                }
-            }
-        }
-        _ => {}
-    }
 }
 
 /// The bodies of `item` the reveal rule walks that are no row (a
@@ -4461,33 +5309,103 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
         tail: None,
         span,
     };
+    let mut arguments = |owner: NodeId, parent: &str, locus: Option<&str>, params: &'p [Param]| {
+        for (ordinal, parameter) in params.iter().enumerate() {
+            let Some(value) = &parameter.default else { continue };
+            let (enclosing, member) = match locus {
+                Some(locus) => (locus, format!("{parent}::args::{}", parameter.name.name)),
+                None => (parent, format!("args::{}", parameter.name.name)),
+            };
+            let key = FnKey::method(DeclId::user(parameter.name.id), enclosing.to_string(), member);
+            let initializer = DeclId::user(owner).map(|owner| InitializerKey {
+                owner, kind: InitializerKind::Argument, field: parameter.name.name.clone(), ordinal: ordinal as u32,
+            });
+            out.push((owner, MemberBody { key, position: "argument", initializer,
+                body: exprs(vec![value], parameter.span), params: &[] }));
+        }
+    };
+    match item {
+        TopDecl::Fn(f) => arguments(f.id, &f.name.name, None, &f.params),
+        TopDecl::Locus(l) => for member in &l.members {
+            match member {
+                LocusMember::Fn(f) => arguments(f.id, &f.name.name, Some(&l.name.name), &f.params),
+                LocusMember::Mode(m) => arguments(m.id, match m.kind { ModeKind::Bulk => "bulk", ModeKind::Harmonic => "harmonic", ModeKind::Resolution => "resolution" }, Some(&l.name.name), &m.params),
+                LocusMember::Lifecycle(lc) => arguments(lc.id, &lifecycle_key(lc.kind).0, Some(&l.name.name), &lc.params),
+                LocusMember::Failure(f) => arguments(f.id, &FnKey::failure_handler(DeclId::user(f.id), l.name.name.clone(), &f.params).fn_name, Some(&l.name.name), &f.params),
+                _ => {}
+            }
+        },
+        _ => {}
+    }
+    drop(arguments);
+    let mut field_defaults = |td: &'p TypeDecl| {
+        let TypeDeclBody::Struct(fields) = &td.body else { return };
+        for (ordinal, field) in fields.iter().enumerate() {
+            let Some(value) = &field.default else { continue };
+            let key = FnKey::method(DeclId::user(field.id), td.name.name.clone(), format!("fields::{}", field.name.name));
+            let initializer = DeclId::user(td.id).map(|owner| InitializerKey { owner, kind: InitializerKind::Field, field: field.name.name.clone(), ordinal: ordinal as u32 });
+            out.push((td.id, MemberBody { key, position: "field", initializer, body: exprs(vec![value], field.span), params: &[] }));
+        }
+    };
+    if let TopDecl::Type(td) = item { field_defaults(td); return; }
+    if let TopDecl::Locus(l) = item {
+        for member in &l.members { if let LocusMember::Type(td) = member { field_defaults(td); } }
+    }
+    drop(field_defaults);
     match item {
         TopDecl::Const(c) => out.push((
             c.id,
             MemberBody {
                 key: FnKey::free_fn(DeclId::user(c.id), c.name.name.clone()),
                 position: "const",
+                initializer: None,
                 body: exprs(vec![&c.value], c.span),
                 params: &[],
             },
         )),
         TopDecl::Locus(l) => {
             let locus = &l.name.name;
-            let mut push = |member: NodeId, name: &str, position: &'static str, body: Block, params: &'p [Param]| {
+            let mut push = |member: NodeId, name: &str, position: &'static str, body: Block, params: &'p [Param], initializer: Option<InitializerKey>| {
                 let key = FnKey::method(DeclId::user(member), locus.clone(), name);
-                out.push((l.id, MemberBody { key, position, body, params }))
+                out.push((l.id, MemberBody { key, position, initializer, body, params }))
             };
+            let mut parameter_ordinal = 0u32;
+            let mut birth_check_ordinal = 0u32;
             for m in &l.members {
                 match m {
                     LocusMember::Lifecycle(lc) if lc.synthesized => {
-                        push(lc.id, &lifecycle_key(lc.kind).0, "lifecycle", lc.body.clone(), &lc.params)
+                        push(lc.id, &lifecycle_key(lc.kind).0, "lifecycle", lc.body.clone(), &lc.params, None)
                     }
-                    LocusMember::Failure(fd) => push(fd.id, "on_failure", "on_failure", fd.body.clone(), &fd.params),
-                    LocusMember::Params(pb) => push(l.id, "params", "params", exprs(initializers(pb), pb.span), &[]),
-                    LocusMember::Const(c) => push(c.id, &c.name.name, "const", exprs(vec![&c.value], c.span), &[]),
+                    LocusMember::Params(pb) => {
+                        for pd in &pb.params {
+                            let ordinal = parameter_ordinal;
+                            parameter_ordinal += 1;
+                            let ParamInit::Value(value) = &pd.init else { continue };
+                            let initializer = DeclId::user(l.id).map(|owner| InitializerKey { owner, kind: InitializerKind::Parameter, field: pd.name.name.clone(), ordinal });
+                            push(pd.id, &format!("params::{}", pd.name.name), "params", exprs(vec![value], pd.span), &[], initializer);
+                        }
+                    }
+                    LocusMember::Const(c) => push(c.id, &c.name.name, "const", exprs(vec![&c.value], c.span), &[], None),
+                    LocusMember::Closure(c) => {
+                        if let Some(assertion)=&c.assertion {
+                            let mut values=Vec::new();
+                            let epoch=c.epoch();
+                            if let EpochSpec::Duration(ref duration)=epoch { values.push(duration); }
+                            values.extend([&assertion.left,&assertion.right,&assertion.tolerance]);
+                            push(c.id,&format!("closures::{}",c.name.name),"closure",exprs(values,c.span),&[],None);
+                        }
+                    }
                     LocusMember::BirthCheck(bc) => {
-                        let es = std::iter::once(&bc.cond).chain(&bc.payload).collect();
-                        push(l.id, "birth_check", "birth_check", exprs(es, bc.span), &[])
+                        let ordinal = birth_check_ordinal;
+                        birth_check_ordinal += 1;
+                        // Evaluate the predicate once; the payload is conditional.
+                        // Failure dispatch is represented by coverage, not a fake
+                        // unconditional `violate` statement in this source body.
+                        let then_block = exprs(bc.payload.iter().collect(), bc.span);
+                        let body = Block { stmts: vec![Stmt::If(IfStmt {
+                            cond: bc.cond.clone(), then_block, else_block: None, span: bc.span,
+                        })], tail: None, span: bc.span };
+                        push(bc.id, &format!("birth_checks::{ordinal}"), "birth_check", body, &[], None)
                     }
                     _ => {}
                 }
@@ -4497,7 +5415,7 @@ fn member_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(NodeId, MemberBody<'p>
             let perspective = &p.name.name;
             let mut push = |member: NodeId, name: &str, position: &'static str, body: Block, params: &'p [Param]| {
                 let key = FnKey::method(DeclId::user(member), perspective.clone(), name);
-                out.push((p.id, MemberBody { key, position, body, params }))
+                out.push((p.id, MemberBody { key, position, initializer: None, body, params }))
             };
             for m in &p.members {
                 match m {
@@ -4737,15 +5655,17 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
             None
         }),
     });
-    let recognition_cap = l.annotations.iter().find_map(|a| match a {
-        LocusAnnotation::Projection(ProjectionClass::Recognition(Some(p))) => Some(p.cap),
+    let has_accept = l.members.iter().any(|m| matches!(m,
+        LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Accept));
+    let projection = l.annotations.iter().find_map(|a| match a {
+        LocusAnnotation::Projection(class) => Some(*class),
         _ => None,
-    });
+    }).unwrap_or(if has_accept { ProjectionClass::Chunked } else { ProjectionClass::Rich });
     LocusShape {
         name: l.name.name.clone(),
         capacity_slots,
         form,
-        recognition_cap,
+        projection: StorageProjectionRow { class: projection, accepts_children: has_accept },
     }
 }
 
@@ -5313,6 +6233,11 @@ fn resolve_function_values<'a>(
     // Every declared field, by name: its declared type (`None` where it
     // has none, or holds no value a call could be through).
     let mut field_tys: BTreeMap<String, Vec<Option<&'a TypeExpr>>> = BTreeMap::new();
+    // A call through an owner-declared field with no resolved method
+    // is a value call. Its declared type may be a function, alias or
+    // generic parameter. The owner prevents unrelated same-named fields
+    // from reclassifying an actual method call.
+    let mut declared_fields: BTreeSet<(String, String)> = BTreeSet::new();
     let mut aliases: BTreeSet<String> = BTreeSet::new();
     let mut nominal: BTreeSet<String> = BTreeSet::new();
     for s in scopes {
@@ -5323,6 +6248,7 @@ fn resolve_function_values<'a>(
                 aliases: &mut BTreeSet<String>,
                 nominal: &mut BTreeSet<String>,
                 field_tys: &mut BTreeMap<String, Vec<Option<&'a TypeExpr>>>,
+                declared_fields: &mut BTreeSet<(String, String)>,
             ) {
                 match &t.body {
                     TypeDeclBody::Alias(_) => {
@@ -5332,6 +6258,7 @@ fn resolve_function_values<'a>(
                         nominal.insert(t.name.name.clone());
                         for f in fs {
                             field_tys.entry(f.name.name.clone()).or_default().push(Some(&f.ty));
+                            declared_fields.insert((t.name.name.clone(), f.name.name.clone()));
                         }
                     }
                     // GH #1076: a scalar is a type of its own, not its base.
@@ -5345,7 +6272,7 @@ fn resolve_function_values<'a>(
                     TopDecl::Fn(f) => {
                         decls.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), f);
                     }
-                    TopDecl::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys),
+                    TopDecl::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys, &mut declared_fields),
                     TopDecl::Interface(i) => {
                         nominal.insert(i.name.name.clone());
                     }
@@ -5358,10 +6285,11 @@ fn resolve_function_values<'a>(
                                     let key = FnKey::method(DeclId::of(universe, f.id), l.name.name.clone(), f.name.name.clone());
                                     decls.insert(key, f);
                                 }
-                                LocusMember::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys),
+                                LocusMember::Type(t) => type_decl(t, &mut aliases, &mut nominal, &mut field_tys, &mut declared_fields),
                                 LocusMember::Params(pb) => {
                                     for p in &pb.params {
                                         field_tys.entry(p.name.name.clone()).or_default().push(p.ty.as_ref());
+                                        declared_fields.insert((l.name.name.clone(), p.name.name.clone()));
                                     }
                                 }
                                 LocusMember::Capacity(cb) => {
@@ -5451,13 +6379,25 @@ fn resolve_function_values<'a>(
     }
     summary.analysis_copy_values =
         taken.iter().filter(|(_, (c, _, own))| !own && matches!(c, Callee::Unresolved(_))).map(|(k, _)| k.clone()).collect();
+    // Classify before the method-value bailout: that horizon may prevent
+    // dispatch expansion, but cannot make a callback field a pure leaf.
+    for fs in summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().filter(|b| b.initializer.is_none() && b.position != "closure" && b.position != "birth_check").map(|b| &mut b.summary)) {
+        for edge in &mut fs.calls {
+            if let (Callee::Unresolved(name), Some(owner)) = (&edge.callee, &edge.recv_ty) {
+                if declared_fields.contains(&(owner.clone(), name.clone())) {
+                    edge.indirect = true;
+                    edge.bound_field = Some(name.clone());
+                }
+            }
+        }
+    }
     if method_value {
         return;
     }
     let types = FnTypes { aliases: &aliases, nominal: &nominal };
     // Declaration bodies carry the same call facts for editor dependents.
     // Keep their groups after the fn rows, as for interface dispatch.
-    let rows = summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().map(|b| &mut b.summary));
+    let rows = summary.fns.values_mut().chain(summary.declaration_bodies.iter_mut().filter(|b| b.initializer.is_none() && b.position != "closure" && b.position != "birth_check").map(|b| &mut b.summary));
     for fs in rows {
         if !fs.calls.iter().any(|e| e.indirect) {
             continue;
@@ -5560,7 +6500,20 @@ enum Local {
 /// declaration of that name ([`AllocSummary::by_name`]).
 type Known = BTreeMap<(Option<String>, String), FnKey>;
 
+/// Declaration-only data shapes used by receiver confinement. A template
+/// parameter is not a nominal record even when its spelling matches one.
+#[derive(Clone, Debug)]
+struct RecordConfinementShape {
+    fields: BTreeMap<String, String>,
+    parameters: BTreeSet<String>,
+}
+
 struct Walker<'a> {
+    purity_sites: Vec<crate::purity::PuritySite>,
+    value_conversions: BTreeSet<SiteId>,
+    scalar_constructors: &'a BTreeSet<String>,
+    allow_value_constructors: bool,
+    stack_bytes: u64,
     sites: Vec<AllocSite>,
     /// GH #265: syntactic effect sites (publish / spawn).
     effect_sites: Vec<EffectSite>,
@@ -5573,10 +6526,17 @@ struct Walker<'a> {
     /// #353: function-typed parameter names of the fn being walked, so
     /// a call through one can be marked indirect on its edge.
     fn_params: Vec<String>,
+    /// Lexically scoped type parameters: a symbolic type is no resolved
+    /// concrete receiver, even if a global locus has the same spelling.
+    generic_types: BTreeSet<String>,
+    /// Alias and locus names in this body's source universe.
+    scope_types: &'a crate::handler_routing::DeclaredNames,
+    import_renames: &'a [(Vec<String>, String)],
     /// The body's local bindings, innermost scope last, the params the
     /// outermost: what a call through each would reach.
     locals: Vec<BTreeMap<String, Local>>,
     calls: Vec<CallEdge>,
+    constructions: Vec<ConstructionSite>,
     /// The subexpressions the walk does not descend into (a callee that
     /// is no name), each summarized
     /// beside the body as a [`DeclarationBody`] of its declaration.
@@ -5629,6 +6589,7 @@ struct Walker<'a> {
     /// fallback for chained receivers passing through plain
     /// structs (`route.handler.handle()`).
     all_struct_fields: &'a BTreeMap<String, BTreeMap<String, String>>,
+    confinement_records: &'a BTreeMap<String, RecordConfinementShape>,
     /// #382 receiver-typing: per-locus ELEMENT types (array params
     /// fields + capacity slots), for `for`-binder typing.
     all_elem_types: &'a BTreeMap<String, BTreeMap<String, String>>,
@@ -5934,6 +6895,32 @@ impl<'a> Walker<'a> {
         key.is_some_and(|k| self.string_rets.contains(&k))
     }
 
+    /// A write through a managed or unresolved receiver needs proof that
+    /// the instance is confined. Plain data fields retain value semantics.
+    fn mutation_needs_confinement(&self, target: &LValue) -> bool {
+        let mut receiver = self.var_types.get(&target.head.name).cloned();
+        for (index, segment) in target.tail.iter().enumerate() {
+            let Some(ty) = receiver.as_ref() else { return true };
+            if self.generic_types.contains(ty) || self.locus_types.contains(ty) { return true; }
+            receiver = match segment {
+                LValueSeg::Field(field) => {
+                    let Some(record) = self.confinement_records.get(ty) else { return true };
+                    // Replacing a value record's own field does not mutate
+                    // an instance reached through that field. Primitive
+                    // fields need no nominal receiver type in the map.
+                    if index + 1 == target.tail.len() { return false; }
+                    let next = record.fields.get(&field.name);
+                    if next.is_some_and(|name| record.parameters.contains(name)) { return true; }
+                    next.cloned()
+                },
+                LValueSeg::Index(_) if index == 0 => self.var_elem_types.get(&target.head.name).cloned(),
+                LValueSeg::Index(_) => None,
+            };
+            if receiver.is_none() { return true; }
+        }
+        false
+    }
+
     /// The declared/inferable LOCUS type of a receiver expression
     /// (#382 receiver-typing root fix). Beyond the original two
     /// shapes (bare var via `var_types`, `self.<field>` via
@@ -5941,13 +6928,14 @@ impl<'a> Walker<'a> {
     /// silently-dropped unresolved edges: a struct-literal receiver
     /// (`B { }.work()`), a chained field (`self.mid.inner.work()`),
     /// a call result (`make_b().work()`), and a uniform if/else
-    /// value. Anything genuinely untypeable at this layer (an index
-    /// result, a match value, a foreign expression) returns `None`
+    /// value, and an index into an array with a known element type.
+    /// Anything genuinely untypeable at this layer (a match value or
+    /// a foreign expression) returns `None`
     /// and downstream soundness judgments fail closed on the edge.
     /// Used to spot growing-`@form` receivers (D2) and to resolve
     /// handle-method call edges (`record_call`).
     fn receiver_type_name(&self, recv: &Expr) -> Option<String> {
-        match recv {
+        let name = match recv {
             Expr::Ident(v) => self.var_types.get(&v.name).cloned(),
             Expr::KwSelf(_) => self.enclosing_locus.clone(),
             Expr::Field { receiver, name, .. }
@@ -6023,10 +7011,19 @@ impl<'a> Walker<'a> {
                 _ => None,
             },
             Expr::If(ifs) => self.if_locus_type(ifs),
+            Expr::Index { receiver, .. } => self.iter_elem_type(receiver),
             // `mws.get(i) or raise` — the disposition unwraps the
             // fallible; the VALUE'S type is the inner call's.
             Expr::Or { inner, .. } => self.receiver_type_name(inner),
             _ => None,
+        }?;
+        if self.generic_types.contains(&name) {
+            return None;
+        }
+        match self.scope_types.aliases.get(&name) {
+            Some(target) => crate::handler_routing::resolve_named_type(target, self.scope_types, self.import_renames)
+                .map(|(_, declaration)| declaration),
+            None => Some(name),
         }
     }
 
@@ -6485,6 +7482,7 @@ impl<'a> Walker<'a> {
         self.place_cell_copy(stmt.span(), depth, per_iteration);
         match stmt {
             Stmt::Let { name, ty, value, id, span, .. } => {
+                self.stack_bytes = self.stack_bytes.saturating_add(crate::quantitative::local_stack_bytes(ty.as_ref(), value));
                 // D2: a typed `let v: T = …` extends the var→type map so a
                 // later `v.push(x)` can resolve `v`'s form.
                 if let Some(et) = ty.as_ref().and_then(|t| match t {
@@ -6539,6 +7537,7 @@ impl<'a> Walker<'a> {
                 self.bind_taint(&name.name, taint);
             }
             Stmt::LetTuple { names, value, span, .. } => {
+                self.stack_bytes = self.stack_bytes.saturating_add((names.len() as u64).saturating_mul(8));
                 let taint = self.taint_of(value);
                 self.walk_let_value(value, *span, depth, Escape::Local);
                 for n in names {
@@ -6548,6 +7547,15 @@ impl<'a> Walker<'a> {
                 }
             }
             Stmt::Assign { target, op, value, id, span, .. } => {
+                if !target.tail.is_empty() {
+                    let action = if target.head.name == "self" {
+                        Some(crate::purity::StateAction::SelfWrite(crate::purity::format_lvalue_chain(target)))
+                    } else if self.mutation_needs_confinement(target) {
+                        Some(crate::purity::StateAction::LocusWrite(crate::purity::format_lvalue_chain(target)))
+                    } else { None };
+                    if let Some(action) = action { self.purity_sites.push(crate::purity::PuritySite { action, span: *span }); }
+                }
+
                 // GH #540: a write to a field of any place may be a write
                 // to an interface-typed slot of that name.
                 for seg in &target.tail {
@@ -6642,7 +7650,7 @@ impl<'a> Walker<'a> {
             // Perspectives Phase 2b: `reperspective` instantiates a
             // fresh impl (bounded, one per swap) — no expression to
             // walk for the alloc summary.
-            Stmt::Reperspective { .. } => {}
+            Stmt::Reperspective { span, .. } => self.purity_sites.push(crate::purity::PuritySite { action: crate::purity::StateAction::Reperspective, span: *span }),
             Stmt::Fail { value, .. } => self.walk_diverging_payload(value),
             Stmt::Send { subject, value, span, .. } => {
                 // GH #265: a publish is an effect the language
@@ -6766,7 +7774,8 @@ impl<'a> Walker<'a> {
             Stmt::If(if_stmt) => self.walk_if(if_stmt, depth, Escape::Local),
             Stmt::Match(m) => self.walk_match(m, depth, Escape::Local),
             Stmt::Block(b) => self.walk_block(b, depth, Escape::Local),
-            Stmt::ShmWrite { max, binding, body, .. } => {
+            Stmt::ShmWrite { max, binding, body, span, .. } => {
+                self.purity_sites.push(crate::purity::PuritySite { action: crate::purity::StateAction::SharedWrite, span: *span });
                 self.walk_expr(max, depth, Escape::Local);
                 // The body writes into the ring view, not the arena; treat
                 // its allocations as local for now.
@@ -6785,9 +7794,13 @@ impl<'a> Walker<'a> {
                 self.walk_expr(e, depth, Escape::Local);
                 self.bare_stmt = None;
             }
-            Stmt::Recovery { args, .. } => {
+            Stmt::Recovery { op, args, modifier, span } => {
+                self.push_effect_site(EffectSiteKind::Recovery(*op), depth, *span);
                 for a in args {
                     self.walk_expr(a, depth, Escape::Local);
+                }
+                if let Some(RecoveryModifier::For(bound) | RecoveryModifier::Until(bound)) = modifier {
+                    self.walk_expr(bound, depth, Escape::Local);
                 }
             }
             Stmt::Violate { name, payload, span } => {
@@ -6796,7 +7809,9 @@ impl<'a> Walker<'a> {
                     self.walk_expr(p, depth, Escape::Local);
                 }
             }
-            Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::Yield(span) => self.purity_sites.push(crate::purity::PuritySite { action: crate::purity::StateAction::Yield, span: *span }),
+            Stmt::Terminate(span) => self.purity_sites.push(crate::purity::PuritySite { action: crate::purity::StateAction::Terminate, span: *span }),
+            Stmt::Break(_) | Stmt::Continue(_) => {}
         }
     }
 
@@ -6846,7 +7861,30 @@ impl<'a> Walker<'a> {
     fn walk_expr(&mut self, expr: &Expr, depth: u32, escape: Escape) {
         self.place_cell_copy(expr.span(), depth, false);
         match expr {
-            Expr::Struct { path, inits, span, .. } => {
+            Expr::Struct { path, inits, span, id } => {
+                // Resolve the declaration in the same scope and with the
+                // same alias/import rules as receiver and handler routing.
+                let ty = TypeExpr::Named { path: path.clone(), generic_args: Vec::new(), span: *span };
+                let nominal = crate::handler_routing::resolve_named_type(&ty, self.scope_types, self.import_renames)
+                    .filter(|(_, name)| !self.generic_types.contains(name));
+                let target = nominal.as_ref().and_then(|(_, name)| self.scope_types.decls.get(name).or_else(|| self.scope_types.records.get(name)))
+                    .and_then(|decl| match decl {
+                        crate::handler_routing::DeclAt::Program(id) => DeclId::user(*id),
+                        crate::handler_routing::DeclAt::Stdlib(id) => DeclId::stdlib(*id),
+                    });
+                let lifecycle_owner = nominal.as_ref().filter(|(_, name)| self.scope_types.loci.contains(name))
+                    .and_then(|(_, name)| self.scope_types.decls.get(name).map(|decl| {
+                        let (universe, node) = match decl {
+                            crate::handler_routing::DeclAt::Program(id) => (SiteUniverse::User, *id),
+                            crate::handler_routing::DeclAt::Stdlib(id) => (SiteUniverse::StdlibAnalysis, *id),
+                        };
+                        crate::lifecycle_hooks::LifecycleOwner::new(universe, node, name.clone())
+                    }));
+                self.constructions.push(ConstructionSite {
+                    site: self.escaping.ids.site_id(*id), target, lifecycle_owner,
+                    supplied: inits.iter().map(|si| si.name.name.clone()).collect(), span: *span,
+                    loop_depth: depth, in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                });
                 // The *qualified* path (joined) — a local struct is
                 // single-segment ("Quote"), a stdlib one carries its full
                 // path ("std::io::tcp::Listener") so consumers can match it
@@ -6885,7 +7923,10 @@ impl<'a> Walker<'a> {
                 if let Some(l) = struct_locus(path, self.locus_types) {
                     self.starts.insert(l);
                 }
-                if self.locus_types.contains(&name) {
+                let constructed_locus = nominal.as_ref().filter(|(_, name)| self.scope_types.loci.contains(name)).map(|(_, declaration)| declaration.clone())
+                    .or_else(|| self.locus_types.contains(&name).then(|| name.clone()));
+                if let Some(constructed_locus) = constructed_locus {
+                    self.starts.insert(constructed_locus.clone());
                     // GH #265: locus instantiation — an effect in its
                     // own right (arena create, possibly a thread or
                     // pool post), recorded whether or not the alloc
@@ -7008,8 +8049,8 @@ impl<'a> Walker<'a> {
                 self.walk_expr(right, depth, Escape::Local);
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
-            Expr::Call { callee, args, span, .. } => {
-                self.record_call(callee, args, *span, depth, escape);
+            Expr::Call { callee, args, span, id } => {
+                self.record_call(callee, args, *span, self.escaping.ids.site_id(*id), depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }
@@ -7077,7 +8118,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, depth: u32, escape: Escape) {
+    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, authored: Option<hale_graph::ids::SiteId>, depth: u32, escape: Escape) {
         let arity = args.len();
         // GH #1490 (step 4): what each argument carries, for the callee's
         // parameters' provenance, and whether the call is on `self`.
@@ -7153,7 +8194,7 @@ impl<'a> Walker<'a> {
                     receiver_present = false;
                 }
                 // `self.m()` — the enclosing locus is the receiver type.
-                let owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                let mut owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                     self.enclosing_locus.clone()
                 } else {
                     // GH #265 soundness: a call through a HANDLE
@@ -7167,6 +8208,15 @@ impl<'a> Walker<'a> {
                     self.receiver_type_name(receiver)
                 };
                 recv_ty = owner.clone();
+                if owner.as_ref().is_some_and(|ty| self.generic_types.contains(ty)) {
+                    // The typed body retains T; this dispatch summary has no
+                    // concrete target for it. Every consumer shares the
+                    // existing opaque-receiver horizon instead of treating
+                    // `T::method` as a classified zero-effect leaf.
+                    recv_ty = None;
+                    receiver_present = true;
+                    owner = None;
+                }
                 match owner {
                     Some(ty) => match self.known.get(&(Some(ty), name.name.clone())) {
                         Some(key) => Callee::Resolved(key.clone()),
@@ -7193,6 +8243,12 @@ impl<'a> Walker<'a> {
             _ => false,
         };
         let indirect = through_param || unresolved_local || computed;
+        if self.allow_value_constructors && !indirect && !receiver_present && via_local.is_none()
+            && arity == 1 && matches!(callee, Expr::Ident(_))
+            && matches!(&resolved, Callee::Unresolved(name) if self.scalar_constructors.contains(name) && !self.generic_types.contains(name))
+        {
+            if let Some(site) = authored { self.value_conversions.insert(site); }
+        }
         // GH #1490 (step 4): a parameter the call leaves takes its
         // default, evaluated here, in the caller's scope.
         if let Callee::Resolved(key) = &resolved {
@@ -7219,6 +8275,8 @@ impl<'a> Walker<'a> {
         let allocating_recv = spelling.allocating_recv();
         if let Some(hook) = evict_hook {
             self.calls.push(CallEdge {
+                authored: None,
+                closure_context_unknown: false,
                 recv_ty: recv_ty.clone(),
                 receiver_present,
                 callee: Callee::Resolved(hook),
@@ -7246,6 +8304,8 @@ impl<'a> Walker<'a> {
             });
         }
         self.calls.push(CallEdge {
+            authored,
+            closure_context_unknown: false,
             recv_ty,
             receiver_present,
             callee: resolved,
@@ -7389,9 +8449,12 @@ impl Reassigned {
             Stmt::Block(b) => self.block(b, Vec::new()),
             Stmt::Return(Some(e), _) | Stmt::Fail { value: e, .. } | Stmt::Expr(e) => self.expr(e),
             Stmt::Violate { payload: Some(e), .. } => self.expr(e),
-            Stmt::Recovery { args, .. } => {
+            Stmt::Recovery { args, modifier, .. } => {
                 for a in args {
                     self.expr(a);
+                }
+                if let Some(RecoveryModifier::For(bound) | RecoveryModifier::Until(bound)) = modifier {
+                    self.expr(bound);
                 }
             }
             Stmt::Send { subject, value, or_disposition, .. } => {
@@ -9817,7 +10880,7 @@ mod tests {
         "#;
         let s = summarize(src);
         let coord = s.locus_shapes.get("Coord").expect("Coord shape");
-        assert_eq!(coord.recognition_cap, Some(64));
+        assert_eq!(coord.recognition_cap(), Some(64));
     }
 
     #[test]
@@ -10349,5 +11412,31 @@ mod tests {
         let s = summarize(src);
         let marked: Vec<bool> = fns(&s, None, "g").calls.iter().map(|c| c.unresolved_local).collect();
         assert_eq!(marked, [true, true, true, true, true, true, true, true, false, false, false, false]);
+    }
+}
+
+
+impl AllocSummary {
+    /// The effective projection rows, including every concrete locus in
+    /// the shared specialization inventory. Specialization rekeys a
+    /// declaration's policy: recognition cap/mode are literal declaration
+    /// parameters, so no type substitution or source traversal is needed.
+    pub fn storage_projections(
+        &self,
+        instances: &[crate::generic_instances::Instantiation],
+    ) -> Result<BTreeMap<String, StorageProjectionRow>, String> {
+        let mut rows: BTreeMap<_, _> = self
+            .locus_shapes
+            .iter()
+            .map(|(name, shape)| (name.clone(), shape.projection))
+            .collect();
+        for instance in instances.iter().filter(|i| i.locus) {
+            let class = self.locus_shapes.get(&instance.template).ok_or_else(|| format!(
+                "required alloc_summary storage projection for template `{}` is missing while specializing `{}`",
+                instance.template, instance.name,
+            ))?.projection;
+            rows.insert(instance.name.clone(), class);
+        }
+        Ok(rows)
     }
 }

@@ -19,7 +19,10 @@
 //! same entries by the statement's span
 //! ([`HandlerRouting::retry_bound_at`]), so the model's bound and the
 //! one lowered are one fact. Restart-in-place
-//! attribution is a question over those ops. Beside the rows, the
+//! vocabulary is a question over those ops. These are declaration
+//! summaries, not recovery target semantics: the checker records each
+//! actual receiver in `TypedBodies::recoveries`, including in handlers.
+//! Beside the rows, the
 //! routing states per locus declaration whether a failure can originate
 //! there ([`HandlerRouting::can_fail`]), which is where lowering emits
 //! restart points.
@@ -318,10 +321,10 @@ impl HandlerRouting {
         InstanceKey::Decl(decl.0, specialization)
     }
 
-    /// Whether some handler, in any parent, restarts a child of locus
-    /// type `child` in place: such a child keeps a copy of the params
-    /// it was built with.
-    pub fn restarts_in_place(&self, child: &str) -> bool {
+    /// Whether a handler with child type `child` contains this op in its
+    /// syntactic survey. This does not identify the op's receiver. Runtime
+    /// snapshot eligibility reads `TypedBodies::may_restart_in_place`.
+    pub fn signature_restarts_in_place(&self, child: &str) -> bool {
         self.rows.iter().chain(self.specialized.values().flatten()).any(|r| {
             matches!(&r.child, ChildRef::Locus(n) if n == child)
                 && r.ops.contains(&RecoveryOp::RestartInPlace)
@@ -356,6 +359,9 @@ pub enum InstanceKey {
 #[derive(Debug, Clone, Default)]
 pub struct DeclaredNames {
     pub loci: BTreeSet<String>,
+    /// Record declarations share nominal resolution with loci but are never
+    /// lifecycle children or spawn targets.
+    pub records: BTreeMap<String, DeclAt>,
     pub aliases: BTreeMap<String, TypeExpr>,
     /// Each declared locus's declaration: the first a program
     /// declares, else the bundled stdlib analysis copy's.
@@ -386,6 +392,11 @@ impl DeclaredNames {
                     out.loci.insert(l.name.name.clone());
                     out.decls.entry(l.name.name.clone()).or_insert(DeclAt::Stdlib(l.id));
                 }
+                if let TopDecl::Type(t) = item {
+                    if matches!(t.body, TypeDeclBody::Struct(_)) {
+                        out.records.entry(t.name.name.clone()).or_insert(DeclAt::Stdlib(t.id));
+                    }
+                }
             }
         }
         let mut own: BTreeSet<String> = BTreeSet::new();
@@ -398,9 +409,14 @@ impl DeclaredNames {
                             out.decls.insert(l.name.name.clone(), DeclAt::Program(l.id));
                         }
                     }
-                    TopDecl::Type(t) if t.generics.is_empty() => {
-                        if let TypeDeclBody::Alias(te) = &t.body {
-                            out.aliases.insert(t.name.name.clone(), te.clone());
+                    TopDecl::Type(t) => {
+                        if matches!(t.body, TypeDeclBody::Struct(_)) {
+                            out.records.insert(t.name.name.clone(), DeclAt::Program(t.id));
+                        }
+                        if t.generics.is_empty() {
+                            if let TypeDeclBody::Alias(te) = &t.body {
+                                out.aliases.insert(t.name.name.clone(), te.clone());
+                            }
                         }
                     }
                     _ => {}
@@ -467,15 +483,28 @@ pub(crate) fn resolve_locus_type(
     declared: &DeclaredNames,
     import_renames: &[(Vec<String>, String)],
 ) -> Option<ResolvedLocusType> {
-    let (name, declaration) = resolve(te, declared, import_renames, &mut Vec::new())?;
+    let (name, declaration) = resolve_named_type(te, declared, import_renames)?;
+    if !declared.loci.contains(&declaration) {
+        return None;
+    }
     let at = declared.decls.get(&declaration).copied();
     Some(ResolvedLocusType { name, declaration, at })
 }
 
-/// The locus name `te` denotes if it denotes one, with the name of the
-/// declaration that locus is (a monomorph's template): `None` for a
-/// type no declared locus answers to.
-fn resolve(
+/// The named type a type expression denotes, retaining its template
+/// declaration beside the physical generic name. Alias expansion and
+/// qualified-path resolution are shared with locus routing; callers classify
+/// the resolved declaration (locus, interface, record) in their own tables.
+/// A function/compound type or cyclic alias has no nominal receiver here.
+pub(crate) fn resolve_named_type(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    renames: &[(Vec<String>, String)],
+) -> Option<(String, String)> {
+    resolve_named(te, declared, renames, &mut Vec::new())
+}
+
+fn resolve_named(
     te: &TypeExpr,
     declared: &DeclaredNames,
     renames: &[(Vec<String>, String)],
@@ -491,19 +520,16 @@ fn resolve(
         crate::resolved::lookup_qualified_path(&segs, renames)?
     };
     if !generic_args.is_empty() {
-        if !declared.loci.contains(&name) {
-            return None;
-        }
         let mangled = crate::mangle::mangle_generic_name(&name, generic_args).ok()?;
         return Some((mangled, name));
     }
     match declared.aliases.get(&name) {
         Some(target) if !seen.contains(&name) => {
             seen.push(name);
-            resolve(target, declared, renames, seen)
+            resolve_named(target, declared, renames, seen)
         }
         Some(_) => None,
-        None => declared.loci.contains(&name).then(|| (name.clone(), name)),
+        None => Some((name.clone(), name)),
     }
 }
 

@@ -530,10 +530,8 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             // enforced naturally as the counter accumulates
             // across attempts.
             self.builder.position_at_end(call_birth_bb);
-            let birth_fn = *info
-                .methods
-                .get("birth")
-                .expect("birth method present");
+            let birth_fn = self.birth_method(&info, locus_name, false)?.ok_or_else(||
+                CodegenError::missing_row("alloc_summary", "the restart's source birth body", None))?;
             self.builder
                 .build_call(
                     birth_fn,

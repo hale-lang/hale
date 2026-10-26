@@ -244,6 +244,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l03_body_literal_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l04_dissolve_route_reclaim.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: outcome_or_exit },
     Fixture { file: "l04_dissolve_route_cascade.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: handled_once },
+    Fixture { file: "l04_dissolve_bound_supervisors.hl", line: "4", adopted: Some("bound-supervisors"), run: RunMode::Plain, judge: bound_supervisors },
     Fixture { file: "l05_accept_position.hl", line: "5", adopted: Some("accept-after-params-before-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l06_readiness_main.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l06_readiness_pool.hl", line: "6", adopted: Some("delivered-after-birth"), run: RunMode::Plain, judge: outcome_line },
@@ -303,14 +304,7 @@ const FIXTURES: &[Fixture] = &[
 /// today's outcome). Each is asserted to give today's outcome, and to
 /// not give the adopted one.
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
-    ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
-    ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    // A yield inside a handler on a pinned thread runs the owner's
-    // handler that reclaims the suspended one's subscriber, which no hold
-    // keeps. Deferred: a pinned handler holds its subscriber (or the
-    // reclaim waits for it to return) as a pool worker's does. No read
-    // word: the read is of freed memory, judged under ASan.
-    ("l19_pinned_yield_replaces_child.hl", "R52", "reclaimed-under-handler dissolved-once-each"),
+
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -381,6 +375,10 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             &["4"]
         }
         "l04_dissolve_route_cascade.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
+            &["4"]
+        }
+        "l04_dissolve_bound_supervisors.hl" => {
             p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
             &["4"]
         }
@@ -463,13 +461,9 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.occurrences = count(&[("Kid", 1)]);
             &["9"]
         }
-        // Line 10's fixture runs on line 4's open path (C31): the
-        // violation takes the structural exit inside the cascade's
-        // dissolve of Kid.
         "l10_dissolve_closures_first.hl" => {
             p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
-            p.ends_inside = Some(Inside { decl: Some("Kid".into()), kind: ObligationKind::Dissolve, spine: None });
-            &["10"]
+            &["4", "10"]
         }
         "l11_let_bound_drain.hl" => &["11"],
         "l11_idle_reclaim_deregisters.hl" => {
@@ -618,26 +612,6 @@ fn fixture_plan(file: &str) -> Option<Expected> {
 /// list fails the fixture as it would any other, and when the fix lands
 /// they go, the assertion fails, and so does the entry.
 const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
-    // The failure raised at Flowing's dissolve takes the structural
-    // exit: the process ends inside that dissolve, so nothing owed after
-    // it is reached.
-    (
-        "l04_dissolve_route_reclaim.hl",
-        "C25",
-        &[
-            "missing: Flowing.FailureDelivery",
-            "missing: Flowing.Reclaim",
-            "missing: App.Drain",
-            "missing: App.Dissolve",
-            "missing: App.Reclaim",
-        ],
-    ),
-    // The same exit, inside the cascade's dissolve of Kid.
-    (
-        "l04_dissolve_route_cascade.hl",
-        "C31",
-        &["missing: Kid.FailureDelivery", "missing: Kid.Reclaim", "missing: App.Reclaim"],
-    ),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.
     (
@@ -1172,16 +1146,42 @@ fn wait_abort(r: &Ran) -> String {
     outcome_line(r)
 }
 
-/// The handler's line before the dissolve's; or, while the cascade's
-/// route misses the handler, the violation's exit with no dissolve
-/// line printed before it. Both say the closure ran first.
+/// A successful delivery to the handler must precede the dissolve.
 fn closures_before_dissolve(r: &Ran) -> String {
     match (pos(r, "ev handler clean"), pos(r, "ev kid-dissolve")) {
-        (Some(h), Some(d)) if h < d => "closures-before-dissolve".to_string(),
+        (Some(h), Some(d)) if h < d && r.code == Some(0) => "closures-before-dissolve".to_string(),
         (Some(_), Some(_)) => "dissolve-before-closures".to_string(),
-        (None, None) if r.stderr.contains("closure `clean` failed at dissolve") => "closures-before-dissolve".to_string(),
-        (None, Some(_)) if r.stderr.contains("closure `clean` failed at dissolve") => "dissolve-before-closures".to_string(),
         _ => exit_word(r),
+    }
+}
+
+fn bound_supervisors(r: &Ran) -> String {
+    if r.code == Some(0)
+        && count(r, "ev supervisor FIRST CHILD clean") == 1
+        && count(r, "ev supervisor SECOND CHILD clean") == 1
+        && count(r, "ev wrong-supervisor") == 0
+    {
+        "bound-supervisors".to_string()
+    } else {
+        format!("wrong delivery: {} {}", r.stdout, exit_word(r))
+    }
+}
+
+#[test]
+fn dissolve_failure_without_a_handler_keeps_structural_exit() {
+    for file in ["l04_dissolve_route_reclaim.hl", "l04_dissolve_route_cascade.hl"] {
+        let original = source(file);
+        let handlers: Vec<_> = original.lines().filter(|line| line.trim_start().starts_with("on_failure(")).collect();
+        assert_eq!(handlers.len(), 1, "one single-line handler in {file}");
+        assert!(handlers[0].trim_end().ends_with('}'));
+        let unhandled = original.replace(handlers[0], "");
+        let bin = harness::unique_bin("hale_dissolve_no_handler");
+        build_opts::build_source(&unhandled, &bin, &build_opts::options()).expect("unhandled fixture builds");
+        let ran = run_bin(&bin, RunMode::Plain, &[]);
+        let _ = std::fs::remove_file(&bin);
+        assert_eq!(ran.code, Some(1), "{file}: {} {}", ran.stdout, ran.stderr);
+        assert!(ran.stderr.contains("closure `clean` failed at dissolve"), "{file}: {}", ran.stderr);
+        assert!(!ran.stdout.contains("owner-handled-once") && !ran.stdout.contains("ev handler"));
     }
 }
 
@@ -1514,33 +1514,26 @@ fn reused_address(r: &Ran) -> String {
     }
 }
 
-/// Whether the old Kid's reclaim came after its suspended handler's read
-/// or under it, and each Kid's teardown (R52 on a pinned thread). Both
-/// are facts of order and count. What the read printed is judged only
-/// when the reclaim came after it, the one order in which the read is
-/// defined: under the handler it reads a released arena, and what that
-/// prints depends on whether the chunk pool handed the bytes out again
-/// (`2` by default, `kid-1-name` under `LOTUS_NO_CHUNK_POOL=1`, GH #816).
-/// That read is judged by `l19_pinned_yield_replaces_child_under_asan`,
-/// which asserts the heap-use-after-free, not what it printed.
+/// Read the old child whole and require its physical reclaim to end
+/// after its handler. A dissolve body is logical teardown, so its print
+/// alone cannot establish when the arena was released.
+
 fn pinned_yield(r: &Ran) -> String {
     if r.timed_out || r.code != Some(0) {
         return exit_word(r);
     }
-    let starts = |prefix: &str| r.stdout.lines().position(|l| l.starts_with(prefix));
-    let once = if count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1 {
-        "dissolved-once-each"
+    let handler = r.trace.events.iter().find(|e| e.decl.as_deref() == Some("Kid")
+        && e.kind == ObligationKind::Handler && e.point == Point::Completed);
+    let storage_after = handler.is_some_and(|h| r.trace.events.iter().any(|e|
+        e.subject == h.subject && e.kind == ObligationKind::Reclaim
+            && e.point == Point::Completed && e.seq > h.seq));
+    let once = count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1;
+    if storage_after && once && count(r, "ev kid-handler-read kid-1-name") == 1 {
+        "read-whole reclaimed-after-handler dissolved-once-each".into()
     } else {
-        "dissolved-other"
-    };
-    match (starts("ev kid-handler-read "), pos(r, "ev kid-dissolve 1")) {
-        (Some(h), Some(d)) if h < d => {
-            let read = if count(r, "ev kid-handler-read kid-1-name") == 1 { "read-whole" } else { "read-torn" };
-            format!("{read} reclaimed-after-handler {once}")
-        }
-        (Some(_), Some(_)) => format!("reclaimed-under-handler {once}"),
-        _ => format!("unread-or-undissolved {once}"),
+        format!("storage_after={storage_after} once={once}: {}", r.stdout)
     }
+
 }
 
 fn completed_or_named(r: &Ran) -> String {
@@ -2107,6 +2100,7 @@ fixture_tests! {
     l03_body_literal_one_domain => "l03_body_literal_one_domain.hl",
     l04_dissolve_route_reclaim => "l04_dissolve_route_reclaim.hl",
     l04_dissolve_route_cascade => "l04_dissolve_route_cascade.hl",
+    l04_dissolve_bound_supervisors => "l04_dissolve_bound_supervisors.hl",
     l05_accept_position => "l05_accept_position.hl",
     l06_readiness_main => "l06_readiness_main.hl",
     l06_readiness_pool => "l06_readiness_pool.hl",
@@ -2205,7 +2199,7 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     let file = "l19_cross_pool_queued_run_canceled.hl";
     let bin = harness::unique_bin("hale_lifecycle_asan_l19_cross_pool");
     harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
@@ -2213,27 +2207,58 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
 }
 
-/// R52 on a pinned thread, known open, under AddressSanitizer with chunk
-/// pooling off (GH #816): the owner's handler, run by the yield inside
-/// the child's handler, releases the child's arena, and the suspended
-/// handler reads its name from it once the sleep returns. Asserted to
-/// report that heap-use-after-free today; when a pinned handler holds
-/// its subscriber the run is clean, this fails, and it becomes an
-/// [`assert_clean_under_asan`] test beside the fixture's KNOWN_OPEN
-/// entry going.
+/// R52: nested mailbox handlers retain the suspended subscriber.
 #[test]
 fn l19_pinned_yield_replaces_child_under_asan() {
     let file = "l19_pinned_yield_replaces_child.hl";
-    let bin = harness::unique_bin("hale_lifecycle_asan_l19_pinned_yield");
-    harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    for no_bus_devirt in [false, true] {
+        let bin = harness::unique_bin("hale_lifecycle_asan_l19_pinned_yield");
+        let options = hale_codegen::BuildOptions {
+            asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+        };
+        build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
+        let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
+        let _ = std::fs::remove_file(&bin);
+        let report = format!("{}\n{}", ran.stdout, ran.stderr);
+        for marker in SANITIZER_MARKERS { assert!(!report.contains(marker), "{file}: {report}"); }
+        assert_eq!(pinned_yield(&ran), fixture(file).adopted.unwrap(), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+        assert_trace(file, &ran);
+    }
+}
+
+/// Removing the mailbox's hold must restore the real stale read in
+/// both dispatch modes, not merely change a printed outcome word.
+#[test]
+fn a_pinned_handler_without_its_hold_reads_reclaimed_storage() {
+    let file = "l19_pinned_yield_replaces_child.hl";
+    for no_bus_devirt in [false, true] {
+        let bin = harness::unique_bin("hale_lifecycle_pinned_no_hold");
+        let options = hale_codegen::BuildOptions {
+            asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+        };
+        build_opts::build_source(&source(file), &bin, &options).expect("ASan control build");
+        let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()),
+            ("LOTUS_NO_CHUNK_POOL", "1"), ("LOTUS_LIFECYCLE_SKIP", "HandlerHold")]);
+        let _ = std::fs::remove_file(&bin);
+        let report = format!("{}\n{}", ran.stdout, ran.stderr);
+        assert!(ran.code != Some(0) && report.contains("heap-use-after-free")
+            && report.contains("Kid.on_go"), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+    }
+}
+
+/// Keeping the hold but waiting inside the nested replacement prevents
+/// the suspended handler below it from returning and releasing that hold.
+#[test]
+fn a_pinned_handler_without_storage_retirement_waits_on_its_own_stack() {
+    let bin = harness::unique_bin("hale_pinned_storage_negative");
+    let options = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
+    build_opts::build_source(&source("l19_pinned_yield_replaces_child.hl"), &bin, &options).expect("build");
+    let ran = run_bin(&bin, RunMode::Plain, &[("LOTUS_LIFECYCLE_SKIP", "HandlerStorage")]);
     let _ = std::fs::remove_file(&bin);
-    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
-    assert!(
-        report.contains("heap-use-after-free") && report.contains("Kid.on_go") && report.contains("__release_storage_Kid_Reclaim"),
-        "{file} under ASan no longer reports the handler reading its reclaimed arena (KNOWN_OPEN at R52): {}\n{report}",
-        exit_word(&ran)
-    );
+    assert!(ran.timed_out, "nested replacement unexpectedly completed: {} {}", ran.stdout, ran.stderr);
+    assert_eq!(count(&ran, "ev owner-swap"), 1);
+    assert_eq!(count(&ran, "ev kid-dissolve 1"), 1);
+    assert_eq!(count(&ran, "ev kid-handler-read kid-1-name"), 0);
 }
 
 /// Decision line 19, a started run, under AddressSanitizer with chunk
@@ -2244,12 +2269,39 @@ fn l19_pinned_yield_replaces_child_under_asan() {
 fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
     let bin = harness::unique_bin(&format!("hale_lifecycle_asan_{tag}"));
     harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
     let _ = std::fs::remove_file(&bin);
     let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
     let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
     assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
     assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+/// The failed child and its selected supervisor remain readable until
+/// delivery returns, including the flow's reclaim and recursive cascade.
+#[test]
+fn dissolve_failure_routes_under_asan_both_dispatch_modes() {
+    for file in ["l04_dissolve_route_reclaim.hl", "l04_dissolve_route_cascade.hl", "l04_dissolve_bound_supervisors.hl"] {
+        let f = fixture(file);
+        for no_bus_devirt in [false, true] {
+            let bin = harness::unique_bin("hale_dissolve_route_asan");
+            let options = hale_codegen::BuildOptions {
+                asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+            };
+            build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
+            let image = std::fs::read(&bin).expect("read ASan binary");
+            assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let _ = std::fs::remove_file(&bin);
+            let report = format!("{}\n{}", ran.stdout, ran.stderr);
+            for marker in SANITIZER_MARKERS {
+                assert!(!report.contains(marker), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            }
+            assert_eq!(ran.code, Some(0), "{file}: {report}");
+            assert_eq!(Some((f.judge)(&ran).as_str()), f.adopted, "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+            assert_trace(file, &ran);
+        }
+    }
 }
 
 /// R33 on the idle path: each let-bound Kid's reclaim deregisters it with
@@ -2334,7 +2386,7 @@ fn handler_reclaim_and_run_control_under_asan_both_dispatch_modes() {
             build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("read ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"), "ASan instrumentation is required");
-            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
             let _ = std::fs::remove_file(&bin);
             let report = format!("{}\n{}", ran.stdout, ran.stderr);
             for marker in SANITIZER_MARKERS {
@@ -2376,7 +2428,7 @@ fn retired_run_self_reclaim_has_one_owner_under_asan() {
                 build_opts::build_source(&src, &bin, &options).expect("ASan build");
                 let image = std::fs::read(&bin).expect("ASan binary");
                 assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
-                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+                let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
                 let _ = std::fs::remove_file(&bin);
                 let report = format!("{}\n{}", ran.stdout, ran.stderr);
                 for marker in SANITIZER_MARKERS {
@@ -2424,7 +2476,7 @@ locus Kid {"#)
             build_opts::build_source(&src, &bin, &options).expect("ASan build");
             let image = std::fs::read(&bin).expect("ASan binary");
             assert!(image.windows(b"__asan_init".len()).any(|w| w == b"__asan_init"));
-            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+            let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
             let _ = std::fs::remove_file(&bin);
             let report = format!("{}\n{}", ran.stdout, ran.stderr);
             for marker in SANITIZER_MARKERS {

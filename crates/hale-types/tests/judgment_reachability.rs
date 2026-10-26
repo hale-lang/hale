@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use hale_types::claim_lowering::lower_claims;
 use hale_types::judgment::{
-    judge_bound, judge_endpoints, judge_forbid_reaches,
+    judge_bound, judge_endpoints, judge_forbid_reaches as judge_without_proofs,
     judge_only_edges,
 };
 use hale_types::symbol::SourceFile;
@@ -22,6 +22,35 @@ use hale_types::Bundle;
 #[path = "support/entries.rs"]
 mod entries;
 use entries::derive_application_model;
+
+// Every existing reachability regression also exercises proof extraction. The
+// ordinary check must retain byte-identical verdicts and diagnostics, including
+// model-mutation cases, holes, bus composition and stdlib absorption.
+fn judge_forbid_reaches(
+    table: &hale_model::ClaimIrTable,
+    model: &hale_model::ApplicationModel,
+    bases: &[u32],
+) -> (Vec<hale_syntax::Diag>, Vec<hale_types::judgment::Judged>) {
+    use hale_types::verdict::Verdict;
+    let plain = judge_without_proofs(table, model, bases);
+    let (pre, rows, proofs) = hale_types::judgment::judge_forbid_reaches_with_certificates(table, model, bases);
+    let diagnostics = |diags: &[hale_syntax::Diag]| diags.iter().map(|d| format!("{d:?}")).collect::<Vec<_>>();
+    assert_eq!(diagnostics(&plain.0), diagnostics(&pre));
+    assert_eq!(plain.1.len(), rows.len());
+    for (expected, actual) in plain.1.iter().zip(&rows) {
+        assert_eq!((expected.ordinal, expected.verdict), (actual.ordinal, actual.verdict));
+        assert_eq!(diagnostics(&expected.diags), diagnostics(&actual.diags));
+        match proofs.get(&actual.ordinal) {
+            Some(proof) => {
+                proof.validate().unwrap_or_else(|error| panic!("claim {}: {error}; {proof:?}", actual.ordinal));
+                assert!(matches!(actual.verdict, Verdict::Holds | Verdict::Violated));
+            }
+            None => assert!(matches!(actual.verdict, Verdict::Invalid | Verdict::Uncertified)
+                || actual.diags.iter().any(|d| d.message.contains("exceeded")), "lost mathematical proof: {actual:?}"),
+        }
+    }
+    (pre, rows)
+}
 
 /// A single-program bundle WITH a populated source table, so model
 /// provenance is Source-backed and the engine reconstructs the
@@ -81,8 +110,48 @@ fn main() { App { }; }
     let (_pre, judged) = judge_forbid_reaches(&table, &model, &[0]);
     assert_eq!(judged.len(), 1);
     assert_eq!(judged[0].verdict, hale_types::verdict::Verdict::Violated);
+    let proof_bundle = hale_types::reachability_proof::ProofBundle::derive(&table, &model, &[0]).unwrap();
+    let mut wrong_sources = table.clone();
+    wrong_sources.provenance.sources[0].digest.push('x');
+    assert!(hale_types::reachability_proof::ProofBundle::derive(&wrong_sources, &model, &[0]).is_err());
+    assert!(hale_types::reachability_proof::ProofBundle::derive(&table, &model, &[]).is_err());
+    let mut wrong_semantics = model.clone();
+    wrong_semantics.header.semantics += 1;
+    assert!(hale_types::reachability_proof::ProofBundle::derive(&table, &wrong_semantics, &[0]).is_err());
+    let mut path_without_completeness = model.clone();
+    path_without_completeness.capabilities.exact_calls = false;
+    assert!(hale_types::reachability_proof::ProofBundle::derive(&table, &path_without_completeness, &[0]).unwrap().lean_source().is_ok());
+    let original = proof_bundle.canonical_json();
+    let mut payload: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(payload["schema"], "hale.reachability-proofs/2");
+    assert_eq!(payload["rows"][0]["origin"]["kind"], "main");
+    assert!(payload["binding"].get("model_debug_digest").is_none());
+    let declared = payload["binding"].as_object_mut().unwrap().remove("evidence_digest").unwrap();
+    assert_eq!(declared.as_str().unwrap().len(), 16);
+    proof_bundle.check_canonical(&original).unwrap();
+    assert!(proof_bundle.lean_source().unwrap().contains("theorem violation"));
+    assert!(proof_bundle.check_canonical(&format!(" {original}")).is_err());
+    assert!(proof_bundle.check_canonical(&original.replace("\"schema\":", "\"extra\": 0, \"schema\":")).is_err());
     // Drop the relation: the violation must disappear.
     model.relations.calls.clear();
+    let changed = hale_types::reachability_proof::ProofBundle::derive(&table, &model, &[0]).unwrap();
+    let changed_json: serde_json::Value = serde_json::from_str(&changed.canonical_json()).unwrap();
+    assert_ne!(declared, changed_json["binding"]["evidence_digest"]);
+    assert!(changed.check_canonical(&original).is_err());
+    assert!(changed.lean_source().unwrap().contains("theorem absence"));
+    let closed_src = src.replace("run() { println(self.a.go(1)); }", "run() { }");
+    let closed_program = hale_syntax::parse_source(&closed_src).unwrap();
+    let closed_bundle = bundle_of(&closed_src, &closed_program);
+    let mut unvouched = derive_application_model(&closed_bundle);
+    unvouched.relations.calls.clear();
+    let closed_table = lower_claims(&closed_bundle, &unvouched);
+    assert!(!unvouched.holes.iter().any(|h| h.hides.intersects(hale_model::RelationSet::CALLS)));
+    unvouched.capabilities.exact_calls = false;
+    let unproved = hale_types::reachability_proof::ProofBundle::derive(&closed_table, &unvouched, &[0]).unwrap();
+    assert!(unproved.lean_source().is_err());
+    assert!(unproved.canonical_json().contains("no typed gap account"));
+
+
     let (_pre, judged) = judge_forbid_reaches(&table, &model, &[0]);
     assert_eq!(
         judged[0].verdict,
@@ -435,6 +504,9 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,
+            initializer: None,
+            type_owner: None,
+            argument_owner: None,
         effects: Vec::new(),
         direct_effects: Vec::new(),
         attribution: Vec::new(),
@@ -444,7 +516,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V1,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -471,16 +543,21 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
+            failure_sources: None,
+            lifecycle_contexts: None,
+            recovery: Default::default(),
             dispatch_plan: Default::default(),
-            stdlib_absorption: vec![StdlibAbsorption {
+            stdlib_absorption: vec![StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
+                entry_initialization: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: None,
                 entry_in_loop: true,
                 entry_group: None,
                 entry_provenance: p,
-                nodes: vec![AbsorbedNode {
+                nodes: vec![AbsorbedNode { constructor_check: None, lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "std::pay::charge".to_string(),
                     carries: vec!["money".to_string()],
@@ -971,7 +1048,8 @@ fn main() {
         .first_mut()
         .expect("absorption");
     let frontier = a.nodes.len() as u32;
-    a.nodes.push(hale_model::AbsorbedNode {
+    a.nodes.push(hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+        initializer: None,
         decl: String::new(),
         display: "std::deep::beyond".to_string(),
         carries: Vec::new(),
@@ -979,6 +1057,7 @@ fn main() {
         events: vec![hale_model::AbsorbedEvent::Truncated],
     });
     a.nodes[0].events.push(hale_model::AbsorbedEvent::Call {
+        initialization: None,
         target: hale_model::AbsorbedTarget::Interior(frontier),
         dispatch: None,
         in_loop: false,
@@ -1601,7 +1680,8 @@ fn main() {
     let mut m = base.clone();
     let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
     m.analyses.stdlib_absorption[0].nodes.push(
-        hale_model::AbsorbedNode {
+        hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+            initializer: None,
             decl: String::new(),
             display: "std::x::Ledger::charge_a".to_string(),
             carries: Vec::new(),
@@ -1611,6 +1691,7 @@ fn main() {
     );
     m.analyses.stdlib_absorption[0].nodes[0].events.push(
         hale_model::AbsorbedEvent::Call {
+            initialization: None,
             target: hale_model::AbsorbedTarget::Interior(n),
             dispatch: Some((
                 "Payer".to_string(),
@@ -1828,6 +1909,7 @@ fn main() {
     m.analyses.stdlib_absorption[probe_entry].nodes[0]
         .events
         .push(hale_model::AbsorbedEvent::Call {
+            initialization: None,
             target: hale_model::AbsorbedTarget::User(
                 hale_model::FunctionId(hello),
             ),
@@ -2291,10 +2373,9 @@ fn main() { App { }; }
 }
 
 /// Review pin (round 2): `require attributed` consults the model's
-/// HOLES, not only `Function.opaque_call` — an on_failure handler
-/// enters the universe with an UnanalyzedBody hole hiding EFFECTS,
-/// so it may perform the class without an authored purpose and the
-/// claim must be Uncertified, never a fail-open Holds.
+/// HOLES, not only `Function.opaque_call`: explicitly withdrawing a
+/// handler summary retains EFFECTS-hiding residue and must prevent Holds.
+/// An analyzed empty handler has no such blanket gap.
 #[test]
 fn attributed_fails_closed_on_unanalyzed_bodies() {
     let held = r#"
@@ -2328,13 +2409,21 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
-    let model = derive_application_model(&bundle);
-    assert!(
-        model.holes.iter().any(|h| h
-            .hides
-            .intersects(hale_model::RelationSet::EFFECTS)),
-        "the on_failure body arrives as an EFFECTS-hiding hole"
-    );
+    let mut model = derive_application_model(&bundle);
+    assert!(!model.holes.iter().any(|h| h.kind == hale_model::HoleKind::UnanalyzedBody));
+    let handler = model.entities.functions.iter().position(|f| f.kind == hale_model::FunctionKind::FailureHandler).unwrap();
+    // Removing coverage must retain a hole; an analyzed empty handler is
+    // otherwise a legitimate closed body, including at attribution grain.
+    model.entities.functions[handler].analyzed = false;
+    model.entities.functions[handler].summarized = false;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(handler as u32)),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::CALLS.union(hale_model::RelationSet::EFFECTS).union(hale_model::RelationSet::PUBLISHES),
+        authored_site: None,
+        reason: "summary unavailable".to_string(),
+        provenance: model.entities.functions[handler].provenance,
+    });
     let table = lower_claims(&bundle, &model);
     let judged = judge_endpoints(&table, &model, &[0]);
     assert_eq!(
@@ -2646,6 +2735,9 @@ fn mixed_dispatch_alternatives_share_one_group() {
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,
+            initializer: None,
+            type_owner: None,
+            argument_owner: None,
         effects: Vec::new(),
         direct_effects: Vec::new(),
         attribution: Vec::new(),
@@ -2655,7 +2747,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V1,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -2686,12 +2778,16 @@ fn mixed_dispatch_alternatives_share_one_group() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
+            failure_sources: None,
+            lifecycle_contexts: None,
+            recovery: Default::default(),
             dispatch_plan: Default::default(),
             // The stdlib alternative of the SAME authored dispatch
             // (site 0), carrying a summary-global group id that
             // differs from the local ordinal.
-            stdlib_absorption: vec![StdlibAbsorption {
+            stdlib_absorption: vec![StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
+                entry_initialization: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: Some((
@@ -2701,7 +2797,8 @@ fn mixed_dispatch_alternatives_share_one_group() {
                 entry_in_loop: false,
                 entry_group: Some(7),
                 entry_provenance: p,
-                nodes: vec![AbsorbedNode {
+                nodes: vec![AbsorbedNode { constructor_check: None, lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "std::pay::charge".to_string(),
                     carries: vec!["money".to_string()],
@@ -2718,6 +2815,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
     });
     // The user alternative at the same site 0.
     m.relations.calls.push(Call {
+        supplied: None,
         from: FunctionId(0),
         to: FunctionId(1),
         dispatch: DispatchKind::Interface {
@@ -3230,7 +3328,8 @@ fn main() {
                    display: &str| {
         let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
         m.analyses.stdlib_absorption[0].nodes.push(
-            hale_model::AbsorbedNode {
+            hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                initializer: None,
                 decl: String::new(),
                 display: display.to_string(),
                 carries: vec!["money".to_string()],
@@ -3248,6 +3347,7 @@ fn main() {
     for t in [a, b] {
         m.analyses.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
+                initialization: None,
                 target: hale_model::AbsorbedTarget::Interior(t),
                 dispatch: None,
                 in_loop: false,
@@ -3266,6 +3366,7 @@ fn main() {
     for (t, method) in [(a, "pay"), (b, "refund")] {
         m.analyses.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
+                initialization: None,
                 target: hale_model::AbsorbedTarget::Interior(t),
                 dispatch: Some((
                     "Payer".to_string(),
@@ -3287,6 +3388,7 @@ fn main() {
     for t in [a, b] {
         m.analyses.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
+                initialization: None,
                 target: hale_model::AbsorbedTarget::Interior(t),
                 dispatch: Some((
                     "Payer".to_string(),

@@ -1,0 +1,14 @@
+locus Worker {
+    closure rejected { epoch inline; }
+    birth_check { false } -> violate rejected;
+}
+group workers = { Worker };
+main locus App {
+    claims {
+        quiet: forbid reaches(workers, effects(stdio)) during birth;
+    }
+}
+fn main() {
+    Worker { };
+    App { };
+}

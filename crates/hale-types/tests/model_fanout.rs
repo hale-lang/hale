@@ -797,20 +797,23 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
     m.relations.calls.retain(|c| c.from != handler);
     for site in 0..2u32 {
         m.analyses.stdlib_absorption.push(
-            hale_model::StdlibAbsorption {
+            hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
+                entry_initialization: None,
                 from: handler,
                 site,
                 entry_dispatch: None,
                 entry_in_loop: false,
                 entry_group: None,
                 entry_provenance: hale_model::ProvenanceId(0),
-                nodes: vec![hale_model::AbsorbedNode {
+                nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "std::x::apply".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
                     events: vec![hale_model::AbsorbedEvent::Call {
+                        initialization: None,
                         target: hale_model::AbsorbedTarget::User(
                             emitter,
                         ),
@@ -846,8 +849,9 @@ fn stdlib_conformer_alternatives_take_the_max() {
     m.relations.calls.retain(|c| c.from != handler);
     for _ in 0..2u32 {
         m.analyses.stdlib_absorption.push(
-            hale_model::StdlibAbsorption {
+            hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
                 entry_bus: None,
+                entry_initialization: None,
                 from: handler,
                 // One AUTHORED site, two conformers: alternatives
                 // of one dispatch share the site ordinal, which is
@@ -858,12 +862,14 @@ fn stdlib_conformer_alternatives_take_the_max() {
                 entry_in_loop: false,
                 entry_group: Some(7),
                 entry_provenance: hale_model::ProvenanceId(0),
-                nodes: vec![hale_model::AbsorbedNode {
+                nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "std::x::apply".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
                     events: vec![hale_model::AbsorbedEvent::Call {
+                        initialization: None,
                         target: hale_model::AbsorbedTarget::User(
                             emitter,
                         ),
@@ -904,21 +910,24 @@ fn interior_dispatch_alternatives_take_the_max() {
     // One entry whose INTERIOR dispatches to two conformers, both
     // re-emerging at the publishing callback.
     m.analyses.stdlib_absorption.push(
-        hale_model::StdlibAbsorption {
+        hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
             entry_bus: None,
+                entry_initialization: None,
             from: handler,
             site: 0,
             entry_dispatch: None,
             entry_in_loop: false,
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
-            nodes: vec![hale_model::AbsorbedNode {
+            nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                initializer: None,
                 decl: String::new(),
                 display: "std::http::Router::dispatch".to_string(),
                 carries: Vec::new(),
                 direct_effects: Vec::new(),
                 events: vec![
                     hale_model::AbsorbedEvent::Call {
+                        initialization: None,
                         target: hale_model::AbsorbedTarget::User(
                             emitter,
                         ),
@@ -930,6 +939,7 @@ fn interior_dispatch_alternatives_take_the_max() {
                         group: Some(1),
                     },
                     hale_model::AbsorbedEvent::Call {
+                        initialization: None,
                         target: hale_model::AbsorbedTarget::User(
                             emitter,
                         ),
@@ -966,8 +976,9 @@ fn an_interior_edge_is_followed() {
     let emitter = fn_id(&m, "Emitter::emit");
     m.relations.calls.retain(|c| c.from != handler);
     m.analyses.stdlib_absorption.push(
-        hale_model::StdlibAbsorption {
+        hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
             entry_bus: None,
+                entry_initialization: None,
             from: handler,
             site: 0,
             entry_dispatch: None,
@@ -976,12 +987,14 @@ fn an_interior_edge_is_followed() {
             entry_provenance: hale_model::ProvenanceId(0),
             nodes: vec![
                 // node 0 calls node 1…
-                hale_model::AbsorbedNode {
+                hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "std::x::outer".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
                     events: vec![hale_model::AbsorbedEvent::Call {
+                        initialization: None,
                         target: hale_model::AbsorbedTarget::Interior(1),
                         dispatch: None,
                         in_loop: false,
@@ -989,12 +1002,14 @@ fn an_interior_edge_is_followed() {
                     }],
                 },
                 // …which re-emerges at the publishing callback.
-                hale_model::AbsorbedNode {
+                hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                    initializer: None,
                     decl: String::new(),
                     display: "std::x::inner".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
                     events: vec![hale_model::AbsorbedEvent::Call {
+                        initialization: None,
                         target: hale_model::AbsorbedTarget::User(
                             emitter,
                         ),
@@ -1036,20 +1051,23 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
         .map(|c| c.site)
         .expect("the handler calls its emitter");
     m.analyses.stdlib_absorption.push(
-        hale_model::StdlibAbsorption {
+        hale_model::StdlibAbsorption { entry_constructor_check: None, entry_constructor_source: None, entry_lifecycle: None,
             entry_bus: None,
+                entry_initialization: None,
             from: handler,
             site,
             entry_dispatch: None,
             entry_in_loop: false,
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
-            nodes: vec![hale_model::AbsorbedNode {
+            nodes: vec![hale_model::AbsorbedNode { constructor_check: None, lifecycle: None,
+                initializer: None,
                 decl: String::new(),
                 display: "std::x::apply".to_string(),
                 carries: Vec::new(),
                 direct_effects: Vec::new(),
                 events: vec![hale_model::AbsorbedEvent::Call {
+                    initialization: None,
                     target: hale_model::AbsorbedTarget::User(emitter),
                     dispatch: None,
                     in_loop: false,
@@ -1538,4 +1556,32 @@ fn main() { App { }; }
         "residue on another locus and another subject says nothing \
          about this closure"
     );
+}
+
+#[test]
+fn deliveries_from_each_omitted_parameter_add_to_handler_amplification() {
+    let source = r#"
+type Item { n: Int; }
+topic Start { payload: Item; }
+topic Next { payload: Item; }
+locus Emitter { bus { publish Next; } fn emit() -> Int { Next <- Item { n: 1 }; return 0; } }
+locus Settings { params { a: Int = Emitter { }.emit(); b: Int = Emitter { }.emit(); } }
+locus Relay {
+    bus { subscribe Start as receive; publish Next; }
+    fn receive(item: Item) { let settings = Settings { }; }
+}
+locus Sink { bus { subscribe Next as receive; } fn receive(item: Item) { } }
+main locus App {
+    params { relay: Relay = Relay { }; sink: Sink = Sink { }; }
+    bus { publish Start; }
+    @budget(fanout = 2) fn fire() { Start <- Item { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(source);
+    assert!(ds.iter().any(|m| m.contains("budget exceeded") && m.contains("fanout") && m.contains(" 3 ")), "{ds:?}");
+    let supplied = source.replace("let settings = Settings { };", "let settings = Settings { b: 0 };");
+    let ds = diags(&supplied);
+    assert!(!ds.iter().any(|m| m.contains("budget exceeded") || m.contains("cannot be certified")), "{ds:?}");
 }

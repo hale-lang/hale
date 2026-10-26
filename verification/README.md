@@ -20,9 +20,16 @@ substrate is **C** (pthreads + C11 atomics), which decides it:
   and keeping two implementations in sync. **Rejected** (the substrate
   is C; we want to check the code that ships).
 - **TLA+** — an *abstract* spec, not the C; smaller state space, good
-  as documentation, but the spec-to-code mapping is unverified.
-  **Complementary, not primary** — write it later if a primitive wants
-  a formal design record.
+  for explicit temporal properties. The [wake-handshake pilot](tla/README.md)
+  checks finite delivery and quiescent shutdown with explicit fairness,
+  exclusions and source-alignment guards. The mapping to C remains a
+  reviewed transcription rather than a refinement proof.
+
+Graph claims have a separate [Lean certificate checker](lean/README.md).
+It checks compiler-produced finite-graph propositions independently of the
+compiler's search bookkeeping. It does not check C11 interleavings or prove
+that compiler extraction and native execution correspond. See the
+[user verification reference](../docs/src/verification.md) for these scopes.
 
 GenMC v0.17.0 builds against the project's LLVM 18. See
 `build_genmc.sh`.
@@ -202,9 +209,13 @@ There the condvar governs only *sleep-vs-spin* — the **safety**
 properties (no lost/duplicated cell, no use-after-free) are independent
 of it. So those models replace the `cond_wait`/`signal` wake with a
 lock-guarded spin that preserves the exact parked/wake predicate, and
-check safety under all interleavings. Missed-wakeup *liveness* is out
-of scope for GenMC and would need a different tool (e.g. a TLA+ spec of
-the wake handshake).
+check safety under all interleavings. Missed-wakeup *liveness* remains
+outside GenMC's scope. The [TLA+ wake-handshake pilot](tla/README.md)
+checks finite condvar executions, eventual delivery and quiescent shutdown,
+with three required liveness counterexamples when protocol steps are
+removed. Its finite bounds, fairness, C11 visibility assumption, exclusions
+and source-alignment guards are explicit; it does not establish every
+execution of the production runtime.
 
 ## The failure cascade's boundary
 
@@ -231,6 +242,12 @@ operation. It has no retirement queue, active-release guard or
 descendant-storage graph. The handler and run-body fixtures exercise
 those paths with nested form storage, both dispatch modes and ASan;
 removing the handler boundary restores the deadlock under a deadline.
+The model also has no nested pinned-mailbox stack. The pinned-yield
+fixture forces a nested replacement and checks the old heap-backed data
+under ASan in both dispatch modes, with trace ordering at physical reclaim.
+Its missing-hold and missing-retirement controls respectively restore an
+invalid read and a circular wait. These tests are runtime evidence, not a
+GenMC proof of nested mailbox execution.
 
 **A started run against a reclaim no join orders is in.** It was the
 model's open boundary while admission freed the ticket and nothing
@@ -310,3 +327,13 @@ runs `run_genmc.sh` on every push/PR, so a race / UAF / assertion
 violation in any model fails the build. New models are picked up
 automatically. `build_genmc.sh` + `run_genmc.sh` are also the local
 recipe.
+
+### Lifecycle sanitizer checks on native hosts
+
+The lifecycle and failure-delivery fixture tests use AddressSanitizer with
+chunk pooling disabled to expose stale child and supervisor reads. On Linux,
+they also enable LeakSanitizer. Apple's ASan runtime does not support
+`detect_leaks=1`; on macOS these tests retain address checks with leak detection
+disabled. Passing them on macOS establishes no leak-check result. Their Linux
+CI run retains both checks, and negative controls still require a missing
+lifetime hold to produce a memory-access failure.

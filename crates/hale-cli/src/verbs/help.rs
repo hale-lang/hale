@@ -12,6 +12,8 @@ pub(crate) fn usage() {
     eprintln!("    hale inputs <seed>            every file a build of the seed reads (imports followed)");
     eprintln!("    hale check <file.hl | dir>    parse + typecheck");
     eprintln!("        [--dump-topology[=<path>]] [--check-topology[-shape] <path>]");
+    eprintln!("        [--dump-reachability-proofs <path>] [--dump-reachability-lean <path>]");
+    eprintln!("        [--check-reachability-proofs <path>] [--check-reachability-lean <path>]");
     eprintln!("        [--dump-effects-manifest] [--json] [--workspace]");
     eprintln!("        (`hale check --help` for all)");
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");

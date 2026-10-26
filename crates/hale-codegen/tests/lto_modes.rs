@@ -28,16 +28,15 @@ const SRC: &str = r#"
 /// halves of what this file tests — that each accepted spelling maps
 /// to the flavor it names, and that each flavor produces a working
 /// binary — without a global write.
-fn builds_under(var: Option<&str>, name: &str) -> bool {
+fn builds_under(var: Option<&str>, name: &str) -> Result<(), hale_codegen::CodegenError> {
     let bin = harness::unique_bin(name);
     let options = BuildOptions {
         lto: Some(LtoMode::parse(var.unwrap_or(""))),
         ..build_opts::options()
     };
-    let ok =
-        build_opts::build_source(SRC, &bin, &options).is_ok();
+    let result = build_opts::build_source(SRC, &bin, &options);
     let _ = std::fs::remove_file(&bin);
-    ok
+    result
 }
 
 /// Each accepted spelling produces a working binary. ThinLTO is the
@@ -59,11 +58,8 @@ fn every_lto_spelling_builds() {
             v,
             want
         );
-        assert!(
-            builds_under(v, "lto_modes"),
-            "LOTUS_LTO={:?} must produce a working build",
-            v
-        );
+        builds_under(v, "lto_modes")
+            .unwrap_or_else(|error| panic!("LOTUS_LTO={v:?} must produce a working build: {error:?}"));
     }
 }
 
@@ -76,8 +72,6 @@ fn unknown_lto_value_is_off_not_an_error() {
         LtoMode::Off,
         "an unrecognized LOTUS_LTO must not select an LTO flavor"
     );
-    assert!(
-        builds_under(Some("yes-please"), "lto_modes_unknown"),
-        "an unrecognized LOTUS_LTO must fall back to a normal build"
-    );
+    builds_under(Some("yes-please"), "lto_modes_unknown")
+        .expect("an unrecognized LOTUS_LTO must fall back to a normal build");
 }

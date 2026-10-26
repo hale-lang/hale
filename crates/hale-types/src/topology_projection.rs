@@ -136,6 +136,13 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         |id: hale_model::FunctionId| e.functions[id.index()].display.clone();
     let locus_display =
         |id: hale_model::LocusDeclId| e.loci[id.index()].display.clone();
+    let owner_json = |owner: hale_model::ConstructorTarget| -> String {
+        let (kind, display) = match owner {
+            hale_model::ConstructorTarget::Locus(l) => ("locus", &e.loci[l.index()].display),
+            hale_model::ConstructorTarget::Type(t) => ("type", &e.types[t.index()].display),
+        };
+        format!("{{\"kind\": {}, \"name\": {}}}", quote(kind), quote(display))
+    };
     let iface_display = |raw: &str| -> String {
         e.interfaces
             .iter()
@@ -324,15 +331,13 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     }
 
     // ---- phases ----
-    // NO v1 filter: the legacy phase relation comes from the AST
-    // walk (vmodel), which includes empty-bodied hooks the behavior
-    // summary never keys — `run() { }` has a phase row and no fn
-    // sort entry.
+    // Source phase membership includes empty authored hooks and automatic
+    // assertion bodies; invocation remains its separate execution account.
     let mut phase_rows: BTreeMap<String, (String, bool)> = BTreeMap::new();
     for po in &r.phase_of {
         let hook = matches!(
             e.functions[po.function.index()].kind,
-            FunctionKind::Hook | FunctionKind::Mode
+            FunctionKind::Hook | FunctionKind::Mode | FunctionKind::FailureHandler | FunctionKind::ClosureAssertion | FunctionKind::BirthCheck
         );
         phase_rows.insert(
             fn_display(po.function),
@@ -458,9 +463,22 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
                 format!("untyped_receiver_call:{}", callee)
             }
             HoleKind::ComputedSubject => "computed_publish".to_string(),
+            HoleKind::UnmodeledRecovery => "unmodeled_recovery".to_string(),
+            HoleKind::UnmodeledFailureDispatch => "unmodeled_failure_dispatch".to_string(),
+            HoleKind::UnmodeledInitialization => "unmodeled_initialization".to_string(),
+            HoleKind::UnmodeledLifecycleContext => "unmodeled_lifecycle_context".to_string(),
+            HoleKind::UnmodeledFailureContext => "unmodeled_failure_context".to_string(),
             _ => continue,
         };
         unknowns.entry(fn_display(f)).or_default().insert(reason);
+    }
+    // The compact artifact cannot serialize a foreign interior vertex. Keep
+    // its intrinsic failure uncertainty at the enclosing artifact entry; the
+    // source model retains that residue at the actual predicate for via masks.
+    for a in &m.analyses.stdlib_absorption {
+        if !m.no_source_failure_handlers() && a.nodes.iter().any(|n| n.constructor_check.is_some()) {
+            unknowns.entry(fn_display(a.from)).or_default().insert("unmodeled_initialization".to_string());
+        }
     }
     for d in &r.dead_interface_calls {
         if !v1.contains(&d.from) {
@@ -478,6 +496,10 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     model.push_str("  \"sorts\": {\n");
     model.push_str(&format!("    \"loci\": [{}],\n", join_str(loci.iter())));
     model.push_str(&format!("    \"fns\": [{}],\n", join_str(fns.iter())));
+    if !e.types.is_empty() {
+        let types: BTreeSet<_> = e.types.iter().map(|t| t.display.clone()).collect();
+        model.push_str(&format!("    \"types\": [{}],\n", join_str(types.iter())));
+    }
     model.push_str(&format!(
         "    \"topics\": [{}]\n",
         join_str(topics.iter())
@@ -487,7 +509,160 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         "  \"sealed\": [{}],\n",
         join_str(sealed.iter())
     ));
-    model.push_str("  \"relations\": {\n    \"calls\": [\n");
+    // A missing entry means concrete Resident in schema 1.23. Only
+    // non-default tags are emitted; their identity is hashed, independent
+    // of which laws the source happens to declare.
+    let classes: BTreeMap<_, _> = e.loci.iter().filter_map(|l| {
+        let class = match l.flow {
+            hale_model::FlowClass::Resident => return None,
+            hale_model::FlowClass::Flow { .. } => "flow",
+            hale_model::FlowClass::GenericTemplate => "template",
+        };
+        Some((l.display.as_str(), class))
+    }).collect();
+    if !classes.is_empty() {
+        model.push_str(&format!("  \"flow_classes\": [{}],\n", classes.iter()
+            .map(|(locus, class)| format!("{{\"locus\": {}, \"class\": {}}}", quote(locus), quote(class)))
+            .collect::<Vec<_>>().join(", ")));
+    }
+    model.push_str("  \"relations\": {\n");
+    match &m.analyses.failure_sources {
+        None => model.push_str("    \"failure_sources\": null,\n"),
+        Some(account) => {
+            let handlers: Vec<_> = account.handlers.iter().map(|f| fn_display(*f)).collect();
+            let may_fail: Vec<_> = account.may_fail.iter().map(|f| fn_display(*f)).collect();
+            model.push_str(&format!("    \"failure_sources\": {{\"handlers\": [{}], \"foreign_handlers\": {}, \"may_fail\": [{}]}},\n", join_str(handlers.iter()), account.foreign_handlers, join_str(may_fail.iter())));
+        }
+    }
+
+    let defaults: Vec<_> = e.functions.iter().enumerate().filter_map(|(i, f)|
+        f.initializer.as_ref().map(|default| (hale_model::FunctionId(i as u32), f, default))).collect();
+    if !defaults.is_empty() {
+        model.push_str("    \"initializers\": [\n");
+        for (function, body, default) in defaults {
+            let owner = match body.argument_owner {
+                Some(parent) => format!("{{\"kind\": \"function\", \"name\": {}}}",quote(&fn_display(parent))),
+                None => owner_json(body.initializer_owner().unwrap()),
+            };
+            let kind = match default.kind { hale_model::InitializerKind::Parameter => "parameter", hale_model::InitializerKind::Field => "field", hale_model::InitializerKind::Argument => "argument" };
+            model.push_str(&format!("      {{\"function\": {}, \"kind\": {}, \"owner\": {}, \"field\": {}, \"member\": {}}},\n", quote(&fn_display(function)), quote(kind), owner, quote(&default.field), default.ordinal));
+        }
+        trim_trailing_comma(&mut model);
+        model.push_str("    ],\n");
+    }
+    if !r.constructions.is_empty() {
+        model.push_str("    \"constructions\": [\n");
+        for row in &r.constructions {
+            model.push_str(&format!("      {{\"function\": {}, \"owner\": {}, \"site\": {}, \"supplied\": [{}], \"loop\": {}, \"unbounded\": {}}},\n", quote(&fn_display(row.function)), owner_json(row.owner), row.site, join_str(row.supplied.iter()), row.in_loop, row.unbounded));
+        }
+        trim_trailing_comma(&mut model);
+        model.push_str("    ],\n");
+    }
+    if !r.initializes.is_empty() {
+        model.push_str("    \"initializes\": [\n");
+        for edge in &r.initializes {
+            model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"owner\": {}, \"field\": {}, \"site\": {}, \"member\": {}, \"loop\": {}, \"unbounded\": {}}},\n", quote(&fn_display(edge.from)), quote(&fn_display(edge.to)), owner_json(edge.owner), quote(&edge.field), edge.site, edge.member, edge.in_loop, edge.unbounded));
+        }
+        trim_trailing_comma(&mut model);
+        model.push_str("    ],\n");
+    }
+    if !r.protocol_definitions.is_empty() {
+        model.push_str("    \"protocol_definitions\": [\n");
+        for d in &r.protocol_definitions {
+            let child = d.child.as_ref().map(|c| quote(c)).unwrap_or_else(|| "null".into());
+            model.push_str(&format!("      {{\"function\": {}, \"owner\": {}, \"stage\": {}, \"child\": {}, \"interface\": {}, \"empty\": {}}},\n",quote(&fn_display(d.function)),quote(&e.loci[d.owner.index()].display),quote(d.stage.as_str()),child,d.interface,d.empty));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+        model.push_str("    \"protocol_constructors\": [\n");
+        for constructor in &r.constructions {
+            for child in m.protocol_constructor_symbols(constructor.function, constructor.site) {
+                model.push_str(&format!("      {{\"function\": {}, \"site\": {}, \"child\": {}}},\n",quote(&fn_display(constructor.function)),constructor.site,quote(child)));
+            }
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+        model.push_str("    \"protocol_contexts\": [\n");
+        for c in &r.protocol_contexts {
+            let (kind, site) = match c.root { hale_model::ProtocolRoot::Construction(site) => ("construction",site), hale_model::ProtocolRoot::Call(site) => ("call",site) };
+            model.push_str(&format!("      {{\"from\": {}, \"root\": {{\"kind\": {}, \"site\": {}}}, \"constructor_function\": {}, \"constructor\": {}, \"child\": {}, \"owner\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(c.from)),quote(kind),site,quote(&fn_display(c.constructor_function)),c.constructor,quote(&c.child),quote(&e.loci[c.owner.index()].display),c.in_loop,c.unbounded));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+        model.push_str("    \"protocol_evaluations\": [\n");
+        for v in &r.protocol_evaluations {
+            model.push_str(&format!("      {{\"context\": {}, \"to\": {}, \"stage\": {}, \"guard\": {}}},\n",v.context,quote(&fn_display(v.to)),quote(v.stage.as_str()),quote(v.stage.guard())));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+    }
+    if !r.lifecycle_definitions.is_empty() {
+        model.push_str("    \"lifecycle_definitions\": [\n");
+        for d in &r.lifecycle_definitions {
+            model.push_str(&format!("      {{\"function\": {}, \"owner\": {}, \"stage\": {}, \"empty\": {}}},\n",quote(&fn_display(d.function)),quote(&e.loci[d.owner.index()].display),quote(d.stage.as_str()),d.empty));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+    }
+    if !r.lifecycle_evaluations.is_empty() {
+        model.push_str("    \"lifecycle_evaluations\": [\n");
+        for v in &r.lifecycle_evaluations {
+            model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"stage\": {}, \"guard\": {}, \"site\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(v.from)),quote(&fn_display(v.to)),quote(v.stage.as_str()),quote(v.guard.as_str()),v.site,v.in_loop,v.unbounded));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+    }
+    if !r.constructor_checks.is_empty() {
+        model.push_str("    \"constructor_checks\": [\n");
+        for v in &r.constructor_checks {
+            let (kind, epoch, clause) = match v.kind {
+                hale_model::ConstructorCheck::BirthCheck(ordinal) => ("birth_check", "birth", ordinal),
+                hale_model::ConstructorCheck::Assertion { epoch, ordinal } => ("assertion", epoch.as_str(), ordinal),
+            };
+            model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"kind\": {}, \"epoch\": {}, \"clause\": {}, \"site\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(v.from)),quote(&fn_display(v.to)),quote(kind),quote(epoch),clause,v.site,v.in_loop,v.unbounded));
+        }
+        trim_trailing_comma(&mut model); model.push_str("    ],\n");
+    }
+    if !r.birth_checks.is_empty() {
+        model.push_str("    \"birth_checks\": [\n");
+        for row in &r.birth_checks {
+            model.push_str(&format!("      {{\"function\": {}, \"owner\": {}, \"closure\": {}, \"clause\": {}}},\n", quote(&fn_display(row.function)), quote(&e.loci[row.owner.index()].display), quote(&row.closure), row.ordinal));
+        }
+        trim_trailing_comma(&mut model);
+        model.push_str("    ],\n");
+    }
+    if !r.closure_definitions.is_empty() {
+        model.push_str("    \"closure_definitions\": [\n");
+        for row in &r.closure_definitions {
+            model.push_str(&format!("      {{\"function\": {}, \"owner\": {}, \"name\": {}, \"epoch\": {}, \"closure\": {}}},\n",quote(&fn_display(row.function)),quote(&e.loci[row.owner.index()].display),quote(&row.name),quote(row.epoch.as_str()),row.ordinal));
+        }
+        trim_trailing_comma(&mut model);model.push_str("    ],\n");
+    }
+    if !r.closure_checks.is_empty() {
+        model.push_str("    \"closure_checks\": [\n");
+        for row in &r.closure_checks {
+            model.push_str(&format!("      {{\"function\": {}, \"owner\": {}, \"site\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(row.function)),quote(&e.loci[row.owner.index()].display),row.site,row.in_loop,row.unbounded));
+        }
+        trim_trailing_comma(&mut model);model.push_str("    ],\n");
+    }
+    if !r.closure_evaluations.is_empty() {
+        model.push_str("    \"closure_evaluations\": [\n");
+        for row in &r.closure_evaluations {
+            model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"site\": {}, \"closure\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(row.from)),quote(&fn_display(row.to)),row.site,row.closure,row.in_loop,row.unbounded));
+        }
+        trim_trailing_comma(&mut model);model.push_str("    ],\n");
+    }
+    let argument_owners: BTreeSet<_> = e.functions.iter().filter_map(|f| f.argument_owner).collect();
+    let argument_calls: Vec<_> = r.calls.iter().filter(|c| c.supplied.is_some() && argument_owners.contains(&c.to)).collect();
+    if !argument_calls.is_empty() {
+        model.push_str("    \"argument_calls\": [\n");
+        for call in argument_calls {
+            model.push_str(&format!("      {{\"from\": {}, \"callee\": {}, \"site\": {}, \"supplied\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(call.from)),quote(&fn_display(call.to)),call.site,call.supplied.unwrap(),call.in_loop,call.unbounded));
+        }
+        trim_trailing_comma(&mut model);model.push_str("    ],\n");
+    }
+    if !r.argument_evaluations.is_empty() {
+        model.push_str("    \"argument_evaluations\": [\n");
+        for edge in &r.argument_evaluations {
+            model.push_str(&format!("      {{\"from\": {}, \"to\": {}, \"callee\": {}, \"site\": {}, \"argument\": {}, \"parameter\": {}, \"loop\": {}, \"unbounded\": {}}},\n",quote(&fn_display(edge.from)),quote(&fn_display(edge.to)),quote(&fn_display(edge.callee)),edge.site,edge.argument,quote(&edge.parameter),edge.in_loop,edge.unbounded));
+        }
+        trim_trailing_comma(&mut model);model.push_str("    ],\n");
+    }
+    model.push_str("    \"calls\": [\n");
     for ((from, to), meta) in &calls {
         let mut row = format!(
             "      {{\"from\": {}, \"to\": {}",
@@ -807,6 +982,12 @@ pub fn judge_all(
         judged.insert(j.ordinal, j);
     }
     for j in crate::judgment::judge_endpoints(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::flow_policy::judge(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::resource_claim::judge(table, model, source_bases) {
         judged.insert(j.ordinal, j);
     }
     for j in crate::placement_claim::judge(table, model, source_bases) {
@@ -1192,6 +1373,8 @@ pub fn family_adequacy(
         F::Boundary,
         F::Endpoint,
         F::Placement,
+        F::Resource,
+        F::FlowPolicy,
         F::Bound,
         F::Certificate,
         // Change 5f: a migrated family ships with its adequacy

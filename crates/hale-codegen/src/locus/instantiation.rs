@@ -58,7 +58,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // that called us once it returns, on every exit path.
         let saved_holder = self.field_holder.clone();
         let saved_supervisor = self.supervising_parent.clone();
-        let out = self.lower_locus_instantiation_inner(locus_name, inits, scope);
+        let alternatives = self.current_self.as_ref().and_then(|cs|
+            self.ownership_bubble_alternatives.get(&(cs.locus_name.clone(), locus_name.to_string()))).cloned();
+        let out = if self.bubble_instance_override.is_none() && alternatives.is_some() {
+            self.lower_owner_alternatives(locus_name, inits, scope, alternatives.unwrap())
+        } else {
+            self.lower_locus_instantiation_inner(locus_name, inits, scope)
+        };
         self.field_holder = saved_holder;
         self.supervising_parent = saved_supervisor;
         out
@@ -66,6 +72,79 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// One constructor path for the actual nearest owner carried by this
+    /// instance. Every arm uses that owner's real LLVM layout. The orphan
+    /// arm uses normal transient ownership; its deferred slots are entry-block
+    /// null-initialized, so the other arms never tear down its unbuilt values.
+    fn lower_owner_alternatives(
+        &mut self, locus: &str, inits: &[StructInit], scope: &Scope<'ctx>,
+        alternatives: Vec<hale_types::ownership_graph::OwnerAlternative>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        use hale_types::ownership_graph::EdgeClass;
+        if alternatives.iter().any(|a| a.class != EdgeClass::SameTower
+            && !(a.class == EdgeClass::CrossPool && a.singleton)) {
+            return Err(CodegenError::missing_row("ownership", format!(
+                "per-instance owners of `{locus}` do not have closed same-tower or singleton cross-pool routes; dynamic cross-pool owner dispatch remains unresolved"), None));
+        }
+        if alternatives.iter().any(|a| a.class == EdgeClass::CrossPool)
+            && !self.bare_locus_instantiation_stmt {
+            return Err(CodegenError::missing_row("law_backstops", format!(
+                "a possible cross-pool owner of `{locus}` makes its birth fire-and-forget; the value-use law must refuse this source site"), None));
+        }
+        let cs = self.current_self.clone().expect("alternative owner has enclosing self");
+        let info = self.user_loci.get(&cs.locus_name).cloned().ok_or_else(||
+            CodegenError::missing_row("ownership", "alternative owner has no enclosing layout", None))?;
+        // These are the constructor's one-shot inputs. Re-arm them for each
+        // mutually exclusive IR path, before a nested literal can take them.
+        let input = (self.owner_site.clone(), self.declared_owner.clone(), self.reserve_child_next.clone(),
+            self.field_holder.clone(), self.bare_locus_instantiation_stmt, self.mixed_bubble_arm,
+            self.numa_node_for_next_locus_instantiation, self.replica_index_for_next_locus_instantiation,
+            self.anchor_record_slot, self.cooperative_pool_for_next_locus_instantiation.clone(),
+            self.instantiating_program_lifetime, self.instantiating_into_payload_arena);
+        let function = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("constructor in function");
+        let joined = self.context.append_basic_block(function, "owner.join");
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let mut incoming = Vec::new();
+        for alternative in alternatives.into_iter().map(Some).chain(std::iter::once(None)) {
+            let selected = match alternative {
+                Some(alternative) => {
+                    let key = (locus.to_string(), alternative.owner.clone());
+                    let index = *info.owner_alternative_field_idxs.get(&key).ok_or_else(||
+                        CodegenError::missing_row("ownership", format!("`{}` has no forwarding row for `{locus}` to `{}`", cs.locus_name,alternative.owner), None))?;
+                    let slot = self.builder.build_struct_gep(info.struct_ty, cs.self_ptr, index, "owner.choice.slot")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let owner = self.builder.build_load(ptr_ty, slot, "owner.choice")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.into_pointer_value();
+                    let owned = self.context.append_basic_block(function, "owner.present");
+                    let next = self.context.append_basic_block(function, "owner.next");
+                    let present = self.builder.build_is_not_null(owner, "owner.present")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.build_conditional_branch(present, owned, next)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(owned);
+                    Some((alternative.owner, owner, next, alternative.class == EdgeClass::CrossPool))
+                }
+                None => None,
+            };
+            self.owner_site=input.0.clone(); self.declared_owner=input.1.clone(); self.reserve_child_next=input.2.clone();
+            self.field_holder=input.3.clone(); self.bare_locus_instantiation_stmt=input.4; self.mixed_bubble_arm=input.5;
+            self.numa_node_for_next_locus_instantiation=input.6; self.replica_index_for_next_locus_instantiation=input.7;
+            self.anchor_record_slot=input.8; self.cooperative_pool_for_next_locus_instantiation=input.9.clone();
+            self.instantiating_program_lifetime=input.10; self.instantiating_into_payload_arena=input.11;
+            self.bubble_instance_override=Some(selected.as_ref().map(|(name,ptr,_,post)| (name.clone(),*ptr,*post)));
+            let value = self.lower_locus_instantiation(locus, inits, scope)?;
+            let end = self.builder.get_insert_block().expect("constructor leaves a block");
+            if end.get_terminator().is_none() {
+                self.builder.build_unconditional_branch(joined).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                incoming.push((value,end));
+            }
+            if let Some((_,_,next,_))=selected { self.builder.position_at_end(next); }
+        }
+        self.builder.position_at_end(joined);
+        let result = self.builder.build_phi(ptr_ty,"owner.constructed").map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        for (value,block) in incoming { result.add_incoming(&[(&value,block)]); }
+        Ok(result.as_basic_value().into_pointer_value())
+    }
     /// A field type no locus can hide in: scalars, text, bytes, and
     /// data records / arrays / bounds of those. Anything else — a
     /// locus, an interface, an unknown name — counts as a child
@@ -113,6 +192,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // which has no source expression for a table row to key on
         // and so states its owner at the site instead.
         let owner_site = std::mem::take(&mut self.owner_site);
+        let instance_owner_override = self.bubble_instance_override.take();
         // #1534: whether the params loop around this literal made it a
         // node of a static tree (the locus it expected, and the root's
         // reservations), taken before any literal nested in it can.
@@ -203,23 +283,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // as before: the method body or params-init loop it sits in.
         let holder = self.field_holder.take();
         let child = self.routing_key(locus_name);
-        self.supervising_parent = match (&site_owner, holder) {
-            (
-                crate::ownership::Owner::Field { owner, .. },
-                Some((Some(lit), cx)),
-            ) if *owner == lit => Some((child, cx)),
-            (crate::ownership::Owner::Placement(_), Some((_, cx))) => {
-                Some((child, cx))
+        let source = site_owner.supervision_override(holder.as_ref().map(|(literal, _)| *literal), self.params_init_self.is_some());
+        if let Some(site) = own_site_id {
+            let expected = self.placement.construction_supervisor_at(hale_syntax::ast::NodeId(site.0))
+                .map_err(|why| CodegenError::missing_row("placement", why.to_string(), None))?;
+            if expected.is_some_and(|expected| expected != source) {
+                return Err(CodegenError::missing_row("placement", format!("construction supervisor for literal #{} disagrees with the supplied lowering context: expected {expected:?}, supplied {source:?}", site.0), None));
             }
-            (crate::ownership::Owner::Field { owner, .. }, None)
-                if *owner == crate::ownership::ExprId::DECLARED =>
-            {
-                self.params_init_self.clone().map(|cx| (child, cx))
-            }
-            (crate::ownership::Owner::Placement(_), None) => {
-                self.params_init_self.clone().map(|cx| (child, cx))
-            }
-            _ => None,
+        }
+        use hale_types::ownership::SupervisionOverride;
+        self.supervising_parent = match source {
+            SupervisionOverride::FieldHolder => holder.map(|(_, cx)| (child, cx)),
+            SupervisionOverride::ParamsInitializer => self.params_init_self.clone().map(|cx| (child, cx)),
+            SupervisionOverride::Enclosing => None,
         };
         // The locus whose FIELD this instance is, when it is one (the
         // supervisor just resolved), snapshotted here because the
@@ -429,25 +505,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // child type a locus declares `accept(_: T)` for, resolved by
         // `child_locus_name` to the locus lowering resolves (an alias,
         // generic arguments and a `std::` path included), the same
-        // relation `accept_param` spells (the checker admits one
-        // `accept` per locus). A locus codegen monomorphised
-        // (`Holder<T>` lowered as `Holder_Int`) reads its template's
-        // accept rows, asked for by the template's identity and
-        // specialized by the instantiation's substitution
-        // (`specialized_accepts`, filled at synthesis). Total: no accept
-        // row means the enclosing locus does not accept the child, and
-        // no bubble plan below means no ancestor owns it either.
-        let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
-            match self.specialized_accepts.get(&cs.locus_name) {
-                Some(accepts) => accepts.contains(locus_name),
-                None => self
-                    .ownership_accepts
-                    .get(&cs.locus_name)
-                    .is_some_and(|accepts| accepts.contains(locus_name)),
-            }
-        } else {
-            false
-        };
+        // relation `accept_param` spells. Concrete specializations and
+        // ordinary loci use the resolved view's one acceptance table.
+        let parent_accepts_us = self.current_self.as_ref().is_some_and(|cs|
+            self.ownership_accepts.get(&cs.locus_name).is_some_and(|a| a.contains(locus_name)));
         // Interest-based ownership #3: cross-pool bubble. When the direct
         // parent does not accept us but the cross-pool plan resolved
         // `(enclosing, I) -> A` (A a SingletonConst on a DIFFERENT
@@ -511,6 +572,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let crosspool_owner: Option<String> = if parent_accepts_us {
             None
+        } else if let Some(Some((owner, _, true))) = &instance_owner_override {
+            Some(owner.clone())
         } else if let (Some(plan), Some(crate::codegen::MixedArm::CrossPool)) = (&mixed_plan, mixed_arm) {
             Some(plan.owner.clone())
         } else if let Some(cs) = self.current_self.as_ref() {
@@ -550,6 +613,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 locus_name,
                 &info,
                 &owner_name,
+                instance_owner_override.as_ref().and_then(|o| o.as_ref()).map(|(_, ptr, _)| *ptr),
                 &overrides,
                 scope,
             );
@@ -665,7 +729,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Singleton(String),
             Threaded(String),
         }
-        let bubble_route: Option<BubbleRoute> = if parent_accepts_us {
+        let bubble_route: Option<BubbleRoute> = if let Some(owner) = &instance_owner_override {
+            owner.as_ref().filter(|(_,_,post)| !post).map(|(name,_,_)| BubbleRoute::Threaded(name.clone()))
+        } else if parent_accepts_us {
             None
         } else if let (Some(plan), Some(crate::codegen::MixedArm::SameTower)) = (&mixed_plan, mixed_arm) {
             // U-1: this enclosing instance runs on the owner's thread.
@@ -731,7 +797,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //        plan admitted an orphan/per-path site, which it never
         //        does.)
         // None → transient, exactly as before.
-        let bubble_owner_self_ptr: Option<PointerValue<'ctx>> =
+        let bubble_owner_self_ptr: Option<PointerValue<'ctx>> = if let Some(owner) = &instance_owner_override {
+            owner.as_ref().map(|(_,ptr,_)| *ptr)
+        } else {
             match &bubble_route {
                 Some(BubbleRoute::Singleton(a)) => {
                     Some(self.load_owner_singleton_ptr(a)?)
@@ -782,7 +850,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some(loaded)
                 }
                 None => None,
-            };
+            }
+        };
         let (owner_self_ptr, owner_locus_name): (
             Option<PointerValue<'ctx>>,
             Option<String>,
@@ -1128,8 +1197,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // - v1.x-3 recognition w/ shared_slab: parent's accept
         //   routes us through `lotus_recpool_slab_acquire`,
         //   which returns the SAME slab arena every sibling
-        //   shares. Per-child release is a no-op; the whole
-        //   slab frees at parent dissolve.
+        //   shares. Per-child release returns an admission reservation;
+        //   all slab bytes remain until parent dissolve.
         // - otherwise (rich, top-level, parent doesn't accept
         //   us, or recognition w/ unshipped sub-mode after
         //   typecheck defense): fresh `lotus_arena_create()`.
@@ -1367,65 +1436,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             strategy @ (AcquireStrategy::RecpoolFixed | AcquireStrategy::RecpoolSlab) => {
-                let parent_self_ptr = parent_self_ptr_opt
-                    .expect("recpool strategy requires parent self_ptr");
-                // Owner (SelfOwned self, or bubbled singleton A) — the
-                // recpool handle lives on the owner's struct.
-                let parent_info = self
-                    .user_loci
-                    .get(
-                        owner_locus_name
-                            .as_ref()
-                            .expect("recpool strategy implies an owner"),
-                    )
-                    .cloned()
-                    .expect("owner declared");
-                // Load `parent.__recpool` — the recpool handle
-                // allocated at the parent's own instantiation.
-                let recpool_field_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        parent_info.struct_ty,
-                        parent_self_ptr,
-                        parent_info.recpool_field_idx,
-                        "parent.__recpool.ptr",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let parent_recpool = self
-                    .builder
-                    .build_load(
-                        self.context.ptr_type(AddressSpace::default()),
-                        recpool_field_ptr,
-                        "parent.__recpool",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let (acquire_fn_name, kind_const) = match strategy {
-                    AcquireStrategy::RecpoolFixed => {
-                        ("lotus_recpool_fixed_acquire", 1u64)
-                    }
-                    AcquireStrategy::RecpoolSlab => {
-                        ("lotus_recpool_slab_acquire", 2u64)
-                    }
-                    _ => unreachable!(),
-                };
-                let acquire_fn = self
-                    .module
-                    .get_function(acquire_fn_name)
-                    .expect("recpool acquire extern declared");
-                let cell_arena = self
-                    .builder
-                    .build_call(
-                        acquire_fn,
-                        &[parent_recpool.into()],
-                        &format!("{}.arena.recpool", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("recpool acquire returns ptr");
-                // The header stores the child-side release stash.
-                pending_recpool_release = Some((parent_recpool, kind_const));
-                cell_arena
+                let owner = owner_locus_name.as_deref().expect("recpool owner");
+                let owner_info = self.user_loci.get(owner).cloned().expect("owner declared");
+                let mode = if matches!(strategy, AcquireStrategy::RecpoolFixed) {
+                    RecognitionSubMode::FixedCell
+                } else { RecognitionSubMode::SharedSlab };
+                let (arena, pool, kind) = self.acquire_recognition_child_arena(
+                    owner, &owner_info, parent_self_ptr_opt.expect("recpool owner pointer"), locus_name, mode,
+                )?;
+                pending_recpool_release = Some((pool.into(), kind));
+                arena.into()
             }
         };
         let arena_field = self
@@ -2493,6 +2513,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => None,
         };
 
+        // Owner-qualified pointers retain the actual type as well as the
+        // instance. A nearer acceptor clears every other candidate, even if
+        // it carries a pointer for that candidate from further up the tree.
+        if !info.owner_alternative_field_idxs.is_empty() {
+            let ptr_ty = self.context.ptr_type(AddressSpace::default());
+            let parent = field_holder_cx.clone().or_else(|| self.current_self.clone());
+            let parent_info = parent.as_ref().and_then(|p| self.user_loci.get(&p.locus_name)).cloned();
+            for ((child,owner),index) in &info.owner_alternative_field_idxs {
+                let value = match (&parent,&parent_info) {
+                    (Some(parent),Some(parent_info)) if parent_info.accept_fns.contains_key(child) => {
+                        if parent.locus_name == *owner { parent.self_ptr } else { ptr_ty.const_null() }
+                    }
+                    (Some(parent),Some(parent_info)) => {
+                        if let Some(source) = parent_info.owner_alternative_field_idxs.get(&(child.clone(),owner.clone())) {
+                            let slot = self.builder.build_struct_gep(parent_info.struct_ty,parent.self_ptr,*source,"owner.forward.source")
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            self.builder.build_load(ptr_ty,slot,"owner.forward.value")
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?.into_pointer_value()
+                        } else { ptr_ty.const_null() }
+                    }
+                    _ => ptr_ty.const_null(),
+                };
+                let slot = self.builder.build_struct_gep(info.struct_ty,self_ptr,*index,"owner.forward.target")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.build_store(slot,value).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
         let prev_params_init_self = self.params_init_self.take();
         // Finding 4 (downstream handoff 2026-07-14): remember whether the
         // code that WROTE this instantiation was itself params-
@@ -4051,11 +4098,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // parent's params not settled yet) is waited for first, so
             // the decision is the handler's, not the timing's.
             let restart = self.restart_fns.get(locus_name).copied();
-            let birth_call = info
-                .methods
-                .get("birth")
-                .copied()
-                .filter(|_| !info.empty_lifecycle.contains("birth"));
+            let birth_call = self.birth_method(&info, locus_name, true)?;
             // The thread's steps of the birth spine, in the plan's order.
             let checks = self.birth_check_decls(locus_name);
             // The restart count as the birth began: the gate before run()
@@ -4424,11 +4467,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // state's invariants). If birth violates and the parent
         // has a matching on_failure handler, that handler runs;
         // otherwise the runtime exits with a diagnostic.
-        let birth_call = info
-            .methods
-            .get("birth")
-            .copied()
-            .filter(|_| !info.empty_lifecycle.contains("birth"));
+        let birth_call = self.birth_method(&info, locus_name, true)?;
         self.lc_in_spine("Instantiation", |cx| {
             cx.lc_step("Birth", Some(self_ptr), Some(locus_name), |cx| {
                 if let Some(birth_fn) = birth_call {
@@ -4441,7 +4480,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })?;
         if let Some(birth_closures_fn) = info.birth_closures_fn {
             let (parent_self, handler_ptr) =
-                self.resolve_failure_route(&locus_name);
+                self.bound_failure_route(&info, self_ptr)?;
             let before = match birth_pre_slot {
                 Some(_) => Some(self.emit_restart_count(&info, self_ptr)?),
                 None => None,
@@ -4817,7 +4856,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // skipped (quarantined) run().
             if let Some(tick_fn) = info.tick_closures_fn {
                 let (parent_self_t, handler_ptr_t) =
-                    self.resolve_failure_route(&locus_name);
+                    self.bound_failure_route(&info, self_ptr)?;
                 self.builder
                     .build_call(
                         tick_fn,
@@ -4838,7 +4877,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // elapsed since last fire of each duration closure.
             if let Some(duration_fn) = info.duration_closures_fn {
                 let (parent_self_d, handler_ptr_d) =
-                    self.resolve_failure_route(&locus_name);
+                    self.bound_failure_route(&info, self_ptr)?;
                 self.builder
                     .build_call(
                         duration_fn,
@@ -6121,17 +6160,57 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if info.accept_param.is_some() {
             return reject("its own `accept` (nested owned children)");
         }
-        if !info.owner_forward_field_idxs.is_empty() {
+        if !info.owner_forward_field_idxs.is_empty() || !info.owner_alternative_field_idxs.is_empty() {
             return reject("owner-forwarding fields");
         }
-        // A non-empty `run` would need to be scheduled on the far side;
-        // an empty (or absent) run is a no-op we simply skip.
+        // A non-empty `run` would need scheduling on the far side.
+        // An empty flow run still needs its wrapper: completion reclaims
+        // the child. The dispatcher invokes that continuation inline.
         if info.methods.contains_key("run")
             && !info.empty_lifecycle.contains("run")
         {
             return reject("a non-empty `run`");
         }
         Ok(())
+    }
+
+    /// Reserve the accepting owner's recognition capacity before exposing a
+    /// child. Both constructor paths use this operation and store its matching
+    /// release metadata, including when the child's body needs no own arena.
+    fn acquire_recognition_child_arena(
+        &mut self,
+        owner: &str,
+        info: &LocusInfo<'ctx>,
+        owner_ptr: PointerValue<'ctx>,
+        child: &str,
+        mode: RecognitionSubMode,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>, u64), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let slot = self.builder.build_struct_gep(info.struct_ty, owner_ptr, info.recpool_field_idx, "recognition.pool.ptr").map_err(e)?;
+        let pool = self.builder.build_load(ptr, slot, "recognition.pool").map_err(e)?.into_pointer_value();
+        let (acquire, kind, name) = match mode {
+            RecognitionSubMode::FixedCell => ("lotus_recpool_fixed_acquire", 1, "fixed_cell"),
+            RecognitionSubMode::SharedSlab => ("lotus_recpool_slab_acquire", 2, "shared_slab"),
+            _ => return Err(CodegenError::Unsupported("unshipped recognition acquisition mode".into())),
+        };
+        let acquire = self.module.get_function(acquire).expect("recpool acquire declared");
+        let arena = self.builder.build_call(acquire, &[pool.into()], "recognition.arena").map_err(e)?
+            .try_as_basic_value().left().expect("recpool acquire returns ptr").into_pointer_value();
+        let unavailable = self.builder.build_is_null(arena, "recognition.unavailable").map_err(e)?;
+        let function = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("constructor function");
+        let refused = self.context.append_basic_block(function, "recognition.refused");
+        let admitted = self.context.append_basic_block(function, "recognition.available");
+        self.builder.build_conditional_branch(unavailable, refused, admitted).map_err(e)?;
+        self.builder.position_at_end(refused);
+        let panic = self.module.get_function("lotus_root_panic").expect("lotus_root_panic declared");
+        let reason = self.global_string(&format!(
+            "RecognitionPoolUnavailable (owner `{owner}` cannot construct `{child}`: {name} capacity exhausted or pool allocation failed)",
+        ));
+        self.builder.build_call(panic, &[ptr.const_null().into(), self.context.i64_type().const_zero().into(), reason.into()], "recognition.panic").map_err(e)?;
+        self.builder.build_unreachable().map_err(e)?;
+        self.builder.position_at_end(admitted);
+        Ok((arena, pool, kind))
     }
 
     /// Consumer side of a cross-pool bubble. Runs on the enclosing
@@ -6146,6 +6225,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         child_locus: &str,
         info: &LocusInfo<'ctx>,
         owner_name: &str,
+        owner_pointer: Option<PointerValue<'ctx>>,
         overrides: &BTreeMap<&str, &Expr>,
         scope: &Scope<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
@@ -6239,7 +6319,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // A's self-pointer (a program-start SingletonConst) from the
         // internal global, and the post to A's thread.
-        let a_self = self.load_owner_singleton_ptr(owner_name)?;
+        let a_self = match owner_pointer { Some(ptr) => ptr, None => self.load_owner_singleton_ptr(owner_name)? };
         self.emit_crosspool_post(
             owner_name,
             dispatcher.as_global_value().as_pointer_value(),
@@ -6358,9 +6438,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `I` is arena-elidable — matching the Fresh-strategy reclaim
     /// contract), then runs `I`'s birth spine in the plan's order: the
     /// stitch to `A` (`A.accept(A, I)` + `lotus_children_push`), then
-    /// `I.birth()` (line 5). Because `I` ends up
-    /// co-located with `A`, teardown is A's existing same-thread reclaim
-    /// cascade — no cross-thread reclaim protocol.
+    /// `I.birth()` (line 5), and an empty flow's run wrapper. Because `I`
+    /// ends up co-located with `A`, its completion or A's cascade uses
+    /// the existing same-thread reclaim protocol.
     fn synthesize_crosspool_dispatcher(
         &mut self,
         child_locus: &str,
@@ -6401,11 +6481,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // cell (return void). Trusted same-process payload never trips
         // this; it exists only to satisfy the wire deserializer ABI.
         let fail_bb = self.context.append_basic_block(dispatch, "xpool.fail");
-        self.builder.position_at_end(fail_bb);
-        self.builder
-            .build_return(None)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
         self.builder.position_at_end(entry);
         let a_self = dispatch
             .get_nth_param(0)
@@ -6432,11 +6507,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
 
-        // Allocate I's struct in A's arena (16-align — widest scalar).
+        // Allocate I's struct in A's arena through the same recycler as
+        // local accepted children. A completed flow returns its struct
+        // here; raw bump allocation would retain one per historical birth.
         let alloc_fn = self
             .module
-            .get_function("lotus_arena_alloc")
-            .expect("lotus_arena_alloc declared");
+            .get_function("lotus_child_struct_alloc")
+            .expect("lotus_child_struct_alloc declared");
         let child_size = child_info
             .struct_ty
             .size_of()
@@ -6458,32 +6535,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // arena-elidable — then borrow A's arena (matching the
         // Fresh-strategy contract so __reclaim's destroy-skip is
         // leak-free).
-        let child_arena = if child_info.arena_elidable {
-            a_arena
+        let recognition = match owner_info.projection_class {
+            ProjectionClass::Recognition(Some(params)) => Some(params.sub_mode),
+            _ => None,
+        };
+        let (child_arena, recpool_release) = if let Some(mode) = recognition {
+            let (arena, pool, kind) = self.acquire_recognition_child_arena(owner_name, &owner_info, a_self, child_locus, mode)?;
+            (arena, Some((pool.into(), kind)))
         } else {
-            let label_ptr = self
-                .builder
-                .build_global_string_ptr(
-                    child_locus,
-                    &format!("{}.xpool.arena.label", child_locus),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .as_pointer_value();
-            let create_fn = self
-                .module
-                .get_function("lotus_arena_create_labeled")
-                .expect("lotus_arena_create_labeled declared");
-            self.builder
-                .build_call(
-                    create_fn,
-                    &[label_ptr.into()],
-                    &format!("{}.xpool.arena.new", child_locus),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .try_as_basic_value()
-                .left()
-                .expect("arena_create returns ptr")
-                .into_pointer_value()
+            let child_arena = if child_info.arena_elidable {
+                a_arena
+            } else {
+                let label_ptr = self
+                    .builder
+                    .build_global_string_ptr(
+                        child_locus,
+                        &format!("{}.xpool.arena.label", child_locus),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .as_pointer_value();
+                let create_fn = self
+                    .module
+                    .get_function("lotus_arena_create_labeled")
+                    .expect("lotus_arena_create_labeled declared");
+                self.builder
+                    .build_call(
+                        create_fn,
+                        &[label_ptr.into()],
+                        &format!("{}.xpool.arena.new", child_locus),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("arena_create returns ptr")
+                    .into_pointer_value()
+            };
+            (child_arena, None)
         };
 
         // The header, as every instantiation stores it (a bare statement:
@@ -6506,8 +6593,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let null = ptr_t.const_null();
         store_ptr_field(self, child_info.arena_field_idx, child_arena.into(), "xpool.arena.set")?;
-        self.emit_instance_header(&child_info, child_ptr, child_locus, false, (null, null), None)?;
+        self.emit_instance_header(&child_info, child_ptr, child_locus, false, (null, null), recpool_release)?;
         store_ptr_field(self, child_info.owner_self_field_idx, a_self.into(), "xpool.owner.set")?;
+
+        let initialized = self.builder.get_insert_block().expect("initialized child");
+        self.builder.position_at_end(fail_bb);
+        if let Some((pool, kind)) = recpool_release {
+            let release = self.module.get_function(if kind == 1 { "lotus_recpool_fixed_release" } else { "lotus_recpool_slab_release" }).expect("recpool release declared");
+            self.builder.build_call(release, &[pool.into(), child_arena.into()], "xpool.refused.release")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        } else if !child_info.arena_elidable {
+            let destroy = self.module.get_function("lotus_arena_destroy").expect("arena destroy declared");
+            self.builder.build_call(destroy, &[child_arena.into()], "xpool.refused.arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.builder.build_return(None).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(initialized);
 
         // Deserialize the marshaled params into I's param slots. The
         // wire deserializer allocates String/Bytes into the program-
@@ -6528,20 +6629,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // The birth spine on A's thread, the fifth shape (L4): its steps
         // in the order the plan places them for I (line 5: accept after
         // the params, before the birth). A cross-pool child subscribes to
-        // nothing and runs nothing (`crosspool_child_shape_ok`), so the
-        // stitch to A and the birth are the whole of it.
+        // nothing and has no run body (`crosspool_child_shape_ok`); the
+        // stitch to A and the birth are followed by an empty flow's run
+        // wrapper. Its completion owns drain/release/dissolve and reclaim.
         let accepted = owner_info.accept_fns.contains_key(child_locus);
-        let kinds: Vec<ObligationKind> =
+        let mut kinds: Vec<ObligationKind> =
             if accepted { vec![ObligationKind::Accept, ObligationKind::Birth] } else { vec![ObligationKind::Birth] };
+        if self.is_flow(child_locus) {
+            kinds.push(ObligationKind::Run);
+        }
         for step in self.birth_spine_order(child_locus, &kinds)? {
             match step {
                 ObligationKind::Accept => self.emit_crosspool_stitch(&owner_info, owner_name, a_self, child_locus, child_ptr)?,
                 ObligationKind::Birth => {
-                    let birth_call = child_info
-                        .methods
-                        .get("birth")
-                        .copied()
-                        .filter(|_| !child_info.empty_lifecycle.contains("birth"));
+                    let birth_call = self.birth_method(&child_info, child_locus, true)?;
                     self.lc_in_spine("Instantiation", |cx| {
                         cx.lc_step("Birth", Some(child_ptr), Some(child_locus), |cx| {
                             if let Some(birth_fn) = birth_call {
@@ -6552,6 +6653,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             Ok(())
                         })
                     })?;
+                }
+                ObligationKind::Run => {
+                    let wrapper = self.coop_pool_run_wrappers.get(child_locus).copied().ok_or_else(|| {
+                        CodegenError::missing_row("flows", format!("cross-pool flow `{child_locus}` has no run wrapper"), None)
+                    })?;
+                    // The shape check admits only an empty run. Use the
+                    // ordinary wrapper, including its failure/reclaim
+                    // gates, rather than a separate teardown sequence.
+                    self.builder.build_call(wrapper, &[child_ptr.into(), null.into()], "xpool.flow.run")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
@@ -6590,6 +6701,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         child_locus: &str,
         child_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
+        // Flow-ness is type-wide, but the release bookend belongs to
+        // this accepting owner. Other owners may release the same type.
+        if let Some(child_info) = self.user_loci.get(child_locus).cloned() {
+            let release = owner_info.release_fns.get(child_locus)
+                .map(|f| f.as_global_value().as_pointer_value())
+                .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).const_null());
+            let slot = self.builder.build_struct_gep(child_info.struct_ty, child_ptr, child_info.owner_release_field_idx, "xpool.owner_release.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(slot, release).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         let accept_call =
             owner_info.accept_fns.get(child_locus).copied().filter(|_| !owner_info.empty_lifecycle.contains("accept"));
         self.lc_in_spine("Instantiation", |cx| {

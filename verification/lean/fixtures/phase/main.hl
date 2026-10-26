@@ -1,0 +1,13 @@
+fn sink(n: Int) -> Int { return n; }
+fn safe(n: Int) -> Int { return n + 1; }
+locus Worker {
+    birth() { safe(0); }
+    run() { sink(1); }
+}
+group workers = { Worker };
+group sinks = { sink };
+main locus App {
+    params { worker: Worker = Worker { }; }
+    claims { prepared: forbid reaches(workers, sinks) via { calls } during birth; }
+}
+fn main() { App { }; }

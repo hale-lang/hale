@@ -412,6 +412,32 @@ The remaining verbs (#382 phases 2–5):
   selected declarations do not withdraw this proof. Invalid selectors
   take precedence over evaluation; otherwise a concrete collision
   takes precedence over uncertainty.
+- **`bound queue_slots <= N on instances G`** (GH #1327 § 4) —
+  the sum of declared subscription queue capacities across every arranged
+  instance of every locus declaration selected by `G` is at most `N`.
+  Each replica, repeated construction and subscription site contributes
+  separately. A selected declaration does not implicitly select its
+  descendants. A filter naming no presently published key still reserves
+  its declared capacity. An instantiated locus with no subscriptions
+  contributes zero; an unbounded registration violates every finite limit.
+
+  `N` is nonnegative. The group must resolve to a nonempty locus selection,
+  and every selected declaration must have an instance or a recorded
+  unknown population. Misspelled/refused groups, function-only selections,
+  intentional empty groups and exact zero populations are `invalid`.
+  Relevant unknown subscription sets or populations produce `uncertified`
+  unless known reservations already exceed the limit. Unrelated holes do
+  not affect the result. Violations name the total and contributing
+  instance/registration sites. Counts use checked-width-independent sums;
+  overflow cannot produce a pass. The same judgment runs for check,
+  verify, imported library claims, constitutions and artifact projection.
+
+  The counted quantity is declared subscription slots. It does not claim
+  a bound on payload bytes, resident memory, dynamic admission, topic-wide
+  outstanding quotas, processing work or restart overlap. A topic's bound
+  does not replace a subscription's bound in this reservation account.
+  A user effect named `queue_slots` keeps the existing `on paths from`
+  spelling and semantics.
 - **`require no_silent_loss(topic T | all G)`** (GH #1327 § 2) — no
   modeled boundary on a named route is configured to discard
   silently. A route is a wire subject; `all G` takes every route a
@@ -532,7 +558,128 @@ specified in [`spec/model.md`](./model.md). This document specifies
 what is CHECKED and what is SERIALISED; that one specifies the IR
 sitting between them.
 
-**The topology artifact** (#382 phase 2; schema 1.17):
+### Reachability proof export (GH #1327)
+
+`hale check <t>` accepts four single-seed, required-path options:
+
+- `--dump-reachability-proofs <path>` exports canonical JSON,
+  schema `hale.reachability-proofs/2`.
+- `--dump-reachability-lean <path>` exports Lean source importing
+  `verification/lean/GraphCertificates.lean` under Lean 4.35.0.
+- `--check-reachability-proofs <path>` regenerates and compares the
+  complete canonical JSON report against current source/model/laws.
+- `--check-reachability-lean <path>` regenerates and compares the
+  complete Lean document, including the exact propositions and proofs.
+
+All accept `=<path>` as well as a separate operand. Missing or empty
+operands are usage errors. Workspace and matrix evaluations refuse these
+options. Export refuses an ill-typed seed. A violated claim retains the
+ordinary check's failing exit status while its evidence can be exported.
+Output destinations must differ and cannot replace loaded source files.
+
+The scope is exactly the selected `ClaimIr::ForbidReaches` rows, including
+library and constitution origins. Every such row appears with its ordinal,
+name, typed law payload, origin, law provenance, verdict, diagnostics, and
+optional certificate/refusal. Other selected law ordinals are explicitly
+excluded. `all_selected_forbid_laws_have_certificates` reports certificate
+availability, not satisfaction: a violated law can have a path certificate.
+Selection issues are retained and prevent theorem export. A report
+with no selected forbid rows cannot pass the proof replay gate or export
+Lean theorems. This interface never certifies another judgment family.
+
+The existing reachability judgment records its own selected roots, target
+predicate, masks and successor rows, without another graph derivation or
+transitive search. Numeric vertex identities distinguish model FunctionIds
+from each stdlib absorption entry's interior nodes. The report maps them to
+named identities and model provenance. For an absence, every expanded
+vertex's complete selected successor list is recorded; masked vertices and
+edges entering them are excluded by the law's interposition semantics.
+Targets are selected over the model's whole user/interior vertex universe.
+
+A closed-set certificate contains all selected roots, excludes every selected
+target, and is closed under all recorded outgoing edges. Its set equals the
+expanded-vertex account, so an edge skipped by search bookkeeping cannot
+silently disappear from the closure check. A path certificate names a
+selected source and explicit edge steps ending in a selected target; the
+empty step list proves reflexive reachability. The existing empty-target
+shortcut instead exports a theorem quantified over an arbitrary edge list.
+
+Invalid and uncertified rows produce no mathematical certificate. Neither
+search saturation nor absorption truncation can manufacture a path proof;
+if the legacy judgment reports `violated` only because of a cutoff, that row
+has no certificate. A known path found before incomplete information still
+has a path certificate. Each row records its selected relation requirements
+and the positive completeness flags, with the typed global gap account. For
+a nonempty closed-set proof, a withdrawn required capability without any
+typed hole accounting for it prevents certificate export. Globally degraded
+flags accounted for by typed holes can still permit a scoped proof when the
+existing judgment establishes that the holes are irrelevant. Empty source or
+target sets and known paths need no outgoing-completeness premise. JSON reports
+preserve these refusals, while Lean export
+refuses the whole bundle if any selected forbid law lacks a certificate.
+
+Binding includes source paths and content identities, the complete law-table
+digest, analysis semantics and input digest, coverage digest, topology shape,
+and a supplementary canonical evidence-payload digest. That digest covers
+all exported graph, proposition, completeness and provenance facts together
+with the other binding inputs, excluding only its own field; it is not a
+complete-model digest. Model and law provenance
+stores are separate; law source IDs index `law_sources`, vertex provenance
+indexes `model_provenance`, and model source IDs index `binding.sources`.
+Diagnostic locations retain their bundle or stdlib coordinate space;
+`source_bases` maps bundle source ordinals to their virtual byte bases.
+Related locations preserve their own coordinate spaces.
+Origins, hole kinds and anchors are encoded by exhaustive typed cases,
+never Rust Debug strings. FNV identities are not authentication. Replay checks exact canonical
+bytes, including every graph fact and proposition; it does not accept
+arbitrary alternate certificates, normalize JSON, or trust a stated digest.
+
+Generated Lean uses only numeric declarations and kernel reduction (`by
+decide`), applying `checkClosed_sound` or `checkViolation_sound`. The report's
+canonical-byte identity is carried into the generated document. Successful
+export or replay is NOT a successful Lean run; the consumer must check the
+actual emitted Lean document. A kernel failure, timeout or missing tool is
+not a proof. The bundled CI runner checks generated examples with both Lean
+and `leanchecker`, and requires rejection of an omitted-root certificate.
+
+The soundness propositions concern supplied finite graph data. Extraction,
+source authenticity, projection and completeness remain compiler obligations;
+the proofs do not verify compiler lowering, runtime executions, handler
+termination, scheduling fairness, or unrelated claims. They do not rebuild
+an ApplicationModel from the lossy topology artifact.
+
+### Flow reclamation policy
+
+`require flow(all G)` requires every selected locus declaration to have
+concrete flow classification from the shared completed inventory.
+A nonempty locus selection is required; unrelated functions in a group
+are outside this projection. Concrete residents violate with declaration
+witnesses. Generic templates are uncertified, and their scoped
+`FLOW_CLASSIFICATION` holes do not affect unrelated concrete child types.
+A missing positive completeness account with no typed gaps is uncertified;
+it cannot establish absence of a release clause.
+
+This is declaration policy, not a temporal claim. It says nothing about
+whether a run returns, the accepting owner of a particular birth,
+flow-field cancellation safety, or simultaneous retained populations or
+bytes. Schema 1.23 adds the typed law, hashed classification tags,
+classification capability and `flow_policy` adequacy. Analysis semantics
+11 binds the added judgment and completeness family.
+
+**The topology artifact** (#382 phase 2; current schema 1.38):
+The exporter uses artifact semantics **3**. The in-process canonical model
+uses semantics **15**, and analysis inputs use semantics **33**. These are
+separate version domains; the artifact's `semantics` field is not the model
+semantics version. Reachability reports use their own schema,
+`hale.reachability-proofs/2`. Schema 1.37 adds exact constructor predicate
+entries; schema 1.36 separates represented self lifecycle source work from
+unresolved runtime cost context. Schema 1.35 adds the complete guarded parent
+protocol accounts; schema 1.34 introduced the guarded self-stage accounts.
+Consumers apply the admission rules for the supported schema and semantics,
+not just a string-label check. Re-export from source when required coverage
+is absent.
+
+
 `hale check <t> --dump-topology` emits a PROJECTION of the model
 (lossy by construction; see [`spec/model.md`](./model.md)) —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
@@ -620,7 +767,7 @@ their wire `subject`), **`subjects`** (the wire-subject pattern
 universe), and **`effect_classes`** (each class with its
 `declared` / `cyclic` status). `fn_universe` covers every
 function the model knows — wider than the legacy `sorts.fns`, which
-holds the summarized ones (a failure handler is not). A resolved reference
+holds the summarized ones (including failure handlers since schema 1.24). A resolved reference
 must match one exact `(name, display)` pair — the raw half is
 the machine join key and is anchored, not merely
 cross-row-consistent — and the catalogs are cross-tied to the
@@ -669,10 +816,15 @@ outside the legacy analyzable universe carries no certificates
 and judges `uncertified` with its residue on the row (round 8):
 `sorts.fns` for fn subjects, the `analyzable` flag on `law.loci`
 rows for phase contracts — an unanalyzed body is residue, not
-invalidity. An implicit lifecycle phase with no hook body gets a
-SYNTHETIC `Holds` certificate from the evidence layer (no hook
-performs no effects), so `@phase_effects(birth: {})` on a
-hook-less locus is `holds`, not a missing report. Beyond the
+invalidity. A lifecycle phase with no source bodies gets a
+SYNTHETIC `Holds` certificate from the evidence layer. Automatic assertions
+are source bodies even without an authored hook, so only a genuinely
+bodyless phase is vacuous. `@phase_effects(birth: {})` holds by absence
+only when no hook, automatic assertion or birth-check clause supplies a
+represented birth body. Each birth check has a distinct executable identity
+and birth-phase membership, with conditional-failure coverage. Construction
+invocation remains a separate uncertainty boundary.
+Beyond the
 statically decodable invalidities, the claims evaluator's other
 legitimate `Invalid` outcomes (an operand outside a verb's
 domain, projection vacuity, an empty `during` slice, `avoiding`
@@ -744,17 +896,20 @@ carry the typed `FunctionKind::FailureHandler` — no consumer
 infers handler-ness from a display prefix. The coverage laws — `analyzed ⇔ summarized` (both
 directions: a summarized body was walked and a walked body is
 summarized, anchoring `analyzed` to the hashed `sorts.fns`);
-failure handlers never analyzed; the legacy fn sort equals the
+failure handlers obey the same coverage contract; the legacy fn sort equals the
 summarized set; an unanalyzed body RETAINS its `UnanalyzedBody`
 residue and an analyzed body carries none; and (rounds 14–15)
 `LocusDecl::analyzable` DERIVES from the CLOSED ownership
 account: every function carries its canonical `owner`
-(`Some` for methods, hooks, modes, and failure handlers; `None`
-for free functions), `member_of` must be a total, exclusive
-partition agreeing with it exactly (a free fn appears in no row;
-every other kind in exactly one, at its owner), and a locus is
-analyzable iff every relevant owned member (all kinds except
-failure handlers) is analyzed, an empty set vacuously so — so a
+(`Some` for locus-owned bodies, including parameter defaults;
+`None` for free functions, data-field defaults and argument defaults
+of free functions). Data-field defaults retain their separate typed
+record owner. `member_of` must be a total, exclusive partition of
+locus-owned bodies agreeing with `owner` exactly (a body with no
+locus owner appears in no row; every locus-owned body in exactly one,
+at its owner), and a locus is
+analyzable iff every executable owned member, including failure
+handlers, is analyzed, an empty set vacuously so — so a
 membership row can be neither deleted nor moved to launder
 coverage or group projection — and ownership is anchored to the
 ENTITY IDENTITY itself (round 16): `owner = Some(l)` requires the
@@ -803,7 +958,87 @@ fingerprint covers `{issues, rows}`) and in the document verdict
 entry like any diagnostic, and the duplicate-name case is
 recomputed from the rows themselves — no claim error disappears
 between checking and artifact projection. The evidence engine's
-`ANALYSIS_SEMANTICS_VERSION` is 8. It moves whenever the
+`ANALYSIS_SEMANTICS_VERSION` is 21. Version 12 added canonical failure-handler
+summaries, direct callback-field dispatch, and explicit uncertainty for implicit
+recovery lifecycle work. Version 13 also retains recovery operations evaluated
+inside struct-field defaults when temporary typing rows are undone, so hidden
+recovery work cannot certify a closed budget. Version 14 refuses would-be
+certifications through explicit structural failure (`violate`), including
+resolved helper/library call paths. A printing failure handler previously
+escaped an effect assertion on the method raising the failure. Certificates
+and canonical model gaps now consume one cached summary witness forest;
+unrelated functions retain their scope and known violations still win.
+Version 16 also represents ordinary locus parameter defaults as explicit
+executable bodies, with separate constructor-evaluation edges. The same source
+facts supply categorical effects, per-call costs and helper-preserving graph
+paths. Version 17 extends that execution account to data-field defaults with
+real type owners and field declaration sites. Model semantics 10 and
+artifact schema 1.33 introduced the validated constructor account;
+constructor/default omission tables are validated independently of authored
+call ordinals. Inline defaults have zero native-frame overhead, retaining
+their own local and helper charges. Version 18 adds argument defaults
+evaluated at named call sites, with callable owners, supplied counts and
+separate argument-evaluation edges. Version 19 adds typed closure assertion bodies and explicit-checkpoint
+evaluations, comparison-failure coverage and refusal of unresolved caller-self
+contexts in default checkpoints. The same omission validator gates model
+and evidence coverage. Function-body contracts start inside the body; caller
+contracts include their evaluated arguments. Implicit closure checks and
+lifecycle execution are separate coverage obligations. Version 20 records
+source construction obligations for birth, dissolve, tick and duration
+assertions. A resolved constructor with such assertions cannot certify closed
+effects, reachability or costs until its automatic scheduling, retained
+lifetime and failure context are represented. It carries a scoped
+`UnmodeledInitialization` gap; explicit checkpoints keep their executable
+edges. The gap is uncertainty, not proof that an epoch runs or is unbounded.
+Concrete violations in represented work still win. Authored hook invocation and
+`birth_check` execution remain separate unfinished obligations. Version 21
+adds one source phase inventory shared by ordinary phase certificates and
+canonical phase roots. Automatic assertion bodies belong to their declared
+birth/dissolve/tick/duration phase even without an authored hook; explicit
+assertions inherit their checkpoint caller phase. Multiple bodies in one
+phase are checked together, with concrete violations taking precedence over
+contextual unknowns. Module, mode and failure-handler phase contracts read
+the same inventory. Missing reports over real phase roots are Uncertified,
+never synthesized Holds. Schema 1.31 and model semantics 8 validate the
+automatic assertion/epoch/phase account, require complete named-body phase
+membership, and retain undeclared phase names as Invalid in unchecked law
+projection. Version 22 adds executable birth checks with real clause identities,
+inline predicate/payload summaries and birth-phase membership. Their helper
+paths are represented, while possible conditional rejection retains scoped
+failure-dispatch coverage. Constructors retain separate invocation-context
+gaps rather than invented calls or frame charges. Model semantics 9 and schema
+1.32 require the complete clause, ownership, ordinal, phase and coverage
+accounts, including current-input downgrade refusal. Version 23 adds authored
+self lifecycle definitions and constructor birth entries in their own typed
+namespace. Effects and graph witnesses follow the real birth body, including
+foreign interiors, while invocation/frame/lifetime context retains scoped
+coverage. Later run/drain/dissolve admission remains unresolved. Empty and
+synthesized source facts are shared with native birth selection through the
+merge correspondence. Model semantics 10 and schema 1.33 validate complete
+source definitions and constructor entries; quantitative evidence does not
+invent a caller frame from those entries. Checker and lowering
+agree on each clause's typed-body identity; the editor dependency view remains
+attached to its enclosing declaration. Actual lifecycle invocation remains
+required work.
+
+Version 15 extends the same cached forest through constructor invocations
+of omitted locus parameter defaults, including nested construction and helper
+calls. An explicitly supplied field does not execute its default. Unused
+defaults do not affect unrelated functions; imported and analysis-copy targets
+retain declaration identities in their own source universes. Version 15 alone did not
+establish ordinary initializer effect/allocation coverage, automatic closure
+checks, other declaration-body execution, runtime admission or complete
+failure-handler execution. The distinct failure-dispatch gap withdraws
+call/effect/cost coverage while retaining authored publish-site completeness;
+it cannot itself invent a send under an unknown loss policy. Schema 1.25
+exports this distinction and rejects it under an older schema. Categorical and phase certificates retain recovery
+witnesses as `uncertified` when no concrete forbidden effect is found.
+The check and verify diagnostic streams include these model-derived refusals
+at the user's assertion; the artifact retains the model's recovery witness.
+An existing concrete violation remains a violation. Pointwise effect and phase
+assertions request the model when recovery coverage is relevant; proven recovery
+syntax absence preserves their existing demand path.
+It moves whenever the
 producer's RESULTS move, because `validate` compares digests and
 never the implementation: v3 was round 8's synthetic
 implicit-phase certificates and report-less subjects judging
@@ -1933,7 +2168,7 @@ state), and zeroization.
 |---|---|---|---|
 | **CQRS / no-locus-return** | a locus `fn` member whose return type (or `fallible(T)` payload) names a user-declared locus type — returning a managed entity from a method is a Law-of-Demeter / CQRS / Dependency-Inversion violation that also leaks via payload-arena routing | error | `check_no_locus_return` |
 | **Stdlib error-type shadow** | a user-declared `type IoError` / `ParseError` / `CryptoError` / `IndexError` / `KeyError` / `EmptyError` whose shape doesn't match the stdlib's, when that error type is reached by a fallible stdlib call: the error a call fails with is its stdlib surface row's (`std::time::parse_iso8601` reaches `ParseError`, `std::compress::gzip` `IoError`), or, for a path that renames to a Hale-source stdlib fn, that fn's `fallible(E)` | error | `check_stdlib_error_shadowing` (resolve) |
-| **Codec purity** | a bus codec whose `encode` / `decode` method isn't pure (codecs may be dispatched off-thread): it writes a `self` field, publishes, violates a closure, prints, or calls a stdlib function whose row in the stdlib surface table carries `syscall`, `block` or `publish`, or a fn that does any of these | error | `check_main_and_bindings`, reading the purity column of the effect rows, whose stdlib leaves are derived from the surface table |
+| **Codec purity** | a bus codec whose `encode` / `decode` method is impure or cannot be certified (codecs may be dispatched off-thread): shared execution reaches state mutation, parent admission/tracking, publish, structural failure, scheduler/recovery actions, `syscall`, `block`, or `publish` leaves; unresolved execution or instance confinement also refuses dispatch | error | `check_main_and_bindings`, reading purity inferred from shared body, call, default, lifecycle and parent execution rows; stdlib leaves use the surface table |
 | **`ring_layout` contract** | a foreign-ring layout declaration that's internally ill-formed — unknown scalar/`len_prefix` repr, missing `framing` (or `byte_records` without a `len_prefix` / `buffer_size`, or `slots` without `slot_size` / `slot_count`), no cursor / a cursor without an `at`, unknown cursor ordering or unit, a missing `magic` / `data_at`, or a `shm_ring(..., layout: N)` whose `N` doesn't resolve to a declared `ring_layout` | error | `check_ring_layout` + `check_main_and_bindings` |
 | **`ring_layout` geometry** | a *cross-field* inconsistency that would let a record header land out of bounds or silently corrupt the reader: a header scalar or the cursor overrunning `data_at`, two fields overlapping, a non-power-of-two `align`, a `pad_sentinel` too wide for the `len_prefix`, a `len_prefix` width `> align`, a non-8-aligned `atomic_u64` cursor, or (producer side) a `buffer_size:` that isn't a multiple of `align` | error | `check_ring_layout` + `check_main_and_bindings` |
 | **Foreign-ring payload shape** | a `layout:`-bound topic whose payload is neither flat-shapeable (typed mode — read by direct cast, needs a fixed byte layout) nor `BytesView` (raw-frame mode — a bounded view per record, for heterogeneous rings); e.g. a struct with `String` / `Bytes` / variable-size fields. Enforced regardless of `where zero_copy` | error | `check_main_and_bindings` |
@@ -1946,7 +2181,7 @@ state), and zeroization.
 | **Recovery event alphabet** | a name in a closure's `persists_through(...)` or `resets_on(...)` that is not a recovery event: the alphabet is closed, `restart`, `restart_in_place` and `quarantine`; the message names it at the name, and suggests the event a misspelling one edit away means | error | `outside_the_alphabet` (closure events) |
 | **Persisting through dissolve** | `dissolve` in a closure's `persists_through(...)`: an accumulator does not outlive its locus's dissolve, so the clause can mean nothing | error | `persists_through_dissolve` (closure events) |
 | **Contradicting recovery clauses** | a recovery event one closure names in both `persists_through(...)` and `resets_on(...)`: the two contradict each other. Reported at the `resets_on` name, with the `persists_through` name as its witness | error | `in_both_clauses` (closure events) |
-| **Unreached recovery event** | in a closed world (the program has an entry), a recovery event a closure of the program's own seed names that no handler and no recovery statement applies to its locus, read from the handler rows and from the recovery statements outside the handlers as the checker types them, each on the locus its receiver's type names, a generic body's per specialization (a spent `restart(c) for N` bound is `quarantine`). The witness is each handler and statement that names the locus, with the events it applies, or the locus when none does. Not judged for an imported locus, nor for an event some recovery applies to a child no row names (a generic supervisor's handler's type parameter, or a receiver of a type parameter in a generic body no specialization binds) | warning | `unreached_events` (closure events) |
+| **Unreached recovery event** | in a closed world (the program has an entry), a recovery event a closure of the program's own seed names that no handler and no recovery statement applies to its locus, read from all recovery statements as the checker types them, handlers included, each on the locus its receiver's type names, a generic body's per specialization; a handler's signature alone does not identify the recovery receiver (a spent `restart(c) for N` bound is `quarantine`). The witness is each handler and statement that names the locus, with the events it applies, or the locus when none does. Not judged for an imported locus, nor for an event some recovery applies to a child no row names (a receiver of a type parameter in a generic body no specialization binds) | warning | `unreached_events` (closure events) |
 | **Persistence with no accumulator** | `persists_through(...)` on a closure whose assertion has no `sum`, `count` or `mean`: there is nothing to keep. Reported at the clause, with the assertion as its witness | warning | `nothing_to_keep` (closure events) |
 | **Sealed confinement** | a read or a write of a `@sealed` locus's `params` field from outside that locus's own members (`self.signer.key` in its parent), naming the methods to call instead; see § "Secrets — confine, classify, claim". Judged over the param-access rows the checker records for every access through a locus-typed receiver, sealed or not, which the `--sealable` survey reads too. A parameter's default is judged where it is evaluated, at each call that leaves it, with that caller as the reader, and refused once, at the default. A receiver typed as a generic locus's specialization (`b: Box<Int>`) reaches the generic locus's `params`, and is judged against its `@sealed`. A generic body is judged in each of its specializations, so an access through a value of a parameter type (`self.inner.key`, `inner: T`) is refused where it is written when a specialization binds that type to a sealed locus, once however many do, through a chain of fields of any depth (`self.h.s.key`, `h: Holder<T>`) | error | `outside_access` (sealed access) |
 | **Module-nested entry** | a seed whose only `main locus` sits inside a `module { }`: it is not the entry (`spec/semantics.md` § "The entry locus"), and nothing else in the seed is, so the program would build with a `main locus` that never runs. Reported once, at that locus's name, read from the entry row; every other rule still judges the declaration | error | `module_nested_main_is_not_the_entry` (lowering laws) |
@@ -2096,7 +2331,7 @@ assume the others in a build:
     silence nothing in any program that reaches them.
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
   own fns and loci, judged the same way: one row per declaration (a fn,
-  a method, an authored hook, a mode), keyed by its site and printed
+  a method, an authored hook, a mode, a failure handler or a default body), keyed by its site and printed
   under its name, so two declarations sharing a name (a program the
   check refuses as a duplicate top-level name) are two rows. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
@@ -2494,7 +2729,12 @@ assume the others in a build:
   documented deficiency); a phase omitted is unconstrained, a phase
   with `{}` forbids everything. Phases resolve to lifecycle hooks
   (`birth`, `run`, `drain`, `dissolve`, `accept`, `release`) or to
-  any member fn / handler by name.
+  any member fn / handler, mode or failure-handler phase by name. Automatic
+  assertions join their declared epoch phase; `tick` and `duration` become
+  available when such assertions are declared. An omitted phase remains
+  unconstrained. The contract checks represented source bodies; generated
+  wrapper work, failure dispatch and lifecycle scheduling retain their
+  explicit coverage boundaries.
 - **`@no_panic` — disposition coverage** (GH #265, 2026-07-29).
   Deliberately *not* an effect class: this is a syntactic property of
   a body, not a query over the classified frontier. A fn asserting
@@ -2514,7 +2754,11 @@ assume the others in a build:
   defect that "the checker says what I expect" testing cannot find.
   A negative control asserts the oracle detects the effect when it
   genuinely happens, so the conformance checks can never pass
-  vacuously. Same philosophy as GenMC-in-CI, applied to effects.
+  vacuously. These counter-based checks require the Linux GNU link-wrap
+  backend. Other native targets return `-1` for unavailable counters;
+  equal unavailable readings establish no zero-effect property. A separate
+  runtime test checks counter availability against the host backend.
+  Same philosophy as GenMC-in-CI, applied to effects.
 - **The `.hale.effects` manifest + CI gate** (GH #265 step 7). The
   manifest is a **behavioural fingerprint**: every fn's declared
   contracts *and* its INFERRED effect set (`does={…}`), stable-sorted
@@ -2543,14 +2787,19 @@ assume the others in a build:
   the seed boundary and under-reported those effects; an imported
   fn's own rows stay out of an app's manifest.
 - **Corpus-wide conformance** (GH #265 step 7). Beyond the per-test
-  runtime oracle, a sweep over the whole in-tree `.hl` corpus asserts
-  three properties everywhere real code lives: no reachable stdlib
-  call lands on an **unclassified** registry row (an unclassified
-  leaf silently weakens every assertion over it, so frontier
-  completeness must not rot as the corpus grows); inference is
-  **deterministic** (the same program inferred twice yields identical
-  sets — otherwise manifests diff spuriously); and every corpus
-  program carrying an assertion **satisfies** it.
+  runtime oracle, `effects_corpus_conformance.rs` sweeps the example
+  `main.hl` files and all bodies in each source summary, including
+  module members and implicit execution bodies. The shared witness walk
+  identifies any reachable **unclassified registry leaf**; an injected
+  leaf checks that this oracle detects a missing classification.
+  Inference is **deterministic** across its upper bound, known effects
+  and unknown flag. An unknown execution horizon retains a conservative
+  upper bound and cannot contribute an unknown effect to the known
+  lower bound. Such uncertainty is distinct from an unclassified registry
+  leaf and still cannot certify an effect assertion. The sweep also
+  rejects known violations of declared contracts; it does not establish
+  that every uncertain contract is certified or that the example sweep
+  covers the full language corpus.
 - **The `.hale.effects` manifest** (GH #265 step 7). `effect_manifest`
   / `render_effect_manifest` emit the whole program's declared
   contracts in a stable, sorted line format alongside `.hale.topo`.
@@ -3143,3 +3392,37 @@ per call, and their aggregate growth is intended" — a cache insert per
 call is exactly that shape. The two decorators measure different
 things (per call vs. in aggregate), which is why only the zero case
 collides.
+
+### Parent protocol effects
+
+Effect certificates follow source parent `accept`/`release` may-entries at
+resolved construction owners and caller roots of inline defaults. A known
+forbidden effect in such a body is a violation. A nonempty body whose known
+work is permitted still retains invocation-context uncertainty and cannot
+supply a closed effect certificate. Empty hooks contribute no invented work.
+Parent entries are distinct from authored calls and caller-frame edges.
+
+A bare allocation summary supplies allocation/routing facts, without the
+caller-sensitive parent execution account. Categorical certificates refuse
+closure through a relevant construction when that required source input is
+absent. Unminted identities do not substitute for an invocation account.
+Known forbidden work still takes precedence over missing coverage.
+
+### Self lifecycle source effects
+
+Categorical source effects include every represented nonempty self lifecycle
+stage of a constructed locus. A complete pure hook is not unknown merely
+because admission, frame placement or teardown timing remains unresolved.
+Those runtime questions retain cost coverage gaps and cannot certify a numeric
+budget. Missing hook inventories or bodies, unknown calls inside hooks,
+failure dispatch, automatic assertion epochs and parent protocols still
+prevent certification where relevant. Known forbidden effects keep their
+ordinary source witnesses.
+
+The source callback census is a compiler-produced primitive over the complete
+source declaration store, not a result of routing an empty reached-body set.
+A graph absence certificate is still a source-graph theorem: the native fatal
+report/exit path and external C callbacks are beyond that graph horizon. Native
+failure cost coverage and `NoPanic` are not discharged by source handler absence.
+Model 15 / analysis 33 / topology 1.38 bind the positive census and preserve this
+boundary. This supplies no native refinement or failure-containment theorem.

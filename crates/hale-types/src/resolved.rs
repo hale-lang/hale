@@ -95,16 +95,23 @@ pub struct LoweringView {
     /// through the correspondence, then the stdlib's
     /// (`ownership_graph::lowering_ownership_graph`; F.40 phase 3, C5).
     pub ownership: OwnershipGraph,
+    /// Direct acceptance over the shared concrete generic inventory.
+    pub concrete_accepts: BTreeMap<String, BTreeSet<String>>,
     /// The bubble plans lowering acts on, projected from `ownership`.
     pub bubble: BubblePlans,
     /// Which `on_failure` handler a failing child reaches, one row per
     /// handler of `merged` (F.40 phase 1.4).
     pub handlers: HandlerRouting,
-    /// Which children are flows, over `merged`: every `release(c: T)`
-    /// clause with the locus `T` denotes as lowering names it, and a
-    /// generic owner's clause as its template, which lowering
-    /// specializes with its own substitution.
-    pub flows: crate::flows::FlowRows,
+    /// The snapshot's completed flow membership and concrete generic
+    /// inventory, including stdlib clauses. Emission only reads it.
+    pub flows: Option<crate::flow_instances::FlowInstances>,
+    /// The allocation summary's effective storage policy for each locus,
+    /// including the closed concrete specialization inventory. Missing
+    /// rows are refused; lowering does not rediscover annotations/defaults.
+    pub storage_projections: Option<BTreeMap<String, crate::alloc_summary::StorageProjectionRow>>,
+    /// Source self lifecycle inventory projected through the merge correspondence.
+    pub lifecycle_hooks: Option<crate::lifecycle_hooks::LoweredHooks>,
+    pub protocol_hooks: Option<crate::protocol_execution::LoweredProtocolHooks>,
     /// The form rows (F.40 phase 3, C1): the snapshot's, one per user
     /// `@form` declaration with the discipline it gets, inference's
     /// included, and the merged stdlib's as written. Lowering lays each
@@ -444,7 +451,7 @@ pub fn resolve_rewritten(
     bus: &BusGraph,
     ownership: &OwnershipGraph,
     handlers: &crate::handler_routing::HandlerRouting,
-    flows: &crate::flows::FlowRows,
+    flows: &crate::flow_instances::FlowInstances,
     scratch_local: &std::collections::BTreeSet<String>,
     plan: &DispatchPlan,
     class: crate::capability::TargetClass,
@@ -590,7 +597,7 @@ pub fn resolve_rewritten(
     // scope. The dispatch plan is not derived here (F.40 phase 4, S9):
     // the snapshot's gates are this graph's, without the merge
     // (`bus_graph::derive_dispatch_gates`), and its plan is handed in.
-    let (ownership, bubble, bus) = {
+    let (ownership, bubble, concrete_accepts, bus) = {
         let bundle = merged_bundle(&merged, import_renames, &snapshot);
         // The closed world is the snapshot's rows', the entry row's over
         // the checked bundle: the merged program holds the same
@@ -604,7 +611,8 @@ pub fn resolve_rewritten(
             &correspondence,
             placement,
         )?;
-        let bubble = graph.bubble_plans();
+        let concrete = graph.concrete_ownership(&flows.instantiations, &snapshot, placement)?;
+        let bubble = concrete.bubble;
         let stdlib = crate::bus_graph::stdlib_bus_rows(&bundle, top, stdlib_items);
         let mut bus = crate::bus_graph::lowering_bus_graph(bus, stdlib, &topic_rewrites, &correspondence, placement)?;
         // Boundary 7: the sends the intra-locus rewrite replaced are
@@ -632,7 +640,7 @@ pub fn resolve_rewritten(
                 info.written_topics.push((rw.site, rw.written.clone()));
             }
         }
-        (graph, bubble, bus)
+        (graph, bubble, concrete.accepts, bus)
     };
     let plan = plan.clone();
 
@@ -646,14 +654,10 @@ pub fn resolve_rewritten(
         crate::handler_routing::stdlib_handler_rows(&merged, &merged.items[user_items..], import_renames, &snapshot),
         &correspondence,
     )?;
-    // The flow rows are the snapshot's (F.40 phase 4, Q1), and after them
-    // the flows the stdlib's own `release` clauses make, surveyed over the
-    // merged program's tail (`std::http::Server`'s connections on an
-    // `async_io` pool are flow children of a stdlib owner). Lowering reads
-    // them by locus name (`is_flow`, `specialize`); the stdlib declares no
-    // type alias, and `DeclaredNames` holds the stdlib's loci over either
-    // program, so a stdlib clause resolves as a user one does.
-    let flows = flows.clone().with_stdlib(&merged.items[user_items..]);
+    // Names are already lowering's names; the completed inventory and
+    // flow membership include stdlib clauses in their analysis universe.
+    // No second survey or specialization happens in this view.
+    let flows = Some(flows.clone());
     // The allocation-routing rows over the same merged program, cross-seed
     // calls resolved through the same renames: lowering reads them. Their
     // scratch-local set is the allocation summary's (F.40 phase 4, Q1).
@@ -676,9 +680,13 @@ pub fn resolve_rewritten(
         owner_table,
         fresh_locus_factories,
         ownership,
+        concrete_accepts,
         bubble,
         handlers,
         flows,
+        storage_projections: None,
+        lifecycle_hooks: None,
+        protocol_hooks: None,
         forms,
         bindings: bindings.clone(),
         placement: placement.clone(),

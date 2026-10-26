@@ -99,6 +99,13 @@ fn main() {
 
 ### Function Value Capabilities and Restrictions
 
+A function-valued field is callable through either `self.callback(...)` or
+another handle, such as `worker.callback(...)`. This also applies to a child
+handle received by an `on_failure` handler. The field's declared `fn(...)`
+signature supplies the arguments and return type; the receiver is not passed
+as an extra function argument. A function-valued field takes precedence over
+a method with the same name.
+
 Hale function values are thin function pointers with no environment capture. There is no inline closure syntax (`|x| x + captured`).
 
 | Callable Kind | Valid as `fn(...)` Value? | Details & Workaround |
