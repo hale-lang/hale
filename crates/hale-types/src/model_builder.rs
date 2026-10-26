@@ -46,7 +46,7 @@ use hale_model::{
     PublishDisposition, Relations, Seed, SeedId, SelectorForm, Subject,
     SubjectId, Subscribe, Supervises, SupervisedRef, SupervisionPolicy,
     Topic, TopicBound, TopicId, TopicKey, TopicOnFull, TypeDecl as MTypeDecl,
-    TypeDeclId, MODEL_SEMANTICS_V14,
+    TypeDeclId, MODEL_SEMANTICS_V15,
 };
 use hale_syntax::ast::{
     Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
@@ -3380,8 +3380,12 @@ pub fn derive_application_model_over(
         let Some(from) = fid_of(key) else { continue };
         for site in &fs.effect_sites {
             if let EffectSiteKind::ProtocolInvocation { target, stage, reason } = &site.kind {
-                let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
-                holes.entry((EntityRef::Function(from),kind,format!("parent {} protocol{}; {}",stage.map(|s| s.as_str()).unwrap_or("accept/release"),target.as_ref().map(|t| format!(" `{}`",t.display())).unwrap_or_default(),reason.as_str())))
+                let complete = merged.fns.get(key).is_some_and(|body| merged.protocol_source_complete(body, site));
+                let kind=if merged.no_source_failure_handlers() && complete { HoleKind::UnmodeledLifecycleContext } else { HoleKind::UnmodeledInitialization };let hides=kind.implicit_execution_families().unwrap();
+                let root = merged.fns.get(key).and_then(|body| body.protocol_evaluations.iter().find(|edge|
+                    edge.span == site.span && Some(&edge.target) == target.as_ref() && Some(edge.stage) == *stage))
+                    .map(|edge| format!(" at {:?}", edge.root)).unwrap_or_default();
+                holes.entry((EntityRef::Function(from),kind,format!("parent {} protocol{}{}; {}",stage.map(|s| s.as_str()).unwrap_or("accept/release"),target.as_ref().map(|t| format!(" `{}`",t.display())).unwrap_or_default(),root,reason.as_str())))
                     .or_insert((hides,None,intern_span(&mut records,site.span)));
             }
             if let EffectSiteKind::LifecycleInvocation { constructor, target, stage } = &site.kind {
@@ -3390,13 +3394,15 @@ pub fn derive_application_model_over(
                     .or_insert((hides,None,intern_span(&mut records,site.span)));
             }
             if let EffectSiteKind::BirthCheckInvocation { constructor, target } = &site.kind {
-                let kind = HoleKind::UnmodeledInitialization;
+                let complete = merged.fns.get(key).is_some_and(|body| merged.constructor_predicate_source_complete(body));
+                let kind = if merged.no_source_failure_handlers() && complete { HoleKind::UnmodeledLifecycleContext } else { HoleKind::UnmodeledInitialization };
                 let hides = kind.implicit_execution_families().unwrap();
                 holes.entry((EntityRef::Function(from), kind, format!("construction {constructor} can enter birth check `{}`; invocation scheduling, lifetime and failure context are unresolved", target.display())))
                     .or_insert((hides, None, intern_span(&mut records, site.span)));
             }
             if let EffectSiteKind::AutomaticClosure { constructor, target, epoch } = &site.kind {
-                let kind = HoleKind::UnmodeledInitialization;
+                let complete = merged.fns.get(key).is_some_and(|body| merged.constructor_predicate_source_complete(body));
+                let kind = if merged.no_source_failure_handlers() && complete { HoleKind::UnmodeledLifecycleContext } else { HoleKind::UnmodeledInitialization };
                 let hides = kind.implicit_execution_families().unwrap();
                 holes.entry((EntityRef::Function(from), kind, format!("construction {constructor} can enter automatic {} closure `{}`; epoch scheduling, lifetime and failure context are unresolved", epoch.as_str(), target.display())))
                     .or_insert((hides, None, intern_span(&mut records, site.span)));
@@ -3526,9 +3532,9 @@ pub fn derive_application_model_over(
         let Some(function) = fid_of(key) else { continue };
         let Some(owner) = e.functions[function.index()].owner else { continue };
         r.birth_checks.push(hale_model::BirthCheckDefinition { function, owner, closure: clause.closure.clone(), ordinal: clause.ordinal });
-        let kind = HoleKind::UnmodeledFailureDispatch;
+        let kind = if merged.no_source_failure_handlers() { HoleKind::UnmodeledFailureContext } else { HoleKind::UnmodeledFailureDispatch };
         let hides = kind.implicit_execution_families().unwrap();
-        holes.entry((EntityRef::Function(function), kind, format!("birth check may reject via `{}`: conditional runtime failure reporting and handler execution are unresolved", clause.closure)))
+        holes.entry((EntityRef::Function(function), kind.clone(), format!("birth check may reject via `{}`: {}", clause.closure, if kind == HoleKind::UnmodeledFailureContext { "no source handler is declared; native reporting and exit costs remain unresolved" } else { "conditional runtime failure reporting and handler execution are unresolved" })))
             .or_insert((hides, None, e.functions[function.index()].provenance));
     }
     r.birth_checks.sort_by_key(|c| c.function);
@@ -3536,9 +3542,9 @@ pub fn derive_application_model_over(
         let Some(function)=fid_of(key) else { continue };
         let Some(owner)=e.functions[function.index()].owner else { continue };
         r.closure_definitions.push(hale_model::ClosureDefinition { function,owner,name:definition.name.clone(),epoch:definition.epoch,ordinal:definition.ordinal });
-        let kind=HoleKind::UnmodeledFailureDispatch;
+        let kind=if merged.no_source_failure_handlers() { HoleKind::UnmodeledFailureContext } else { HoleKind::UnmodeledFailureDispatch };
         let hides=kind.implicit_execution_families().unwrap();
-        holes.entry((EntityRef::Function(function),kind,"closure assertion may fail: conditional runtime failure reporting and handler execution are unresolved".to_string()))
+        holes.entry((EntityRef::Function(function),kind.clone(),if kind == HoleKind::UnmodeledFailureContext { "closure assertion may fail: no source handler is declared; native reporting and exit costs remain unresolved".to_string() } else { "closure assertion may fail: conditional runtime failure reporting and handler execution are unresolved".to_string() }))
             .or_insert((hides,None,e.functions[function.index()].provenance));
     }
     for (key,fs) in summary.fns.iter().filter(|(key,_)| user_key(key)) {
@@ -3957,7 +3963,7 @@ pub fn derive_application_model_over(
         // User assertion gaps live at the assertion vertex, so a real graph
         // barrier can exclude them. Foreign assertion execution is not yet
         // projected into its absorbed interior and remains an entry gap.
-        if summary.structural_failure_path(key).ok().flatten().is_some_and(|t| (t.assertion || t.birth_check) && !t.foreign) { continue; }
+        if !merged.no_source_failure_handlers() && summary.structural_failure_path(key).ok().flatten().is_some_and(|t| (t.assertion || t.birth_check) && !t.foreign) { continue; }
         let (reason, pid) = match &summary.structural_failures {
             None => (
                 "structural failure coverage is unavailable".to_string(),
@@ -3991,8 +3997,11 @@ pub fn derive_application_model_over(
                 ),
             },
         };
-        let kind = HoleKind::UnmodeledFailureDispatch;
+        let kind = if merged.no_source_failure_handlers() && summary.structural_failures.is_some() { HoleKind::UnmodeledFailureContext } else { HoleKind::UnmodeledFailureDispatch };
         let hides = kind.implicit_execution_families().expect("implicit failure dispatch is an execution gap");
+        let reason = if kind == HoleKind::UnmodeledFailureContext {
+            format!("`{}` may raise a structural failure; no source failure handler is declared; native reporting and exit costs remain unresolved", key.display())
+        } else { reason };
         holes.entry((EntityRef::Function(function), kind, reason)).or_insert((hides, None, pid));
     }
 
@@ -4119,7 +4128,7 @@ pub fn derive_application_model_over(
         let mut m = hale_model::RelationSet(0);
         for a in &stdlib_absorption {
             for n in &a.nodes {
-                if n.constructor_check.is_some() {
+                if n.constructor_check.is_some() && !merged.no_source_failure_handlers() {
                     m = m.union(hale_model::RelationSet::CALLS).union(hale_model::RelationSet::EFFECTS).union(hale_model::RelationSet::COSTS);
                 }
                 for ev in &n.events {
@@ -4378,15 +4387,29 @@ pub fn derive_application_model_over(
         },
     );
     prov.records = records;
+    let failure_sources = merged.failure_handlers.as_ref().filter(|c| c.complete)
+        .zip(merged.structural_failures.as_ref()).and_then(|(census, failures)| {
+            let mut handlers = Vec::new();
+            let mut foreign_handlers = 0u32;
+            for key in &census.declarations {
+                if user_key(key) { handlers.push(fid_of(key)?); }
+                else { foreign_handlers = foreign_handlers.checked_add(1)?; }
+            }
+            handlers.sort(); handlers.dedup();
+            let mut may_fail: Vec<_> = failures.keys().filter(|key| user_key(key)).filter_map(|key| fid_of(key)).collect();
+            may_fail.sort(); may_fail.dedup();
+            Some(hale_model::FailureSourceAccount { handlers, foreign_handlers, may_fail })
+        });
     let model = ApplicationModel {
         analyses: hale_model::Analyses {
+            failure_sources,
             lifecycle_contexts: Some(lifecycle_contexts),
             recovery,
             dispatch_plan,
             stdlib_absorption,
         },
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V14,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint,
         },
         entities: e,

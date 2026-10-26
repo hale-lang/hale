@@ -118,13 +118,14 @@ fn a_possible_assertion_failure_does_not_certify_an_empty_execution_leaf() {
     let s=entries::load_files(&[("main.hl",&source)],Config::check(true,false));
     let m=s.demand_model().unwrap();m.validate().unwrap();
     let f=m.entities.functions.iter().position(|f| f.name=="Child::closures::audit").unwrap();
-    assert!(m.holes.iter().any(|h| h.at==hale_model::EntityRef::Function(hale_model::FunctionId(f as u32)) && h.kind==hale_model::HoleKind::UnmodeledFailureDispatch));
+    assert!(m.holes.iter().any(|h| h.at==hale_model::EntityRef::Function(hale_model::FunctionId(f as u32)) && h.kind==hale_model::HoleKind::UnmodeledFailureContext));
 }
 
 
 #[test]
 fn unresolved_assertion_failure_blocks_closed_certificates_at_the_checkpoint_only() {
-    let source=SOURCE.replace("observe() + self.n ~~ self.n", "self.n ~~ 0");
+    let source=SOURCE.replace("observe() + self.n ~~ self.n", "self.n ~~ 0")
+        + "\nlocus Dormant { on_failure(c: Child, e: ClosureViolation) { } }\n";
     let s=entries::load_files(&[("main.hl",&source)],Config::check(true,false));
     let m=s.demand_model().unwrap();let bundle=s.bundle();
     let table=hale_types::claim_lowering::lower_claims(&bundle,m);
@@ -224,7 +225,7 @@ fn main() {{ App {{ }}; }}
         let model = s.demand_model().unwrap();
         model.validate().unwrap();
         let mut missing = model.clone();
-        missing.holes.retain(|h| h.kind != hale_model::HoleKind::UnmodeledInitialization);
+        missing.holes.retain(|h| h.kind != hale_model::HoleKind::UnmodeledLifecycleContext);
         assert!(missing.validate_coverage().is_err(), "automatic coverage cannot disappear: {epoch}");
         assert!(missing.validate().is_err(), "automatic coverage cannot disappear: {epoch}");
         let bundle = s.bundle();
@@ -260,7 +261,7 @@ fn main() { App { }; }
     let rows = s.demand_effects().unwrap();
     let caller = rows.rows.iter().find(|(k, _)| k.display() == "caller").unwrap().1;
     let known = rows.rows.iter().find(|(k, _)| k.display() == "known").unwrap().1;
-    assert!(caller.unknown && caller.effects.is_unclassified());
+    assert!(!caller.unknown && caller.known.contains(hale_types::stdlib_surface::EffectSet::STDIO));
     assert!(known.known.contains(hale_types::stdlib_surface::EffectSet::STDIO));
 }
 
@@ -277,7 +278,7 @@ fn main() { App { }; }
     let library = "locus Child { params { n: Int = 0; } closure audit { self.n ~~ 0 within 0; epoch birth; } }";
     let s = entries::load_files(&[("main.hl", main), ("lib/child.hl", library)], Config::check(true, false));
     let reports = s.demand_effect_certificates().unwrap();
-    for (name, result) in [("omitted", Verdict::Uncertified), ("supplied", Verdict::Holds), ("consume", Verdict::Holds)] {
+    for (name, result) in [("omitted", Verdict::Holds), ("supplied", Verdict::Holds), ("consume", Verdict::Holds)] {
         assert_eq!(reports.iter().find(|(r, _)| r.subject == name).unwrap().0.result, result, "{name}");
     }
     let summary = s.demand_alloc_summary().unwrap();

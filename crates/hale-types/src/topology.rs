@@ -200,7 +200,8 @@ use crate::symbol::Bundle;
 // 1.35: parent callback source contexts and guarded execution accounts.
 // 1.36: separate self lifecycle source coverage from runtime cost context.
 // 1.37: constructor predicates have exact independent source entry rows.
-pub const TOPOLOGY_SCHEMA: &str = "1.37";
+// 1.38: source failure inventory and cost-only native failure context.
+pub const TOPOLOGY_SCHEMA: &str = "1.38";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///

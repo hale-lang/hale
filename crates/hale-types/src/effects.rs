@@ -904,7 +904,7 @@ fn effect_report_three_way_over(
                 EffectAssert::NoPanic => {
                     let before = sink.len();
                     check_no_panic(programs, key, *span, &mut sink);
-                    let result = recovery_certificate_result(summary, &key, *span, before, &mut sink);
+                    let result = recovery_certificate_result_with_policy(summary, &key, *span, before, &mut sink, false);
                     ranges.push((rows.len(), before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
@@ -984,6 +984,10 @@ fn assemble_groups(
 /// concrete effect violation. Every categorical certificate reads this
 /// same site inventory, including phase certificates.
 fn recovery_certificate_result(summary: &AllocSummary, key: &FnKey, span: Span, before: usize, diags: &mut DiagSink) -> Verdict {
+    recovery_certificate_result_with_policy(summary, key, span, before, diags, true)
+}
+
+fn recovery_certificate_result_with_policy(summary: &AllocSummary, key: &FnKey, span: Span, before: usize, diags: &mut DiagSink, source_effects_only: bool) -> Verdict {
     if diags.len() > before {
         return Verdict::Violated;
     }
@@ -995,7 +999,8 @@ fn recovery_certificate_result(summary: &AllocSummary, key: &FnKey, span: Span, 
     let gap = crate::model_graph::search([key.clone()], |at| {
         crate::model_graph::Visit::<_, (), ()>::edges(summary.fns.get(at).into_iter()
             .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))) .collect())
-    }, |at| summary.fns.get(at).is_some_and(|body| !summary.lifecycle_source_complete(body)),
+    }, |at| summary.fns.get(at).is_some_and(|body| !summary.lifecycle_source_complete(body)
+        || (summary.no_source_failure_handlers() && !summary.constructor_predicate_source_complete(body))),
         |_| false, None, crate::model_graph::HolePolicy::Halt);
     if let crate::model_graph::Search::Found { hit, .. } = gap {
         diags.push(Diag::ty(span, format!("effect assertion uncertified: `{}` reaches `{}`; lifecycle source execution is incomplete", key.display(), hit.display())));
@@ -1025,6 +1030,7 @@ fn recovery_certificate_result(summary: &AllocSummary, key: &FnKey, span: Span, 
         return Verdict::Uncertified;
     }
     match summary.structural_failure_path(key) {
+        Ok(Some(_)) if source_effects_only && summary.no_source_failure_handlers() => {}
         Ok(Some(trace)) => {
             let path = trace.path.iter().map(FnKey::display).collect::<Vec<_>>().join(" -> ");
             let source=if trace.birth_check { format!("birth check for `{}` may reject",trace.closure) } else if trace.assertion { format!("closure assertion `{}` may fail",trace.closure) } else { format!("`violate {}`",trace.closure) };
@@ -1058,10 +1064,12 @@ pub(crate) fn missing_parent_execution(summary: &AllocSummary, key: &FnKey) -> O
 /// The same scoped source witness for ordinary certificates and contracted
 /// stdlib entries in the canonical model. No artifact or lifecycle plan is read.
 pub(crate) fn automatic_closure_gap(summary: &AllocSummary, key: &FnKey) -> Option<(String, Span, FnKey)> {
+    let predicates_closed = summary.no_source_failure_handlers() && summary.constructor_predicate_source_complete_from(key);
+    let protocols_closed = summary.no_source_failure_handlers() && summary.protocol_source_complete_from(key);
     find_effect_site(summary, key, |kind| match kind {
-        alloc_summary::EffectSiteKind::AutomaticClosure { target, epoch, .. } => Some(format!("automatic {} closure `{}`", epoch.as_str(), target.display())),
-        alloc_summary::EffectSiteKind::BirthCheckInvocation { target, .. } => Some(format!("birth check `{}`", target.display())),
-        alloc_summary::EffectSiteKind::ProtocolInvocation { target, stage, reason } => Some(format!("parent {} protocol{}; {}", stage.map(|s| s.as_str()).unwrap_or("accept/release"), target.as_ref().map(|t| format!(" `{}`", t.display())).unwrap_or_default(), reason.as_str())),
+        alloc_summary::EffectSiteKind::AutomaticClosure { target, epoch, .. } if !predicates_closed => Some(format!("automatic {} closure `{}`", epoch.as_str(), target.display())),
+        alloc_summary::EffectSiteKind::BirthCheckInvocation { target, .. } if !predicates_closed => Some(format!("birth check `{}`", target.display())),
+        alloc_summary::EffectSiteKind::ProtocolInvocation { target, stage, reason } if !protocols_closed => Some(format!("parent {} protocol{}; {}", stage.map(|s| s.as_str()).unwrap_or("accept/release"), target.as_ref().map(|t| format!(" `{}`", t.display())).unwrap_or_default(), reason.as_str())),
         _ => None,
     })
 }

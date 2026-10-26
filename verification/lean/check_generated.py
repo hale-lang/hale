@@ -51,15 +51,36 @@ def main():
         expected["lifecycle_" + stage] = "path"
 
     expected.update({"parent_accept": "path", "parent_release": "path"})
+    source_cases = ["automatic_epoch", "phase_assertion_unknown", "birth_check_unknown", "parent_unknown"]
+    expected.update({"source_" + case: "closed" for case in source_cases})
+    expected.update({"lifecycle_quiet_" + stage: "closed" for stage in ["birth", "run", "drain", "dissolve"]})
 
-    def lifecycle_seed(stage, unknown=False):
+    def source_seed(case, with_handler=False):
+        # Preserve the original source fixture, adding an unreachable real
+        # target so an absence theorem cannot pass through empty selection.
+        seed = output / "sources" / (("handler_" if with_handler else "source_") + case)
+        seed.mkdir(parents=True, exist_ok=True)
+        source = (PROJECT / "fixtures" / case / "main.hl").read_text()
+        source += '\nfn unrelated() { println("outside"); }\n'
+        if with_handler:
+            source += '\nlocus UnusedSupervisor { on_failure(c: App, e: ClosureViolation) { } }\n'
+        (seed / "main.hl").write_text(source)
+        return seed
+
+    def lifecycle_seed(stage, unknown=False, quiet=False):
         # Vary source bodies; the compiler still derives every graph and claim.
-        case = "lifecycle_unknown" if unknown else "lifecycle_birth"
-        seed = output / "sources" / (case + "_" + stage)
+        case = "lifecycle_unknown" if unknown or quiet else "lifecycle_birth"
+        seed = output / "sources" / (("opaque_" if unknown else "quiet_" if quiet else "") + case + "_" + stage)
         seed.mkdir(parents=True, exist_ok=True)
         source = (PROJECT / "fixtures" / case / "main.hl").read_text()
         if source.count("birth()") != 1:
             raise SystemExit("lifecycle fixture lost its unique self hook")
+        if unknown:
+            if source.count("let value = 1;") != 1:
+                raise SystemExit("lifecycle unknown control lost its unique body")
+            source = source.replace("let value = 1;", "(match 0 { _ -> B { }, }).work();")
+            source += "\nlocus B { fn work() { } }\n"
+        source += '\nfn unrelated() { println("outside"); }\n'
         (seed / "main.hl").write_text(source.replace("birth()", stage + "()"))
         return seed
 
@@ -70,7 +91,14 @@ def main():
         for previous in [report, lean, output / (module + ".olean")]:
             if previous.exists():
                 previous.unlink()
-        seed = lifecycle_seed(case[len("lifecycle_"):]) if case.startswith("lifecycle_") else PROJECT / "fixtures" / case
+        if case.startswith("source_"):
+            seed = source_seed(case[len("source_"):])
+        elif case.startswith("lifecycle_quiet_"):
+            seed = lifecycle_seed(case[len("lifecycle_quiet_"):], quiet=True)
+        elif case.startswith("lifecycle_"):
+            seed = lifecycle_seed(case[len("lifecycle_"):])
+        else:
+            seed = PROJECT / "fixtures" / case
         run([exporter, seed, report, lean])
         evidence = json.loads(report.read_text())
         if evidence["schema"] != "hale.reachability-proofs/2":
@@ -101,13 +129,24 @@ def main():
         if case == "birth_check" and not any(v["display"] == "Worker::birth_checks::0" for v in row["proof"]["vertices"]):
             raise SystemExit("birth-check fixture lost its predicate root")
         if case.startswith("lifecycle_"):
-            stage = case[len("lifecycle_"):]
+            stage = case[len("lifecycle_quiet_"):] if case.startswith("lifecycle_quiet_") else case[len("lifecycle_"):]
             if not any(v["display"] == "Child::" + stage for v in row["proof"]["vertices"]):
                 raise SystemExit("lifecycle fixture lost its actual " + stage + " body")
         if case in ["parent_accept", "parent_release"]:
             stage = case[len("parent_"):]
             if not any(v["display"] == "Parent::" + stage for v in row["proof"]["vertices"]):
                 raise SystemExit("parent fixture lost its actual " + stage + " body")
+        if case.startswith("source_") or case.startswith("lifecycle_quiet_"):
+            if not row["proof"]["targets"]:
+                raise SystemExit("source absence fixture lost its real effect target")
+        source_body = {
+            "source_automatic_epoch": "Worker::closures::audit",
+            "source_phase_assertion_unknown": "Worker::closures::audit",
+            "source_birth_check_unknown": "Worker::birth_checks::0",
+            "source_parent_unknown": "Parent::accept",
+        }.get(case)
+        if source_body and not any(v["display"] == source_body for v in row["proof"]["vertices"]):
+            raise SystemExit("source absence fixture lost its represented body: " + source_body)
         if case == "imported":
             origins = [r["origin"] for r in evidence["rows"]]
             if len(origins) != 2 or {"kind": "library", "alias": "lib"} not in origins or {"kind": "constitution", "name": "Boundary"} not in origins:
@@ -145,7 +184,7 @@ def main():
     for path in [pending_report, pending_lean]:
         if path.exists():
             path.unlink()
-    failure = run([exporter, PROJECT / "fixtures" / "automatic_epoch", pending_report, pending_lean], succeeds=False)
+    failure = run([exporter, source_seed("automatic_epoch", with_handler=True), pending_report, pending_lean], succeeds=False)
     if "cannot emit Lean proofs" not in failure or pending_report.exists() or pending_lean.exists():
         raise SystemExit("unresolved automatic epoch did not refuse a theorem: " + failure)
     print("automatic-epoch negative control: compiler refused theorem", flush=True)
@@ -154,7 +193,7 @@ def main():
     for path in [unknown_report, unknown_lean]:
         if path.exists():
             path.unlink()
-    failure = run([exporter, PROJECT / "fixtures" / "phase_assertion_unknown", unknown_report, unknown_lean], succeeds=False)
+    failure = run([exporter, source_seed("phase_assertion_unknown", with_handler=True), unknown_report, unknown_lean], succeeds=False)
     if "cannot emit Lean proofs" not in failure or unknown_report.exists() or unknown_lean.exists():
         raise SystemExit("unresolved phase assertion did not refuse a theorem: " + failure)
     print("phase-assertion negative control: compiler refused theorem", flush=True)
@@ -163,7 +202,7 @@ def main():
     for path in [unknown_report, unknown_lean]:
         if path.exists():
             path.unlink()
-    failure = run([exporter, PROJECT / "fixtures" / "birth_check_unknown", unknown_report, unknown_lean], succeeds=False)
+    failure = run([exporter, source_seed("birth_check_unknown", with_handler=True), unknown_report, unknown_lean], succeeds=False)
     if "cannot emit Lean proofs" not in failure or unknown_report.exists() or unknown_lean.exists():
         raise SystemExit("unresolved birth rejection did not refuse a theorem: " + failure)
     print("birth-check negative control: compiler refused theorem", flush=True)
@@ -172,7 +211,7 @@ def main():
     for path in [parent_report, parent_lean]:
         if path.exists():
             path.unlink()
-    failure = run([exporter, PROJECT / "fixtures" / "parent_unknown", parent_report, parent_lean], succeeds=False)
+    failure = run([exporter, source_seed("parent_unknown", with_handler=True), parent_report, parent_lean], succeeds=False)
     if "cannot emit Lean proofs" not in failure or parent_report.exists() or parent_lean.exists():
         raise SystemExit("unresolved parent invocation did not refuse a theorem: " + failure)
     print("parent-context negative control: compiler refused theorem", flush=True)
@@ -184,8 +223,8 @@ def main():
                 path.unlink()
         failure = run([exporter, lifecycle_seed(stage, unknown=True), unknown_report, unknown_lean], succeeds=False)
         if "cannot emit Lean proofs" not in failure or unknown_report.exists() or unknown_lean.exists():
-            raise SystemExit("unresolved " + stage + " context did not refuse a theorem: " + failure)
-        print("lifecycle-" + stage + "-context negative control: compiler refused theorem", flush=True)
+            raise SystemExit("opaque " + stage + " source did not refuse a theorem: " + failure)
+        print("lifecycle-" + stage + "-opaque-source negative control: compiler refused theorem", flush=True)
 
 
 

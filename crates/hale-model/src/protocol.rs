@@ -239,9 +239,6 @@ impl crate::ApplicationModel {
             .iter()
             .map(|c| ((c.function, c.site), c))
             .collect();
-        let hides = crate::HoleKind::UnmodeledInitialization
-            .implicit_execution_families()
-            .unwrap();
         let mut expected = BTreeSet::new();
         let mut previous = None;
         for (index, c) in r.protocol_contexts.iter().enumerate() {
@@ -347,11 +344,7 @@ impl crate::ApplicationModel {
             if !direct && !seen.contains(&c.constructor_function) {
                 return Err(bad(index, "nested parent construction must follow the root's initializer evaluations, never ordinary calls"));
             }
-            if !self.holes.iter().any(|h| {
-                h.at == crate::EntityRef::Function(c.from)
-                    && h.kind == crate::HoleKind::UnmodeledInitialization
-                    && h.hides.contains(hides)
-            }) {
+            if !self.source_invocation_context_covered(c.from, c.provenance) {
                 return Err(bad(
                     index,
                     "parent opportunity requires scoped invocation-context coverage",

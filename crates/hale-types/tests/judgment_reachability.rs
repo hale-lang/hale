@@ -516,7 +516,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V14,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -543,6 +543,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
+            failure_sources: None,
             lifecycle_contexts: None,
             recovery: Default::default(),
             dispatch_plan: Default::default(),
@@ -2746,7 +2747,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V14,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -2777,6 +2778,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
+            failure_sources: None,
             lifecycle_contexts: None,
             recovery: Default::default(),
             dispatch_plan: Default::default(),

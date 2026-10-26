@@ -452,16 +452,16 @@ impl RefContext {
                             kind
                         ));
                     }
-                    if kind == "birth_check" && (!matches!(v["schema"].as_str(),Some("1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) || !analyzed || !summarized || e["owner"].as_str().is_none_or(str::is_empty)) {
+                    if kind == "birth_check" && (!matches!(v["schema"].as_str(),Some("1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) || !analyzed || !summarized || e["owner"].as_str().is_none_or(str::is_empty)) {
                         return Err("birth checks require topology schema 1.32, locus ownership and complete body coverage".into());
                     }
-                    if kind == "closure_assertion" && (!matches!(v["schema"].as_str(), Some("1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) || !analyzed || !summarized) {
+                    if kind == "closure_assertion" && (!matches!(v["schema"].as_str(), Some("1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) || !analyzed || !summarized) {
                         return Err("closure assertions require topology schema 1.29 and complete body coverage".into());
                     }
                     if matches!(kind, "parameter_default" | "field_default" | "argument_default") {
                         let owner = match kind { "argument_default" => "owner_function", "field_default" => "owner_type", _ => "owner" };
-                        let schema_ok = if kind == "argument_default" { matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) } else if kind == "field_default" { matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) }
-                            else { matches!(v["schema"].as_str(), Some("1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) };
+                        let schema_ok = if kind == "argument_default" { matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) } else if kind == "field_default" { matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) }
+                            else { matches!(v["schema"].as_str(), Some("1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) };
                         if !schema_ok || !analyzed || !summarized || e[owner].as_str().is_none_or(str::is_empty)
                             || e["initializer_field"].as_str().is_none_or(str::is_empty)
                             || e["initializer_ordinal"].as_u64().is_none_or(|n| n > u32::MAX as u64) {
@@ -498,7 +498,7 @@ impl RefContext {
                             e["display"].as_str().unwrap_or("?")
                         ));
                     }
-                    if kind == "failure" && analyzed && !matches!(v["schema"].as_str(), Some("1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+                    if kind == "failure" && analyzed && !matches!(v["schema"].as_str(), Some("1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
                         return Err(format!(
                             "law.fn_universe: failure handler \
                              `{}` marked analyzed",
@@ -606,7 +606,7 @@ impl RefContext {
                 .collect(),
             fn_type_owner: v["law"]["fn_universe"].as_array().into_iter().flatten().filter_map(|e|
                 Some((e["display"].as_str()?.to_string(), e["owner_type"].as_str()?.to_string()))).collect(),
-            types: if matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) { pairs(&v["law"]["types"], "law.types")? } else { Vec::new() },
+            types: if matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { pairs(&v["law"]["types"], "law.types")? } else { Vec::new() },
             sorts_fns: v["sorts"]["fns"]
                 .as_array()
                 .into_iter()
@@ -881,7 +881,7 @@ impl RefContext {
                 .fn_owner
                 .iter()
                 .filter(|(d, o)| {
-                    *o == disp && (matches!(v["schema"].as_str(), Some("1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) || !cx.fn_failure.contains(*d))
+                    *o == disp && (matches!(v["schema"].as_str(), Some("1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) || !cx.fn_failure.contains(*d))
                 })
                 .map(|(d, _)| d)
                 .collect();
@@ -2579,7 +2579,7 @@ pub fn validate_law_account(
     use hale_model::JudgmentFamily as JF;
     use hale_model::VerdictIr;
     let is_verdict = |x: &str| VerdictIr::from_word(x).is_some();
-    if !matches!(v["schema"].as_str(), Some("1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) && v["unknowns"].as_array().into_iter().flatten().any(|row|
+    if !matches!(v["schema"].as_str(), Some("1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) && v["unknowns"].as_array().into_iter().flatten().any(|row|
         row["reasons"].as_array().into_iter().flatten().any(|reason| reason == "unmodeled_failure_dispatch"))
     {
         return Err(format!("{label}: failure-dispatch residue requires topology schema 1.25"));
@@ -2638,6 +2638,7 @@ pub fn validate_law_account(
     }
     let cx = RefContext::from_artifact(v)
         .map_err(|e| format!("{}: {}", label, e))?;
+    validate_failure_source_account(v).map_err(|error| format!("{label}: {error}"))?;
     validate_initialization_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
     validate_argument_account(v, &cx).map_err(|error| format!("{label}: {error}"))?;
     protocol::validate(v, &cx).map_err(|error| format!("{label}: {error}"))?;
@@ -2807,13 +2808,13 @@ pub fn validate_law_account(
             )
         })?;
         let fam = family_of(&decoded);
-        if fam == JF::Resource && !matches!(v["schema"].as_str(), Some("1.22" | "1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+        if fam == JF::Resource && !matches!(v["schema"].as_str(), Some("1.22" | "1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
             return Err(format!("{}: resource laws require schema 1.22", label));
         }
-        if fam == JF::FlowPolicy && !matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+        if fam == JF::FlowPolicy && !matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
             return Err(format!("{}: flow-policy laws require schema 1.23", label));
         }
-        if fam == JF::Placement && !matches!(v["schema"].as_str(), Some("1.20" | "1.21" | "1.22" | "1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+        if fam == JF::Placement && !matches!(v["schema"].as_str(), Some("1.20" | "1.21" | "1.22" | "1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] carries \
                  require_separate_domains, which requires schema 1.20 or later",
@@ -3382,7 +3383,7 @@ pub fn validate_law_account(
     // Classifications default to resident in 1.23. A template tag is
     // explicit uncertainty; it contradicts an exact classification flag.
     if let Some(classes) = v.get("flow_classes") {
-        if !matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+        if !matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
             return Err(format!("{}: flow_classes requires schema 1.23", label));
         }
         let rows = classes.as_array().ok_or("flow_classes must be an array")?;
@@ -3421,7 +3422,7 @@ pub fn validate_law_account(
     ];
     let flags_123: Vec<_> = CAP_FLAGS.iter().copied()
         .chain([("exact_flow_classification", 1 << 13)]).collect();
-    let cap_flags = if matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) { &flags_123[..] } else { CAP_FLAGS };
+    let cap_flags = if matches!(v["schema"].as_str(), Some("1.23" | "1.24" | "1.25" | "1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { &flags_123[..] } else { CAP_FLAGS };
     let caps = v["capabilities"].as_object().ok_or_else(|| {
         format!("{}: capabilities must be an object", label)
     })?;
@@ -3501,7 +3502,7 @@ pub fn validate_law_account(
     let migrated_123: Vec<_> = migrated_122.iter().copied().chain([JF::FlowPolicy]).collect();
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[JF] = match schema {
-        "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.28" | "1.27" | "1.26" | "1.25" | "1.24" | "1.23" => &migrated_123,
+        "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38" | "1.28" | "1.27" | "1.26" | "1.25" | "1.24" | "1.23" => &migrated_123,
         "1.22" => &migrated_122,
         // 1.21 added the `observe` section (GH #1592).
         "1.21" | "1.20" => MIGRATED_120,
@@ -3695,12 +3696,12 @@ pub fn validate_law_account(
 
 
 fn validate_initialization_account(v: &Value, cx: &RefContext) -> Result<(), String> {
-    let current = matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37"));
+    let current = matches!(v["schema"].as_str(), Some("1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38"));
     let tables = ["initializers", "parameter_defaults", "constructions", "initializes"];
     let present = tables.iter().any(|name| v["relations"].get(*name).is_some())
         || v["unknowns"].as_array().into_iter().flatten().any(|row|
             row["reasons"].as_array().into_iter().flatten().any(|reason| reason == "unmodeled_initialization"));
-    if present && !matches!(v["schema"].as_str(), Some("1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+    if present && !matches!(v["schema"].as_str(), Some("1.26" | "1.27" | "1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
         return Err("initializer execution tables require topology schema 1.26 or later".into());
     }
     if !current && (v["relations"].get("initializers").is_some() || v["sorts"].get("types").is_some() || v["law"].get("types").is_some()) {
@@ -3732,7 +3733,7 @@ fn validate_initialization_account(v: &Value, cx: &RefContext) -> Result<(), Str
         let known = match kind.as_str() {
             "locus" => cx.loci.iter().any(|(_, display, _)| *display == name),
             "type" => cx.types.iter().any(|(_, display)| *display == name),
-            "function" if matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) => cx.fn_universe.iter().any(|(_,display)| *display == name),
+            "function" if matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) => cx.fn_universe.iter().any(|(_,display)| *display == name),
             _ => false,
         };
         if !known { return Err("initializer owner names an absent declaration or kind".into()); }
@@ -3802,7 +3803,7 @@ fn validate_initialization_account(v: &Value, cx: &RefContext) -> Result<(), Str
 /// This does not evaluate Hale laws or reconstruct an ApplicationModel.
 fn validate_argument_account(v: &Value, cx: &RefContext) -> Result<(), String> {
     let present = ["argument_calls","argument_evaluations"].iter().any(|k| v["relations"].get(*k).is_some());
-    if present && !matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) { return Err("argument evaluation tables require topology schema 1.28".into()); }
+    if present && !matches!(v["schema"].as_str(), Some("1.28" | "1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { return Err("argument evaluation tables require topology schema 1.28".into()); }
     let rows = |name: &str| -> Result<Vec<&Value>,String> {
         match v["relations"].get(name) { None => Ok(Vec::new()), Some(v) => v.as_array().map(|a| a.iter().collect()).ok_or_else(|| format!("relations.{name} must be an array")) }
     };
@@ -3850,7 +3851,7 @@ fn validate_argument_account(v: &Value, cx: &RefContext) -> Result<(), String> {
 /// reconstructing its canonical ApplicationModel.
 fn validate_closure_account(v: &Value, cx: &RefContext) -> Result<(), String> {
     let names=["closure_definitions","closure_checks","closure_evaluations"];
-    if names.iter().any(|k| v["relations"].get(*k).is_some()) && !matches!(v["schema"].as_str(), Some("1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) {
+    if names.iter().any(|k| v["relations"].get(*k).is_some()) && !matches!(v["schema"].as_str(), Some("1.29" | "1.30" | "1.31" | "1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
         return Err("closure execution tables require topology schema 1.29".into());
     }
     let rows=|name:&str| -> Result<Vec<&Value>,String> {
@@ -3940,9 +3941,7 @@ fn validate_closure_account(v: &Value, cx: &RefContext) -> Result<(), String> {
         for construction in rows("constructions")? {
             if construction["owner"]["kind"] == "locus"
                 && construction["owner"]["name"].as_str().is_some_and(|owner| automatic_owners.contains(owner))
-                && !v["unknowns"].as_array().into_iter().flatten().any(|unknown|
-                    unknown["fn"] == construction["function"] && unknown["reasons"].as_array().into_iter().flatten()
-                        .any(|reason| reason == "unmodeled_initialization")) {
+                && !source_invocation_context_covered(v, construction["function"].as_str().unwrap_or("")) {
                 return Err("automatic closure construction requires scoped invocation-context coverage".into());
             }
         }
@@ -3956,7 +3955,7 @@ fn validate_birth_check_account(v: &Value, cx: &RefContext) -> Result<(), String
     let rows: Vec<&Value> = match v["relations"].get("birth_checks") {
         None => Vec::new(),
         Some(rows) => {
-            if !matches!(v["schema"].as_str(),Some("1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37")) { return Err("birth-check definitions require topology schema 1.32".into()); }
+            if !matches!(v["schema"].as_str(),Some("1.32" | "1.33" | "1.34" | "1.35" | "1.36" | "1.37" | "1.38")) { return Err("birth-check definitions require topology schema 1.32".into()); }
             rows.as_array().ok_or("birth_checks must be an array")?.iter().collect()
         }
     };
@@ -3989,7 +3988,7 @@ fn validate_birth_check_account(v: &Value, cx: &RefContext) -> Result<(), String
         if phase["phase"] != "birth" || phase["kind"] != "hook" {
             return Err("birth checks require exactly their birth source phase".into());
         }
-        if !has_gap(function, "unmodeled_failure_dispatch") {
+        if !has_gap(function, if failure_handlers_absent(v) { "unmodeled_failure_context" } else { "unmodeled_failure_dispatch" }) {
             return Err("conditional birth rejection requires scoped failure-dispatch coverage".into());
         }
         owners.insert(owner);
@@ -3998,7 +3997,7 @@ fn validate_birth_check_account(v: &Value, cx: &RefContext) -> Result<(), String
     for construction in v["relations"]["constructions"].as_array().into_iter().flatten() {
         if construction["owner"]["kind"] == "locus"
             && construction["owner"]["name"].as_str().is_some_and(|owner| owners.contains(owner))
-            && !has_gap(construction["function"].as_str().unwrap_or(""), "unmodeled_initialization") {
+            && !source_invocation_context_covered(v, construction["function"].as_str().unwrap_or("")) {
             return Err("birth-check construction requires scoped invocation-context coverage".into());
         }
     }
@@ -4013,11 +4012,11 @@ fn validate_lifecycle_account(v: &Value, cx: &RefContext) -> Result<(), String> 
         && v["phases"][b["display"].as_str().unwrap()]["phase"].as_str().is_some_and(|s| stages.contains(&s)))
         .map(|b| b["display"].as_str().unwrap()).collect();
     let present=v["relations"].get("lifecycle_definitions").is_some() || v["relations"].get("lifecycle_evaluations").is_some();
-    if !matches!(v["schema"].as_str(), Some("1.36" | "1.37")) && v["unknowns"].as_array().into_iter().flatten().any(|u|
+    if !matches!(v["schema"].as_str(), Some("1.36" | "1.37" | "1.38")) && v["unknowns"].as_array().into_iter().flatten().any(|u|
         u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_lifecycle_context")) {
         return Err("self lifecycle source closure requires topology schema 1.36; re-export from source".into());
     }
-    if (present || !expected_bodies.is_empty()) && !matches!(v["schema"].as_str(), Some("1.34" | "1.35" | "1.36" | "1.37")) {
+    if (present || !expected_bodies.is_empty()) && !matches!(v["schema"].as_str(), Some("1.34" | "1.35" | "1.36" | "1.37" | "1.38")) {
         return Err("guarded self lifecycle accounts require topology schema 1.34".into());
     }
     let rows=|name:&str| -> Result<Vec<&Value>,String> {
@@ -4062,7 +4061,7 @@ fn validate_lifecycle_account(v: &Value, cx: &RefContext) -> Result<(), String> 
         let owner=c["owner"]["name"].as_str().unwrap_or("");let function=text(c,"function")?;let site=number(c,"site")?;let repetition=flags(c)?;
         if uncertain_owners.contains(owner) && !v["unknowns"].as_array().into_iter().flatten().any(|u| u["fn"]==function
             && u["reasons"].as_array().into_iter().flatten().any(|r|
-                if matches!(v["schema"].as_str(), Some("1.36" | "1.37")) { r == "unmodeled_lifecycle_context" } else { r == "unmodeled_initialization" })) {
+                if matches!(v["schema"].as_str(), Some("1.36" | "1.37" | "1.38")) { r == "unmodeled_lifecycle_context" } else { r == "unmodeled_initialization" })) {
             return Err("self lifecycle construction requires scoped invocation-context coverage".into());
         }
         for (target,(declared,stage,empty)) in &definitions {
@@ -4096,7 +4095,7 @@ fn validate_constructor_check_account(v: &Value) -> Result<(), String> {
                 .ok_or_else(|| format!("{name} must be an array")),
         }
     };
-    if v["schema"] != "1.37" {
+    if !matches!(v["schema"].as_str(), Some("1.37" | "1.38")) {
         if v["relations"].get("constructor_checks").is_some() {
             return Err("constructor predicate entries require topology schema 1.37".into());
         }
@@ -4152,6 +4151,67 @@ fn validate_constructor_check_account(v: &Value) -> Result<(), String> {
     }
     if actual != expected.keys().cloned().collect() {
         return Err("constructor predicate entries do not equal the represented constructors' source predicates".into());
+    }
+    Ok(())
+}
+
+
+fn failure_handlers_absent(v: &Value) -> bool {
+    let a = &v["relations"]["failure_sources"];
+    v["schema"] == "1.38" && a["handlers"].as_array().is_some_and(Vec::is_empty)
+        && a["foreign_handlers"].as_u64() == Some(0)
+}
+
+fn source_invocation_context_covered(v: &Value, function: &str) -> bool {
+    v["unknowns"].as_array().into_iter().flatten().any(|u| u["fn"] == function
+        && u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_initialization"
+            || (failure_handlers_absent(v) && r == "unmodeled_lifecycle_context")))
+}
+
+fn validate_failure_source_account(v: &Value) -> Result<(), String> {
+    let account = v["relations"].get("failure_sources");
+    let native_rows: Vec<_> = v["unknowns"].as_array().into_iter().flatten().filter(|u|
+        u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_failure_context")).collect();
+    if v["schema"] != "1.38" {
+        if account.is_some() || !native_rows.is_empty() {
+            return Err("source failure accounts require topology schema 1.38".into());
+        }
+        return Ok(());
+    }
+    let account = account.ok_or("schema 1.38 requires an explicit source failure account (null when unavailable)")?;
+    if account.is_null() {
+        if !native_rows.is_empty() { return Err("native failure cost coverage needs a complete empty source handler inventory".into()); }
+        return Ok(());
+    }
+    only_keys(account, "relations.failure_sources", &["handlers", "foreign_handlers", "may_fail"], &[])?;
+    let universe = v["law"]["fn_universe"].as_array().unwrap();
+    let names = |key: &str| -> Result<Vec<String>, String> {
+        let mut previous = None;
+        account[key].as_array().ok_or("failure source members must be arrays")?.iter().map(|value| {
+            let name = value.as_str().ok_or("failure source members must be function names")?;
+            let position = universe.iter().position(|f| f["display"] == name).ok_or("failure source names no source function")?;
+            if previous.is_some_and(|p| p >= position) { return Err("failure source members must be canonically sorted and unique".into()); }
+            previous = Some(position);
+            Ok(name.to_string())
+        }).collect()
+    };
+    let handlers = names("handlers")?;
+    let may_fail = names("may_fail")?;
+    account["foreign_handlers"].as_u64().filter(|n| *n <= u32::MAX as u64).ok_or("foreign handler count must be a finite u32")?;
+    let expected: Vec<_> = universe.iter().filter(|f| f["kind"] == "failure").map(|f| f["display"].as_str().unwrap().to_string()).collect();
+    if handlers != expected { return Err("complete source failure inventory must retain every declared handler".into()); }
+    if universe.iter().filter(|f| matches!(f["kind"].as_str(), Some("birth_check" | "closure_assertion")))
+        .any(|f| !may_fail.iter().any(|name| f["display"] == *name)) {
+        return Err("complete source failure inventory must retain every conditional source root".into());
+    }
+    if !failure_handlers_absent(v) && !native_rows.is_empty() {
+        return Err("native failure cost coverage needs a complete empty source handler inventory".into());
+    }
+    for row in &native_rows {
+        if !may_fail.iter().any(|name| row["fn"] == *name) { return Err("native failure cost coverage must anchor a represented possible failure".into()); }
+    }
+    if failure_handlers_absent(v) && may_fail.iter().any(|name| !native_rows.iter().any(|row| row["fn"] == *name)) {
+        return Err("every possible source failure must retain native failure cost coverage".into());
     }
     Ok(())
 }

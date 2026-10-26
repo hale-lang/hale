@@ -1398,9 +1398,24 @@ pub struct FormShape {
     pub cap: Option<i64>,
 }
 
+/// All failure-handler headers, before executable reachability projection.
+/// Complete means the bundled source store was supplied alongside every seed.
+#[derive(Debug, Clone, Default)]
+pub struct FailureHandlerCensus {
+    pub complete: bool,
+    pub declarations: Vec<FnKey>,
+}
+impl FailureHandlerCensus {
+    /// Absence is independent of receiver identity only when there are no
+    /// source handlers anywhere in the complete declaration inventory.
+    pub fn is_empty_closed(&self) -> bool { self.complete && self.declarations.is_empty() }
+}
+
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
+    /// Missing is unavailable, never an empty source callback inventory.
+    pub failure_handlers: Option<FailureHandlerCensus>,
     /// Source phase membership, produced with the declaration inventory.
     /// Automatic assertion epochs are phase roots even without an authored
     /// hook. Invocation and scheduling remain separate execution facts.
@@ -1833,6 +1848,7 @@ impl AllocSummary {
         let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
+            failure_handlers: self.failure_handlers.clone(),
             parent_execution_supplied: self.parent_execution_supplied,
             protocol_hooks: self.protocol_hooks.iter().filter(|(owner, _)| owner.universe == SiteUniverse::User && (runtime_own || own_locus(&owner.name)))
                 .map(|(owner, hooks)| (owner.clone(), hooks.clone())).collect(),
@@ -3842,6 +3858,11 @@ pub fn summarize_within(
 
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
+    summary.failure_handlers = Some(FailureHandlerCensus {
+        complete: identified.iter().any(|(_, ids)| is_stdlib_copy(ids)),
+        declarations: bodies.iter().filter(|body| body.2 == Some(EntryKind::FailureHandler))
+            .map(|body| body.0.clone()).collect(),
+    });
     summary.source_phases=source_phases;
     summary.lifecycle_hooks=lifecycle_hooks;
     summary.protocol_hooks=protocol_hooks;
@@ -4617,6 +4638,80 @@ pub struct StructuralFailureTrace {
 }
 
 impl AllocSummary {
+    /// A positive complete declaration census, not a conclusion from which
+    /// handler bodies happened to be reached or routed.
+    pub fn no_source_failure_handlers(&self) -> bool {
+        self.structural_failures.is_some() && self.failure_handlers.as_ref().is_some_and(FailureHandlerCensus::is_empty_closed)
+    }
+
+    /// The shared source failure producer also consumes late parent entries.
+    pub(crate) fn refresh_failure_paths(&mut self) {
+        self.structural_failures = Some(derive_structural_failure_paths(self));
+    }
+
+    /// A native invocation-context marker can close source coverage only when
+    /// its nominal parent body and original constructor/root are represented.
+    pub fn protocol_source_complete(&self, body: &FnSummary, site: &EffectSite) -> bool {
+        use crate::protocol_execution::ProtocolGap;
+        let EffectSiteKind::ProtocolInvocation { target: Some(target), stage: Some(stage), reason: ProtocolGap::InvocationContext } = &site.kind else { return false };
+        let markers = body.effect_sites.iter().filter(|s| s.span == site.span && s.loop_depth == site.loop_depth
+            && matches!(&s.kind, EffectSiteKind::ProtocolInvocation { target: Some(t), stage: Some(p), reason: ProtocolGap::InvocationContext } if t == target && p == stage)).count();
+        let entries: Vec<_> = body.protocol_evaluations.iter().filter(|e| &e.target == target && e.stage == *stage
+            && e.span == site.span && e.loop_depth == site.loop_depth).collect();
+        let unique: BTreeSet<_> = entries.iter().map(|e| (e.root_source, e.constructor_source, &e.owner, &e.child)).collect();
+        self.parent_execution_supplied && markers == entries.len() && unique.len() == entries.len() && self.fns.contains_key(target)
+            && body.protocol_evaluations.iter().any(|edge| &edge.target == target && edge.stage == *stage
+                && edge.span == site.span && edge.loop_depth == site.loop_depth
+                && self.protocol_hooks.get(&edge.owner).is_some_and(|hooks| hooks.iter().any(|hook|
+                    hook.key == *target && hook.stage == *stage && !hook.empty && !hook.synthesized && !hook.interface))
+                && self.fns.get(&edge.constructor_function).and_then(|f| f.constructions.get(edge.constructor as usize))
+                    .is_some_and(|c| c.site == Some(edge.constructor_source) && c.span == edge.constructor_span))
+    }
+
+    pub fn protocol_source_complete_from(&self, root: &FnKey) -> bool {
+        use crate::model_graph::{self, Visit, HolePolicy, Search};
+        matches!(model_graph::search([root.clone()], |at| {
+            Visit::<_, (), ()>::edges(self.fns.get(at).into_iter()
+                .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))).collect())
+        }, |at| self.fns.get(at).is_none_or(|body| body.effect_sites.iter().any(|site|
+            matches!(site.kind, EffectSiteKind::ProtocolInvocation { .. }) && !self.protocol_source_complete(body, site))),
+            |_| false, None, HolePolicy::Halt), Search::NotFound)
+    }
+
+    pub fn constructor_predicate_source_complete_from(&self, root: &FnKey) -> bool {
+        use crate::model_graph::{self, Visit, HolePolicy, Search};
+        matches!(model_graph::search([root.clone()], |at| {
+            Visit::<_, (), ()>::edges(self.fns.get(at).into_iter()
+                .flat_map(|body| body.execution_targets().map(|(to, _)| (to.clone(), ()))).collect())
+        }, |at| self.fns.get(at).is_none_or(|body| !self.constructor_predicate_source_complete(body)),
+            |_| false, None, HolePolicy::Halt), Search::NotFound)
+    }
+
+    /// Every constructor's possible predicates have exact analyzed source
+    /// bodies and entries. No admission, native frame or invocation bound is
+    /// established by this qualitative account.
+    pub fn constructor_predicate_source_complete(&self, body: &FnSummary) -> bool {
+        let mut expected = BTreeSet::new();
+        for (site, constructor) in body.constructions.iter().enumerate() {
+            let Some(owner) = &constructor.lifecycle_owner else { continue };
+            if !self.lifecycle_hooks.contains_key(owner) { return false; }
+            let definitions = self.birth_checks.iter().filter(|(_, d)| &d.owner == owner)
+                .map(|(key, d)| (key, hale_model::ConstructorCheck::BirthCheck(d.ordinal)))
+                .chain(self.closure_assertions.iter().filter(|(_, d)| &d.owner == owner && d.epoch != hale_model::ClosureEpoch::Explicit)
+                    .map(|(key, d)| (key, hale_model::ConstructorCheck::Assertion { epoch: d.epoch, ordinal: d.ordinal })));
+            for (target, kind) in definitions {
+                if !self.fns.contains_key(target) { return false; }
+                expected.insert((site as u32, kind, target));
+                if !body.constructor_checks.iter().any(|edge| edge.constructor == site as u32
+                    && edge.kind == kind && &edge.target == target && edge.invocation == constructor.site
+                    && edge.span == constructor.span && edge.loop_depth == constructor.loop_depth
+                    && edge.in_unbounded_loop == constructor.in_unbounded_loop) { return false; }
+            }
+        }
+        body.constructor_checks.len() == expected.len() && body.constructor_checks.iter()
+            .all(|edge| expected.contains(&(edge.constructor, edge.kind, &edge.target)))
+    }
+
     /// Qualitative self lifecycle work is closed only when each constructor's
     /// complete hook inventory has its exact source edge and analyzed body.
     /// This says nothing about admission, stack frames or retained lifetime.

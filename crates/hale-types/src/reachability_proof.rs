@@ -153,7 +153,7 @@ impl ProofBundle {
         model: &ApplicationModel,
         source_bases: &[u32],
     ) -> Result<Self, String> {
-        if model.header.semantics != hale_model::MODEL_SEMANTICS_V14 {
+        if model.header.semantics != hale_model::MODEL_SEMANTICS_V15 {
             return Err("unsupported model semantics for reachability proof extraction".into());
         }
         if table.provenance.sources != model.provenance.sources {
@@ -456,6 +456,7 @@ fn hole_kind_json(kind: &hale_model::HoleKind) -> Value {
         HoleKind::UnmodeledFailureDispatch => "unmodeled_failure_dispatch",
         HoleKind::UnmodeledInitialization => "unmodeled_initialization",
         HoleKind::UnmodeledLifecycleContext => "unmodeled_lifecycle_context",
+        HoleKind::UnmodeledFailureContext => "unmodeled_failure_context",
     };
     json!({"kind": name})
 }

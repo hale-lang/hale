@@ -129,11 +129,11 @@ fn main() { Parent { }; }
         .all(|f| f.protocol_evaluations.is_empty()));
 }
 #[test]
-fn empty_hooks_have_no_invented_work_and_nonempty_pure_hooks_keep_the_gap() {
+fn empty_hooks_have_no_work_and_complete_pure_hooks_close_source_effects() {
     let empty = snapshot(&DIRECT.replace("println(\"accepted\");", ""));
     assert_eq!(verdict(&empty, "Parent::make"), Verdict::Holds);
     let pure = snapshot(&DIRECT.replace("println(\"accepted\");", "let marker = 1;"));
-    assert_eq!(verdict(&pure, "Parent::make"), Verdict::Uncertified);
+    assert_eq!(verdict(&pure, "Parent::make"), Verdict::Holds);
     let rows = pure.demand_effects().unwrap();
     let body = rows
         .summary
@@ -190,7 +190,7 @@ fn main() { let parent = Parent { }; construct(parent); App { }; }
         .unwrap();
     assert!(model.holes.iter().any(|h| h.at
         == hale_model::EntityRef::Function(hale_model::FunctionId(root as u32))
-        && h.kind == hale_model::HoleKind::UnmodeledInitialization
+        && h.kind == hale_model::HoleKind::UnmodeledLifecycleContext
         && h.reason.contains("parent accept")));
     let table = hale_types::claim_lowering::lower_claims(&s.bundle(), model);
     let (pre, rows, proofs) =
@@ -212,8 +212,9 @@ fn main() { let parent = Parent { }; construct(parent); App { }; }
     let pure = snapshot(&source.replace("println(\"accepted\");", "let marker = 1;"));
     let table = hale_types::claim_lowering::lower_claims(&pure.bundle(), pure.demand_model().unwrap());
     let (_, rows, proofs) = hale_types::judgment::judge_forbid_reaches_with_certificates(&table, pure.demand_model().unwrap(), &[0]);
-    assert_eq!(rows[0].verdict, Verdict::Uncertified);
-    assert!(proofs.is_empty(), "unresolved invocation coverage cannot supply an absence theorem");
+    assert_eq!(rows[0].verdict, Verdict::Holds);
+    assert_eq!(proofs.len(), 1, "complete source work with no callbacks can supply a source-graph absence theorem");
+    proofs[&0].validate().unwrap();
 }
 
 #[test]
@@ -335,7 +336,7 @@ fn a_reused_caller_gets_its_parent_helpers_new_effects() {
         )
     };
     let before = snapshot(&source(false));
-    assert_eq!(verdict(&before, "Parent::make"), Verdict::Uncertified);
+    assert_eq!(verdict(&before, "Parent::make"), Verdict::Holds);
     let after = snapshot(&source(true)).reusing_typing(before);
     assert_eq!(verdict(&after, "Parent::make"), Verdict::Violated);
     assert!(
@@ -386,7 +387,7 @@ fn canonical_parent_account_refuses_missing_entries_contexts_definitions_and_cov
     assert!(missing.validate().is_err());
     let mut missing = model.clone();
     missing.holes.retain(|h| !(h.at == hale_model::EntityRef::Function(context.from)
-        && h.kind == hale_model::HoleKind::UnmodeledInitialization));
+        && h.kind == hale_model::HoleKind::UnmodeledLifecycleContext));
     assert!(missing.validate().is_err());
     let mut changed = model.clone();
     changed.relations.protocol_contexts[0].root_source = hale_graph::ids::SiteId { seed: context.constructor_source.seed, index: context.constructor_source.index + 1 };

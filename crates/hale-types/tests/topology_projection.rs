@@ -650,7 +650,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V14,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -678,6 +678,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
+            failure_sources: None,
             lifecycle_contexts: None,
             recovery: Default::default(),
             dispatch_plan: Default::default(),

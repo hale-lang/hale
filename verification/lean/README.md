@@ -67,12 +67,16 @@ It contains no replacement graph interpreter. The positive cases cover:
   birth-check predicates.
 - Authored self hooks in birth, run, drain and dissolve, plus parent accept
   and release callbacks reached from construction contexts.
+- Complete quiet self-hook, predicate and nominal parent source cones under a
+  positive empty handler census. Every absence case retains an unreachable real
+  stdio target, so these are closed-set theorems rather than empty selections.
 
 Every generated module is checked by Lean and replayed by `leanchecker`.
 Negative controls require Lean to reject an omitted-root certificate and the
-compiler to refuse theorem export for invalid laws, unresolved automatic
-epochs, phase-local failure coverage, conditional birth rejection, unresolved
-parent invocation and unresolved invocation at each of the four self stages.
+compiler to refuse theorem export for invalid laws, automatic/phase assertions,
+birth rejection and parent invocation when a source handler is declared, and
+opaque source calls inside each of the four self stages. The handler controls
+include a dormant header: an empty reached-handler set cannot prove absence.
 Compiler refusals must leave neither the requested JSON nor Lean output.
 
 Generated JSON, Lean modules and oleans live under
@@ -90,14 +94,17 @@ FNV identities are stale-evidence checks, not cryptographic signatures. The
 remaining trust boundary above still applies.
 
 The birth-check fixtures retain the real predicate clause as a birth-phase
-root. A known printing helper produces a path certificate; unresolved
-conditional rejection refuses an absence theorem. This does not establish
+root. A known printing helper produces a path certificate; conditional rejection
+with a declared source handler refuses an absence theorem. A positive complete
+empty source-handler census permits a source absence theorem while preserving
+native failure costs and the separate failure-freedom obligation. This does not establish
 constructor scheduling, failure-handler admission or runtime refinement.
 
 The lifecycle gate varies the authored self hook across birth, run, drain and
 dissolve using the same source fixtures. Every printing body supplies a path
-certificate through its guarded may-entry; each pure nonempty body retains
-unresolved invocation context and refuses an absence theorem. The kernel
+certificate through its guarded may-entry. A complete pure nonempty body permits
+a source absence theorem while retaining native invocation cost uncertainty;
+a body with an opaque source call still refuses a theorem. The kernel
 proves a path in the supplied graph. It does not prove that the construction,
 run-admission or teardown guard occurs in a feasible runtime trace. No caller
 stack charge, admission or retention fact is inferred from that edge.

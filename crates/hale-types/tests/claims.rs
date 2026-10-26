@@ -976,6 +976,9 @@ fn raw_log_delivery_through_a_sink_holds_the_structured_logging_law() {
     // context. Without that gate, a quiet source effect remains uncertified.
     let quiet = source.replace(LOGS_STRUCTURED, "quiet: forbid reaches(program, effects(secret_use));");
     let ds = diags(&quiet);
+    assert!(ds.is_empty(), "no source handler exists: {ds:?}");
+    let with_handler = quiet + "\nlocus ChildForHandler { closure bad { epoch inline; } }\nlocus Dormant { on_failure(c: ChildForHandler, e: ClosureViolation) { } }\n";
+    let ds = diags(&with_handler);
     assert!(ds.iter().any(|d| d.contains("conditional failure dispatch is unresolved")), "{ds:?}");
     // Known writes must still win over that uncertainty.
     let ds = diags(&source.replace(" avoiding std::log::*", ""));

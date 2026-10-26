@@ -180,7 +180,7 @@ fn the_replay_gate_refuses_what_it_refused() {
             "core {syscall,unclassified}",
             "host {syscall,unclassified}",
             "host/verb {syscall,unclassified}",
-            "oidc {unclassified}",
+            "oidc {syscall}",
             "operations {syscall,unclassified}",
             "organism {syscall,unclassified}",
             "organization_runtime {syscall,unclassified}",

@@ -162,7 +162,7 @@ Checking a stdlib source seed keeps its own executable bodies while retaining
 the bundled clone's declaration identities for lowering. That metadata does
 not add the shadowed clone's calls or effects to the program model.
 
-Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under an FNV-1a `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`. The current exporter uses schema 1.37 and artifact semantics 3. It includes non-default flow classifications and their policy adequacy, default evaluations, and guarded self/parent lifecycle accounts. Model semantics 14 and analysis semantics 32 are separate version domains; see the [artifact format reference](./claims.md#topology-artifact-format).
+Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under an FNV-1a `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`. The current exporter uses schema 1.38 and artifact semantics 3. It includes non-default flow classifications and their policy adequacy, default evaluations, and guarded self/parent lifecycle accounts. Model semantics 15 and analysis semantics 33 are separate version domains; see the [artifact format reference](./claims.md#topology-artifact-format).
 
 ### Further Reading
 
@@ -362,3 +362,9 @@ are refused. Topology views and fleet composition retain the admitted edges.
 Generic, interface, foreign and unrepresented execution boundaries still need
 adequate source and runtime correspondence; this account establishes no
 resident population or physical-memory bound.
+
+The source failure census precedes body reachability. Its complete empty case
+closes source handler dispatch; it does not describe native diagnostics,
+exit/finalization, runtime costs or behavioral containment. Predicate and nominal
+parent bodies still need their exact source entries. Native failure costs and
+`NoPanic` remain separate; see [source failure coverage](./claims.md#source-failure-coverage-and-native-boundaries).

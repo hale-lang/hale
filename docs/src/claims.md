@@ -913,12 +913,12 @@ law:
 
 ### Topology Artifact Format
 
-The current exporter writes schema **1.37** and artifact semantics **3**.
+The current exporter writes schema **1.38** and artifact semantics **3**.
 For example, these selected header fields appear in a fresh export:
 
 ```json
 {
-  "schema": "1.37",
+  "schema": "1.38",
   "semantics": 3,
   "shape_hash": "<fnv1a-64 over the model half>"
 }
@@ -939,10 +939,10 @@ The versions describe different things:
 
 | Version | Current value | Meaning |
 |---|---|---|
-| Topology `schema` | `1.37` | Serialized fields and admission rules. |
+| Topology `schema` | `1.38` | Serialized fields and admission rules. |
 | Topology `semantics` | `3` | Interpretation of artifact rows. |
-| In-process model semantics | `14` | Canonical model invariants; separate from topology `semantics`. |
-| Analysis semantics | `32` | Meaning of the analyses and evidence inputs. |
+| In-process model semantics | `15` | Canonical model invariants; separate from topology `semantics`. |
+| Analysis semantics | `33` | Meaning of the analyses and evidence inputs. |
 | Reachability proof schema | `hale.reachability-proofs/2` | Separate certificate report format. |
 
 Key artifact rules:
@@ -1017,7 +1017,39 @@ execution order, a native stack frame nor eventual evaluation. Conditional
 failure dispatch, recovery, scheduling and lifetime coverage remain explicit;
 a pure operand alone does not certify a constructor or its quantitative budget.
 Imported and standard-library predicate bodies use the same execution facts.
-Topology schema 1.37 includes `relations.constructor_checks`; admission requires
+Topology schema 1.38 includes `relations.constructor_checks`; admission requires
 exactly the represented constructors' birth predicates and automatic assertions.
-Model semantics 14 and analysis semantics 32 distinguish this account from older
+Model semantics 15 and analysis semantics 33 distinguish this account from older
 evidence, including source-bound reachability proof replay.
+
+### Source failure coverage and native boundaries
+
+The declaration inventory includes every `on_failure` header before executable
+reachability is projected, including handlers in unused loci and imported
+seeds. When the complete program and bundled source inventory contains no
+handler, a structural failure cannot dispatch another Hale source handler.
+An unavailable inventory is never treated as empty. Any declared handler keeps
+the conservative dispatch gap; this account does not select an instance or
+prove recovery containment.
+
+With that positive empty inventory, complete birth-predicate, automatic
+assertion and nominal parent-protocol bodies can close **source** calls/effects.
+Original constructors, caller/default roots, parent bodies, clause/epoch
+membership and repetition still have to agree. Interface/generic matching,
+missing source identities, unresolved owners/defaults and opaque operations
+retain their independent gaps. Known forbidden work remains a violation.
+
+This is a source graph horizon. It does not promise process silence or classify
+native fatal diagnostics, exit/finalization, allocator/runtime internals or an
+external C environment as Hale source calls. Native failure/reporting costs
+remain explicit as `UnmodeledFailureContext`; admission, scheduling, native
+frames and retained lifetime keep invocation-context costs. `@no_panic` keeps
+its separate possible-failure obligation. A quiet source body is not evidence
+that it cannot fail, that its budget holds, or that teardown is safe.
+
+Topology 1.38 records `relations.failure_sources`: an explicit unavailable
+`null`, or the complete own-handler list, foreign-source handler count and
+source functions the shared failure graph may reach. The artifact hash binds
+this account. Admission requires every represented handler and conditional
+source root, canonical members, and native cost coverage. Model semantics 15
+and analysis semantics 33 distinguish the new source horizon from old evidence.

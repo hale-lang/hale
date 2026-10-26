@@ -1947,3 +1947,35 @@ Each enclosing source entry separately retains runtime cost coverage; compact
 artifacts conservatively project interior failure uncertainty to that entry.
 The compact projection therefore cannot recover the source model's interior
 barrier precision. Native scheduling and failure dispatch remain unproved.
+
+### Source failure coverage and native boundaries
+
+The declaration inventory includes every `on_failure` header before executable
+reachability is projected, including handlers in unused loci and imported
+seeds. When the complete program and bundled source inventory contains no
+handler, a structural failure cannot dispatch another Hale source handler.
+An unavailable inventory is never treated as empty. Any declared handler keeps
+the conservative dispatch gap; this account does not select an instance or
+prove recovery containment.
+
+With that positive empty inventory, complete birth-predicate, automatic
+assertion and nominal parent-protocol bodies can close **source** calls/effects.
+Original constructors, caller/default roots, parent bodies, clause/epoch
+membership and repetition still have to agree. Interface/generic matching,
+missing source identities, unresolved owners/defaults and opaque operations
+retain their independent gaps. Known forbidden work remains a violation.
+
+This is a source graph horizon. It does not promise process silence or classify
+native fatal diagnostics, exit/finalization, allocator/runtime internals or an
+external C environment as Hale source calls. Native failure/reporting costs
+remain explicit as `UnmodeledFailureContext`; admission, scheduling, native
+frames and retained lifetime keep invocation-context costs. `@no_panic` keeps
+its separate possible-failure obligation. A quiet source body is not evidence
+that it cannot fail, that its budget holds, or that teardown is safe.
+
+Topology 1.38 records `relations.failure_sources`: an explicit unavailable
+`null`, or the complete own-handler list, foreign-source handler count and
+source functions the shared failure graph may reach. The artifact hash binds
+this account. Admission requires every represented handler and conditional
+source root, canonical members, and native cost coverage. Model semantics 15
+and analysis semantics 33 distinguish the new source horizon from old evidence.

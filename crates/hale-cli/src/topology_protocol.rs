@@ -26,7 +26,7 @@ pub(super) fn validate(v: &Value, cx: &RefContext) -> Result<(), String> {
         "protocol_evaluations",
     ];
     let present = names.iter().any(|n| v["relations"].get(*n).is_some());
-    if !matches!(v["schema"].as_str(), Some("1.35" | "1.36" | "1.37")) {
+    if !matches!(v["schema"].as_str(), Some("1.35" | "1.36" | "1.37" | "1.38")) {
         if present || !expected_bodies.is_empty() {
             return Err(
                 "parent protocol accounts require topology schema 1.35; re-export from source"
@@ -319,7 +319,7 @@ pub(super) fn validate(v: &Value, cx: &RefContext) -> Result<(), String> {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .any(|r| r == "unmodeled_initialization")
+                    .any(|r| r == "unmodeled_initialization" || (super::failure_handlers_absent(v) && r == "unmodeled_lifecycle_context"))
         }) {
             return Err("parent opportunity requires scoped invocation-context coverage".into());
         }

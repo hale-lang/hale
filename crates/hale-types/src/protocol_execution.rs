@@ -460,6 +460,7 @@ pub fn derive(
             }
         }
     }
+    out.refresh_failure_paths();
     out
 }
 

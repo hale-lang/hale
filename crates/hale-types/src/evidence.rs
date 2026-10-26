@@ -110,7 +110,8 @@ use crate::symbol::Bundle;
 // 30: declaration-only record confinement and nominal/generic shadowing.
 // 31: complete self lifecycle source work is distinct from quantitative context gaps.
 // 32: constructor-bound birth predicates and automatic assertion operands.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 32;
+// 33: source callback census, explicit native failure costs and NoPanic separation.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 33;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -884,7 +885,8 @@ pub(crate) fn derive_certificate_evidence_with_recovery_reports_over(
                         let budget = matches!(row.law, ClaimIr::AllocBudget { .. } | ClaimIr::QuantBudget { .. });
                         let kind = if budget { "budget" } else { "effect certificate" };
                         let form = if budget { String::new() } else { format!(" ({})", demangled[i].1) };
-                        let execution = if matches!(gap.hole.kind, hale_model::HoleKind::UnmodeledInitialization | hale_model::HoleKind::UnmodeledLifecycleContext) { "implicit execution" } else { "recovery execution" };
+                        let execution = if gap.hole.kind == hale_model::HoleKind::UnmodeledFailureContext { "native failure work" }
+                            else if matches!(gap.hole.kind, hale_model::HoleKind::UnmodeledInitialization | hale_model::HoleKind::UnmodeledLifecycleContext) { "implicit execution" } else { "recovery execution" };
                         let message = format!("{kind} uncertified{form}: `{path}` reaches {}; explicit work does not cover the unresolved {execution}", gap.hole.reason);
                         if !budget { recovery_reports.push(RecoveryCertificateReport { ordinal: row.ordinal, message: message.clone() }); }
                         diags_out.push((message, pid));

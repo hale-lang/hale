@@ -467,6 +467,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             HoleKind::UnmodeledFailureDispatch => "unmodeled_failure_dispatch".to_string(),
             HoleKind::UnmodeledInitialization => "unmodeled_initialization".to_string(),
             HoleKind::UnmodeledLifecycleContext => "unmodeled_lifecycle_context".to_string(),
+            HoleKind::UnmodeledFailureContext => "unmodeled_failure_context".to_string(),
             _ => continue,
         };
         unknowns.entry(fn_display(f)).or_default().insert(reason);
@@ -475,7 +476,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     // its intrinsic failure uncertainty at the enclosing artifact entry; the
     // source model retains that residue at the actual predicate for via masks.
     for a in &m.analyses.stdlib_absorption {
-        if a.nodes.iter().any(|n| n.constructor_check.is_some()) {
+        if !m.no_source_failure_handlers() && a.nodes.iter().any(|n| n.constructor_check.is_some()) {
             unknowns.entry(fn_display(a.from)).or_default().insert("unmodeled_initialization".to_string());
         }
     }
@@ -525,6 +526,15 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             .collect::<Vec<_>>().join(", ")));
     }
     model.push_str("  \"relations\": {\n");
+    match &m.analyses.failure_sources {
+        None => model.push_str("    \"failure_sources\": null,\n"),
+        Some(account) => {
+            let handlers: Vec<_> = account.handlers.iter().map(|f| fn_display(*f)).collect();
+            let may_fail: Vec<_> = account.may_fail.iter().map(|f| fn_display(*f)).collect();
+            model.push_str(&format!("    \"failure_sources\": {{\"handlers\": [{}], \"foreign_handlers\": {}, \"may_fail\": [{}]}},\n", join_str(handlers.iter()), account.foreign_handlers, join_str(may_fail.iter())));
+        }
+    }
+
     let defaults: Vec<_> = e.functions.iter().enumerate().filter_map(|(i, f)|
         f.initializer.as_ref().map(|default| (hale_model::FunctionId(i as u32), f, default))).collect();
     if !defaults.is_empty() {

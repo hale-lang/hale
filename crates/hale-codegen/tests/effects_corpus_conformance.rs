@@ -131,7 +131,8 @@ fn the_registry_oracle_detects_an_unclassified_leaf() {
     // and its real call sites stay unchanged; a missed leaf must fail.
     for (source, unknown) in [
         ("fn main() { println(1); }", false),
-        ("locus Worker { run() { println(1); } } fn main() { Worker { }; }", true),
+        ("locus Worker { run() { println(1); } } fn main() { Worker { }; }", false),
+        ("locus B { fn work() { } } locus Worker { run() { println(1); (match 0 { _ -> B { }, }).work(); } } fn main() { Worker { }; }", true),
     ] {
         let mut program = hale_syntax::parse_source(source).unwrap();
         let ids = hale_types::snapshot::mint([("probe.hl", &mut program)], &[]);

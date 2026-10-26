@@ -78,6 +78,9 @@ pub const MODEL_SEMANTICS_V13: u32 = 13;
 /// Constructor-bound birth predicates and automatic assertion operand entries.
 pub const MODEL_SEMANTICS_V14: u32 = 14;
 
+/// Complete source handler absence closes callback effects, not native failure costs.
+pub const MODEL_SEMANTICS_V15: u32 = 15;
+
 /// Named hash algorithms over a model. The replay-compatibility law
 /// (crate docs): the first artifact encoder reproduces
 /// `TopologyShapeV1` byte-for-byte over the corpus before any
@@ -270,9 +273,26 @@ pub struct DispatchGate {
     pub subscribers: Vec<(String, String)>,
 }
 
-/// the legacy artifact schema is versioned past.
+/// Source callback inventory and every own function the shared reverse source
+/// failure graph can reach. None is unavailable; an empty positive inventory
+/// is distinct. This establishes no instance selection or recovery containment.
+#[derive(Clone, Debug, Default)]
+pub struct FailureSourceAccount {
+    /// Every own source failure-handler header, including unreachable ones.
+    pub handlers: Vec<FunctionId>,
+    /// Number of handler headers outside the own source function universe.
+    pub foreign_handlers: u32,
+    /// Own functions with a possible structural failure in the shared graph.
+    pub may_fail: Vec<FunctionId>,
+}
+impl FailureSourceAccount {
+    pub fn no_handlers(&self) -> bool { self.handlers.is_empty() && self.foreign_handlers == 0 }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Analyses {
+    /// Complete full-source declaration inventory, distinct from reached bodies.
+    pub failure_sources: Option<FailureSourceAccount>,
     /// Source lifecycle contexts; absence is unavailable, never an empty proof.
     pub lifecycle_contexts: Option<crate::construction::LifecycleInventory>,
     /// Typed recovery observations with symbolic operands. This inventory
@@ -1003,7 +1023,9 @@ impl ApplicationModel {
         if actual != expected.keys().copied().collect() { return Err(bad(0,"lifecycle entries must equal exactly the represented constructors' guarded nonempty lifecycle hooks")); }
         for (index, hole) in self.holes.iter().enumerate().filter(|(_, h)| h.kind == crate::HoleKind::UnmodeledLifecycleContext) {
             let crate::EntityRef::Function(from) = hole.at else { return Err(bad(index,"lifecycle context must anchor a source function")); };
-            let own = r.lifecycle_evaluations.iter().any(|v| v.from == from && v.provenance == hole.provenance);
+            let own = r.lifecycle_evaluations.iter().any(|v| v.from == from && v.provenance == hole.provenance)
+                || (self.no_source_failure_handlers() && (r.constructor_checks.iter().any(|v| v.from == from && v.provenance == hole.provenance)
+                    || r.protocol_contexts.iter().any(|v| v.from == from && v.provenance == hole.provenance)));
             let foreign = self.analyses.stdlib_absorption.iter().any(|a| a.from == from && a.entry_provenance == hole.provenance
                 && (a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.constructor_check.is_some() || n.events.iter().any(|e| matches!(e, crate::AbsorbedEvent::Lifecycle { .. } | crate::AbsorbedEvent::ConstructorCheck { .. })))));
             if !own && !foreign { return Err(bad(index,"lifecycle context requires a represented constructor/hook source entry")); }
@@ -1011,8 +1033,52 @@ impl ApplicationModel {
         Ok(())
     }
 
-    /// Every represented constructor retains its complete possible predicate
-    /// body account. Runtime admission and failure dispatch are separate facts.
+    /// The complete full-source census positively contains no handler headers.
+    /// This does not discharge native failure costs or failure freedom.
+    pub fn no_source_failure_handlers(&self) -> bool {
+        self.analyses.failure_sources.as_ref().is_some_and(FailureSourceAccount::no_handlers)
+    }
+
+    fn failure_coverage_kind(&self) -> crate::HoleKind {
+        if self.no_source_failure_handlers() { crate::HoleKind::UnmodeledFailureContext }
+        else { crate::HoleKind::UnmodeledFailureDispatch }
+    }
+
+    pub(crate) fn source_invocation_context_covered(&self, function: FunctionId, provenance: ProvenanceId) -> bool {
+        self.holes.iter().any(|h| h.at == crate::EntityRef::Function(function)
+            && (h.kind == crate::HoleKind::UnmodeledInitialization
+                || (self.no_source_failure_handlers() && h.kind == crate::HoleKind::UnmodeledLifecycleContext && h.provenance == provenance)))
+    }
+
+    fn validate_failure_sources(&self) -> Result<(), ModelError> {
+        for (index, hole) in self.holes.iter().enumerate().filter(|(_, h)| h.kind == crate::HoleKind::UnmodeledFailureContext) {
+            let valid = self.no_source_failure_handlers() && matches!(hole.at, crate::EntityRef::Function(f)
+                if self.analyses.failure_sources.as_ref().is_some_and(|a| a.may_fail.binary_search(&f).is_ok()));
+            if !valid { return Err(ModelError::CoverageLaw { index, law: "native failure cost context requires complete source handler absence and a represented possible failure" }); }
+        }
+        let Some(account) = &self.analyses.failure_sources else { return Ok(()) };
+        check_sorted_keys("failure_sources.handlers", account.handlers.iter().copied())?;
+        check_sorted_keys("failure_sources.may_fail", account.may_fail.iter().copied())?;
+        let expected: Vec<_> = self.entities.functions.iter().enumerate()
+            .filter(|(_, f)| f.kind == crate::FunctionKind::FailureHandler)
+            .map(|(i, _)| FunctionId(i as u32)).collect();
+        if account.handlers != expected || account.may_fail.iter().any(|f| f.index() >= self.entities.functions.len())
+            || self.relations.birth_checks.iter().any(|d| !account.may_fail.contains(&d.function))
+            || self.relations.closure_definitions.iter().any(|d| !account.may_fail.contains(&d.function)) {
+            return Err(ModelError::CoverageLaw { index: 0, law: "complete source failure account must retain every declared handler and conditional source root" });
+        }
+        if account.no_handlers() {
+            for (index, function) in account.may_fail.iter().enumerate() {
+                if !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(*function)
+                    && h.kind == crate::HoleKind::UnmodeledFailureContext && h.hides.contains(crate::RelationSet::COSTS)) {
+                    return Err(ModelError::CoverageLaw { index, law: "every represented possible failure retains native failure cost coverage" });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Exact possible source predicate entries at each constructor.
     fn validate_constructor_checks(&self) -> Result<(), ModelError> {
         use std::collections::{BTreeMap, BTreeSet};
         let r = &self.relations;
@@ -1047,7 +1113,8 @@ impl ApplicationModel {
         check_sorted_keys("birth_checks", r.birth_checks.iter().map(|b| b.function))?;
         let mut bodies = BTreeSet::new();
         let mut ordinals = BTreeSet::new();
-        let failure_hides = crate::HoleKind::UnmodeledFailureDispatch.implicit_execution_families().unwrap();
+        let failure_kind = self.failure_coverage_kind();
+        let failure_hides = failure_kind.implicit_execution_families().unwrap();
         for (index, clause) in r.birth_checks.iter().enumerate() {
             let f = e.functions.get(clause.function.index()).ok_or(ModelError::DanglingId { table: "birth_checks", index })?;
             let owner = e.loci.get(clause.owner.index()).ok_or(ModelError::DanglingId { table: "birth_checks", index })?;
@@ -1063,7 +1130,7 @@ impl ApplicationModel {
                 return Err(bad(index, "birth checks require exactly their birth source phase"));
             }
             if !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(clause.function)
-                && h.kind == crate::HoleKind::UnmodeledFailureDispatch && h.hides.contains(failure_hides)) {
+                && h.kind == failure_kind && h.hides.contains(failure_hides)) {
                 return Err(bad(index, "conditional birth rejection requires scoped failure-dispatch coverage"));
             }
         }
@@ -1073,12 +1140,9 @@ impl ApplicationModel {
             }
         }
         let owners: BTreeSet<_> = r.birth_checks.iter().map(|b| b.owner).collect();
-        let invocation_hides = crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
         for (index, construction) in r.constructions.iter().enumerate() {
             if matches!(construction.owner, crate::ConstructorTarget::Locus(owner) if owners.contains(&owner))
-                && !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(construction.function)
-                    && h.kind == crate::HoleKind::UnmodeledInitialization && h.provenance == construction.provenance
-                    && h.hides.contains(invocation_hides)) {
+                && !self.source_invocation_context_covered(construction.function, construction.provenance) {
                 return Err(bad(index, "birth-check construction requires scoped invocation-context coverage"));
             }
         }
@@ -1091,6 +1155,7 @@ impl ApplicationModel {
         self.validate_birth_checks()?;
         self.validate_lifecycle_evaluations()?;
         self.validate_constructor_checks()?;
+        self.validate_failure_sources()?;
         self.validate_protocol_account()?;
         let mut counts = vec![0usize; self.entities.functions.len()];
         check_sorted_keys("phase_of", self.relations.phase_of.iter().map(|p| (p.function, p.phase)))?;
@@ -1169,12 +1234,9 @@ impl ApplicationModel {
         if actual!=expected { return Err(bad(0,"closure evaluations must equal all explicit assertions of each represented checkpoint")); }
         let automatic_owners: BTreeSet<_> = r.closure_definitions.iter()
             .filter(|d| d.epoch != crate::ClosureEpoch::Explicit).map(|d| d.owner).collect();
-        let hides = crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
         for (index, construction) in r.constructions.iter().enumerate() {
             if matches!(construction.owner, crate::ConstructorTarget::Locus(owner) if automatic_owners.contains(&owner))
-                && !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(construction.function)
-                    && h.kind == crate::HoleKind::UnmodeledInitialization && h.provenance == construction.provenance
-                    && h.hides.contains(hides)) {
+                && !self.source_invocation_context_covered(construction.function, construction.provenance) {
                 return Err(bad(index,"automatic closure construction requires scoped invocation-context coverage"));
             }
         }
@@ -1685,7 +1747,7 @@ impl ApplicationModel {
         }
         for a in &self.analyses.stdlib_absorption {
             for n in &a.nodes {
-                if n.constructor_check.is_some() {
+                if n.constructor_check.is_some() && !self.no_source_failure_handlers() {
                     m = m.union(crate::RelationSet::CALLS).union(crate::RelationSet::EFFECTS).union(crate::RelationSet::COSTS);
                 }
                 for ev in &n.events {
@@ -1857,7 +1919,7 @@ impl ApplicationModel {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
-        if self.header.semantics != MODEL_SEMANTICS_V14 {
+        if self.header.semantics != MODEL_SEMANTICS_V15 {
             return Err(ModelError::UnsupportedModelSemantics { actual: self.header.semantics });
         }
         self.analyses.recovery.validate(self)?;

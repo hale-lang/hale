@@ -119,6 +119,9 @@ pub enum HoleKind {
     /// by exact entries. Admission, native frames, scheduling and
     /// retained lifetime remain unknown to quantitative judgments.
     UnmodeledLifecycleContext,
+    /// The complete source inventory declares no failure handler. Native
+    /// failure reporting/exit costs remain outside source callback coverage.
+    UnmodeledFailureContext,
     /// A generic locus template has no single concrete flow discipline.
     GenericFlowTemplate,
 }
@@ -132,7 +135,7 @@ impl HoleKind {
         match self {
             Self::UnmodeledFailureDispatch | Self::UnmodeledInitialization => Some(execution),
             Self::UnmodeledRecovery => Some(execution.union(RelationSet::PUBLISHES)),
-            Self::UnmodeledLifecycleContext => Some(RelationSet::COSTS),
+            Self::UnmodeledLifecycleContext | Self::UnmodeledFailureContext => Some(RelationSet::COSTS),
             _ => None,
         }
     }
@@ -245,7 +248,7 @@ pub fn allowed_hole_families(
         // (the subject's subscriber set), so the fn-grain shape
         // stops at what the engines consume — and an unanalyzed
         // body hides ALL of what it could contain (round 9).
-        (EntityRef::Function(_), K::UnmodeledRecovery | K::UnmodeledFailureDispatch | K::UnmodeledInitialization | K::UnmodeledLifecycleContext) =>
+        (EntityRef::Function(_), K::UnmodeledRecovery | K::UnmodeledFailureDispatch | K::UnmodeledInitialization | K::UnmodeledLifecycleContext | K::UnmodeledFailureContext) =>
             kind.implicit_execution_families().map(|hidden| (hidden, hidden)),
         (EntityRef::Function(_), K::UnanalyzedBody) => {
             Some((c.union(p).union(e), c.union(p).union(e)))

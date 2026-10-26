@@ -1306,7 +1306,7 @@ fn judge_forbid_reaches_impl(
                     V::Interior(ai, ni) => {
                         let node = &absorption[*ai as usize].nodes
                             [*ni as usize];
-                        if predicate_unknown.is_none() && node.constructor_check.is_some()
+                        if predicate_unknown.is_none() && !model.no_source_failure_handlers() && node.constructor_check.is_some()
                             && behavioral_mask.intersects(hale_model::RelationSet::CALLS.union(hale_model::RelationSet::EFFECTS)) {
                             predicate_unknown = Some((display(*v), node.constructor_check.unwrap()));
                         }

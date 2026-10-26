@@ -236,10 +236,10 @@ pub mod surface;
 pub use application::{
     AbsorbedEvent, AbsorbedHoleKind, AbsorbedNode, AbsorbedTarget,
     ApplicationModel, Entities, CertificateEvidence, EvidenceRow, EvidenceTable, LabelRow,
-    Analyses, StdlibAbsorption,
+    Analyses, FailureSourceAccount, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
     certificate_row_verdict, document_verdict, DocumentVerdict,
-    Relations, WeightRow, MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, MODEL_SEMANTICS_V14, DispatchGate,
+    Relations, WeightRow, MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, MODEL_SEMANTICS_V14, MODEL_SEMANTICS_V15, DispatchGate,
 };
 pub use capability::Capabilities;
 pub use claim_ir::{

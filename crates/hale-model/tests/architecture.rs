@@ -69,7 +69,7 @@ fn tiny_model() -> ApplicationModel {
 
     ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V14,
+            semantics: MODEL_SEMANTICS_V15,
             entrypoint: "App".to_string(),
         },
         entities: Entities {
@@ -2001,7 +2001,7 @@ fn failure_handlers_obey_ordinary_coverage_and_owner_completeness_laws() {
 #[test]
 fn old_and_unknown_model_semantics_are_refused() {
     let mut m = tiny_model();
-    for version in [MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, 0, MODEL_SEMANTICS_V14 + 1] {
+    for version in [MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, MODEL_SEMANTICS_V13, MODEL_SEMANTICS_V14, 0, MODEL_SEMANTICS_V15 + 1] {
         m.header.semantics = version;
         assert_eq!(m.validate(), Err(ModelError::UnsupportedModelSemantics { actual: version }));
     }

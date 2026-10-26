@@ -348,7 +348,7 @@ pub fn kind_hides_edges(kind: &str) -> bool {
         k if k.starts_with("uninhabited_interface_call") => false,
         // Exact source lifecycle entries are present; this residue concerns
         // native scheduling/frame/lifetime costs, not missing graph edges.
-        "unmodeled_lifecycle_context" => false,
+        "unmodeled_lifecycle_context" | "unmodeled_failure_context" => false,
         // Unrecognized kinds fail CLOSED. A newer compiler emitting a
         // hole this build has never heard of must not be read as an
         // absence of holes.

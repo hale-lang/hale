@@ -136,7 +136,7 @@ fn the_arrangement_is_rooted_at_the_deployed_main() {
     let (side, w, leaf) = (format!("{app}.side"), format!("{app}.w"), format!("{app}.w.leaf"));
     remapped(m, &[(app, Some(0), None), (&side, Some(1), None), (&w, Some(2), None), (&leaf, Some(3), None)]);
     assert!(m.entities.thread_domains.is_empty(), "no domain is the imported root's: {:?}", m.entities.thread_domains);
-    identities_hold(m, "c8e14f85e87e9ab6", "eb9f93ef2d701a6e");
+    identities_hold(m, "c19a56db8bbe4f94", "eb9f93ef2d701a6e");
 }
 
 const M3: &str = r#"
@@ -178,7 +178,7 @@ fn the_wrongly_inferred_twin_is_removed() {
     let m = model(&s);
     remapped(m, &[("App", Some(0), Some(0)), ("App.a", Some(1), Some(1)), ("App.l", Some(2), None), ("App.z", Some(3), Some(2))]);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.a Reader - main 0", "2 App.z Tail - main 0"]);
-    identities_hold(m, "03027c9cfa7a1713", "76ab966fa69b16ae");
+    identities_hold(m, "34dea0a36da08817", "76ab966fa69b16ae");
 }
 
 /// U-4 (M-2): the projection is user-only. The table places the stdlib
@@ -267,7 +267,7 @@ fn aliased_and_contract_typed_fields_are_added() {
             "4 App.z Tail - main 0",
         ]
     );
-    identities_hold(m, "53a634ba338961c5", "10ad616cf9728b3e");
+    identities_hold(m, "3e7502104ed100af", "10ad616cf9728b3e");
 }
 
 /// M-9: below a held row whose source the producer cannot link the
@@ -286,7 +286,7 @@ fn nothing_is_arranged_below_an_unlinked_held_row() {
             ("App.h.roles.k", Some(3), None),
         ],
     );
-    identities_hold(m, "de993ef75d1e36c9", "af7c2c5ce5fa9bea");
+    identities_hold(m, "8d764238b9466d1b", "af7c2c5ce5fa9bea");
 }
 
 /// M-7: the entry's implicit construction adds no row of its own. A
@@ -299,7 +299,7 @@ fn the_entry_adds_no_arrangement_row_of_its_own() {
     let m = model(&claims_only);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.l Leaf - main 0"]);
     assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
-    identities_hold(m, "d143c2e55dc8e0e2", "ccc8c3ec47f273ff");
+    identities_hold(m, "99b4ac715f52dee4", "ccc8c3ec47f273ff");
 
     let with_side = snapshot(
         "locus Side { }\nlocus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\n\
@@ -311,7 +311,7 @@ fn the_entry_adds_no_arrangement_row_of_its_own() {
         locus_holes(m),
         ["Side instance born outside the arrangement: owner and placement resolve at runtime"]
     );
-    identities_hold(m, "4893a43a725fdf00", "db323984f4298dfa");
+    identities_hold(m, "5fbd2d4a31e47196", "db323984f4298dfa");
 }
 
 /// The model's `replica` column is the replica row's own index, never an
@@ -336,7 +336,7 @@ fn a_replica_index_stays_on_its_own_row() {
             "4 App.v[1].inner Leaf - pinned:App.v[1] 3",
         ]
     );
-    identities_hold(m, "c040340f245425b3", "b7e5edf4a6b220ce");
+    identities_hold(m, "575cb662a9314ec5", "b7e5edf4a6b220ce");
 }
 
 /// Contract 3's construction templates: a path has no construction
@@ -389,7 +389,7 @@ fn main() { build(true); }
     for decl in ["RouterV1", "RouterV2"] {
         assert!(holes.contains(&format!("{decl} {disagree}")), "{decl}: {holes:?}");
     }
-    identities_hold(m, "7d6131dcd57088b2", "23e954518d6a8109");
+    identities_hold(m, "f4cd4b790513296c", "23e954518d6a8109");
 }
 
 /// U-5: the model projects `affined_to` from the table's resolved domain
@@ -433,7 +433,7 @@ fn the_affinity_column_is_projected() {
         &dump[at..at + dump[at..].find("dispatch_plan").unwrap()],
         "affined_to (3):\n  pinned:App.w[0] cpus [5]\n  pinned:App.w[1] cpus [6]\n  pool:io cpus [2,3]\n"
     );
-    identities_hold(m, "d520083a3016e2a7", "6f7ec26b0442cb4d");
+    identities_hold(m, "8512e17a47af3225", "6f7ec26b0442cb4d");
 }
 
 /// U-5: a program with no affinity dumps no `affined_to` lines.

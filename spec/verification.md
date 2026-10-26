@@ -666,9 +666,9 @@ bytes. Schema 1.23 adds the typed law, hashed classification tags,
 classification capability and `flow_policy` adequacy. Analysis semantics
 11 binds the added judgment and completeness family.
 
-**The topology artifact** (#382 phase 2; current schema 1.37):
+**The topology artifact** (#382 phase 2; current schema 1.38):
 The exporter uses artifact semantics **3**. The in-process canonical model
-uses semantics **14**, and analysis inputs use semantics **32**. These are
+uses semantics **15**, and analysis inputs use semantics **33**. These are
 separate version domains; the artifact's `semantics` field is not the model
 semantics version. Reachability reports use their own schema,
 `hale.reachability-proofs/2`. Schema 1.37 adds exact constructor predicate
@@ -3418,3 +3418,11 @@ budget. Missing hook inventories or bodies, unknown calls inside hooks,
 failure dispatch, automatic assertion epochs and parent protocols still
 prevent certification where relevant. Known forbidden effects keep their
 ordinary source witnesses.
+
+The source callback census is a compiler-produced primitive over the complete
+source declaration store, not a result of routing an empty reached-body set.
+A graph absence certificate is still a source-graph theorem: the native fatal
+report/exit path and external C callbacks are beyond that graph horizon. Native
+failure cost coverage and `NoPanic` are not discharged by source handler absence.
+Model 15 / analysis 33 / topology 1.38 bind the positive census and preserve this
+boundary. This supplies no native refinement or failure-containment theorem.

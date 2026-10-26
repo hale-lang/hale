@@ -69,6 +69,10 @@ fn restamp_law(v: &mut Value) {
 
 fn refused(mut v: Value, message: &str) {
     // Exercise the deep law binding, not merely its integrity digest.
+    if v["schema"] != "1.38" && !v["unknowns"].as_array().into_iter().flatten().any(|u|
+        u["reasons"].as_array().into_iter().flatten().any(|r| r == "unmodeled_failure_context")) {
+        v["relations"].as_object_mut().unwrap().remove("failure_sources");
+    }
     restamp_law(&mut v);
     let error = topology_law::validate_law_account(&v, "placement").unwrap_err();
     assert!(error.contains(message), "expected {message:?}: {error}");
@@ -81,6 +85,7 @@ fn refused(mut v: Value, message: &str) {
 fn historical_account(v: &Value, schema: &str) -> Value {
     let mut old = v.clone();
     old["schema"] = json!(schema);
+    old["relations"].as_object_mut().unwrap().remove("failure_sources");
     let defaults: std::collections::BTreeSet<String> = old["law"]["fn_universe"].as_array().unwrap().iter()
         .filter(|r| matches!(r["kind"].as_str(), Some("parameter_default" | "field_default"))).map(|r| r["display"].as_str().unwrap().to_string()).collect();
     old["law"]["fn_universe"].as_array_mut().unwrap().retain(|r| !defaults.contains(r["display"].as_str().unwrap()));
@@ -619,6 +624,7 @@ fn schema_126_locus_default_accounts_remain_readable() {
     let (_, mut v) = artifact_with_outcome("legacy_parameter_defaults", &INITIALIZATION.replace("run() { }", ""), false);
     assert!(v["law"]["types"].as_array().unwrap().is_empty());
     v["schema"] = json!("1.26");
+    v["relations"].as_object_mut().unwrap().remove("failure_sources");
     v["law"].as_object_mut().unwrap().remove("types");
     v["sorts"].as_object_mut().unwrap().remove("types");
     let definitions = v["relations"].as_object_mut().unwrap().remove("initializers").unwrap();
@@ -746,21 +752,24 @@ fn main() { App { }; }
     let (_, v) = artifact_with_outcome("automatic_epoch_coverage", source, false);
     topology_law::validate_law_account(&v, "automatic epoch").unwrap();
     assert_eq!(v["schema"], hale_types::topology::TOPOLOGY_SCHEMA);
-    assert!(v["law"]["rows"].as_array().unwrap().iter().all(|row| row["verdict"] == "uncertified"));
+    assert!(v["law"]["rows"].as_array().unwrap().iter().any(|row| row["verdict"] == "holds"));
+    assert!(v["law"]["rows"].as_array().unwrap().iter().any(|row| row["verdict"] == "uncertified"));
     let mut missing = v.clone();
     missing["unknowns"].as_array_mut().unwrap().retain(|row| row["fn"] != "construct");
-    refused(missing.clone(), "automatic closure construction requires scoped invocation-context coverage");
+    refused(missing.clone(), "every possible source failure must retain native failure cost coverage");
     missing["schema"] = json!("1.29");
-    refused(missing, "self lifecycle source closure requires topology schema 1.36");
+    refused(missing, "source failure accounts require topology schema 1.38");
     let mut wrong_anchor = v.clone();
     wrong_anchor["unknowns"].as_array_mut().unwrap().iter_mut().find(|row| row["fn"] == "construct").unwrap()["fn"] = json!("App::run");
-    refused(wrong_anchor, "automatic closure construction requires scoped invocation-context coverage");
+    refused(wrong_anchor, "every possible source failure must retain native failure cost coverage");
     let mut downgrade = v;
     downgrade["schema"] = json!("1.29");
-    refused(downgrade, "self lifecycle source closure requires topology schema 1.36");
+    refused(downgrade, "source failure accounts require topology schema 1.38");
     let (_, mut previous) = artifact_with_outcome("prior_epoch_without_authored_hook",
-        &source.replace("main locus App { run() { construct(); } }", "main locus App { }"), false);
+        &(source.replace("main locus App { run() { construct(); } }", "main locus App { }")
+            + "\nlocus Dormant { on_failure(w: Worker, e: ClosureViolation) { } }\n"), false);
     previous["schema"] = json!("1.29");
+    previous["relations"].as_object_mut().unwrap().remove("failure_sources");
     previous["relations"].as_object_mut().unwrap().remove("constructor_checks");
     topology_law::validate_law_account(&previous, "prior explicit epoch account").unwrap();
 }
@@ -781,8 +790,8 @@ fn main() { Worker { }; }
     assert_eq!(v["law"]["rows"][0]["verdict"], "violated");
     assert_eq!(v["phases"]["Worker::closures::audit"], json!({"phase":"birth","kind":"hook"}));
     let quiet = source.replace("println(\"phase operand\");", "");
-    let (_, quiet) = artifact_with_outcome("automatic_phase_unknown", &quiet, false);
-    assert_eq!(quiet["law"]["rows"][0]["verdict"], "uncertified");
+    let (_, quiet) = artifact_with_outcome("automatic_phase_closed", &quiet, true);
+    assert_eq!(quiet["law"]["rows"][0]["verdict"], "holds");
     topology_law::validate_law_account(&quiet, "conditional automatic phase").unwrap();
     for mutation in 0..5 {
         let mut changed = v.clone();
@@ -842,6 +851,7 @@ fn closure_admission_rejects_forged_definitions_lost_evaluations_and_downgrades(
 fn schema_128_argument_accounts_remain_readable() {
     let (_,mut v)=artifact_with_outcome("schema_128_arguments",ARGUMENT_DEFAULTS,false);
     v["schema"]=json!("1.28");
+    v["relations"].as_object_mut().unwrap().remove("failure_sources");
     topology_law::validate_law_account(&v,"schema 1.28 arguments").unwrap();
 }
 
@@ -862,9 +872,9 @@ fn main() { Worker { }; }
     assert_eq!(v["law"]["rows"][0]["verdict"], "violated");
     assert_eq!(v["relations"]["birth_checks"].as_array().unwrap().len(), 2);
     assert_eq!(v["phases"]["Worker::birth_checks::0"], json!({"phase":"birth","kind":"hook"}));
-    let (_, quiet) = artifact_with_outcome("birth_check_unknown", &source.replace("println(\"predicate\");", ""), false);
+    let (_, quiet) = artifact_with_outcome("birth_check_closed", &source.replace("println(\"predicate\");", ""), true);
     topology_law::validate_law_account(&quiet, "conditional birth check").unwrap();
-    assert_eq!(quiet["law"]["rows"][0]["verdict"], "uncertified");
+    assert_eq!(quiet["law"]["rows"][0]["verdict"], "holds");
     for mutation in 0..10 {
         let mut changed = v.clone();
         match mutation {
@@ -984,7 +994,7 @@ fn main() { App { }; }
 "#;
     let (_, v) = artifact("constructor_predicates", source);
     topology_law::validate_law_account(&v, "constructor predicates").unwrap();
-    assert_eq!(v["schema"], "1.37");
+    assert_eq!(v["schema"], "1.38");
     let entries = v["relations"]["constructor_checks"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
     assert!(entries.iter().all(|e| e["from"] == "construct" && e["site"] == 1 && e["epoch"] == "birth"));
@@ -1014,4 +1024,45 @@ fn main() { App { }; }
         restamp_law(&mut changed);
         assert!(topology_law::validate_law_account(&changed, "predicate mutation").is_err(), "mutation {mutation}");
     }
+}
+
+#[test]
+fn failure_source_account_binds_empty_inventory_and_native_cost_coverage() {
+    let source = r#"
+locus Child { closure bad { epoch inline; } birth_check { false } -> violate bad; }
+@effects(none: {stdio}) fn construct() { Child { }; }
+main locus App { run() { construct(); } }
+fn main() { App { }; }
+"#;
+    let (_, v) = artifact("failure_source_account", source);
+    topology_law::validate_law_account(&v, "source failure account").unwrap();
+    assert_eq!(v["relations"]["failure_sources"]["handlers"], json!([]));
+    assert_eq!(v["relations"]["failure_sources"]["foreign_handlers"], 0);
+    assert!(!v["relations"]["failure_sources"]["may_fail"].as_array().unwrap().is_empty());
+    assert_eq!(v["law"]["rows"][0]["verdict"], "holds");
+    for mutation in 0..13 {
+        let mut changed = v.clone();
+        match mutation {
+            0 => { changed["relations"].as_object_mut().unwrap().remove("failure_sources"); }
+            1 => changed["relations"]["failure_sources"] = Value::Null,
+            2 => changed["relations"]["failure_sources"]["foreign_handlers"] = json!(1),
+            3 => changed["relations"]["failure_sources"]["handlers"] = json!(["construct"]),
+            4 => changed["relations"]["failure_sources"]["may_fail"] = json!([]),
+            5 => changed["relations"]["failure_sources"]["may_fail"] = json!(["missing"]),
+            6 => changed["relations"]["failure_sources"]["extra"] = json!(true),
+            7 => changed["relations"]["failure_sources"]["foreign_handlers"] = json!(-1),
+            8 => changed["schema"] = json!("1.37"),
+            9 => { changed["schema"] = json!("1.37"); changed["relations"].as_object_mut().unwrap().remove("failure_sources"); }
+            10 => changed["unknowns"].as_array_mut().unwrap().iter_mut().for_each(|u|
+                u["reasons"].as_array_mut().unwrap().retain(|r| r != "unmodeled_failure_context")),
+            11 => { let value=changed["relations"]["failure_sources"]["may_fail"][0].clone(); changed["relations"]["failure_sources"]["may_fail"].as_array_mut().unwrap().push(value); }
+            _ => changed["relations"]["failure_sources"]["may_fail"].as_array_mut().unwrap().reverse(),
+        }
+        assert!(topology_law::validate_law_account(&changed, "failure source mutation").is_err(), "mutation {mutation}");
+    }
+    let with_handler = source.to_string() + "\nlocus Dormant { on_failure(c: Child, e: ClosureViolation) { } }\n";
+    let (_, blocked) = artifact_with_outcome("failure_source_handler", &with_handler, false);
+    topology_law::validate_law_account(&blocked, "declared callback").unwrap();
+    assert_eq!(blocked["relations"]["failure_sources"]["handlers"].as_array().unwrap().len(), 1);
+    assert_eq!(blocked["law"]["rows"][0]["verdict"], "uncertified");
 }

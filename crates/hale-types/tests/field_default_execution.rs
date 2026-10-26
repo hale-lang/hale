@@ -203,6 +203,11 @@ locus Child {
 }
 "#;
     let source = format!("{child}{}",SOURCE.replace("println(\"field default ran\");", "let child = Child { }; child.break_it();"));
+    let quiet = snapshot(&source);
+    assert_eq!(quiet.demand_effect_certificates().unwrap().iter().find(|(r,_)| r.subject == "App::omitted").unwrap().0.result, Verdict::Holds);
+    let costs = quiet.demand_model().unwrap();
+    assert!(costs.holes.iter().any(|h| h.at == hale_model::EntityRef::Function(function(costs,"App::omitted")) && h.kind == hale_model::HoleKind::UnmodeledFailureContext));
+    let source = source + "\nlocus Dormant { on_failure(c: Child, e: ClosureViolation) { } }\n";
     let s = snapshot(&source); let m = s.demand_model().unwrap(); m.validate().unwrap();
     for (name, expected) in [("App::omitted",Verdict::Uncertified),("App::supplied",Verdict::Holds)] {
         assert_eq!(s.demand_effect_certificates().unwrap().iter().find(|(r,_)| r.subject == name).unwrap().0.result,expected);

@@ -209,12 +209,12 @@ fn main() { App { }; }
     let gaps: Vec<_> = m.holes.iter().filter(|h| h.kind == hale_model::HoleKind::UnmodeledInitialization).collect();
     assert!(!gaps.iter().any(|h| matches!(h.at, hale_model::EntityRef::Function(f) if f == route || f == helper)),
         "the route default and its real helper remain fully represented");
-    let parent_gaps: Vec<_> = gaps.iter().filter(|h| h.reason.starts_with("parent ")).collect();
+    let parent_gaps: Vec<_> = m.holes.iter().filter(|h| h.kind == hale_model::HoleKind::UnmodeledLifecycleContext && h.reason.starts_with("parent ")).collect();
     assert_eq!(parent_gaps.len(), 2, "exactly the flow owner's two bookends are new");
     let serve = function(m, "__StdIoTcpFlows::serve");
     for (stage, gap) in ["accept", "release"].into_iter().zip(parent_gaps) {
         assert_eq!(gap.at, hale_model::EntityRef::Function(serve));
-        assert!(gap.reason.starts_with(&format!("parent {stage} protocol `__StdIoTcpFlows::{stage}`;")));
+        assert!(gap.reason.starts_with(&format!("parent {stage} protocol `__StdIoTcpFlows::{stage}`")));
     }
     assert!(gaps.iter().filter(|h| !h.reason.starts_with("parent "))
         .all(|h| h.reason.contains("birth check") || h.reason.contains("lifecycle")),

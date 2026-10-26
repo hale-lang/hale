@@ -83,9 +83,10 @@ fn a_pure_predicate_retains_conditional_failure_coverage() {
     let s = snapshot(&SOURCE.replace("println(\"birth predicate\"); ", ""));
     let reports = s.demand_effect_certificates().unwrap();
     let row = reports.iter().find(|(r, _)| r.subject == "Child").unwrap();
-    assert_eq!(row.0.result, Verdict::Uncertified);
-    assert!(row.1.iter().any(|(d, _)| d.message.contains("birth check")));
-    assert_eq!(phase_verdict(&s), Verdict::Uncertified);
+    assert_eq!(row.0.result, Verdict::Holds);
+    assert!(row.1.is_empty());
+    assert!(s.demand_model().unwrap().holes.iter().any(|h| h.kind == HoleKind::UnmodeledFailureContext));
+    assert_eq!(phase_verdict(&s), Verdict::Holds);
     let summary = s.demand_alloc_summary().unwrap();
     let key = summary.birth_checks.keys().next().unwrap();
     let failure = summary.structural_failure_path(key).unwrap().unwrap();
@@ -106,8 +107,8 @@ fn birth_check_definitions_phases_and_coverage_are_mandatory() {
             2 => changed.relations.birth_checks[0].ordinal += 1,
             3 => changed.relations.birth_checks[0].closure.clear(),
             4 => changed.entities.functions[clause.index()].kind = FunctionKind::Hook,
-            5 => changed.holes.retain(|h| !(h.at == EntityRef::Function(clause) && h.kind == HoleKind::UnmodeledFailureDispatch)),
-            6 => changed.holes.retain(|h| h.kind != HoleKind::UnmodeledInitialization),
+            5 => changed.holes.retain(|h| !(h.at == EntityRef::Function(clause) && h.kind == HoleKind::UnmodeledFailureContext)),
+            6 => changed.holes.retain(|h| h.kind != HoleKind::UnmodeledLifecycleContext),
             _ => {
                 let phase = changed.relations.phase_of.iter().find(|p| p.function == clause).unwrap().phase;
                 changed.entities.phases[phase.index()].name = "run".into();
@@ -141,7 +142,7 @@ fn constructor_predicate_work_remains_known_before_runtime_context_closes() {
     let m = s.demand_model().unwrap();
     m.validate().unwrap();
     let construction = m.relations.constructions.iter().find(|c| m.entities.functions[c.function.index()].display == "construct").unwrap();
-    assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(construction.function) && h.kind == HoleKind::UnmodeledInitialization && h.provenance == construction.provenance));
+    assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(construction.function) && h.kind == HoleKind::UnmodeledLifecycleContext && h.provenance == construction.provenance));
 }
 #[test]
 fn imported_predicates_retain_their_actual_locus_and_source_universe() {
@@ -182,14 +183,15 @@ fn main() { probe(); }
     let s = snapshot(source);
     let reports = s.demand_effect_certificates().unwrap();
     let report = reports.iter().find(|(r, _)| r.subject == "probe").unwrap();
-    assert_eq!(report.0.result, Verdict::Uncertified);
-    assert!(report.1.iter().any(|(d, _)| d.message.contains("birth check")), "{:?}", report.1);
+    assert_eq!(report.0.result, Verdict::Holds);
+    assert!(report.1.is_empty());
     let m = s.demand_model().unwrap();
     m.validate().unwrap();
     let function = hale_model::FunctionId(m.entities.functions.iter().position(|f| f.display == "probe").unwrap() as u32);
-    assert!(m.holes.iter().any(|h| h.at == EntityRef::Function(function)
-        && h.kind == HoleKind::UnmodeledInitialization && h.reason.contains("birth check")),
-        "represented birth work must not erase the independent predicate obligation");
+    assert!(m.analyses.stdlib_absorption.iter().filter(|a| a.from == function && a.entry_constructor_check.is_some())
+        .all(|a| m.holes.iter().any(|h| h.at == EntityRef::Function(function)
+            && h.kind == HoleKind::UnmodeledLifecycleContext && h.provenance == a.entry_provenance)),
+        "represented birth work must retain its runtime cost obligation");
 }
 
 #[test]
@@ -245,17 +247,11 @@ fn main() { probe(); }
     assert_eq!(entry.nodes[0].constructor_check, entry.entry_constructor_check);
     assert!(entry.entry_constructor_source.is_some());
     assert!(entry.entry_lifecycle.is_none() && entry.entry_initialization.is_none());
-    assert!(!m.capabilities.exact_calls && !m.capabilities.exact_effects && !m.capabilities.exact_costs);
-    for capability in 0..3 {
-        let mut forged = m.clone();
-        match capability {
-            0 => forged.capabilities.exact_calls = true,
-            1 => forged.capabilities.exact_effects = true,
-            _ => forged.capabilities.exact_costs = true,
-        }
-        assert!(forged.validate().is_err(), "predicate coverage cannot claim exactness: {capability}");
-    }
-
+    assert!(m.no_source_failure_handlers());
+    assert!(!m.capabilities.exact_costs);
+    let mut forged = m.clone();
+    forged.capabilities.exact_costs = true;
+    assert!(forged.validate().is_err(), "native predicate costs cannot claim exactness");
     for mutation in 0..6 {
         let mut changed = m.clone();
         let a = &mut changed.analyses.stdlib_absorption[index];

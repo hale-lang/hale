@@ -258,13 +258,21 @@ pub struct ClosureEvaluation {
 /// original constructor. This is distinct from explicit closure checkpoints.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConstructorCheckEvaluation {
+    /// Identity of the original constructor expression, when available.
     pub source: Option<hale_graph::ids::SiteId>,
+    /// Enclosing source function that may construct the locus.
     pub from: FunctionId,
+    /// Analyzed predicate or assertion operand body.
     pub to: FunctionId,
+    /// Birth-clause ordinal or automatic assertion epoch and ordinal.
     pub kind: crate::ConstructorCheck,
+    /// Constructor ordinal in `from`, separate from calls/checkpoints.
     pub site: u32,
+    /// The constructor occurs inside a source loop.
     pub in_loop: bool,
+    /// Its enclosing loop has no static iteration bound.
     pub unbounded: bool,
+    /// Original constructor source witness; not a native invocation frame.
     pub provenance: ProvenanceId,
 }
 

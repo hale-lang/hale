@@ -60,7 +60,7 @@ Claim [345..356] group member `MissingGate` names no declared locus or fn. Unkno
 Claim [37..41] group member `p::*` names no import alias — the glob form expands `import "…" as p`, which this bundle does not declare. Unknown names are errors, never empty sets
 Claim [23..44] group `kvs` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
 --- crates/hale-cli/tests/placement_artifact.rs#8 ---
-Claim [165..175] budget uncertified: `construct` reaches construction 0 can enter automatic birth closure `Worker::closures::audit`; epoch scheduling, lifetime and failure context are unresolved; explicit work does not cover the unresolved implicit execution
+Claim [165..175] budget uncertified: `construct` reaches `construct` may raise a structural failure; no source failure handler is declared; native reporting and exit costs remain unresolved; explicit work does not cover the unresolved native failure work
 --- crates/hale-cli/tests/topology_artifact_contract.rs#1 ---
 Claim [255..260] claim `wired` violated: no member of `subs` subscribes `Tk`
 --- crates/hale-cli/tests/topology_artifact_contract.rs#3 ---
@@ -257,6 +257,8 @@ Claim [159..173] claim `gate`: this call crosses the boundary. A call cannot be 
 Claim [601..603] claim `sw` violated: counted 2 publisher(s) (`P1`, `P2`) of `Tasks`, claim requires == 1
 --- crates/hale-types/tests/depends_set.rs#0 ---
 Claim [376..383] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
+--- crates/hale-types/tests/failure_source_account.rs#0 ---
+Claim [174..183] budget uncertified: `construct` reaches `construct` may raise a structural failure; no source failure handler is declared; native reporting and exit costs remain unresolved; explicit work does not cover the unresolved native failure work
 --- crates/hale-types/tests/field_default_execution.rs#0 ---
 Claim [362..367] claim `quiet` violated: `apps` reaches `effects(stdio)` — witness: `App::omitted` -(initializes n)-> `Settings::fields::n` -> `observe`
 Claim [90..99] claim `quiet`: the boundary into `effects(stdio)` is crossed by this call
