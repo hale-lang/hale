@@ -304,12 +304,7 @@ const FIXTURES: &[Fixture] = &[
 /// today's outcome). Each is asserted to give today's outcome, and to
 /// not give the adopted one.
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
-    // A yield inside a handler on a pinned thread runs the owner's
-    // handler that reclaims the suspended one's subscriber, which no hold
-    // keeps. Deferred: a pinned handler holds its subscriber (or the
-    // reclaim waits for it to return) as a pool worker's does. No read
-    // word: the read is of freed memory, judged under ASan.
-    ("l19_pinned_yield_replaces_child.hl", "R52", "reclaimed-under-handler dissolved-once-each"),
+
 ];
 
 /// Fixtures on a pending line: (file, today's outcome).
@@ -1519,33 +1514,26 @@ fn reused_address(r: &Ran) -> String {
     }
 }
 
-/// Whether the old Kid's reclaim came after its suspended handler's read
-/// or under it, and each Kid's teardown (R52 on a pinned thread). Both
-/// are facts of order and count. What the read printed is judged only
-/// when the reclaim came after it, the one order in which the read is
-/// defined: under the handler it reads a released arena, and what that
-/// prints depends on whether the chunk pool handed the bytes out again
-/// (`2` by default, `kid-1-name` under `LOTUS_NO_CHUNK_POOL=1`, GH #816).
-/// That read is judged by `l19_pinned_yield_replaces_child_under_asan`,
-/// which asserts the heap-use-after-free, not what it printed.
+/// Read the old child whole and require its physical reclaim to end
+/// after its handler. A dissolve body is logical teardown, so its print
+/// alone cannot establish when the arena was released.
+
 fn pinned_yield(r: &Ran) -> String {
     if r.timed_out || r.code != Some(0) {
         return exit_word(r);
     }
-    let starts = |prefix: &str| r.stdout.lines().position(|l| l.starts_with(prefix));
-    let once = if count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1 {
-        "dissolved-once-each"
+    let handler = r.trace.events.iter().find(|e| e.decl.as_deref() == Some("Kid")
+        && e.kind == ObligationKind::Handler && e.point == Point::Completed);
+    let storage_after = handler.is_some_and(|h| r.trace.events.iter().any(|e|
+        e.subject == h.subject && e.kind == ObligationKind::Reclaim
+            && e.point == Point::Completed && e.seq > h.seq));
+    let once = count(r, "ev kid-dissolve 1") == 1 && count(r, "ev kid-dissolve 2") == 1;
+    if storage_after && once && count(r, "ev kid-handler-read kid-1-name") == 1 {
+        "read-whole reclaimed-after-handler dissolved-once-each".into()
     } else {
-        "dissolved-other"
-    };
-    match (starts("ev kid-handler-read "), pos(r, "ev kid-dissolve 1")) {
-        (Some(h), Some(d)) if h < d => {
-            let read = if count(r, "ev kid-handler-read kid-1-name") == 1 { "read-whole" } else { "read-torn" };
-            format!("{read} reclaimed-after-handler {once}")
-        }
-        (Some(_), Some(_)) => format!("reclaimed-under-handler {once}"),
-        _ => format!("unread-or-undissolved {once}"),
+        format!("storage_after={storage_after} once={once}: {}", r.stdout)
     }
+
 }
 
 fn completed_or_named(r: &Ran) -> String {
@@ -2219,27 +2207,58 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
 }
 
-/// R52 on a pinned thread, known open, under AddressSanitizer with chunk
-/// pooling off (GH #816): the owner's handler, run by the yield inside
-/// the child's handler, releases the child's arena, and the suspended
-/// handler reads its name from it once the sleep returns. Asserted to
-/// report that heap-use-after-free today; when a pinned handler holds
-/// its subscriber the run is clean, this fails, and it becomes an
-/// [`assert_clean_under_asan`] test beside the fixture's KNOWN_OPEN
-/// entry going.
+/// R52: nested mailbox handlers retain the suspended subscriber.
 #[test]
 fn l19_pinned_yield_replaces_child_under_asan() {
     let file = "l19_pinned_yield_replaces_child.hl";
-    let bin = harness::unique_bin("hale_lifecycle_asan_l19_pinned_yield");
-    harness::build_source_asan(&source(file), &bin);
-    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    for no_bus_devirt in [false, true] {
+        let bin = harness::unique_bin("hale_lifecycle_asan_l19_pinned_yield");
+        let options = hale_codegen::BuildOptions {
+            asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+        };
+        build_opts::build_source(&source(file), &bin, &options).expect("ASan build");
+        let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()), ("LOTUS_NO_CHUNK_POOL", "1")]);
+        let _ = std::fs::remove_file(&bin);
+        let report = format!("{}\n{}", ran.stdout, ran.stderr);
+        for marker in SANITIZER_MARKERS { assert!(!report.contains(marker), "{file}: {report}"); }
+        assert_eq!(pinned_yield(&ran), fixture(file).adopted.unwrap(), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+        assert_trace(file, &ran);
+    }
+}
+
+/// Removing the mailbox's hold must restore the real stale read in
+/// both dispatch modes, not merely change a printed outcome word.
+#[test]
+fn a_pinned_handler_without_its_hold_reads_reclaimed_storage() {
+    let file = "l19_pinned_yield_replaces_child.hl";
+    for no_bus_devirt in [false, true] {
+        let bin = harness::unique_bin("hale_lifecycle_pinned_no_hold");
+        let options = hale_codegen::BuildOptions {
+            asan: true, lifecycle_trace: true, no_bus_devirt, ..build_opts::options()
+        };
+        build_opts::build_source(&source(file), &bin, &options).expect("ASan control build");
+        let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", harness::asan_options()),
+            ("LOTUS_NO_CHUNK_POOL", "1"), ("LOTUS_LIFECYCLE_SKIP", "HandlerHold")]);
+        let _ = std::fs::remove_file(&bin);
+        let report = format!("{}\n{}", ran.stdout, ran.stderr);
+        assert!(ran.code != Some(0) && report.contains("heap-use-after-free")
+            && report.contains("Kid.on_go"), "{file}, no_bus_devirt={no_bus_devirt}: {report}");
+    }
+}
+
+/// Keeping the hold but waiting inside the nested replacement prevents
+/// the suspended handler below it from returning and releasing that hold.
+#[test]
+fn a_pinned_handler_without_storage_retirement_waits_on_its_own_stack() {
+    let bin = harness::unique_bin("hale_pinned_storage_negative");
+    let options = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
+    build_opts::build_source(&source("l19_pinned_yield_replaces_child.hl"), &bin, &options).expect("build");
+    let ran = run_bin(&bin, RunMode::Plain, &[("LOTUS_LIFECYCLE_SKIP", "HandlerStorage")]);
     let _ = std::fs::remove_file(&bin);
-    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
-    assert!(
-        report.contains("heap-use-after-free") && report.contains("Kid.on_go") && report.contains("__release_storage_Kid_Reclaim"),
-        "{file} under ASan no longer reports the handler reading its reclaimed arena (KNOWN_OPEN at R52): {}\n{report}",
-        exit_word(&ran)
-    );
+    assert!(ran.timed_out, "nested replacement unexpectedly completed: {} {}", ran.stdout, ran.stderr);
+    assert_eq!(count(&ran, "ev owner-swap"), 1);
+    assert_eq!(count(&ran, "ev kid-dissolve 1"), 1);
+    assert_eq!(count(&ran, "ev kid-handler-read kid-1-name"), 0);
 }
 
 /// Decision line 19, a started run, under AddressSanitizer with chunk

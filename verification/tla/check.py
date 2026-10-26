@@ -20,7 +20,7 @@ REGIONS = [
     ("void lotus_mailbox_post(", "static int lotus_mailbox_take(",
      "b29fc2305100efdad8e4bd2b74a271e36e5cf5df8fc63b69518608970aeebe02"),
     ("int lotus_mailbox_drain_one(", "void lotus_mailbox_shutdown(",
-     "5a5ae5eee50d9789a7d598e7bcae721d82d0bd8ba7c4f0e64aac191e93590085"),
+     "dc2a699393ecc08b0a442bf72690a2421ddd4a9ed8445423a4f6e046a15c38c2"),
     ("void lotus_mailbox_shutdown(", "void lotus_mailbox_destroy(",
      "9a941f292b5c63668eec0bdb9378a1ea7c0cb8d40c80a4ee7d347e3abfa8c91a"),
     ("static void lotus_coop_pool_wake_consumer(", "static void lotus_coop_pool_post_cell(",

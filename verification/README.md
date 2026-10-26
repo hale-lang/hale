@@ -242,6 +242,12 @@ operation. It has no retirement queue, active-release guard or
 descendant-storage graph. The handler and run-body fixtures exercise
 those paths with nested form storage, both dispatch modes and ASan;
 removing the handler boundary restores the deadlock under a deadline.
+The model also has no nested pinned-mailbox stack. The pinned-yield
+fixture forces a nested replacement and checks the old heap-backed data
+under ASan in both dispatch modes, with trace ordering at physical reclaim.
+Its missing-hold and missing-retirement controls respectively restore an
+invalid read and a circular wait. These tests are runtime evidence, not a
+GenMC proof of nested mailbox execution.
 
 **A started run against a reclaim no join orders is in.** It was the
 model's open boundary while admission freed the ticket and nothing

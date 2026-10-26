@@ -712,6 +712,46 @@ fn id_of(p: &LifecyclePlan, o: &Obligation) -> ObligationId {
     p.iter().find(|(_, x)| std::ptr::eq(*x, o)).map(|(id, _)| id).expect("in the plan")
 }
 
+/// A mailbox yield can replace a subscriber below the current stack
+/// frame. Its handler holds the instance through its terminal event.
+#[test]
+fn pinned_mailbox_handlers_retain_their_subscribers_until_return() {
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_pinned_yield_replaces_child.hl"));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    for decl in ["Kid", "Owner"] {
+        for handler in rows(p, decl, K::Handler) {
+            assert_eq!(handler.holder.spine, Spine::QueueDrain);
+            assert_eq!(claimed(p, handler), labels(&["pinned"]));
+            let id = id_of(p, handler);
+            assert!(handler.lifetime.iter().any(|r| r.resource == Resource::Instance
+                && r.until.obligation == id && r.until.point == Point::Ended && r.status == Status::Shipped));
+            let reclaim = p.obligations.iter().find(|r| r.kind == K::Reclaim && r.site == handler.site).expect("reclaim");
+            assert!(reclaim.edges.completion.iter().any(|r| r.event.obligation == id && r.event.point == Point::Ended));
+        }
+        assert!(!rows(p, decl, K::Handler).is_empty(), "{decl} owes a handler");
+    }
+}
+
+/// One literal template can receive cells on both kinds of executor.
+/// Each handler row names only the domains on which that row runs.
+#[test]
+fn a_shared_subscriber_template_keeps_pool_and_mailbox_handler_domains() {
+    let s = snapshot("type Msg { n: Int; }\ntopic Hits { payload: Msg; }\nlocus Leaf { bus { subscribe Hits as on_hit; } fn on_hit(m: Msg) { } }\nlocus Runner { run() { let leaf = Leaf { }; } }\nmain locus App { params { p: Runner = Runner { }; q: Runner = Runner { }; } placement { p: pinned; q: cooperative(pool = side); } }\nfn main() { App { }; }\n");
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let handlers = rows(p, "Leaf", K::Handler);
+    assert_eq!(handlers.len(), 2, "one Leaf template owes both executor rows");
+    for (spine, domain) in [(Spine::PoolRun, "pool:side"), (Spine::QueueDrain, "pinned")] {
+        let handler = handlers.iter().find(|h| h.holder.spine == spine).expect("executor's row");
+        assert_eq!(claimed(p, handler), labels(&[domain]));
+        assert_eq!(handler.runs_on.as_ref().unwrap().rule.status, Status::Shipped);
+        let id = id_of(p, handler);
+        assert!(one(p, "Leaf", K::Reclaim).edges.completion.iter()
+            .any(|r| r.event.obligation == id && r.event.point == Point::Ended));
+    }
+}
+
 /// `Parent { }` built by App's run() on main and by Worker's on pool
 /// `side`: Parent's field default `Leaf { }` is one template with both.
 fn two_parents(leaf: &str, extra: &str, worker_placed: bool) -> String {

@@ -786,27 +786,27 @@ impl<'b, 'a> Builder<'b, 'a> {
             self.push(o);
         }
         self.failures(i, &mut r, &[FailureSource::Run, FailureSource::Handler]);
-        // A bus handler on a pool's worker holds its subscriber until it
-        // returns (line 19, R52), once per delivered cell: another thread
-        // can reclaim the subscriber (main replaces a placed field, or
-        // tears it down and everything under it), and that reclaim
-        // completes only once every handler it found running has
-        // returned. A classic worker may carry the hold past a handler's
-        // end to its next cell of the subscriber, but ends it after the
-        // handler in progress once a reclaim waits for it: that only
-        // delays the reclaim, so the row still ends with each handler and
-        // the edge is to that end. Main's queue and a pinned thread run
-        // their handlers on the thread that reclaims their subscribers,
-        // and owe none.
-        let handler = (subscribes && on_pool).then(|| {
-            let mut o = self.row(i, K::Handler, Holder { spine: Spine::PoolRun, domain: DomainRole::Own });
+        // Every pool or pinned-mailbox handler retains its subscriber.
+        // Mailbox handlers may nest at yields: their storage retires until
+        // the outermost frame returns. Each dispatch domain has its own
+        // source row, including a template used under both kinds of owner.
+        let on_mailbox = self.any(i, |c| c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { .. })));
+        let mut handlers = Vec::new();
+        for (present, spine) in [(on_pool, Spine::PoolRun), (on_mailbox, Spine::QueueDrain)] {
+            if !subscribes || !present { continue; }
+            let mut o = self.row(i, K::Handler, Holder { spine, domain: DomainRole::Own });
             o.line = Some("19");
             o.multiplicity = Multiplicity::OncePerTrigger;
             o.terminals = vec![Terminal::Completed];
-            if on_async_pool {
+            if spine == Spine::PoolRun && on_async_pool {
                 o.terminals.push(Terminal::CanceledAfterStart);
             }
-            o.runs_on = self.claim(i, |c| if self.is_pool(c.own) { Self::on(c.own, shipped("19")) } else { None });
+            o.runs_on = combine(self.contributions(i).iter().filter(|c| {
+                c.own.is_none() || match spine {
+                    Spine::PoolRun => self.is_pool(c.own),
+                    _ => c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { .. })),
+                }
+            }).map(|c| Self::on(c.own, shipped("19"))));
             o.lifetime.push(Retention {
                 resource: Resource::Instance,
                 until: Event { obligation: ObligationId(0), point: Point::Ended },
@@ -814,8 +814,8 @@ impl<'b, 'a> Builder<'b, 'a> {
             });
             let id = self.push(o);
             self.get(id).lifetime[0].until.obligation = id;
-            id
-        });
+            handlers.push(id);
+        }
         // The teardown: drain, dissolve, the pinned join, the reclaim.
         let (spine, role) = self.teardown(i);
         let holder = Holder { spine, domain: role };
@@ -908,8 +908,8 @@ impl<'b, 'a> Builder<'b, 'a> {
         if let Some(run) = r.run {
             self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
         }
-        // And a bus handler running on a pool's worker (R52).
-        if let Some(h) = handler {
+        // And every handler dispatched on a pool or mailbox (R52).
+        for h in handlers {
             self.get(id).edges.completion.push(after(h, Point::Ended, shipped("19")));
         }
         // Any posted run still queued at reclaim is canceled there,

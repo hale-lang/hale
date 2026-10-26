@@ -438,9 +438,9 @@ pub enum ObligationKind {
     RunAdmission,
     /// `run()`'s execution, from start to return.
     Run,
-    /// A bus handler's execution on a pool's worker, from its start to
-    /// its return, once per delivered cell: its subscriber, which another
-    /// thread can reclaim, is retained until it returns (line 19, R52).
+    /// A bus handler's execution on a pool worker or pinned mailbox,
+    /// from start to return, once per delivered cell. Its subscriber
+    /// survives concurrent reclaim and nested yields (line 19, R52).
     Handler,
     /// The run end: await phase 0, the restart loop, the per-child
     /// reclaim decision (a kept failed child stays, GH #1069).
@@ -1224,7 +1224,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
             (
                 Status::Shipped,
-                "a bus handler on a pool's worker holds its subscriber until it returns, so the subscriber's physical reclaim completes after it (R52, phase 4's R1)",
+                "a bus handler on a pool worker or pinned mailbox holds its subscriber until it returns; nested mailbox releases wait for the outermost frame (R52)",
             ),
         ],
     },

@@ -1,40 +1,31 @@
-// Decision line 19, a bus handler suspended at a yield on a pinned
-// thread when its owner replaces it (Handler, inventory row R52, known
-// open): the handler holds its subscriber until it returns.
+// Decision line 19, a pinned mailbox handler retains its subscriber
+// across a nested yield (Handler, inventory row R52).
 //
-// Owner, pinned, owns `c: Kid`, whose subscription routes to Owner's
-// mailbox. App publishes `Gos`, then `Swap`. The pinned thread runs
-// Kid's handler, which says so, sleeps and then reads the heap String
-// its birth() built. The sleep is a yield on a pinned thread, which
-// drains the thread's mailbox (`lotus_mailbox_drain_pending`), so
-// Owner's `Swap` handler runs inside the suspended one and replaces
-// `c` through `swap()`. A pinned thread's handler takes no hold on its
-// subscriber (only a pool worker's does, `lotus_handler_hold_take`),
-// so the old Kid is reclaimed there and then, its arena released, and
-// when the sleep returns its handler reads the freed name.
+// Go precedes Swap in the mailbox. Kid yields until Owner's Swap handler
+// replaces it and sets a shared gate, then reads its old heap-backed
+// name. Both handlers and the gate run on the same pinned thread. The
+// gate forces the nested replacement without relying on a timed window.
+// Logical dissolve may run during replacement; physical storage must
+// remain until the suspended handler and its delivery region have ended.
 //
-// Expected terminal outcome: the handler reads the old Kid's name, the
-// old Kid is reclaimed after its handler returns, and each Kid is torn
-// down once, judged by the harness: `read-whole reclaimed-after-handler
-// dissolved-once-each`. Today: `reclaimed-under-handler
-// dissolved-once-each`, and under ASan a heap-use-after-free in the
-// handler. The harness names the read only when the reclaim came after
-// it: under the handler the read is of a released arena, and what it
-// prints depends on whether the chunk pool reused the bytes, so that
-// read is judged by the ASan run alone.
+// Expected: `read-whole reclaimed-after-handler dissolved-once-each`.
+// Removing the handler hold restores a heap-use-after-free; retaining
+// the hold but removing handler-boundary retirement restores a deadlock.
 
 type Go { k: Int; }
 topic Gos { payload: Go; subject: "lifecycle.l19.pinned_yield.go"; }
 topic Swap { payload: Go; subject: "lifecycle.l19.pinned_yield.swap"; }
 
+locus Gate { params { swapped: Int = 0; } }
+
 locus Kid {
-    params { tag: Int = 0; name: String = ""; }
+    params { tag: Int = 0; name: String = ""; gate: Gate; }
     bus { subscribe Gos as on_go; }
     birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
     fn on_go(g: Go) {
         if g.k == self.tag {
             println("ev kid-handler-enter " + to_string(self.tag));
-            std::time::sleep(100ms);
+            while self.gate.swapped == 0 { std::time::sleep(1ms); }
             println("ev kid-handler-read " + self.name);
         }
     }
@@ -42,9 +33,12 @@ locus Kid {
 }
 
 locus Owner {
-    params { c: Kid = Kid { tag: 1 }; }
+    params { gate: Gate = Gate { }; c: Kid = Kid { tag: 1, gate: self.gate }; }
     bus { subscribe Swap as on_swap; }
-    fn swap() { self.c = Kid { tag: 2 }; }
+    fn swap() {
+        self.c = Kid { tag: 2, gate: self.gate };
+        self.gate.swapped = 1;
+    }
     fn on_swap(s: Go) {
         println("ev owner-swap");
         self.swap();
@@ -58,7 +52,6 @@ main locus App {
     run() {
         Gos <- Go { k: 1 };
         Swap <- Go { k: 0 };
-        std::time::sleep(500ms);
         println("ev finished");
     }
 }

@@ -2236,12 +2236,15 @@ owes its eager spine at each of its teardowns: line 19's three
 cross-pool and shutdown fixtures are derived that way.
 The six started-run retention fixtures use the derived plan, including
 the edge from each run's end to its reclaim's completion. A subscriber
-a pool hosts owes a `Handler` row the same way (line 19, inventory row
-R52): one per delivered cell, as many as the run delivers, its
+a pool or pinned mailbox hosts owes a `Handler` row the same way
+(line 19, inventory row R52): one per delivered cell, as many as the run delivers, its
 instance retained until each ends, and the reclaim's completion after
 the end of every one that began before it (`l19_handler_cell_retained.hl`);
 the worker's hold, which a classic worker may carry to its next cell,
-ends no earlier, and no later than the carry's bounds (line 19 below). A posted run
+ends no earlier, and no later than the carry's bounds (line 19 below).
+Pinned handlers name `QueueDrain`; pool handlers name `PoolRun`. A template
+used on both has a separate row for each executor and its relevant domains.
+A posted run
 may overlap drain and dissolve; an inline run ends before drain. The
 producer also keeps statement-position subscribers alive until frame
 exit, where their teardown runs, rather than assigning them an eager
@@ -2902,14 +2905,26 @@ its `KNOWN_OPEN` table, which is empty today.
   keeps its storage until that handler returns. Its drain and dissolve
   still run beside the handler. Every locus a pool hosts is a placed
   field of the main locus or nested under one, so main can reclaim it
-  while its worker runs a handler. The main queue's handlers and a
-  pinned thread's take no hold: their subscribers are reclaimed on
-  the thread that runs them, between handlers, or after the pinned
-  thread's join. A yield inside a pinned thread's handler departs
-  from this today: it drains the thread's mailbox, so an owner's
-  handler it runs can replace the suspended handler's subscriber,
-  which is reclaimed under it (`l19_pinned_yield_replaces_child.hl`,
-  known open, R52). A cell still queued for a subscriber whose reclaim
+  while its worker runs a handler. A pinned mailbox handler takes
+  the same hold before checking the cell's subscriber incarnation.
+  A yield can run another mailbox handler which replaces the suspended
+  handler's subscriber. Drain and dissolve still run at replacement;
+  physical release waits until the outermost mailbox handler returns,
+  after its delivery region and hold end. Waiting inside the nested
+  replacement would prevent the suspended frame from returning.
+  Outermost mailbox handlers may carry a ticket across consecutive
+  cells for the same subscriber with the pool worker's 64-cell and
+  reclaim-waiter bounds. Nested frames end their own tickets; retired
+  storage forces release at the outer boundary. A carry ends before
+  replay-idle waits, mailbox parks, shutdown return and the end of a
+  nonblocking mailbox drain, and before a posted failure is delivered.
+  Main's queue takes no handler ticket: its handlers do not nest and
+  physical release follows their return. The pinned regression
+  (`l19_pinned_yield_replaces_child.hl`) forces replacement with a
+  same-thread gate and reads the old heap-backed name under ASan in
+  both dispatch modes. Removing the hold restores the invalid read;
+  removing storage retirement while retaining the hold restores a
+  deadlock. A cell still queued for a subscriber whose reclaim
   has deregistered it is dropped unrun when its worker reaches it
   (GH #703); the worker takes the hold before it looks, so it either
   drops the cell or the reclaim waits for its handler. A subscriber
@@ -3106,8 +3121,8 @@ place while the params are open; for `Cancellation`, a reclaim
 cancels no queued run, which only a fixture whose cells no worker
 will dequeue may use); two name a hold, not a kind: `RunHold`, where
 a reclaim does not wait for its child's started runs, and
-`HandlerHold`, where a pool worker links no hold on a handler's
-subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
+`HandlerHold`, where a pool worker or pinned mailbox links no hold on a
+handler's subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
 the trace and its IR is the same. `lifecycle_fixtures.rs`'s
 `CONTROLS` use it so that, for every obligation kind a fixture's plan

@@ -72,5 +72,13 @@ behavior. Their existing runtime and GenMC contracts remain necessary.
 regions and classic-pool wake/wait regions. A change to those regions fails
 before TLC runs and requires reviewing this mapping, the abstraction and
 its exclusions. Updating a fingerprint alone is not correspondence evidence.
+The pinned-handler retention change adds carry release before the mailbox's
+replay-idle wait and before the empty-queue park/shutdown path. These calls
+precede the queue mutex and parked announcement; publication, parked stores,
+fences, rechecks, signals and shutdown ordering are unchanged. Handler tickets
+and nested mailbox execution remain outside this wake abstraction. The updated
+mailbox-wait fingerprint records that review, while native regression tests
+check retention and the carry's release boundaries.
+
 The guards prevent silent source drift; the model is a reviewed transcription,
 and these finite-model results are not a proof of every runtime execution.

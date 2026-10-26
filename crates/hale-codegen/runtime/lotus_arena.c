@@ -9251,6 +9251,15 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
  * (TSAN-flagged). A __thread flag is per-thread, so neither happens. */
 static __thread int g_bus_drain_active = 0;
 static __thread void *t_bus_delivery_self = NULL;
+/* Pinned mailbox handlers can nest at a yield. Physical release waits
+ * for the entire stack, so a nested replacement cannot wait for or free
+ * a suspended subscriber. This does not change queue re-entry or failure
+ * delivery policy (`g_bus_drain_active` remains the main-queue guard). */
+static __thread unsigned t_mailbox_handler_depth = 0;
+static int lotus_handler_storage_active(void) {
+    return g_bus_drain_active || t_mailbox_handler_depth;
+}
+
 
 /* A main-queue handler must return before a reclaim waits for a run
  * that can need another handler on this queue. Keep the physical-release request
@@ -9452,10 +9461,10 @@ int64_t lotus_reclaim_defer(void *child, void *owner, void *reclaim) {
     int protected = 0;
     for (lotus_reclaim_scope_t *s = t_reclaim_scope; s; s = s->prev)
         if (s->owner == owner) { protected = 1; break; }
-    if (!protected && !g_bus_drain_active) return 0;
+    if (!protected && !lotus_handler_storage_active()) return 0;
 #ifdef LOTUS_LIFECYCLE_TRACE
     /* Regression control: restore the synchronous handler wait. */
-    if (!protected && g_bus_drain_active && lotus_lc_skips("HandlerStorage"))
+    if (!protected && lotus_handler_storage_active() && lotus_lc_skips("HandlerStorage"))
         return 0;
 #endif
     /* A scope-local inline locus can be a stack slot in the handler
@@ -9551,7 +9560,7 @@ void lotus_reclaim_release_leave(void *release) {
     free(r);
     lotus_reclaim_record_freed();
     t_reclaim_flushing--;
-    if (!t_reclaim_flushing && !g_bus_drain_active)
+    if (!t_reclaim_flushing && !lotus_handler_storage_active())
         lotus_reclaim_after_handler();
 }
 
@@ -9592,6 +9601,7 @@ void lotus_reclaim_flush_owned(void *owner) {
 }
 
 static void lotus_reclaim_after_handler(void) {
+    if (t_mailbox_handler_depth) return;
     if (!t_reclaim_head || t_reclaim_flushing || t_reclaim_scope) return;
     int was_active = g_bus_drain_active;
     g_bus_drain_active = 0;
@@ -10389,21 +10399,8 @@ lotus_mailbox_t *lotus_mailbox_create(void) {
 
 /* Run a dequeued cell's handler, then free its heap payload (if any).
  * Two-tier inline/heap payload, identical to the cooperative drain. */
-static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
-    /* Wire cell? Deserialize into the subscriber's arena HERE, on
-     * its owner thread (bug 3, downstream handoff 2026-07-15). */
-    if (!lotus_bus_cell_materialize(cell)) return;
-    void *payload_ptr = NULL;
-    if (cell->payload_size > 0) {
-        payload_ptr = cell->payload_heap
-            ? cell->payload_heap
-            : (void *)cell->payload_inline;
-    }
-    lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
-    LOTUS_CALL_HANDLER(cell->handler, cell->self_ptr, payload_ptr);
-    if (cell->payload_heap) free(cell->payload_heap);
-    if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
-}
+static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell);
+static void lotus_handler_carry_end(void);
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
  * blocked on a full ring — but only if one is actually waiting. The
@@ -10614,11 +10611,18 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
                 lotus_mailbox_dispatch_cell(&cell);
                 return 1;
             }
+#ifndef __wasm__
+            lotus_handler_carry_end();
+#endif
             struct timespec ts = {0, 200 * 1000};
             nanosleep(&ts, NULL);
             continue;
         }
 
+        /* No handler hold survives a park or the shutdown return. */
+#ifndef __wasm__
+        lotus_handler_carry_end();
+#endif
         /* Both empty — park under the mutex with the seq_cst handshake. */
         lotus_local_queued_clear();
         pthread_mutex_lock(&mb->lock);
@@ -10773,6 +10777,9 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
             continue;
         }
         if (!replaying || t_rp_pending_len == 0) lotus_local_queued_clear();
+#ifndef __wasm__
+        lotus_handler_carry_end();
+#endif
         return;                                 /* no eligible cell */
     }
 }
@@ -11367,9 +11374,9 @@ static void lotus_run_hold_release(lotus_run_ticket_t *t) {
 #ifdef LOTUS_LIFECYCLE_TRACE
     /* A handler's end, named while its hold still stands, so a reclaim
      * that waited for it completes after it in the trace. */
-    if (t->handler == 2) lotus_lc_ev("Handler", "Completed", t->child, "PoolRun", NULL);
+    if (t->handler == 2) lotus_lc_ev("Handler", "Completed", t->child, t->runner ? "PoolRun" : "QueueDrain", NULL);
     if (t->handler == 3)
-        lotus_lc_ev("Handler", "Terminal(CanceledAfterStart)", t->child, "PoolRun", NULL);
+        lotus_lc_ev("Handler", "Terminal(CanceledAfterStart)", t->child, t->runner ? "PoolRun" : "QueueDrain", NULL);
     /* The negative control's handler ticket was never linked. */
     if (t->handler && t->canceled) {
         free(t);
@@ -11396,10 +11403,10 @@ static void lotus_run_hold_release(lotus_run_ticket_t *t) {
  * teardown, cascading to everything under it. The reclaim already waits
  * for the instance's held tickets before it releases the storage
  * (`lotus_run_hold_wait`), so a held one keeps it until the handler
- * returns. The main queue's handlers and a pinned thread's take none:
- * their subscribers are reclaimed on the thread that runs them (main's
- * queue runs one handler at a time, and releases the running handler's
- * own subscriber after it returns), or after the pinned thread's join.
+ * returns. Pinned mailbox handlers use the same tickets: nested yields can replace
+ * a suspended subscriber on the same thread. Their releases wait for the
+ * outermost mailbox handler boundary. Main's queue takes no handler
+ * ticket: its handlers do not nest, and storage release follows return.
  *
  * Taken before the cell's dead-self check (`lotus_bus_cell_materialize`):
  * a reclaim marks its subscriber dead (`lotus_bus_quarantine_self`)
@@ -11449,7 +11456,7 @@ static inline void lotus_handler_hold_started(lotus_run_ticket_t *t) {
 #ifdef LOTUS_LIFECYCLE_TRACE
     if (t && t->handler == 1) {
         t->handler = 2;
-        lotus_lc_ev("Handler", "Entered", t->child, "PoolRun", NULL);
+        lotus_lc_ev("Handler", "Entered", t->child, t->runner ? "PoolRun" : "QueueDrain", NULL);
     }
 #else
     (void)t;
@@ -11511,13 +11518,63 @@ static inline void lotus_handler_hold_settle(lotus_run_ticket_t *t) {
     if (++t->carried < LOTUS_HANDLER_CARRY_MAX
         && !__atomic_load_n(&t->wanted, __ATOMIC_ACQUIRE)) {
 #ifdef LOTUS_LIFECYCLE_TRACE
-        lotus_lc_ev("Handler", "Completed", t->child, "PoolRun", NULL);
+        lotus_lc_ev("Handler", "Completed", t->child, t->runner ? "PoolRun" : "QueueDrain", NULL);
         t->handler = 1;
 #endif
         t_handler_carry = t;
         return;
     }
     lotus_run_hold_release(t);
+}
+
+/* A mailbox cell retains its subscriber across nested yields. Outermost
+ * dispatches reuse the classic worker's bounded carry; a nested frame
+ * always ends its own ticket. Retired storage forces the outer hold to
+ * end before the outermost boundary flushes it. */
+static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
+#ifndef __wasm__
+    lotus_run_ticket_t *carry = t_handler_carry;
+    t_handler_carry = NULL;
+    if (carry && (t_mailbox_handler_depth || carry->runner || carry->child != cell->self_ptr)) {
+        lotus_run_hold_release(carry);
+        carry = NULL;
+    }
+    lotus_run_ticket_t *hold = cell->self_ptr
+        ? (carry ? carry : lotus_handler_hold_take(cell->self_ptr, NULL)) : NULL;
+#endif
+    /* The hold precedes the dead-incarnation check, as on pool workers. */
+    if (!lotus_bus_cell_materialize(cell)) {
+#ifndef __wasm__
+        lotus_run_hold_release(hold);
+#endif
+        return;
+    }
+    void *payload_ptr = NULL;
+    if (cell->payload_size > 0)
+        payload_ptr = cell->payload_heap ? cell->payload_heap : (void *)cell->payload_inline;
+    lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
+#ifndef __wasm__
+    lotus_run_ticket_t *outer = t_run_running;
+    void *outer_delivery = t_bus_delivery_self;
+    t_run_running = hold;
+    t_bus_delivery_self = cell->self_ptr;
+    t_mailbox_handler_depth++;
+    lotus_handler_hold_started(hold);
+#endif
+    LOTUS_CALL_HANDLER(cell->handler, cell->self_ptr, payload_ptr);
+    if (cell->payload_heap) free(cell->payload_heap);
+    if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
+#ifndef __wasm__
+    hold = t_run_running;
+    t_run_running = outer;
+    t_bus_delivery_self = outer_delivery;
+    if (hold && t_mailbox_handler_depth == 1 && !t_reclaim_head)
+        lotus_handler_hold_settle(hold);
+    else
+        lotus_run_hold_release(hold);
+    t_mailbox_handler_depth--;
+    if (!t_mailbox_handler_depth) lotus_reclaim_after_handler();
+#endif
 }
 
 /* Defined with the pool workers below, where the coroutine state is. */
