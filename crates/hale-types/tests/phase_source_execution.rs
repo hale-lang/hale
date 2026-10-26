@@ -68,8 +68,11 @@ fn main() { Worker { }; }
     let reports = s.demand_effect_certificates().unwrap();
     assert_eq!(reports.iter().find(|(r, _)| r.form.ends_with("during birth")).unwrap().0.result, Verdict::Violated);
     assert_eq!(judged(&s, reports).0, Verdict::Violated);
-    let quiet = snapshot(&source.replace("println(\"hook\");", ""));
-    assert_eq!(judged(&quiet, quiet.demand_effect_certificates().unwrap()).0, Verdict::Uncertified);
+    let quiet_source = source.replace("println(\"hook\");", "");
+    let quiet = snapshot(&quiet_source);
+    assert_eq!(judged(&quiet, quiet.demand_effect_certificates().unwrap()).0, Verdict::Holds);
+    let handler = snapshot(&(quiet_source + "\nlocus Dormant { on_failure(c: Worker, e: ClosureViolation) { } }\n"));
+    assert_eq!(judged(&handler, handler.demand_effect_certificates().unwrap()).0, Verdict::Uncertified);
 }
 
 #[test]
@@ -141,7 +144,9 @@ fn main() { Worker { }; }
     assert_eq!(roots.len(), 2);
     assert!(!roots.iter().find(|(k, _)| k.fn_name == "tick").unwrap().1.hook);
     assert!(roots.iter().find(|(k, _)| k.fn_name == "closures::audit").unwrap().1.hook);
-    assert_eq!(judged(&s, s.demand_effect_certificates().unwrap()).0, Verdict::Uncertified);
+    assert_eq!(judged(&s, s.demand_effect_certificates().unwrap()).0, Verdict::Holds);
+    let handler = snapshot(&format!("{source}\nlocus Dormant {{ on_failure(c: Worker, e: ClosureViolation) {{ }} }}\n"));
+    assert_eq!(judged(&handler, handler.demand_effect_certificates().unwrap()).0, Verdict::Uncertified);
 }
 
 #[test]
