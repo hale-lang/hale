@@ -820,6 +820,25 @@ fn main() {
             && !std::io::fs::file_exists(dna::local_habitat_dir() + "/birth.pending"),
         "the same identity, its rows intact, the birth whole again",
     );
+    // the body came up once: never restarted by compose (a body whose
+    // genome does not build exits and is started again, giving its lease
+    // back each time), and exactly one lease claimed
+    let restarts = dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\nid=$(docker ps -aq --filter \"label=com.docker.compose.project=$1\" --filter label=com.docker.compose.service=body | head -n 1); docker inspect --format '{{.RestartCount}}' \"$id\"\nsh\n"
+                + dna::local_habitat_project(),
+        ).stdout,
+    );
+    let leases = lease_rows(genome);
+    std::test::assert(
+        restarts == "0" && occurrences(leases, "body.claimed ") == 1,
+        "the body came up once and ran (restarts: " + restarts + "): the lease's rows:\n" + leases
+            + "the body's log (its last 80 lines):\n"
+            + dna::run_tool(
+                "sh\n-c\nid=$(docker ps -aq --filter \"label=com.docker.compose.project=$1\" --filter label=com.docker.compose.service=body | head -n 1); docker logs --tail 80 \"$id\" 2>&1\nsh\n"
+                    + dna::local_habitat_project(),
+            ).stdout,
+    );
     let body_log = scratch + "/body-1.log";
     follow_body_log(body_log);
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
