@@ -338,6 +338,22 @@ pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String
     })))
 }
 
+/// The entries at a repository's root that its tracked files (`git
+/// ls-files`, one per line) are under, each once, in order: a file, or a
+/// directory with the files under it. Its `compose.yaml` and `hale.toml` are
+/// not among them.
+fn mounted_entries(tracked: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for f in tracked.lines() {
+        let top = f.split('/').next().unwrap_or("");
+        if top.is_empty() || top == "compose.yaml" || top == "hale.toml" || out.contains(&top) {
+            continue;
+        }
+        out.push(top);
+    }
+    out
+}
+
 /// The organism's own services (a repository's compose file at its root),
 /// an allocation of the host its graft placed it on, and applied there by
 /// the head (`Commands::apply_allocations`). Nothing for an organism with no
@@ -353,11 +369,12 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     // its own compose project on the host, named for it: its services are
     // its own, never the habitat's
     let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
-    // the files its services mount beside the compose file: the
-    // repository's own, at its root (what it tracks, never what the graft
-    // wrote)
+    // what its services need beside the compose file (build contexts, bind
+    // mounts' sources): each entry the repository tracks at its root, a
+    // file or a directory, shipped whole to a host elsewhere (what it
+    // tracks, never what the graft wrote at its root)
     let tracked = Command::new("git").arg("-C").arg(root).args(["ls-files"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-    let mounted: Vec<&str> = tracked.lines().filter(|f| !f.contains('/') && *f != "compose.yaml" && *f != "hale.toml").collect();
+    let mounted = mounted_entries(&tracked);
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
@@ -700,6 +717,15 @@ fn refreshed() -> std::process::ExitCode {
 mod tests {
     use super::*;
 
+
+    /// A services render ships each root entry once: a directory whole
+    /// (a build context, a bind mount's source), never the compose file or
+    /// the manifest the graft wrote.
+    #[test]
+    fn mounted_entries_are_the_roots_entries() {
+        let tracked = "Dockerfile\napi/main.hl\napi/lib/x.hl\ncompose.yaml\ndeploy/nats/nats.conf\ndeploy/node/capabilities.json\nhale.toml\n.dockerignore\n";
+        assert_eq!(mounted_entries(tracked), vec!["Dockerfile", "api", "deploy", ".dockerignore"]);
+    }
 
     fn words(line: &str) -> Vec<String> {
         line.split(' ').map(str::to_string).collect()
