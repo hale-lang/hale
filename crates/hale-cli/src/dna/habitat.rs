@@ -2586,6 +2586,45 @@ pub(crate) fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> V
     projects
 }
 
+/// The compose projects `root` owns by what lies under it, as
+/// `dna::scratch_owned_projects` finds them, whether or not a container of
+/// theirs is left to carry a working directory (a project whose containers
+/// went keeps its network and its volumes): each directory an `ssh` host
+/// was handed a render in (`<home>/.hale/habitat/<project>/…`), and each
+/// habitat born there (`…/hale/habitat/local`, its project
+/// [`habitat_project_at`]). Never a project one of whose containers (in
+/// docker's `listed`) ran from outside `root`.
+pub(crate) fn owned_projects(root: &Path, listed: &str) -> Vec<String> {
+    let text = root.display().to_string();
+    let under = format!("{text}/");
+    let outside: Vec<&str> = listed.lines().filter_map(|l| l.split_once('|')).filter(|(p, wd)| !p.is_empty() && *wd != text && !wd.starts_with(&under)).map(|(p, _)| p).collect();
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            let parent = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let grand = dir.parent().and_then(|g| g.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if parent == "habitat" && grand == ".hale" {
+                found.push(name);
+            } else if name == "local" && parent == "habitat" && grand == "hale" {
+                found.push(habitat_project_at(&path.display().to_string()));
+            } else {
+                stack.push(path);
+            }
+        }
+    }
+    found.retain(|p| !outside.contains(&p.as_str()));
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// Take down every compose project rooted in `root` — its containers,
 /// networks and volumes (`docker compose -p <project> down -v`, which needs
 /// no compose file) — and confirm none of it is left, by the project's
@@ -2621,7 +2660,8 @@ pub(crate) fn down_under_with(root: &Path, docker: &mut dyn FnMut(&[&str]) -> Do
         Docker::Failed(why) => return Err(why),
         Docker::Answered(out) => out,
     };
-    let projects = projects_rooted_in(&listed, root, &recorded);
+    let owned = owned_projects(root, &listed).join("\n");
+    let projects = projects_rooted_in(&listed, root, &format!("{recorded}\n{owned}"));
     if projects.is_empty() {
         let _ = std::fs::remove_file(&file);
         return Ok(());
@@ -2634,7 +2674,7 @@ pub(crate) fn down_under_with(root: &Path, docker: &mut dyn FnMut(&[&str]) -> Do
             left.push(why);
         }
         let label = format!("label=com.docker.compose.project={project}");
-        for (what, args) in [("containers", ["ps", "-a", "-q", "--filter", label.as_str()].as_slice()), ("volumes", ["volume", "ls", "-q", "--filter", label.as_str()].as_slice())] {
+        for (what, args) in [("containers", ["ps", "-a", "-q", "--filter", label.as_str()].as_slice()), ("volumes", ["volume", "ls", "-q", "--filter", label.as_str()].as_slice()), ("networks", ["network", "ls", "-q", "--filter", label.as_str()].as_slice())] {
             match docker(args) {
                 Docker::Answered(out) if !out.trim().is_empty() => left.push(format!("compose project {project} still has {what} after its teardown")),
                 Docker::Failed(why) => left.push(why),
@@ -3439,6 +3479,7 @@ mod tests {
             ["compose", ..] => Docker::Answered(String::new()),
             ["ps", "-a", "-q", ..] => Docker::Answered(String::new()),
             ["volume", ..] => Docker::Answered(if volume_left { format!("{p}_memory-abc\n") } else { String::new() }),
+            ["network", ..] => Docker::Answered(String::new()),
             _ => Docker::Failed("unexpected".into()),
         };
         let err = down_under_with(&d, &mut first).unwrap_err();
@@ -3455,6 +3496,7 @@ mod tests {
             }
             ["ps", "-a", "-q", ..] => Docker::Answered(String::new()),
             ["volume", ..] => Docker::Answered(format!("{p}_memory-abc\n")),
+            ["network", ..] => Docker::Answered(String::new()),
             _ => Docker::Failed("unexpected".into()),
         };
         assert!(down_under_with(&d, &mut again).is_err());
@@ -3469,6 +3511,42 @@ mod tests {
         };
         down_under_with(&d, &mut done).unwrap();
         assert!(!d.join(COMPOSE_FILE).exists(), "confirmed gone, the record goes");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A root owns what lies under it with no container left to say so:
+    /// the projects an `ssh` host was handed renders for under its home
+    /// there, and a habitat born in it; never a project that also runs
+    /// from outside the root. Taken down whole, its network with it.
+    #[test]
+    fn a_root_owns_the_projects_its_directories_name() {
+        let d = root("owned");
+        std::fs::create_dir_all(d.join("home/.hale/habitat/hale-habitat-local-aa-localhost/abc")).unwrap();
+        std::fs::create_dir_all(d.join("home/.hale/habitat/hale-habitat-local-aa-localhost-abc/sprout/conf")).unwrap();
+        std::fs::create_dir_all(d.join("home/.hale/habitat/elsewhere/x")).unwrap();
+        let born = format!("{}/home/.local/share/hale/habitat/local", d.display());
+        std::fs::create_dir_all(format!("{born}/genome")).unwrap();
+        let listed = "elsewhere|/home/someone/.local/share/hale/habitat/local/allocations/x\n";
+        assert_eq!(owned_projects(&d, listed), {
+            let mut v = vec!["hale-habitat-local-aa-localhost".to_string(), "hale-habitat-local-aa-localhost-abc".to_string(), habitat_project_at(&born)];
+            v.sort();
+            v
+        });
+        let mut downs = Vec::new();
+        let mut network_left = true;
+        let mut dock = |args: &[&str]| match args {
+            ["ps", "-a", "--filter", ..] => Docker::Answered(listed.to_string()),
+            ["compose", "-p", project, ..] => {
+                downs.push(project.to_string());
+                network_left = false;
+                Docker::Answered(String::new())
+            }
+            ["network", ..] => Docker::Answered(if network_left { "n\n".into() } else { String::new() }),
+            _ => Docker::Answered(String::new()),
+        };
+        down_under_with(&d, &mut dock).unwrap();
+        assert_eq!(downs.len(), 3, "each owned project is taken down: {downs:?}");
+        assert!(!downs.contains(&"elsewhere".to_string()), "never one that runs from outside the root");
         let _ = std::fs::remove_dir_all(&d);
     }
 

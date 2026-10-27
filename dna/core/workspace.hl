@@ -703,9 +703,56 @@ fn scratch_compose_projects(dir: String) -> DockerAnswer {
         out: scratch_projects_in(
             ps.out,
             dir,
-            std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "",
+            (std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "")
+                + scratch_owned_projects(ps.out, dir),
         ),
     };
+}
+
+// The compose projects `dir` owns by what lies under it, whether or not a
+// container of theirs is left to carry a working directory (a project
+// whose containers went keeps its network and its volumes): each
+// directory an `ssh` host was handed a render in
+// (`<home>/.hale/habitat/<project>/…`, the host's side of a placed or a
+// services allocation), and each habitat born there
+// (`…/hale/habitat/local`, its project `habitat_project_at`). Never a
+// project one of whose containers ran from outside `dir`: what is not
+// under the root is not the root's.
+@bounded_by(listed)
+fn scratch_owned_projects(listed: String, dir: String) -> String {
+    let found = run_tool(
+        "sh\n-c\nfind \"$1\" -type d \\( -path '*/.hale/habitat/*' -o -path '*/hale/habitat/local' \\) -prune -print 2>/dev/null; exit 0\nsh\n"
+            + dir,
+    );
+    let mut outside = "";
+    let mut rest = listed;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let bar = std::str::index_of(line, "|");
+        if bar <= 0 { continue; }
+        let wd = line[(bar + 1)..len(line)];
+        if wd != dir && !std::str::starts_with(wd, dir + "/") {
+            outside = line_set_add(outside, line[0..bar]);
+        }
+    }
+    let mut out = "";
+    rest = found.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let path = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(path) == 0 { continue; }
+        let project = if std::str::ends_with(path, "/hale/habitat/local") {
+            habitat_project_at(path)
+        } else {
+            path[(last_slash(path) + 1)..len(path)]
+        };
+        if std::str::contains("\n" + outside, "\n" + project + "\n") { continue; }
+        out = line_set_add(out, project);
+    }
+    return out;
 }
 
 // The projects of docker's `listed` (`<project>|<working dir>` lines)
@@ -768,12 +815,20 @@ fn scratch_compose_down(dir: String) -> String {
         let volumes = docker_ask(
             "volume\nls\n-q\n--filter\nlabel=com.docker.compose.project=" + project,
         );
+        let networks = docker_ask(
+            "network\nls\n-q\n--filter\nlabel=com.docker.compose.project=" + project,
+        );
         if !containers.ok && !containers.absent { failed = failed + containers.why + "\n"; }
         if !volumes.ok && !volumes.absent { failed = failed + volumes.why + "\n"; }
-        if len(trim_nl(containers.out)) > 0 || len(trim_nl(volumes.out)) > 0 {
+        if !networks.ok && !networks.absent { failed = failed + networks.why + "\n"; }
+        if len(trim_nl(containers.out)) > 0
+            || len(trim_nl(volumes.out)) > 0
+            || len(trim_nl(networks.out)) > 0
+        {
             failed = failed + "compose project " + project + " still has "
                 + (if len(trim_nl(containers.out)) > 0 { "containers " } else { "" })
                 + (if len(trim_nl(volumes.out)) > 0 { "volumes " } else { "" })
+                + (if len(trim_nl(networks.out)) > 0 { "networks " } else { "" })
                 + "after its teardown\n";
         }
     }
