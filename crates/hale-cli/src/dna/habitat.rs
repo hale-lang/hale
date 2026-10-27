@@ -70,6 +70,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat up --host <name> [--user <user>] [--port <n>] [--name <name>] [--image <tag>] [--backends own|operator]
        hale habitat image build [<checkout>]
        hale habitat [--head <url>] graft <dir> [--attach] [--no-library] [--no-pack]
+       hale habitat graft --resume <path on the habitat's machine> [flags]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat [--head <url>] graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
@@ -146,7 +147,10 @@ up --host <name>     run the habitat on another machine, one with docker and
                      there by the name typed at this terminal, the pointer
                      removed last), `graft <dir>` runs there over SSH (a
                      directory here shipped there as the habitat's copy,
-                     the organism's home), `organism <name> dna <verb>`
+                     the organism's home, in a directory of its own made
+                     fresh there; `graft --resume <path>` goes on with a
+                     graft that stopped, in the directory it kept there,
+                     nothing shipped), `organism <name> dna <verb>`
                      runs an organism's own verbs there, and `migrate` and
                      `handover`, which act on a genome here, are refused.
                      Run again, it finds the same habitat there by its
@@ -390,6 +394,13 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some(verb @ ("migrate" | "handover")) if remote::pointer().is_some() => remote::refuse_local(verb).unwrap_or(ExitCode::from(2)),
         // a directory (one here, or a path) is grafted on the habitat's
         // machine over SSH; a bare name is a sapling, the head's graft
+        Some("graft") if args.get(1).map(String::as_str) == Some("--resume") => match remote::pointer() {
+            Some(p) => remote::graft_resume(&p, &args[2..]),
+            None => {
+                eprintln!("hale habitat graft --resume: only through a pointer to a habitat on another machine (`hale habitat up --host`); here, run the graft again in the organism's directory");
+                ExitCode::from(2)
+            }
+        },
         Some("graft") if args.get(1).is_some_and(|a| Path::new(a).is_dir() || a.contains('/')) && remote::pointer().is_some() => match remote::pointer() {
             Some(p) => remote::graft(&p, &args[1..]),
             None => ExitCode::from(2),
