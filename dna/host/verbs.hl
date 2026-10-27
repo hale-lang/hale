@@ -1812,18 +1812,20 @@ fn secret_name_ok(name: String) -> Bool {
 // arrives whole; at a terminal, one line typed after a prompt. "" when
 // there is none, which the verb refuses by the secret's name.
 fn secret_value(name: String, target: String) -> String {
-    if !std::term::is_tty(0) {
-        let mut piped = std::io::fs::read_file("/dev/stdin") or "";
-        if std::str::ends_with(piped, "\n") { piped = piped[0..(len(piped) - 1)]; }
-        if std::str::ends_with(piped, "\r") { piped = piped[0..(len(piped) - 1)]; }
-        return piped;
-    }
+    let piped = !std::term::is_tty(0);
+    // the run's log names the secret it reads, never its value
     eprintln(
         "value for ",
         name,
         (if len(target) > 0 { " on " + target } else { " (this machine)" }),
-        ", on one line:",
+        (if piped { ", from stdin" } else { ", on one line:" }),
     );
+    if piped {
+        let mut value = std::io::fs::read_file("/dev/stdin") or "";
+        if std::str::ends_with(value, "\n") { value = value[0..(len(value) - 1)]; }
+        if std::str::ends_with(value, "\r") { value = value[0..(len(value) - 1)]; }
+        return value;
+    }
     return dna::trim_nl(std::io::stdin::read_line());
 }
 
