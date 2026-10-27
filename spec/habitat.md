@@ -672,7 +672,10 @@ fixture's head does.
 
 The genome carries a `ui/` (`dna/habitat/ui`), written at birth and tracked,
 which the standard face serves under `/app/` as it serves any attached
-project's: the operator face. Its first screen shows the sign-in edge and
+project's: the operator face. A signed-in visitor lands on it: the render sets the
+`face` service's `HALE_DNA_FACE_HOME` to `/app/`, so `/` redirects there,
+the organization shell answers at `/organization` (linked from the
+operator face's navigation), and `/app` redirects to `/app/`. Its first screen shows the sign-in edge and
 the habitat's name, state, record revision and organisms, read by the
 page from the head's `Commands::index` row through the generated ES-module
 client committed beside it (`head-client.js`, from `dna/face/operator`). It

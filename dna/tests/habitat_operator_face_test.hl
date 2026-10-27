@@ -240,6 +240,31 @@ fn main() {
     // the relay carries is refused and the API child is not asked.
     let token = dna::trim_nl(text_of(dna::local_habitat_dir() + "/face-state/head.token"));
     std::test::assert(len(token) > 0, "the head's launch token is in its state");
+
+    // ---- a visitor lands on the operator face, the organization shell one link away
+    let cookie = "\n-H\nCookie: dna_local=" + token + "\n";
+    let landed = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code} %{redirect_url}" + cookie + face + "/",
+    );
+    std::test::assert(
+        std::str::trim(landed.stdout) == "302 " + face + "/app/",
+        "`/` lands on the operator face: " + landed.stdout,
+    );
+    let shell_page = dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}" + cookie + face + "/organization",
+    );
+    std::test::assert(
+        std::str::contains(shell_page.stdout, "src=\"/app.js\"")
+            && std::str::ends_with(std::str::trim(shell_page.stdout), "200"),
+        "the organization shell answers at /organization: " + shell_page.stdout,
+    );
+    let bare = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code} %{redirect_url}\n" + face + "/app",
+    );
+    std::test::assert(
+        std::str::trim(bare.stdout) == "302 " + face + "/app/",
+        "`/app` is the app's directory: " + bare.stdout,
+    );
     let no_graft = row_call(
         face, "graft", "fnv1a64:428819c34f30bc3a",
         "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}", "",

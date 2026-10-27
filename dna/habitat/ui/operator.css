@@ -29,7 +29,7 @@ body {
   font-family: var(--mono);
 }
 
-main { max-width: 88ch; margin: 0 auto; padding: calc(var(--step) * 4) calc(var(--step) * 3); }
+main { max-width: 140ch; margin: 0 auto; padding: calc(var(--step) * 4) calc(var(--step) * 3); }
 
 header, section { border-top: 1px solid var(--rule); padding: calc(var(--step) * 2) 0; }
 header { display: flex; justify-content: space-between; align-items: baseline; border-top: 0; }
