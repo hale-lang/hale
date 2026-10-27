@@ -151,9 +151,7 @@ fn habitat_dir(m: &Machine) -> String {
 /// The address the machine is reached at from here, as this machine
 /// resolves its name: the address its person-facing listeners bind there.
 fn listen_address(host: &str) -> Result<String, String> {
-    use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::SocketAddr> = (host, 0u16).to_socket_addrs().map_err(|e| format!("{host} does not resolve here: {e}"))?.collect();
-    addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).map(|a| a.ip().to_string()).ok_or_else(|| format!("{host} resolves to no address here"))
+    super::ipv4_or_first(host, &super::resolved(host)?)
 }
 
 /// The toolchain image on the machine: there already, sent from this
