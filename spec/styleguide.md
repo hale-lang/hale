@@ -1926,6 +1926,50 @@ String forms `cp_at` / `cp_size` look for the String's end before every
 read, so a walk with them is quadratic (1 MB of text: 2.4 s, against
 0.5 ms over the view). **[convention]**
 
+### S17. Hash a stream as it passes, never the collected whole
+
+`std::crypto::sha256(b)` needs all of `b` in memory, so hashing a
+download or a file that way holds the whole input. Feed a
+`std::crypto::Sha256` the pieces as they pass instead: `update(piece)`
+absorbs into a fixed 112-byte context, and `finish()` answers the same
+32 bytes `sha256` would of the pieces joined. A file on disk is one call,
+`std::crypto::sha256_file(path)`, which reads it 1 MiB at a time. Make
+each piece inside a method call, as `absorb` does below: a piece built in
+the loop body of `run()` itself stays in the locus's region until the
+locus dissolves, while a method's scratch goes when it returns.
+
+```hale
+locus Verifier {
+    params {
+        path: String = "";
+    }
+    fn absorb(h: std::crypto::Sha256, buf: std::bytes::BytesBuilder) {
+        let piece = buf.snapshot() or b"";
+        h.update(piece);
+    }
+    run() {
+        let f = std::io::file::open(self.path, "r") or { return; };
+        let buf = std::bytes::BytesBuilder { initial_cap: 1048576 };
+        let h = std::crypto::Sha256 { };
+        while true {
+            buf.clear();
+            if std::io::tcp::recv_into(f.fd, buf, 1048576) <= 0 { break; }
+            self.absorb(h, buf);
+        }
+        println(std::hex::encode(h.finish()));
+    }
+}
+
+fn main() { let v = Verifier { path: std::env::arg(1) }; }
+```
+
+Measured over a 10 GiB file, as peak resident set: `sha256_file` 5.4 MB
+and this loop 6.7 MB, against 4.7 MB for a program that hashes nothing;
+the same loop with the piece made in `run()`'s own body grew by the
+input (1 GiB held 1 GB). Both ran as fast as `sha256sum` (4.7 to 4.9 s
+against 4.9 s, on a CPU with the SHA extensions). `hale verify` passes
+the loop above with no `@unbounded`. **[convention]**
+
 ---
 
 ## 5. The enforcement ladder

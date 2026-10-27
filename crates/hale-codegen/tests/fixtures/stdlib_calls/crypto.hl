@@ -21,5 +21,10 @@ fn main() {
     let pk = std::crypto::__ed25519_public_key(b);
     let ed = std::crypto::ed25519_sign(b, b) or b"";
     let ok = std::crypto::ed25519_verify(pk, b, ed);
-    println(len(mac) + len(digest) + len(sig) + len(pk) + len(ed), ok);
+    let h = std::crypto::__sha256_new();
+    std::crypto::__sha256_update(h, b);
+    let streamed = std::crypto::__sha256_finish(h);
+    std::crypto::__sha256_free(h);
+    let filed = std::crypto::sha256_file("/dev/null") or b"";
+    println(len(mac) + len(digest) + len(sig) + len(pk) + len(ed) + len(streamed) + len(filed), ok);
 }
