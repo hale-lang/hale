@@ -1081,89 +1081,31 @@ pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> Exi
     }
 }
 
-/// `hale habitat graft <sapling> [--host <name>] [--no-library]` through a
-/// pointer: the head's `Commands::graft`, as the operator face makes it,
-/// its log followed page by page (`Commands::graft_log`) to its end. The
-/// head knows the habitat's saplings and hosts; this machine holds none.
+/// `hale habitat graft <sapling> [flags]` through a pointer: the graft run on
+/// the habitat's machine in its toolchain image, as `graft <dir>` is, with
+/// every flag passed on (`--host`, `--own`, `--reuse`, `--plan`, …): its plan
+/// and its progress print here as they happen, and at a terminal the person
+/// confirms the plan there. `--no-head`: it acts itself, never through the
+/// head, which would take the plan as it stands and ask no one.
 pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode {
-    let head = p["head"].as_str().unwrap_or("");
-    let Some(name) = args.first() else {
-        eprintln!("usage: hale habitat graft <sapling> [--host <name>] [--no-library]");
-        return ExitCode::from(2);
+    let (t, m) = match checked_machine(p, "graft") {
+        Ok(tm) => tm,
+        Err(code) => return code,
     };
-    let (mut host, mut library) = (String::new(), true);
-    let mut i = 1;
-    while i < args.len() {
-        match (args[i].as_str(), args.get(i + 1)) {
-            ("--host", Some(h)) => {
-                host = h.clone();
-                i += 2;
-            }
-            ("--no-library", _) => {
-                library = false;
-                i += 1;
-            }
-            (other, _) => {
-                eprintln!("hale habitat graft {name}: `{other}` is not taken through a pointer (a sapling grafts by name, with --host and --no-library)");
-                return ExitCode::from(2);
-            }
-        }
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut a: Vec<&str> = vec!["graft"];
+    a.extend(args.iter().map(String::as_str));
+    a.push("--no-head");
+    let mut cmd = t.ssh(tty);
+    cmd.arg(in_image(&m, p, &a, tty));
+    if !tty {
+        cmd.stdin(Stdio::null());
     }
-    let started = match http_surface_call(head, "Commands::graft", &serde_json::json!({ "sapling": name, "host": host, "library": library })) {
-        Ok(v) => v,
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => {
-            eprintln!("hale habitat graft {name}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    if started["ok"] != serde_json::json!(true) {
-        eprintln!("hale habitat graft {name}: {} ({})", started["why"].as_str().unwrap_or(""), started["code"].as_str().unwrap_or(""));
-        return ExitCode::from(1);
-    }
-    let graft = started["graft"].as_str().unwrap_or("").to_string();
-    super::progress(&format!("grafting `{name}`{}", if host.is_empty() { String::new() } else { format!(" on {host}") }));
-    let mut from = 0i64;
-    let begun = std::time::Instant::now();
-    let deadline = begun + std::time::Duration::from_secs(3600);
-    let mut heard = begun;
-    let mut last = String::new();
-    loop {
-        let page = match http_surface_call(head, "Commands::graft_log", &serde_json::json!({ "graft": graft, "from": from })) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("hale habitat graft {name}: following its log: {e}");
-                return ExitCode::from(1);
-            }
-        };
-        if let Some(text) = page["text"].as_str().filter(|t| !t.is_empty()) {
-            print!("{text}");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-            heard = std::time::Instant::now();
-            if let Some(l) = text.lines().rev().find(|l| !l.trim().is_empty()) {
-                last = l.trim().trim_start_matches("... ").to_string();
-            }
-        } else if heard.elapsed() >= std::time::Duration::from_secs(20) {
-            // a quiet log is a step still running, never a hang the person
-            // has to guess at: how long, and what it said last
-            let t = begun.elapsed().as_secs();
-            eprintln!("... still grafting `{name}` ({}m {:02}s){}", t / 60, t % 60, if last.is_empty() { String::new() } else { format!(": {last}") });
-            heard = std::time::Instant::now();
-        }
-        from = page["next"].as_i64().unwrap_or(from);
-        if page["done"] == serde_json::json!(true) && page["text"].as_str().is_none_or(str::is_empty) {
-            let exit = page["exit"].as_i64().unwrap_or(-1);
-            if exit == 0 {
-                return ExitCode::SUCCESS;
-            }
-            eprintln!("hale habitat graft {name}: the graft ended with exit {exit}");
-            return ExitCode::from(1);
-        }
-        if std::time::Instant::now() > deadline {
-            eprintln!("hale habitat graft {name}: no end within an hour; `hale habitat status` shows where it is");
-            return ExitCode::from(1);
-        }
-        if page["text"].as_str().is_none_or(str::is_empty) {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            eprintln!("hale habitat graft: ssh: {e}");
+            ExitCode::from(1)
         }
     }
 }

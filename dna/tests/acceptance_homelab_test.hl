@@ -482,10 +482,12 @@ fn main() {
         "allocation",
         key + "/memory",
     );
+    // the organism plane reuses the habitat's: its memory runs on the
+    // habitat's machine, never on the host its application was placed on
     std::test::assert(
-        std::json::find_string_field(memory, "host") == "localhost"
+        std::json::find_string_field(memory, "host") == "local"
             && std::json::find_string_field(memory, "state") == "up",
-        "and its memory: " + memory,
+        "and its memory, on the habitat's machine: " + memory,
     );
 
     // ---- reachable at the host's name: a streamed request through voice,

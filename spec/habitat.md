@@ -736,7 +736,7 @@ socket), so the habitat's head must be up.
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
 | `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
-| `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
+| `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
@@ -909,6 +909,27 @@ Chosen at the habitat's birth and kept.
   `operator` backends.
 
 ## Graft and `[dna] needs`
+
+**A graft plans each body part before it makes anything.** The organism
+plane (`memory`, `nerves`, `senses`) reuses the habitat's: it runs on the
+habitat's machine beside the habitat's own, unless `--own <part>[=<host>]`
+gives the organism a server of its own on that host (on the `--host`
+machine without one). The application plane is the organism's own
+software: its compose services, placed on the `--host` machine, and the
+heart roles it needs (`database`, `broker`), which are the application's
+own when its manifest says it brings them (`[dna] brings = ["database",
+"broker"]`, a subset of its needs: its compose provides them) and are
+otherwise provisioned by the habitat. `--reuse <part>` has the habitat
+provide a heart role an application brings; `--own <part>` leaves it to
+the application. `graft --plan` prints the plan, part by part (each
+choice, where it runs, and the flag that changes it), and grafts nothing;
+a graft at a terminal prints it and acts only once the person confirms.
+A graft the head starts (the operator face's) asks no one and takes the
+plan as its defaults give it. The choice for each heart role is kept
+beside the organism's allocations (`parts.json`): `hale habitat migrate`
+and an upgrade provision, and run the heart migration of, only the roles
+the habitat provides. Identity is each organism's own sign-in stub for
+now; reusing the habitat's is not built.
 
 A graft allocates each role the organism's genome needs, records the
 allocations in the habitat's record, writes a `habitat.grafted <child>`

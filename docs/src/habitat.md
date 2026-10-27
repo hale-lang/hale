@@ -63,8 +63,11 @@ hale habitat nursery add https://example.com/nursery.git
 hale habitat nursery refresh
 hale habitat nursery ratify <sapling>
 hale habitat nursery add https://github.com/hale-lang/voice   # voice is its own nursery
-hale habitat graft voice
+hale habitat graft voice --host rack-a.lan --plan              # the plan, part by part; nothing grafted
+hale habitat graft voice --host rack-a.lan                     # prints the plan and asks
 ```
+
+A graft plans each body part first. The organism plane (its record in memory, its nerves, its senses) reuses the habitat's, on the habitat's machine; `--own memory=rack-b.lan` gives it a server of its own on a host instead. The application plane is the organism's own: its compose services on the `--host` machine, and the database or broker it brings (`[dna] brings` in its `hale.toml`, as voice brings its own Postgres and NATS); `--reuse database` has the habitat provision one instead.
 
 1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (`hale`, the one the toolchain carries, or one a trusted nursery offers, such as `voice`; `./<name>` denotes a local directory). A repository can be its own nursery: a `nursery.toml` at its root whose `[[sapling]]` says `repo = "."` (and no revision or digest) offers the repository itself, pinned at the commit the habitat reads. That is how `hale-lang/voice` is offered; the toolchain bundles no application. The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row. The `hale` sapling (the organism that works on the Hale toolchain) is a tree the toolchain itself carries, with no remote. `hale habitat graft hale` makes it the organism's own repository in the habitat and checks its digest the same way. Like every graft, it mirrors that repository to the habitat's Forgejo; nothing of an organism's own goes to GitHub unless its Board allocates GitHub later.
 2. **A genome's codebases attach at its graft:** a `[[dna.codebase]]` list in the sapling's `hale.toml` (each with `name`, `repo`, `branch`, `build`, `test`, `toolchain`) becomes `codebase.attached` rows of the grafted organism's record, once each; nothing is cloned until a leg works one. The toolchain nursery's `hale` sapling is **the hale organism**: its genome is its own small repository, and its codebases are `hale-lang/hale` and `hale-lang/voice`.
