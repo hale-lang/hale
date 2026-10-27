@@ -42,13 +42,6 @@ function placedLine(placed) {
   return [...by].map(([who, roles]) => who + ": " + roles.join(", ")).join("\n") || "none";
 }
 
-function cell(text, cls) {
-  const td = document.createElement("td");
-  td.textContent = text;
-  if (cls) td.className = cls;
-  return td;
-}
-
 function button(label, onclick) {
   const b = document.createElement("button");
   b.type = "button";
@@ -146,27 +139,41 @@ export async function refresh() {
     outcome("the head did not answer");
     return;
   }
+  // one block per host: its name and state, then a line per fact
   const rows = $("host-rows");
   rows.replaceChildren();
   for (const h of hosts) {
     const placed = allocs.filter((x) => x.host === h.name);
-    const tr = document.createElement("tr");
-    const s = cell(h.state);
-    s.dataset.state = stateOf(h);
-    const actions = document.createElement("td");
+    const block = document.createElement("article");
+    block.className = "host";
+    const head = document.createElement("h3");
+    const state = document.createElement("span");
+    state.className = "state";
+    state.textContent = h.state;
+    state.dataset.state = stateOf(h);
+    head.append(hostLabel(h.name), " ", state);
+    const facts = document.createElement("dl");
+    const fact = (k, v, cls) => {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      if (cls) dd.className = cls;
+      facts.append(dt, dd);
+    };
+    if (h.address || h.user) fact("login", (h.user ? h.user + "@" : "") + (h.address || h.name) + (h.port ? ":" + h.port : ""));
+    fact("offers", (h.offers || "nothing yet").split(" ").filter(Boolean).join(", "));
+    if (h.os || h.arch) fact("system", [h.os, h.arch].filter(Boolean).join(" "));
+    fact("host key", h.fingerprint || "none yet");
+    fact("runs", placedLine(placed), "list");
+    const actions = document.createElement("p");
+    actions.className = "actions";
     if (h.state === "pending-key") {
       actions.append(button("probe", () => act(commandsProbeHost, h)), " ");
     }
     actions.append(button("remove", () => planRemove(h)));
-    tr.append(
-      cell(hostLabel(h.name)),
-      s,
-      cell(h.offers || ""),
-      cell(h.fingerprint || "none yet", "wrap"),
-      cell(placedLine(placed), "list"),
-      actions,
-    );
-    rows.append(tr);
+    block.append(head, facts, actions);
+    rows.append(block);
   }
   $("hosts-empty").hidden = hosts.length > 0;
 }

@@ -76,3 +76,10 @@ pre { margin: 0; padding: var(--step) 0; white-space: pre-wrap; overflow-wrap: a
 .outcome { white-space: pre-wrap; }
 td.wrap { white-space: normal; overflow-wrap: anywhere; }
 td.list { white-space: pre-line; }
+
+/* the hardware screen: a block per host, a line per fact */
+article.host { border-top: 1px solid var(--rule); padding-block: var(--step) calc(var(--step) * 2); }
+article.host h3 { margin: 0 0 var(--step); font-size: inherit; font-weight: 600; }
+article.host h3 .state { font-weight: 400; margin-left: var(--step); }
+article.host dd.list { white-space: pre-line; }
+article.host .actions { margin: var(--step) 0 0; }
