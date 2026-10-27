@@ -1700,7 +1700,7 @@ crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
 crates/hale-stdlib/hl/http_client.hl eb5d0299409b2bc6
-crates/hale-stdlib/hl/http_read.hl c9fa27d77278e5e0
+crates/hale-stdlib/hl/http_read.hl 1fc27db38d44bca7
 crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/lang.hl cec111863280b6a7

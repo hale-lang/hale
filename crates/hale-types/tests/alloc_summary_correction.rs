@@ -2160,11 +2160,11 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 2),
-            ("once-per-invocation -> per-iteration-reclaim", 8),
+            ("once-per-invocation -> per-iteration-reclaim", 14),
         ],
         &[
-            "request_to BytesLit @11057..11060 InvokedUnboundedly",
-            "request_to StructLit(\"std::http::ClientRequest\") @11014..11062 InvokedUnboundedly",
+            "request_to BytesLit @12554..12557 InvokedUnboundedly",
+            "request_to StructLit(\"std::http::ClientRequest\") @12511..12559 InvokedUnboundedly",
         ],
     );
     pinned(

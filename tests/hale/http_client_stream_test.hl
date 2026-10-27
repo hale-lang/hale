@@ -118,6 +118,33 @@ locus Streams {
             }
             return std::http::Response { status: 200, body: "weights" };
         }
+        if std::str::starts_with(req.path, "/redirect?to=") {
+            // a 302 to wherever `to` says (another server's URL, or a path)
+            let to = req.path[13..len(req.path)];
+            return std::http::Response {
+                status: 302,
+                headers: "Location: " + std::url::decode(to) + "\r\nX-Hop: origin",
+                body: "",
+            };
+        }
+        if req.path == "/loop" {
+            return std::http::Response { status: 302, headers: "Location: /loop", body: "" };
+        }
+        if req.path == "/to-ftp" {
+            return std::http::Response {
+                status: 301,
+                headers: "Location: ftp://127.0.0.1/x",
+                body: "",
+            };
+        }
+        if req.path == "/cdn" {
+            // the other host: what Authorization it was handed, if any
+            return std::http::Response {
+                status: 200,
+                headers: "X-Hop: cdn",
+                body: "cdn[" + std::http::header(req, "Authorization") + "]",
+            };
+        }
         if req.path == "/quiet-sse" {
             // one event, half of the next, 1.5 s of silence, then the rest
             // and one more; framed by the close
@@ -240,6 +267,16 @@ locus Gated {
             || std::str::contains(s.body.headers, "sk-sealed");
         return to_string(s.body.status) + " " + e.data + " " + to_string(held);
     }
+    // through a redirect: a 302 to `/gated` on the same origin keeps the
+    // bearer, one to another origin drops it
+    fn hop(u: std::http::Url) -> String {
+        let r = std::http::BodyReader {
+            req: std::http::ClientRequest { url: u, body: b"", follow_redirects: 2 },
+            bearer: self.key,
+        };
+        let b = r.chunk() or b"!";
+        return to_string(r.status) + " " + std::str::from_bytes(b);
+    }
     // none: the server refuses
     fn bare(u: std::http::Url) -> Int {
         let r = std::http::BodyReader { req: std::http::ClientRequest { url: u, body: b"" } };
@@ -259,8 +296,13 @@ fn text(b: Bytes) -> String {
 main locus App {
     params {
         srv: std::http::Server = std::http::Server { port: 0, handler: Streams { } };
+        // a second origin, the one a redirect moves to
+        srv2: std::http::Server = std::http::Server { port: 0, handler: Streams { } };
     }
-    placement { srv: cooperative(pool = io) where async_io; }
+    placement {
+        srv: cooperative(pool = io) where async_io;
+        srv2: cooperative(pool = io) where async_io;
+    }
     run() {
         let port = std::io::tcp::__local_port(self.srv.listen_fd);
         std::test::assert(port > 0, "the server is bound");
@@ -424,6 +466,103 @@ main locus App {
         std::test::assert(
             std::str::contains(detail, "the bearer credential resolved to nothing"),
             "its detail: " + detail,
+        );
+        // ---- redirects: followed within the limit, the target's head
+        let srv2_port = std::io::tcp::__local_port(self.srv2.listen_fd);
+        let cdn = "http://127.0.0.1:" + to_string(srv2_port) + "/cdn";
+        let hop = base + "/redirect?to=" + std::url::encode(cdn);
+        let plain = std::http::BodyReader { req: request_to(hop) };
+        std::test::assert_eq_int(plain.status, 302, "with 0, a 3xx comes back as it is");
+        std::test::assert(
+            std::str::contains(plain.headers, "Location: " + cdn),
+            "its own Location: " + plain.headers,
+        );
+        let mut hop_req = request_to(hop);
+        hop_req.headers = "Authorization: Bearer plain-token\r\nX-Keep: 1";
+        hop_req.follow_redirects = 1;
+        let moved = std::http::BodyReader { req: hop_req };
+        std::test::assert_eq_int(moved.status, 200, "the target's status");
+        std::test::assert(
+            std::str::contains(moved.headers, "X-Hop: cdn"),
+            "the target's headers: " + moved.headers,
+        );
+        std::test::assert(!std::str::contains(moved.headers, "X-Hop: origin"), "none of the 302's");
+        std::test::assert_eq_str(
+            text(moved.chunk() or b"!"),
+            "cdn[]",
+            "another origin is sent no Authorization",
+        );
+        std::test::assert_eq_str(
+            gated.hop(request_to(base + "/redirect?to=%2Fgated").url),
+            "200 weights",
+            "a same-origin redirect keeps the bearer",
+        );
+        std::test::assert_eq_str(
+            gated.hop(request_to(hop).url),
+            "200 cdn[]",
+            "the bearer is dropped once the origin changes",
+        );
+        let mut looped = request_to(base + "/loop");
+        looped.follow_redirects = 3;
+        let lp = std::http::BodyReader { req: looped };
+        detail = "";
+        kind = "";
+        let mut st = 0;
+        lp.chunk() or {
+            kind = err.kind;
+            detail = err.detail;
+            st = err.status;
+            b""
+        };
+        std::test::assert_eq_str(kind, "too_many_redirects", "one redirect past the limit fails");
+        std::test::assert_eq_int(st, 302, "with the 3xx it got");
+        std::test::assert(
+            std::str::contains(detail, "after 3 redirect(s)"),
+            "its detail: " + detail,
+        );
+        let mut ftp = request_to(base + "/to-ftp");
+        ftp.follow_redirects = 1;
+        let fp = std::http::BodyReader { req: ftp };
+        kind = "";
+        fp.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "redirect_refused", "a redirect off http / https");
+        // https -> http: no TLS server here, so the refusal is pinned
+        // where it is decided
+        let secure = std::http::Url {
+            scheme: "https",
+            host: "models.example",
+            port: 443,
+            path: "/w/a.bin",
+        };
+        kind = "";
+        detail = "";
+        __http_redirect_target(secure, "http://cdn.example/a.bin") or {
+            kind = err.kind;
+            detail = err.detail;
+            secure
+        };
+        std::test::assert_eq_str(kind, "redirect_refused", "https to http is a downgrade");
+        std::test::assert(std::str::contains(detail, "downgrade"), "its detail: " + detail);
+        let up = __http_redirect_target(
+            std::http::Url { scheme: "http", host: "a.example", port: 80, path: "/x" },
+            "https://cdn.example/b",
+        ) or secure;
+        std::test::assert_eq_str(
+            up.scheme + " " + up.host + " " + to_string(up.port) + " " + up.path,
+            "https cdn.example 443 /b",
+            "an upgrade is followed",
+        );
+        let rel = __http_redirect_target(secure, "//cdn.example:8443/c#frag") or secure;
+        std::test::assert_eq_str(
+            rel.scheme + " " + rel.host + " " + to_string(rel.port) + " " + rel.path,
+            "https cdn.example 8443 /c",
+            "scheme-relative keeps https",
+        );
+        let dir = __http_redirect_target(secure, "b.bin?x=1") or secure;
+        std::test::assert_eq_str(
+            dir.host + dir.path,
+            "models.example/w/b.bin?x=1",
+            "a relative path resolves against the directory",
         );
         std::test::assert_eq_str(
             keyed.kept(request_to(base + "/whoami").url),
@@ -644,6 +783,7 @@ main locus App {
         std::test::assert(n_took < 1500, "ended at its deadline: " + to_string(n_took));
 
         std::io::tcp::stop(self.srv.listener);
+        std::io::tcp::stop(self.srv2.listener);
     }
 }
 

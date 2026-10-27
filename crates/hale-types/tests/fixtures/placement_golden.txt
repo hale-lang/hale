@@ -685,7 +685,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#c45746aa
+== crates/hale-stdlib/hl/http_client.hl#b5d700ce
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -8339,6 +8339,7 @@ domain	pool:io	async_io
 row	App@literal1	App	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 shared	App@literal1.srv	__StdHttpServer #7ea4240c
+shared	App@literal1.srv2	__StdHttpServer #7ea4240c
 -- dynamic	sites in the seed
 dynamic	Gated	on main
 dynamic	Keyed	on main

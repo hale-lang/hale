@@ -30,7 +30,8 @@
 // failure, the whole-body read's kinds: `connect_failed`, `send_failed`,
 // `recv_failed` (the deadline, the connection closed before the body
 // ended, a read error), `bad_response` (an unparseable head, malformed
-// chunk framing), `too_large`, `unsupported_scheme`. Once a read has
+// chunk framing), `too_large`, `unsupported_scheme`, and for an opening
+// that follows redirects `too_many_redirects` and `redirect_refused`. Once a read has
 // ended or failed, every later one fails the same way.
 //
 // `timeout_ms` bounds the exchange whole, as the Client's does: the dial,
@@ -105,6 +106,111 @@ fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
     return __StdHttpChunkPeel { state: 1, lo: lo, hi: hi, used: hi + 2 };
 }
 
+// ---- redirects -------------------------------------------------------
+//
+// 2026-10-27 — a reader whose request sets `follow_redirects` follows a
+// 301, 302, 303, 307 or 308 that names a `Location`, at most that many
+// times under the one deadline, each hop a fresh `Connection: close`
+// exchange. Only the same scheme or an upgrade to https is followed,
+// never a downgrade; once the origin (scheme, host, port) changes, the
+// request's `Authorization` lines and the reader's `bearer` are dropped
+// for the rest of the chain.
+
+// Whether `status` is a redirect a reader follows.
+fn __http_is_redirect(status: Int) -> Bool {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+// Where a redirect's `location` leads from `from`: an absolute http or
+// https URL, a scheme-relative `//host/…`, an absolute path, or a path
+// relative to `from`'s directory (a fragment is dropped). Fails
+// `redirect_refused` for a scheme other than http / https and for a
+// downgrade from https to http, `bad_url` for a location that does not
+// parse.
+fn __http_redirect_target(
+    from: std::http::Url,
+    location: String
+) -> std::http::Url fallible(std::http::HttpError) {
+    let mut loc = std::str::trim(location);
+    let hash = std::str::index_of(loc, "#");
+    if hash >= 0 {
+        loc = loc[0..hash];
+    }
+    if len(loc) == 0 {
+        fail std::http::HttpError { kind: "bad_url", status: 0, detail: "an empty Location" };
+    }
+    let mut to = std::http::Url {
+        scheme: from.scheme,
+        host: from.host,
+        port: from.port,
+        path: from.path,
+    };
+    let sep = std::str::index_of(loc, "://");
+    let slash = std::str::index_of(loc, "/");
+    if std::str::starts_with(loc, "//") {
+        to = __http_parse_url(from.scheme + ":" + loc) or raise;
+    } else if sep > 0 && (slash < 0 || sep < slash) {
+        let scheme = std::str::lower(loc[0..sep]);
+        if scheme != "http" && scheme != "https" {
+            fail std::http::HttpError {
+                kind: "redirect_refused",
+                status: 0,
+                detail: "a redirect to " + scheme + ": only http / https are followed",
+            };
+        }
+        to = __http_parse_url(scheme + loc[sep..len(loc)]) or raise;
+    } else if std::str::starts_with(loc, "/") {
+        to.path = loc;
+    } else {
+        let mut base = from.path;
+        let q = std::str::index_of(base, "?");
+        if q >= 0 {
+            base = base[0..q];
+        }
+        let mut cut = 0;
+        let mut i = 0;
+        while i < len(base) {
+            if base[i..(i + 1)] == "/" {
+                cut = i + 1;
+            }
+            i = i + 1;
+        }
+        to.path = if cut == 0 { "/" + loc } else { base[0..cut] + loc };
+    }
+    if from.scheme == "https" && to.scheme != "https" {
+        fail std::http::HttpError {
+            kind: "redirect_refused",
+            status: 0,
+            detail: "a redirect from https to " + to.scheme + " is a downgrade: never followed",
+        };
+    }
+    return to;
+}
+
+// Whether `a` and `b` are one origin: scheme, host (any case) and port.
+fn __http_same_origin(a: std::http::Url, b: std::http::Url) -> Bool {
+    return a.scheme == b.scheme
+        && std::str::lower(a.host) == std::str::lower(b.host)
+        && a.port == b.port;
+}
+
+// A packed header block without its `Authorization` lines.
+fn __http_without_authorization(headers: String) -> String {
+    let mut out = "";
+    let mut rest = headers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\r\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 2)..len(rest)] };
+        let colon = std::str::index_of(line, ":");
+        let name = if colon < 0 { line } else { line[0..colon] };
+        if std::str::lower(std::str::trim(name)) != "authorization" {
+            out = if len(out) == 0 { line } else { out + "\r\n" + line };
+        }
+    }
+    return out;
+}
+
 /// A response body read as it arrives: the client's mirror of
 /// `BodyWriter`. Birth sends `req` (`Connection: close`) and reads the
 /// response's head into `status` and `headers`; `chunk()` returns the
@@ -122,7 +228,12 @@ fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
 /// the credential writes that line onto the wire itself, so it is never
 /// a String here, in `req` or anywhere the program reads; a credential
 /// whose source resolves to nothing fails the opening `send_failed`
-/// with nothing sent.
+/// with nothing sent. `req.follow_redirects: n` follows up to `n`
+/// redirects (301, 302, 303, 307, 308 with a `Location`), `status` and
+/// `headers` then the last target's: the same scheme or an upgrade to
+/// https only (`redirect_refused` otherwise), `Authorization` and the
+/// `bearer` dropped once the origin changes, and one more redirect than
+/// `n` fails `too_many_redirects`.
 locus __StdHttpBodyReader {
     params {
         req: std::http::ClientRequest;
@@ -163,15 +274,16 @@ locus __StdHttpBodyReader {
         until: Int = 0;
         idle: Bool = false;
         short_armed: Bool = false;
+        // redirects followed so far, and whether the origin has changed
+        // (the `bearer` and `Authorization` dropped from then on)
+        redirects: Int = 0;
+        moved_origin: Bool = false;
     }
     birth() {
         // the one deadline runs from the reader's birth, deferred or not
         self.deadline = __http_deadline(self.timeout_ms);
         if !self.deferred {
-            self.__start();
-            if self.outcome == "" {
-                self.__head(0);
-            }
+            self.__opening(0);
         }
     }
     dissolve() {
@@ -220,13 +332,20 @@ locus __StdHttpBodyReader {
         return self.phase == 2;
     }
 
-    // The opening, as far as `until` allows (0: to its end or the deadline).
+    // The opening, as far as `until` allows (0: to its end or the
+    // deadline), through each redirect it follows.
     fn __opening(until: Int) {
-        if self.phase == 0 {
-            self.__start();
-        }
-        if self.outcome == "" && self.phase == 1 {
-            self.__head(until);
+        while self.outcome == "" && self.phase < 2 {
+            if self.phase == 0 {
+                self.__start();
+            }
+            if self.outcome == "" && self.phase == 1 {
+                self.__head(until);
+                if self.phase == 1 {
+                    // the bounded wait passed before the head came
+                    return;
+                }
+            }
         }
     }
 
@@ -348,6 +467,8 @@ locus __StdHttpBodyReader {
     fn __stop(kind: String, detail: String) {
         self.outcome = kind;
         self.detail = detail;
+        self.req.headers = "";
+        self.req.body = b"";
         __http_close_handle(self.handle, self.is_tls);
         self.handle = -1;
     }
@@ -380,16 +501,19 @@ locus __StdHttpBodyReader {
         // the head without its blank line: the bearer's line, when there
         // is one, goes before it, written by the credential itself
         let head = __http_build_request_headers(self.req, self.user_agent, false);
-        let mut sent = self.bearer.__send_in_head(
-            h,
-            self.is_tls,
-            head[0..(len(head) - 2)],
-            "Authorization: Bearer ",
-            self.deadline,
-        );
+        let mut sent = 0;
+        if self.moved_origin {
+            sent = __http_send_within(h, self.is_tls, std::bytes::from_string(head), self.deadline);
+        } else {
+            sent = self.bearer.__send_in_head(
+                h,
+                self.is_tls,
+                head[0..(len(head) - 2)],
+                "Authorization: Bearer ",
+                self.deadline,
+            );
+        }
         if sent == 0 - 3 || sent == 0 - 4 {
-            self.req.headers = "";
-            self.req.body = b"";
             let why = if sent == 0 - 3 { "resolved to nothing" } else { "holds a line break" };
             self.__stop(
                 "send_failed",
@@ -401,9 +525,13 @@ locus __StdHttpBodyReader {
             sent = __http_send_within(h, self.is_tls, self.req.body, self.deadline);
         }
         // The request is sent: its headers and body (where a revealed
-        // credential travels) are a consumed wire write, never kept.
-        self.req.headers = "";
-        self.req.body = b"";
+        // credential travels) are a consumed wire write, never kept — kept
+        // only while a redirect may send them again, to the end of the
+        // opening.
+        if self.req.follow_redirects <= 0 {
+            self.req.headers = "";
+            self.req.body = b"";
+        }
         if sent < 0 {
             if __http_expired(self.deadline) {
                 self.__timed_out();
@@ -411,6 +539,51 @@ locus __StdHttpBodyReader {
                 self.__stop("send_failed", self.__at() + " the request could not be sent");
             }
         }
+    }
+
+    // Follow the redirect the head just read names: a fresh exchange to
+    // `location` from the start of the opening, or the outcome that
+    // refuses it.
+    fn __redirect(location: String) {
+        if self.redirects >= self.req.follow_redirects {
+            self.__stop(
+                "too_many_redirects",
+                self.__at() + " answered " + to_string(self.status) + " after "
+                    + to_string(self.redirects)
+                    + " redirect(s), the most `follow_redirects` allows",
+            );
+            return;
+        }
+        let mut refused = "";
+        let mut kind = "";
+        let to = __http_redirect_target(self.req.url, location) or {
+            kind = err.kind;
+            refused = err.detail;
+            self.req.url
+        };
+        if len(kind) > 0 {
+            self.__stop(kind, self.__at() + " " + refused);
+            return;
+        }
+        if !__http_same_origin(self.req.url, to) {
+            self.req.headers = __http_without_authorization(self.req.headers);
+            self.moved_origin = true;
+        }
+        let m = self.req.method;
+        if (self.status == 303 && m != "GET" && m != "HEAD")
+            || ((self.status == 301 || self.status == 302) && m == "POST")
+        {
+            self.req.method = "GET";
+            self.req.body = b"";
+        }
+        __http_close_handle(self.handle, self.is_tls);
+        self.handle = -1;
+        self.req.url = to;
+        self.redirects = self.redirects + 1;
+        self.rx.clear();
+        self.status = 0;
+        self.headers = "";
+        self.phase = 0;
     }
 
     // Read the response's head, waiting until `until` at most (0: the
@@ -460,10 +633,19 @@ locus __StdHttpBodyReader {
             return;
         }
         self.status = status;
-        self.phase = 2;
         if line_end >= 0 {
             self.headers = text[(line_end + 2)..len(text)];
         }
+        if self.req.follow_redirects > 0 && __http_is_redirect(status) {
+            let location = __http_client_header(self.headers, "location");
+            if len(location) > 0 {
+                self.__redirect(location);
+                return;
+            }
+        }
+        self.phase = 2;
+        self.req.headers = "";
+        self.req.body = b"";
         self.rx.shift_front(hdr_end + 4);
         let te = std::str::lower(__http_client_header(self.headers, "transfer-encoding"));
         let cl = __http_client_header(self.headers, "content-length");
@@ -496,6 +678,7 @@ fn __http_sse_request(req: std::http::ClientRequest) -> std::http::ClientRequest
         url: req.url,
         headers: headers,
         body: req.body,
+        follow_redirects: req.follow_redirects,
     };
 }
 

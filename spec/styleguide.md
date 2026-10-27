@@ -1420,7 +1420,10 @@ fn handle(req: std::http::Request) -> std::http::Response {
   header built with `reveal_text()`: the credential writes its line onto
   the wire, so no field of the reader, deferred or not, ever holds the
   token. `hale check` refuses the reveal into a deferred reader's `req`.
-  **[convention]**
+  A download that may redirect sets `follow_redirects` to a small bound
+  on the reader's request, never a large one to be safe: the reader
+  drops the credential itself when the origin changes and refuses a
+  downgrade to http. **[convention]**
 - **A relay that answers something else reads with a bounded wait.**
   When the relay also serves a control channel (a cancel, a new
   assignment), read with `up.event_within(ms)` (or `chunk_within`): on
