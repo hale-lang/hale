@@ -1414,6 +1414,13 @@ fn handle(req: std::http::Request) -> std::http::Response {
   long as the stream may run (`0` for none). Do not speak HTTP/1.1 over
   `std::io::tcp` to stream: the reader de-chunks, splits events, takes
   https and keeps the deadline. **[convention]**
+- **A streamed request presents its credential as `bearer:`.** A
+  `BodyReader` or `SseReader` behind a token takes the
+  `std::secret::Credential` itself, `bearer: self.key`, and never a
+  header built with `reveal_text()`: the credential writes its line onto
+  the wire, so no field of the reader, deferred or not, ever holds the
+  token. `hale check` refuses the reveal into a deferred reader's `req`.
+  **[convention]**
 - **A relay that answers something else reads with a bounded wait.**
   When the relay also serves a control channel (a cancel, a new
   assignment), read with `up.event_within(ms)` (or `chunk_within`): on

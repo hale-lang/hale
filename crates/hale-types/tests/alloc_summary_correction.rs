@@ -2151,7 +2151,7 @@ fn verdict_changes() {
     // through `request_to` each time
     pinned(
         "tests/hale/http_client_stream_test.hl",
-        29,
+        31,
         &[
             "request_to",
             "Streams::handle",
@@ -2160,11 +2160,11 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 2),
-            ("once-per-invocation -> per-iteration-reclaim", 6),
+            ("once-per-invocation -> per-iteration-reclaim", 8),
         ],
         &[
-            "request_to BytesLit @8613..8616 InvokedUnboundedly",
-            "request_to StructLit(\"std::http::ClientRequest\") @8570..8618 InvokedUnboundedly",
+            "request_to BytesLit @11057..11060 InvokedUnboundedly",
+            "request_to StructLit(\"std::http::ClientRequest\") @11014..11062 InvokedUnboundedly",
         ],
     );
     pinned(

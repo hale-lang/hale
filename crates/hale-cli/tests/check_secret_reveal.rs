@@ -83,6 +83,43 @@ fn a_readers_request_is_the_wire_only_in_its_headers_and_body() {
     }
 }
 
+/// A reader presents a vault credential as `bearer:`, which reveals
+/// nothing; the header revealed into a request that is bound first, or
+/// into a deferred reader (whose `req` holds it, readable, until the
+/// opening sends it), stays refused.
+#[test]
+fn a_reader_takes_a_credential_as_bearer_and_a_held_header_is_refused() {
+    let accepted = [
+        ("bearer", "let r = std::http::BodyReader { req: std::http::ClientRequest { url: u, body: b\"\" }, bearer: self.token };"),
+        ("bearer_deferred", "let s = std::http::SseReader { req: std::http::ClientRequest { url: u, body: b\"\" }, bearer: self.token, deferred: true };"),
+    ];
+    for (tag, stmt) in accepted {
+        let (ok, out) = one(&method(stmt, ""), &format!("accepted_{tag}"));
+        assert!(ok && !out.contains(CONSUMED), "{tag}: {out}");
+    }
+    let refused = [
+        (
+            "bound_request",
+            "let req = std::http::ClientRequest { url: u, headers: \"Authorization: Bearer \" + self.token.reveal_text(), body: b\"\" };\n        let r = std::http::BodyReader { req: req };",
+            "here it is bound to `req`",
+        ),
+        (
+            "deferred_body",
+            "let r = std::http::BodyReader { req: std::http::ClientRequest { url: u, headers: \"Authorization: Bearer \" + self.token.reveal_text(), body: b\"\" }, deferred: true };",
+            "is the request of a deferred `std::http::BodyReader`",
+        ),
+        (
+            "deferred_sse",
+            "let s = std::http::SseReader { req: std::http::ClientRequest { url: u, headers: \"Authorization: Bearer \" + self.token.reveal_text(), body: b\"\" }, deferred: true };",
+            "is the request of a deferred `std::http::SseReader`",
+        ),
+    ];
+    for (tag, stmt, why) in refused {
+        let (ok, out) = one(&method(stmt, ""), &format!("refused_{tag}"));
+        assert!(!ok && out.contains(CONSUMED) && out.contains(why), "{tag}: {out}");
+    }
+}
+
 #[test]
 fn a_reveal_in_a_free_fn_is_refused() {
     let src = "fn token() -> Int {\n    let n = len(std::secret::Credential { vault: \"t\" }.reveal_text());\n    return n;\n}\nfn main() { let n = token(); }\n";
@@ -107,6 +144,8 @@ fn a_reveal_consumed_in_its_statement_is_accepted() {
         // a streamed body's reader sends its `req` at birth (GH #1698)
         ("sse_reader", "let s = std::http::SseReader { req: std::http::ClientRequest { url: u, headers: \"Authorization: Bearer \" + self.token.reveal_text(), body: b\"\" }, timeout_ms: 0 };"),
         ("body_reader", "let r = std::http::BodyReader { req: std::http::ClientRequest { method: \"POST\", url: u, body: std::bytes::from_string(\"key=\" + self.token.reveal_text()) } };"),
+        // a reader written with `deferred: false` sends at birth as before
+        ("body_reader_not_deferred", "let r = std::http::BodyReader { req: std::http::ClientRequest { url: u, headers: \"Authorization: Bearer \" + self.token.reveal_text(), body: b\"\" }, deferred: false };"),
     ];
     let enc = "fn enc(s: String) -> String {\n    let mut out = \"\";\n    let mut i = 0;\n    while i < len(s) { out = out + s[i..(i + 1)]; i = i + 1; }\n    return out;\n}\n";
     for (tag, stmt) in cases {

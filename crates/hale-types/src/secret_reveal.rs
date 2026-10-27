@@ -46,7 +46,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    BinOp, Block, ElseBranch, Expr, FnDecl, IfStmt, LocusMember, MatchArmBody, MatchStmt, OrDisposition, Param,
+    BinOp, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchStmt, OrDisposition, Param,
     ParamInit, Pattern, PerspectiveMember, Program, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::error::Diag;
@@ -106,7 +106,11 @@ const REQUEST_WIRE_FIELDS: &[&str] = &["headers", "body"];
 
 /// Loci whose `req` field is a request they put on the wire as
 /// `Client.request` does (GH #1698): a streamed body's readers send their
-/// `req` at birth, so its `headers` and `body` are the wire's.
+/// `req` at birth, so its `headers` and `body` are the wire's — unless
+/// the literal names `deferred`, when the request waits in `req`,
+/// readable, for the opening, and a reveal there is refused (the reader
+/// takes the credential as `bearer:` instead, and the credential writes
+/// its header onto the wire itself).
 const REQUEST_LOCI: &[&str] = &["__StdHttpBodyReader", "__StdHttpSseReader"];
 
 /// Methods that compare their argument with a sealed value.
@@ -1487,8 +1491,24 @@ impl<'a> Body<'a> {
                     Some(l) => Flow::leaks(format!("is stored in a `{} {{ … }}`", self.world.display(&l))),
                     None => flow.composed(),
                 };
+                // a deferred reader sends nothing at birth: its request,
+                // revealed headers and all, waits in its `req` for the
+                // opening, where the program reads it
+                let deferred = reader.is_some()
+                    && inits.iter().any(|i| {
+                        i.name.name == "deferred" && !matches!(i.value, Expr::Literal(Literal::Bool(false), _))
+                    });
                 for i in inits {
                     match &reader {
+                        Some(spelled) if i.name.name == "req" && deferred => self.expr(
+                            &i.value,
+                            &Flow::leaks(format!(
+                                "is the request of a deferred `{}`, which keeps it in its `req` until the \
+                                 opening sends it, readable there: a reader presents a credential as `bearer: c`, \
+                                 written onto the wire by the credential itself",
+                                spelled
+                            )),
+                        ),
                         Some(spelled) if i.name.name == "req" => self.request_arg(spelled, &i.value),
                         _ => self.expr(&i.value, &f),
                     }

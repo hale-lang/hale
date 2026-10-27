@@ -332,8 +332,8 @@ fn own_scope_let_block_scope_test() {
             // program that holds one)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 486 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 486 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 487 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 487 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",

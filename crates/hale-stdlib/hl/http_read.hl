@@ -117,10 +117,19 @@ fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
 /// and fails with kind `idle` when none arrived, the stream left open.
 /// `deferred: true` leaves the wire alone at birth: `open_within(ms)`
 /// advances the opening a bounded time at a time, and the first read
-/// opens it (within its own window, for `chunk_within`).
+/// opens it (within its own window, for `chunk_within`). `bearer: c`
+/// presents the `std::secret::Credential` `c` as `Authorization: Bearer`:
+/// the credential writes that line onto the wire itself, so it is never
+/// a String here, in `req` or anywhere the program reads; a credential
+/// whose source resolves to nothing fails the opening `send_failed`
+/// with nothing sent.
 locus __StdHttpBodyReader {
     params {
         req: std::http::ClientRequest;
+        // a credential the request presents as `Authorization: Bearer`,
+        // written onto the wire by the sealed side and never a value
+        // here; one that names no source presents none
+        bearer: std::secret::Credential = std::secret::Credential { };
         timeout_ms: Int = 30000;
         user_agent: String = "hale-std-http/0.11";
         max_chunk: Int = 16777216;
@@ -368,13 +377,26 @@ locus __StdHttpBodyReader {
             return;
         }
         self.handle = h;
+        // the head without its blank line: the bearer's line, when there
+        // is one, goes before it, written by the credential itself
         let head = __http_build_request_headers(self.req, self.user_agent, false);
-        let mut sent = __http_send_within(
+        let mut sent = self.bearer.__send_in_head(
             h,
             self.is_tls,
-            std::bytes::from_string(head),
+            head[0..(len(head) - 2)],
+            "Authorization: Bearer ",
             self.deadline,
         );
+        if sent == 0 - 3 || sent == 0 - 4 {
+            self.req.headers = "";
+            self.req.body = b"";
+            let why = if sent == 0 - 3 { "resolved to nothing" } else { "holds a line break" };
+            self.__stop(
+                "send_failed",
+                self.__at() + " the bearer credential " + why + ": nothing was sent",
+            );
+            return;
+        }
         if sent >= 0 && len(self.req.body) > 0 {
             sent = __http_send_within(h, self.is_tls, self.req.body, self.deadline);
         }
@@ -578,16 +600,19 @@ fn __http_sse_take(raw: Bytes) -> __StdHttpSseTake {
 /// (an unfinished last event is dropped), else as `chunk()` fails.
 /// `event_within(ms)` waits at most `ms` for the next event and fails with
 /// kind `idle` when none completed, the stream and a partial event kept.
-/// `deferred: true` and `open_within(ms)` as `BodyReader`'s.
+/// `deferred: true`, `open_within(ms)` and `bearer` as `BodyReader`'s.
 locus __StdHttpSseReader {
     params {
         req: std::http::ClientRequest;
+        // as `BodyReader`'s: presented as `Authorization: Bearer`
+        bearer: std::secret::Credential = std::secret::Credential { };
         timeout_ms: Int = 30000;
         // as `BodyReader`'s: the opening waits for `open_within` or the
         // first read
         deferred: Bool = false;
         body: std::http::BodyReader = std::http::BodyReader {
             req: __http_sse_request(self.req),
+            bearer: self.bearer,
             timeout_ms: self.timeout_ms,
             deferred: self.deferred
         };

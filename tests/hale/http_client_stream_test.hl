@@ -106,6 +106,18 @@ locus Streams {
             ) or discard;
             return w.end();
         }
+        if req.path == "/gated" {
+            // a gated download: the body only for the vault's bearer
+            if std::http::header(req, "Authorization") != "Bearer sk-sealed" {
+                return std::http::Response { status: 401, body: "denied" };
+            }
+            if std::http::header(req, "Accept") == "text/event-stream" {
+                let w = std::http::SseWriter { conn_fd: req.conn_fd };
+                w.event(std::http::SseEvent { data: "weights" }) or discard;
+                return w.end();
+            }
+            return std::http::Response { status: 200, body: "weights" };
+        }
         if req.path == "/quiet-sse" {
             // one event, half of the next, 1.5 s of silence, then the rest
             // and one more; framed by the close
@@ -190,6 +202,48 @@ locus Keyed {
             },
         };
         return s.req.headers + to_string(len(s.req.body));
+    }
+}
+
+// A gated upstream: the reader takes the credential itself (`bearer:`),
+// and the credential writes its header line onto the wire, so no
+// String the program can read ever holds it.
+locus Gated {
+    params {
+        key: std::secret::Credential = std::secret::Credential { vault: "upstream-key" };
+    }
+    // status, the body, and what the request kept (its headers, the
+    // response's head) that holds the token
+    fn body(u: std::http::Url) -> String {
+        let r = std::http::BodyReader {
+            req: std::http::ClientRequest { url: u, body: b"" },
+            bearer: self.key,
+        };
+        let b = r.chunk() or b"!";
+        let held = std::str::contains(r.req.headers, "sk-sealed")
+            || std::str::contains(r.headers, "sk-sealed");
+        return to_string(r.status) + " " + std::str::from_bytes(b) + " " + to_string(held);
+    }
+    // a deferred event reader: nothing of the token is held before the
+    // opening either
+    fn events(u: std::http::Url) -> String {
+        let s = std::http::SseReader {
+            req: std::http::ClientRequest { url: u, body: b"" },
+            bearer: self.key,
+            deferred: true,
+        };
+        let mut held = std::str::contains(s.req.headers, "sk-sealed")
+            || std::str::contains(s.body.req.headers, "sk-sealed");
+        let e = s.event() or std::http::SseEvent { data: "!" };
+        held = held
+            || std::str::contains(s.body.req.headers, "sk-sealed")
+            || std::str::contains(s.body.headers, "sk-sealed");
+        return to_string(s.body.status) + " " + e.data + " " + to_string(held);
+    }
+    // none: the server refuses
+    fn bare(u: std::http::Url) -> Int {
+        let r = std::http::BodyReader { req: std::http::ClientRequest { url: u, body: b"" } };
+        return r.status;
     }
 }
 
@@ -334,6 +388,42 @@ main locus App {
             keyed.who(request_to(base + "/whoami").url),
             "Bearer sk-sealed",
             "the sealed key on the wire",
+        );
+        let gated = Gated { };
+        std::test::assert_eq_str(
+            gated.body(request_to(base + "/gated").url),
+            "200 weights false",
+            "a reader's bearer from the vault opens the gated body, and nothing it holds has the token",
+        );
+        std::test::assert_eq_str(
+            gated.events(request_to(base + "/gated").url),
+            "200 weights false",
+            "an event reader's bearer, deferred, held nowhere before or after",
+        );
+        std::test::assert_eq_int(
+            gated.bare(request_to(base + "/gated").url),
+            401,
+            "without the bearer the server refuses",
+        );
+        let unset = std::http::BodyReader {
+            req: request_to(base + "/gated"),
+            bearer: std::secret::Credential { vault: "no-such-key" },
+        };
+        detail = "";
+        kind = "";
+        unset.chunk() or {
+            kind = err.kind;
+            detail = err.detail;
+            b""
+        };
+        std::test::assert_eq_str(
+            kind,
+            "send_failed",
+            "a bearer that resolves to nothing sends nothing",
+        );
+        std::test::assert(
+            std::str::contains(detail, "the bearer credential resolved to nothing"),
+            "its detail: " + detail,
         );
         std::test::assert_eq_str(
             keyed.kept(request_to(base + "/whoami").url),
