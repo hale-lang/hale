@@ -82,6 +82,12 @@ pub const TCP_LISTENER_SOURCE: &str = include_str!("../hl/io_tcp_listener.hl");
 /// carries none of it.
 pub const HTTP_READ_SOURCE: &str = include_str!("../hl/http_read.hl");
 
+/// The incremental SHA-256 (`crypto_sha256.hl`): `std::crypto::Sha256`.
+/// Every stdlib declaration is lowered into every program, so it is
+/// appended only to a program that names it (`hale_types::rpc_expand`),
+/// and a program that hashes no stream carries none of it.
+pub const SHA256_SOURCE: &str = include_str!("../hl/crypto_sha256.hl");
+
 /// The observe backends (`observe.hl`, GH #1592),
 /// `std::observe::Scrape` and `std::observe::Otlp`. Every stdlib declaration is lowered
 /// into every program, so it is appended only to a program whose main
@@ -453,8 +459,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
     (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
-    // std::crypto (crypto.hl): the Ed25519 key pair and the incremental
-    // SHA-256.
+    // std::crypto (crypto.hl): the Ed25519 key pair; the incremental
+    // SHA-256 (crypto_sha256.hl, appended to a program that names it).
     (&["std", "crypto", "ed25519_keypair"], "__std_crypto_ed25519_keypair"),
     (&["std", "crypto", "Sha256"], "__StdCryptoSha256"),
     // std::hex (hex.hl): base16 text of bytes.

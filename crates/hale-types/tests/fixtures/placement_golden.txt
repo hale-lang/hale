@@ -681,7 +681,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/api_rpc.hl#dd570c71
 
-== crates/hale-stdlib/hl/crypto.hl#5dcc76a7
+== crates/hale-stdlib/hl/crypto.hl#c68ea340
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
 
 == crates/hale-stdlib/hl/file.hl#f57ba351

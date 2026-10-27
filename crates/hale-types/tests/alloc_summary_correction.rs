@@ -269,9 +269,10 @@ const CALL_LINES_ONLY: [(&str, usize); 26] = [
     // 4: the new test (S6) calls the writers and the readers, whose
     // stdlib bodies only the renames name.
     ("tests/hale/bytes_writer_offset_test.hl", 4),
-    // the incremental SHA-256's test: the `Sha256` locus's stdlib bodies
-    // only the renames name
-    ("tests/hale/crypto_sha256_stream_test.hl", 16),
+    // the incremental SHA-256's test: the `Sha256` locus is appended to
+    // the program that names it, so only the two native calls of its
+    // `std::crypto::sha256` comparisons are the renames'
+    ("tests/hale/crypto_sha256_stream_test.hl", 2),
     // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
     // f()` to the fn the local names, which only the renames reach; 3
     // more: E5 resolves the calls through a function value to the

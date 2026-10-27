@@ -85,7 +85,7 @@ crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl 1d500adb8e506048
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl cacd1cb351f514df
 crates/hale-cli/tests/fixtures/qualified-type-fwd-lib/main.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/sha256-stream/app.hl b2dcc8638b2896b7
+crates/hale-cli/tests/fixtures/sha256-stream/app.hl ec0a30b3147fad21
 crates/hale-cli/tests/fixtures/three-hop-app/main.hl d4275fdcef4d5b13
 crates/hale-cli/tests/fixtures/three-hop-lib-mid/wrap.hl 6f502960693db966
 crates/hale-cli/tests/fixtures/three-hop-lib-util/box.hl f86b867c8ab3a29c
@@ -1696,7 +1696,8 @@ crates/hale-stdlib/hl/api_client.hl 36ae064bec55aa33
 crates/hale-stdlib/hl/api_rpc.hl ce165dc9a4bde371
 crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
-crates/hale-stdlib/hl/crypto.hl 877ca85595f965f2
+crates/hale-stdlib/hl/crypto.hl 21b957bbaa986ffd
+crates/hale-stdlib/hl/crypto_sha256.hl b68948b7c74811dd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
