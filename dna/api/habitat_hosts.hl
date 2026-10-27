@@ -110,12 +110,62 @@ fn host_name_refusal(name: String) -> String {
 }
 
 // The `habitat.host` row for `h`, appended in the name of `by`: "" once
-// it is, else why not.
+// it is, else why not. What the habitat's senses read of its machines
+// follows the rows (`host_targets_write`).
 fn host_write(root: String, h: dna::Host, by: String) -> String {
     let j = dna::RecordJournal { repo: root, author: by };
     let moved = j.refresh();
     let r = j.append(j.revision(), "habitat.host", h.name, dna::host_row_body(h));
+    if r.ok { host_targets_write(root); }
     return if r.ok { "" } else { "the habitat's record refused the host's row (" + r.error + ")" };
+}
+
+// The node exporters' port on every machine (`hale habitat up` and `host
+// add` install one there, or find one).
+const NODE_EXPORTER_PORT: Int = 9100;
+
+// What the habitat's senses' store scrapes of its machines: its own (the
+// store's container reaches it over the host gateway) and each host it
+// added and has not removed, at the node exporter's port, each labelled
+// `host`. The whole file is written beside and renamed over the last
+// (the store reads `senses.d/*.json` as it changes); a habitat with no
+// allocation of its own yet has nowhere to write it.
+fn host_targets_write(root: String) {
+    let dir = dna::allocation_dir(root);
+    if len(dir) == 0 || !std::io::fs::file_exists(dir + "/senses.d") { return; }
+    let b = std::json::Builder { };
+    b.begin_array();
+    b.begin_object();
+    b.begin_array_field("targets");
+    b.string_value("host.docker.internal:" + to_string(NODE_EXPORTER_PORT));
+    b.end_array();
+    b.begin_object_field("labels");
+    b.string_field("host", dna::host_label("local"));
+    b.end_object();
+    b.end_object();
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.host");
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let h = dna::host_of_row(e.body);
+        if h.state == "removed" || h.provider != "ssh" || len(h.address) == 0 { continue; }
+        b.begin_object();
+        b.begin_array_field("targets");
+        b.string_value(h.address + ":" + to_string(NODE_EXPORTER_PORT));
+        b.end_array();
+        b.begin_object_field("labels");
+        b.string_field("host", h.name);
+        b.end_object();
+        b.end_object();
+    }
+    b.end_array();
+    let tmp = dir + "/senses.d/.hosts.json.tmp";
+    let mut wrote = true;
+    std::io::fs::write_file(tmp, b.result() + "\n") or { wrote = false; };
+    if wrote { std::io::fs::rename(tmp, dir + "/senses.d/hosts.json") or discard; }
 }
 
 // The allocations placed on the host `name`, space-separated
@@ -280,6 +330,7 @@ fn habitat_host_remove(root: String, r: HostRemove, by: String) -> HostRemoval {
         };
     }
     let report = dna::teardown_run(root, plan, by);
+    host_targets_write(root);
     let after = dna::recorded_host(root, r.name);
     if !dna::teardown_all_done(report) {
         return HostRemoval {

@@ -38,7 +38,9 @@ const MEMORY_FROM_KEY: String = "HALE_DNA_MEMORY_FROM";
 // The origin a DSN derived from the organism's memory allocation in the
 // local habitat records.
 fn memory_allocation_name(repo: String) -> String {
-    let service = allocation_service(repo, "memory");
+    // the server its record is on: its own, or the habitat's for a tenant
+    // (`memory_root`), as the toolchain's `memory_allocation_name` says it
+    let service = allocation_service(memory_root(repo), "memory");
     return if len(service) > 0 { "habitat " + local_habitat_project() + "/" + service } else { "" };
 }
 
@@ -1388,6 +1390,7 @@ fn allocation_compose_text(k: String) -> String {
         + "      - \"host.docker.internal:host-gateway\"\n"
         + "    volumes:\n"
         + "      - ./senses.yml:/etc/prometheus/senses.yml:ro\n"
+        + "      - ./senses.d:/etc/prometheus/senses.d:ro\n"
         + "      - senses-" + k + ":/prometheus\n"
         + "volumes:\n"
         + "  memory-" + k + ": {}\n"
@@ -1410,7 +1413,11 @@ fn allocation_senses_text() -> String {
         + "global:\n  scrape_interval: 5s\nscrape_configs:\n"
         + "  - job_name: spine\n    honor_labels: true\n    static_configs:\n      - targets: [\"host.docker.internal:9464\"]\n"
         + "  - job_name: node\n    honor_labels: true\n    static_configs:\n      - targets: [\"host.docker.internal:9465\"]\n"
-        + "  - job_name: head\n    honor_labels: true\n    static_configs:\n      - targets: [\"host.docker.internal:9466\"]\n";
+        + "  - job_name: head\n    honor_labels: true\n    static_configs:\n      - targets: [\"host.docker.internal:9466\"]\n"
+        + "# The machines' node exporters, labelled `host`: the habitat's store reads them\n"
+        + "# from senses.d/ (its own machine, and each host the habitat adds, written as\n"
+        + "# hosts come and go); any other organism's store finds none there.\n"
+        + "  - job_name: host\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/*.json\"]\n";
 }
 
 // `docker compose` on the organism's allocations in the local habitat,
@@ -1431,6 +1438,9 @@ fn allocation_compose(root: String) -> String {
     if !std::io::fs::file_exists(dir + "/senses.yml") {
         std::io::fs::write_file(dir + "/senses.yml", allocation_senses_text()) or discard;
     }
+    // the store's targets of the machines, mounted as a directory: a file
+    // written in place there is seen, where a file's own mount keeps the old
+    if run_tool("mkdir\n-p\n" + dir + "/senses.d").code != 0 { return ""; }
     let ports = dir + "/ports.yaml";
     if !std::io::fs::file_exists(ports) {
         let text = "# The host ports these allocations publish on, chosen once (GH #1653).\n"

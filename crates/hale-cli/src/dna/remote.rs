@@ -34,6 +34,7 @@ pub(super) const EXPECT_ENV: &str = "HALE_DNA_HABITAT_EXPECT";
 /// habitat's machine, as a local `up` hands it to its body and face.
 const FORWARDED: &[&str] = &[
     "HALE_DNA_DISCOVER",
+    "HALE_DNA_GRAFANA",
     "HALE_DNA_TRUSTED_LOCAL",
     "HALE_DNA_WAIT_SCALE",
     "HALE_DNA_FORGE",
@@ -109,6 +110,67 @@ impl Target {
         } else {
             Err(format!("ssh {}: {}", self.host, String::from_utf8_lossy(&out.stderr).trim()))
         }
+    }
+}
+
+/// A script of the habitat's (`readings`) run on `host` over the person's
+/// own login, made with the `sudo` that suits the run: at a terminal the
+/// session has one (sudo asks there), its output shown as it comes and its
+/// outcome line kept back; elsewhere `sudo -n` and the output captured.
+/// The outcome, or why it failed.
+pub(super) fn login_script(host: &str, user: Option<&str>, port: Option<u16>, script: impl Fn(&str) -> String) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let t = Target { host: host.to_string(), user: user.map(str::to_string), port };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut child = t
+        .ssh(tty)
+        .arg(script(super::readings::sudo_word(tty)))
+        .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(if tty { Stdio::inherit() } else { Stdio::piped() })
+        .spawn()
+        .map_err(|e| format!("ssh: {e}"))?;
+    let mut all = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let mut pending = String::new();
+        let mut buf = [0u8; 4096];
+        let mut shown = std::io::stdout();
+        while let Ok(n) = out.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+            all.push_str(&chunk);
+            if !tty {
+                continue;
+            }
+            // a terminal's: every line but the outcome, and a prompt (a
+            // line not ended yet that cannot be the outcome) at once
+            pending.push_str(&chunk);
+            while let Some(i) = pending.find('\n') {
+                let line: String = pending.drain(..=i).collect();
+                if !line.trim_start_matches('\r').starts_with("hale-node:") {
+                    let _ = shown.write_all(line.as_bytes());
+                }
+            }
+            if !pending.is_empty() && !"hale-node:".starts_with(pending.trim_start_matches('\r')) && !pending.trim_start_matches('\r').starts_with("hale-node:") {
+                let _ = shown.write_all(pending.as_bytes());
+                pending.clear();
+            }
+            let _ = shown.flush();
+        }
+    }
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    let status = child.wait().map_err(|e| format!("ssh: {e}"))?;
+    if status.success() {
+        Ok(super::readings::outcome_of(&all))
+    } else if status.code() == Some(255) {
+        Err(format!("ssh {host} did not connect{}", if err.trim().is_empty() { String::new() } else { format!(": {}", err.trim()) }))
+    } else {
+        Err(super::readings::last_words(&err, &all))
     }
 }
 
@@ -466,6 +528,9 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
         (LISTEN_ENV, p["listen"].as_str().unwrap_or("127.0.0.1").to_string()),
         (ADDRESS_ENV, p["host"].as_str().unwrap_or("").to_string()),
         (EXPECT_ENV, p["identity"].as_str().unwrap_or("").to_string()),
+        // the machine's exporter is the person's login's to install over
+        // SSH (a Mac's is launchd's, outside the image), never the image's
+        ("HALE_DNA_NODE_EXPORTER", "off".to_string()),
     ];
     for k in FORWARDED {
         if let Ok(v) = std::env::var(k) {
@@ -652,6 +717,16 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
         out.push(format!("{:<8}{link}", "sign in"));
     }
     out.push(format!("{:<8}{}… ({})", "record", &identity[..12.min(identity.len())], if kept.is_some() { "reconnected; the pointer is the same habitat's" } else { "pointed at from this machine" }));
+    if !super::readings::grafana_off() {
+        out.push(format!("{:<8}{face}{}", "grafana", super::readings::GRAFANA_PATH));
+    }
+    if !super::readings::node_exporter_off() {
+        super::progress(&format!("installing the node exporter on {host}, over your SSH login"));
+        out.push(match login_script(host, user, port, super::readings::install_script) {
+            Ok(o) => super::readings::install_line(host, &o),
+            Err(why) => format!("{:<8}{host}: no exporter: {why}", "node"),
+        });
+    }
     Ok(out)
 }
 
@@ -669,6 +744,9 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     let link = super::sign_in_link(p["face"].as_str().unwrap_or(""));
     if face_up && !link.is_empty() {
         println!("{:<8}{link}", "sign in");
+    }
+    if face_up && !super::readings::grafana_off() {
+        println!("{:<8}{}{}", "grafana", p["face"].as_str().unwrap_or(""), super::readings::GRAFANA_PATH);
     }
     println!("{:<8}{head} ({})", "head", if up { "up" } else { "down" });
     if !up {
@@ -794,6 +872,9 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         return ExitCode::from(ran.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1));
     }
     if plan {
+        if !super::readings::node_exporter_off() {
+            println!("  - and from this machine, over your SSH login: the habitat's node exporter off {} and off each host below, where it installed one", t.host);
+        }
         for h in &hosts {
             let user = h["user"].as_str().unwrap_or("");
             if is_habitat_user(user) {
@@ -820,6 +901,18 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
                     match unauthorize_key(name, user, port, &comment) {
                         Ok(()) => println!("the habitat's key is out of {user}@{name}:~/.ssh/authorized_keys"),
                         Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {user}'s ~/.ssh/authorized_keys there"),
+                    }
+                }
+                if !super::readings::node_exporter_off() {
+                    let machines = std::iter::once((t.host.clone(), t.user.clone(), t.port)).chain(hosts.iter().map(|h| {
+                        (h["name"].as_str().unwrap_or("").to_string(), None, h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0))
+                    }));
+                    for (name, user, port) in machines {
+                        match login_script(&name, user.as_deref(), port, super::readings::remove_script) {
+                            Ok(o) if o == "removed" => println!("the habitat's node exporter is removed from {name}"),
+                            Ok(_) => {}
+                            Err(why) => println!("the habitat's node exporter is left on {name} ({why})"),
+                        }
                     }
                 }
                 remove_pointer();

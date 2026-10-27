@@ -32,7 +32,7 @@ fn source() -> String {
 // Run `argv` (newline-separated) in `dir`: discovery and hosted models off.
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }

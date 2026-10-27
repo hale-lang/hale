@@ -32,7 +32,7 @@ main locus App {
     params { repo: String = ""; bin: String = ""; spine: String = ""; }
     // `n` projectors at once, each bounded; what each said, one per line.
     fn project(n: Int) -> String {
-        let mut script = "cd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\"; ";
+        let mut script = "cd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\"; ";
         let mut i = 0;
         while i < n {
             script = script + "timeout 120 \"$3\" \"$1\" 90 >\"$1/../projector-" + to_string(i)

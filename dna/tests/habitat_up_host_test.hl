@@ -29,7 +29,7 @@ fn toolchain() -> String {
 fn in_dir(dir: String, config: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         1200,
-        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && unset HALE_DNA_TRUSTED_LOCAL && exec \"$@\"\nsh\n"
             + dir + "\n" + config + "\n" + argv,
     );
 }

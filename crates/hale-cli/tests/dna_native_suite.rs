@@ -663,6 +663,12 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>, habitat: Option<&S
     // its own body with `HALE_DNA_COMPOSE=on`; each fixture that runs a
     // repository body also says `off` itself, so a run by hand is as safe.
     cmd.env("HALE_DNA_COMPOSE", "off");
+    // Nor does a fixture's habitat install the machine's node exporter or
+    // run a Grafana (a machine-wide service; an image pull): each fixture
+    // that runs a habitat says `off` itself too, and the one about them
+    // (habitat_up_test) opts in on its own `up`.
+    cmd.env("HALE_DNA_NODE_EXPORTER", "off");
+    cmd.env("HALE_DNA_GRAFANA", "off");
     // GH #795: a fixture's bounded waits are written for a quiet
     // machine, and here they are not on one — the slices run beside the
     // rest of the workspace's tests, and beside one another, with an

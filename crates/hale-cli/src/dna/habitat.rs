@@ -27,6 +27,9 @@ mod forget;
 #[path = "remote.rs"]
 mod remote;
 
+#[path = "readings.rs"]
+mod readings;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -768,6 +771,15 @@ fn host(args: &[String]) -> ExitCode {
                             if pf("state") != "ready" {
                                 println!("{:<8}{}", "note", p["why"].as_str().unwrap_or("not ready yet: `hale habitat host probe` checks it again"));
                             }
+                            if !readings::node_exporter_off() {
+                                // the machine's readings, over the same login the account was made over
+                                let login = if own_user { None } else { Some(field("user")) };
+                                progress(&format!("installing the node exporter on {name}, over your SSH login"));
+                                println!("{}", match remote::login_script(&name, login.as_deref(), if own_user { login_port } else { port }, readings::install_script) {
+                                    Ok(o) => readings::install_line(&name, &o),
+                                    Err(why) => format!("{:<8}{name}: no exporter: {why}", "node"),
+                                });
+                            }
                         }
                         Err(code) => return code,
                     }
@@ -999,6 +1011,13 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     // the line its authorized_keys took, which the habitat cannot remove,
     // taken off over the person's own login
     let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+    if !readings::node_exporter_off() {
+        match remote::login_script(name, None, port, readings::remove_script) {
+            Ok(o) if o == "removed" => println!("the habitat's node exporter is removed from {name}, over your SSH login"),
+            Ok(_) => {}
+            Err(why) => println!("the habitat's node exporter is left on {name} ({why})"),
+        }
+    }
     if remote::is_habitat_user(&field("user")) {
         // the habitat's own account there, its home and key with it
         match remote::remove_user(name, port, &field("user")) {
@@ -1067,13 +1086,19 @@ fn migrate_lines(root: &Path) -> Result<Vec<String>, String> {
     // an environment that names servers of its own names its own store.
     // Nothing reads it but the reflexes, so one that cannot come up is said
     if !own_servers() {
-        match host_run("senses-up", root, &[]) {
-            Ok(o) if !o.starts_with("none: ") => out.push(format!("senses  up ({})", o.trim().trim_start_matches("HALE_DNA_SENSES_URL="))),
-            Ok(o) => out.push(format!("senses  not up: {}", o.trim().strip_prefix("none: ").unwrap_or(o.trim()))),
-            Err(e) => out.push(format!("senses  not up: {e}")),
-        }
+        out.push(senses_line(root));
     }
     Ok(out)
+}
+
+/// The senses' store of the organism at `root` brought up: what `up` and
+/// `migrate` say of it. One that cannot come up is said, and nothing stops.
+fn senses_line(root: &Path) -> String {
+    match host_run("senses-up", root, &[]) {
+        Ok(o) if !o.starts_with("none: ") => format!("senses  up ({})", o.trim().trim_start_matches("HALE_DNA_SENSES_URL=")),
+        Ok(o) => format!("senses  not up: {}", o.trim().strip_prefix("none: ").unwrap_or(o.trim())),
+        Err(e) => format!("senses  not up: {e}"),
+    }
 }
 
 /// Whether this environment names memory or nerves of its own.
@@ -1143,12 +1168,9 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
 /// role has no version of the habitat's: its schema is the heart's (a
 /// declared migration runs the heart's own tool, `run_heart_migrations`),
 /// so its allocation is recorded once and carries none.
-fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool) {
-    next_rows_as(row, id, role, version, slots, project, operator, None)
-}
-
-/// `next_rows`, the allocation naming `service_as` (a tenant's record on
-/// the habitat's memory names the habitat's server) when given.
+///
+/// The allocation names `service_as` (a tenant's record on the habitat's
+/// memory names the habitat's server) when given.
 #[allow(clippy::too_many_arguments)]
 fn next_rows_as(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool, service_as: Option<&str>) {
     let heart = PROVISIONED_HEART_ROLES.contains(&role);
@@ -1359,7 +1381,18 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
 /// (`app_owns`). Nothing when the graft placed nothing and chose nothing.
 pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
     let dir = PathBuf::from(local_habitat_dir()).join("allocations").join(key);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    // the allocation's directory holds its passwords' files: yours alone,
+    // as the secrets' provisioning makes it, whichever makes it first
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        if !dir.is_dir() {
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let mut placed = Vec::new();
     for role in ORGANISM_PARTS {
         let h = match part_choice(role) {
@@ -1972,6 +2005,11 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
             std::fs::write(name_file(), format!("{name}\n")).map_err(|e| format!("write {}: {e}", name_file().display()))?;
         }
         out.extend(birth(&genome, backends, name, with_body)?);
+        // its senses' store, as a migration brings it up: what the reflexes
+        // read and the habitat's Grafana charts
+        if !own_servers() {
+            out.push(senses_line(&genome));
+        }
     }
     let own = allocation_dir(&genome);
     let versions = toolchain_versions(&genome);
@@ -2099,8 +2137,13 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
     // habitat's birth goes on after it
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut proposed = 0;
+    // a pack whose batch the record holds was proposed (and, at birth,
+    // ratified): memory decides, never the local marker, which a stopped
+    // birth may have lost
+    let recorded_rows = rows_of(genome);
     for (pack, args) in [("habitat", vec!["apply", "habitat", "--on-holes"]), ("standard", vec!["apply", "standard"])] {
-        if have.contains(&pack) {
+        let recorded = recorded_rows.iter().any(|r| r["kind"] == "batch.proposed" && r.to_string().contains(&format!("{pack}@")));
+        if have.contains(&pack) || recorded {
             continue;
         }
         let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -2379,6 +2422,13 @@ fn habitat_listen_host() -> String {
 /// its `habitat.profile` row and in `head.url`): the loopback for a local
 /// habitat, the host's name for one on another machine
 /// (`HALE_DNA_HABITAT_ADDRESS`, which `up --host` hands its containers).
+/// The habitat's own machine as its readings name it: the address it is
+/// recorded at, or `local` on the loopback (as the head's `host_label`).
+fn host_label_here() -> String {
+    let at = habitat_address();
+    if at == "127.0.0.1" || at == "localhost" { "local".to_string() } else { at }
+}
+
 fn habitat_address() -> String {
     std::env::var(remote::ADDRESS_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string())
 }
@@ -2505,6 +2555,26 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         }
     }
 
+    // Grafana, behind the face: on the face's loopback at the block's
+    // GRAFANA_OFFSET, trusting the header only the two of them know
+    // (none without a senses' store of the habitat's own to chart: an
+    // operator's backends hold none)
+    let key = dir.file_name().map(|k| k.to_string_lossy().into_owned()).unwrap_or_default();
+    let senses = readings::senses_port(&dir, &key);
+    let grafana = match senses {
+        Some(senses) if !readings::grafana_off() => {
+            let reach = if is_macos { "host.docker.internal" } else { "127.0.0.1" };
+            readings::write_provisioning(Path::new(&hab_dir), &format!("http://{reach}:{senses}"))?;
+            Some((base + readings::GRAFANA_OFFSET, readings::grafana_header(Path::new(&hab_dir))?))
+        }
+        _ => None,
+    };
+    let grafana_note = (grafana.is_none() && senses.is_none() && !readings::grafana_off()).then(|| format!("{:<8}none: the habitat has no senses' store of its own to chart ({} publishes none)", "grafana", dir.join("ports.yaml").display()));
+    let grafana_env = grafana.as_ref().map(|(port, header)| format!("      HALE_DNA_GRAFANA_PORT: \"{port}\"\n      HALE_DNA_GRAFANA_HEADER: \"{header}\"\n")).unwrap_or_default();
+    // what the senses' store scrapes of the machines: this one, until the
+    // head writes the hosts it adds beside it
+    readings::seed_targets(&dir, &host_label_here())?;
+
     let drain_secs = drain_window().as_secs();
     let g = genome.display();
     let fstate = face_state_dir().display().to_string();
@@ -2537,7 +2607,11 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_FACE_HOME: \"/app/\"\n      HALE_DNA_IDENTITY: \"publish\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
+    services_block.push_str(&grafana_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
+    if let Some((port, header)) = &grafana {
+        services_block.push_str(&readings::grafana_service(&hab_dir, *port, &face_url, header, &user_spec));
+    }
 
     let compose_path = dir.join("compose.yaml");
     let existing_compose = std::fs::read_to_string(&compose_path).unwrap_or_else(|_| "services:\n".to_string());
@@ -2562,7 +2636,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let base_ports = existing_ports.split("# habitat-body-and-face\n").next().unwrap_or(&existing_ports).trim_end().to_string();
     let new_ports = if is_macos {
         let mut p = format!("{base_ports}\n# habitat-body-and-face\n  face:\n    ports:\n");
-        for offset in 0..HEAD_BLOCK {
+        for offset in (0..HEAD_BLOCK).filter(|o| *o != readings::GRAFANA_OFFSET) {
             let port = base + offset;
             p.push_str(&format!("      - \"{declared}:{port}:{port}\"\n"));
         }
@@ -2586,7 +2660,20 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         .arg(&ports_path)
         // their backends are the habitat's allocations, brought up by
         // their provider: `depends_on` orders the stop, never this start
-        .args(["up", "-d", "--no-deps", "body", "face"]);
+        .args(["up", "-d", "--no-deps", "body", "face"])
+        .args(grafana.as_ref().map(|_| "grafana"));
+    // a Grafana an earlier `up` started, when this one runs none (the
+    // project holds the organisms' allocations too: never --remove-orphans)
+    if grafana.is_none() {
+        if let Docker::Answered(ids) = docker(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={}", local_habitat_project()), "--filter", "label=com.docker.compose.service=grafana"]) {
+            let ids: Vec<&str> = ids.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            if !ids.is_empty() {
+                let mut a = vec!["rm", "-f"];
+                a.extend(ids);
+                let _ = docker(&a);
+            }
+        }
+    }
     if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
         cmd.stderr(std::process::Stdio::inherit());
     }
@@ -2623,6 +2710,13 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let link = sign_in_link(&face_url);
     if !link.is_empty() {
         lines.push(format!("{:<8}{link}", "sign in"));
+    }
+    if grafana.is_some() {
+        lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in)", "grafana", readings::GRAFANA_PATH));
+    }
+    lines.extend(grafana_note);
+    if let Some(l) = readings::install_here(&host_label_here()) {
+        lines.push(l);
     }
     Ok(lines)
 }
@@ -2691,6 +2785,9 @@ fn status() -> ExitCode {
         Some(port) => {
             println!("{:<8}http://{}:{port}/ ({})", "face", habitat_address(), face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
             let link = sign_in_link(&format!("http://{}:{port}", habitat_address()));
+            if !readings::grafana_off() {
+                println!("{:<8}http://{}:{port}{}", "grafana", habitat_address(), readings::GRAFANA_PATH);
+            }
             if !link.is_empty() && face_running().is_some() {
                 println!("{:<8}{link}", "sign in");
             }
@@ -2719,8 +2816,12 @@ fn status() -> ExitCode {
             if role == "database" && !row["roles"]["database"].is_object() {
                 continue;
             }
-            // the heart's database is a tenant of the memory server
-            let service = if role == "database" { format!("memory-{key}") } else { format!("{role}-{key}") };
+            // the heart's database is a tenant of the memory server, and a
+            // record the habitat's memory keeps names the habitat's service
+            let own = format!("memory-{key}");
+            let memory_service = row["roles"]["memory"]["service"].as_str().filter(|s| s.starts_with("memory-")).unwrap_or(&own).to_string();
+            let tenant = memory_service != own;
+            let service = if role == "database" || role == "memory" { memory_service.clone() } else { format!("{role}-{key}") };
             let on_operator = row["roles"][role]["service"].as_str() == Some("operator");
             let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
@@ -2733,7 +2834,8 @@ fn status() -> ExitCode {
                 (Some(had), None) => format!(", schema {had}"),
                 (None, _) => String::new(),
             };
-            println!("  {role:<7} {service} {state}{version}{migration}");
+            let whose = if tenant && (role == "memory" || role == "database") { if role == "memory" { ", the habitat's: a schema of its own there" } else { ", the habitat's: a database of its own there" } } else { "" };
+            println!("  {role:<7} {service} {state}{whose}{version}{migration}");
         }
     }
     ExitCode::SUCCESS
@@ -2823,6 +2925,7 @@ fn down(args: &[String]) -> ExitCode {
 fn stop_processes(said: &mut Vec<String>) -> Result<(), String> {
     let project = local_habitat_project();
     for (service, timeout, msg) in [
+        ("grafana", None, "stopped the habitat's Grafana (compose service grafana)"),
         ("face", None, "stopped the habitat's face (compose service face)"),
         ("body", Some(drain_window().as_secs().to_string()), "stopped the habitat's body (compose service body), drained"),
     ] {
@@ -3615,7 +3718,8 @@ fn attach_codebases(root: &Path) -> Result<Vec<String>, String> {
 }
 
 /// GH #1653: the `database` heart role provisioned for the organism at
-/// `root`, a tenant database of its memory server, and recorded as its
+/// `root`, a tenant database of the memory server its record is on (its
+/// own, or the habitat's when that keeps the record), and recorded as its
 /// allocation; the heart is handed `HALE_DNA_DATABASE_DSN`, which names
 /// its vault slot.
 pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, String> {
@@ -3625,7 +3729,8 @@ pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, 
     }
     let slots = o.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
     record_allocation(root, "database", 0, slots, backends == "operator")?;
-    Ok(format!("database a tenant database of the organism's memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
+    let whose = if memory_root(root) == root { "the organism's" } else { "the habitat's" };
+    Ok(format!("database a tenant database of {whose} memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
 }
 
 /// GH #1653: the `broker` heart role, recorded as the organism's
@@ -3866,13 +3971,13 @@ mod tests {
     fn a_heart_role_carries_no_version() {
         let mut row = serde_json::json!({});
         let id = "0123456789abcdef0123456789abcdef";
-        next_rows(&mut row, id, "database", 0, "postgres-heart_x", "p", false);
-        next_rows(&mut row, id, "database", 0, "postgres-heart_x", "p", false);
+        next_rows_as(&mut row, id, "database", 0, "postgres-heart_x", "p", false, None);
+        next_rows_as(&mut row, id, "database", 0, "postgres-heart_x", "p", false, None);
         let pending = row["pending"].as_array().unwrap();
         assert_eq!(pending.len(), 1, "allocated once, and no migration row of the habitat's: {pending:?}");
         assert_eq!(pending[0]["kind"], "habitat.allocated");
         assert!(row["roles"]["database"]["schema_version"].is_null());
-        next_rows(&mut row, id, "memory", 3, "", "p", false);
+        next_rows_as(&mut row, id, "memory", 3, "", "p", false, None);
         assert_eq!(row["roles"]["memory"]["schema_version"], 3);
     }
 
@@ -3903,7 +4008,7 @@ mod tests {
     fn allocation_rows_follow_the_version() {
         let id = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
         let mut row = serde_json::json!({ "root": "/a/checkout" });
-        next_rows(&mut row, id, "memory", 9, "postgres-owner-1234567890ab", "hale-habitat-local-x", false);
+        next_rows_as(&mut row, id, "memory", 9, "postgres-owner-1234567890ab", "hale-habitat-local-x", false, None);
         let kinds: Vec<&str> = row["pending"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["habitat.allocated", "habitat.migrated"]);
         let allocated = row["pending"][0]["body"].as_str().unwrap();
@@ -3912,16 +4017,16 @@ mod tests {
         // phase 4: every allocation names its provider and its host
         assert!(allocated.contains("\"provider\":\"compose\"") && allocated.contains("\"host\":\"local\""), "{allocated}");
         let mut adopted = serde_json::json!({});
-        next_rows(&mut adopted, id, "nerves", 2, "", "p", true);
+        next_rows_as(&mut adopted, id, "nerves", 2, "", "p", true, None);
         let on_operator = adopted["pending"][0]["body"].as_str().unwrap();
         assert!(on_operator.contains("\"provider\":\"operator\"") && on_operator.contains("\"host\":\"\"") && on_operator.contains("\"service\":\"operator\""), "{on_operator}");
         // flushed, then migrated again at the same version: nothing owed
         row["pending"] = serde_json::json!([]);
         row["roles"]["memory"]["recorded"] = serde_json::json!(true);
-        next_rows(&mut row, id, "memory", 9, "", "p", false);
+        next_rows_as(&mut row, id, "memory", 9, "", "p", false, None);
         assert!(row["pending"].as_array().unwrap().is_empty());
         // the version moves: one migrated row, from the old version
-        next_rows(&mut row, id, "memory", 10, "", "p", false);
+        next_rows_as(&mut row, id, "memory", 10, "", "p", false, None);
         let moved = &row["pending"][0];
         assert_eq!(moved["kind"], "habitat.migrated");
         assert!(moved["body"].as_str().unwrap().contains("\"from\":9") && moved["body"].as_str().unwrap().contains("\"schema_version\":10"));

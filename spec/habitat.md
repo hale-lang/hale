@@ -778,7 +778,8 @@ only for a crossing, color only for state (up, degraded, down).
 The page is one session with four screens, each a module of the same
 directory, switched by the hash (`#habitat`, `#hardware`,
 `#infrastructure`, `#organisms`), with no build step and no graph
-renderer. Every call is the generated client's; the page speaks no other
+renderer; its navigation also links the organization shell and the
+habitat's Grafana (`/grafana/`, Readings below). Every call is the generated client's; the page speaks no other
 HTTP. The head relays the surface's reads and the Board's acts for a
 signed-in visitor: the standard face presents the visitor's session as the
 call's bearer on any `Commands::` row, and the row keeps its own gate (a
@@ -816,6 +817,77 @@ person who does not hold the Board is refused as the row says).
   organism offers `remove`: its plan (`Commands::plan_remove_organism`)
   with a field for its name, which `Commands::remove_organism` checks with
   the plan's digest (a crossing, so brass).
+
+## Readings: the machines' exporters and Grafana
+
+The habitat reads the machines it runs on and charts them. Every machine
+it uses runs a **Prometheus node exporter** on `:9100`, and the habitat's
+senses' store scrapes each as the job `host`, its series labelled `host`
+(the habitat's own machine by the name `host_label` gives it, a host by
+its name). A **Grafana** behind the habitat's face charts them, its one
+data source the habitat's senses' store.
+
+**The exporter is the machine's.** One per machine, whichever habitats use
+it, installed over the person's own login, where sudo can ask:
+
+| When | Where |
+|---|---|
+| `hale habitat up` | this machine, the habitat's |
+| `hale habitat up --host <h>` | `<h>`, over SSH from the person's machine (the run inside the habitat's image installs none) |
+| `hale habitat host add <h>` | `<h>`, over the same login its account was made over, once it is probed |
+| `host remove <h>`, `down --forget` | taken off each, the same way; a remote forget takes it off the habitat's machine and every host it named |
+
+On **Linux** it is the container `hale-node-exporter`
+(`prom/node-exporter`, pinned), on the host's network and process
+namespace, reading the root filesystem read-only, labelled
+`lang.hale.node-exporter`, restarted unless stopped. On **macOS** it is
+the release's own `node_exporter` (pinned, its archive checked against the
+release's SHA-256) under launchd, `lang.hale.node-exporter`: a
+LaunchAgent of the person's when the login has a GUI session (no sudo),
+else a LaunchDaemon run as `nobody` (sudo, at a terminal). A container
+there would read the VM docker runs in, not the Mac. An exporter that
+already answers on `:9100` with node readings is scraped as it is and
+never touched; a removal takes off only the habitat's own (the container
+by its label, the launchd job by its label). An install that cannot run
+(sudo with no terminal, docker the login cannot reach, another OS) says
+why and stops nothing: `up` and `host add` go on. `HALE_DNA_NODE_EXPORTER=off`
+turns all of it off for a run.
+
+**What is scraped follows the record.** The store reads
+`senses.d/*.json` beside its allocation (mounted as a directory, so a file
+renamed into it is seen): `up` writes `hosts.json` with this machine
+(`host.docker.internal:9100`, the store's container reaching it over the
+host gateway) when there is none, and the head rewrites it whole from the
+`habitat.host` rows whenever one is written (`add_host`, `probe_host`) and
+after a host's removal, each host at `<address>:9100`. A grafted
+organism's store has the same job and an empty directory.
+
+**Grafana is behind the face.** `up` runs the compose service `grafana`
+(`grafana/grafana`, pinned) in the face's network namespace, on the
+loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
+published on macOS but for that port), served under `/grafana/` of the
+face. Its provisioning (`<habitat>/grafana/provisioning`, written at
+every `up`) is the habitat's senses' store as its one data source (uid
+`habitat-senses`) and the habitat's dashboards, `Hosts` its home: whether
+each machine answers, its uptime, CPUs and memory, and over time CPU busy,
+load per core, memory used, disk used, network and disk throughput, for
+Linux and macOS alike. Its data is `<habitat>/grafana/data`. The operator
+face's navigation links it as `dashboards`.
+
+Grafana signs in no one itself: its login form, basic authentication and
+anonymous access are off, and its admin password is drawn at each `up`.
+It trusts the person's name on one header (Grafana's proxy
+authentication), whose name is drawn once per habitat (`X-Hale-Grafana-`
+and 32 hex digits, in `<habitat>/grafana.secrets`, 0600) and known only to
+the face and Grafana. For every request under `/grafana/` but Grafana's
+public build (`/grafana/public/`, the same for everyone), the face asks
+the head's gate at `/` as the browser's session, exactly as for the
+shell: a refusal is passed on as it came, and a 204 names the person
+(`X-Hale-Person`), whom the face relays to Grafana under the header. The
+browser's own `X-Hale-*` and `Authorization` lines never reach Grafana. A
+person is signed up in Grafana at their first visit, as an Editor.
+`HALE_DNA_GRAFANA=off` runs none, and a habitat with no senses' store of
+its own (its allocation publishes none) runs none and says so.
 
 ## Pairing: an agent beside a person
 

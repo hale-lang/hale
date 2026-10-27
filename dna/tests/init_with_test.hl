@@ -97,7 +97,7 @@ fn make(scratch: String, name: String) -> String {
 // The command that starts a project's organization in the background, its
 // log in `.hale/body.log`.
 fn start_of(repo: String, owner: String, nats: String) -> String {
-    return "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
+    return "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
         + repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
 }
 
@@ -148,13 +148,13 @@ locus App {
         if len(self.head) > 0 {
             return dna::run_tool_timeout(
                 900,
-                "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+                "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
                     + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args,
             );
         }
         return dna::run_tool_timeout(
             900,
-            "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && shift && exec \"$@\"\nsh\n"
                 + self.repo + "\n" + toolchain() + "\ndna\n" + args,
         );
     }

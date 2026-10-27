@@ -53,6 +53,21 @@ In habitat commands, a **host** always refers to a physical or virtual machine w
 | `hale habitat host probe <name>` | Re-probes `<name>` over SSH. Once `~/.ssh/authorized_keys` is updated, transitions the host from `pending-key` to `ready` and records its capabilities (`docker compose`, `systemd-user`, OS, and CPU architecture). |
 | `hale habitat host remove <name> [--plan]` | Removes a registered host from the habitat record, planned first: on a host with allocations the plan lists each one and what stops or is deleted there, and the removal waits for the host's name typed back at a terminal (`--plan` prints the plan and exits). |
 
+### Machine Readings and Dashboards (node exporters, Grafana)
+
+The habitat reads every machine it runs on. `hale habitat up` (on this machine, or on the machine `--host` names, over your SSH login) and `hale habitat host add` (on the new host) install a Prometheus **node exporter** on `:9100`: on Linux the container `hale-node-exporter`, on macOS the release's own `node_exporter` under launchd (a LaunchAgent when you are logged in at the Mac, otherwise a LaunchDaemon, for which sudo asks once at your terminal). A container on a Mac would read the VM docker runs in, not the Mac. If an exporter already answers on `:9100`, the habitat scrapes it as it is and never touches it. `host remove` and `down --forget` take the habitat's own exporter off again.
+
+The habitat's senses' store (its Prometheus) scrapes each machine as the job `host`, with a `host` label naming the machine. The habitat keeps the target list in step with its hosts: adding or removing a host rewrites it.
+
+A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike. `up` and `status` print its address:
+
+```text
+grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in)
+node    local: node_exporter 1.12.1 on :9100, a container of the habitat's (hale-node-exporter)
+```
+
+`HALE_DNA_NODE_EXPORTER=off` and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
+
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 
 While a **pack** is a reusable template of rows adopted inside an existing organism (positions, mandates, practices, knowledge), a **sapling** is a complete, prebuilt organism template published in a nursery and pinned by repository URL, Git revision, file tree SHA-256 digest, and default packs.
@@ -104,7 +119,7 @@ face    http://127.0.0.1:<port>/ (up, ...)
 
 ### 2. Sign In to the Operator Face
 
-Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)).
+Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
 
 ### 3. Graft the `voice` Sapling (Local or LAN Host)
 

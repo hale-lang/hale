@@ -23,7 +23,7 @@ fn toolchain() -> String {
 // fixture's own so the host binary is found in one place.
 fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n"
             + dir + "\n" + cache + "\n" + argv,
     );
 }

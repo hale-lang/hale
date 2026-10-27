@@ -36,7 +36,7 @@ fn toolchain() -> String {
 // habitat's own backends then, which refuse either.
 fn in_dir(dir: String, vault: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && { [ -n \"$HALE_DNA_MEMORY_DSN_OWNER\" ] && [ -n \"$HALE_DNA_NATS_URL_OWNER\" ] || unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; } && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && { [ -n \"$HALE_DNA_MEMORY_DSN_OWNER\" ] && [ -n \"$HALE_DNA_NATS_URL_OWNER\" ] || unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; } && exec \"$@\"\nsh\n"
             + dir + "\n" + vault + "\n" + argv,
     );
 }

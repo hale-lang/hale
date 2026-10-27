@@ -33,7 +33,7 @@ main locus App {
     fn in_dir(dir: String, argv: String) -> dna::RunResult {
         return dna::run_tool_timeout(
             dna::wait_secs(120),
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
                 + dir + "\n" + self.head + "\n" + argv,
         );
     }
@@ -74,7 +74,7 @@ main locus App {
         // the record is born in memory (GH #1590): `new` keeps the owner's DSN
         let made = dna::run_tool_timeout(
             dna::wait_secs(300),
-            "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
                 + scratch + "\n" + dna::in_habitat(toolchain() + "\nhabitat\ngraft\nteam"),
         );
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);

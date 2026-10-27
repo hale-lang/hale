@@ -26,7 +26,8 @@ fn toolchain() -> String {
 // Run `argv` (newline-separated) in `dir`, model discovery off.
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
+            + dir
             + "\n" + argv,
     );
 }
@@ -142,7 +143,7 @@ main locus App {
     fn cli(app: String, args: String) -> String {
         let head = if app == self.firm { self.firm_head } else { self.acct_head };
         let r = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" && shift 3 && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" && shift 3 && exec \"$@\"\nsh\n"
                 + app + "\n" + head + "\n" + self.nerves + "\n" + toolchain() + "\ndna\n" + args,
         );
         return r.stdout + r.stderr;
@@ -304,11 +305,11 @@ main locus App {
             "two records: " + firm_genesis + " " + acct_genesis,
         );
         let fm = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_RECEIPT_KEY=handoff-test-receipt-key && exec \"$3\" dna memory migrate\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_RECEIPT_KEY=handoff-test-receipt-key && exec \"$3\" dna memory migrate\nsh\n"
                 + firm + "\n" + owner + "\n" + toolchain(),
         );
         let am = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_RECEIPT_KEY=handoff-test-receipt-key && exec \"$3\" dna memory migrate\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_RECEIPT_KEY=handoff-test-receipt-key && exec \"$3\" dna memory migrate\nsh\n"
                 + acct + "\n" + owner + "\n" + toolchain(),
         );
         self.firm_head = line_value(fm.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
@@ -319,11 +320,11 @@ main locus App {
         );
         // the accountant's inbox holds seven waiting envelopes from one sender: its bound
         let fnv = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NATS_URL_OWNER=\"$2\" && exec \"$3\" dna nerves migrate\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_NATS_URL_OWNER=\"$2\" && exec \"$3\" dna nerves migrate\nsh\n"
                 + firm + "\n" + nats_owner + "\n" + toolchain(),
         );
         let anv = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NATS_URL_OWNER=\"$2\" HALE_DNA_EXCHANGE_PER_SENDER=7 && exec \"$3\" dna nerves migrate\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_NATS_URL_OWNER=\"$2\" HALE_DNA_EXCHANGE_PER_SENDER=7 && exec \"$3\" dna nerves migrate\nsh\n"
                 + acct + "\n" + nats_owner + "\n" + toolchain(),
         );
         std::test::assert(
