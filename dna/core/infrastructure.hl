@@ -640,17 +640,29 @@ fn containers_state(what: String, seen: String) -> AllocationState {
     return AllocationState { detail: "none of " + to_string(n) + " running" };
 }
 
-// An allocation served at a loopback `address` (`http://127.0.0.1:<port>`):
-// up while something accepts connections there, as this process reaches
-// this machine's loopback (`loopback_host`).
+// An allocation served at `address` (`http://<host>:<port>`): up while
+// something accepts connections there. The loopback is reached as this
+// process reaches this machine's (`loopback_host`); the habitat's declared
+// name (`hale habitat up --host keep` records `http://keep:<port>`) is
+// dialed by that name, then at the loopback, where a listener on every
+// interface of a docker VM answers as well.
 fn observe_address(address: String) -> AllocationState {
-    let at = std::str::index_of(address, "127.0.0.1:");
-    if at < 0 { return AllocationState { detail: "no address assigned yet" }; }
-    let rest = address[(at + 10)..len(address)];
+    if !std::str::starts_with(address, "http://") {
+        return AllocationState { detail: "no address assigned yet" };
+    }
+    let rest = address[7..len(address)];
     let slash = std::str::index_of(rest, "/");
-    let port = std::str::parse_int(if slash < 0 { rest } else { rest[0..slash] }) or 0;
+    let hostport = if slash < 0 { rest } else { rest[0..slash] };
+    let colon = std::str::index_of(hostport, ":");
+    if colon < 0 { return AllocationState { detail: "no port in " + address }; }
+    let host = hostport[0..colon];
+    let port = std::str::parse_int(hostport[(colon + 1)..len(hostport)]) or 0;
     if port < 1 || port > 65535 { return AllocationState { detail: "no port in " + address }; }
-    let fd = std::io::tcp::connect(loopback_host(), port) or - 1;
+    let local = host == "127.0.0.1" || host == "localhost";
+    let mut fd = std::io::tcp::connect(if local { loopback_host() } else { host }, port) or - 1;
+    if fd < 0 && !local && host == declared_address() {
+        fd = std::io::tcp::connect(loopback_host(), port) or - 1;
+    }
     if fd < 0 { return AllocationState { detail: "nothing answers at " + address }; }
     std::io::tcp::close_fd(fd);
     return AllocationState { state: "up", detail: "answers at " + address };
