@@ -116,13 +116,16 @@ admin machine reaches it over SSH as the person's own login (`--user` and
 `--port`, else the SSH config's; `HALE_HABITAT_SSH_CONFIG` names a config
 file for `ssh -F`), never with the habitat's keypair, which is drawn there,
 in the habitat's vault, as a local `up` draws it. The toolchain image is put
-there first: there already, sent from the admin machine's docker (`docker
-save | docker load`), or pulled as the published image of this toolchain's
-version when that image's `hale --version` answers as the admin's does;
-nothing is compiled there, and an image of a platform other than the
-machine's docker (`<os>/<arch>`) is never used or sent: the published
-image is pulled for the machine's platform instead, or the run is refused
-naming both. Then the same `hale habitat up` runs there in
+there first: there already; sent from the admin machine's docker (`docker
+save | docker load`); for a release's build (the tag `v<version>` on
+`hale-lang/hale` names the toolchain's own commit), pulled as that
+release's published image when its `hale --version` answers as the
+admin's does; else built there from the toolchain's commit on
+`hale-lang/hale`, the source a local habitat's compose renders as its
+`build:`, which needs that docker's `buildx` plugin and the commit pushed.
+A build from any other commit shares the version string and never pulls
+the release's image. An image of a platform other than the machine's
+docker (`<os>/<arch>`) is never used or sent. Then the same `hale habitat up` runs there in
 that image, as the login's user, on the host's network, with the user's
 data directory (`~/.local/share/hale`: the habitat, its genome, record
 and vault) and the docker socket mounted, and with

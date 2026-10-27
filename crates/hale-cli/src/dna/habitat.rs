@@ -30,6 +30,8 @@ static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
 const HABITAT_PIN: &str = env!("HALE_HABITAT_PIN");
+/// The toolchain's repository: a habitat image is built from a commit of it.
+pub(super) const HALE_GIT: &str = "https://github.com/hale-lang/hale.git";
 
 pub(super) fn set_head_flag(url: String) {
     let _ = HEAD_FLAG.set(url);
@@ -1943,7 +1945,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let build_spec = if override_image.is_some() {
         String::new()
     } else {
-        format!("    build:\n      context: \"https://github.com/hale-lang/hale.git#{pin}\"\n")
+        format!("    build:\n      context: \"{HALE_GIT}#{pin}\"\n")
     };
 
     let hab_dir = local_habitat_dir();

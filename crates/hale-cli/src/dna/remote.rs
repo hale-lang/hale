@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
-use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN};
+use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN, HALE_GIT};
 use crate::dna::local_habitat_dir;
 
 /// The pointer's file, in the local habitat's directory.
@@ -156,32 +156,73 @@ fn listen_address(host: &str) -> Result<String, String> {
     addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).map(|a| a.ip().to_string()).ok_or_else(|| format!("{host} resolves to no address here"))
 }
 
-/// The toolchain image on the machine: there already, sent from this
-/// machine's docker (`docker save | docker load`), or pulled from the
-/// published images when the one of this toolchain's version answers as
-/// this toolchain does. Nothing is compiled there.
 /// How the toolchain image reaches the machine, from the platforms
 /// (`<os>/<arch>`) of the machine's docker, of the tag there ("" when it
-/// has none) and of the tag here ("" when this docker has none): a tag of
-/// another platform is never used or sent, since the machine could not run
-/// it without emulation; the published image is pulled for the machine's
-/// platform instead.
+/// has none) and of the tag here ("" when this docker has none), and
+/// whether this toolchain is a release's build: there already; sent from
+/// this machine's docker (`docker save | docker load`); for a release's
+/// build, the published image pulled for the machine's platform; else built
+/// there from this toolchain's commit. A tag of another platform is never
+/// used or sent, since the machine could not run it without emulation.
 #[derive(Debug, PartialEq)]
 enum ImageRoute {
     There,
     Send,
     Pull { mismatch: Option<String> },
+    Build { mismatch: Option<String> },
 }
 
-fn image_route(machine: &str, there: &str, here: &str) -> ImageRoute {
+fn image_route(machine: &str, there: &str, here: &str, release: bool) -> ImageRoute {
     if !there.is_empty() && there == machine {
         return ImageRoute::There;
     }
     if !here.is_empty() && here == machine {
         return ImageRoute::Send;
     }
-    let other = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
-    ImageRoute::Pull { mismatch: other }
+    let mismatch = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
+    if release {
+        ImageRoute::Pull { mismatch }
+    } else {
+        ImageRoute::Build { mismatch }
+    }
+}
+
+/// The commit a tag names, from `git ls-remote <repo> refs/tags/<tag>
+/// refs/tags/<tag>^{}`: an annotated tag's peeled line, else the tag's own.
+fn tag_commit(ls_remote: &str, tag: &str) -> Option<String> {
+    let own = format!("refs/tags/{tag}");
+    let peeled = format!("refs/tags/{tag}^{{}}");
+    let mut found = None;
+    for (sha, name) in ls_remote.lines().filter_map(|l| l.split_once('\t')) {
+        if name.trim() == peeled {
+            return Some(sha.trim().to_string());
+        }
+        if name.trim() == own {
+            found = Some(sha.trim().to_string());
+        }
+    }
+    found
+}
+
+/// Whether this toolchain is the build of its version's release: the
+/// release tag `v<version>` on the toolchain's repository names this
+/// build's commit. A build from any other commit shares the version string
+/// and is never one; so is any build when the tag cannot be read.
+fn is_release_build() -> bool {
+    let pin = HABITAT_PIN.trim();
+    if pin.is_empty() {
+        return false;
+    }
+    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let out = Command::new("git")
+        .args(["ls-remote", HALE_GIT, &format!("refs/tags/{tag}"), &format!("refs/tags/{tag}^{{}}")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => tag_commit(&String::from_utf8_lossy(&o.stdout), &tag).is_some_and(|c| c == pin),
+        _ => false,
+    }
 }
 
 /// `<os>/<arch>` of a docker answer, `amd64` and `x86_64` alike.
@@ -202,7 +243,7 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
     let there = there.trim().split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
     let here = Command::new("docker").args(["image", "inspect", "--format", "{{.Os}} {{.Architecture}}", tag]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
     let here = here.split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
-    let route = image_route(&machine, &there, &here);
+    let route = image_route(&machine, &there, &here, is_release_build());
     if route == ImageRoute::There {
         return Ok(format!("{:<8}{tag} (on {} already, {machine})", "image", t.host));
     }
@@ -217,23 +258,54 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
         }
         return Ok(format!("{:<8}{tag} (sent from this machine, {machine})", "image"));
     }
-    let mismatch = match route {
-        ImageRoute::Pull { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
+    let mismatch = match &route {
+        ImageRoute::Pull { mismatch: Some(p) } | ImageRoute::Build { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
         _ => String::new(),
     };
-    let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
-    super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
-    let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
-    if theirs.is_empty() || theirs != ours {
-        return Err(format!(
-            "no image of this toolchain for {machine} reaches {}: {tag} is neither there nor in this machine's docker for that platform{mismatch}, and {published} {} (`hale habitat image build` on a {machine} machine builds it, `--image <tag>` names another)",
-            t.host,
-            if theirs.is_empty() { "could not be pulled there".to_string() } else { format!("is another build ({})", theirs.lines().last().unwrap_or("")) }
+    if matches!(route, ImageRoute::Pull { .. }) {
+        let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+        super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
+        let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
+        if !theirs.is_empty() && theirs == ours {
+            t.run(&format!("docker tag {} {}", sq(&published), sq(tag)))?;
+            return Ok(format!("{:<8}{tag} (pulled there as {published})", "image"));
+        }
+        super::progress(&format!(
+            "{published} {} on {}; building it there instead",
+            if theirs.is_empty() { format!("has no {machine} image") } else { "is another build".to_string() },
+            t.host
         ));
     }
-    t.run(&format!("docker tag {} {}", sq(&published), sq(tag)))?;
-    Ok(format!("{:<8}{tag} (pulled there as {published})", "image"))
+    build_there(t, tag, &machine, &mismatch)
+}
+
+/// The toolchain image built on the machine from this toolchain's commit
+/// on its repository, the source a local habitat's compose renders as its
+/// `build:`. Its docker needs BuildKit (the `buildx` plugin): the
+/// Dockerfile builds only the stages the chosen one needs.
+fn build_there(t: &Target, tag: &str, machine: &str, mismatch: &str) -> Result<String, String> {
+    let pin = HABITAT_PIN.trim();
+    if pin.is_empty() {
+        return Err(format!("no image of this toolchain reaches {}{mismatch}, and this toolchain was built outside a git checkout, so it names no commit to build one from (`--image <tag>` names an image there)", t.host));
+    }
+    let short = &pin[..12.min(pin.len())];
+    if t.run("docker buildx version >/dev/null 2>&1 && echo yes || echo no")?.trim() != "yes" {
+        return Err(format!("building the toolchain image on {} needs docker's buildx plugin there, which it lacks (Homebrew: `brew install docker-buildx`, then link it as its caveats say)", t.host));
+    }
+    super::progress(&format!("building the image {tag} on {} from hale-lang/hale@{short}{mismatch}; once per toolchain commit, and a first build compiles the compiler (tens of minutes)", t.host));
+    let context = format!("{HALE_GIT}#{pin}");
+    let built = t
+        .ssh(false)
+        .arg(format!("docker build -t {} {}", sq(tag), sq(&context)))
+        .stdin(Stdio::null())
+        .stdout(std::process::Stdio::from(std::io::stderr()))
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if !built.success() {
+        return Err(format!("building {tag} on {} from {context} failed (above); the commit must be on GitHub, so push it, or `--image <tag>` names an image there", t.host));
+    }
+    Ok(format!("{:<8}{tag} (built on {} from hale-lang/hale@{short}, {machine})", "image", t.host))
 }
 
 /// The `docker run` on the machine that runs `hale habitat <args>` in the
@@ -593,13 +665,30 @@ mod tests {
 
     #[test]
     fn an_image_of_another_platform_is_never_used_or_sent() {
-        assert_eq!(image_route("linux/amd64", "linux/amd64", ""), ImageRoute::There);
-        assert_eq!(image_route("linux/amd64", "", "linux/amd64"), ImageRoute::Send);
-        assert_eq!(image_route("linux/amd64", "", "linux/arm64"), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
-        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64"), ImageRoute::Send);
-        assert_eq!(image_route("linux/arm64", "", ""), ImageRoute::Pull { mismatch: None });
+        assert_eq!(image_route("linux/amd64", "linux/amd64", "", false), ImageRoute::There);
+        assert_eq!(image_route("linux/amd64", "", "linux/amd64", false), ImageRoute::Send);
+        assert_eq!(image_route("linux/amd64", "", "linux/arm64", true), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
+        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64", true), ImageRoute::Send);
+        assert_eq!(image_route("linux/arm64", "", "", true), ImageRoute::Pull { mismatch: None });
         assert_eq!(platform("linux", "x86_64"), "linux/amd64");
         assert_eq!(platform("linux", "aarch64"), "linux/arm64");
+    }
+
+    #[test]
+    fn a_build_from_another_commit_builds_its_image_there_and_never_pulls_the_release() {
+        assert_eq!(image_route("linux/arm64", "", "", false), ImageRoute::Build { mismatch: None });
+        assert_eq!(image_route("linux/arm64", "", "linux/amd64", false), ImageRoute::Build { mismatch: Some("linux/amd64".into()) });
+        assert_eq!(image_route("linux/arm64", "linux/arm64", "", false), ImageRoute::There);
+    }
+
+    #[test]
+    fn a_release_is_the_commit_its_tag_names() {
+        let annotated = "1111111111111111111111111111111111111111\trefs/tags/v0.29.0\n2222222222222222222222222222222222222222\trefs/tags/v0.29.0^{}\n";
+        assert_eq!(tag_commit(annotated, "v0.29.0").as_deref(), Some("2222222222222222222222222222222222222222"));
+        let light = "3333333333333333333333333333333333333333\trefs/tags/v0.29.0\n";
+        assert_eq!(tag_commit(light, "v0.29.0").as_deref(), Some("3333333333333333333333333333333333333333"));
+        assert_eq!(tag_commit("", "v0.29.0"), None);
+        assert_eq!(tag_commit("4444\trefs/tags/v0.29.1\n", "v0.29.0"), None);
     }
 
     #[test]
