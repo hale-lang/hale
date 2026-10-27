@@ -214,8 +214,12 @@ fn main() {
     std::test::assert(
         len(rows_of(genome, "habitat.profile")) > 0
             && std::str::contains(rows_of(genome, "batch.proposed"), "habitat@1")
-            && std::str::contains(rows_of(genome, "batch.proposed"), "standard@1"),
-        "born whole: its profile and both packs",
+            && std::str::contains(rows_of(genome, "batch.proposed"), "standard@1")
+            && std::str::contains(
+                first.stdout,
+                "ratified the toolchain's foundational positions and law, at the habitat's birth",
+            ),
+        "born whole: its profile and both packs, ratified by the birth: " + first.stdout,
     );
     std::test::assert(
         std::str::contains(

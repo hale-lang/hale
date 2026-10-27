@@ -295,6 +295,8 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             out.push(format!("{:<8}`{p}` proposed to the child's Board, as the sapling adopts it", "pack"));
         }
     }
+    // the sapling's packaging, ratified by the graft that chose it
+    out.push(super::ratify_packaged(&crate::dna::organism_root(&store)?, &format!("the graft of the sapling `{name}`"), "its purpose, practices and positions"));
     // its own services, on the host its graft names
     out.extend(place_services(&crate::dna::organism_root(&store)?)?);
     Ok(out)

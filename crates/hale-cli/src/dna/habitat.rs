@@ -566,6 +566,36 @@ pub(super) fn sign_in_link(face: &str) -> String {
     format!("{}/?token={token}", face.trim_end_matches('/'))
 }
 
+/// What a birth or a sapling's graft proposes is the packaging the person
+/// chose by that act, so the act ratifies it in their name: `hale dna review
+/// all approve --no-wait`, every pending group (purpose, the practices it
+/// ships with, positions, …) decided at once, its verdicts executed when
+/// the body runs. The organism starts governed instead of waiting on its
+/// own defaults; anything proposed after is the Board's to review. A
+/// directory grafted as a new application is not packaging anyone vetted,
+/// and keeps its proposals. A line saying what was done, or how to finish.
+pub(super) fn ratify_packaged(root: &Path, act: &str, what: &str) -> String {
+    let comment = format!("ratified at {act}: {what}, the packaging the act chose");
+    let ran = std::env::current_exe().map_err(|e| e.to_string()).and_then(|me| {
+        Command::new(me)
+            .current_dir(root)
+            .args(["dna", "review", "all", "approve", "--no-wait", "--comment", &comment])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())
+    });
+    match ran {
+        Ok(o) if o.status.success() => format!("ratified {what}, at {act}"),
+        Ok(o) => format!(
+            "{:<8}{what} proposed but not ratified ({}): `hale dna review all approve` in {} ratifies it",
+            "note",
+            String::from_utf8_lossy(&o.stderr).trim().lines().last().unwrap_or("no reason given"),
+            root.display()
+        ),
+        Err(e) => format!("{:<8}{what} proposed but not ratified ({e}): `hale dna review all approve` in {} ratifies it", "note", root.display()),
+    }
+}
+
 pub(crate) fn head_token() -> String {
     std::fs::read_to_string(face_state_dir().join("head.token"))
         .or_else(|_| std::fs::read_to_string(genome_dir().join(".hale/dna/head.token")))
@@ -1794,7 +1824,7 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
         }
     }
     if proposed > 0 {
-        out.push("proposed the habitat's positions (`habitat`) and its law (`standard`): `hale dna review all approve` ratifies them".to_string());
+        out.push(ratify_packaged(&genome, "the habitat's birth", "the toolchain's foundational positions and law"));
     }
     // whole
     let _ = std::fs::remove_file(birth_pending());

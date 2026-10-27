@@ -468,7 +468,16 @@ allocates it (the habitat's Forgejo on its own backends, `spec/dna.md`):
 nothing of an organism's own is on GitHub unless its Board allocates
 GitHub later. Its packs are proposed to the child's Board on
 the holes its birth proposed, with the sapling's `set` and the graft's
-`--set` values, each to the packs that take it. The graft's
+`--set` values, each to the packs that take it. **A sapling's packaging is
+ratified by its graft**: the person who grafts it chose it, so the graft
+then decides every pending group in their name (`hale dna review all
+approve --no-wait`, its verdicts executed when the child's body runs) and
+says `ratified its purpose, practices and positions`. So does the
+habitat's birth for the toolchain's foundational positions and law (the
+`habitat` and `standard` packs). Anything proposed after is the Board's to
+review, and a directory grafted as a new application keeps its proposals:
+no one vetted that packaging. A ratification that fails is said, with the
+command that finishes it. The graft's
 `habitat.grafted` row names the `sapling`, `revision`, `digest` and
 `nursery`. A graft that stopped part way goes on at the revision it was
 checked at. Where the organism is placed is the graft's placement

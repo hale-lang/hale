@@ -211,8 +211,13 @@ fn main() {
         grafted.code == 0
             && std::str::contains(grafted.stdout, "fetched sprout at v1")
             && std::str::contains(grafted.stdout, "as the habitat's child")
-            && std::str::contains(grafted.stdout, "pack    `crew` proposed"),
-        "the sapling is grafted by name: " + grafted.stdout + grafted.stderr,
+            && std::str::contains(grafted.stdout, "pack    `crew` proposed")
+            && std::str::contains(
+                grafted.stdout,
+                "ratified its purpose, practices and positions, at the graft of the sapling `sprout`",
+            ),
+        "the sapling is grafted by name, its packaging ratified by the graft: " + grafted.stdout
+            + grafted.stderr,
     );
     let store = dna::local_habitat_dir() + "/saplings/sprout";
     let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
