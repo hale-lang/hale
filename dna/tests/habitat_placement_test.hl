@@ -494,11 +494,9 @@ fn main() {
 
     in_dir(scratch, toolchain() + "\nhabitat\ndown");
     // what ran on the machine is containers of this daemon in projects of
-    // their own (the habitat's named for the host): taken down with it
-    dna::run_tool(
-        "sh\n-c\nfor id in $(docker ps -aq); do d=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' \"$id\" 2>/dev/null); case \"$d\" in \"$1\"/*) p=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' \"$id\"); docker rm -f -v \"$id\" >/dev/null; docker volume ls -q --filter \"label=com.docker.compose.project=$p\" | xargs -r docker volume rm >/dev/null 2>&1 ;; esac; done\nsh\n"
-            + home,
-    );
+    // their own (the habitat's named for the host), run from under the
+    // scratch root: `scratch_done` takes each down whole, its network and
+    // volumes with its containers
     dna::run_tool(compose + "\ndown\n-v");
     dna::scratch_done(scratch);
 }
