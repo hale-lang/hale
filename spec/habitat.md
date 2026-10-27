@@ -128,7 +128,10 @@ the release's image. An image of a platform other than the machine's
 docker (`<os>/<arch>`) is never used or sent. Then the same `hale habitat up` runs there in
 that image, as the login's user, on the host's network, with the user's
 data directory (`~/.local/share/hale`: the habitat, its genome, record
-and vault) and the docker socket mounted, and with
+and vault) and the docker socket mounted, in the socket's group as the
+daemon has it (read by a `stat` in the same image with the same mount,
+since the login's shell may see another socket, as a VM's docker on
+macOS has), and with
 `HALE_DNA_HABITAT_LISTEN` (the address `<name>` resolves to on the admin
 machine) and `HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind
 that address and are recorded at `http://<name>:<port>`. The admin machine

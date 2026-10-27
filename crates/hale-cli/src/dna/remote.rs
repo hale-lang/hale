@@ -116,26 +116,27 @@ fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// What the machine says of itself: its user's home, uid, gid, name and the
-/// docker socket's group.
+/// What the machine says of itself: its user's home, uid, gid and name.
+/// The docker socket's group is not among them: it is the daemon's, read
+/// where the run there mounts it (`in_image`), since the login's shell may
+/// see another socket or none (a VM's docker, as Colima's on macOS).
 struct Machine {
     home: String,
     uid: String,
     gid: String,
     user: String,
-    sock_gid: String,
 }
 
 fn probe(t: &Target) -> Result<Machine, String> {
-    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; stat -c %g /var/run/docker.sock 2>/dev/null || echo 0; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
+    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
     let lines: Vec<&str> = said.lines().map(str::trim).collect();
-    if lines.len() < 6 || lines[5] != "docker" {
+    if lines.len() < 5 || lines[4] != "docker" {
         return Err(format!("{} answers over SSH, but its docker does not (the habitat's machine needs docker and the user's access to its socket)", t.host));
     }
     if lines[0].is_empty() || !lines[0].starts_with('/') {
         return Err(format!("{} names no home directory for its user", t.host));
     }
-    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string(), sock_gid: lines[4].to_string() })
+    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string() })
 }
 
 /// The habitat's directory on its machine and what holds it (the user's
@@ -335,13 +336,15 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
             }
         }
     }
+    // the socket's group as the run sees it: the daemon's socket, mounted
+    // the same way into the same image
     let mut line = format!(
-        "mkdir -p {d} && exec docker run --rm {it}--network host --user {u}:{g} --group-add {sg} -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
+        "mkdir -p {d} && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock {i} -c %g /var/run/docker.sock) && exec docker run --rm {it}--network host --user {u}:{g} --group-add \"$sg\" -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
         d = sq(&data),
+        i = sq(image),
         it = if tty { "-i -t " } else { "" },
         u = sq(&m.uid),
         g = sq(&m.gid),
-        sg = sq(&m.sock_gid),
         h = sq(&m.home),
     );
     for (k, v) in env {
@@ -718,10 +721,10 @@ mod tests {
 
     #[test]
     fn the_run_there_carries_its_address_and_its_data() {
-        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), sock_gid: "998".into() };
+        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc", "listen": "192.168.1.20", "host": "rack-a.lan" });
         let line = in_image(&m, &p, &["up", "--name", "x"], false);
-        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && exec docker run --rm --network host --user '1000':'1000' --group-add '998'"), "{line}");
+        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock 'hale-habitat:abc' -c %g /var/run/docker.sock) && exec docker run --rm --network host --user '1000':'1000' --group-add \"$sg\""), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_LISTEN=192.168.1.20'") && line.contains("-e 'HALE_DNA_HABITAT_ADDRESS=rack-a.lan'"), "{line}");
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");
