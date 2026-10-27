@@ -280,9 +280,33 @@ fn ssh_render_dir(render: Render) -> String {
     return ".hale/habitat/" + render.project + "/" + dir[at..len(dir)];
 }
 
-// `docker compose` on an `ssh` host for `render`, as one shell line run in
-// its directory there.
-fn ssh_compose(render: Render, then: String) -> String {
+// The two facts every compose project placed on an `ssh` host is handed in
+// its environment, whatever it runs: the host's name
+// (`HALE_DNA_HOST_NAME`), and its listen address (`HALE_DNA_HOST_LISTEN`:
+// the address that name resolves to here, which the LAN reaches it at;
+// left out when it resolves to none). A project maps them to its own
+// variables in its compose file; the habitat knows none of its names.
+fn host_facts(h: Host) -> String {
+    let listen = host_listen_address(h.address);
+    return "HALE_DNA_HOST_NAME='" + h.name + "' "
+        + (if len(listen) > 0 { "HALE_DNA_HOST_LISTEN='" + listen + "' " } else { "" });
+}
+
+// The first IPv4 address `name` resolves to here, "" for none.
+fn host_listen_address(name: String) -> String {
+    let r = run_tool("getent\nahostsv4\n" + name);
+    if r.code != 0 { return ""; }
+    let line = trim_nl(r.stdout);
+    let nl = std::str::index_of(line, "\n");
+    let first = if nl < 0 { line } else { line[0..nl] };
+    let sp = std::str::index_of(first, " ");
+    return if sp < 0 { first } else { first[0..sp] };
+}
+
+// `docker compose` on an `ssh` host `h` for `render`, as one shell line run
+// in its directory there, with the host's facts (`host_facts`) in its
+// environment.
+fn ssh_compose(h: Host, render: Render, then: String) -> String {
     let remote = ssh_render_dir(render);
     let mut files = "";
     let mut rest = render.files;
@@ -292,7 +316,8 @@ fn ssh_compose(render: Render, then: String) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(f) > 0 { files = files + " -f '" + f + "'"; }
     }
-    return "cd '" + remote + "' && COMPOSE_IGNORE_ORPHANS=1 docker compose -p '" + render.project
+    return "cd '" + remote + "' && " + host_facts(h)
+        + "COMPOSE_IGNORE_ORPHANS=1 docker compose -p '" + render.project
         + "'"
         + files + " " + then;
 }
@@ -395,7 +420,7 @@ locus SshProvider {
                 };
             }
         }
-        let up = ssh_run(self.root, h, ssh_compose(render, compose_up_args(render, " ")), "");
+        let up = ssh_run(self.root, h, ssh_compose(h, render, compose_up_args(render, " ")), "");
         if up.code != 0 {
             return RenderApplied {
                 why: "docker compose up on " + host + " failed: " + trim_nl(up.stderr),
@@ -408,7 +433,12 @@ locus SshProvider {
         if h.provider != "ssh" || h.state != "ready" {
             return RenderApplied { why: "host `" + host + "` is not a ready ssh host" };
         }
-        let down = ssh_run(self.root, h, ssh_compose(render, compose_down_args(render, " ")), "");
+        let down = ssh_run(
+            self.root,
+            h,
+            ssh_compose(h, render, compose_down_args(render, " ")),
+            "",
+        );
         if down.code != 0 {
             return RenderApplied {
                 why: "docker compose down on " + host + " failed: " + trim_nl(down.stderr),

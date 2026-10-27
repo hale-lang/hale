@@ -894,5 +894,16 @@ same set to the host, which the heart inherits.
 | `HALE_DNA_DATABASE_DSN` | for an allocated `database`: a DSN naming the role `heart_<id>` and its vault slot, no password |
 | `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT` | for an allocated `broker`: the nerves server (no credential), the heart's user and its slot, its subject space `heart.<id>.>`, and the nodes' user and slot |
 
+Every compose project the habitat applies on an `ssh` host (an organism's
+own services placed there, an allocation placed there) is also handed two
+facts of the host in its environment, whatever it runs; the habitat knows
+none of the project's own variables, and a project maps these in its
+compose file. On this machine neither is set.
+
+| Variable | Value |
+|---|---|
+| `HALE_DNA_HOST_NAME` | the host's name, as it was added (`hale habitat host add <name>`) and as the LAN's DNS resolves it |
+| `HALE_DNA_HOST_LISTEN` | the host's listen address: the first IPv4 address its name resolves to on the habitat's machine, which the LAN reaches it at; left out when it resolves to none |
+
 The manifest is read once, by graft; every reader after it reads the
 roles the habitat allocated, as `allocation.json` keeps them.

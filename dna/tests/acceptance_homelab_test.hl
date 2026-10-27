@@ -450,6 +450,17 @@ fn main() {
             && std::json::find_string_field(services, "state") == "up",
         "voice's services run on the host, observed over SSH: " + services,
     );
+    // the host's facts reached voice's compose project (its file maps them
+    // into the service's environment, as voice's own does)
+    let facts = dna::run_tool(
+        "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter label=com.docker.compose.service=voice | head -n 1); docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \"$id\"\nsh\n"
+            + dna::local_habitat_project() + "-localhost-" + key,
+    ).stdout;
+    std::test::assert(
+        std::str::contains(facts, "VOICE_HOST_NAME=localhost\n")
+            && std::str::contains(facts, "VOICE_HOST_LISTEN=127.0.0.1\n"),
+        "the habitat hands the project its host's name and listen address: " + facts,
+    );
     let memory = element(
         read(sock, "Commands::allocations", "allocations"),
         "allocation",

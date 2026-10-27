@@ -63,8 +63,8 @@ params = { board = "" }
 name = "voice"
 summary = "distributed inference: one endpoint over local hosts and hosted providers, with routing, projects, budgets and rate limits"
 repo = "https://github.com/hale-lang/voice"
-revision = "d4d3db32319acbb607a2c3327b6796583bddbec5"
-digest = "sha256:bae66d743c8affe87332aa10dfc666964394d25cead9189a7d68b66083989708"
+revision = "2f2b68e0deeacc4b5f090072e2eec06c8925777d"
+digest = "sha256:11117b0f5d2d8a5b329b3808a84392230d06df21d391ad46ec107898e506ed0d"
 packs = []
 
 # The hale organism (D8): the organism that works on the Hale toolchain. Its
