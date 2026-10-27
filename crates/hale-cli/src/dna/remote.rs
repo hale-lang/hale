@@ -246,6 +246,9 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
         ("HOME", m.home.clone()),
         ("USER", m.user.clone()),
         ("XDG_DATA_HOME", format!("{}/.local/share", m.home)),
+        // state a run there keeps (an organism head's launch token and
+        // key) under the data directory every run there mounts
+        ("XDG_STATE_HOME", format!("{data}/state")),
         ("HALE_DNA_HABITAT", habitat_dir(m)),
         ("HALE_VAULT_DIR", format!("{data}/vault")),
         ("HALE_HABITAT_IMAGE", image.to_string()),
@@ -261,8 +264,9 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
         }
     }
     let mut line = format!(
-        "mkdir -p {d} && exec docker run --rm {it}--network host --user {u}:{g} --group-add {sg} -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
+        "mkdir -p {d} && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add {sg} -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
         d = sq(&data),
+        lb = sq(&format!("hale.habitat.dir={}", habitat_dir(m))),
         it = if tty { "-i -t " } else { "" },
         u = sq(&m.uid),
         g = sq(&m.gid),
@@ -898,7 +902,7 @@ mod tests {
         let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), sock_gid: "998".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc", "listen": "192.168.1.20", "host": "rack-a.lan" });
         let line = in_image(&m, &p, &["up", "--name", "x"], false);
-        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && exec docker run --rm --network host --user '1000':'1000' --group-add '998'"), "{line}");
+        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && exec docker run --rm --network host --label 'hale.habitat.dir=/home/h/.local/share/hale/habitat/local' --user '1000':'1000' --group-add '998'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_LISTEN=192.168.1.20'") && line.contains("-e 'HALE_DNA_HABITAT_ADDRESS=rack-a.lan'"), "{line}");
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");

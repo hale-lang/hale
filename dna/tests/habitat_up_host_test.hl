@@ -355,6 +355,30 @@ fn main() {
             ),
         "the grafted organism's face and head are recorded at the declared address: " + graft_row,
     );
+    // its head, launched through the pointer, binds the habitat's listen
+    // address and answers at the face the row advertises
+    let face_at = std::json::find_string_field(graft_body, "face");
+    let launched = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL && (\"$3\" habitat organism shipme dna head . > \"$4\" 2>&1 &)\nsh\n"
+            + scratch + "\n" + config + "\n" + toolchain() + "\n" + scratch + "/shipme-head.log",
+    );
+    let mut answering = false;
+    let deadline = std::time::now() + dna::wait_secs(240);
+    while !answering && std::time::now() <= deadline {
+        answering = dna::run_tool("curl\n-s\n-o\n/dev/null\n-m\n3\n" + face_at + "/").code == 0;
+        if !answering { std::time::sleep(1s); }
+    }
+    let head_log = std::io::fs::read_file(scratch + "/shipme-head.log") or "";
+    // its run there goes: the container the pointer started for it
+    dna::run_tool(
+        "sh\n-c\ndocker ps -q --filter \"label=hale.habitat.dir=$1\" | xargs -r docker rm -f\nsh\n"
+            + there,
+    );
+    std::test::assert(
+        launched.code == 0 && answering,
+        "the organism's face answers at the URL its graft recorded (" + face_at + "): "
+            + head_log,
+    );
     let its = in_dir(scratch, config, toolchain() + "\nhabitat\norganism\nshipme\ndna\nstatus");
     std::test::assert(
         its.code == 0 && std::str::contains(its.stdout, "profile:"),

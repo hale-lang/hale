@@ -114,6 +114,43 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+/// The listen address and declared address a head launched under a habitat
+/// on another machine binds and answers as (`HALE_DNA_LISTEN_HOST`,
+/// `HALE_DNA_HABITAT_ADDRESS`), from the habitat's own
+/// (`HALE_DNA_HABITAT_LISTEN`, `HALE_DNA_HABITAT_ADDRESS`); none for a
+/// local habitat.
+fn head_listen_env() -> Vec<(&'static str, String)> {
+    head_listen_env_of(std::env::var("HALE_DNA_HABITAT_LISTEN").ok(), std::env::var("HALE_DNA_HABITAT_ADDRESS").ok())
+}
+
+fn head_listen_env_of(listen: Option<String>, address: Option<String>) -> Vec<(&'static str, String)> {
+    let listen = listen.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let address = address.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let mut out = Vec::new();
+    if let Some(l) = listen {
+        out.push(("HALE_DNA_LISTEN_HOST", l));
+        if let Some(a) = address {
+            out.push(("HALE_DNA_HABITAT_ADDRESS", a));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_head_under_a_remote_habitat_binds_its_listen_address() {
+        assert!(head_listen_env_of(None, None).is_empty());
+        assert!(head_listen_env_of(None, Some("rack-a.lan".into())).is_empty());
+        assert_eq!(
+            head_listen_env_of(Some("192.0.2.7".into()), Some("rack-a.lan".into())),
+            vec![("HALE_DNA_LISTEN_HOST", "192.0.2.7".to_string()), ("HALE_DNA_HABITAT_ADDRESS", "rack-a.lan".to_string())]
+        );
+    }
+}
+
 fn set(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
@@ -166,6 +203,17 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
             if let Some(dsn) = head_dsn(Path::new(p)) {
                 cmd.env("HALE_DNA_MEMORY_DSN_HEAD", dsn);
             }
+        }
+    }
+    // under a habitat on another machine (`up --host` hands the containers
+    // it runs there the habitat's declared address), an organism's face,
+    // head and identity stub bind the habitat's listen address and answer
+    // under its name, as the habitat's own face does, so the URLs its
+    // graft recorded answer from the admin machine; nothing changes for a
+    // local habitat
+    for (var, value) in head_listen_env() {
+        if !set(var) {
+            cmd.env(var, value);
         }
     }
     // exec in place: the pid that ran `hale dna head` is the launcher, so
