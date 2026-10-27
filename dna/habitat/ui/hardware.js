@@ -15,6 +15,7 @@ import {
   commandsPlanRemoveHost,
   commandsRemoveHost,
 } from "./head-client.js";
+import { hostLabel } from "./host-label.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -27,6 +28,18 @@ function stateOf(host) {
   if (host.state === "ready") return "up";
   if (host.state === "pending-key") return "degraded";
   return "down";
+}
+
+// The allocations placed on a host, once per organism: "dark-coffee: memory,
+// nerves, head" rather than each allocation's full key.
+function placedLine(placed) {
+  const by = new Map();
+  for (const x of placed) {
+    const [key, role] = x.allocation.split("/");
+    const who = x.organism || key;
+    by.set(who, [...(by.get(who) || []), x.role || role]);
+  }
+  return [...by].map(([who, roles]) => who + ": " + roles.join(", ")).join("\n") || "none";
 }
 
 function cell(text, cls) {
@@ -146,11 +159,11 @@ export async function refresh() {
     }
     actions.append(button("remove", () => planRemove(h)));
     tr.append(
-      cell(h.name),
+      cell(hostLabel(h.name)),
       s,
-      cell(h.offers || "", "wrap"),
+      cell(h.offers || ""),
       cell(h.fingerprint || "none yet", "wrap"),
-      cell(placed.map((x) => x.allocation).join(" ") || "none", "wrap"),
+      cell(placedLine(placed), "list"),
       actions,
     );
     rows.append(tr);

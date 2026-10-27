@@ -23,8 +23,8 @@
 //   minimal tree with voice's shape where the habitat touches it (a
 //   repository declaring its needs, its services in a root compose.yaml,
 //   an OpenAI-compatible streaming endpoint, a seat relaying to a local
-//   model over the host's network), in a local git nursery: the real
-//   hale-lang/voice at the bundled pin needs voice#44 and a network fetch;
+//   model over the host's network), a git repository that is its own
+//   nursery (`repo = "."`, as hale-lang/voice is), which the Board trusts;
 // - Ollama on the host is the cycle's canned OpenAI-compatible gateway
 //   (scripts/dna-cycle/canned-gateway.py) on this machine's loopback.
 // The organism's model map is pointed at voice's endpoint on the host
@@ -391,30 +391,30 @@ fn main() {
             + source() + "\n" + vsrc + "\n" + to_string(voice_port) + "\n" + to_string(model_port),
     );
     std::test::assert_eq_int(copied.code, 0, "voice's tree: " + copied.stderr);
+    // voice is a nursery of its own: its root offers its own repository
+    // (`repo = "."`), pinned at the commit the habitat reads
+    std::io::fs::write_file(
+        vsrc + "/nursery.toml",
+        "[[sapling]]\nname = \"voice\"\nsummary = \"distributed inference: one endpoint over local hosts\"\nrepo = \".\"\n",
+    ) or discard;
     git(vsrc, "init\n-q\n-b\nmain");
     git(vsrc, "add\n-A");
     git(vsrc, "commit\n-q\n-m\nvoice");
-    git(vsrc, "tag\nv1");
-    let nursery = scratch + "/nursery";
-    std::io::fs::mkdir(nursery) or discard;
-    std::io::fs::write_file(
-        nursery + "/nursery.toml",
-        "[[sapling]]\nname = \"voice\"\nsummary = \"distributed inference: one endpoint over local hosts\"\nrepo = \""
-            + vsrc + "\"\nrevision = \"v1\"\ndigest = \"" + digest_of(vsrc, "v1") + "\"\n",
-    ) or discard;
-    let trusted = call(sock, "Commands::add_nursery", "{\"source\": \"" + nursery + "\"}");
+    let trusted = call(sock, "Commands::add_nursery", "{\"source\": \"" + vsrc + "\"}");
     std::test::assert(
         std::json::find_bool_field(trusted, "ok")
-            && std::str::contains(std::json::find_string_field(trusted, "why"), "upgrade voice"),
-        "the Board trusts the nursery; its voice is filed over the bundled one's pin: " + trusted,
+            && std::str::contains(
+                std::json::find_string_field(trusted, "why"),
+                "sapling voice at ",
+            ),
+        "the Board trusts voice's repository as a nursery; voice is pinned from it: " + trusted,
     );
-    let ratified = call(sock, "Commands::ratify_sapling", "{\"name\": \"voice\"}");
-    std::test::assert(std::json::find_bool_field(ratified, "ok"), "and ratified: " + ratified);
     let sapling = element(read(sock, "Commands::saplings", "saplings"), "name", "voice");
     std::test::assert(
         std::json::find_string_field(sapling, "repo") == vsrc
-            && std::json::find_string_field(sapling, "nursery") == nursery,
-        "the habitat pins voice from the nursery: " + sapling,
+            && std::json::find_string_field(sapling, "nursery") == vsrc
+            && std::json::find_string_field(sapling, "digest") == digest_of(vsrc, "HEAD"),
+        "the habitat pins voice from its own repository: " + sapling,
     );
 
     // ---- grafted by name onto the host, and applied there
@@ -597,7 +597,7 @@ fn main() {
     // ---- what this fixture does not prove
     skipped(
         "voice's own programs",
-        "the sapling stands in for voice's api, brain and node (built by the toolchain into its image), its store and its broker; the real hale-lang/voice at the bundled pin needs voice#44 and a network fetch",
+        "the sapling stands in for voice's api, brain and node (built by the toolchain into its image), its store and its broker; the real hale-lang/voice, its own nursery, needs a network fetch",
     );
     skipped("the Mac's launchd node", "no second machine on a CI runner: the real run's");
 

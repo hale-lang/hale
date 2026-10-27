@@ -231,6 +231,7 @@ pub const HABITAT_FILES: &[EmbeddedFile] = at![
     "dna/habitat/ui/infrastructure.js",
     "dna/habitat/ui/organisms.js",
     "dna/habitat/ui/head-client.js",
+    "dna/habitat/ui/host-label.js",
     "dna/habitat/ui/index.html",
     "dna/habitat/ui/operator.css",
     "dna/habitat/ui/operator.js",

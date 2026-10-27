@@ -18,6 +18,7 @@ import {
   commandsPlanRemoveOrganism,
   commandsRemoveOrganism,
 } from "./head-client.js";
+import { hostLabel } from "./host-label.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -93,7 +94,7 @@ function grafter(name, hosts) {
   for (const h of ["local", ...hosts.filter((x) => x.state === "ready").map((x) => x.name)]) {
     const o = document.createElement("option");
     o.value = h;
-    o.textContent = h;
+    o.textContent = hostLabel(h);
     sel.append(o);
   }
   const b = document.createElement("button");

@@ -12,6 +12,7 @@ import {
   commandsPlaceAllocation,
   commandsApplyAllocations,
 } from "./head-client.js";
+import { hostLabel } from "./host-label.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -54,7 +55,7 @@ function picker(a, names) {
   for (const n of names) {
     const o = document.createElement("option");
     o.value = n;
-    o.textContent = n;
+    o.textContent = hostLabel(n);
     sel.append(o);
   }
   sel.value = names.includes(a.host) ? a.host : (a.host ? "" : "local");
@@ -74,7 +75,7 @@ function showPulse(reply) {
     const tr = document.createElement("tr");
     const s = cell(p.state || "not observed");
     if (p.state === "up" || p.state === "degraded" || p.state === "down") s.dataset.state = p.state;
-    tr.append(cell(p.allocation), cell(p.host), s, cell(p.ok ? p.detail || "applied" : p.why));
+    tr.append(cell(p.allocation), cell(hostLabel(p.host)), s, cell(p.ok ? p.detail || "applied" : p.why));
     rows.append(tr);
   }
 }
@@ -121,7 +122,7 @@ export async function refresh() {
     const tr = document.createElement("tr");
     const where = document.createElement("td");
     where.append(picker(a, names));
-    tr.append(cell(a.role), cell(a.instance), cell(a.provider), cell(a.host || "none"), stateCell(a), where);
+    tr.append(cell(a.role), cell(a.instance), cell(a.provider), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
     rows.append(tr);
   }
   $("allocations-empty").hidden = allocs.length > 0;

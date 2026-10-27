@@ -116,24 +116,36 @@ admin machine reaches it over SSH as the person's own login (`--user` and
 `--port`, else the SSH config's; `HALE_HABITAT_SSH_CONFIG` names a config
 file for `ssh -F`), never with the habitat's keypair, which is drawn there,
 in the habitat's vault, as a local `up` draws it. The toolchain image is put
-there first: there already, sent from the admin machine's docker (`docker
-save | docker load`), or pulled as the published image of this toolchain's
-version when that image's `hale --version` answers as the admin's does;
-nothing is compiled there, and an image of a platform other than the
-machine's docker (`<os>/<arch>`) is never used or sent: the published
-image is pulled for the machine's platform instead, or the run is refused
-naming both. Then the same `hale habitat up` runs there in
+there first: there already; sent from the admin machine's docker (`docker
+save | docker load`); for a release's build (the tag `v<version>` on
+`hale-lang/hale` names the toolchain's own commit), pulled as that
+release's published image when its `hale --version` answers as the
+admin's does; else built there from the toolchain's commit on
+`hale-lang/hale`, the source a local habitat's compose renders as its
+`build:`, which needs that docker's `buildx` plugin and the commit pushed.
+A build from any other commit shares the version string and never pulls
+the release's image. An image of a platform other than the machine's
+docker (`<os>/<arch>`) is never used or sent. Then the same `hale habitat up` runs there in
 that image, as the login's user, on the host's network, with the user's
 data directory (`~/.local/share/hale`: the habitat, its genome, record
-and vault) and the docker socket mounted, and with
+and vault) and the docker socket mounted, in the socket's group as the
+daemon has it (read by a `stat` in the same image with the same mount,
+since the login's shell may see another socket, as a VM's docker on
+macOS has), and with
 `HALE_DNA_HABITAT_LISTEN` (the address `<name>` resolves to on the admin
-machine) and `HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind
-that address and are recorded at `http://<name>:<port>`. The admin machine
+machine; `0.0.0.0` on a machine whose login shell says `Darwin`, since
+its docker runs in a VM that owns none of the machine's addresses and
+publishes what listens on the VM's interfaces on the machine's own) and
+`HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind that
+address and are recorded at `http://<name>:<port>`. The admin machine
 waits on the head and the face at the recorded URL, then keeps a pointer in
 its local habitat's directory in place of a habitat: `remote.json` (the
 name, the host, the login, the image, the head's and face's URLs, the
 record's identity), `head.url`, and the head's launch token
-(`face-state/head.token`, 0600). A machine points at one habitat, and one
+(`face-state/head.token`, 0600). `up` and `status`, local or through a
+pointer, end with a `sign in` line while the face answers: the face's URL
+with that token (`/?token=…`), the link that opens the face once and sets
+its session, which is otherwise printed only in the face's own log. A machine points at one habitat, and one
 that runs a habitat of its own points at none.
 
 Every verb on the admin machine reaches the habitat's head through the
@@ -462,9 +474,17 @@ the holes its birth proposed, with the sapling's `set` and the graft's
 checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
 
-The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
-commit and fetched from its public repository) and **the hale organism**
-(`hale`, a tree the toolchain carries). A sapling needs nothing beyond what an attached repository
+The toolchain's nursery offers one sapling, **the hale organism** (`hale`,
+a tree the toolchain carries): the organism that makes the toolchain. An
+application is not bundled. **A repository can be its own nursery**: a
+`nursery.toml` at its root whose sapling says `repo = "."` and no revision
+or digest offers the repository itself, pinned where the nursery is read
+(a git nursery at the commit it was read at, a directory at its `HEAD`)
+by that tree's digest; a later read at a newer commit is a proposal, as for
+any sapling. The toolchain's nursery refuses that form. `hale-lang/voice`
+is one: `hale habitat nursery add https://github.com/hale-lang/voice` (or
+the organisms screen's form) trusts it, and `hale habitat graft voice`
+grafts it. A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
 
@@ -493,8 +513,8 @@ that goes on attaches none twice.
 After `hale habitat up` on an empty box, every step is a row of the head's
 surface, called on its socket as the operator face calls its rows: a
 machine of the LAN is added over SSH (`add_host`), authorized by its owner
-and probed (`probe_host`); a nursery is trusted (`add_nursery`) and its
-voice ratified over the bundled pin (`ratify_sapling`); voice is grafted by
+and probed (`probe_host`); voice's own repository is trusted as its nursery
+(`add_nursery`, `repo = "."`) and voice pinned from it; voice is grafted by
 name onto the machine (`graft`) and applied there (`apply_allocations`)
 from its own compose; a streamed `/v1/chat/completions` through it, at the
 machine's name, answers as server-sent events from a local model on the
@@ -708,7 +728,10 @@ fixture's head does.
 
 The genome carries a `ui/` (`dna/habitat/ui`), written at birth and tracked,
 which the standard face serves under `/app/` as it serves any attached
-project's: the operator face. Its first screen shows the sign-in edge and
+project's: the operator face. A signed-in visitor lands on it: the render sets the
+`face` service's `HALE_DNA_FACE_HOME` to `/app/`, so `/` redirects there,
+the organization shell answers at `/organization` (linked from the
+operator face's navigation), and `/app` redirects to `/app/`. Its first screen shows the sign-in edge and
 the habitat's name, state, record revision and organisms, read by the
 page from the head's `Commands::index` row through the generated ES-module
 client committed beside it (`head-client.js`, from `dna/face/operator`). It

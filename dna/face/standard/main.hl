@@ -100,6 +100,20 @@ fn head_request(req: std::http::Request, head_port: Int) -> String {
         + req.body;
 }
 
+// The organization shell's address when `/` lands elsewhere (a habitat's
+// face lands on its operator face, `dna::face_home`).
+const ORGANIZATION_PATH: String = "/organization";
+
+// A redirect to a path of this face.
+fn moved(to: String) -> std::http::Response {
+    return std::http::Response {
+        status: 302,
+        content_type: "text/plain; charset=utf-8",
+        headers: "Location: " + to + "\r\nCache-Control: no-store",
+        body: "",
+    };
+}
+
 fn refusal(status: Int, code: String, message: String) -> std::http::Response {
     let b = std::json::Builder { };
     b.begin_object();
@@ -277,6 +291,13 @@ locus Face {
     fn handle(req: std::http::Request) -> std::http::Response {
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
+        // the app's directory: its pages' relative paths resolve under `/app/`
+        if req.method == "GET" && path == ops::APP_ASSETS_PREFIX {
+            return moved(
+                ops::APP_ASSETS_PREFIX + "/"
+                    + (if cut < 0 { "" } else { req.path[cut..len(req.path)] }),
+            );
+        }
         if req.method == "GET"
             && (
                 path == ops::APP_ASSETS_PREFIX
@@ -286,14 +307,18 @@ locus Face {
             return self.app_asset(req, path);
         }
         if req.method == "GET" && path == "/index" { return self.index_page(req); }
-        if req.method == "GET" && path == "/" {
-            // the head's gate: 204 lets the shell out, anything else is the head's to say
-            let gate = buffered(self.head_port, head_request(req, self.head_port));
+        if req.method == "GET" && (path == "/" || path == ORGANIZATION_PATH) {
+            // the head's gate at `/`: 204 lets the shell out, anything else is the head's to say
+            let mut at_root = req;
+            at_root.path = if path == "/" { req.path } else { "/" };
+            let gate = buffered(self.head_port, head_request(at_root, self.head_port));
             if !gate.ok {
                 return refusal(502, "head_unreachable", "the head does not answer on the loopback");
             }
             if gate.status != 204 { return self.hand_over(req, gate.raw); }
-            return self.web.response(path);
+            let home = dna::face_home();
+            if path == "/" && len(home) > 0 { return moved(home); }
+            return self.web.response("/");
         }
         if req.method == "GET" && self.web.serves(path) && cut < 0 {
             return self.web.response(path);

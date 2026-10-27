@@ -58,14 +58,10 @@ params = { board = "" }
 # packs it adopts at graft. `hale habitat graft <name>` fetches the pinned
 # revision into the habitat's store, checks the digest and grafts it; a
 # newer revision here is filed for the habitat's Board, never taken.
-
-[[sapling]]
-name = "voice"
-summary = "distributed inference: one endpoint over local hosts and hosted providers, with routing, projects, budgets and rate limits"
-repo = "https://github.com/hale-lang/voice"
-revision = "84584c5e39c6ce0020a9fc292b76bbe227ae5b8f"
-digest = "sha256:3185a60c16e34474cae1cd634d8f71c46d6bade2aad5e7efb9dc3ec24bd324a5"
-packs = []
+# The toolchain carries one: the organism that makes it. An application
+# (voice, say) is a nursery of its own, a `nursery.toml` at its repository's
+# root offering itself (`repo = "."`), which the Board trusts with
+# `hale habitat nursery add <its repository>`.
 
 # The hale organism (D8): the organism that works on the Hale toolchain. Its
 # genome is the tree the toolchain carries at saplings/hale, embedded as the

@@ -29,7 +29,7 @@ body {
   font-family: var(--mono);
 }
 
-main { max-width: 88ch; margin: 0 auto; padding: calc(var(--step) * 4) calc(var(--step) * 3); }
+main { max-width: 140ch; margin: 0 auto; padding: calc(var(--step) * 4) calc(var(--step) * 3); }
 
 header, section { border-top: 1px solid var(--rule); padding: calc(var(--step) * 2) 0; }
 header { display: flex; justify-content: space-between; align-items: baseline; border-top: 0; }
@@ -43,9 +43,9 @@ dl { display: grid; grid-template-columns: 14ch 1fr; margin: 0; gap: 2px calc(va
 dt { color: var(--dim); }
 dd { margin: 0; overflow-wrap: anywhere; }
 
-table { border-collapse: collapse; width: 100%; }
+table { border-collapse: collapse; }
 th { color: var(--dim); font-weight: 400; text-align: left; border-bottom: 1px solid var(--rule); }
-th, td { padding: 2px calc(var(--step) * 2) 2px 0; }
+th, td { padding: 2px calc(var(--step) * 2) 2px 0; white-space: nowrap; vertical-align: top; }
 
 /* state, the only color */
 [data-state="up"] { color: var(--up); }
@@ -74,4 +74,5 @@ label { color: var(--dim); margin-right: calc(var(--step) * 2); }
 pre { margin: 0; padding: var(--step) 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 .dim { color: var(--dim); }
 .outcome { white-space: pre-wrap; }
-td.wrap { overflow-wrap: anywhere; }
+td.wrap { white-space: normal; overflow-wrap: anywhere; }
+td.list { white-space: pre-line; }

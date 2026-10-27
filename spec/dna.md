@@ -5490,7 +5490,8 @@ The live half is memory's, projected from the record by the spine
   packs it adopts at graft, by name, from its own nursery or else the
   toolchain's) and `set` (their parameters). A sapling is grafted by name
   into the habitat (`spec/habitat.md`, Nurseries and saplings); the
-  toolchain's nursery offers `voice`.
+  toolchain's nursery offers `hale`, and a repository may be its own
+  nursery (`repo = "."`).
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`
@@ -6719,6 +6720,7 @@ otherwise.
 | `HALE_DNA_HABITAT_EXPECT=<record>` | unset | The record a `hale habitat down` run on a habitat's machine through a pointer must find there: when it is set and the habitat's genome pins another record, or none, nothing is stopped or removed. Not set by hand: `hale habitat down` on the admin machine sets it to the pointer's identity, after checking the same over SSH. |
 | `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |
 | `HALE_HABITAT_SSH_CONFIG=<file>` | unset | An SSH config file `hale habitat up --host` and the verbs of a habitat on another machine hand `ssh -F`; unset, `ssh` reads the person's own. |
+| `HALE_DNA_FACE_HOME=<path>` | unset | The path the standard face lands a signed-in visitor on in place of the organization shell at `/` (`dna::face_home`); the shell is then at `/organization`. Not set by hand: the habitat's compose render sets it on its `face` service to `/app/`, the operator face. A value that is not a path of the face is ignored. |
 | `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
 | `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |

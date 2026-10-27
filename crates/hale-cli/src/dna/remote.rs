@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
-use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN};
+use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN, HALE_GIT};
 use crate::dna::local_habitat_dir;
 
 /// The pointer's file, in the local habitat's directory.
@@ -116,18 +116,23 @@ fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// What the machine says of itself: its user's home, uid, gid, name and the
-/// docker socket's group.
+/// What the machine says of itself: its user's home, uid, gid and name.
+/// The docker socket's group is not among them: it is the daemon's, read
+/// where the run there mounts it (`in_image`), since the login's shell may
+/// see another socket or none (a VM's docker, as Colima's on macOS).
 struct Machine {
     home: String,
     uid: String,
     gid: String,
     user: String,
-    sock_gid: String,
+    /// `uname -s` of the login's shell: `Darwin` when the machine's docker
+    /// runs in a VM (Colima, Docker Desktop), whose containers never own
+    /// the machine's own addresses.
+    os: String,
 }
 
 fn probe(t: &Target) -> Result<Machine, String> {
-    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; stat -c %g /var/run/docker.sock 2>/dev/null || echo 0; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
+    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; uname -s; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
     let lines: Vec<&str> = said.lines().map(str::trim).collect();
     if lines.len() < 6 || lines[5] != "docker" {
         return Err(format!("{} answers over SSH, but its docker does not (the habitat's machine needs docker and the user's access to its socket)", t.host));
@@ -135,7 +140,7 @@ fn probe(t: &Target) -> Result<Machine, String> {
     if lines[0].is_empty() || !lines[0].starts_with('/') {
         return Err(format!("{} names no home directory for its user", t.host));
     }
-    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string(), sock_gid: lines[4].to_string() })
+    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string(), os: lines[4].to_string() })
 }
 
 /// The habitat's directory on its machine and what holds it (the user's
@@ -148,38 +153,91 @@ fn habitat_dir(m: &Machine) -> String {
     format!("{}/habitat/local", data_dir(m))
 }
 
+/// The address the habitat's person-facing listeners bind on the machine:
+/// the address its name resolves to here, which a Linux docker's host
+/// network owns; on a machine whose docker runs in a VM (macOS), every
+/// interface of the VM, since the VM owns none of the machine's addresses
+/// and its port forwarding publishes what listens there on the machine.
+fn listen_on(os: &str, resolved: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    if os == "Darwin" {
+        return Ok("0.0.0.0".to_string());
+    }
+    resolved()
+}
+
 /// The address the machine is reached at from here, as this machine
-/// resolves its name: the address its person-facing listeners bind there.
+/// resolves its name.
 fn listen_address(host: &str) -> Result<String, String> {
     super::ipv4_or_first(host, &super::resolved(host)?)
 }
 
-/// The toolchain image on the machine: there already, sent from this
-/// machine's docker (`docker save | docker load`), or pulled from the
-/// published images when the one of this toolchain's version answers as
-/// this toolchain does. Nothing is compiled there.
 /// How the toolchain image reaches the machine, from the platforms
 /// (`<os>/<arch>`) of the machine's docker, of the tag there ("" when it
-/// has none) and of the tag here ("" when this docker has none): a tag of
-/// another platform is never used or sent, since the machine could not run
-/// it without emulation; the published image is pulled for the machine's
-/// platform instead.
+/// has none) and of the tag here ("" when this docker has none), and
+/// whether this toolchain is a release's build: there already; sent from
+/// this machine's docker (`docker save | docker load`); for a release's
+/// build, the published image pulled for the machine's platform; else built
+/// there from this toolchain's commit. A tag of another platform is never
+/// used or sent, since the machine could not run it without emulation.
 #[derive(Debug, PartialEq)]
 enum ImageRoute {
     There,
     Send,
     Pull { mismatch: Option<String> },
+    Build { mismatch: Option<String> },
 }
 
-fn image_route(machine: &str, there: &str, here: &str) -> ImageRoute {
+fn image_route(machine: &str, there: &str, here: &str, release: bool) -> ImageRoute {
     if !there.is_empty() && there == machine {
         return ImageRoute::There;
     }
     if !here.is_empty() && here == machine {
         return ImageRoute::Send;
     }
-    let other = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
-    ImageRoute::Pull { mismatch: other }
+    let mismatch = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
+    if release {
+        ImageRoute::Pull { mismatch }
+    } else {
+        ImageRoute::Build { mismatch }
+    }
+}
+
+/// The commit a tag names, from `git ls-remote <repo> refs/tags/<tag>
+/// refs/tags/<tag>^{}`: an annotated tag's peeled line, else the tag's own.
+fn tag_commit(ls_remote: &str, tag: &str) -> Option<String> {
+    let own = format!("refs/tags/{tag}");
+    let peeled = format!("refs/tags/{tag}^{{}}");
+    let mut found = None;
+    for (sha, name) in ls_remote.lines().filter_map(|l| l.split_once('\t')) {
+        if name.trim() == peeled {
+            return Some(sha.trim().to_string());
+        }
+        if name.trim() == own {
+            found = Some(sha.trim().to_string());
+        }
+    }
+    found
+}
+
+/// Whether this toolchain is the build of its version's release: the
+/// release tag `v<version>` on the toolchain's repository names this
+/// build's commit. A build from any other commit shares the version string
+/// and is never one; so is any build when the tag cannot be read.
+fn is_release_build() -> bool {
+    let pin = HABITAT_PIN.trim();
+    if pin.is_empty() {
+        return false;
+    }
+    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let out = Command::new("git")
+        .args(["ls-remote", HALE_GIT, &format!("refs/tags/{tag}"), &format!("refs/tags/{tag}^{{}}")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => tag_commit(&String::from_utf8_lossy(&o.stdout), &tag).is_some_and(|c| c == pin),
+        _ => false,
+    }
 }
 
 /// `<os>/<arch>` of a docker answer, `amd64` and `x86_64` alike.
@@ -200,7 +258,7 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
     let there = there.trim().split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
     let here = Command::new("docker").args(["image", "inspect", "--format", "{{.Os}} {{.Architecture}}", tag]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
     let here = here.split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
-    let route = image_route(&machine, &there, &here);
+    let route = image_route(&machine, &there, &here, is_release_build());
     if route == ImageRoute::There {
         return Ok(format!("{:<8}{tag} (on {} already, {machine})", "image", t.host));
     }
@@ -215,23 +273,57 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
         }
         return Ok(format!("{:<8}{tag} (sent from this machine, {machine})", "image"));
     }
-    let mismatch = match route {
-        ImageRoute::Pull { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
+    let mismatch = match &route {
+        ImageRoute::Pull { mismatch: Some(p) } | ImageRoute::Build { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
         _ => String::new(),
     };
-    let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
-    super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
-    let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
-    if theirs.is_empty() || theirs != ours {
-        return Err(format!(
-            "no image of this toolchain for {machine} reaches {}: {tag} is neither there nor in this machine's docker for that platform{mismatch}, and {published} {} (`hale habitat image build` on a {machine} machine builds it, `--image <tag>` names another)",
-            t.host,
-            if theirs.is_empty() { "could not be pulled there".to_string() } else { format!("is another build ({})", theirs.lines().last().unwrap_or("")) }
+    if matches!(route, ImageRoute::Pull { .. }) {
+        let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+        super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
+        let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
+        if !theirs.is_empty() && theirs == ours {
+            t.run(&format!("docker tag {} {}", sq(&published), sq(tag)))?;
+            return Ok(format!("{:<8}{tag} (pulled there as {published})", "image"));
+        }
+        super::progress(&format!(
+            "{published} {} on {}; building it there instead",
+            if theirs.is_empty() { format!("has no {machine} image") } else { "is another build".to_string() },
+            t.host
         ));
     }
-    t.run(&format!("docker tag {} {}", sq(&published), sq(tag)))?;
-    Ok(format!("{:<8}{tag} (pulled there as {published})", "image"))
+    build_there(t, tag, &machine, &mismatch)
+}
+
+/// The toolchain image built on the machine from this toolchain's commit
+/// on its repository, the source a local habitat's compose renders as its
+/// `build:`. Its docker needs BuildKit (the `buildx` plugin): the
+/// Dockerfile builds only the stages the chosen one needs.
+fn build_there(t: &Target, tag: &str, machine: &str, mismatch: &str) -> Result<String, String> {
+    let pin = HABITAT_PIN.trim();
+    if pin.is_empty() {
+        return Err(format!("no image of this toolchain reaches {}{mismatch}, and this toolchain was built outside a git checkout, so it names no commit to build one from (`--image <tag>` names an image there)", t.host));
+    }
+    let short = &pin[..12.min(pin.len())];
+    if t.run("docker buildx version >/dev/null 2>&1 && echo yes || echo no")?.trim() != "yes" {
+        return Err(format!(
+            "building the toolchain image on {h} needs docker's buildx plugin there, which it lacks (Docker Desktop and Linux's docker packages ship it; Homebrew's docker does not). With Homebrew, once:\n  ssh {h} 'brew install docker-buildx && mkdir -p ~/.docker/cli-plugins && ln -sfn \"$(brew --prefix)/opt/docker-buildx/bin/docker-buildx\" ~/.docker/cli-plugins/docker-buildx'",
+            h = t.host
+        ));
+    }
+    super::progress(&format!("building the image {tag} on {} from hale-lang/hale@{short}{mismatch}; once per toolchain commit, and a first build compiles the compiler (tens of minutes)", t.host));
+    let context = format!("{HALE_GIT}#{pin}");
+    let built = t
+        .ssh(false)
+        .arg(format!("docker build -t {} {}", sq(tag), sq(&context)))
+        .stdin(Stdio::null())
+        .stdout(std::process::Stdio::from(std::io::stderr()))
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if !built.success() {
+        return Err(format!("building {tag} on {} from {context} failed (above); the commit must be on GitHub, so push it, or `--image <tag>` names an image there", t.host));
+    }
+    Ok(format!("{:<8}{tag} (built on {} from hale-lang/hale@{short}, {machine})", "image", t.host))
 }
 
 /// The `docker run` on the machine that runs `hale habitat <args>` in the
@@ -261,14 +353,16 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
             }
         }
     }
+    // the socket's group as the run sees it: the daemon's socket, mounted
+    // the same way into the same image
     let mut line = format!(
-        "mkdir -p {d} && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add {sg} -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
+        "mkdir -p {d} && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock {i} -c %g /var/run/docker.sock) && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add \"$sg\" -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
         d = sq(&data),
+        i = sq(image),
         lb = sq(&format!("hale.habitat.dir={}", habitat_dir(m))),
         it = if tty { "-i -t " } else { "" },
         u = sq(&m.uid),
         g = sq(&m.gid),
-        sg = sq(&m.sock_gid),
         h = sq(&m.home),
     );
     for (k, v) in env {
@@ -377,7 +471,7 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     let t = Target { host: host.to_string(), user: user.map(str::to_string), port };
     super::progress(&format!("reaching {host} over SSH"));
     let m = probe(&t)?;
-    let listen = listen_address(host)?;
+    let listen = listen_on(&m.os, || listen_address(host))?;
     let tag = image.map(str::to_string).or_else(|| std::env::var("HALE_HABITAT_IMAGE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())).unwrap_or_else(|| default_habitat_image_tag(HABITAT_PIN.trim()));
     // a second `up` reconnects: the habitat there must be the one the
     // pointer names, by its record's identity
@@ -432,6 +526,10 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     write_pointer(&p, &token)?;
     out.push(format!("{:<8}{face}/", "face"));
     out.push(format!("{:<8}{url} (recorded here in {})", "head", head_url_file().display()));
+    let link = super::sign_in_link(&face);
+    if !link.is_empty() {
+        out.push(format!("{:<8}{link}", "sign in"));
+    }
     out.push(format!("{:<8}{}… ({})", "record", &identity[..12.min(identity.len())], if kept.is_some() { "reconnected; the pointer is the same habitat's" } else { "pointed at from this machine" }));
     Ok(out)
 }
@@ -445,7 +543,12 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     let identity = p["identity"].as_str().unwrap_or("");
     println!("{:<8}on {} (record {}…)", "genome", p["host"].as_str().unwrap_or(""), &identity[..12.min(identity.len())]);
     let up = answers(head);
-    println!("{:<8}{}/ ({})", "face", p["face"].as_str().unwrap_or(""), if answers(p["face"].as_str().unwrap_or("")) { "up" } else { "down: `hale habitat up --host` starts it" });
+    let face_up = answers(p["face"].as_str().unwrap_or(""));
+    println!("{:<8}{}/ ({})", "face", p["face"].as_str().unwrap_or(""), if face_up { "up" } else { "down: `hale habitat up --host` starts it" });
+    let link = super::sign_in_link(p["face"].as_str().unwrap_or(""));
+    if face_up && !link.is_empty() {
+        println!("{:<8}{link}", "sign in");
+    }
     println!("{:<8}{head} ({})", "head", if up { "up" } else { "down" });
     if !up {
         return ExitCode::SUCCESS;
@@ -466,7 +569,10 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
             }
             for r in rows {
                 let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
-                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), if f("applied").is_empty() { f("host") } else { f("applied") }, if f("organism").is_empty() { String::new() } else { format!(", {}", f("organism")) }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                // the habitat's own machine is the host `local` in its rows; here it is the machine's name
+                let on = if f("applied").is_empty() { f("host") } else { f("applied") };
+                let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if f("organism").is_empty() { String::new() } else { format!(", {}", f("organism")) }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }
@@ -829,13 +935,30 @@ mod tests {
 
     #[test]
     fn an_image_of_another_platform_is_never_used_or_sent() {
-        assert_eq!(image_route("linux/amd64", "linux/amd64", ""), ImageRoute::There);
-        assert_eq!(image_route("linux/amd64", "", "linux/amd64"), ImageRoute::Send);
-        assert_eq!(image_route("linux/amd64", "", "linux/arm64"), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
-        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64"), ImageRoute::Send);
-        assert_eq!(image_route("linux/arm64", "", ""), ImageRoute::Pull { mismatch: None });
+        assert_eq!(image_route("linux/amd64", "linux/amd64", "", false), ImageRoute::There);
+        assert_eq!(image_route("linux/amd64", "", "linux/amd64", false), ImageRoute::Send);
+        assert_eq!(image_route("linux/amd64", "", "linux/arm64", true), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
+        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64", true), ImageRoute::Send);
+        assert_eq!(image_route("linux/arm64", "", "", true), ImageRoute::Pull { mismatch: None });
         assert_eq!(platform("linux", "x86_64"), "linux/amd64");
         assert_eq!(platform("linux", "aarch64"), "linux/arm64");
+    }
+
+    #[test]
+    fn a_build_from_another_commit_builds_its_image_there_and_never_pulls_the_release() {
+        assert_eq!(image_route("linux/arm64", "", "", false), ImageRoute::Build { mismatch: None });
+        assert_eq!(image_route("linux/arm64", "", "linux/amd64", false), ImageRoute::Build { mismatch: Some("linux/amd64".into()) });
+        assert_eq!(image_route("linux/arm64", "linux/arm64", "", false), ImageRoute::There);
+    }
+
+    #[test]
+    fn a_release_is_the_commit_its_tag_names() {
+        let annotated = "1111111111111111111111111111111111111111\trefs/tags/v0.29.0\n2222222222222222222222222222222222222222\trefs/tags/v0.29.0^{}\n";
+        assert_eq!(tag_commit(annotated, "v0.29.0").as_deref(), Some("2222222222222222222222222222222222222222"));
+        let light = "3333333333333333333333333333333333333333\trefs/tags/v0.29.0\n";
+        assert_eq!(tag_commit(light, "v0.29.0").as_deref(), Some("3333333333333333333333333333333333333333"));
+        assert_eq!(tag_commit("", "v0.29.0"), None);
+        assert_eq!(tag_commit("4444\trefs/tags/v0.29.1\n", "v0.29.0"), None);
     }
 
     #[test]
@@ -884,6 +1007,13 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_docker_listens_on_the_vm_and_a_linux_docker_on_the_address() {
+        assert_eq!(listen_on("Darwin", || Err("unused".into())).unwrap(), "0.0.0.0");
+        assert_eq!(listen_on("Linux", || Ok("192.168.1.20".into())).unwrap(), "192.168.1.20");
+        assert!(listen_on("Linux", || Err("rack-a.lan does not resolve here".into())).is_err());
+    }
+
+    #[test]
     fn a_remote_word_is_quoted_whole() {
         assert_eq!(sq("a b"), "'a b'");
         assert_eq!(sq("it's"), "'it'\\''s'");
@@ -897,10 +1027,10 @@ mod tests {
 
     #[test]
     fn the_run_there_carries_its_address_and_its_data() {
-        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), sock_gid: "998".into() };
+        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), os: "Linux".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc", "listen": "192.168.1.20", "host": "rack-a.lan" });
         let line = in_image(&m, &p, &["up", "--name", "x"], false);
-        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && exec docker run --rm --network host --label 'hale.habitat.dir=/home/h/.local/share/hale/habitat/local' --user '1000':'1000' --group-add '998'"), "{line}");
+        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock 'hale-habitat:abc' -c %g /var/run/docker.sock) && exec docker run --rm --network host --label 'hale.habitat.dir=/home/h/.local/share/hale/habitat/local' --user '1000':'1000' --group-add \"$sg\""), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_LISTEN=192.168.1.20'") && line.contains("-e 'HALE_DNA_HABITAT_ADDRESS=rack-a.lan'"), "{line}");
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");
