@@ -64,10 +64,14 @@ fn volumes_named(project: String) -> String {
 
 // The home a graft through the pointer made for `shipme` there: its own
 // fresh directory, `<habitat>/grafted/shipme-<suffix>/shipme`.
-fn shipped_home(there: String) -> String {
+fn shipped_home(there: String) -> String { return grafted_home(there, "shipme"); }
+
+// The home a graft through the pointer made for `name` there.
+fn grafted_home(there: String, name: String) -> String {
     return dna::trim_nl(
         dna::run_tool(
-            "sh\n-c\nls -d \"$1\"/grafted/shipme-*/shipme | head -n 1\nsh\n" + there,
+            "sh\n-c\nls -d \"$1\"/grafted/\"$2\"-*/\"$2\" 2>/dev/null | head -n 1\nsh\n" + there
+                + "\n" + name,
         ).stdout,
     );
 }
@@ -351,6 +355,27 @@ fn main() {
         resumed.code == 0 && !std::str::contains(resumed.stdout, "shipped "),
         "--resume goes on in the kept directory, nothing shipped: " + resumed.stdout
             + resumed.stderr,
+    );
+    // a creation graft (a new application made there, no --attach) resumes
+    // attached to the directory it made, from its pin
+    let created = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n" + scratch + "/freshapp\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        created.code == 0 && len(grafted_home(there, "freshapp")) > 0,
+        "a new application is made there through the pointer: " + created.stdout + created.stderr,
+    );
+    let again = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + grafted_home(there, "freshapp")
+            + "\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        again.code == 0,
+        "--resume of a creation graft goes on in its directory: " + again.stdout + again.stderr,
     );
 
     // ---- a stale pointer (another record's identity) tears nothing down
