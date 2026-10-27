@@ -68,6 +68,25 @@ fn habitat_latest(j: dna::Journal, kind: String) -> LatestRows {
     return latest;
 }
 
+// The index of the latest successful `habitat.applied` row of each
+// allocation in `j`: what its services publish is read where it was last
+// applied, and an apply or withdrawal that failed there changed nothing
+// (it records no `published`), so it never replaces the last that took.
+// An apply that took and publishes nothing (`published: []`) does.
+@bounded_by(j)
+fn habitat_latest_applied(j: dna::Journal) -> LatestRows {
+    let latest = LatestRows { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.applied" && std::json::find_bool_field(e.body, "ok") {
+            latest.set(LatestRow { entity: e.entity, at: i });
+        }
+        i = i + 1;
+    }
+    return latest;
+}
+
 // Whether the row at `i` is its entity's latest.
 fn habitat_holds(latest: LatestRows, entity: String, i: Int) -> Bool {
     let r = latest.get(entity) or LatestRow { };
@@ -225,6 +244,9 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     let out = std::json::Builder { };
     out.begin_array();
     let latest = habitat_latest(j, "habitat.allocated");
+    // what each allocation publishes, as its last successful apply read it
+    // where it ran (`habitat.applied`'s `published`)
+    let applies = habitat_latest_applied(j);
     let cap = habitat_cap(limit);
     let mut n = 0;
     let mut i = 0;
@@ -253,10 +275,142 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("applied", ran.host);
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
+        let last = applies.get(entity) or LatestRow { };
+        let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
+        out.field(
+            "links",
+            allocation_links(
+                root,
+                if std::str::starts_with(
+                    std::json::find_field_raw(applied_body, "published"),
+                    "[",
+                ) {
+                    applied_body
+                } else {
+                    body
+                },
+                ran.host,
+            ),
+        );
         out.end_object();
     }
     out.end_array();
     return AllocationRows { ok: true, revision: j.revision(), allocations: out.result() };
+}
+
+// The links to what an organism's own services publish, as `body` records
+// it (`published`: each service's port and the address it is bound to
+// there, "" for every interface; the allocation's last successful apply,
+// read where it ran with the environment it ran with), resolved against
+// the host the allocation runs on (`allocation_links_at`).
+fn allocation_links(root: String, body: String, applied: String) -> String {
+    let published = std::json::find_field_raw(body, "published");
+    if !std::str::starts_with(published, "[") { return "[]"; }
+    let here = len(applied) == 0 || applied == "local";
+    let address = if here {
+        "127.0.0.1"
+    } else {
+        let recorded = dna::recorded_host(root, applied).address;
+        if len(recorded) > 0 { recorded } else { applied }
+    };
+    // whether the host is the head's own machine: `local`, or an address
+    // that resolves to the loopback where the head runs (`hale habitat
+    // resolve`, asked only where the answer changes a link)
+    let declared = dna::declared_address();
+    let ask = !here
+        && (if habitat_is_local(declared) {
+            publishes_loopback(published)
+        } else {
+            !std::json::array_first(published).done
+        });
+    let on_head = here
+        || (ask
+                && (bind_is_loopback(address)
+                        || bind_is_loopback(dna::host_listen_address(address))));
+    return allocation_links_at(published, applied, here, address, on_head, declared);
+}
+
+// Whether the habitat is local to the person's browser: it declares no
+// address (`HALE_DNA_HABITAT_ADDRESS`), or declares the loopback.
+fn habitat_is_local(declared: String) -> Bool {
+    return len(declared) == 0 || bind_is_loopback(declared);
+}
+
+fn bind_is_loopback(bind: String) -> Bool {
+    return bind == "localhost" || bind == "::1" || std::str::starts_with(bind, "127.");
+}
+
+// Whether any service in `published` is bound to the loopback.
+fn publishes_loopback(published: String) -> Bool {
+    let mut it = std::json::array_first(published);
+    while !it.done {
+        if bind_is_loopback(std::json::find_string_field(it.element, "bind")) { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+// The links to `published` (a JSON array of `{service, port, bind}`) on
+// the host `applied` reached at `address` (`here`: the head's machine's
+// `local`; `on_head`: the host is the head's machine, its address the
+// loopback there), under a habitat that declares `declared` ("" for none),
+// as a JSON array of `{service, url, note}`, `[]` for none. A link is
+// given only where it is reachable from the person's browser. Under a
+// local habitat (`habitat_is_local`) the head's machine is the browser's:
+// there a port links at the loopback, or at the address it is bound to.
+// Under a habitat on another machine the head's machine is reached at its
+// declared address, never its loopback: a port bound to every interface
+// links there, and one bound to the loopback gets no URL (its note says
+// `loopback only on <host>`). On any other host a port bound to every
+// interface links at the host's address, one bound to a specific address
+// at that address, and one bound to the loopback gets the note.
+fn allocation_links_at(
+    published: String,
+    applied: String,
+    here: Bool,
+    address: String,
+    on_head: Bool,
+    declared: String
+) -> String {
+    let local = habitat_is_local(declared);
+    // this machine's loopback, reachable from the browser
+    let mine = local && on_head;
+    let base = if !local && on_head { declared } else if here { "127.0.0.1" } else { address };
+    let host = if len(applied) == 0 { "local" } else { applied };
+    let out = std::json::Builder { };
+    out.begin_array();
+    if std::str::starts_with(published, "[") {
+        let mut it = std::json::array_first(published);
+        while !it.done {
+            let service = std::json::find_string_field(it.element, "service");
+            let port = std::json::find_string_field(it.element, "port");
+            let bind = std::json::find_string_field(it.element, "bind");
+            let every = len(bind) == 0 || bind == "0.0.0.0" || bind == "::";
+            let loopback = bind_is_loopback(bind);
+            let at = if every {
+                base
+            } else if loopback && mine {
+                "127.0.0.1"
+            } else if loopback {
+                ""
+            } else if std::str::contains(bind, ":") {
+                "[" + bind + "]"
+            } else {
+                bind
+            };
+            out.begin_object();
+            out.string_field("service", service);
+            out.string_field(
+                "url",
+                if len(at) > 0 && len(port) > 0 { "http://" + at + ":" + port } else { "" },
+            );
+            out.string_field("note", if len(at) == 0 { "loopback only on " + host } else { "" });
+            out.end_object();
+            it = std::json::array_next(it);
+        }
+    }
+    out.end_array();
+    return out.result();
 }
 
 // ---- the habitat's nurseries and saplings (phase 4) --------------------------

@@ -273,6 +273,7 @@ fn index_organisms(root: String, j: dna::Journal, cap: Int) -> String {
             let name = std::json::find_string_field(e.body, "name");
             out.begin_object();
             out.string_field("name", if len(name) > 0 { name } else { e.entity });
+            out.string_field("key", e.entity);
             out.string_field(
                 "state",
                 if len(face) > 0 && index_answers(face) { "up" } else { "grafted" },

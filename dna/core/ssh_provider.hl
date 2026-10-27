@@ -434,7 +434,13 @@ locus SshProvider {
                 why: "docker compose up on " + host + " failed: " + trim_nl(up.stderr),
             };
         }
-        return RenderApplied { ok: true };
+        // what it publishes there, as compose reads the render there with
+        // the host's facts it was applied with
+        let config = ssh_run(self.root, h, ssh_compose(h, render, "config --format json"), "");
+        return RenderApplied {
+            ok: true,
+            published: if config.code == 0 { published_of_config(config.stdout) } else { "[]" },
+        };
     }
     fn withdraw(host: String, render: Render) -> RenderApplied {
         let h = recorded_host(self.root, host);

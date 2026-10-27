@@ -450,6 +450,22 @@ fn main() {
             && std::json::find_string_field(services, "state") == "up",
         "voice's services run on the host, observed over SSH: " + services,
     );
+    // what its service publishes, as compose read the render on the host
+    // with the host's facts it was applied with: bound to the host's
+    // listen address, which is the loopback for this fixture's host
+    // (`localhost`, this machine), and the habitat is local (it declares no
+    // remote address), so it is linked at 127.0.0.1 (the
+    // graft's own environment, without the facts, would have read every
+    // interface and linked the host's name)
+    std::test::assert(
+        std::str::contains(
+            services,
+            "{\"service\": \"voice\", \"url\": \"http://127.0.0.1:" + to_string(voice_port)
+                + "\", \"note\": \"\"}",
+        ),
+        "and its service, read where it was applied, is linked at this machine's loopback: "
+            + services,
+    );
     // the host's facts reached voice's compose project (its file maps them
     // into the service's environment, as voice's own does)
     let facts = dna::run_tool(

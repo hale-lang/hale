@@ -9088,6 +9088,9 @@ shared	dynamic	sites in core #8e1938c5
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/api/tests/allocation_links_test.hl
+shared	__lib_dna__core___journal__MemJournal@main1	__lib_dna__core___journal__MemJournal #63b83e2f
+
 == dna/api/tests/attempt_recovery_api_test.hl
 hole	RecoveryCases@main2.f	reuse `f`
 -- RecoveryCases@main2	RecoveryCases
@@ -13429,6 +13432,8 @@ dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
 shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/published_config_test.hl
 
 == dna/tests/reap_test.hl
 root	App	the entry

@@ -5,9 +5,11 @@ services:
   voice:
     image: python:3.12-alpine
     ports:
+      # the host's listen address, as a placed voice's api is published
+      # (every interface where the habitat hands none)
       - target: @VOICE_PORT@
         published: @VOICE_PORT@
-        host_ip: 127.0.0.1
+        host_ip: "${HALE_DNA_HOST_LISTEN:-0.0.0.0}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     working_dir: /srv

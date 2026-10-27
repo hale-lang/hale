@@ -284,6 +284,52 @@ type Render {
 type RenderApplied {
     ok: Bool = false;
     why: String = "";
+    // what the applied services publish, as compose read the render where
+    // it applied it, with the environment it applied it with
+    // (`published_of_config`): a JSON array of `{service, port, bind}`
+    published: String = "[]";
+}
+
+// What the services of a compose project publish, from compose's own
+// reading of its render (`docker compose config --format json`, the
+// environment it is applied with interpolated): each service with a TCP
+// port published, its first, with the address it is bound to (`host_ip`,
+// "" for every interface), a JSON array of `{service, port, bind}`; `[]`
+// when the text is no config.
+fn published_of_config(config: String) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let services = std::json::find_field_raw(config, "services");
+    if std::str::starts_with(services, "{") {
+        let mut it = std::json::object_first(services);
+        while !it.done {
+            let name = std::json::obj_key_string(it, services);
+            let ports = std::json::find_field_raw(std::json::obj_value_raw(it, services), "ports");
+            if std::str::starts_with(ports, "[") {
+                let mut p = std::json::array_first(ports);
+                let mut found = false;
+                while !p.done && !found {
+                    let protocol = std::json::find_string_field(p.element, "protocol");
+                    let port = std::json::find_string_field(p.element, "published");
+                    if (len(protocol) == 0 || protocol == "tcp") && len(port) > 0 {
+                        out.begin_object();
+                        out.string_field("service", name);
+                        out.string_field("port", port);
+                        out.string_field(
+                            "bind",
+                            std::json::find_string_field(p.element, "host_ip"),
+                        );
+                        out.end_object();
+                        found = true;
+                    }
+                    p = std::json::array_next(p);
+                }
+            }
+            it = std::json::object_next(it, services);
+        }
+    }
+    out.end_array();
+    return out.result();
 }
 
 // What a provider observes of an allocation: `up`, `degraded` (running,
@@ -497,7 +543,13 @@ locus ComposeProvider {
         if up.code != 0 {
             return RenderApplied { why: "docker compose up failed: " + trim_nl(up.stderr) };
         }
-        return RenderApplied { ok: true };
+        let config = run_tool(
+            "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--format\njson",
+        );
+        return RenderApplied {
+            ok: true,
+            published: if config.code == 0 { published_of_config(config.stdout) } else { "[]" },
+        };
     }
     fn withdraw(host: String, render: Render) -> RenderApplied {
         if host != self.host_name {

@@ -154,6 +154,33 @@ function fill(id, rows) {
   }
 }
 
+// An organism's allocations, each with the addresses its own services
+// publish as links (its row's `links`: voice's api, whose `/` is its
+// console, among them).
+function allocationsCell(list) {
+  const td = document.createElement("td");
+  if (list.length === 0) { td.textContent = "none"; return td; }
+  list.forEach((x, n) => {
+    if (n > 0) td.append(" ");
+    td.append(x.allocation);
+    for (const l of x.links || []) {
+      if (!l.url) {
+        // not reachable from here: said, not linked
+        td.append(" " + l.service + " (" + l.note + ")");
+        continue;
+      }
+      const a = document.createElement("a");
+      a.href = l.url;
+      a.textContent = l.service;
+      a.title = l.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      td.append(" ", a);
+    }
+  });
+  return td;
+}
+
 export async function refresh() {
   let organisms, allocs, saplings, nurseries, hosts;
   try {
@@ -182,7 +209,7 @@ export async function refresh() {
     cell(o.purpose || ""),
     cell(o.state, o.state === "up" ? "up" : ""),
     cell(o.pulse || ""),
-    cell(allocs.filter((x) => x.organism === o.name).map((x) => x.allocation).join(" ") || "none"),
+    allocationsCell(allocs.filter((x) => (o.key && x.allocation.startsWith(o.key + "/")) || x.organism === o.name)),
     remover(o.name),
   ]));
   $("placed-empty").hidden = organisms.length > 0;
