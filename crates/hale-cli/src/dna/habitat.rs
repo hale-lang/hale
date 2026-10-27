@@ -89,6 +89,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat down [--forget [--plan]]
        hale habitat migrate [organism]
        hale habitat sweep <root> | --test-vaults [<root>]
+       hale habitat resolve <name>
 
 The local habitat holds every organism's infrastructure on this machine:
 one docker compose project, named for the habitat, with a service per
@@ -325,6 +326,10 @@ migrate [organism]   bring the organism's allocations up and migrate them:
                      directory. Each role's version is recorded in the
                      allocation's allocation.json.
 
+resolve <name>       the first IPv4 address <name> resolves to on this
+                     machine: what a compose project placed on that host is
+                     handed as HALE_DNA_HOST_LISTEN. Exit 1 when it resolves
+                     to none.
 sweep <root>         take down every compose project run from under <root>,
                      a test's habitat: its containers, networks and
                      volumes, confirmed gone by the project's label. The
@@ -413,6 +418,16 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("down") => match remote::pointer() {
             Some(p) => remote::down(&p, &args[1..]),
             None => down(&args[1..]),
+        },
+        Some("resolve") if args.len() == 2 => match first_ipv4(&args[1]) {
+            Ok(ip) => {
+                println!("{ip}");
+                ExitCode::SUCCESS
+            }
+            Err(why) => {
+                eprintln!("hale habitat resolve: {why}");
+                ExitCode::from(1)
+            }
         },
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
             let root = args.get(2).map(PathBuf::from).unwrap_or_else(crate::verbs::test::test_vault_root);
@@ -1894,6 +1909,16 @@ fn ensure_profile_head(genome: &Path, backends: &str, name: &str, face_url: &str
     Ok(())
 }
 
+/// The first IPv4 address `name` resolves to on this machine, through the
+/// toolchain's own resolver (the platform's getaddrinfo, no external
+/// tool): a host's listen address (`HALE_DNA_HOST_LISTEN`,
+/// `hale habitat resolve`), or why there is none.
+pub(crate) fn first_ipv4(name: &str) -> Result<String, String> {
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<std::net::SocketAddr> = (name, 0u16).to_socket_addrs().map_err(|e| format!("{name} does not resolve here: {e}"))?.collect();
+    addrs.iter().find(|a| a.is_ipv4()).map(|a| a.ip().to_string()).ok_or_else(|| format!("{name} resolves to no IPv4 address here"))
+}
+
 /// The address the habitat declares its person-facing listeners on: the
 /// loopback for a local habitat; the host's interface for a habitat on
 /// another machine, which `up --host` hands every container it runs there
@@ -3114,6 +3139,16 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host's listen address is its name's first IPv4 address, through
+    /// the toolchain's own resolver; a name that resolves to none says so.
+    #[test]
+    fn a_hosts_listen_address_is_its_first_ipv4() {
+        assert_eq!(first_ipv4("127.0.0.1").as_deref(), Ok("127.0.0.1"));
+        assert_eq!(first_ipv4("localhost").as_deref(), Ok("127.0.0.1"));
+        assert!(first_ipv4("no-such-host.invalid").is_err());
+        assert!(first_ipv4("::1").is_err());
+    }
 
     /// A head block never covers the senses' fixed scrape ports.
     #[test]

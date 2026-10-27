@@ -283,24 +283,24 @@ fn ssh_render_dir(render: Render) -> String {
 // The two facts every compose project placed on an `ssh` host is handed in
 // its environment, whatever it runs: the host's name
 // (`HALE_DNA_HOST_NAME`), and its listen address (`HALE_DNA_HOST_LISTEN`:
-// the address that name resolves to here, which the LAN reaches it at;
-// left out when it resolves to none). A project maps them to its own
-// variables in its compose file; the habitat knows none of its names.
+// the first IPv4 address that name resolves to here, which the LAN reaches
+// it at). A project maps them to its own variables in its compose file;
+// the habitat knows none of its names. An apply on a host whose name
+// resolves to none is refused (`apply`); a withdrawal or an exec there goes
+// on without the address.
 fn host_facts(h: Host) -> String {
     let listen = host_listen_address(h.address);
     return "HALE_DNA_HOST_NAME='" + h.name + "' "
         + (if len(listen) > 0 { "HALE_DNA_HOST_LISTEN='" + listen + "' " } else { "" });
 }
 
-// The first IPv4 address `name` resolves to here, "" for none.
+// The first IPv4 address `name` resolves to here, "" for none: the
+// toolchain's own resolver (`hale habitat resolve`, the platform's
+// getaddrinfo), never an external tool that a machine may not have.
 fn host_listen_address(name: String) -> String {
-    let r = run_tool("getent\nahostsv4\n" + name);
-    if r.code != 0 { return ""; }
-    let line = trim_nl(r.stdout);
-    let nl = std::str::index_of(line, "\n");
-    let first = if nl < 0 { line } else { line[0..nl] };
-    let sp = std::str::index_of(first, " ");
-    return if sp < 0 { first } else { first[0..sp] };
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let r = run_tool(hale + "\nhabitat\nresolve\n" + name);
+    return if r.code == 0 { trim_nl(r.stdout) } else { "" };
 }
 
 // `docker compose` on an `ssh` host `h` for `render`, as one shell line run
@@ -393,6 +393,14 @@ locus SshProvider {
         }
         if len(render.project) == 0 || len(render.dir) == 0 {
             return RenderApplied { why: "nothing to apply: the render names no project" };
+        }
+        // a project placed here is told the host's listen address: a name
+        // that resolves to none is refused, never applied without it
+        if len(host_listen_address(h.address)) == 0 {
+            return RenderApplied {
+                why: "host `" + host + "`: its name " + h.address
+                    + " resolves to no IPv4 address here, so the project placed there cannot be told its listen address (HALE_DNA_HOST_LISTEN); fix the LAN's DNS for it, or add the host again under a name that resolves",
+            };
         }
         let remote = ssh_render_dir(render);
         let made = ssh_run(self.root, h, "mkdir -p '" + remote + "'", "");

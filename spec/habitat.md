@@ -903,7 +903,7 @@ compose file. On this machine neither is set.
 | Variable | Value |
 |---|---|
 | `HALE_DNA_HOST_NAME` | the host's name, as it was added (`hale habitat host add <name>`) and as the LAN's DNS resolves it |
-| `HALE_DNA_HOST_LISTEN` | the host's listen address: the first IPv4 address its name resolves to on the habitat's machine, which the LAN reaches it at; left out when it resolves to none |
+| `HALE_DNA_HOST_LISTEN` | the host's listen address: the first IPv4 address its name resolves to on the habitat's machine, through the toolchain's own resolver (`hale habitat resolve <name>`), which the LAN reaches it at; an apply on a host whose name resolves to none is refused, saying so |
 
 The manifest is read once, by graft; every reader after it reads the
 roles the habitat allocated, as `allocation.json` keeps them.
