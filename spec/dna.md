@@ -4947,9 +4947,16 @@ The live half is memory's, projected from the record by the spine
   file one beside its vault, the CLI tests one per process), which comes
   down with the vault. `hale test`, the CLI tests' reap and
   `scripts/compose-down-under.sh` share one teardown, `hale habitat sweep
-  <root>`: it names every project rooted in the root in the root's
-  `.dna-compose-projects` before it takes any down, and drops a name
-  only once the project's containers and volumes are confirmed gone, so
+  <root>`: a project is rooted in the root when a container of it ran
+  from under it, or when a directory under it names it whether or not a
+  container is left (a project whose containers went keeps its network and
+  volumes): each `<home>/.hale/habitat/<project>` an `ssh` host was handed
+  a render in, and each habitat born there (`…/hale/habitat/local`, its
+  project named from that path), never a project one of whose containers
+  ran from outside the root. It names every project rooted in the root in
+  the root's `.dna-compose-projects` before it takes any down, and drops
+  a name only once the project's containers, volumes and networks are
+  confirmed gone, so
   a teardown that did not finish (a volume docker would not remove) is
   found again by name and retried by the next — a vault whose habitat
   did not come down is kept for the next sweep. It, and
