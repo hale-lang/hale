@@ -509,6 +509,17 @@ pub(crate) fn head_endpoint() -> Option<String> {
     head_url_at(&genome).as_deref().and_then(loopback_port).map(|base| format!("http://{}:{}", habitat_address(), base + 1))
 }
 
+/// The link that signs the person in to the habitat's face: the face's URL
+/// with the head's launch token, which opens `/` once and sets the session
+/// cookie (`dna/api/project_service/head.hl`). "" when no token is kept here.
+pub(super) fn sign_in_link(face: &str) -> String {
+    let token = head_token();
+    if token.is_empty() || face.is_empty() {
+        return String::new();
+    }
+    format!("{}/?token={token}", face.trim_end_matches('/'))
+}
+
 pub(crate) fn head_token() -> String {
     std::fs::read_to_string(face_state_dir().join("head.token"))
         .or_else(|_| std::fs::read_to_string(genome_dir().join(".hale/dna/head.token")))
@@ -2150,10 +2161,12 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     if !face_ok {
         return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within 180s"));
     }
-    Ok(vec![
-        format!("{:<8}up (compose service face, {face_url}/)", "face"),
-        format!("{:<8}up (compose service body)", "body"),
-    ])
+    let mut lines = vec![format!("{:<8}up (compose service face, {face_url}/)", "face"), format!("{:<8}up (compose service body)", "body")];
+    let link = sign_in_link(&face_url);
+    if !link.is_empty() {
+        lines.push(format!("{:<8}{link}", "sign in"));
+    }
+    Ok(lines)
 }
 
 /// Phase 4: the habitat's face (and the head behind it) restarted, after
@@ -2217,7 +2230,13 @@ fn status() -> ExitCode {
     }
     println!("{:<8}{}", "body", body_state().unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
     match head_url_at(&genome).as_deref().and_then(loopback_port) {
-        Some(port) => println!("{:<8}http://{}:{port}/ ({})", "face", habitat_address(), face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string())),
+        Some(port) => {
+            println!("{:<8}http://{}:{port}/ ({})", "face", habitat_address(), face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
+            let link = sign_in_link(&format!("http://{}:{port}", habitat_address()));
+            if !link.is_empty() && face_running().is_some() {
+                println!("{:<8}{link}", "sign in");
+            }
+        }
         None => println!("{:<8}not assigned: `hale habitat up` assigns its address", "face"),
     }
     if face_running().is_some() {

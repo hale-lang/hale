@@ -524,6 +524,10 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     write_pointer(&p, &token)?;
     out.push(format!("{:<8}{face}/", "face"));
     out.push(format!("{:<8}{url} (recorded here in {})", "head", head_url_file().display()));
+    let link = super::sign_in_link(&face);
+    if !link.is_empty() {
+        out.push(format!("{:<8}{link}", "sign in"));
+    }
     out.push(format!("{:<8}{}… ({})", "record", &identity[..12.min(identity.len())], if kept.is_some() { "reconnected; the pointer is the same habitat's" } else { "pointed at from this machine" }));
     Ok(out)
 }
@@ -537,7 +541,12 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     let identity = p["identity"].as_str().unwrap_or("");
     println!("{:<8}on {} (record {}…)", "genome", p["host"].as_str().unwrap_or(""), &identity[..12.min(identity.len())]);
     let up = answers(head);
-    println!("{:<8}{}/ ({})", "face", p["face"].as_str().unwrap_or(""), if answers(p["face"].as_str().unwrap_or("")) { "up" } else { "down: `hale habitat up --host` starts it" });
+    let face_up = answers(p["face"].as_str().unwrap_or(""));
+    println!("{:<8}{}/ ({})", "face", p["face"].as_str().unwrap_or(""), if face_up { "up" } else { "down: `hale habitat up --host` starts it" });
+    let link = super::sign_in_link(p["face"].as_str().unwrap_or(""));
+    if face_up && !link.is_empty() {
+        println!("{:<8}{link}", "sign in");
+    }
     println!("{:<8}{head} ({})", "head", if up { "up" } else { "down" });
     if !up {
         return ExitCode::SUCCESS;

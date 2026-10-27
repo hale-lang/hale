@@ -142,7 +142,10 @@ waits on the head and the face at the recorded URL, then keeps a pointer in
 its local habitat's directory in place of a habitat: `remote.json` (the
 name, the host, the login, the image, the head's and face's URLs, the
 record's identity), `head.url`, and the head's launch token
-(`face-state/head.token`, 0600). A machine points at one habitat, and one
+(`face-state/head.token`, 0600). `up` and `status`, local or through a
+pointer, end with a `sign in` line while the face answers: the face's URL
+with that token (`/?token=…`), the link that opens the face once and sets
+its session, which is otherwise printed only in the face's own log. A machine points at one habitat, and one
 that runs a habitat of its own points at none.
 
 Every verb on the admin machine reaches the habitat's head through the
