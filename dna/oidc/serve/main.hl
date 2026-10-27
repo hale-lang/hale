@@ -74,6 +74,7 @@ fn main() {
             x: x,
             y: y,
             services: std::env::var("HALE_DNA_OIDC_SERVICES"),
+            services_file: std::env::var("HALE_DNA_OIDC_SERVICES_FILE"),
         },
     };
 }

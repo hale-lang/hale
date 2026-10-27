@@ -903,7 +903,17 @@ pub(super) fn allocate_roles(child: &str, root: &Path) -> Result<Vec<String>, St
     if !["none", "github", "file", "forgejo"].contains(&forge.as_str()) {
         return Err(format!("`--forge {forge}`: a forge is forgejo, github, file or none"));
     }
-    let issuer = Command::new("git").arg("-C").arg(root).args(["config", "--get", "dna.oidc.issuer"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "http://127.0.0.1:8794".to_string());
+    let configured = || Command::new("git").arg("-C").arg(root).args(["config", "--get", "dna.oidc.issuer"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty());
+    // a habitat that publishes its identity is the organism's: it signs in
+    // through the habitat's provider, which its head, its handover and its
+    // host code all read from here
+    if let (None, Some(shared)) = (configured(), super::shared_issuer()) {
+        let set = Command::new("git").arg("-C").arg(root).args(["config", "--local", "dna.oidc.issuer", &shared]).status().is_ok_and(|s| s.success());
+        if !set {
+            return Err(format!("could not point {} at the habitat's identity ({shared})", root.display()));
+        }
+    }
+    let issuer = configured().unwrap_or_else(|| "http://127.0.0.1:8794".to_string());
     let path = PathBuf::from(local_habitat_dir()).join("allocations").join(key).join("forge.json");
     let cache = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
     let allocated = latest(&rows, "habitat.allocated");

@@ -226,6 +226,17 @@ absolute_executable() {
 # starts none.
 oidc_local=0
 [[ "${HALE_DNA_TRUSTED_LOCAL:-}" == 1 ]] || oidc_local=1
+# A habitat shares one identity with the organisms it grafts: its own
+# face's launch (HALE_DNA_IDENTITY=publish) keeps its provider's key in its
+# state, so the key outlives a restart, and publishes the provider at
+# <habitat>/identity.env; an organism's launch under a habitat that
+# published one signs in through it and starts no provider of its own.
+habitat_dir=${HALE_DNA_HABITAT:-${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local}
+identity_env=$habitat_dir/identity.env
+shared_identity=0
+if ((oidc_local)) && [[ "${HALE_DNA_IDENTITY:-}" != publish && -f "$identity_env" ]]; then
+  shared_identity=1
+fi
 if ((oidc_local)); then
   command -v curl >/dev/null || fail 'curl is required to wait for the OpenID provider'
   command -v openssl >/dev/null || fail 'openssl is required to make the OpenID provider its key'
@@ -234,7 +245,7 @@ seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
 if [[ -z "$face_bin" ]]; then seeds+=(dna/face/standard); else face_bin=$(absolute_executable "$face_bin" face); fi
-if ((oidc_local)); then
+if ((oidc_local && !shared_identity)); then
   if [[ -z "$oidc" ]]; then seeds+=(dna/oidc/serve); else oidc=$(absolute_executable "$oidc" 'OpenID provider'); fi
 fi
 # GH #988: the reflexes read a project's senses, so they are a seed when
@@ -260,12 +271,30 @@ fi
 # the stub provider serves on the loopback under a key and a secret made
 # for this launch, and the person running this signs in through it as
 # local-sub; it goes with the launcher (cleanup stops it on any exit).
-if ((oidc_local)); then
+if ((shared_identity)); then
+  # the habitat's provider, as its face published it: its issuer, its
+  # key's public half (which the head pins) and the client; this launch
+  # starts no provider
+  set -a
+  # shellcheck disable=SC1090
+  . "$identity_env"
+  set +a
+  [[ -n "${HALE_DNA_OIDC_ISSUER:-}" && -n "${HALE_DNA_OIDC_KEY:-}" && -n "${HALE_DNA_OIDC_DIAL:-}" ]] || fail "$identity_env does not name the habitat's provider"
+  curl -sf "$HALE_DNA_OIDC_DIAL/.well-known/openid-configuration" >/dev/null 2>&1 || fail "the habitat's identity does not answer at $HALE_DNA_OIDC_ISSUER: its face serves it (\`hale habitat up\`)"
+  export HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
+  printf 'face: signing in through the habitat'\''s identity, %s, as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
+elif ((oidc_local)); then
   # the provider's key, made for this launch and readable by you alone; the
   # head pins its public half, since anyone on this machine could answer
-  # on the loopback port
+  # on the loopback port. The habitat's own (HALE_DNA_IDENTITY=publish) is
+  # kept in its state instead, made once: the organisms that sign in
+  # through it pin the same half across its restarts
   key_file="$build_dir/oidc.key"
-  (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out "$key_file" 2>/dev/null) || fail 'cannot make the provider its key'
+  if [[ "${HALE_DNA_IDENTITY:-}" == publish && -n "${HALE_DNA_HEAD_STATE:-}" ]]; then
+    mkdir -p "$HALE_DNA_HEAD_STATE"
+    key_file="$HALE_DNA_HEAD_STATE/oidc.key"
+  fi
+  [[ -s "$key_file" ]] || (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out "$key_file" 2>/dev/null) || fail 'cannot make the provider its key'
   pub() { openssl ec -in "$key_file" -pubout -outform DER 2>/dev/null; }
   b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
   spki=$(pub | base64 -w0)
@@ -280,7 +309,9 @@ if ((oidc_local)); then
   # under the habitat's declared address; it is probed where it binds
   oidc_dial=${HALE_DNA_LISTEN_HOST:-127.0.0.1}
   [[ "$oidc_dial" == 0.0.0.0 ]] && oidc_dial=127.0.0.1
-  env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
+  services_file=
+  [[ "${HALE_DNA_IDENTITY:-}" == publish ]] && services_file=$habitat_dir/identity.services
+  env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" HALE_DNA_OIDC_SERVICES_FILE="$services_file" "$oidc" "$oidc_port" dna-local >&2 &
   provider=$!
   for _ in $(seq 1 100); do
     curl -sf "http://$oidc_dial:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
@@ -291,6 +322,11 @@ if ((oidc_local)); then
   curl -sf "http://$oidc_dial:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
   export HALE_DNA_OIDC_ISSUER="http://${HALE_DNA_HABITAT_ADDRESS:-127.0.0.1}:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through %s as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
+  # the habitat's provider, published for the organisms it grafts
+  if [[ "${HALE_DNA_IDENTITY:-}" == publish ]]; then
+    mkdir -p "$habitat_dir"
+    printf 'HALE_DNA_OIDC_ISSUER=%s\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_KEY=%s\nHALE_DNA_OIDC_DIAL=http://%s:%s\n' "$HALE_DNA_OIDC_ISSUER" "$spki" "$oidc_dial" "$oidc_port" >"$identity_env.$$" && mv "$identity_env.$$" "$identity_env" || fail "cannot publish the habitat's identity at $identity_env"
+  fi
 fi
 
 # GH #988: the reflexes, on the private-services tier beside the project's

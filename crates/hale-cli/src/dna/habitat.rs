@@ -1261,6 +1261,14 @@ pub(super) fn parse_part(flag: &str, value: &str, into: &mut BTreeMap<String, Pa
     Ok(())
 }
 
+/// The habitat's identity, as its face published it (`<habitat>/identity.env`,
+/// dna/face/start.sh under `HALE_DNA_IDENTITY=publish`): the issuer every
+/// organism it grafts signs in through. `None` before its face has run.
+pub(super) fn shared_issuer() -> Option<String> {
+    let text = std::fs::read_to_string(PathBuf::from(local_habitat_dir()).join("identity.env")).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("HALE_DNA_OIDC_ISSUER=")).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 /// The name a person knows the habitat's machine by: its declared address
 /// under `up --host`, else this machine.
 fn habitat_machine() -> String {
@@ -1275,10 +1283,10 @@ pub(super) fn graft_plan(needs: &[String], has_app: bool) -> Vec<String> {
     let here = habitat_machine();
     let host = GRAFT_HOST.get().and_then(|h| h["host"].as_str()).map(str::to_string).unwrap_or_else(|| here.clone());
     let brings = GRAFT_BRINGS.get().cloned().unwrap_or_default();
-    plan_lines(needs, has_app, &here, &host, &brings, &part_choice)
+    plan_lines(needs, has_app, &here, &host, &brings, shared_issuer().as_deref(), &part_choice)
 }
 
-fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &[String], part_choice: &dyn Fn(&str) -> Part) -> Vec<String> {
+fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &[String], shared: Option<&str>, part_choice: &dyn Fn(&str) -> Part) -> Vec<String> {
     let (here, host) = (here.to_string(), host.to_string());
     let mut out = vec!["organism plane".to_string()];
     for role in ORGANISM_PARTS {
@@ -1290,7 +1298,10 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
             Part::Own(h) => format!("  {role:<9} own    a server of its own on {}", h.unwrap_or_else(|| host.clone())),
         });
     }
-    out.push(format!("  {:<9} own    its own sign-in stub, beside its head (the habitat's: not yet)", "identity"));
+    out.push(match shared {
+        Some(issuer) => format!("  {:<9} reuse  the habitat's sign-in ({issuer}): one account, every organism", "identity"),
+        None => format!("  {:<9} own    its own sign-in stub, beside its head (the habitat's face has published none)", "identity"),
+    });
     out.push(format!("  {:<9} reuse  the habitat's forge, by its policy (--forge to choose)", "forge"));
     out.push("application plane".to_string());
     out.push(if has_app { format!("  {:<9} its compose services on {host}", "services") } else { format!("  {:<9} none (no compose file at its root)", "services") });
@@ -2492,7 +2503,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_FACE_HOME: \"/app/\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_FACE_HOME: \"/app/\"\n      HALE_DNA_IDENTITY: \"publish\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
@@ -3611,6 +3622,17 @@ fn map_service_client(root: &Path) -> Result<Vec<String>, String> {
             return Err(format!("could not map the service client `{client}` in {}", root.display()));
         }
     }
+    // a habitat that shares its identity learns the client: its provider
+    // reads the list at each request (dna/oidc, HALE_DNA_OIDC_SERVICES_FILE)
+    if shared_issuer().is_some() {
+        let list = PathBuf::from(local_habitat_dir()).join("identity.services");
+        let known = std::fs::read_to_string(&list).unwrap_or_default();
+        if !known.split_whitespace().any(|c| c == client) {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&list).map_err(|e| format!("{}: {e}", list.display()))?;
+            writeln!(f, "{client}").map_err(|e| format!("{}: {e}", list.display()))?;
+        }
+    }
     let drawn = super::organism_secrets(root, false);
     Ok(vec![format!("{:<8}the heart's service client `{client}` (dna.oidc.service {mapping}; its secret the vault slot oidc-service-{client})", "oidc"), drawn].into_iter().filter(|l| !l.is_empty()).collect())
 }
@@ -3654,7 +3676,7 @@ mod tests {
         assert_eq!(default_part("database", &[]), Part::Reuse, "an application that brings none is provided one");
         assert_eq!(default_part("memory", &brings), Part::Reuse);
         let needs: Vec<String> = ["memory", "nerves", "database", "broker"].iter().map(|s| s.to_string()).collect();
-        let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
+        let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, Some("http://rack-a.lan:8803"), &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
         let text = lines.join("\n");
         assert!(text.contains("memory    own    a server of its own on box-1"), "{text}");
         assert!(text.contains("nerves    reuse  on the habitat's machine (rack-a.lan)"), "{text}");
@@ -3662,6 +3684,7 @@ mod tests {
         assert!(text.contains("database  reuse  provisioned by the habitat"), "{text}");
         assert!(text.contains("broker    own    the application's own NATS, in its compose"), "{text}");
         assert!(!text.contains("senses"), "a part it does not need is not planned: {text}");
+        assert!(text.contains("identity  reuse  the habitat's sign-in (http://rack-a.lan:8803)"), "{text}");
     }
 
     /// What an application brings is among its application-plane needs.

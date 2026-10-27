@@ -929,7 +929,21 @@ plan as its defaults give it. The choice for each heart role is kept
 beside the organism's allocations (`parts.json`): `hale habitat migrate`
 and an upgrade provision, and run the heart migration of, only the roles
 the habitat provides. Identity is each organism's own sign-in stub for
-now; reusing the habitat's is not built.
+unless the habitat's face has published its identity (below).
+
+**One identity for the habitat and every organism it grafts.** The
+habitat's face starts its sign-in provider with `HALE_DNA_IDENTITY=publish`:
+its signing key is kept in the face's state, made once, so it outlives a
+restart, and the provider is published at `<habitat>/identity.env` (its
+issuer, the key's public half, the client `dna-local`, and where it
+answers). A graft points the child at it (`dna.oidc.issuer` in the child's
+configuration, which its head, its heart's handover and the host's code
+read) and registers the heart's service client in
+`<habitat>/identity.services`, which the provider reads at each request.
+An organism's face launch under that habitat starts no provider of its
+own: it signs in through the habitat's, so a person has one account for
+every organism, and what they may do in each is the positions they hold
+in its record. The plan says `identity reuse the habitat's sign-in`.
 
 A graft allocates each role the organism's genome needs, records the
 allocations in the habitat's record, writes a `habitat.grafted <child>`
