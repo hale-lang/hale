@@ -205,7 +205,7 @@ fn main() {
         j.revision(),
         "habitat.allocated",
         "shop/services",
-        "{\"role\":\"services\",\"service\":\"\",\"provider\":\"ssh\",\"host\":\"rack-b.lan\",\"organism\":\"shop\",\"published\":[{\"service\":\"api\",\"url\":\"http://rack-b.lan:8080\"}]}",
+        "{\"role\":\"services\",\"service\":\"\",\"provider\":\"ssh\",\"host\":\"rack-b.lan\",\"organism\":\"shop\",\"published\":[{\"service\":\"api\",\"port\":\"8080\",\"bind\":\"\"},{\"service\":\"admin\",\"port\":\"9090\",\"bind\":\"127.0.0.1\"}]}",
     );
     std::test::assert(services.ok, "the services' row landed");
     let added = f.git("add\n-A");
@@ -351,6 +351,7 @@ fn main() {
     std::test::assert(
         std::str::contains(allocations.body, "shop/services")
             && std::str::contains(allocations.body, "http://rack-b.lan:8080")
+            && std::str::contains(allocations.body, "loopback only on rack-b.lan")
             && std::str::contains(organisms.body, "allocationsCell")
             && std::str::contains(organisms.body, "a.href = l.url"),
         "an organism's services are listed with the addresses they publish, which screen 4 links: "

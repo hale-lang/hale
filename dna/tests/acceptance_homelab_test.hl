@@ -450,14 +450,16 @@ fn main() {
             && std::json::find_string_field(services, "state") == "up",
         "voice's services run on the host, observed over SSH: " + services,
     );
-    // the address its service publishes, recorded from the render at the
-    // graft: the operator face's link to it
+    // what its service publishes, recorded from the render at the graft:
+    // a port the host publishes on its interfaces, linked at the host's
+    // address
     std::test::assert(
         std::str::contains(
             services,
-            "{\"service\": \"voice\", \"url\": \"http://localhost:" + to_string(voice_port) + "\"}",
+            "{\"service\": \"voice\", \"url\": \"http://localhost:" + to_string(voice_port)
+                + "\", \"note\": \"\"}",
         ),
-        "and the address its service publishes, at the host's name: " + services,
+        "and its service is linked at the host's address: " + services,
     );
     let memory = element(
         read(sock, "Commands::allocations", "allocations"),

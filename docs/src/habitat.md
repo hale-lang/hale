@@ -142,7 +142,7 @@ A moved memory starts empty, because nothing migrates. A memory that holds its o
 
 `voice`'s image downloads the released Hale toolchain itself when it is built (its `Dockerfile`), so the first `apply` needs the network and takes a few minutes; nothing is staged by hand.
 
-The operator face's **organisms** screen lists each of `voice`'s allocations with the addresses its services publish as links: `api` opens `voice`'s console (its admin UI, served at the api's `/`).
+The operator face's **organisms** screen lists each of `voice`'s allocations with what its services publish: a link where the port is reachable from your machine (`api` opens `voice`'s console, its admin UI served at the api's `/`), and `loopback only on <host>` for a port bound to that host's loopback.
 
 `voice`'s Compose definition publishes port `8080` bound to loopback (`127.0.0.1:8080:8080`) on the host running `voice` so that its unauthenticated `/admin/v1/*` plane is never exposed directly to the LAN. If you placed `voice` on a remote host (`rack-a.lan`), open a local SSH port forward first (or run the commands in Steps 4–7 directly on `rack-a.lan`) so `http://localhost:8080` reaches `voice`'s loopback interface:
 

@@ -253,48 +253,60 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("applied", ran.host);
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
-        out.field("links", allocation_links(root, body, a.host, ran.host));
+        out.field("links", allocation_links(root, body, ran.host));
         out.end_object();
     }
     out.end_array();
     return AllocationRows { ok: true, revision: j.revision(), allocations: out.result() };
 }
 
-// The addresses an organism's own services publish, as its allocation's
-// row records them at its graft (`published`: each service and
-// `http://<host's address>:<port>`), a JSON array of `{service, url}`;
-// `[]` for an allocation that records none. One applied on another host
-// than its row names is reached at that host's address, with the port it
-// publishes.
-fn allocation_links(root: String, body: String, recorded: String, applied: String) -> String {
+// The links to what an organism's own services publish, as its
+// allocation's row records it at its graft (`published`: each service's
+// port and the address it is bound to there, "" for every interface),
+// resolved against the host the allocation runs on: a JSON array of
+// `{service, url, note}`, `[]` for a row that records none. A link is
+// given only where it is reachable from the admin machine: on another host,
+// a port bound to every interface at the host's address, one bound to a
+// specific address at that address, and one bound to the host's loopback
+// not at all (its note says `loopback only on <host>`); on this machine at
+// the loopback, or at the address it is bound to.
+fn allocation_links(root: String, body: String, applied: String) -> String {
     let out = std::json::Builder { };
     out.begin_array();
     let published = std::json::find_field_raw(body, "published");
     if std::str::starts_with(published, "[") {
-        let moved = len(applied) > 0 && applied != recorded;
-        let address = if !moved {
-            ""
-        } else if applied == "local" {
+        let here = len(applied) == 0 || applied == "local";
+        let address = if here {
             "127.0.0.1"
         } else {
-            dna::recorded_host(root, applied).address
+            let recorded = dna::recorded_host(root, applied).address;
+            if len(recorded) > 0 { recorded } else { applied }
         };
         let mut it = std::json::array_first(published);
         while !it.done {
             let service = std::json::find_string_field(it.element, "service");
-            let url = std::json::find_string_field(it.element, "url");
-            let mut colon = len(url) - 1;
-            while colon > 0 && url[colon..(colon + 1)] != ":" { colon = colon - 1; }
+            let port = std::json::find_string_field(it.element, "port");
+            let bind = std::json::find_string_field(it.element, "bind");
+            let every = len(bind) == 0 || bind == "0.0.0.0" || bind == "::";
+            let loopback = bind == "localhost"
+                || bind == "::1"
+                || std::str::starts_with(bind, "127.");
+            let at = if every || (here && loopback) {
+                address
+            } else if loopback {
+                ""
+            } else if std::str::contains(bind, ":") {
+                "[" + bind + "]"
+            } else {
+                bind
+            };
             out.begin_object();
             out.string_field("service", service);
             out.string_field(
                 "url",
-                if moved && len(address) > 0 && colon > 0 {
-                    "http://" + address + url[colon..len(url)]
-                } else {
-                    url
-                },
+                if len(at) > 0 && len(port) > 0 { "http://" + at + ":" + port } else { "" },
             );
+            out.string_field("note", if len(at) == 0 { "loopback only on " + applied } else { "" });
             out.end_object();
             it = std::json::array_next(it);
         }

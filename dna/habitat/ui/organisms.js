@@ -164,6 +164,11 @@ function allocationsCell(list) {
     if (n > 0) td.append(" ");
     td.append(x.allocation);
     for (const l of x.links || []) {
+      if (!l.url) {
+        // not reachable from here: said, not linked
+        td.append(" " + l.service + " (" + l.note + ")");
+        continue;
+      }
       const a = document.createElement("a");
       a.href = l.url;
       a.textContent = l.service;
