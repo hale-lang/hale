@@ -201,7 +201,7 @@ pub(super) fn remove_user(host: &str, port: Option<u16>, user: &str) -> Result<(
     let sudo = if tty { "sudo" } else { "sudo -n" };
     let ran = t
         .ssh(tty)
-        .arg(format!("u={u}; if id \"$u\" >/dev/null 2>&1; then {sudo} userdel -r \"$u\" 2>/dev/null || {sudo} userdel \"$u\"; fi", u = sq(user)))
+        .arg(remove_user_script(user, sudo))
         .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
         .status()
         .map_err(|e| format!("ssh: {e}"))?;
@@ -210,6 +210,19 @@ pub(super) fn remove_user(host: &str, port: Option<u16>, user: &str) -> Result<(
     } else {
         Err(format!("removing the account {user} there failed{}", if tty { "" } else { " (sudo needs a terminal)" }))
     }
+}
+
+/// The account removed, its sessions ended first: the habitat's own SSH
+/// session there, and the user manager logind started for it, are still
+/// exiting just after the habitat's last act, and `userdel` refuses a user
+/// with a process. Retried a few seconds; its home goes with it.
+fn remove_user_script(user: &str, sudo: &str) -> String {
+    format!(
+        "u={u}; id \"$u\" >/dev/null 2>&1 || exit 0; {s} loginctl terminate-user \"$u\" 2>/dev/null; {s} pkill -KILL -u \"$u\" 2>/dev/null; \
+         for _ in 1 2 3 4 5 6 7 8 9 10; do {s} userdel -r \"$u\" 2>/dev/null && exit 0; sleep 1; done; {s} userdel -r \"$u\"",
+        u = sq(user),
+        s = sudo
+    )
 }
 
 /// The comment the habitat's public key carries (`habitat-<allocation
@@ -1240,6 +1253,9 @@ mod tests {
             assert!(!is_habitat_user(other), "{other}");
         }
         assert!(remove_user("box-1", None, "person").is_err(), "refused before any connection");
+        let removal = remove_user_script(&u, "sudo -n");
+        assert!(removal.contains("loginctl terminate-user") && removal.contains("pkill -KILL -u") && removal.contains("userdel -r"), "{removal}");
+        assert!(Command::new("sh").arg("-n").arg("-c").arg(&removal).status().unwrap().success(), "the removal parses as sh");
         let script = provision_script(&u, "ssh-ed25519 AAAA habitat-0123456789ab", false);
         assert!(script.contains("u='hale-0123456789ab'") && script.contains("'ssh-ed25519 AAAA habitat-0123456789ab'") && script.contains("sudo -n useradd --system"), "{script}");
         for tty in [false, true] {

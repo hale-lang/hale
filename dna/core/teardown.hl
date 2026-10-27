@@ -504,7 +504,7 @@ fn host_key_note(root: String, h: Host, action: String) -> String {
         h.name,
         "the line " + (if len(line) > 0 { "`" + line + "`" } else { "of the habitat's key" })
             + " in " + h.user + "@" + h.name
-            + ":~/.ssh/authorized_keys: the habitat cannot remove it; remove it on that machine",
+            + ":~/.ssh/authorized_keys: the habitat cannot remove it; the CLI does, over your own SSH login (an account the habitat made goes whole), else remove it on that machine",
         "1 line",
         "-",
         action,
