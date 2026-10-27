@@ -353,7 +353,7 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 "its genome repository " + groot
                     + ", the habitat's copy of the directory grafted from another machine",
                 "1 directory", "no: commits made there since and not pushed are lost",
-                "dir-rm", "", groot, FORGET_STEP_FILES,
+                "dir-rm", "", dna::grafted_home(groot), FORGET_STEP_FILES,
             )
         } else {
             dna::teardown_item(

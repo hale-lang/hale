@@ -903,6 +903,15 @@ type GraftedOrganism {
 }
 
 @bounded_by(root)
+// The directory a graft through a pointer made for an organism's copy:
+// `<habitat>/grafted/<name>-<suffix>`, which holds its home `<name>` and
+// goes with it.
+fn grafted_home(groot: String) -> String {
+    let mut at = len(groot);
+    while at > 0 && groot[(at - 1)..at] != "/" { at = at - 1; }
+    return if at > 1 { groot[0..(at - 1)] } else { groot };
+}
+
 fn grafted_organism(root: String, name: String) -> GraftedOrganism {
     let mut found = GraftedOrganism { };
     let mut n = 0;
@@ -1113,7 +1122,7 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                 "its genome repository " + groot
                     + ", the habitat's copy of the directory grafted from another machine",
                 "1 directory", "no: commits made there since and not pushed are lost",
-                "dir-rm", "", groot, 65,
+                "dir-rm", "", grafted_home(groot), 65,
             ),
         );
     } else {

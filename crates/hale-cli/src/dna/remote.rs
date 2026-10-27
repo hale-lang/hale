@@ -624,47 +624,93 @@ pub(super) fn graft(p: &serde_json::Value, args: &[String]) -> ExitCode {
         Ok(tm) => tm,
         Err(code) => return code,
     };
-    let there = grafted_dir(&m, &name);
-    let existed = t.run(&format!("test -e {} && echo yes || true", sq(&there))).map(|o| o.trim() == "yes").unwrap_or(false);
+    // a directory of its own for this graft, made fresh there: `mkdir`
+    // (never `-p`) is the gate, so nothing is ever unpacked over another
+    // organism's home, and the organism's directory keeps its name inside it
+    let gate = grafted_dir(&m, &format!("{name}-{}", fresh_suffix()));
+    let there = format!("{gate}/{name}");
+    let made = t.run(&format!("mkdir -p {g} && mkdir {d} && echo made || true", g = sq(&format!("{}/grafted", habitat_dir(&m))), d = sq(&gate)));
+    if made.as_deref().map(str::trim) != Ok("made") {
+        eprintln!("hale habitat graft: {gate} could not be made fresh on {}; nothing was shipped", t.host);
+        return ExitCode::from(1);
+    }
     let shipped = local.is_dir();
     if shipped {
         super::progress(&format!("shipping {} to {}:{there}", local.display(), t.host));
         let Some(parent) = std::fs::canonicalize(&local).ok().and_then(|c| c.parent().map(|p| p.to_path_buf())) else {
             eprintln!("hale habitat graft: `{given}` has no parent directory");
+            let _ = t.run(&format!("rmdir {}", sq(&gate)));
             return ExitCode::from(2);
         };
         let mut tar = match Command::new("tar").arg("-C").arg(&parent).args(["-cf", "-", &name]).stdout(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("hale habitat graft: tar: {e}");
+                let _ = t.run(&format!("rmdir {}", sq(&gate)));
                 return ExitCode::from(1);
             }
         };
         let Some(out) = tar.stdout.take() else { return ExitCode::from(1) };
-        let unpacked = t.ssh(false).arg(format!("mkdir -p {d} && tar -C {d} -xf -", d = sq(&format!("{}/grafted", habitat_dir(&m))))).stdin(out).status();
+        let unpacked = t.ssh(false).arg(format!("tar -C {} -xf -", sq(&gate))).stdin(out).status();
         let packed = tar.wait();
         if !unpacked.is_ok_and(|s| s.success()) || !packed.is_ok_and(|s| s.success()) {
-            eprintln!("hale habitat graft: {} could not be shipped to {}", local.display(), t.host);
-            if !existed {
-                let _ = t.run(&format!("rm -rf {}", sq(&there)));
-            }
+            // nothing grafted from it yet: the fresh directory goes whole
+            eprintln!("hale habitat graft: {} could not be shipped to {}; nothing was grafted", local.display(), t.host);
+            let _ = t.run(&format!("rm -rf {}", sq(&gate)));
             return ExitCode::from(1);
         }
         println!("{:<8}{} shipped to {}:{there}, the habitat's copy", "shipped", local.display(), t.host);
-    } else {
-        let _ = t.run(&format!("mkdir -p {}", sq(&format!("{}/grafted", habitat_dir(&m)))));
     }
+    // what the directory held before the graft: a pin or DNA state it
+    // brought makes it never removable here
+    let before = graft_state(&t, &there);
     let mut a: Vec<&str> = vec!["graft", there.as_str()];
     a.extend(args[1..].iter().map(String::as_str));
     let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
     if ran.as_ref().is_ok_and(|s| s.success()) {
         return ExitCode::SUCCESS;
     }
-    if !existed {
-        let _ = t.run(&format!("rm -rf {}", sq(&there)));
-        eprintln!("hale habitat graft: the graft on {} failed; the copy made for it there is removed", t.host);
+    // a refusal that committed nothing leaves no copy; anything else (a
+    // pin or DNA state the graft wrote, a result SSH lost) keeps it, since
+    // the graft resumes from it
+    let code = ran.as_ref().ok().and_then(|s| s.code());
+    let after = graft_state(&t, &there);
+    if keep_after_failure(code, before.as_deref(), after.as_deref()) {
+        eprintln!("hale habitat graft: the graft on {} did not finish; its directory is kept at {there} (run the graft again to go on from it, or `hale habitat organism remove`)", t.host);
+    } else {
+        let _ = t.run(&format!("rm -rf {}", sq(&gate)));
+        eprintln!("hale habitat graft: the graft on {} was refused before it committed anything; the copy made for it there is removed", t.host);
     }
-    ExitCode::from(ran.ok().and_then(|s| s.code()).and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
+    ExitCode::from(code.and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
+}
+
+/// 12 hex digits drawn fresh: the suffix of a graft's own directory.
+fn fresh_suffix() -> String {
+    let mut b = [0u8; 6];
+    let _ = openssl::rand::rand_bytes(&mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// What a graft has committed in the directory `there` on the machine: a
+/// line naming each mark present (`pin`: its hale.toml pins a record;
+/// `dna`: `.hale/dna` exists), `None` when the machine did not answer.
+fn graft_state(t: &Target, there: &str) -> Option<String> {
+    t.run(&format!(
+        "d={}; s=''; grep -qs '^record *=' \"$d/hale.toml\" && s=\"$s pin\"; [ -e \"$d/.hale/dna\" ] && s=\"$s dna\"; echo \"state:$s\"",
+        sq(there)
+    ))
+    .ok()
+    .and_then(|o| o.lines().find_map(|l| l.strip_prefix("state:").map(|s| s.trim().to_string())))
+}
+
+/// Whether a failed graft's directory must be kept: unless the graft
+/// answered (a code SSH carried back, not 255) and the directory holds no
+/// mark of a graft, now or before it ran.
+fn keep_after_failure(code: Option<i32>, before: Option<&str>, after: Option<&str>) -> bool {
+    match (code, before, after) {
+        (Some(c), Some(b), Some(a)) if c != 255 => !b.is_empty() || !a.is_empty(),
+        _ => true,
+    }
 }
 
 /// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
@@ -729,6 +775,16 @@ mod tests {
         assert!(pointer_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
         assert!(pointer_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
         assert!(pointer_refusal("rack-a.lan", "", &b).is_some());
+    }
+
+    #[test]
+    fn a_failed_grafts_directory_goes_only_when_nothing_was_committed() {
+        assert!(!keep_after_failure(Some(1), Some(""), Some("")));
+        assert!(keep_after_failure(Some(1), Some(""), Some("pin dna")));
+        assert!(keep_after_failure(Some(1), Some("pin"), Some("pin")));
+        assert!(keep_after_failure(Some(255), Some(""), Some("")));
+        assert!(keep_after_failure(None, Some(""), Some("")));
+        assert!(keep_after_failure(Some(1), Some(""), None));
     }
 
     #[test]
