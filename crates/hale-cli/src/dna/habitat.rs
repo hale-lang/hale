@@ -262,11 +262,16 @@ host add <name>      add a machine on the LAN, by the name it resolves under,
                      as a host the habitat places on over SSH (port 22
                      unless --port, as --user or this user): prints the
                      host key first seen there (the one trusted after it)
-                     and the habitat's public key; over your own SSH login
-                     (as up --host reaches a machine) it appends that line
-                     to ~/.ssh/authorized_keys there and probes the host
-                     ready. When your login does not reach it, the line is
-                     printed to append by hand, and the host is pending-key.
+                     and the habitat's public key. With no --user, the
+                     habitat logs in as an account of its own there,
+                     hale-<id>: over your own SSH login (as up --host
+                     reaches a machine), with your sudo, it makes that
+                     account (no sudo of its own; in the docker group,
+                     which is root-equivalent on the host), puts the key in
+                     it and probes the host ready. With --user, the key goes
+                     into that account. When your login does not reach the
+                     machine, what to do there is printed, and the host is
+                     pending-key.
 host probe <name>    probe it again over SSH: what it offers (docker
                      compose, the user's systemd, its OS and architecture);
                      a pending-key host whose key is now authorized is
@@ -691,6 +696,19 @@ fn host(args: &[String]) -> ExitCode {
         }
         i += 2;
     }
+    // with no --user, the habitat logs in as an account of its own there,
+    // made below over the person's login, never as the person
+    let own_user = verb == "add" && payload.get("user").is_none();
+    if own_user {
+        match habitat_identity() {
+            Some(id) => payload["user"] = serde_json::json!(remote::habitat_user(&id)),
+            None => {
+                eprintln!("hale habitat host add {name}: the habitat has no record identity yet (`hale habitat up` births it)");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let login_port = payload["port"].as_u64().and_then(|n| u16::try_from(n).ok());
     let member = if verb == "add" { "Commands::add_host" } else { "Commands::probe_host" };
     let v = match host_call(member, payload) {
         Ok(v) => v,
@@ -714,7 +732,13 @@ fn host(args: &[String]) -> ExitCode {
             // the key appended there, then the host probed again
             let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
             let line = v["authorize"].as_str().unwrap_or("");
-            match remote::authorize_key(&name, &field("user"), port, line) {
+            let done = if own_user {
+                println!("making the habitat's own account {} on {name} over your SSH login (no sudo of its own; in the docker group, which is root-equivalent on that host); sudo may ask for your password:", field("user"));
+                remote::provision_user(&name, login_port, &field("user"), line)
+            } else {
+                remote::authorize_key(&name, &field("user"), port, line)
+            };
+            match done {
                 Ok(()) => {
                     println!("authorized the habitat's key in {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user"));
                     match host_call("Commands::probe_host", serde_json::json!({ "name": name })) {
@@ -730,7 +754,7 @@ fn host(args: &[String]) -> ExitCode {
                     }
                 }
                 Err(why) => {
-                    println!("your SSH login does not reach {name} ({why}); on {name}, append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", field("user"));
+                    println!("{name} was not set up over your SSH login ({why}); on {name}, {}append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", if own_user { format!("make the user {} (in the docker group), ", field("user")) } else { String::new() }, field("user"));
                     println!("{line}");
                 }
             }
@@ -955,13 +979,21 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
     // the line its authorized_keys took, which the habitat cannot remove,
     // taken off over the person's own login
-    for i in items.iter().filter(|i| i["group"] == "hosts" && i["host"] == name && i["args"].as_str().is_some_and(|a| !a.is_empty())) {
-        let line = i["args"].as_str().unwrap_or("");
-        let comment = line.rsplit(' ').next().unwrap_or("");
-        let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
-        match remote::unauthorize_key(name, &field("user"), port, comment) {
-            Ok(()) => println!("the habitat's key is out of {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user")),
-            Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {}'s ~/.ssh/authorized_keys there", field("user")),
+    let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+    if remote::is_habitat_user(&field("user")) {
+        // the habitat's own account there, its home and key with it
+        match remote::remove_user(name, port, &field("user")) {
+            Ok(()) => println!("the habitat's account {} is removed from {name}, over your SSH login", field("user")),
+            Err(why) => println!("the habitat's account {} is left on {name} ({why}): `sudo userdel -r {}` there removes it", field("user"), field("user")),
+        }
+    } else {
+        for i in items.iter().filter(|i| i["group"] == "hosts" && i["host"] == name && i["args"].as_str().is_some_and(|a| !a.is_empty())) {
+            let line = i["args"].as_str().unwrap_or("");
+            let comment = line.rsplit(' ').next().unwrap_or("");
+            match remote::unauthorize_key(name, &field("user"), port, comment) {
+                Ok(()) => println!("the habitat's key is out of {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user")),
+                Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {}'s ~/.ssh/authorized_keys there", field("user")),
+            }
         }
     }
     ExitCode::SUCCESS
@@ -1032,6 +1064,16 @@ fn own_servers() -> bool {
 // ---------------------------------------------------------------
 // the allocation record (GH #1653)
 // ---------------------------------------------------------------
+
+/// The habitat's record identity: its pointer's when it runs on another
+/// machine, else its genome's.
+fn habitat_identity() -> Option<String> {
+    let id = match remote::pointer() {
+        Some(p) => p["identity"].as_str().map(str::to_string),
+        None => manifest_pin(&genome_dir().join("hale.toml")).ok().flatten(),
+    };
+    id.filter(|i| i.len() >= 12)
+}
 
 /// The directory of the organism at `root`'s allocations, `None` when it
 /// pins no record identity.

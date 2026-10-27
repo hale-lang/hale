@@ -207,16 +207,25 @@ reads it by the vault file's path (a vault at `HALE_VAULT_ADDR` hands
 `ssh` a private copy written on the sealed side, removed after the call),
 and it appears in no output, log, row or error. `host add` prints the
 public key, `ssh-ed25519 <key> habitat-<id>`, and the one line the host's
-`~/.ssh/authorized_keys` takes. **The CLI takes that step itself when the
-person's own SSH login reaches the machine** (as `up --host` reaches one:
-their SSH config, `--user`, `--port`, `HALE_HABITAT_SSH_CONFIG`): it
-appends the line once and probes the host again, so `hale habitat host add
-<name>` ends `ready` with nothing pasted. When their login does not reach
-it, the line is printed to append there by hand. `hale habitat host
-remove` and, for a habitat on another machine, `hale habitat down
---forget` take the line off each host the same way, by its comment
-(`habitat-<id>`), every other line kept; a host the login does not reach
-keeps it, and the CLI says which line to remove. The operator face, which
+`~/.ssh/authorized_keys` takes. **The habitat logs in as an account of its
+own**, `hale-<id>` (`<id>` the record identity's first 12 hex digits),
+never as the person, unless `--user` names an account: one per habitat, so
+two habitats on one host never share a login. **The CLI sets it up when
+the person's own SSH login reaches the machine** (as `up --host` reaches
+one: their SSH config, `--port`, `HALE_HABITAT_SSH_CONFIG`): with their
+sudo, asked at their terminal, it makes the account (a system user with
+its own home and no sudo, in the `docker` group, which is root-equivalent
+on the host: the account keeps the habitat out of the person's account,
+not out of the host), puts the habitat's key in its `authorized_keys`, and
+probes the host again, so `hale habitat host add <name>` ends `ready`. A
+host with no `useradd` (a Linux host is needed) is refused by name. With
+`--user`, the line is appended to that account instead. When the login
+does not reach the machine, what to do there is printed. `hale habitat
+host remove` and, for a habitat on another machine, `hale habitat down
+--forget` undo it the same way: the habitat's account removed with its
+home, or, for an account `--user` named, the line taken off by its
+comment (`habitat-<id>`), every other line kept; a host the login does not
+reach keeps it, and the CLI says what to remove. The operator face, which
 cannot reach a machine, shows the line to copy. **Host keys
 are checked strictly**: the ed25519 key the host answers with when it is
 added is kept in its row and shown with its fingerprint (trust on first

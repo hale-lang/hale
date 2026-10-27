@@ -140,6 +140,78 @@ fn unauthorize_script(comment: &str) -> String {
     )
 }
 
+/// The account a habitat logs into a host as, when the person names none:
+/// one of its own (`hale-<allocation key>`), never the person's, made over
+/// their login (`provision_user`) and removed with the host
+/// (`remove_user`). One per habitat, so two habitats on one host never
+/// share a login, and one's teardown never removes the other's.
+pub(super) fn habitat_user(identity: &str) -> String {
+    format!("hale-{}", &identity[..12.min(identity.len())])
+}
+
+/// Whether `user` is an account the habitat made (`habitat_user`).
+pub(super) fn is_habitat_user(user: &str) -> bool {
+    user.strip_prefix("hale-").is_some_and(|k| k.len() == 12 && k.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The habitat's own account on a host, made over the person's login with
+/// their sudo (asked at their terminal): a system user with its own home
+/// and no sudo, in the `docker` group (which is root-equivalent: this keeps
+/// the habitat out of the person's account, not out of the host), with the
+/// habitat's key its only `authorized_keys` line. Linux hosts; one that has
+/// no `useradd` is refused by name.
+pub(super) fn provision_user(host: &str, port: Option<u16>, user: &str, line: &str) -> Result<(), String> {
+    let t = Target { host: host.to_string(), user: None, port };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let ran = t
+        .ssh(tty)
+        .arg(provision_script(user, line, tty))
+        .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if ran.success() {
+        Ok(())
+    } else {
+        Err(format!("making the account {user} there failed (above){}", if tty { "" } else { "; run it at a terminal, where sudo can ask" }))
+    }
+}
+
+fn provision_script(user: &str, line: &str, tty: bool) -> String {
+    let sudo = if tty { "sudo" } else { "sudo -n" };
+    format!(
+        "set -e; command -v useradd >/dev/null || {{ echo 'this host has no useradd (a Linux host is needed for a habitat account; --user names an account you made)' >&2; exit 1; }}; \
+         u={u}; id \"$u\" >/dev/null 2>&1 || {s} useradd --system --create-home --shell /bin/sh \"$u\"; \
+         if getent group docker >/dev/null; then {s} usermod -aG docker \"$u\"; fi; \
+         h=$(getent passwd \"$u\" | cut -d: -f6); {s} install -d -m 700 -o \"$u\" -g \"$(id -gn \"$u\")\" \"$h/.ssh\"; \
+         {s} sh -c 'f=\"$1/.ssh/authorized_keys\"; touch \"$f\"; grep -qxF \"$2\" \"$f\" || printf \"%s\\n\" \"$2\" >> \"$f\"; chown \"$3\" \"$f\"; chmod 600 \"$f\"' sh \"$h\" {l} \"$u\"",
+        u = sq(user),
+        l = sq(line),
+        s = sudo
+    )
+}
+
+/// The habitat's own account taken off a host, its home with it, over the
+/// person's login with their sudo; nothing when it is not there.
+pub(super) fn remove_user(host: &str, port: Option<u16>, user: &str) -> Result<(), String> {
+    if !is_habitat_user(user) {
+        return Err(format!("{user} is not an account the habitat made"));
+    }
+    let t = Target { host: host.to_string(), user: None, port };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let sudo = if tty { "sudo" } else { "sudo -n" };
+    let ran = t
+        .ssh(tty)
+        .arg(format!("u={u}; if id \"$u\" >/dev/null 2>&1; then {sudo} userdel -r \"$u\" 2>/dev/null || {sudo} userdel \"$u\"; fi", u = sq(user)))
+        .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if ran.success() {
+        Ok(())
+    } else {
+        Err(format!("removing the account {user} there failed{}", if tty { "" } else { " (sudo needs a terminal)" }))
+    }
+}
+
 /// The comment the habitat's public key carries (`habitat-<allocation
 /// key>`, the record identity's first 12 hex digits).
 pub(super) fn key_comment(identity: &str) -> String {
@@ -696,7 +768,12 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     }
     if plan {
         for h in &hosts {
-            println!("  - and from this machine, over your SSH login: the habitat's key (`{comment}`) out of {}@{}:~/.ssh/authorized_keys", h["user"].as_str().unwrap_or(""), h["name"].as_str().unwrap_or(""));
+            let user = h["user"].as_str().unwrap_or("");
+            if is_habitat_user(user) {
+                println!("  - and from this machine, over your SSH login: the habitat's account {user} and its home off {}", h["name"].as_str().unwrap_or(""));
+            } else {
+                println!("  - and from this machine, over your SSH login: the habitat's key (`{comment}`) out of {user}@{}:~/.ssh/authorized_keys", h["name"].as_str().unwrap_or(""));
+            }
         }
     }
     if confirm {
@@ -706,6 +783,13 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
                 for h in &hosts {
                     let (name, user) = (h["name"].as_str().unwrap_or(""), h["user"].as_str().unwrap_or(""));
                     let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+                    if is_habitat_user(user) {
+                        match remove_user(name, port, user) {
+                            Ok(()) => println!("the habitat's account {user} is removed from {name}"),
+                            Err(why) => println!("the habitat's account {user} is left on {name} ({why}): `sudo userdel -r {user}` there removes it"),
+                        }
+                        continue;
+                    }
                     match unauthorize_key(name, user, port, &comment) {
                         Ok(()) => println!("the habitat's key is out of {user}@{name}:~/.ssh/authorized_keys"),
                         Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {user}'s ~/.ssh/authorized_keys there"),
@@ -1094,6 +1178,26 @@ mod tests {
         run(&unauthorize_script(&comment));
         assert_eq!(std::fs::read_to_string(&keys).unwrap(), "ssh-ed25519 AAAAperson person@laptop\n", "the habitat's line alone removed");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A habitat's own account is named from its record and is the only
+    /// account teardown deletes: any other name, the person's included, is
+    /// never one.
+    #[test]
+    fn only_the_habitats_own_account_is_ever_removed() {
+        let u = habitat_user("0123456789abcdef0123");
+        assert_eq!(u, "hale-0123456789ab");
+        assert!(is_habitat_user(&u));
+        for other in ["person", "hale", "hale-", "hale-0123456789a", "hale-0123456789abc", "hale-0123456789ag", "root"] {
+            assert!(!is_habitat_user(other), "{other}");
+        }
+        assert!(remove_user("box-1", None, "person").is_err(), "refused before any connection");
+        let script = provision_script(&u, "ssh-ed25519 AAAA habitat-0123456789ab", false);
+        assert!(script.contains("u='hale-0123456789ab'") && script.contains("'ssh-ed25519 AAAA habitat-0123456789ab'") && script.contains("sudo -n useradd --system"), "{script}");
+        for tty in [false, true] {
+            let parsed = Command::new("sh").arg("-n").arg("-c").arg(provision_script(&u, "ssh-ed25519 AAAA it's habitat-0123456789ab", tty)).status().unwrap();
+            assert!(parsed.success(), "the account script parses as sh");
+        }
     }
 
     #[test]
