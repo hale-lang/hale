@@ -911,10 +911,20 @@ Chosen at the habitat's birth and kept.
 ## Graft and `[dna] needs`
 
 **A graft plans each body part before it makes anything.** The organism
-plane (`memory`, `nerves`, `senses`) reuses the habitat's: it runs on the
-habitat's machine beside the habitat's own, unless `--own <part>[=<host>]`
-gives the organism a server of its own on that host (on the `--host`
-machine without one). The application plane is the organism's own
+plane (`memory`, `nerves`, `senses`) reuses the habitat's unless
+`--own <part>[=<host>]` gives the organism a server of its own on that host
+(on the `--host` machine without one). A reused `memory` is a tenant of the
+habitat's own Postgres: the organism's record is a schema with roles of its
+own there (as every record is: `dna_<id>`, `dna_<id>_spine`, …), on no
+server of its own, and its heart's `database`, when the habitat provides
+one, is a database of that server too. Removing the organism drops its
+schema, its roles and that database there (`record-drop`, run inside the
+habitat's memory by its superuser), and keeps the server; forgetting the
+habitat removes them with its memory. A reused `nerves` or `senses` is a
+server of its own on the habitat's machine: the nerves' configuration
+carries one organization per NATS server (its users and their subjects are
+the server's), so sharing the habitat's needs an account per organism,
+which is not built. The application plane is the organism's own
 software: its compose services, placed on the `--host` machine, and the
 heart roles it needs (`database`, `broker`), which are the application's
 own when its manifest says it brings them (`[dna] brings = ["database",

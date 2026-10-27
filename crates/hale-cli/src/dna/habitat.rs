@@ -1126,7 +1126,9 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
     if !row["roles"].is_object() {
         row["roles"] = serde_json::json!({});
     }
-    next_rows(&mut row, &id, role, version, slots, &local_habitat_project(), operator);
+    // a record the habitat's memory keeps names the habitat's server
+    let service = (role == "memory" && memory_root(root) != root).then(|| allocation_service_of(&genome_dir(), "memory")).flatten();
+    next_rows_as(&mut row, &id, role, version, slots, &local_habitat_project(), operator, service.as_deref());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     write_row(&path, &row)?;
     // into the habitat's record now, when it exists; else at its birth
@@ -1142,13 +1144,20 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
 /// declared migration runs the heart's own tool, `run_heart_migrations`),
 /// so its allocation is recorded once and carries none.
 fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool) {
+    next_rows_as(row, id, role, version, slots, project, operator, None)
+}
+
+/// `next_rows`, the allocation naming `service_as` (a tenant's record on
+/// the habitat's memory names the habitat's server) when given.
+#[allow(clippy::too_many_arguments)]
+fn next_rows_as(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool, service_as: Option<&str>) {
     let heart = PROVISIONED_HEART_ROLES.contains(&role);
     let had = if heart { row["roles"][role].is_object().then_some(version) } else { row["roles"][role]["schema_version"].as_u64() };
     let recorded = row["roles"][role]["recorded"].as_bool().unwrap_or(false);
     let mut pending: Vec<serde_json::Value> = row["pending"].as_array().cloned().unwrap_or_default();
     // an allocation on the operator's own server is no service of the
     // habitat's project: it is named `operator`
-    let service = if operator { "operator".to_string() } else { format!("{role}-{}", &id[..12]) };
+    let service = if operator { "operator".to_string() } else { service_as.map(str::to_string).unwrap_or_else(|| format!("{role}-{}", &id[..12])) };
     let entity = format!("{}/{role}", &id[..12]);
     let slots: Vec<&str> = slots.split_whitespace().collect();
     if had.is_none() && !recorded {
@@ -1264,6 +1273,24 @@ pub(super) fn parse_part(flag: &str, value: &str, into: &mut BTreeMap<String, Pa
     Ok(())
 }
 
+/// The root whose memory server keeps the record at `root`: its own, or the
+/// habitat's genome when its graft made it a tenant of the habitat's memory
+/// (`parts.json`: memory = reuse), as `dna::memory_root` resolves it.
+pub(crate) fn memory_root(root: &Path) -> PathBuf {
+    let Some(dir) = allocation_dir(root) else { return root.to_path_buf() };
+    let reused = std::fs::read_to_string(dir.join("parts.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).is_some_and(|v| v["memory"] == "reuse");
+    let genome = genome_dir();
+    let mine = manifest_pin(&root.join("hale.toml")).ok().flatten();
+    let habitat = manifest_pin(&genome.join("hale.toml")).ok().flatten();
+    if !reused || habitat.is_none() || mine == habitat { root.to_path_buf() } else { genome }
+}
+
+/// `<role>-<key>`, the compose service of the organism at `root`'s role.
+fn allocation_service_of(root: &Path, role: &str) -> Option<String> {
+    let id = manifest_pin(&root.join("hale.toml")).ok().flatten()?;
+    (id.len() >= 12).then(|| format!("{role}-{}", &id[..12]))
+}
+
 /// The habitat's identity, as its face published it (`<habitat>/identity.env`,
 /// dna/face/start.sh under `HALE_DNA_IDENTITY=publish`): the issuer every
 /// organism it grafts signs in through. `None` before its face has run.
@@ -1297,7 +1324,8 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
             continue;
         }
         out.push(match part_choice(role) {
-            Part::Reuse => format!("  {role:<9} reuse  on the habitat's machine ({here}), beside the habitat's own    (--own {role}=<host>: a server of its own)"),
+            Part::Reuse if role == "memory" => format!("  {role:<9} reuse  a schema of its own on the habitat's Postgres ({here})    (--own memory=<host>: a server of its own)"),
+            Part::Reuse => format!("  {role:<9} reuse  a server of its own on the habitat's machine ({here}); sharing the habitat's is not built    (--own {role}=<host>: elsewhere)"),
             Part::Own(h) => format!("  {role:<9} own    a server of its own on {}", h.unwrap_or_else(|| host.clone())),
         });
     }
@@ -1349,7 +1377,7 @@ pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
         std::fs::write(&path, format!("{h}\n")).map_err(|e| format!("write {}: {e}", path.display()))?;
         placed.push(format!("{role} on {}", h["host"].as_str().unwrap_or("")));
     }
-    let parts: serde_json::Map<String, serde_json::Value> = APPLICATION_PARTS.iter().map(|r| (r.to_string(), serde_json::json!(if part_choice(r) == Part::Reuse { "reuse" } else { "own" }))).collect();
+    let parts: serde_json::Map<String, serde_json::Value> = ORGANISM_PARTS.iter().chain(APPLICATION_PARTS.iter()).map(|r| (r.to_string(), serde_json::json!(if part_choice(r) == Part::Reuse { "reuse" } else { "own" }))).collect();
     write_row(&dir.join("parts.json"), &serde_json::Value::Object(parts))?;
     Ok((!placed.is_empty()).then(|| format!("{:<8}its {}", "placed", placed.join(", "))))
 }
@@ -3722,7 +3750,10 @@ mod tests {
         let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, Some("http://rack-a.lan:8803"), &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
         let text = lines.join("\n");
         assert!(text.contains("memory    own    a server of its own on box-1"), "{text}");
-        assert!(text.contains("nerves    reuse  on the habitat's machine (rack-a.lan)"), "{text}");
+        assert!(text.contains("nerves    reuse  a server of its own on the habitat's machine (rack-a.lan); sharing the habitat's is not built"), "{text}");
+        let defaults = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, None, &|r: &str| default_part(r, &brings)).join("\n");
+        assert!(defaults.contains("memory    reuse  a schema of its own on the habitat's Postgres (rack-a.lan)"), "{defaults}");
+        assert!(defaults.contains("identity  own    its own sign-in stub"), "no published identity: {defaults}");
         assert!(text.contains("services  its compose services on box-1"), "{text}");
         assert!(text.contains("database  reuse  provisioned by the habitat"), "{text}");
         assert!(text.contains("broker    own    the application's own NATS, in its compose"), "{text}");

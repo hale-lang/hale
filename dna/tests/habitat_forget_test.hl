@@ -176,14 +176,20 @@ fn main() {
     // repository and its slots
     let grafted = in_dir(
         scratch,
-        toolchain() + "\nhabitat\ngraft\ntenant\n--no-library\n--no-pack",
+        toolchain() + "\nhabitat\ngraft\ntenant\n--no-library\n--no-pack\n--own\nmemory",
     );
     std::test::assert(
         grafted.code == 0,
         "an organism is grafted: " + grafted.stdout + grafted.stderr,
     );
     let tkey = dna::allocation_key(scratch + "/tenant");
-    let doomed = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ndoomed\n--no-library\n--no-pack");
+    // each with a memory server of its own (`--own memory`), whose volume
+    // the plans name; a tenant of the habitat's memory is
+    // habitat_saplings_test's
+    let doomed = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\ngraft\ndoomed\n--no-library\n--no-pack\n--own\nmemory",
+    );
     std::test::assert(
         doomed.code == 0,
         "a second organism is grafted: " + doomed.stdout + doomed.stderr,

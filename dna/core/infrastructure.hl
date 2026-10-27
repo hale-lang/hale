@@ -607,7 +607,12 @@ locus ComposeProvider {
         }
         // the service that holds the role (the heart's database is the
         // memory server's), never a name the row spelled otherwise
-        let service = compose_service(a.role, a.instance);
+        // a record on the habitat's memory is observed as that server
+        let service = if a.role == "memory" && memory_reused(a.instance) && len(a.service) > 0 {
+            a.service
+        } else {
+            compose_service(a.role, a.instance)
+        };
         if len(service) == 0 && a.role != "services" { return observe_address(a.address); }
         // an organism's own services: every container of its project
         let by_service = if len(service) > 0 {

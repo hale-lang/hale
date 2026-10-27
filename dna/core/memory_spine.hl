@@ -1304,6 +1304,29 @@ fn allocation_dir(root: String) -> String {
 
 // The compose service that is the organism's allocation for `role`
 // (`memory`, `nerves`, `senses`), "" when it has no identity.
+// Whether the organism keyed `key` keeps its record on the habitat's own
+// memory, as its graft chose (`parts.json` beside its allocations: memory
+// = reuse): a schema and roles of its own on that server, never a server
+// of its own.
+fn memory_reused(key: String) -> Bool {
+    if len(key) == 0 { return false; }
+    let parts = std::io::fs::read_file(local_habitat_dir() + "/allocations/" + key + "/parts.json")
+    or "";
+    return std::json::find_string_field(parts, "memory") == "reuse";
+}
+
+// The root whose memory server holds the record at `root`: its own, or the
+// habitat's genome for an organism whose record the habitat's memory keeps
+// (`memory_reused`). Its record's identity stays its own: only the server
+// (its compose service, its owner's password) is the habitat's.
+fn memory_root(root: String) -> String {
+    let key = allocation_key(root);
+    if !memory_reused(key) { return root; }
+    let genome = local_habitat_dir() + "/genome";
+    if allocation_key(genome) == key || len(allocation_key(genome)) == 0 { return root; }
+    return genome;
+}
+
 fn allocation_service(root: String, role: String) -> String {
     let key = allocation_key(root);
     return if len(key) > 0 { role + "-" + key } else { "" };
