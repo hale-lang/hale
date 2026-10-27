@@ -247,6 +247,8 @@ fn main() {
     or discard;
     std::io::fs::write_file(src + "/site/index.html", "sprout\n") or discard;
     std::io::fs::write_file(src + "/conf/web.conf", "listen 8080\n") or discard;
+    // a service's local data under a shipped directory, ignored: never shipped
+    std::io::fs::write_file(src + "/.gitignore", "conf/state.db\n") or discard;
     std::io::fs::write_file(
         src + "/compose.yaml",
         "services:\n  web:\n    build:\n      context: .\n      dockerfile: docker/web.Dockerfile\n    image: hale-dna-test-sprout:1\n    pull_policy: build\n    volumes:\n      - ./conf:/conf:ro\n    command: [\"sleep\", \"3600\"]\n",
@@ -292,6 +294,9 @@ fn main() {
         std::str::contains(holds.stdout, "held"),
         "its build context and mounted directory reached the host: " + holds.stdout + holds.stderr,
     );
+    // local data the habitat's copy holds, ignored by the repository, stays
+    // here: the host's copy is what the repository tracks
+    std::io::fs::write_file(store + "/conf/state.db", "local\n") or discard;
     let memory = allocation(face, key + "/memory");
     std::test::assert(
         std::json::find_string_field(memory, "provider") == "ssh"
@@ -465,6 +470,11 @@ fn main() {
             && !std::str::contains(after, "\n"),
         "moved away, they are withdrawn from here: one copy, on the host: " + after
             + there_again.stdout + there_again.stderr,
+    );
+    std::test::assert(
+        std::io::fs::file_exists(after + "/conf/web.conf")
+            && !std::io::fs::file_exists(after + "/conf/state.db"),
+        "shipped again, the host holds what the repository tracks and no ignored file: " + after,
     );
 
     in_dir(scratch, toolchain() + "\nhabitat\ndown");

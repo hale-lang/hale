@@ -305,9 +305,10 @@ fn host_listen_address(name: String) -> String {
 
 // The render shipped whole to `remote` on `h`: its compose files and each
 // entry its services need beside them (`mounted`: a file, or a directory
-// with everything under it, as it is in the render's directory: a build
-// context, a bind mount's source), as one tar extracted there, modes kept
-// for the owner and nothing for anyone else. "" when it landed, else why.
+// with what is under it: a build context, a bind mount's source), as one
+// tar extracted there, modes kept for the owner and nothing for anyone
+// else. In a repository only its tracked files go. "" when it landed, else
+// why.
 fn ssh_ship(root: String, h: Host, render: Render, remote: String) -> String {
     let mut entries = "";
     let mut rest = render.files
@@ -321,7 +322,14 @@ fn ssh_ship(root: String, h: Host, render: Render, remote: String) -> String {
     let t = run_tool("mktemp\n/tmp/hale-dna-render.XXXXXX");
     if t.code != 0 { return "cannot stage the render for " + h.name + ": mktemp failed"; }
     let tar = trim_nl(t.stdout);
-    let packed = run_tool("tar\n-C\n" + render.dir + "\n-cf\n" + tar + entries);
+    // in a repository (the render's directory is its root: a sapling, a
+    // grafted directory), only what it tracks under each entry, never an
+    // untracked or ignored file there (a service's local data); elsewhere
+    // (a placed render the habitat wrote) each entry as it is
+    let packed = run_tool(
+        "sh\n-c\nd=\"$1\"; t=\"$2\"; shift 2; cd \"$d\" || exit 1; r=$(pwd -P); if [ \"$(git -c safe.directory=\"$r\" rev-parse --show-toplevel 2>/dev/null)\" = \"$r\" ]; then git -c safe.directory=\"$r\" ls-files -z -- \"$@\" > \"$t.list\" && tar --null -T \"$t.list\" -cf \"$t\"; s=$?; rm -f \"$t.list\"; exit $s; fi; exec tar -cf \"$t\" -- \"$@\"\nsh\n"
+            + render.dir + "\n" + tar + entries,
+    );
     if packed.code != 0 {
         std::io::fs::unlink(tar) or discard;
         return "packing the render in " + render.dir + ": " + trim_nl(packed.stderr);
