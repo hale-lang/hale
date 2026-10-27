@@ -28,13 +28,16 @@ function cell(text) {
   return td;
 }
 
-// What fills an allocation: its containers' images; a record the habitat's
-// memory keeps is a schema there, not a server of its own; else the
-// provider's name.
-function runsOf(a) {
+// What fills an allocation: its containers' images; for a grafted
+// organism, what of the habitat's it uses (a schema on its Postgres, a
+// repository on its Forgejo, its sign-in) rather than a server of its own;
+// else the provider's name.
+function runsOf(a, grafted) {
   if (a.role === "memory" && a.service && a.service !== `memory-${a.instance}`) {
     return `a schema on the habitat's Postgres${a.runs ? ` (${a.runs})` : ""}`;
   }
+  if (grafted && a.role === "forge" && a.provider === "forgejo") return "a repository on the habitat's Forgejo";
+  if (grafted && a.role === "identity") return "the habitat's sign-in";
   return a.runs || a.provider;
 }
 
@@ -109,7 +112,7 @@ async function apply(fresh) {
 }
 
 export async function refresh() {
-  let allocs, policy, hosts, named;
+  let allocs, policy, hosts, named, grafted;
   try {
     const i = await commandsIndex({ endpoint }, { limit: 200 });
     const a = await commandsAllocations({ endpoint }, { limit: 1000 });
@@ -127,6 +130,7 @@ export async function refresh() {
     const byKey = new Map(organisms.map((o) => [String(o.key).slice(0, 12), o.name]));
     const habitat = i.kind === "result" && i.value.name ? i.value.name : "the habitat";
     named = (key) => byKey.get(String(key).slice(0, 12)) || habitat;
+    grafted = (key) => byKey.has(String(key).slice(0, 12));
     policy = parse(p.value.policy);
     hosts = parse(h.value.hosts);
   } catch (e) {
@@ -140,7 +144,7 @@ export async function refresh() {
     const tr = document.createElement("tr");
     const where = document.createElement("td");
     where.append(picker(a, names));
-    tr.append(cell(a.role), cell(named(a.instance)), cell(a.provider), cell(runsOf(a)), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
+    tr.append(cell(a.role), cell(named(a.instance)), cell(a.provider), cell(runsOf(a, grafted(a.instance))), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
     rows.append(tr);
   }
   $("allocations-empty").hidden = allocs.length > 0;
