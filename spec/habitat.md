@@ -152,8 +152,15 @@ is shipped there whole (`tar | ssh`) as the habitat's own copy,
 `<habitat>/grafted/<name>`, which is the organism's home from then on
 (its removal and the habitat's forget delete it, as they delete a
 sapling's clone), and a path that does not exist is a new application
-made there; every flag is passed through, and a graft that fails removes
-the copy it shipped. The organism's own verbs (`hale dna review`,
+made there; every flag is passed through. Each graft ships into a
+directory of its own, `<habitat>/grafted/<name>-<suffix>`, made fresh
+there (`mkdir`, never `-p`) before anything is unpacked, so nothing is
+unpacked over another organism's home. A graft that fails removes that
+directory only when it answered and left no mark of a graft (a pinned
+record, `.hale/dna`); otherwise the directory is kept and the command
+that goes on from it is printed, `hale habitat graft --resume <path>
+[flags]`: the same graft run on that directory, nothing shipped, which
+takes only a directory under `<habitat>/grafted/` that exists there. The organism's own verbs (`hale dna review`,
 `task create`, `work run`, `show`, …) run in its directory there through
 `hale habitat organism <name> dna <verb> [args…]`, at the person's terminal
 when there is one; locally the same verb runs them in the organism's

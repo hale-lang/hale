@@ -330,6 +330,29 @@ fn main() {
         "its own verbs run in its directory there: " + its.stdout + its.stderr,
     );
 
+    // ---- a graft goes on in a directory it kept there, nothing shipped;
+    // a path outside the habitat's grafted directories is refused
+    let outside = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + there + "/genome",
+    );
+    std::test::assert(
+        outside.code == 2 && std::str::contains(outside.stderr, "is not a graft's directory"),
+        "--resume takes only a graft's kept directory: " + outside.stderr,
+    );
+    let resumed = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + shipped_home(there)
+            + "\n--attach\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        resumed.code == 0 && !std::str::contains(resumed.stdout, "shipped "),
+        "--resume goes on in the kept directory, nothing shipped: " + resumed.stdout
+            + resumed.stderr,
+    );
+
     // ---- a stale pointer (another record's identity) tears nothing down
     let kept_pointer = std::io::fs::read_file(pointer) or "";
     let real = std::json::find_string_field(kept_pointer, "identity");
