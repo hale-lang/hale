@@ -30,6 +30,18 @@ function stateOf(host) {
   return "down";
 }
 
+// The allocations placed on a host, once per organism: "dark-coffee: memory,
+// nerves, head" rather than each allocation's full key.
+function placedLine(placed) {
+  const by = new Map();
+  for (const x of placed) {
+    const [key, role] = x.allocation.split("/");
+    const who = x.organism || key;
+    by.set(who, [...(by.get(who) || []), x.role || role]);
+  }
+  return [...by].map(([who, roles]) => who + ": " + roles.join(", ")).join("\n") || "none";
+}
+
 function cell(text, cls) {
   const td = document.createElement("td");
   td.textContent = text;
@@ -149,9 +161,9 @@ export async function refresh() {
     tr.append(
       cell(hostLabel(h.name)),
       s,
-      cell(h.offers || "", "wrap"),
+      cell(h.offers || ""),
       cell(h.fingerprint || "none yet", "wrap"),
-      cell(placed.map((x) => x.allocation).join(" ") || "none", "wrap"),
+      cell(placedLine(placed), "list"),
       actions,
     );
     rows.append(tr);
