@@ -297,6 +297,14 @@ fn main() {
     // local data the habitat's copy holds, ignored by the repository, stays
     // here: the host's copy is what the repository tracks
     std::io::fs::write_file(store + "/conf/state.db", "local\n") or discard;
+    // a compose file the repository does not track (here, one changed and
+    // untracked in the habitat's copy) is the render's own: shipped all the
+    // same
+    git(store, "rm\n-q\n--cached\ncompose.yaml");
+    std::io::fs::write_file(
+        store + "/compose.yaml",
+        (std::io::fs::read_file(store + "/compose.yaml") or "") + "# untracked here\n",
+    ) or discard;
     let memory = allocation(face, key + "/memory");
     std::test::assert(
         std::json::find_string_field(memory, "provider") == "ssh"
@@ -473,8 +481,10 @@ fn main() {
     );
     std::test::assert(
         std::io::fs::file_exists(after + "/conf/web.conf")
-            && !std::io::fs::file_exists(after + "/conf/state.db"),
-        "shipped again, the host holds what the repository tracks and no ignored file: " + after,
+            && !std::io::fs::file_exists(after + "/conf/state.db")
+            && std::str::contains(text_of(after + "/compose.yaml"), "# untracked here"),
+        "shipped again, the host holds its compose file, untracked or not, what the repository tracks and no ignored file: "
+            + after,
     );
 
     in_dir(scratch, toolchain() + "\nhabitat\ndown");
