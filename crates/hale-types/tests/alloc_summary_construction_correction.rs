@@ -836,13 +836,19 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
             // `tests/hale/crypto_sha256_stream_test.hl`: the failure fallbacks and
-            // assertion messages of the incremental SHA-256's test
+            // assertion messages of the incremental SHA-256's test, and the
+            // hasher its loop over hashlib's pinned digests builds per size
             "tests/hale/crypto_sha256_stream_test.hl: data BytesLit @730..733 InvokedUnboundedly",
-            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @3685..3722 InUnboundedLoop",
-            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @3847..3873 InUnboundedLoop",
-            "tests/hale/crypto_sha256_stream_test.hl: main BytesLit @3888..3891 InUnboundedLoop",
-            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @4012..4062 InUnboundedLoop",
-            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @4012..4051 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5377..5439 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5377..5428 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5514..5531 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StructLit(\"std::crypto::Sha256\") @5552..5575 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6045..6072 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6531..6568 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6693..6719 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main BytesLit @6734..6737 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6908 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6897 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
             "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") @972..1095 InvokedUnboundedly",
             // the property test's copy of the per-byte escaper as it was:

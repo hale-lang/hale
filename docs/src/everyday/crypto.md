@@ -83,7 +83,7 @@ let on_disk = std::crypto::sha256_file("/models/weights.bin") or raise;
 - `sha256_file` fails with `IoError` (`not_found`, `permission_denied`, …, the path in `err.path`) when the file cannot be opened or read.
 - In a long-lived locus, make each piece inside a method call (`fn absorb(h: std::crypto::Sha256, piece: Bytes)`) rather than in the loop body of `run()` itself: a method's scratch is freed when it returns, while a value made in `run()`'s own loop stays until the locus dissolves.
 
-On x86-64 CPUs with the SHA extensions, the compression runs on them; elsewhere it runs the portable C rounds (about 350 MB/s on the same machine). All four entry points (`sha256`, `hmac_sha256`, `Sha256`, `sha256_file`) share the one implementation.
+On x86-64 CPUs with the SHA extensions, the compression runs on them. On aarch64 Linux and macOS (a Grace CPU, Apple Silicon), it runs on the ARMv8 SHA-256 instructions when the OS reports them. Everywhere else, wasm32 included, it runs the portable C rounds (about 350 MB/s on the x86-64 machine measured above). All four entry points (`sha256`, `hmac_sha256`, `Sha256`, `sha256_file`) share the one implementation.
 
 ---
 
