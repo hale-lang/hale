@@ -291,7 +291,10 @@ fn build_there(t: &Target, tag: &str, machine: &str, mismatch: &str) -> Result<S
     }
     let short = &pin[..12.min(pin.len())];
     if t.run("docker buildx version >/dev/null 2>&1 && echo yes || echo no")?.trim() != "yes" {
-        return Err(format!("building the toolchain image on {} needs docker's buildx plugin there, which it lacks (Homebrew: `brew install docker-buildx`, then link it as its caveats say)", t.host));
+        return Err(format!(
+            "building the toolchain image on {h} needs docker's buildx plugin there, which it lacks (Docker Desktop and Linux's docker packages ship it; Homebrew's docker does not). With Homebrew, once:\n  ssh {h} 'brew install docker-buildx && mkdir -p ~/.docker/cli-plugins && ln -sfn \"$(brew --prefix)/opt/docker-buildx/bin/docker-buildx\" ~/.docker/cli-plugins/docker-buildx'",
+            h = t.host
+        ));
     }
     super::progress(&format!("building the image {tag} on {} from hale-lang/hale@{short}{mismatch}; once per toolchain commit, and a first build compiles the compiler (tens of minutes)", t.host));
     let context = format!("{HALE_GIT}#{pin}");
