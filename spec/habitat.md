@@ -290,8 +290,12 @@ loopback and the habitat is local too (it declares no address,
 `HALE_DNA_HABITAT_ADDRESS`, or the loopback: the head that resolved the
 host runs where the browser opens the link), where it is linked at
 `127.0.0.1`; under a habitat on another machine such a port keeps the note,
-since the head's resolution says nothing of the browser's machine; on
-this machine at `127.0.0.1`, or at the address it is bound to. The
+since the head's resolution says nothing of the browser's machine. On
+this machine at `127.0.0.1`, or at the address it is bound to, under a
+local habitat; under a habitat on another machine, the head's own machine
+(its `local` host, or a host whose address resolves to the loopback there)
+is reached at the habitat's declared address: a port bound to every
+interface links there, one bound to the loopback gets the note. The
 operator face lists them under the organism's
 allocation, a link where there is a `url` and the note where there is
 none: voice's `api`, whose `/` is its console, among them. Every allocation names its

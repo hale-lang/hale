@@ -313,15 +313,21 @@ fn allocation_links(root: String, body: String, applied: String) -> String {
         let recorded = dna::recorded_host(root, applied).address;
         if len(recorded) > 0 { recorded } else { applied }
     };
-    // another host's loopback is this machine's only when the host's listen
-    // address is the loopback and the habitat is local too: the head that
-    // resolves the host runs where the person's browser opens the link,
-    // which a habitat that declares a remote address never does
-    let colocated = !here
-        && habitat_is_local(dna::declared_address())
-        && publishes_loopback(published)
-        && bind_is_loopback(dna::host_listen_address(address));
-    return allocation_links_at(published, applied, here, address, colocated);
+    // whether the host is the head's own machine: `local`, or an address
+    // that resolves to the loopback where the head runs (`hale habitat
+    // resolve`, asked only where the answer changes a link)
+    let declared = dna::declared_address();
+    let ask = !here
+        && (if habitat_is_local(declared) {
+            publishes_loopback(published)
+        } else {
+            !std::json::array_first(published).done
+        });
+    let on_head = here
+        || (ask
+                && (bind_is_loopback(address)
+                        || bind_is_loopback(dna::host_listen_address(address))));
+    return allocation_links_at(published, applied, here, address, on_head, declared);
 }
 
 // Whether the habitat is local to the person's browser: it declares no
@@ -345,21 +351,32 @@ fn publishes_loopback(published: String) -> Bool {
 }
 
 // The links to `published` (a JSON array of `{service, port, bind}`) on
-// the host `applied` reached at `address` (`here`: this machine), as a
-// JSON array of `{service, url, note}`, `[]` for none. A link is given
-// only where it is reachable from the admin machine: on another host, a
-// port bound to every interface at the host's address, one bound to a
-// specific address at that address, and one bound to the host's loopback
-// not at all (its note says `loopback only on <host>`) unless the host and
-// the habitat are both this machine (`colocated`; then at `127.0.0.1`); on
-// this machine at the loopback, or at the address it is bound to.
+// the host `applied` reached at `address` (`here`: the head's machine's
+// `local`; `on_head`: the host is the head's machine, its address the
+// loopback there), under a habitat that declares `declared` ("" for none),
+// as a JSON array of `{service, url, note}`, `[]` for none. A link is
+// given only where it is reachable from the person's browser. Under a
+// local habitat (`habitat_is_local`) the head's machine is the browser's:
+// there a port links at the loopback, or at the address it is bound to.
+// Under a habitat on another machine the head's machine is reached at its
+// declared address, never its loopback: a port bound to every interface
+// links there, and one bound to the loopback gets no URL (its note says
+// `loopback only on <host>`). On any other host a port bound to every
+// interface links at the host's address, one bound to a specific address
+// at that address, and one bound to the loopback gets the note.
 fn allocation_links_at(
     published: String,
     applied: String,
     here: Bool,
     address: String,
-    colocated: Bool
+    on_head: Bool,
+    declared: String
 ) -> String {
+    let local = habitat_is_local(declared);
+    // this machine's loopback, reachable from the browser
+    let mine = local && on_head;
+    let base = if !local && on_head { declared } else if here { "127.0.0.1" } else { address };
+    let host = if len(applied) == 0 { "local" } else { applied };
     let out = std::json::Builder { };
     out.begin_array();
     if std::str::starts_with(published, "[") {
@@ -370,9 +387,9 @@ fn allocation_links_at(
             let bind = std::json::find_string_field(it.element, "bind");
             let every = len(bind) == 0 || bind == "0.0.0.0" || bind == "::";
             let loopback = bind_is_loopback(bind);
-            let at = if every || (here && loopback) {
-                address
-            } else if loopback && colocated {
+            let at = if every {
+                base
+            } else if loopback && mine {
                 "127.0.0.1"
             } else if loopback {
                 ""
@@ -387,7 +404,7 @@ fn allocation_links_at(
                 "url",
                 if len(at) > 0 && len(port) > 0 { "http://" + at + ":" + port } else { "" },
             );
-            out.string_field("note", if len(at) == 0 { "loopback only on " + applied } else { "" });
+            out.string_field("note", if len(at) == 0 { "loopback only on " + host } else { "" });
             out.end_object();
             it = std::json::array_next(it);
         }
