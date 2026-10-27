@@ -1396,10 +1396,18 @@ reveals it:**
     `std::http::Client.post`; the `headers` or `body` of a
     `std::http::ClientRequest { … }` literal handed to
     `std::http::request` / `Client.request`, or written as the `req` of
-    a `std::http::BodyReader { … }` / `SseReader { … }` literal (its
-    birth sends it, as `request` does, and then blanks the request's
-    `headers` and `body`: read back through the reader's `req`, they
-    are empty, so nothing it sent is retained). A descriptor, host, port,
+    a `std::http::BodyReader { … }` / `SseReader { … }` literal that
+    does not name `deferred` (or names it `false`): its birth sends it,
+    as `request` does (following any redirect its `follow_redirects`
+    allows), and then blanks the request's `headers` and `body`, so read
+    back through the reader's `req` they are empty and nothing it sent is
+    retained; an `Authorization` line is not sent on once a redirect
+    changes the origin. A reader whose literal names
+    `deferred` sends nothing at birth and keeps its `req`, readable,
+    until the opening, so a reveal into its request is refused; such a
+    reader presents a credential as `bearer: c`, which the credential
+    writes onto the wire itself, nothing revealed (`spec/stdlib.md` §
+    "Reading a streamed body"). A descriptor, host, port,
     URL or method is not the wire's: an `HttpError` repeats the host
     back, so a secret there is refused;
   - a **comparison of the whole value**: `==`, `!=`, a `match` whose

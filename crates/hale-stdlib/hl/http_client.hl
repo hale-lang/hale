@@ -27,8 +27,9 @@
 // path (one-shot and keep-alive) — `body` is always the payload,
 // never the hex-size framing. Trailer headers are skipped.
 //
-// Not implemented at v1: redirects (3xx returns as-is),
-// URL-decoding, proxies, compression.
+// Not implemented at v1: redirects on the whole-body calls (3xx returns
+// as-is; a streamed body's reader follows them on
+// `ClientRequest.follow_redirects`), URL-decoding, proxies, compression.
 
 // A parsed URL. `parse_url` produces one; callers may also build
 // one by hand and feed it to `request`. `port` 0 at parse time
@@ -47,11 +48,14 @@ type __StdHttpUrl {
 // is Bytes for binary safety.
 /// Client-side request: method / url / packed headers / Bytes
 /// body. Distinct from the server-side Request on purpose.
+/// `follow_redirects`: how many redirects a streamed body's reader
+/// (`BodyReader`, `SseReader`) follows; 0 hands a 3xx back as it is.
 type __StdHttpClientRequest {
     method: String = "GET";
     url: std::http::Url;
     headers: String = "";
     body: Bytes;
+    follow_redirects: Int = 0;
 }
 
 // One received response. `headers` is the same packed block

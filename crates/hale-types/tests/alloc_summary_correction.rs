@@ -243,7 +243,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 25] = [
+const CALL_LINES_ONLY: [(&str, usize); 26] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -269,6 +269,10 @@ const CALL_LINES_ONLY: [(&str, usize); 25] = [
     // 4: the new test (S6) calls the writers and the readers, whose
     // stdlib bodies only the renames name.
     ("tests/hale/bytes_writer_offset_test.hl", 4),
+    // the incremental SHA-256's test: the `Sha256` locus is appended to
+    // the program that names it, so only the two native calls of its
+    // `std::crypto::sha256` comparisons are the renames'
+    ("tests/hale/crypto_sha256_stream_test.hl", 2),
     // 2: P3 2 of 3's classified correction resolves `let f = lib::add3;
     // f()` to the fn the local names, which only the renames reach; 3
     // more: E5 resolves the calls through a function value to the
@@ -2151,7 +2155,7 @@ fn verdict_changes() {
     // through `request_to` each time
     pinned(
         "tests/hale/http_client_stream_test.hl",
-        29,
+        31,
         &[
             "request_to",
             "Streams::handle",
@@ -2160,11 +2164,11 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 2),
-            ("once-per-invocation -> per-iteration-reclaim", 6),
+            ("once-per-invocation -> per-iteration-reclaim", 14),
         ],
         &[
-            "request_to BytesLit @8613..8616 InvokedUnboundedly",
-            "request_to StructLit(\"std::http::ClientRequest\") @8570..8618 InvokedUnboundedly",
+            "request_to BytesLit @12554..12557 InvokedUnboundedly",
+            "request_to StructLit(\"std::http::ClientRequest\") @12511..12559 InvokedUnboundedly",
         ],
     );
     pinned(

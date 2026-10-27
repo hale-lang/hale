@@ -1,4 +1,6 @@
-// std::crypto's Hale half: the Ed25519 key pair (RFC 8032).
+// std::crypto's Hale half: the Ed25519 key pair (RFC 8032). The
+// incremental SHA-256's locus is `crypto_sha256.hl`, appended only to a
+// program that names it.
 //
 // The rest of std::crypto is native (rows of the stdlib table lowered
 // to C: the hashes, HMAC, CRC-32, ECDSA P-256, and Ed25519's signing and

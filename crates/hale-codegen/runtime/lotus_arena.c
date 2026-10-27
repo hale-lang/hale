@@ -32235,9 +32235,20 @@ void *lotus_crypto_sha1(const void *b) {
 /*
  * C3 (pond follow-up): SHA-256 per FIPS 180-4 of a Bytes blob,
  * returning the 32-byte digest as Bytes. Stand-alone — no
- * libcrypto / OpenSSL dependency. Single-shot API; callers that
- * need streaming can build it on top. Mirrors the lotus_crypto_sha1
- * surface (anchored in the bus payload arena).
+ * libcrypto / OpenSSL dependency. One core, three entry points:
+ * the one-shot `std::crypto::sha256`, the incremental
+ * `std::crypto::Sha256` locus (init / update / final over a
+ * malloc'd `lotus_sha256_ctx`, carried as an Int handle), and
+ * `std::crypto::sha256_file`, which feeds a file through the same
+ * context in fixed-size reads. HMAC-SHA256 hashes through it too.
+ *
+ * The compression function has two tiers chosen once per process:
+ * the portable C rounds below, and on x86-64 the SHA extensions
+ * (SHA-NI: `sha256rnds2` / `sha256msg1` / `sha256msg2`) when CPUID
+ * reports them. Both compute the same FIPS 180-4 function over the
+ * same state and the same `lotus_sha256_k` constants; the tests hold
+ * every entry point to `sha256sum` and to each other on whichever
+ * tier the machine selects.
  */
 static const uint32_t lotus_sha256_k[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -32262,51 +32273,17 @@ static uint32_t lotus_sha256_rotr(uint32_t v, int n) {
     return (v >> n) | (v << (32 - n));
 }
 
-/* Core SHA-256 compute: hash `msg[0..len]` into `out[0..32]`.
- * `out` must point to a writable 32-byte buffer. Pure function;
- * no arena allocation here so HMAC can reuse it. */
-static void lotus_sha256_compute(const unsigned char *msg,
-                                  int64_t len,
-                                  unsigned char out[32]) {
-    uint32_t h0 = 0x6a09e667u;
-    uint32_t h1 = 0xbb67ae85u;
-    uint32_t h2 = 0x3c6ef372u;
-    uint32_t h3 = 0xa54ff53au;
-    uint32_t h4 = 0x510e527fu;
-    uint32_t h5 = 0x9b05688cu;
-    uint32_t h6 = 0x1f83d9abu;
-    uint32_t h7 = 0x5be0cd19u;
-
-    /* Padded message: original + 0x80 + zeros + 8-byte BE bit-length.
-     * Total length a multiple of 64. */
-    uint64_t bit_len = (uint64_t)len * 8u;
-    int64_t padded_len = len + 1;
-    int64_t mod = padded_len % 64;
-    int64_t pad_zeros = (mod <= 56) ? (56 - mod) : (56 + 64 - mod);
-    padded_len += pad_zeros + 8;
-
-    unsigned char *buf = (unsigned char *)malloc((size_t)padded_len);
-    if (!buf) {
-        /* Out-of-memory: fall back to all-zero digest. Same shape
-         * as the sha1 path's empty-bytes guard — recoverable in
-         * principle by callers checking len. */
-        memset(out, 0, 32);
-        return;
-    }
-    if (len > 0) memcpy(buf, msg, (size_t)len);
-    buf[len] = 0x80;
-    for (int64_t i = len + 1; i < padded_len - 8; i++) buf[i] = 0;
-    for (int i = 0; i < 8; i++) {
-        buf[padded_len - 1 - i] = (unsigned char)(bit_len >> (i * 8));
-    }
-
-    for (int64_t off = 0; off < padded_len; off += 64) {
+/* Portable compression: `nblocks` 64-byte blocks at `p` into `h`. */
+static void lotus_sha256_blocks_portable(uint32_t h[8],
+                                         const unsigned char *p,
+                                         size_t nblocks) {
+    while (nblocks--) {
         uint32_t w[64];
         for (int i = 0; i < 16; i++) {
-            w[i] = ((uint32_t)buf[off + i * 4 + 0] << 24)
-                 | ((uint32_t)buf[off + i * 4 + 1] << 16)
-                 | ((uint32_t)buf[off + i * 4 + 2] << 8)
-                 | ((uint32_t)buf[off + i * 4 + 3]);
+            w[i] = ((uint32_t)p[i * 4 + 0] << 24)
+                 | ((uint32_t)p[i * 4 + 1] << 16)
+                 | ((uint32_t)p[i * 4 + 2] << 8)
+                 | ((uint32_t)p[i * 4 + 3]);
         }
         for (int i = 16; i < 64; i++) {
             uint32_t s0 = lotus_sha256_rotr(w[i - 15], 7)
@@ -32318,8 +32295,8 @@ static void lotus_sha256_compute(const unsigned char *msg,
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
 
-        uint32_t a = h0, b = h1, c = h2, d = h3;
-        uint32_t e = h4, f = h5, g = h6, hh = h7;
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+        uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
         for (int i = 0; i < 64; i++) {
             uint32_t S1 = lotus_sha256_rotr(e, 6)
                        ^ lotus_sha256_rotr(e, 11)
@@ -32340,18 +32317,185 @@ static void lotus_sha256_compute(const unsigned char *msg,
             b = a;
             a = temp1 + temp2;
         }
-        h0 += a; h1 += b; h2 += c; h3 += d;
-        h4 += e; h5 += f; h6 += g; h7 += hh;
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+        p += 64;
     }
-    free(buf);
+}
 
-    uint32_t hs[8] = { h0, h1, h2, h3, h4, h5, h6, h7 };
-    for (int i = 0; i < 8; i++) {
-        out[i * 4 + 0] = (unsigned char)(hs[i] >> 24);
-        out[i * 4 + 1] = (unsigned char)(hs[i] >> 16);
-        out[i * 4 + 2] = (unsigned char)(hs[i] >> 8);
-        out[i * 4 + 3] = (unsigned char)(hs[i]);
+#if defined(__x86_64__)
+/* SHA-NI needs the SHA bit (CPUID leaf 7, EBX bit 29) and SSE4.1 /
+ * SSSE3 (leaf 1, ECX) for the blend and the byte shuffle. Asked of the
+ * CPU directly through <cpuid.h> (already included above for the AVX2
+ * check), never `__builtin_cpu_supports` (GH #970). */
+static int lotus_have_sha_ni(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        unsigned a = 0, b = 0, c = 0, d = 0;
+        int ok = 0;
+        if (__get_cpuid(1, &a, &b, &c, &d)
+            && (c & bit_SSE4_1) && (c & bit_SSSE3)
+            && __get_cpuid_count(7, 0, &a, &b, &c, &d)
+            && (b & bit_SHA)) {
+            ok = 1;
+        }
+        cached = ok;
     }
+    return cached;
+}
+
+/* The same compression on the SHA extensions. The state is kept as
+ * ABEF / CDGH (the layout `sha256rnds2` works on); each pass of the
+ * loop is four rounds, and groups 4..15 of the message schedule are
+ * computed from the previous four with `sha256msg1` / `sha256msg2`. */
+__attribute__((target("sha,sse4.1,ssse3")))
+static void lotus_sha256_blocks_shani(uint32_t h[8],
+                                      const unsigned char *p,
+                                      size_t nblocks) {
+    const __m128i bswap = _mm_set_epi64x(0x0c0d0e0f08090a0bULL,
+                                         0x0405060700010203ULL);
+    __m128i tmp = _mm_loadu_si128((const __m128i *)&h[0]);   /* ABCD */
+    __m128i st1 = _mm_loadu_si128((const __m128i *)&h[4]);   /* EFGH */
+    tmp = _mm_shuffle_epi32(tmp, 0xB1);                      /* CDAB */
+    st1 = _mm_shuffle_epi32(st1, 0x1B);                      /* EFGH -> HGFE */
+    __m128i st0 = _mm_alignr_epi8(tmp, st1, 8);              /* ABEF */
+    st1 = _mm_blend_epi16(st1, tmp, 0xF0);                   /* CDGH */
+
+    while (nblocks--) {
+        __m128i abef = st0, cdgh = st1;
+        __m128i m[4];
+        for (int i = 0; i < 4; i++) {
+            m[i] = _mm_shuffle_epi8(
+                _mm_loadu_si128((const __m128i *)(p + 16 * i)), bswap);
+        }
+#pragma GCC unroll 16
+        for (int g = 0; g < 16; g++) {
+            __m128i w = m[g & 3];
+            __m128i t = _mm_add_epi32(
+                w, _mm_loadu_si128((const __m128i *)&lotus_sha256_k[4 * g]));
+            st1 = _mm_sha256rnds2_epu32(st1, st0, t);
+            t = _mm_shuffle_epi32(t, 0x0E);
+            st0 = _mm_sha256rnds2_epu32(st0, st1, t);
+            if (g < 12) {
+                /* W[t..t+3] for group g+4 from groups g..g+3. */
+                __m128i x = _mm_sha256msg1_epu32(m[g & 3], m[(g + 1) & 3]);
+                x = _mm_add_epi32(
+                    x, _mm_alignr_epi8(m[(g + 3) & 3], m[(g + 2) & 3], 4));
+                m[g & 3] = _mm_sha256msg2_epu32(x, m[(g + 3) & 3]);
+            }
+        }
+        st0 = _mm_add_epi32(st0, abef);
+        st1 = _mm_add_epi32(st1, cdgh);
+        p += 64;
+    }
+
+    tmp = _mm_shuffle_epi32(st0, 0x1B);                      /* FEBA */
+    st1 = _mm_shuffle_epi32(st1, 0xB1);                      /* DCHG */
+    st0 = _mm_blend_epi16(tmp, st1, 0xF0);                   /* DCBA */
+    st1 = _mm_alignr_epi8(st1, tmp, 8);                      /* ABEF */
+    _mm_storeu_si128((__m128i *)&h[0], st0);
+    _mm_storeu_si128((__m128i *)&h[4], st1);
+}
+#endif
+
+static void lotus_sha256_blocks(uint32_t h[8], const unsigned char *p,
+                                size_t nblocks) {
+#if defined(__x86_64__)
+    if (lotus_have_sha_ni()) {
+        lotus_sha256_blocks_shani(h, p, nblocks);
+        return;
+    }
+#endif
+    lotus_sha256_blocks_portable(h, p, nblocks);
+}
+
+/* The hashing state: the eight words, the bytes absorbed so far, and
+ * the tail of the input not yet a whole 64-byte block. */
+typedef struct lotus_sha256_ctx {
+    uint32_t h[8];
+    uint64_t total;
+    unsigned char buf[64];
+    uint32_t buf_len;
+} lotus_sha256_ctx;
+
+static void lotus_sha256_init(lotus_sha256_ctx *c) {
+    static const uint32_t iv[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
+    };
+    memcpy(c->h, iv, sizeof iv);
+    c->total = 0;
+    c->buf_len = 0;
+}
+
+/* Absorb `len` bytes: top up a partial block first, then compress the
+ * whole blocks straight from `msg`, then keep the remainder. Memory is
+ * the context's 64-byte tail whatever `len` is. */
+static void lotus_sha256_update(lotus_sha256_ctx *c,
+                                const unsigned char *msg, size_t len) {
+    c->total += (uint64_t)len;
+    if (c->buf_len > 0) {
+        size_t take = 64 - c->buf_len;
+        if (take > len) take = len;
+        memcpy(c->buf + c->buf_len, msg, take);
+        c->buf_len += (uint32_t)take;
+        msg += take;
+        len -= take;
+        if (c->buf_len < 64) return;
+        lotus_sha256_blocks(c->h, c->buf, 1);
+        c->buf_len = 0;
+    }
+    size_t whole = len / 64;
+    if (whole > 0) {
+        lotus_sha256_blocks(c->h, msg, whole);
+        msg += whole * 64;
+        len -= whole * 64;
+    }
+    if (len > 0) {
+        memcpy(c->buf, msg, len);
+        c->buf_len = (uint32_t)len;
+    }
+}
+
+/* Pad (0x80, zeros, the 64-bit big-endian bit length) and write the
+ * digest to `out`. Leaves the context spent; re-init to reuse it. */
+static void lotus_sha256_final(lotus_sha256_ctx *c, unsigned char out[32]) {
+    uint64_t bit_len = c->total * 8u;
+    unsigned char pad[128];
+    size_t n = c->buf_len;
+    memcpy(pad, c->buf, n);
+    pad[n++] = 0x80;
+    size_t padded = (n <= 56) ? 64 : 128;
+    memset(pad + n, 0, padded - 8 - n);
+    for (int i = 0; i < 8; i++) {
+        pad[padded - 1 - i] = (unsigned char)(bit_len >> (i * 8));
+    }
+    lotus_sha256_blocks(c->h, pad, padded / 64);
+    for (int i = 0; i < 8; i++) {
+        out[i * 4 + 0] = (unsigned char)(c->h[i] >> 24);
+        out[i * 4 + 1] = (unsigned char)(c->h[i] >> 16);
+        out[i * 4 + 2] = (unsigned char)(c->h[i] >> 8);
+        out[i * 4 + 3] = (unsigned char)(c->h[i]);
+    }
+}
+
+/* Core SHA-256 compute: hash `msg[0..len]` into `out[0..32]`.
+ * `out` must point to a writable 32-byte buffer. Pure function;
+ * no allocation at all, so HMAC can reuse it. */
+static void lotus_sha256_compute(const unsigned char *msg,
+                                  int64_t len,
+                                  unsigned char out[32]) {
+    lotus_sha256_ctx c;
+    lotus_sha256_init(&c);
+    if (len > 0) lotus_sha256_update(&c, msg, (size_t)len);
+    lotus_sha256_final(&c, out);
+}
+
+static void *lotus_sha256_digest_bytes(const unsigned char digest[32]) {
+    void *blob = lotus_caller_or_global_bytes_create(32);
+    if (!blob) return lotus_bytes_empty_global();
+    memcpy(lotus_bytes_data(blob), digest, 32);
+    return blob;
 }
 
 void *lotus_crypto_sha256(const void *b) {
@@ -32361,9 +32505,106 @@ void *lotus_crypto_sha256(const void *b) {
 
     unsigned char digest[32];
     lotus_sha256_compute(msg, len, digest);
+    return lotus_sha256_digest_bytes(digest);
+}
 
+/*
+ * The `std::crypto::Sha256` locus's primitives. The handle is the
+ * malloc'd context's address as an Int (0 = none), the BytesBuilder
+ * convention: `__sha256_new` at birth, `__sha256_free` at dissolve.
+ * `__sha256_finish` answers the digest of everything absorbed since
+ * birth (or since the last finish) and starts the context over, so
+ * one hasher serves file after file. A 0 handle absorbs nothing and
+ * finishes to an empty Bytes, never a digest.
+ */
+int64_t lotus_crypto_sha256_new(void) {
+    lotus_sha256_ctx *c = (lotus_sha256_ctx *)malloc(sizeof *c);
+    if (!c) return 0;
+    lotus_sha256_init(c);
+    return (int64_t)(intptr_t)c;
+}
+
+int64_t lotus_crypto_sha256_update(int64_t handle, const void *b) {
+    lotus_sha256_ctx *c = (lotus_sha256_ctx *)(intptr_t)handle;
+    if (!c) return 0;
+    if (b) {
+        int64_t len = lotus_bytes_len(b);
+        if (len > 0) {
+            lotus_sha256_update(
+                c, (const unsigned char *)b + sizeof(int64_t), (size_t)len);
+        }
+    }
+    return 1;
+}
+
+void *lotus_crypto_sha256_finish(int64_t handle) {
+    lotus_sha256_ctx *c = (lotus_sha256_ctx *)(intptr_t)handle;
+    if (!c) return lotus_bytes_empty_global();
+    unsigned char digest[32];
+    lotus_sha256_final(c, digest);
+    lotus_sha256_init(c);
+    return lotus_sha256_digest_bytes(digest);
+}
+
+int64_t lotus_crypto_sha256_free(int64_t handle) {
+    free((void *)(intptr_t)handle);
+    return 0;
+}
+
+/*
+ * `std::crypto::sha256_file(path)`: the file's SHA-256 without holding
+ * it. Reads `LOTUS_SHA256_FILE_BLOCK` bytes at a time into one malloc'd
+ * buffer and absorbs each read, so memory is that buffer whatever the
+ * file's size. NULL with errno set on failure (open, read, or the
+ * buffer), which the lowering turns into an IoError.
+ */
+#define LOTUS_SHA256_FILE_BLOCK ((size_t)1 << 20)
+
+/* wasm32's libc headers have no O_CLOEXEC (no exec to close across). */
+#if defined(O_CLOEXEC)
+#define LOTUS_SHA256_FILE_FLAGS (O_RDONLY | O_CLOEXEC)
+#else
+#define LOTUS_SHA256_FILE_FLAGS O_RDONLY
+#endif
+
+void *lotus_crypto_sha256_file(const char *path) {
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+    int fd = open(path, LOTUS_SHA256_FILE_FLAGS);
+    if (fd < 0) return NULL;
+    unsigned char *buf = (unsigned char *)malloc(LOTUS_SHA256_FILE_BLOCK);
+    if (!buf) {
+        close(fd);
+        errno = ENOMEM;
+        return NULL;
+    }
+    lotus_sha256_ctx c;
+    lotus_sha256_init(&c);
+    for (;;) {
+        ssize_t r = read(fd, buf, LOTUS_SHA256_FILE_BLOCK);
+        if (r > 0) {
+            lotus_sha256_update(&c, buf, (size_t)r);
+            continue;
+        }
+        if (r == 0) break;
+        if (errno == EINTR) continue;
+        int saved = errno;
+        free(buf);
+        close(fd);
+        errno = saved;
+        return NULL;
+    }
+    free(buf);
+    close(fd);
+    unsigned char digest[32];
+    lotus_sha256_final(&c, digest);
     void *blob = lotus_caller_or_global_bytes_create(32);
-    if (!blob) return lotus_bytes_empty_global();
+    if (!blob) {
+        errno = ENOMEM;
+        return NULL;
+    }
     memcpy(lotus_bytes_data(blob), digest, 32);
     return blob;
 }

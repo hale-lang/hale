@@ -28564,6 +28564,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoSha256 => {
                 self.lower_std_crypto_sha256(args, scope)
             }
+            // The `std::crypto::Sha256` locus's primitives.
+            Id::CryptoSha256NewRaw
+            | Id::CryptoSha256UpdateRaw
+            | Id::CryptoSha256FinishRaw
+            | Id::CryptoSha256FreeRaw => {
+                self.lower_std_crypto_sha256_raw(id, args, scope)
+            }
             Id::CryptoHmacSha256 => {
                 self.lower_std_crypto_hmac_sha256(args, scope)
             }
@@ -28882,6 +28889,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressUnzstd
             | Id::CompressZstd
             | Id::CryptoEcdsaP256Sign
+            | Id::CryptoSha256File
             | Id::CryptoEd25519Sign
             | Id::DecimalFromFloat
             | Id::IoFileOpenRaw
@@ -29129,6 +29137,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Ed25519 (RFC 8032) → fallible(CryptoError) on a malformed
             // secret key.
             Id::CryptoEd25519Sign => self.lower_std_crypto_ed25519_sign_fallible(args, scope),
+            // A file's SHA-256 read in blocks; open / read failures are
+            // its IoError, the path in the detail.
+            Id::CryptoSha256File => self.lower_std_crypto_sha256_file_fallible(args, scope),
             // A Float as the nearest Decimal; NaN, an infinity or a
             // magnitude past the i128 is its ParseError.
             Id::DecimalFromFloat => self.lower_std_decimal_from_float_fallible(args, scope),
@@ -29327,6 +29338,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CryptoHmacSha512
             | Id::CryptoSha1
             | Id::CryptoSha256
+            | Id::CryptoSha256FinishRaw
+            | Id::CryptoSha256FreeRaw
+            | Id::CryptoSha256NewRaw
+            | Id::CryptoSha256UpdateRaw
             | Id::CryptoSha512
             | Id::DecimalFormat
             | Id::DecimalFromInt

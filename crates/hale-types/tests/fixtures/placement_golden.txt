@@ -626,6 +626,10 @@ dynamic	<hole>	on main|unresolved declaration `mat::Grid`	in the seed
 row	Renderer@main1	Renderer	main	default
 dynamic	<hole>	on main|unresolved declaration `gfx::Rect`	in the seed
 
+== crates/hale-cli/tests/fixtures/sha256-stream/app.hl#3ebbfedb
+row	Hasher@main1	Hasher	main	default
+shared	dynamic	sites in the seed #49573352
+
 == crates/hale-cli/tests/fixtures/topology/pipeline.hl#44a7d963
 root	App	the entry
 row	App@literal1	App	main	default
@@ -677,7 +681,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/api_rpc.hl#dd570c71
 
-== crates/hale-stdlib/hl/crypto.hl#79bd629e
+== crates/hale-stdlib/hl/crypto.hl#c68ea340
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
@@ -685,7 +689,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#c45746aa
+== crates/hale-stdlib/hl/http_client.hl#b5d700ce
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -8278,6 +8282,11 @@ row	App@literal1	App	main	default
 row	~	Board	main	default
 row	~.w	Worker	main	inherited
 
+== tests/hale/crypto_sha256_stream_test.hl
+row	__StdCryptoSha256@main1	__StdCryptoSha256	main	default
+row	__StdCryptoSha256@main2	__StdCryptoSha256	main	default
+shared	dynamic	sites in the seed #49573352
+
 == tests/hale/decimal_scale_wire_test.hl
 row	Sink@main1	Sink	main	default
 row	Source@main2	Source	main	default
@@ -8337,8 +8346,11 @@ dynamic	Cache	on main|unresolved arguments	in the seed
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 shared	App@literal1.srv	__StdHttpServer #7ea4240c
+shared	App@literal1.srv2	__StdHttpServer #7ea4240c
 -- dynamic	sites in the seed
+dynamic	Gated	on main
 dynamic	Keyed	on main
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpBodyReader	on main
@@ -8350,6 +8362,7 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdSecretCredential	on main
 
 == tests/hale/http_request_cap_test.hl
 root	App	the entry
@@ -20593,6 +20606,10 @@ dynamic	__StdBytesBytesBuilder	on pool:one|pool:zero
 dynamic	__StdIoTcpConnFlow	on pool:one|pool:zero
 dynamic	__StdIoTcpConnInline	on pool:one|pool:zero
 dynamic	__StdIoTcpStream	on pool:one|pool:zero
+
+== shared sites in the seed #49573352
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdCryptoSha256	on main
 
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
