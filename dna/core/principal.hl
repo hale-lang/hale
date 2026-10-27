@@ -122,7 +122,7 @@ fn declared_address() -> String {
 // The name a person knows a host by. The habitat's own machine is the host
 // `local` in its rows, the one no SSH reaches, which the code branches on;
 // when the habitat declares the name it is reached at (`hale habitat up
-// --host keep` declares `keep`), that is the name shown for it.
+// --host rack` declares `rack`), that is the name shown for it.
 fn host_label(name: String) -> String {
     let at = declared_address();
     if name != "local" || len(at) == 0 || at == "127.0.0.1" || at == "localhost" {
