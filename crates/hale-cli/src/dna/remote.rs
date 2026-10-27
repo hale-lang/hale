@@ -1062,6 +1062,99 @@ pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
     }
 }
 
+/// A habitat verb run on the habitat's machine, in its toolchain image, as
+/// `organism … dna` is: for the verbs that act on the genome there
+/// (`nursery refresh`).
+pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> ExitCode {
+    let (t, m) = match checked_machine(p, verb) {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    let mut cmd = t.ssh(false);
+    cmd.arg(in_image(&m, p, args, false)).stdin(Stdio::null());
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat {verb}: ssh: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `hale habitat graft <sapling> [--host <name>] [--no-library]` through a
+/// pointer: the head's `Commands::graft`, as the operator face makes it,
+/// its log followed page by page (`Commands::graft_log`) to its end. The
+/// head knows the habitat's saplings and hosts; this machine holds none.
+pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let head = p["head"].as_str().unwrap_or("");
+    let Some(name) = args.first() else {
+        eprintln!("usage: hale habitat graft <sapling> [--host <name>] [--no-library]");
+        return ExitCode::from(2);
+    };
+    let (mut host, mut library) = (String::new(), true);
+    let mut i = 1;
+    while i < args.len() {
+        match (args[i].as_str(), args.get(i + 1)) {
+            ("--host", Some(h)) => {
+                host = h.clone();
+                i += 2;
+            }
+            ("--no-library", _) => {
+                library = false;
+                i += 1;
+            }
+            (other, _) => {
+                eprintln!("hale habitat graft {name}: `{other}` is not taken through a pointer (a sapling grafts by name, with --host and --no-library)");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let started = match http_surface_call(head, "Commands::graft", &serde_json::json!({ "sapling": name, "host": host, "library": library })) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("hale habitat graft {name}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if started["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat graft {name}: {} ({})", started["why"].as_str().unwrap_or(""), started["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    let graft = started["graft"].as_str().unwrap_or("").to_string();
+    super::progress(&format!("grafting `{name}`{}", if host.is_empty() { String::new() } else { format!(" on {host}") }));
+    let mut from = 0i64;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    loop {
+        let page = match http_surface_call(head, "Commands::graft_log", &serde_json::json!({ "graft": graft, "from": from })) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("hale habitat graft {name}: following its log: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        if let Some(text) = page["text"].as_str().filter(|t| !t.is_empty()) {
+            print!("{text}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+        from = page["next"].as_i64().unwrap_or(from);
+        if page["done"] == serde_json::json!(true) && page["text"].as_str().is_none_or(str::is_empty) {
+            let exit = page["exit"].as_i64().unwrap_or(-1);
+            if exit == 0 {
+                return ExitCode::SUCCESS;
+            }
+            eprintln!("hale habitat graft {name}: the graft ended with exit {exit}");
+            return ExitCode::from(1);
+        }
+        if std::time::Instant::now() > deadline {
+            eprintln!("hale habitat graft {name}: no end within an hour; `hale habitat status` shows where it is");
+            return ExitCode::from(1);
+        }
+        if page["text"].as_str().is_none_or(str::is_empty) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
 /// `up` asked without `--host` of a machine that points at a habitat on
 /// another.
 pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {

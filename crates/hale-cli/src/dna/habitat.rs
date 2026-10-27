@@ -419,6 +419,11 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             Some(p) => remote::graft(&p, &args[1..]),
             None => ExitCode::from(2),
         },
+        // a bare name through a pointer is a sapling: the head grafts it
+        Some("graft") if args.get(1).is_some_and(|a| !a.starts_with('-')) && remote::pointer().is_some() => match remote::pointer() {
+            Some(p) => remote::graft_sapling(&p, &args[1..]),
+            None => ExitCode::from(2),
+        },
         Some("organism") if args.get(2).map(String::as_str) == Some("dna") => match remote::pointer() {
             Some(p) => remote::organism_dna(&p, &args[1..]),
             None => organism_dna(&args[1..]),

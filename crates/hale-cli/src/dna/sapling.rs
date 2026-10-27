@@ -620,12 +620,26 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                     return ExitCode::from(1);
                 }
             }
+            // the head read it into the record already; this machine holds
+            // no genome to read it again when it points at a habitat elsewhere
+            if super::remote::pointer().is_some() {
+                return ExitCode::SUCCESS;
+            }
             refreshed()
         }
-        (Some("refresh"), None, 1) => refreshed(),
+        (Some("refresh"), None, 1) => match super::remote::pointer() {
+            Some(p) => super::remote::run_there(&p, "nursery", &["nursery", "refresh"]),
+            None => refreshed(),
+        },
         (Some("ratify"), Some(name), 2) => match head_call("Commands::ratify_sapling", serde_json::json!({ "name": name })) {
             Ok(v) if v["ok"] == serde_json::json!(true) => {
-                let pin = pinned(name).unwrap_or_default();
+                // the pin as the head now answers it (this machine may hold
+                // no genome: a pointer to a habitat elsewhere)
+                let pin = head_call("Commands::saplings", serde_json::json!({ "limit": 200 }))
+                    .ok()
+                    .and_then(|v| v["saplings"].as_str().and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(t).ok()))
+                    .and_then(|s| s.into_iter().find(|e| e["name"] == name.as_str()))
+                    .unwrap_or_default();
                 println!("{:<8}{name} pinned at {} ({}); nothing grafted moves", "sapling", pin["revision"].as_str().unwrap_or(""), pin["digest"].as_str().unwrap_or(""));
                 ExitCode::SUCCESS
             }
