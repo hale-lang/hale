@@ -372,6 +372,11 @@ fn main() {
         if !answering { std::time::sleep(1s); }
     }
     let head_log = std::io::fs::read_file(scratch + "/shipme-head.log") or "";
+    // its head keeps its state in a directory of the organism's own there,
+    // not the one every run there shares
+    let own_state = home + "/.local/share/hale/state/organisms/" + shipped_id[0..12];
+    let own_kept = std::io::fs::file_exists(own_state)
+        && !std::io::fs::file_exists(home + "/.local/share/hale/state/hale/dna/head");
     // its run there goes: the container the pointer started for it
     dna::run_tool(
         "sh\n-c\ndocker ps -q --filter \"label=hale.habitat.dir=$1\" | xargs -r docker rm -f\nsh\n"
@@ -382,6 +387,7 @@ fn main() {
         "the organism's face answers at the URL its graft recorded (" + face_at + "): "
             + head_log,
     );
+    std::test::assert(own_kept, "the organism's head keeps its state at " + own_state);
     let its = in_dir(scratch, config, toolchain() + "\nhabitat\norganism\nshipme\ndna\nstatus");
     std::test::assert(
         its.code == 0 && std::str::contains(its.stdout, "profile:"),
