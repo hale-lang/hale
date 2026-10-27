@@ -30,7 +30,7 @@ function stateOf(host) {
   return "down";
 }
 
-// The allocations placed on a host, once per organism: "dark-coffee: memory,
+// The allocations placed on a host, once per organism: "home: memory,
 // nerves, head" rather than each allocation's full key.
 function placedLine(placed) {
   const by = new Map();

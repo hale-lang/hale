@@ -643,7 +643,7 @@ fn containers_state(what: String, seen: String) -> AllocationState {
 // An allocation served at `address` (`http://<host>:<port>`): up while
 // something accepts connections there. The loopback is reached as this
 // process reaches this machine's (`loopback_host`); the habitat's declared
-// name (`hale habitat up --host keep` records `http://keep:<port>`) is
+// name (`hale habitat up --host rack` records `http://rack:<port>`) is
 // dialed by that name, then at the loopback, where a listener on every
 // interface of a docker VM answers as well.
 fn observe_address(address: String) -> AllocationState {
