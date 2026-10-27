@@ -43,7 +43,7 @@ dl { display: grid; grid-template-columns: 14ch 1fr; margin: 0; gap: 2px calc(va
 dt { color: var(--dim); }
 dd { margin: 0; overflow-wrap: anywhere; }
 
-table { border-collapse: collapse; width: 100%; }
+table { border-collapse: collapse; }
 th { color: var(--dim); font-weight: 400; text-align: left; border-bottom: 1px solid var(--rule); }
 th, td { padding: 2px calc(var(--step) * 2) 2px 0; white-space: nowrap; vertical-align: top; }
 
@@ -75,4 +75,4 @@ pre { margin: 0; padding: var(--step) 0; white-space: pre-wrap; overflow-wrap: a
 .dim { color: var(--dim); }
 .outcome { white-space: pre-wrap; }
 td.wrap { white-space: normal; overflow-wrap: anywhere; }
-td.list { white-space: pre-line; width: 100%; }
+td.list { white-space: pre-line; }
