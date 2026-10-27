@@ -303,6 +303,40 @@ fn host_listen_address(name: String) -> String {
     return if r.code == 0 { trim_nl(r.stdout) } else { "" };
 }
 
+// The render shipped whole to `remote` on `h`: its compose files and each
+// entry its services need beside them (`mounted`: a file, or a directory
+// with everything under it, as it is in the render's directory: a build
+// context, a bind mount's source), as one tar extracted there, modes kept
+// for the owner and nothing for anyone else. "" when it landed, else why.
+fn ssh_ship(root: String, h: Host, render: Render, remote: String) -> String {
+    let mut entries = "";
+    let mut rest = render.files
+        + (if len(render.mounted) > 0 { "\n" + render.mounted } else { "" });
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let f = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(f) > 0 { entries = entries + "\n" + f; }
+    }
+    let t = run_tool("mktemp\n/tmp/hale-dna-render.XXXXXX");
+    if t.code != 0 { return "cannot stage the render for " + h.name + ": mktemp failed"; }
+    let tar = trim_nl(t.stdout);
+    let packed = run_tool("tar\n-C\n" + render.dir + "\n-cf\n" + tar + entries);
+    if packed.code != 0 {
+        std::io::fs::unlink(tar) or discard;
+        return "packing the render in " + render.dir + ": " + trim_nl(packed.stderr);
+    }
+    let sent = ssh_run(
+        root,
+        h,
+        "umask 077; mkdir -p '" + remote + "' && tar -C '" + remote + "' -xf -",
+        tar,
+    );
+    std::io::fs::unlink(tar) or discard;
+    if sent.code != 0 { return "shipping the render to " + h.name + ": " + trim_nl(sent.stderr); }
+    return "";
+}
+
 // `docker compose` on an `ssh` host `h` for `render`, as one shell line run
 // in its directory there, with the host's facts (`host_facts`) in its
 // environment.
@@ -409,25 +443,8 @@ locus SshProvider {
                 why: "the render's directory on " + host + ": " + trim_nl(made.stderr),
             };
         }
-        let mut rest = render.files
-            + (if len(render.mounted) > 0 { "\n" + render.mounted } else { "" });
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let f = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if len(f) == 0 { continue; }
-            let copied = ssh_run(
-                self.root,
-                h,
-                "umask 077; cat > '" + remote + "/" + f + "'",
-                render.dir + "/" + f,
-            );
-            if copied.code != 0 {
-                return RenderApplied {
-                    why: "copying " + f + " to " + host + ": " + trim_nl(copied.stderr),
-                };
-            }
-        }
+        let shipped = ssh_ship(self.root, h, render, remote);
+        if len(shipped) > 0 { return RenderApplied { why: shipped }; }
         let up = ssh_run(self.root, h, ssh_compose(h, render, compose_up_args(render, " ")), "");
         if up.code != 0 {
             return RenderApplied {

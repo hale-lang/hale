@@ -8,7 +8,9 @@
 // A sapling is grafted with `--host`: its memory, nerves and senses' store
 // and its own services are allocations of that host, brought up there by
 // the ssh provider, and its record is born in the memory there, the
-// organism reaching it at the host's address. Moved back to this machine,
+// organism reaching it at the host's address. Its services are built
+// there from the render shipped whole (a Dockerfile in a subdirectory, a
+// mounted directory). Moved back to this machine,
 // its memory is refused, since it holds the record and a moved memory
 // starts empty; `--fresh` moves it, empty, and the pulse says it is up
 // here. A move whose withdrawal fails (the machine stopped answering) is
@@ -235,9 +237,19 @@ fn main() {
     or discard;
     std::io::fs::write_file(src + "/README.md", "# sprout\n\nA small organism to place.\n")
     or discard;
+    // its service is built from the repository (a Dockerfile in a
+    // subdirectory, copying another), and mounts a directory of it: a host
+    // elsewhere needs the whole render, not the compose file alone
+    std::io::fs::mkdir(src + "/docker") or discard;
+    std::io::fs::mkdir(src + "/site") or discard;
+    std::io::fs::mkdir(src + "/conf") or discard;
+    std::io::fs::write_file(src + "/docker/web.Dockerfile", "FROM busybox:1.36\nCOPY site /site\n")
+    or discard;
+    std::io::fs::write_file(src + "/site/index.html", "sprout\n") or discard;
+    std::io::fs::write_file(src + "/conf/web.conf", "listen 8080\n") or discard;
     std::io::fs::write_file(
         src + "/compose.yaml",
-        "services:\n  web:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n",
+        "services:\n  web:\n    build:\n      context: .\n      dockerfile: docker/web.Dockerfile\n    image: hale-dna-test-sprout:1\n    pull_policy: build\n    volumes:\n      - ./conf:/conf:ro\n    command: [\"sleep\", \"3600\"]\n",
     ) or discard;
     git(src, "add\n-A");
     git(src, "commit\n-q\n-m\nsprout");
@@ -270,6 +282,16 @@ fn main() {
     );
     let store = dna::local_habitat_dir() + "/saplings/sprout";
     let key = dna::allocation_key(store);
+    // the image was built there from the context shipped, and the mounted
+    // directory is there: the container on the host holds both
+    let holds = dna::run_tool(
+        "sh\n-c\nfor c in $(docker ps -q --filter label=com.docker.compose.service=web); do p=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' \"$c\"); case \"$p\" in *-localhost-$1) docker exec \"$c\" sh -c 'test -f /site/index.html && test -f /conf/web.conf' && echo held; exit;; esac; done\nsh\n"
+            + key,
+    );
+    std::test::assert(
+        std::str::contains(holds.stdout, "held"),
+        "its build context and mounted directory reached the host: " + holds.stdout + holds.stderr,
+    );
     let memory = allocation(face, key + "/memory");
     std::test::assert(
         std::json::find_string_field(memory, "provider") == "ssh"
