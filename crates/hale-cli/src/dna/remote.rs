@@ -695,6 +695,16 @@ fn resume_command(there: &str, flags: &[String]) -> String {
     line
 }
 
+/// The flags a resumed graft runs with: always attached to the kept
+/// directory, which a graft that stopped already holds (a creation graft's
+/// new application among them, whose pin it goes on from), and the rest as
+/// given.
+fn resume_flags(flags: &[String]) -> Vec<String> {
+    let mut out = vec!["--attach".to_string()];
+    out.extend(flags.iter().filter(|f| f.as_str() != "--attach").cloned());
+    out
+}
+
 /// Why `path` is not a graft's directory kept on the habitat's machine
 /// whose habitat lives at `habitat`: one under `<habitat>/grafted/`, named
 /// without `.` or `..`.
@@ -732,8 +742,9 @@ pub(super) fn graft_resume(p: &serde_json::Value, args: &[String]) -> ExitCode {
         eprintln!("hale habitat graft --resume: {path} does not exist on {}", t.host);
         return ExitCode::from(1);
     }
+    let flags = resume_flags(&args[1..]);
     let mut a: Vec<&str> = vec!["graft", path.as_str()];
-    a.extend(args[1..].iter().map(String::as_str));
+    a.extend(flags.iter().map(String::as_str));
     let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
     if ran.as_ref().is_ok_and(|s| s.success()) {
         return ExitCode::SUCCESS;
@@ -833,6 +844,16 @@ mod tests {
         assert!(pointer_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
         assert!(pointer_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
         assert!(pointer_refusal("rack-a.lan", "", &b).is_some());
+    }
+
+    #[test]
+    fn a_resumed_graft_attaches_to_the_kept_directory() {
+        let s = |v: &[&str]| -> Vec<String> { v.iter().map(|x| x.to_string()).collect() };
+        // a creation graft's flags: attached on resume
+        assert_eq!(resume_flags(&s(&["--no-library", "--no-pack"])), s(&["--attach", "--no-library", "--no-pack"]));
+        // an attach graft's: once, not twice
+        assert_eq!(resume_flags(&s(&["--attach", "--with", "founder"])), s(&["--attach", "--with", "founder"]));
+        assert_eq!(resume_flags(&[]), s(&["--attach"]));
     }
 
     #[test]
