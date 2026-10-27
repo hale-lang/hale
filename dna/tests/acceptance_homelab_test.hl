@@ -453,7 +453,8 @@ fn main() {
     // what its service publishes, as compose read the render on the host
     // with the host's facts it was applied with: bound to the host's
     // listen address, which is the loopback for this fixture's host
-    // (`localhost`, this machine), so it is linked at 127.0.0.1 (the
+    // (`localhost`, this machine), and the habitat is local (it declares no
+    // remote address), so it is linked at 127.0.0.1 (the
     // graft's own environment, without the facts, would have read every
     // interface and linked the host's name)
     std::test::assert(

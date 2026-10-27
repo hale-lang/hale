@@ -276,14 +276,21 @@ host's facts, below): `docker compose config --format json`, each service
 with a TCP port published, its first, as `{service, port, bind}` (`bind`
 the address it is bound to, "" for every interface). Each apply records it
 on its `habitat.applied` row (`published`), at the graft's first apply, at
-a later apply and at a move alike. `Commands::allocations` resolves the
-latest against the host the allocation actually runs on and answers the
+a later apply and at a move alike; an apply or a withdrawal that fails
+records none and leaves the last successful one in force (one that takes
+and publishes nothing, `published: []`, replaces it). `Commands::allocations`
+resolves the latest successful one against the host the allocation
+actually runs on and answers the
 allocation's `links` (`{service, url, note}`), a link only where it is
 reachable from the admin machine: on another host, a port bound to every
 interface at the host's address, one bound to a specific address at that
 address, and one bound to the host's loopback with no `url` and the note
 `loopback only on <host>`, unless the host's listen address is itself the
-loopback (the host is this machine), where it is linked at `127.0.0.1`; on
+loopback and the habitat is local too (it declares no address,
+`HALE_DNA_HABITAT_ADDRESS`, or the loopback: the head that resolved the
+host runs where the browser opens the link), where it is linked at
+`127.0.0.1`; under a habitat on another machine such a port keeps the note,
+since the head's resolution says nothing of the browser's machine; on
 this machine at `127.0.0.1`, or at the address it is bound to. The
 operator face lists them under the organism's
 allocation, a link where there is a `url` and the note where there is
