@@ -23,6 +23,12 @@ const NODE_EXPORTER_DARWIN_AMD64_SHA256: &str = "3506a6d788b768a3c2cd1f58dc97b9f
 pub(super) const NODE_EXPORTER_PORT: u16 = 9100;
 /// The name the Linux container goes by and the launchd label on macOS.
 const NODE_EXPORTER_NAME: &str = "hale-node-exporter";
+/// What the Linux container runs with beyond its address: `cpufreq` off,
+/// since reading every core's frequency can block a scrape past
+/// Prometheus's timeout (an Arm server's firmware-backed frequency reads
+/// did), and no dashboard of the habitat's charts it. Its container is
+/// labelled with this, so an install replaces one made with other flags.
+const NODE_EXPORTER_LINUX_FLAGS: &str = "--no-collector.cpufreq";
 const NODE_EXPORTER_LABEL: &str = "lang.hale.node-exporter";
 
 /// The Grafana the habitat runs behind its face.
@@ -62,6 +68,7 @@ pub(super) fn install_script(sudo: &str) -> String {
     let p = NODE_EXPORTER_PORT;
     let n = NODE_EXPORTER_NAME;
     let l = NODE_EXPORTER_LABEL;
+    let flags = NODE_EXPORTER_LINUX_FLAGS;
     let arm = NODE_EXPORTER_DARWIN_ARM64_SHA256;
     let amd = NODE_EXPORTER_DARWIN_AMD64_SHA256;
     format!(
@@ -73,10 +80,11 @@ node_readings() {{ readings 2>/dev/null | grep -q '^node_'; }}
 case "$(uname -s)" in
 Linux)
   if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
-  if [ "$($d inspect -f '{{{{.State.Running}}}}' "$n" 2>/dev/null)" = true ]; then said "ours container"; exit 0; fi
-  if node_readings; then said theirs; exit 0; fi
+  want="$v {flags}"
+  if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said "ours container"; exit 0; fi
+  if ! $d inspect "$n" >/dev/null 2>&1 && node_readings; then said theirs; exit 0; fi
   $d rm -f "$n" >/dev/null 2>&1 || true
-  $d run -d --name "$n" --label "$l=$v" --restart unless-stopped --net host --pid host -v /:/host:ro,rslave "prom/node-exporter:v$v" --path.rootfs=/host --web.listen-address=":$p" >/dev/null
+  $d run -d --name "$n" --label "$l=$want" --restart unless-stopped --net host --pid host -v /:/host:ro,rslave "prom/node-exporter:v$v" --path.rootfs=/host --web.listen-address=":$p" {flags} >/dev/null
   said "ours container" ;;
 Darwin)
   case "$(uname -m)" in arm64) a=arm64; sum={arm} ;; x86_64) a=amd64; sum={amd} ;; *) said "skip no node_exporter build for $(uname -m)"; exit 0 ;; esac
@@ -373,7 +381,17 @@ mod tests {
         assert!(s.contains("prom/node-exporter:v$v"));
         // a Mac's daemon runs as nobody; the format's braces are the shell's
         assert!(s.contains("<key>UserName</key><string>nobody</string>"));
-        assert!(s.contains("'{{.State.Running}}'"), "docker's template survives the format");
+        assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "docker's template survives the format");
+        // the container's flags are its label: one made with others is replaced
+        assert!(s.contains(&format!("want=\"$v {NODE_EXPORTER_LINUX_FLAGS}\"")) && s.contains(&format!("--web.listen-address=\":$p\" {NODE_EXPORTER_LINUX_FLAGS}")));
+    }
+
+    #[test]
+    fn both_scripts_are_shell() {
+        for script in [install_script("sudo"), install_script("sudo -n"), remove_script("sudo -n")] {
+            let ok = std::process::Command::new("sh").args(["-n", "-c", &script]).status().expect("sh");
+            assert!(ok.success(), "{script}");
+        }
     }
 
     #[test]

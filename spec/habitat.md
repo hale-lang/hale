@@ -834,13 +834,16 @@ it, installed over the person's own login, where sudo can ask:
 |---|---|
 | `hale habitat up` | this machine, the habitat's |
 | `hale habitat up --host <h>` | `<h>`, over SSH from the person's machine (the run inside the habitat's image installs none) |
-| `hale habitat host add <h>` | `<h>`, over the same login its account was made over, once it is probed |
+| `hale habitat host add <h>`, `host probe <h>` | `<h>`, over the same login its account was made over, once it is probed ready |
 | `host remove <h>`, `down --forget` | taken off each, the same way; a remote forget takes it off the habitat's machine and every host it named |
 
 On **Linux** it is the container `hale-node-exporter`
 (`prom/node-exporter`, pinned), on the host's network and process
-namespace, reading the root filesystem read-only, labelled
-`lang.hale.node-exporter`, restarted unless stopped. On **macOS** it is
+namespace, reading the root filesystem read-only, its `cpufreq`
+collector off (reading every core's frequency can block a scrape past
+Prometheus's timeout; no dashboard charts it), labelled
+`lang.hale.node-exporter=<version> <flags>`, restarted unless stopped; an
+install replaces a container of the habitat's labelled otherwise. On **macOS** it is
 the release's own `node_exporter` (pinned, its archive checked against the
 release's SHA-256) under launchd, `lang.hale.node-exporter`: a
 LaunchAgent of the person's when the login has a GUI session (no sudo),

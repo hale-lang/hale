@@ -746,6 +746,18 @@ fn host(args: &[String]) -> ExitCode {
     }
     let offers = if field("offers").is_empty() { "nothing yet".to_string() } else { field("offers") };
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
+    // a ready host's probe checks its exporter too, over the person's own
+    // login: installed when it is missing, replaced when it runs with other
+    // flags than this toolchain's
+    if verb == "probe" && field("state") == "ready" && !readings::node_exporter_off() {
+        let login = if remote::is_habitat_user(&field("user")) { None } else { Some(field("user")) };
+        let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+        progress(&format!("checking the node exporter on {name}, over your SSH login"));
+        println!("{}", match remote::login_script(&name, login.as_deref(), port, readings::install_script) {
+            Ok(o) => readings::install_line(&name, &o),
+            Err(why) => format!("{:<8}{name}: no exporter: {why}", "node"),
+        });
+    }
     println!("{:<8}{offers}{}", "offers", if field("os").is_empty() { String::new() } else { format!(" ({} {})", field("os"), field("arch")) });
     if verb == "add" {
         println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
