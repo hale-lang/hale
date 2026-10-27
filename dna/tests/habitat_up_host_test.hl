@@ -356,10 +356,13 @@ fn main() {
         "the grafted organism's face and head are recorded at the declared address: " + graft_row,
     );
     // its head, launched through the pointer, binds the habitat's listen
-    // address and answers at the face the row advertises
+    // address and answers at the face the row advertises. Run as `in_dir`
+    // runs every verb here, without the suite's operator memory and nerves:
+    // the pointer forwards those to the machine, where the head would read
+    // its record from that shared memory, which never held the graft's
     let face_at = std::json::find_string_field(graft_body, "face");
     let launched = dna::run_tool(
-        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL && (\"$3\" habitat organism shipme dna head . > \"$4\" 2>&1 &)\nsh\n"
+        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY &&(\"$3\" habitat organism shipme dna head . > \"$4\" 2>&1 &)\nsh\n"
             + scratch + "\n" + config + "\n" + toolchain() + "\n" + scratch + "/shipme-head.log",
     );
     let mut answering = false;
