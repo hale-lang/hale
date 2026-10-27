@@ -114,6 +114,66 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+/// The listen address and declared address a head launched under a habitat
+/// on another machine binds and answers as (`HALE_DNA_LISTEN_HOST`,
+/// `HALE_DNA_HABITAT_ADDRESS`), from the habitat's own
+/// (`HALE_DNA_HABITAT_LISTEN`, `HALE_DNA_HABITAT_ADDRESS`), and the state
+/// directory of the organism's own head there (`HALE_DNA_HEAD_STATE`,
+/// `$XDG_STATE_HOME/organisms/<record>`): every run there shares one
+/// `XDG_STATE_HOME`, so without it two organisms' heads would share their
+/// pid, URL, registry and journal files. None for a local habitat.
+fn head_listen_env(project: Option<&str>) -> Vec<(&'static str, String)> {
+    let record = project.and_then(|p| super::manifest_pin(&Path::new(p).join("hale.toml")).ok().flatten());
+    head_listen_env_of(std::env::var("HALE_DNA_HABITAT_LISTEN").ok(), std::env::var("HALE_DNA_HABITAT_ADDRESS").ok(), std::env::var("XDG_STATE_HOME").ok(), record)
+}
+
+fn head_listen_env_of(listen: Option<String>, address: Option<String>, state_home: Option<String>, record: Option<String>) -> Vec<(&'static str, String)> {
+    let some = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let (listen, address, state_home, record) = (some(listen), some(address), some(state_home), some(record));
+    let mut out = Vec::new();
+    if let Some(l) = listen {
+        out.push(("HALE_DNA_LISTEN_HOST", l));
+        if let Some(a) = address {
+            out.push(("HALE_DNA_HABITAT_ADDRESS", a));
+        }
+        if let (Some(base), Some(id)) = (state_home, record) {
+            let key: String = id.chars().take(12).collect();
+            out.push(("HALE_DNA_HEAD_STATE", format!("{}/organisms/{key}", base.trim_end_matches('/'))));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_head_under_a_remote_habitat_binds_its_listen_address() {
+        assert!(head_listen_env_of(None, None, None, None).is_empty());
+        assert!(head_listen_env_of(None, Some("rack-a.lan".into()), Some("/d/state".into()), Some("ab".repeat(32))).is_empty());
+        assert_eq!(
+            head_listen_env_of(Some("192.0.2.7".into()), Some("rack-a.lan".into()), None, None),
+            vec![("HALE_DNA_LISTEN_HOST", "192.0.2.7".to_string()), ("HALE_DNA_HABITAT_ADDRESS", "rack-a.lan".to_string())]
+        );
+    }
+
+    #[test]
+    fn two_organisms_heads_under_a_remote_habitat_keep_distinct_state() {
+        let state = |record: &str| {
+            head_listen_env_of(Some("192.0.2.7".into()), Some("rack-a.lan".into()), Some("/d/state/".into()), Some(record.into()))
+                .into_iter()
+                .find(|(k, _)| *k == "HALE_DNA_HEAD_STATE")
+                .map(|(_, v)| v)
+        };
+        let one = state(&"1".repeat(64)).unwrap();
+        let two = state(&"2".repeat(64)).unwrap();
+        assert_eq!(one, "/d/state/organisms/111111111111");
+        assert_eq!(two, "/d/state/organisms/222222222222");
+        assert_ne!(one, two);
+    }
+}
+
 fn set(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
@@ -166,6 +226,17 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
             if let Some(dsn) = head_dsn(Path::new(p)) {
                 cmd.env("HALE_DNA_MEMORY_DSN_HEAD", dsn);
             }
+        }
+    }
+    // under a habitat on another machine (`up --host` hands the containers
+    // it runs there the habitat's declared address), an organism's face,
+    // head and identity stub bind the habitat's listen address and answer
+    // under its name, as the habitat's own face does, so the URLs its
+    // graft recorded answer from the admin machine, and keep their state in
+    // a directory of the organism's own; nothing changes for a local habitat
+    for (var, value) in head_listen_env(project) {
+        if !set(var) {
+            cmd.env(var, value);
         }
     }
     // exec in place: the pid that ran `hale dna head` is the launcher, so
