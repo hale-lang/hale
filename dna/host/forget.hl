@@ -347,6 +347,14 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 "1 directory", "yes, at the pinned revision: commits made there since are lost",
                 "dir-rm", "", groot, FORGET_STEP_FILES,
             )
+        } else if std::str::starts_with(groot, dna::local_habitat_dir() + "/grafted/") {
+            dna::teardown_item(
+                "organism", subject,
+                "its genome repository " + groot
+                    + ", the habitat's copy of the directory grafted from another machine",
+                "1 directory", "no: commits made there since and not pushed are lost",
+                "dir-rm", "", dna::grafted_home(groot), FORGET_STEP_FILES,
+            )
         } else {
             dna::teardown_item(
                 "organism", subject,

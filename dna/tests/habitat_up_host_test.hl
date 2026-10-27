@@ -62,6 +62,20 @@ fn volumes_named(project: String) -> String {
     ).stdout;
 }
 
+// The home a graft through the pointer made for `shipme` there: its own
+// fresh directory, `<habitat>/grafted/shipme-<suffix>/shipme`.
+fn shipped_home(there: String) -> String { return grafted_home(there, "shipme"); }
+
+// The home a graft through the pointer made for `name` there.
+fn grafted_home(there: String, name: String) -> String {
+    return dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\nls -d \"$1\"/grafted/\"$2\"-*/\"$2\" 2>/dev/null | head -n 1\nsh\n" + there
+                + "\n" + name,
+        ).stdout,
+    );
+}
+
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
@@ -277,6 +291,91 @@ fn main() {
             "sh\n-c\ndocker ps -aq | xargs -r docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}} {{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' | grep -F \" $1\" | cut -d' ' -f1 | sort -u | head -n 1\nsh\n"
                 + home,
         ).stdout,
+    );
+
+    // ---- graft <dir> through the pointer: the directory here shipped
+    // there as the habitat's copy and grafted there; the organism seen
+    // through the head, and its own verbs run there
+    let repo = scratch + "/shipme";
+    std::io::fs::mkdir(repo) or discard;
+    std::io::fs::write_file(
+        repo + "/README.md",
+        "# shipme\n\nA repository grafted through a pointer.\n",
+    )
+    or discard;
+    let made = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -q -m shipme\nsh\n"
+            + repo,
+    );
+    std::test::assert_eq_int(made.code, 0, "the repository to ship: " + made.stderr);
+    let grafted = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n" + repo + "\n--attach\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        grafted.code == 0 && std::str::contains(grafted.stdout, "shipped ")
+            && std::io::fs::file_exists(shipped_home(there) + "/README.md"),
+        "graft <dir> runs there, the directory shipped as the habitat's copy: " + grafted.stdout
+            + grafted.stderr,
+    );
+    // its record, as the copy there pins it, among the head's allocations
+    let pinned = std::io::fs::read_file(shipped_home(there) + "/hale.toml") or "";
+    let at = std::str::index_of(pinned, "record = \"");
+    let shipped_id = if at < 0 { "" } else { pinned[(at + 10)..(at + 50)] };
+    let seen = in_dir(scratch, config, toolchain() + "\nhabitat\nstatus");
+    std::test::assert(
+        len(shipped_id) == 40 && std::str::contains(seen.stdout, shipped_id),
+        "the head lists the organism grafted through the pointer: " + seen.stdout + seen.stderr,
+    );
+    let its = in_dir(scratch, config, toolchain() + "\nhabitat\norganism\nshipme\ndna\nstatus");
+    std::test::assert(
+        its.code == 0 && std::str::contains(its.stdout, "profile:"),
+        "its own verbs run in its directory there: " + its.stdout + its.stderr,
+    );
+
+    // ---- a graft goes on in a directory it kept there, nothing shipped;
+    // a path outside the habitat's grafted directories is refused
+    let outside = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + there + "/genome",
+    );
+    std::test::assert(
+        outside.code == 2 && std::str::contains(outside.stderr, "is not a graft's directory"),
+        "--resume takes only a graft's kept directory: " + outside.stderr,
+    );
+    let resumed = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + shipped_home(there)
+            + "\n--attach\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        resumed.code == 0 && !std::str::contains(resumed.stdout, "shipped "),
+        "--resume goes on in the kept directory, nothing shipped: " + resumed.stdout
+            + resumed.stderr,
+    );
+    // a creation graft (a new application made there, no --attach) resumes
+    // attached to the directory it made, from its pin
+    let created = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n" + scratch + "/freshapp\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        created.code == 0 && len(grafted_home(there, "freshapp")) > 0,
+        "a new application is made there through the pointer: " + created.stdout + created.stderr,
+    );
+    let again = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + grafted_home(there, "freshapp")
+            + "\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        again.code == 0,
+        "--resume of a creation graft goes on in its directory: " + again.stdout + again.stderr,
     );
 
     // ---- a stale pointer (another record's identity) tears nothing down
