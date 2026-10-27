@@ -941,6 +941,11 @@ locus Relay {
   the coroutine, http and https alike, as the whole-body read's do; a
   relay in a Server handler there holds one connection each way while it
   streams. Reads land in one `BytesBuilder`, nothing allocated per read;
+  a chunk of a chunked body is read to its end without a copy of what is
+  held, and copied out once when whole, so a reader's memory is linear in
+  its largest chunk (2026-10-27: each read of an unfinished chunk copied
+  the whole buffer, memory and time quadratic in the chunk's size, 278 MB
+  for 2 MiB chunks);
   each piece a read returns is a value of the reading frame, reclaimed
   with it: a handler's per-connection region reclaims a relay's whole
   stream when the response ends, while a read loop in a frame that lives

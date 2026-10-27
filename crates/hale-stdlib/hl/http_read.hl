@@ -76,7 +76,9 @@ fn __http_stream_held(rx: std::bytes::BytesBuilder) -> Bytes {
 
 // The next chunk at the front of `raw`: `state` 0 needs more bytes, 1 a
 // chunk (its payload at [lo, hi), `used` bytes of framing and payload), 2
-// the last chunk, 3 malformed framing.
+// the last chunk, 3 malformed framing. A `state` 0 whose size line has
+// arrived says how much the whole chunk takes (`used`) and its payload's
+// size (`hi - lo`), so the reader reads to there without looking again.
 type __StdHttpChunkPeel { state: Int; lo: Int; hi: Int; used: Int; }
 
 fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
@@ -96,7 +98,7 @@ fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
     let lo = nl + 2;
     let hi = lo + size;
     if hi + 2 > end {
-        return __StdHttpChunkPeel { state: 0, lo: 0, hi: 0, used: 0 };
+        return __StdHttpChunkPeel { state: 0, lo: lo, hi: hi, used: hi + 2 };
     }
     let ca = std::bytes::at(raw, hi) or - 1;
     let cb = std::bytes::at(raw, hi + 1) or - 1;
@@ -278,6 +280,9 @@ locus __StdHttpBodyReader {
         // (the `bearer` and `Authorization` dropped from then on)
         redirects: Int = 0;
         moved_origin: Bool = false;
+        // the bytes the chunk being read takes, framing and all, once its
+        // size line has arrived (0: not known yet)
+        chunk_need: Int = 0;
     }
     birth() {
         // the one deadline runs from the reader's birth, deferred or not
@@ -358,10 +363,21 @@ locus __StdHttpBodyReader {
             }
         }
         while self.outcome == "" {
-            if self.framing == 2 {
+            if self.framing == 2 && self.chunk_need > self.rx.len() {
+                // a chunk whose size is known and has not all arrived: read
+                // on without copying what is held (a copy per read made a
+                // chunk's memory and time quadratic in its size)
+                self.__more();
+                if self.idle {
+                    self.idle = false;
+                    fail std::http::HttpError { kind: "idle", status: self.status, detail: "" };
+                }
+            } else if self.framing == 2 {
+                // what is held is the next size line, or a whole chunk
                 let raw = __http_stream_held(self.rx);
                 let p = __http_chunk_peel(raw);
                 if p.state == 1 {
+                    self.chunk_need = 0;
                     self.rx.shift_front(p.used);
                     return std::bytes::slice(raw, p.lo, p.hi);
                 }
@@ -370,12 +386,15 @@ locus __StdHttpBodyReader {
                     self.__stop("end", "");
                 } else if p.state == 3 {
                     self.__stop("bad_response", "malformed chunk framing");
-                } else if len(raw) > self.max_chunk {
+                } else if p.hi - p.lo > self.max_chunk
+                    || (p.used == 0 && len(raw) > self.max_chunk)
+                {
                     self.__stop(
                         "too_large",
                         "a chunk over " + to_string(self.max_chunk) + " bytes",
                     );
                 } else {
+                    self.chunk_need = p.used;
                     self.__more();
                     if self.idle {
                         self.idle = false;

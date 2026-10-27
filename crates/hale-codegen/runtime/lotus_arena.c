@@ -32560,12 +32560,19 @@ int64_t lotus_crypto_sha256_free(int64_t handle) {
  */
 #define LOTUS_SHA256_FILE_BLOCK ((size_t)1 << 20)
 
+/* wasm32's libc headers have no O_CLOEXEC (no exec to close across). */
+#if defined(O_CLOEXEC)
+#define LOTUS_SHA256_FILE_FLAGS (O_RDONLY | O_CLOEXEC)
+#else
+#define LOTUS_SHA256_FILE_FLAGS O_RDONLY
+#endif
+
 void *lotus_crypto_sha256_file(const char *path) {
     if (!path) {
         errno = EINVAL;
         return NULL;
     }
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = open(path, LOTUS_SHA256_FILE_FLAGS);
     if (fd < 0) return NULL;
     unsigned char *buf = (unsigned char *)malloc(LOTUS_SHA256_FILE_BLOCK);
     if (!buf) {
