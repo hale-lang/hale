@@ -202,7 +202,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, out) = hale_env(&["dna", "secret", "set", "not a name"], &app, &home, Some("x\n"));
     assert!(!ok && out.contains("is not a secret's name"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "set", &cred], &app, &home, Some(""));
-    assert!(!ok && out.contains("no value was given on stdin"), "{out}");
+    assert!(!ok && out.contains(&format!("no value on stdin for {cred}")), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("x\n"));
     assert!(!ok && out.contains("was never set"), "{out}");
     // ---- the host: a missing credential surfaces at once ----

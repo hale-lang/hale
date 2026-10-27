@@ -416,8 +416,10 @@ locus ReferenceInfrastructure {
         }
         let install = "umask 077; d=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}\"; f=\"$d/"
             + vault
-            + "\"; mkdir -p \"$d\"; IFS= read -r line; printf '%s' \"$line\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
-        let r = self.run_at(install, value + "\n");
+            + "\"; mkdir -p \"$d\"; cat > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
+        // the value whole on the shell's stdin, as it was given (several
+        // lines, no newline added)
+        let r = self.run_at(install, value);
         self.last = dna::trim_nl(r.stdout + r.stderr);
         return r.code == 0;
     }

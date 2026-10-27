@@ -321,7 +321,8 @@ organism <name> dna <verb> [args…]
                      `show`, `secret set`, …): through a pointer
                      (`up --host`), on the habitat's machine over SSH, at
                      this terminal when there is one, after the pointer's
-                     record is checked there.
+                     record is checked there; stdin goes through, so a
+                     value piped to `secret set` arrives.
 brief                the Board's hat as a prompt, with the habitat's live
                      state: its hosts, its allocations and their pulse, its
                      organisms, its saplings, and what waits for the Board.
