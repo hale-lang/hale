@@ -62,6 +62,20 @@ fn volumes_named(project: String) -> String {
     ).stdout;
 }
 
+// The home a graft through the pointer made for `shipme` there: its own
+// fresh directory, `<habitat>/grafted/shipme-<suffix>/shipme`.
+fn shipped_home(there: String) -> String { return grafted_home(there, "shipme"); }
+
+// The home a graft through the pointer made for `name` there.
+fn grafted_home(there: String, name: String) -> String {
+    return dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\nls -d \"$1\"/grafted/\"$2\"-*/\"$2\" 2>/dev/null | head -n 1\nsh\n" + there
+                + "\n" + name,
+        ).stdout,
+    );
+}
+
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
@@ -277,6 +291,151 @@ fn main() {
             "sh\n-c\ndocker ps -aq | xargs -r docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}} {{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' | grep -F \" $1\" | cut -d' ' -f1 | sort -u | head -n 1\nsh\n"
                 + home,
         ).stdout,
+    );
+
+    // ---- graft <dir> through the pointer: the directory here shipped
+    // there as the habitat's copy and grafted there; the organism seen
+    // through the head, and its own verbs run there
+    let repo = scratch + "/shipme";
+    std::io::fs::mkdir(repo) or discard;
+    std::io::fs::write_file(
+        repo + "/README.md",
+        "# shipme\n\nA repository grafted through a pointer.\n",
+    )
+    or discard;
+    let made = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -q -m shipme\nsh\n"
+            + repo,
+    );
+    std::test::assert_eq_int(made.code, 0, "the repository to ship: " + made.stderr);
+    let grafted = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n" + repo + "\n--attach\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        grafted.code == 0 && std::str::contains(grafted.stdout, "shipped ")
+            && std::io::fs::file_exists(shipped_home(there) + "/README.md"),
+        "graft <dir> runs there, the directory shipped as the habitat's copy: " + grafted.stdout
+            + grafted.stderr,
+    );
+    // its record, as the copy there pins it, among the head's allocations
+    let pinned = std::io::fs::read_file(shipped_home(there) + "/hale.toml") or "";
+    let at = std::str::index_of(pinned, "record = \"");
+    let shipped_id = if at < 0 { "" } else { pinned[(at + 10)..(at + 50)] };
+    let seen = in_dir(scratch, config, toolchain() + "\nhabitat\nstatus");
+    std::test::assert(
+        len(shipped_id) == 40 && std::str::contains(seen.stdout, shipped_id),
+        "the head lists the organism grafted through the pointer: " + seen.stdout + seen.stderr,
+    );
+    // its head and face are recorded under the habitat's declared address
+    // (`localhost` here), where the operator face's links reach them
+    let rows = dna::run_tool(
+        "sh\n-c\nexport HALE_VAULT_DIR=\"$1\" HALE_DNA_HABITAT=\"$2\" && exec \"$3\" dna record-rows \"$2/genome\"\nsh\n"
+            + home + "/.local/share/hale/vault\n" + there + "\n" + toolchain(),
+    ).stdout;
+    let mut graft_row = "";
+    let mut rest = rows;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") == "habitat.grafted"
+            && std::str::contains(line, "shipme")
+        {
+            graft_row = line;
+        }
+    }
+    let graft_body = std::json::find_string_field(graft_row, "body");
+    std::test::assert(
+        std::str::starts_with(std::json::find_string_field(graft_body, "face"), "http://localhost:")
+            && std::str::starts_with(
+                std::json::find_string_field(graft_body, "head"),
+                "http://localhost:",
+            ),
+        "the grafted organism's face and head are recorded at the declared address: " + graft_row,
+    );
+    // its head, launched through the pointer, binds the habitat's listen
+    // address and answers at the face the row advertises. Run as `in_dir`
+    // runs every verb here, without the suite's operator memory and nerves:
+    // the pointer forwards those to the machine, where the head would read
+    // its record from that shared memory, which never held the graft's
+    let face_at = std::json::find_string_field(graft_body, "face");
+    let launched = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export HALE_HABITAT_SSH_CONFIG=\"$2\" HALE_DNA_DISCOVER=off && unset HALE_DNA_TRUSTED_LOCAL HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY &&(\"$3\" habitat organism shipme dna head . > \"$4\" 2>&1 &)\nsh\n"
+            + scratch + "\n" + config + "\n" + toolchain() + "\n" + scratch + "/shipme-head.log",
+    );
+    let mut answering = false;
+    let deadline = std::time::now() + dna::wait_secs(240);
+    while !answering && std::time::now() <= deadline {
+        answering = dna::run_tool("curl\n-s\n-o\n/dev/null\n-m\n3\n" + face_at + "/").code == 0;
+        if !answering { std::time::sleep(1s); }
+    }
+    let head_log = std::io::fs::read_file(scratch + "/shipme-head.log") or "";
+    // its head keeps its state in a directory of the organism's own there,
+    // not the one every run there shares
+    let own_state = home + "/.local/share/hale/state/organisms/" + shipped_id[0..12];
+    let own_kept = std::io::fs::file_exists(own_state)
+        && !std::io::fs::file_exists(home + "/.local/share/hale/state/hale/dna/head");
+    // its run there goes: the container the pointer started for it
+    dna::run_tool(
+        "sh\n-c\ndocker ps -q --filter \"label=hale.habitat.dir=$1\" | xargs -r docker rm -f\nsh\n"
+            + there,
+    );
+    std::test::assert(
+        launched.code == 0 && answering,
+        "the organism's face answers at the URL its graft recorded (" + face_at + "): "
+            + head_log,
+    );
+    std::test::assert(own_kept, "the organism's head keeps its state at " + own_state);
+    let its = in_dir(scratch, config, toolchain() + "\nhabitat\norganism\nshipme\ndna\nstatus");
+    std::test::assert(
+        its.code == 0 && std::str::contains(its.stdout, "profile:"),
+        "its own verbs run in its directory there: " + its.stdout + its.stderr,
+    );
+
+    // ---- a graft goes on in a directory it kept there, nothing shipped;
+    // a path outside the habitat's grafted directories is refused
+    let outside = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + there + "/genome",
+    );
+    std::test::assert(
+        outside.code == 2 && std::str::contains(outside.stderr, "is not a graft's directory"),
+        "--resume takes only a graft's kept directory: " + outside.stderr,
+    );
+    let resumed = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + shipped_home(there)
+            + "\n--attach\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        resumed.code == 0 && !std::str::contains(resumed.stdout, "shipped "),
+        "--resume goes on in the kept directory, nothing shipped: " + resumed.stdout
+            + resumed.stderr,
+    );
+    // a creation graft (a new application made there, no --attach) resumes
+    // attached to the directory it made, from its pin
+    let created = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n" + scratch + "/freshapp\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        created.code == 0 && len(grafted_home(there, "freshapp")) > 0,
+        "a new application is made there through the pointer: " + created.stdout + created.stderr,
+    );
+    let again = in_dir(
+        scratch,
+        config,
+        toolchain() + "\nhabitat\ngraft\n--resume\n" + grafted_home(there, "freshapp")
+            + "\n--no-library\n--no-pack",
+    );
+    std::test::assert(
+        again.code == 0,
+        "--resume of a creation graft goes on in its directory: " + again.stdout + again.stderr,
     );
 
     // ---- a stale pointer (another record's identity) tears nothing down

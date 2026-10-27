@@ -1224,6 +1224,7 @@ fn dna_fixture_set_is_complete() {
             "projectors_test.hl",
             "prompt_receipt_test.hl",
             "provider_test.hl",
+            "published_config_test.hl",
             "reap_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",

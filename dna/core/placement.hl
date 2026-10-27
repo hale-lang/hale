@@ -184,7 +184,7 @@ fn placed_exec(key: String, role: String, script: String) -> RunResult {
     return ssh_run(
         local_habitat_dir() + "/genome",
         h,
-        ssh_compose(r, "exec -T " + service + " sh -c " + quoted),
+        ssh_compose(h, r, "exec -T " + service + " sh -c " + quoted),
         "",
     );
 }

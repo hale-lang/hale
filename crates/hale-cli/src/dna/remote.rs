@@ -168,9 +168,7 @@ fn listen_on(os: &str, resolved: impl FnOnce() -> Result<String, String>) -> Res
 /// The address the machine is reached at from here, as this machine
 /// resolves its name.
 fn listen_address(host: &str) -> Result<String, String> {
-    use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::SocketAddr> = (host, 0u16).to_socket_addrs().map_err(|e| format!("{host} does not resolve here: {e}"))?.collect();
-    addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).map(|a| a.ip().to_string()).ok_or_else(|| format!("{host} resolves to no address here"))
+    super::ipv4_or_first(host, &super::resolved(host)?)
 }
 
 /// How the toolchain image reaches the machine, from the platforms
@@ -338,6 +336,9 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
         ("HOME", m.home.clone()),
         ("USER", m.user.clone()),
         ("XDG_DATA_HOME", format!("{}/.local/share", m.home)),
+        // state a run there keeps (an organism head's launch token and
+        // key) under the data directory every run there mounts
+        ("XDG_STATE_HOME", format!("{data}/state")),
         ("HALE_DNA_HABITAT", habitat_dir(m)),
         ("HALE_VAULT_DIR", format!("{data}/vault")),
         ("HALE_HABITAT_IMAGE", image.to_string()),
@@ -355,9 +356,10 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
     // the socket's group as the run sees it: the daemon's socket, mounted
     // the same way into the same image
     let mut line = format!(
-        "mkdir -p {d} && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock {i} -c %g /var/run/docker.sock) && exec docker run --rm {it}--network host --user {u}:{g} --group-add \"$sg\" -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
+        "mkdir -p {d} && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock {i} -c %g /var/run/docker.sock) && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add \"$sg\" -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
         d = sq(&data),
         i = sq(image),
+        lb = sq(&format!("hale.habitat.dir={}", habitat_dir(m))),
         it = if tty { "-i -t " } else { "" },
         u = sq(&m.uid),
         g = sq(&m.gid),
@@ -570,7 +572,7 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
                 // the habitat's own machine is the host `local` in its rows; here it is the machine's name
                 let on = if f("applied").is_empty() { f("host") } else { f("applied") };
                 let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
-                println!("  {:<24} {:<8} {} on {}: {}{}", f("allocation"), f("role"), f("provider"), on, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if f("organism").is_empty() { String::new() } else { format!(", {}", f("organism")) }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }
@@ -622,7 +624,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if let Some(why) = teardown_refusal(&t.host, &expected, &found) {
+    if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
         eprintln!("hale habitat down: {why}");
         return ExitCode::from(1);
     }
@@ -666,7 +668,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
 /// Why the habitat on `host` must not be stopped or removed through a
 /// pointer to the record `expected` when the record there is `found`
 /// ("" for none): another record there, or none.
-fn teardown_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
+fn pointer_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
     let short = |id: &str| format!("{}…", &id[..12.min(id.len())]);
     if expected.is_empty() {
         return Some(format!("this machine's pointer names no record of the habitat on {host}; nothing there is touched (`hale habitat up --host {host}` reconnects it)"));
@@ -678,6 +680,240 @@ fn teardown_refusal(host: &str, expected: &str, found: &str) -> Option<String> {
         return Some(format!("the habitat on {host} is not the one this machine points at (its record is {}, the pointer's {}); nothing there is touched", short(found), short(expected)));
     }
     None
+}
+
+/// The machine and its record checked against the pointer before an act
+/// there: the probe, or why the act is refused (the exit code beside it).
+fn checked_machine(p: &serde_json::Value, verb: &str) -> Result<(Target, Machine), ExitCode> {
+    let t = Target::of(p);
+    let m = probe(&t).map_err(|why| {
+        eprintln!("hale habitat {verb}: {why}");
+        ExitCode::from(1)
+    })?;
+    let expected = p["identity"].as_str().unwrap_or("").to_string();
+    let found = remote_state(&t, &m).map(|(_, _, id)| id).map_err(|why| {
+        eprintln!("hale habitat {verb}: {why}");
+        ExitCode::from(1)
+    })?;
+    if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
+        eprintln!("hale habitat {verb}: {why}");
+        return Err(ExitCode::from(1));
+    }
+    Ok((t, m))
+}
+
+/// Where a directory grafted through a pointer lives on the habitat's
+/// machine: the habitat's own copy, `<habitat>/grafted/<name>`, which the
+/// organism's removal and the habitat's forget delete.
+fn grafted_dir(m: &Machine, name: &str) -> String {
+    format!("{}/grafted/{name}", habitat_dir(m))
+}
+
+/// `hale habitat graft <dir> [flags]` through a pointer: the graft runs on
+/// the habitat's machine, as `up` and `down` do. A directory that exists
+/// here is shipped there whole (`tar | ssh`) as the habitat's copy and
+/// becomes the organism's home; a path that does not exist is a new
+/// application made there. Every flag is passed through, and the output
+/// streams back. A graft that fails leaves no copy it shipped.
+pub(super) fn graft(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let Some(given) = args.first() else {
+        eprintln!("usage: hale habitat graft <dir> [flags]");
+        return ExitCode::from(2);
+    };
+    let local = PathBuf::from(given);
+    let name = match std::fs::canonicalize(&local).ok().as_deref().unwrap_or(&local).file_name().and_then(|n| n.to_str()) {
+        Some(n) if !n.is_empty() && n != "." && n != ".." => n.to_string(),
+        _ => {
+            eprintln!("hale habitat graft: `{given}` names no directory");
+            return ExitCode::from(2);
+        }
+    };
+    let (t, m) = match checked_machine(p, "graft") {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    // a directory of its own for this graft, made fresh there: `mkdir`
+    // (never `-p`) is the gate, so nothing is ever unpacked over another
+    // organism's home, and the organism's directory keeps its name inside it
+    let gate = grafted_dir(&m, &format!("{name}-{}", fresh_suffix()));
+    let there = format!("{gate}/{name}");
+    let made = t.run(&format!("mkdir -p {g} && mkdir {d} && echo made || true", g = sq(&format!("{}/grafted", habitat_dir(&m))), d = sq(&gate)));
+    if made.as_deref().map(str::trim) != Ok("made") {
+        eprintln!("hale habitat graft: {gate} could not be made fresh on {}; nothing was shipped", t.host);
+        return ExitCode::from(1);
+    }
+    let shipped = local.is_dir();
+    if shipped {
+        super::progress(&format!("shipping {} to {}:{there}", local.display(), t.host));
+        let Some(parent) = std::fs::canonicalize(&local).ok().and_then(|c| c.parent().map(|p| p.to_path_buf())) else {
+            eprintln!("hale habitat graft: `{given}` has no parent directory");
+            let _ = t.run(&format!("rmdir {}", sq(&gate)));
+            return ExitCode::from(2);
+        };
+        let mut tar = match Command::new("tar").arg("-C").arg(&parent).args(["-cf", "-", &name]).stdout(Stdio::piped()).spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("hale habitat graft: tar: {e}");
+                let _ = t.run(&format!("rmdir {}", sq(&gate)));
+                return ExitCode::from(1);
+            }
+        };
+        let Some(out) = tar.stdout.take() else { return ExitCode::from(1) };
+        let unpacked = t.ssh(false).arg(format!("tar -C {} -xf -", sq(&gate))).stdin(out).status();
+        let packed = tar.wait();
+        if !unpacked.is_ok_and(|s| s.success()) || !packed.is_ok_and(|s| s.success()) {
+            // nothing grafted from it yet: the fresh directory goes whole
+            eprintln!("hale habitat graft: {} could not be shipped to {}; nothing was grafted", local.display(), t.host);
+            let _ = t.run(&format!("rm -rf {}", sq(&gate)));
+            return ExitCode::from(1);
+        }
+        println!("{:<8}{} shipped to {}:{there}, the habitat's copy", "shipped", local.display(), t.host);
+    }
+    // what the directory held before the graft: a pin or DNA state it
+    // brought makes it never removable here
+    let before = graft_state(&t, &there);
+    let mut a: Vec<&str> = vec!["graft", there.as_str()];
+    a.extend(args[1..].iter().map(String::as_str));
+    let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
+    if ran.as_ref().is_ok_and(|s| s.success()) {
+        return ExitCode::SUCCESS;
+    }
+    // a refusal that committed nothing leaves no copy; anything else (a
+    // pin or DNA state the graft wrote, a result SSH lost) keeps it, since
+    // the graft resumes from it
+    let code = ran.as_ref().ok().and_then(|s| s.code());
+    let after = graft_state(&t, &there);
+    if keep_after_failure(code, before.as_deref(), after.as_deref()) {
+        eprintln!("hale habitat graft: the graft on {} did not finish; its directory is kept at {there}; go on from it with:\n  {}", t.host, resume_command(&there, &args[1..]));
+    } else {
+        let _ = t.run(&format!("rm -rf {}", sq(&gate)));
+        eprintln!("hale habitat graft: the graft on {} was refused before it committed anything; the copy made for it there is removed", t.host);
+    }
+    ExitCode::from(code.and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
+}
+
+/// The command that goes on with a graft whose directory is kept at
+/// `there` on the habitat's machine, with the same flags.
+fn resume_command(there: &str, flags: &[String]) -> String {
+    let mut line = format!("hale habitat graft --resume {}", sq(there));
+    for f in flags {
+        line.push(' ');
+        line.push_str(&if f.chars().all(|c| c.is_ascii_alphanumeric() || "-_=./:@,".contains(c)) { f.clone() } else { sq(f) });
+    }
+    line
+}
+
+/// The flags a resumed graft runs with: always attached to the kept
+/// directory, which a graft that stopped already holds (a creation graft's
+/// new application among them, whose pin it goes on from), and the rest as
+/// given.
+fn resume_flags(flags: &[String]) -> Vec<String> {
+    let mut out = vec!["--attach".to_string()];
+    out.extend(flags.iter().filter(|f| f.as_str() != "--attach").cloned());
+    out
+}
+
+/// Why `path` is not a graft's directory kept on the habitat's machine
+/// whose habitat lives at `habitat`: one under `<habitat>/grafted/`, named
+/// without `.` or `..`.
+fn resume_refusal(habitat: &str, path: &str) -> Option<String> {
+    let base = format!("{}/grafted/", habitat.trim_end_matches('/'));
+    let Some(rest) = path.strip_prefix(&base) else {
+        return Some(format!("`{path}` is not a graft's directory on the habitat's machine (those are under {base})"));
+    };
+    let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
+    if parts.is_empty() || parts.iter().any(|c| c.is_empty() || *c == "." || *c == "..") {
+        return Some(format!("`{path}` names no directory under {base}"));
+    }
+    None
+}
+
+/// `hale habitat graft --resume <path> [flags]` through a pointer: the
+/// graft goes on in a directory a graft through the pointer made and kept
+/// on the habitat's machine, with nothing shipped: the path must be under
+/// `<habitat>/grafted/` and exist there, after the pointer's record is
+/// checked.
+pub(super) fn graft_resume(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let Some(path) = args.first().filter(|a| !a.starts_with('-')) else {
+        eprintln!("usage: hale habitat graft --resume <path on the habitat's machine> [flags]");
+        return ExitCode::from(2);
+    };
+    let (t, m) = match checked_machine(p, "graft") {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    if let Some(why) = resume_refusal(&habitat_dir(&m), path) {
+        eprintln!("hale habitat graft --resume: {why}");
+        return ExitCode::from(2);
+    }
+    if t.run(&format!("test -d {} && echo yes || true", sq(path))).map(|o| o.trim() == "yes") != Ok(true) {
+        eprintln!("hale habitat graft --resume: {path} does not exist on {}", t.host);
+        return ExitCode::from(1);
+    }
+    let flags = resume_flags(&args[1..]);
+    let mut a: Vec<&str> = vec!["graft", path.as_str()];
+    a.extend(flags.iter().map(String::as_str));
+    let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
+    if ran.as_ref().is_ok_and(|s| s.success()) {
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("hale habitat graft: the graft on {} did not finish; its directory is kept at {path}; go on from it with:\n  {}", t.host, resume_command(path, &args[1..]));
+    ExitCode::from(ran.ok().and_then(|s| s.code()).and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
+}
+
+/// 12 hex digits drawn fresh: the suffix of a graft's own directory.
+fn fresh_suffix() -> String {
+    let mut b = [0u8; 6];
+    let _ = openssl::rand::rand_bytes(&mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// What a graft has committed in the directory `there` on the machine: a
+/// line naming each mark present (`pin`: its hale.toml pins a record;
+/// `dna`: `.hale/dna` exists), `None` when the machine did not answer.
+fn graft_state(t: &Target, there: &str) -> Option<String> {
+    t.run(&format!(
+        "d={}; s=''; grep -qs '^record *=' \"$d/hale.toml\" && s=\"$s pin\"; [ -e \"$d/.hale/dna\" ] && s=\"$s dna\"; echo \"state:$s\"",
+        sq(there)
+    ))
+    .ok()
+    .and_then(|o| o.lines().find_map(|l| l.strip_prefix("state:").map(|s| s.trim().to_string())))
+}
+
+/// Whether a failed graft's directory must be kept: unless the graft
+/// answered (a code SSH carried back, not 255) and the directory holds no
+/// mark of a graft, now or before it ran.
+fn keep_after_failure(code: Option<i32>, before: Option<&str>, after: Option<&str>) -> bool {
+    match (code, before, after) {
+        (Some(c), Some(b), Some(a)) if c != 255 => !b.is_empty() || !a.is_empty(),
+        _ => true,
+    }
+}
+
+/// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
+/// the organism's own verbs (`review`, `task create`, `work run`, …) run in
+/// its directory on the habitat's machine, at this terminal when there is
+/// one.
+pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let (t, m) = match checked_machine(p, "organism") {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut a: Vec<&str> = vec!["organism"];
+    a.extend(args.iter().map(String::as_str));
+    let mut cmd = t.ssh(tty);
+    cmd.arg(in_image(&m, p, &a, tty));
+    if !tty {
+        cmd.stdin(Stdio::null());
+    }
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat organism: ssh: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// `up` asked without `--host` of a machine that points at a habitat on
@@ -729,10 +965,45 @@ mod tests {
     fn a_habitat_is_torn_down_only_through_its_own_pointer() {
         let a = "a".repeat(64);
         let b = "b".repeat(64);
-        assert_eq!(teardown_refusal("rack-a.lan", &a, &a), None);
-        assert!(teardown_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
-        assert!(teardown_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
-        assert!(teardown_refusal("rack-a.lan", "", &b).is_some());
+        assert_eq!(pointer_refusal("rack-a.lan", &a, &a), None);
+        assert!(pointer_refusal("rack-a.lan", &a, &b).is_some_and(|w| w.contains("is not the one this machine points at")));
+        assert!(pointer_refusal("rack-a.lan", &a, "").is_some_and(|w| w.contains("holds no record")));
+        assert!(pointer_refusal("rack-a.lan", "", &b).is_some());
+    }
+
+    #[test]
+    fn a_resumed_graft_attaches_to_the_kept_directory() {
+        let s = |v: &[&str]| -> Vec<String> { v.iter().map(|x| x.to_string()).collect() };
+        // a creation graft's flags: attached on resume
+        assert_eq!(resume_flags(&s(&["--no-library", "--no-pack"])), s(&["--attach", "--no-library", "--no-pack"]));
+        // an attach graft's: once, not twice
+        assert_eq!(resume_flags(&s(&["--attach", "--with", "founder"])), s(&["--attach", "--with", "founder"]));
+        assert_eq!(resume_flags(&[]), s(&["--attach"]));
+    }
+
+    #[test]
+    fn a_graft_resumes_only_in_a_kept_directory_of_its_habitat() {
+        let h = "/home/h/.local/share/hale/habitat/local";
+        assert_eq!(resume_refusal(h, &format!("{h}/grafted/shipme-0123456789ab/shipme")), None);
+        assert!(resume_refusal(h, "/home/h/elsewhere/shipme").is_some());
+        assert!(resume_refusal(h, &format!("{h}/grafted/")).is_some());
+        assert!(resume_refusal(h, &format!("{h}/grafted/../genome")).is_some());
+        assert!(resume_refusal(h, &format!("{h}/grafted/shipme-x/./shipme")).is_some());
+        assert!(resume_refusal(h, &format!("{h}/genome")).is_some());
+        assert_eq!(
+            resume_command(&format!("{h}/grafted/a-1/a"), &["--attach".to_string(), "--set".to_string(), "who=a b".to_string()]),
+            format!("hale habitat graft --resume '{h}/grafted/a-1/a' --attach --set 'who=a b'")
+        );
+    }
+
+    #[test]
+    fn a_failed_grafts_directory_goes_only_when_nothing_was_committed() {
+        assert!(!keep_after_failure(Some(1), Some(""), Some("")));
+        assert!(keep_after_failure(Some(1), Some(""), Some("pin dna")));
+        assert!(keep_after_failure(Some(1), Some("pin"), Some("pin")));
+        assert!(keep_after_failure(Some(255), Some(""), Some("")));
+        assert!(keep_after_failure(None, Some(""), Some("")));
+        assert!(keep_after_failure(Some(1), Some(""), None));
     }
 
     #[test]
@@ -759,7 +1030,7 @@ mod tests {
         let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), os: "Linux".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc", "listen": "192.168.1.20", "host": "rack-a.lan" });
         let line = in_image(&m, &p, &["up", "--name", "x"], false);
-        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock 'hale-habitat:abc' -c %g /var/run/docker.sock) && exec docker run --rm --network host --user '1000':'1000' --group-add \"$sg\""), "{line}");
+        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock 'hale-habitat:abc' -c %g /var/run/docker.sock) && exec docker run --rm --network host --label 'hale.habitat.dir=/home/h/.local/share/hale/habitat/local' --user '1000':'1000' --group-add \"$sg\""), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_LISTEN=192.168.1.20'") && line.contains("-e 'HALE_DNA_HABITAT_ADDRESS=rack-a.lan'"), "{line}");
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");

@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        665,
-        667,
+        668,
+        670,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -222,6 +222,7 @@ fn api() {
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
         OidcBearer::principal  does={syscall,block,time,env,alloc}
+        allocation_links  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         applied_at  does={syscall,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
         habitat_graft  does={syscall,block,env,alloc}

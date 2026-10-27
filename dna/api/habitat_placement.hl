@@ -302,6 +302,7 @@ fn apply_one(
     row.string_field("why", applied.why);
     row.string_field("state", seen.state);
     row.bool_field("fresh", fresh && moved);
+    if applied.ok { row.field("published", applied.published); }
     row.end_object();
     let recorded = j.append(j.revision(), "habitat.applied", entity, row.result());
     out.begin_object();

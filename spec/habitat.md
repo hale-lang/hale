@@ -158,9 +158,27 @@ the identity there is read first, and the run there checks it again
 machine is never stopped or removed through a stale pointer. `--forget` plans there and is confirmed
 there by the habitat's name typed at the person's terminal, which SSH
 carries (refused off a terminal), and the pointer is removed last, once
-the habitat there holds no record. The verbs that act on a genome on the
-admin machine and have no route through the head, `migrate`, `handover`
-and `graft <dir>`, are refused while the pointer names another machine.
+the habitat there holds no record. `graft <dir>` runs there the same
+way, after the same check of the record: a directory on the admin machine
+is shipped there whole (`tar | ssh`) as the habitat's own copy,
+`<habitat>/grafted/<name>`, which is the organism's home from then on
+(its removal and the habitat's forget delete it, as they delete a
+sapling's clone), and a path that does not exist is a new application
+made there; every flag is passed through. Each graft ships into a
+directory of its own, `<habitat>/grafted/<name>-<suffix>`, made fresh
+there (`mkdir`, never `-p`) before anything is unpacked, so nothing is
+unpacked over another organism's home. A graft that fails removes that
+directory only when it answered and left no mark of a graft (a pinned
+record, `.hale/dna`); otherwise the directory is kept and the command
+that goes on from it is printed, `hale habitat graft --resume <path>
+[flags]`: the same graft run on that directory, nothing shipped, which
+takes only a directory under `<habitat>/grafted/` that exists there. The organism's own verbs (`hale dna review`,
+`task create`, `work run`, `show`, …) run in its directory there through
+`hale habitat organism <name> dna <verb> [args…]`, at the person's terminal
+when there is one; locally the same verb runs them in the organism's
+directory here. `migrate` and `handover`, which act on a genome on the
+admin machine and have no route through the head, are refused while the
+pointer names another machine.
 `up --host` again finds the habitat there by its record's identity (one
 whose identity differs is refused, nothing changed), runs the same
 idempotent `up`, which changes nothing, and writes the pointer again.
@@ -263,7 +281,36 @@ Its memory, nerves and senses' store are brought up there by its birth,
 which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
 allocation `<key>/services` of that host (its `render_dir` and
-`render_files`), applied there through the head. Every allocation names its
+`render_files`), applied there through the head. What the services
+publish is read by the provider where it applies them, from compose's own
+reading of the render there with the environment it applies it with (the
+host's facts, below): `docker compose config --format json`, each service
+with a TCP port published, its first, as `{service, port, bind}` (`bind`
+the address it is bound to, "" for every interface). Each apply records it
+on its `habitat.applied` row (`published`), at the graft's first apply, at
+a later apply and at a move alike; an apply or a withdrawal that fails
+records none and leaves the last successful one in force (one that takes
+and publishes nothing, `published: []`, replaces it). `Commands::allocations`
+resolves the latest successful one against the host the allocation
+actually runs on and answers the
+allocation's `links` (`{service, url, note}`), a link only where it is
+reachable from the admin machine: on another host, a port bound to every
+interface at the host's address, one bound to a specific address at that
+address, and one bound to the host's loopback with no `url` and the note
+`loopback only on <host>`, unless the host's listen address is itself the
+loopback and the habitat is local too (it declares no address,
+`HALE_DNA_HABITAT_ADDRESS`, or the loopback: the head that resolved the
+host runs where the browser opens the link), where it is linked at
+`127.0.0.1`; under a habitat on another machine such a port keeps the note,
+since the head's resolution says nothing of the browser's machine. On
+this machine at `127.0.0.1`, or at the address it is bound to, under a
+local habitat; under a habitat on another machine, the head's own machine
+(its `local` host, or a host whose address resolves to the loopback there)
+is reached at the habitat's declared address: a port bound to every
+interface links there, one bound to the loopback gets the note. The
+operator face lists them under the organism's
+allocation, a link where there is a `url` and the note where there is
+none: voice's `api`, whose `/` is its console, among them. Every allocation names its
 provider: the host's. A tenant's model map is the head's Board command
 `Commands::set_model_map` (`{organism, category, model, endpoint,
 key_vault, tools}`, `hale habitat model-map`): the organism's `hale dna
@@ -647,6 +694,7 @@ socket), so the habitat's head must be up.
 | `down [--forget [--plan]]` | Takes the habitat's compose project down (`docker compose down`), stopping its `face`, its `body` and every service of its project and leaving only its volumes; `up` brings them back. `--forget` removes the habitat whole, planned and confirmed by its name typed back at a terminal; `--plan` prints the plan and exits (above). |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
+| `organism <name> dna <verb> [args…]` | `hale dna <verb>` in the grafted organism's own directory; through a pointer, on the habitat's machine over SSH (§ A habitat on another machine). |
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
 | `place <key>/<role> <host>` | Places an allocation on a host (`Commands::place_allocation`, above); nothing applies. |
 | `apply [<host>] [--fresh]` | Applies the allocations where they are placed and prints the pulse (`Commands::apply_allocations`, above). |
@@ -867,7 +915,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
 | `habitat.profile local` | at birth | `profile`, `backends`, `project`, `name`, `face`, `head` |
-| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses), `purpose` (its declared purpose), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
+| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses, recorded under the habitat's declared address, `HALE_DNA_HABITAT_ADDRESS`: `127.0.0.1` locally, the host's name on another machine, so the operator face's links reach them from the admin machine; `hale dna head` under such a habitat, as `hale habitat organism <name> dna head .` runs it there, binds the habitat's listen address and answers under its declared address, as the habitat's own face does, and keeps its state in a directory of the organism's own, `organisms/<record>` under the state directory every run there shares), `purpose` (its declared purpose), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
 | `habitat.applied <key>/<role>` | at each apply of an allocation | `host`, `provider`, `ok`, `why`, `state` (the pulse after), `fresh` |
 | `habitat.nursery <source>` | when the Board trusts a nursery | `source`, `kind` (`dir` or `git`), `state` (`trusted`) |
 | `habitat.sapling <name>` | when a nursery's sapling is first read, and at its ratification | `name`, `purpose`, `repo`, `revision`, `digest`, `packs`, `set`, `nursery` |
@@ -916,6 +964,17 @@ same set to the host, which the heart inherits.
 | `HALE_DNA_OIDC_CLIENT_VAULT` | `oidc-service-<client>`, the slot of its secret |
 | `HALE_DNA_DATABASE_DSN` | for an allocated `database`: a DSN naming the role `heart_<id>` and its vault slot, no password |
 | `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT` | for an allocated `broker`: the nerves server (no credential), the heart's user and its slot, its subject space `heart.<id>.>`, and the nodes' user and slot |
+
+Every compose project the habitat applies on an `ssh` host (an organism's
+own services placed there, an allocation placed there) is also handed two
+facts of the host in its environment, whatever it runs; the habitat knows
+none of the project's own variables, and a project maps these in its
+compose file. On this machine neither is set.
+
+| Variable | Value |
+|---|---|
+| `HALE_DNA_HOST_NAME` | the host's name, as it was added (`hale habitat host add <name>`) and as the LAN's DNS resolves it |
+| `HALE_DNA_HOST_LISTEN` | the host's listen address: the first IPv4 address its name resolves to on the habitat's machine, through the toolchain's own resolver (`hale habitat resolve <name>`), which the LAN reaches it at; an apply on a host whose name resolves to none is refused, saying so |
 
 The manifest is read once, by graft; every reader after it reads the
 roles the habitat allocated, as `allocation.json` keeps them.

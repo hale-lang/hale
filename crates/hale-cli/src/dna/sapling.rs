@@ -681,6 +681,7 @@ fn refreshed() -> std::process::ExitCode {
 mod tests {
     use super::*;
 
+
     fn words(line: &str) -> Vec<String> {
         line.split(' ').map(str::to_string).collect()
     }

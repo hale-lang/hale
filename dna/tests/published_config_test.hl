@@ -1,0 +1,26 @@
+// dna/tests/published_config_test.hl — what a compose project publishes,
+// read from compose's own reading of its render (`published_of_config`).
+//
+// A provider reads `docker compose config --format json` where it applied
+// the render, with the environment it applied it with, and keeps each
+// service's first published TCP port and the address it is bound to
+// (`host_ip`, "" for every interface): the operator face's links are
+// resolved from them against the host the allocation runs on.
+
+import "../core" as dna;
+
+fn main() {
+    let config = "{\"name\": \"p\", \"services\": {"
+        + "\"api\": {\"image\": \"x\", \"ports\": [{\"mode\": \"ingress\", \"host_ip\": \"192.0.2.7\", \"target\": 8080, \"published\": \"8080\", \"protocol\": \"tcp\"}]},"
+        + "\"brain\": {\"image\": \"x\"},"
+        + "\"dns\": {\"image\": \"x\", \"ports\": [{\"target\": 53, \"published\": \"5353\", \"protocol\": \"udp\"}, {\"target\": 80, \"published\": \"8053\", \"protocol\": \"tcp\"}]},"
+        + "\"nats\": {\"image\": \"x\", \"ports\": [{\"target\": 4222, \"published\": \"4222\"}]}"
+        + "}}";
+    std::test::assert_eq_str(
+        dna::published_of_config(config),
+        "[{\"service\": \"api\", \"port\": \"8080\", \"bind\": \"192.0.2.7\"}, {\"service\": \"dns\", \"port\": \"8053\", \"bind\": \"\"}, {\"service\": \"nats\", \"port\": \"4222\", \"bind\": \"\"}]",
+        "each service's first TCP port, with its bind",
+    );
+    std::test::assert_eq_str(dna::published_of_config("not json"), "[]", "no config, nothing");
+    std::test::assert_eq_str(dna::published_of_config("{\"services\": {}}"), "[]", "no services");
+}
