@@ -655,15 +655,7 @@ fn host(args: &[String]) -> ExitCode {
 /// The directory of the organism the habitat grafted as `name` (or keyed
 /// `name`), from its `habitat.grafted` row and its allocation's cache.
 fn organism_root(name: &str) -> Result<PathBuf, String> {
-    let genome = genome_dir();
-    let keys: Vec<String> = rows_of(&genome)
-        .iter()
-        .filter(|r| r["kind"] == "habitat.grafted")
-        .filter(|r| r["entity"].as_str() == Some(name) || r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).is_some_and(|b| b["name"].as_str() == Some(name)))
-        .filter_map(|r| r["entity"].as_str().map(str::to_string))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    let keys = live_grafts_named(&rows_of(&genome_dir()), name);
     let key = match keys.as_slice() {
         [k] => k.clone(),
         [] => return Err(format!("the habitat grafted no organism `{name}`")),
@@ -676,6 +668,21 @@ fn organism_root(name: &str) -> Result<PathBuf, String> {
         Some(r) => Err(format!("the organism `{name}`'s directory {} is not on this machine", r.display())),
         None => Err(format!("the organism `{name}` ({key}) names no directory in {}", cache.display())),
     }
+}
+
+/// The keys of the organisms the habitat holds grafted under `name` (or
+/// keyed `name`): each entity's latest `habitat.grafted` row, an organism
+/// whose latest row says it was removed left out (as `grafted_organism`
+/// reads them, dna/core/teardown.hl).
+fn live_grafts_named(rows: &[serde_json::Value], name: &str) -> Vec<String> {
+    let mut latest: std::collections::BTreeMap<String, serde_json::Value> = std::collections::BTreeMap::new();
+    for r in rows.iter().filter(|r| r["kind"] == "habitat.grafted") {
+        if let Some(e) = r["entity"].as_str() {
+            let body = r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).unwrap_or_default();
+            latest.insert(e.to_string(), body);
+        }
+    }
+    latest.into_iter().filter(|(_, b)| b["state"].as_str() != Some("removed")).filter(|(k, b)| k == name || b["name"].as_str() == Some(name)).map(|(k, _)| k).collect()
 }
 
 /// `hale habitat organism <name> dna <verb> [args…]`: `hale dna <verb>` in
@@ -3198,6 +3205,22 @@ mod tests {
     fn a_head_block_is_never_placed_over_the_senses_ports() {
         assert!(overlaps_senses(9464) && overlaps_senses(9459) && overlaps_senses(9466));
         assert!(!overlaps_senses(9456) && !overlaps_senses(9467) && !overlaps_senses(8800));
+    }
+
+    /// An organism removed and another grafted under its name: the name
+    /// is the live one's, never ambiguous.
+    #[test]
+    fn a_removed_organisms_name_is_the_live_ones() {
+        let row = |e: &str, body: serde_json::Value| serde_json::json!({ "kind": "habitat.grafted", "entity": e, "body": body.to_string() });
+        let rows = vec![
+            row("aaaaaaaaaaaa", serde_json::json!({ "name": "shipme" })),
+            row("aaaaaaaaaaaa", serde_json::json!({ "name": "shipme", "state": "removed" })),
+            row("bbbbbbbbbbbb", serde_json::json!({ "name": "shipme" })),
+            serde_json::json!({ "kind": "habitat.allocated", "entity": "cccccccccccc/memory", "body": "{}" }),
+        ];
+        assert_eq!(live_grafts_named(&rows, "shipme"), vec!["bbbbbbbbbbbb".to_string()]);
+        assert!(live_grafts_named(&rows, "aaaaaaaaaaaa").is_empty());
+        assert_eq!(live_grafts_named(&rows[..1], "shipme"), vec!["aaaaaaaaaaaa".to_string()]);
     }
 
     /// D8: a genome's manifest lists its codebases with phase 3's attach

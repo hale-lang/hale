@@ -62,6 +62,16 @@ fn volumes_named(project: String) -> String {
     ).stdout;
 }
 
+// The home a graft through the pointer made for `shipme` there: its own
+// fresh directory, `<habitat>/grafted/shipme-<suffix>/shipme`.
+fn shipped_home(there: String) -> String {
+    return dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\nls -d \"$1\"/grafted/shipme-*/shipme | head -n 1\nsh\n" + there,
+        ).stdout,
+    );
+}
+
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
@@ -301,12 +311,12 @@ fn main() {
     );
     std::test::assert(
         grafted.code == 0 && std::str::contains(grafted.stdout, "shipped ")
-            && std::io::fs::file_exists(there + "/grafted/shipme/README.md"),
+            && std::io::fs::file_exists(shipped_home(there) + "/README.md"),
         "graft <dir> runs there, the directory shipped as the habitat's copy: " + grafted.stdout
             + grafted.stderr,
     );
     // its record, as the copy there pins it, among the head's allocations
-    let pinned = std::io::fs::read_file(there + "/grafted/shipme/hale.toml") or "";
+    let pinned = std::io::fs::read_file(shipped_home(there) + "/hale.toml") or "";
     let at = std::str::index_of(pinned, "record = \"");
     let shipped_id = if at < 0 { "" } else { pinned[(at + 10)..(at + 50)] };
     let seen = in_dir(scratch, config, toolchain() + "\nhabitat\nstatus");
