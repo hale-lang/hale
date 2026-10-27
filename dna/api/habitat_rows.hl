@@ -225,6 +225,9 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     let out = std::json::Builder { };
     out.begin_array();
     let latest = habitat_latest(j, "habitat.allocated");
+    // what each allocation publishes, as its last apply read it where it
+    // ran (`habitat.applied`'s `published`)
+    let applies = habitat_latest(j, "habitat.applied");
     let cap = habitat_cap(limit);
     let mut n = 0;
     let mut i = 0;
@@ -253,16 +256,33 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("applied", ran.host);
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
-        out.field("links", allocation_links(root, body, ran.host));
+        let last = applies.get(entity) or LatestRow { };
+        let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
+        out.field(
+            "links",
+            allocation_links(
+                root,
+                if std::str::starts_with(
+                    std::json::find_field_raw(applied_body, "published"),
+                    "[",
+                ) {
+                    applied_body
+                } else {
+                    body
+                },
+                ran.host,
+            ),
+        );
         out.end_object();
     }
     out.end_array();
     return AllocationRows { ok: true, revision: j.revision(), allocations: out.result() };
 }
 
-// The links to what an organism's own services publish, as its
-// allocation's row records it at its graft (`published`: each service's
-// port and the address it is bound to there, "" for every interface),
+// The links to what an organism's own services publish, as `body` records
+// it (`published`: each service's port and the address it is bound to
+// there, "" for every interface; the allocation's last apply, read where
+// it ran with the environment it ran with),
 // resolved against the host the allocation runs on: a JSON array of
 // `{service, url, note}`, `[]` for a row that records none. A link is
 // given only where it is reachable from the admin machine: on another host,

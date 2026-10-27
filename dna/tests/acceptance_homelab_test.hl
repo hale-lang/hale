@@ -450,16 +450,18 @@ fn main() {
             && std::json::find_string_field(services, "state") == "up",
         "voice's services run on the host, observed over SSH: " + services,
     );
-    // what its service publishes, recorded from the render at the graft:
-    // a port the host publishes on its interfaces, linked at the host's
-    // address
+    // what its service publishes, as compose read the render on the host
+    // with the host's facts it was applied with: bound to the host's
+    // listen address, which is the loopback for this fixture's host
+    // (`localhost`), so it is said, not linked (the graft's own
+    // environment, without the facts, would have read every interface)
     std::test::assert(
         std::str::contains(
             services,
-            "{\"service\": \"voice\", \"url\": \"http://localhost:" + to_string(voice_port)
-                + "\", \"note\": \"\"}",
+            "{\"service\": \"voice\", \"url\": \"\", \"note\": \"loopback only on localhost\"}",
         ),
-        "and its service is linked at the host's address: " + services,
+        "and its service, read where it was applied, is bound to the host's listen address: "
+            + services,
     );
     // the host's facts reached voice's compose project (its file maps them
     // into the service's environment, as voice's own does)

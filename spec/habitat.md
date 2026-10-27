@@ -269,21 +269,23 @@ Its memory, nerves and senses' store are brought up there by its birth,
 which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
 allocation `<key>/services` of that host (its `render_dir` and
-`render_files`), applied there through the head. The row also records
-what the services publish (`published`: each service with a TCP port
-published, its first, with the port and the address it is bound to,
-`bind`, "" for every interface), read from compose's own reading of the
-render (`docker compose config`) at the graft. `Commands::allocations`
-resolves them against the host the allocation actually runs on, so a move
-needs no rewrite, and answers them as the allocation's `links`
-(`{service, url, note}`), a link only where it is reachable from the admin
-machine: on another host, a port bound to every interface at the host's
-address, one bound to a specific address at that address, and one bound to
-the host's loopback with no `url` and the note `loopback only on <host>`;
-on this machine at `127.0.0.1`, or at the address it is bound to. The
-operator face lists them under the organism's allocation, a link where
-there is a `url` and the note where there is none: voice's `api`, whose
-`/` is its console, among them. Every allocation names its
+`render_files`), applied there through the head. What the services
+publish is read by the provider where it applies them, from compose's own
+reading of the render there with the environment it applies it with (the
+host's facts, below): `docker compose config --format json`, each service
+with a TCP port published, its first, as `{service, port, bind}` (`bind`
+the address it is bound to, "" for every interface). Each apply records it
+on its `habitat.applied` row (`published`), at the graft's first apply, at
+a later apply and at a move alike. `Commands::allocations` resolves the
+latest against the host the allocation actually runs on and answers the
+allocation's `links` (`{service, url, note}`), a link only where it is
+reachable from the admin machine: on another host, a port bound to every
+interface at the host's address, one bound to a specific address at that
+address, and one bound to the host's loopback with no `url` and the note
+`loopback only on <host>`; on this machine at `127.0.0.1`, or at the
+address it is bound to. The operator face lists them under the organism's
+allocation, a link where there is a `url` and the note where there is
+none: voice's `api`, whose `/` is its console, among them. Every allocation names its
 provider: the host's. A tenant's model map is the head's Board command
 `Commands::set_model_map` (`{organism, category, model, endpoint,
 key_vault, tools}`, `hale habitat model-map`): the organism's `hale dna

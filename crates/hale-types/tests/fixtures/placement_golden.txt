@@ -13430,6 +13430,8 @@ dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/published_config_test.hl
+
 == dna/tests/reap_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
