@@ -346,8 +346,11 @@ resolve <name>       the first IPv4 address <name> resolves to on this
                      handed as HALE_DNA_HOST_LISTEN. Exit 1 when it resolves
                      to none.
 sweep <root>         take down every compose project run from under <root>,
-                     a test's habitat: its containers, networks and
-                     volumes, confirmed gone by the project's label. The
+                     a test's habitat, or named by a directory under it (a
+                     host's `.hale/habitat/<project>`, a habitat born
+                     there) and run from nowhere else: its containers,
+                     networks and volumes, confirmed gone by the
+                     project's label. The
                      projects are named in <root>/.dna-compose-projects
                      until they are, so a teardown that did not finish is
                      retried. Never the developer's habitat (under $HOME),
