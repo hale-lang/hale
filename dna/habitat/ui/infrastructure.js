@@ -122,7 +122,7 @@ export async function refresh() {
     const tr = document.createElement("tr");
     const where = document.createElement("td");
     where.append(picker(a, names));
-    tr.append(cell(a.role), cell(a.instance), cell(a.provider), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
+    tr.append(cell(a.role), cell(a.instance), cell(a.provider), cell(a.runs || a.provider), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
     rows.append(tr);
   }
   $("allocations-empty").hidden = allocs.length > 0;

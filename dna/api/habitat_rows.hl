@@ -279,6 +279,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("applied", ran.host);
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
+        out.string_field("runs", seen.runs);
         let last = applies.get(entity) or LatestRow { };
         let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
         out.field(

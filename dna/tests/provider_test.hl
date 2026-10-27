@@ -165,4 +165,25 @@ fn main() {
             && dna::profile_provider("local", "own", "cache") == "",
         "no preset for a profile that is not built, nor a role the habitat does not know",
     );
+
+    // what fills a role, as `docker ps` lines of `<image>|<state> <status>`
+    // say: the images once each, the state lines as `container_state` reads
+    let seen = dna::seen_containers(
+        "pgvector/pgvector:pg16|running Up 2 minutes\nnats:2.11-alpine|running Up 2 minutes\nnats:2.11-alpine|exited Exited (0)",
+    );
+    std::test::assert_eq_str(
+        seen.images,
+        "pgvector/pgvector:pg16 nats:2.11-alpine",
+        "each image once, in order",
+    );
+    std::test::assert_eq_str(
+        seen.states,
+        "running Up 2 minutes\nrunning Up 2 minutes\nexited Exited (0)",
+        "the state lines without their images",
+    );
+    std::test::assert_eq_str(
+        dna::containers_state("memory", seen.states).state,
+        "degraded",
+        "read as before",
+    );
 }
