@@ -299,8 +299,14 @@ places the new organism on that host before anything of it is brought up.
 Its memory, nerves and senses' store are brought up there by its birth,
 which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
-allocation `<key>/services` of that host (its `render_dir` and
-`render_files`), applied there through the head. What the services
+allocation `<key>/services` of that host (its `render_dir`,
+`render_files` and `render_mounted`: each entry the repository tracks at
+its root but its `compose.yaml` and `hale.toml`, a file or a directory),
+applied there through the head. The `ssh` provider ships a render whole,
+its compose files and each mounted entry (a directory with everything
+under it: a build context, a bind mount's source), as one tar extracted
+into `~/.hale/habitat/<project>/<dir>` on the host, with no access for
+anyone but its user. What the services
 publish is read by the provider where it applies them, from compose's own
 reading of the render there with the environment it applies it with (the
 host's facts, below): `docker compose config --format json`, each service
