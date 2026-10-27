@@ -111,6 +111,41 @@ impl Target {
     }
 }
 
+/// The habitat's key on a host it places on, put there or taken off over
+/// the person's own SSH login, as `up --host` reaches a machine: the line
+/// `add_host` answers, appended to `user`'s `~/.ssh/authorized_keys` once,
+/// or every line carrying the habitat's comment (`habitat-<key>`) removed.
+/// The habitat's own key never authorizes itself.
+pub(super) fn authorize_key(host: &str, user: &str, port: Option<u16>, line: &str) -> Result<(), String> {
+    let t = Target { host: host.to_string(), user: Some(user.to_string()).filter(|u| !u.is_empty()), port };
+    t.run(&authorize_script(line)).map(|_| ())
+}
+
+fn authorize_script(line: &str) -> String {
+    format!(
+        "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && {{ grep -qxF {l} ~/.ssh/authorized_keys || printf '%s\\n' {l} >> ~/.ssh/authorized_keys; }}",
+        l = sq(line)
+    )
+}
+
+pub(super) fn unauthorize_key(host: &str, user: &str, port: Option<u16>, comment: &str) -> Result<(), String> {
+    let t = Target { host: host.to_string(), user: Some(user.to_string()).filter(|u| !u.is_empty()), port };
+    t.run(&unauthorize_script(comment)).map(|_| ())
+}
+
+fn unauthorize_script(comment: &str) -> String {
+    format!(
+        "f=~/.ssh/authorized_keys; [ -f \"$f\" ] || exit 0; awk -v c={c} '$NF != c' \"$f\" > \"$f.hale.$$\" && cat \"$f.hale.$$\" > \"$f\"; rm -f \"$f.hale.$$\"",
+        c = sq(comment)
+    )
+}
+
+/// The comment the habitat's public key carries (`habitat-<allocation
+/// key>`, the record identity's first 12 hex digits).
+pub(super) fn key_comment(identity: &str) -> String {
+    format!("habitat-{}", &identity[..12.min(identity.len())])
+}
+
 /// A word for the remote shell, single-quoted.
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -628,6 +663,20 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         eprintln!("hale habitat down: {why}");
         return ExitCode::from(1);
     }
+    // the hosts the habitat placed on, read before it is forgotten: its key
+    // comes off each over the person's own login once the forget is done
+    let hosts: Vec<serde_json::Value> = if forget {
+        http_surface_call(p["head"].as_str().unwrap_or(""), "Commands::hosts", &serde_json::json!({ "limit": 200 }))
+            .ok()
+            .and_then(|v| v["hosts"].as_str().and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(t).ok()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|h| h["name"].as_str().is_some_and(|n| !n.is_empty() && n != "local") && h["state"] != "removed")
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let comment = key_comment(&expected);
     let mut a: Vec<&str> = vec!["down"];
     a.extend(args.iter().map(String::as_str));
     let mut cmd = t.ssh(confirm);
@@ -645,10 +694,23 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     if !ran.success() {
         return ExitCode::from(ran.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1));
     }
+    if plan {
+        for h in &hosts {
+            println!("  - and from this machine, over your SSH login: the habitat's key (`{comment}`) out of {}@{}:~/.ssh/authorized_keys", h["user"].as_str().unwrap_or(""), h["name"].as_str().unwrap_or(""));
+        }
+    }
     if confirm {
         // gone there whole: the pointer goes last
         match remote_state(&t, &m) {
             Ok((_, _, identity)) if identity.is_empty() => {
+                for h in &hosts {
+                    let (name, user) = (h["name"].as_str().unwrap_or(""), h["user"].as_str().unwrap_or(""));
+                    let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+                    match unauthorize_key(name, user, port, &comment) {
+                        Ok(()) => println!("the habitat's key is out of {user}@{name}:~/.ssh/authorized_keys"),
+                        Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {user}'s ~/.ssh/authorized_keys there"),
+                    }
+                }
                 remove_pointer();
                 println!("the pointer to the habitat on {} is removed from this machine", t.host);
             }
@@ -1011,6 +1073,27 @@ mod tests {
         assert_eq!(listen_on("Darwin", || Err("unused".into())).unwrap(), "0.0.0.0");
         assert_eq!(listen_on("Linux", || Ok("192.168.1.20".into())).unwrap(), "192.168.1.20");
         assert!(listen_on("Linux", || Err("rack-a.lan does not resolve here".into())).is_err());
+    }
+
+    /// The habitat's key goes into a host's authorized_keys once, and comes
+    /// out by its comment alone: every other line stays as it was.
+    #[test]
+    fn the_habitats_key_is_put_on_a_host_once_and_taken_off_alone() {
+        let home = std::env::temp_dir().join(format!("hale_authorize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let keys = home.join(".ssh/authorized_keys");
+        std::fs::write(&keys, "ssh-ed25519 AAAAperson person@laptop\n").unwrap();
+        let run = |script: &str| assert!(Command::new("sh").arg("-c").arg(script).env("HOME", &home).status().unwrap().success(), "{script}");
+        let comment = key_comment("0123456789abcdef");
+        assert_eq!(comment, "habitat-0123456789ab");
+        let line = format!("ssh-ed25519 AAAAhabitat {comment}");
+        run(&authorize_script(&line));
+        run(&authorize_script(&line));
+        assert_eq!(std::fs::read_to_string(&keys).unwrap(), format!("ssh-ed25519 AAAAperson person@laptop\n{line}\n"), "appended once");
+        run(&unauthorize_script(&comment));
+        assert_eq!(std::fs::read_to_string(&keys).unwrap(), "ssh-ed25519 AAAAperson person@laptop\n", "the habitat's line alone removed");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

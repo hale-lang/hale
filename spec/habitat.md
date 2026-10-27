@@ -207,7 +207,17 @@ reads it by the vault file's path (a vault at `HALE_VAULT_ADDR` hands
 `ssh` a private copy written on the sealed side, removed after the call),
 and it appears in no output, log, row or error. `host add` prints the
 public key, `ssh-ed25519 <key> habitat-<id>`, and the one line the host's
-`~/.ssh/authorized_keys` takes, a step taken on that machine. **Host keys
+`~/.ssh/authorized_keys` takes. **The CLI takes that step itself when the
+person's own SSH login reaches the machine** (as `up --host` reaches one:
+their SSH config, `--user`, `--port`, `HALE_HABITAT_SSH_CONFIG`): it
+appends the line once and probes the host again, so `hale habitat host add
+<name>` ends `ready` with nothing pasted. When their login does not reach
+it, the line is printed to append there by hand. `hale habitat host
+remove` and, for a habitat on another machine, `hale habitat down
+--forget` take the line off each host the same way, by its comment
+(`habitat-<id>`), every other line kept; a host the login does not reach
+keeps it, and the CLI says which line to remove. The operator face, which
+cannot reach a machine, shows the line to copy. **Host keys
 are checked strictly**: the ed25519 key the host answers with when it is
 added is kept in its row and shown with its fingerprint (trust on first
 use), every connection trusts that key alone (a known-hosts file written
@@ -627,7 +637,7 @@ grouped by what each item is:
   holds;
 - the hosts' entries, and the line each `ssh` host's
   `~/.ssh/authorized_keys` took, which the habitat cannot remove: it is
-  noted;
+  noted, and the CLI removes it over the person's own login (above);
 - what it runs on each `ssh` host, as the host answers over SSH: each
   allocation placed or applied there (its service stopped and removed, its
   volume deleted), the rest of the habitat's compose projects there, and

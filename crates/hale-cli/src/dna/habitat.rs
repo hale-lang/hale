@@ -262,9 +262,11 @@ host add <name>      add a machine on the LAN, by the name it resolves under,
                      as a host the habitat places on over SSH (port 22
                      unless --port, as --user or this user): prints the
                      host key first seen there (the one trusted after it)
-                     and the habitat's public key, the line to append to
-                     ~/.ssh/authorized_keys on that machine. Until it is
-                     appended the host is pending-key.
+                     and the habitat's public key; over your own SSH login
+                     (as up --host reaches a machine) it appends that line
+                     to ~/.ssh/authorized_keys there and probes the host
+                     ready. When your login does not reach it, the line is
+                     printed to append by hand, and the host is pending-key.
 host probe <name>    probe it again over SSH: what it offers (docker
                      compose, the user's systemd, its OS and architecture);
                      a pending-key host whose key is now authorized is
@@ -273,8 +275,8 @@ host probe <name>    probe it again over SSH: what it offers (docker
 host remove <name>   remove it, planned first: the plan lists each allocation
                      placed or applied there and what stops or is deleted
                      on that host, the record's rows about it, and the line
-                     its authorized_keys took, which the habitat cannot
-                     remove. When the plan stops or deletes anything there,
+                     its authorized_keys took, which this CLI then removes
+                     over your own SSH login. When the plan stops or deletes anything there,
                      nothing is touched until the host's name is typed back
                      at a terminal; --plan prints the plan and exits.
                      The host verbs are the Board's commands of the
@@ -708,8 +710,30 @@ fn host(args: &[String]) -> ExitCode {
         println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
         println!("{:<8}{}", "key", v["public_key"].as_str().unwrap_or(""));
         if field("state") != "ready" {
-            println!("on {name}, append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", field("user"));
-            println!("{}", v["authorize"].as_str().unwrap_or(""));
+            // over the person's own login, as `up --host` reaches a machine:
+            // the key appended there, then the host probed again
+            let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+            let line = v["authorize"].as_str().unwrap_or("");
+            match remote::authorize_key(&name, &field("user"), port, line) {
+                Ok(()) => {
+                    println!("authorized the habitat's key in {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user"));
+                    match host_call("Commands::probe_host", serde_json::json!({ "name": name })) {
+                        Ok(p) => {
+                            let ph: serde_json::Value = p["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                            let pf = |k: &str| ph[k].as_str().unwrap_or("").to_string();
+                            println!("{:<8}{name}: {}{}", "probed", pf("state"), if pf("offers").is_empty() { String::new() } else { format!(", offers {}", pf("offers")) });
+                            if pf("state") != "ready" {
+                                println!("{:<8}{}", "note", p["why"].as_str().unwrap_or("not ready yet: `hale habitat host probe` checks it again"));
+                            }
+                        }
+                        Err(code) => return code,
+                    }
+                }
+                Err(why) => {
+                    println!("your SSH login does not reach {name} ({why}); on {name}, append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", field("user"));
+                    println!("{line}");
+                }
+            }
         }
     } else if let Some(why) = v["why"].as_str().filter(|w| !w.is_empty()) {
         println!("{:<8}{why}", "note");
@@ -929,6 +953,17 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     let h: serde_json::Value = v["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
     let field = |k: &str| h[k].as_str().unwrap_or("").to_string();
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
+    // the line its authorized_keys took, which the habitat cannot remove,
+    // taken off over the person's own login
+    for i in items.iter().filter(|i| i["group"] == "hosts" && i["host"] == name && i["args"].as_str().is_some_and(|a| !a.is_empty())) {
+        let line = i["args"].as_str().unwrap_or("");
+        let comment = line.rsplit(' ').next().unwrap_or("");
+        let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+        match remote::unauthorize_key(name, &field("user"), port, comment) {
+            Ok(()) => println!("the habitat's key is out of {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user")),
+            Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {}'s ~/.ssh/authorized_keys there", field("user")),
+        }
+    }
     ExitCode::SUCCESS
 }
 
