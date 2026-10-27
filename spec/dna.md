@@ -3813,6 +3813,9 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   { key }`; the body's own credential check reads `models.hl` alone, so
   a legs key never stands in for the organization's) — and any other is refused. No process's environment
   carries the value: the part that sends it reads it from the vault.
+  Off a terminal the value is the whole of stdin with one trailing
+  newline taken off; at a terminal, one line typed after a prompt; an
+  empty value is refused by the secret's name and nothing is stored.
   `secret rotate <NAME>` is the same for a name already set. The record
   gets `secret.rotated <NAME> {where, by}` and nothing else. At start
   the host checks the credentials its catalog names

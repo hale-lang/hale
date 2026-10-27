@@ -258,10 +258,12 @@ fn host() {
     // Phase 4: `placement.hl` adds eight rows on each side; two of them,
     // `habitat_address` and `habitat_apply_verb`, reach imported code (the
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
+    // `secret_value` (a secret's value, piped or typed) adds one row on each
+    // side and reaches nothing imported.
     pinned(
         "host",
-        570,
-        577,
+        571,
+        578,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}

@@ -237,7 +237,21 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
 /// The `docker run` on the machine that runs `hale habitat <args>` in the
 /// toolchain image as its user, with its data directory and the docker
 /// socket, on the host's network: the same `hale` a local habitat runs.
+/// At a terminal (`tty`) the run is interactive with a terminal of its own.
 fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> String {
+    in_image_io(m, p, args, if tty { ImageIo::Terminal } else { ImageIo::None })
+}
+
+/// What a run in the toolchain image is given of this side's stdin: none,
+/// the stream as it is (a pipe, `-i`), or a terminal (`-i -t`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ImageIo {
+    None,
+    Stdin,
+    Terminal,
+}
+
+fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -> String {
     let data = data_dir(m);
     let image = p["image"].as_str().unwrap_or("");
     let mut env = vec![
@@ -265,7 +279,11 @@ fn in_image(m: &Machine, p: &serde_json::Value, args: &[&str], tty: bool) -> Str
         "mkdir -p {d} && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add {sg} -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
         d = sq(&data),
         lb = sq(&format!("hale.habitat.dir={}", habitat_dir(m))),
-        it = if tty { "-i -t " } else { "" },
+        it = match io {
+            ImageIo::Terminal => "-i -t ",
+            ImageIo::Stdin => "-i ",
+            ImageIo::None => "",
+        },
         u = sq(&m.uid),
         g = sq(&m.gid),
         sg = sq(&m.sock_gid),
@@ -787,7 +805,9 @@ fn keep_after_failure(code: Option<i32>, before: Option<&str>, after: Option<&st
 /// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
 /// the organism's own verbs (`review`, `task create`, `work run`, …) run in
 /// its directory on the habitat's machine, at this terminal when there is
-/// one.
+/// one. Stdin is forwarded either way, so a verb that reads it (`secret
+/// set`, its value piped in) gets what was piped here; off a terminal no
+/// terminal is allocated, there or on the ssh connection.
 pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let (t, m) = match checked_machine(p, "organism") {
         Ok(tm) => tm,
@@ -797,16 +817,24 @@ pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let mut a: Vec<&str> = vec!["organism"];
     a.extend(args.iter().map(String::as_str));
     let mut cmd = t.ssh(tty);
-    cmd.arg(in_image(&m, p, &a, tty));
-    if !tty {
-        cmd.stdin(Stdio::null());
-    }
+    cmd.arg(in_image_io(&m, p, &a, organism_io(tty)));
     match cmd.status() {
         Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => {
             eprintln!("hale habitat organism: ssh: {e}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// What an organism's verb through the pointer is given of stdin: a
+/// terminal at one, the stream as it is otherwise (never none: a value piped
+/// to `secret set` has to arrive).
+fn organism_io(tty: bool) -> ImageIo {
+    if tty {
+        ImageIo::Terminal
+    } else {
+        ImageIo::Stdin
     }
 }
 
@@ -893,6 +921,17 @@ mod tests {
     fn the_face_is_the_port_before_the_head() {
         assert_eq!(face_of("http://rack-a.lan:8801"), "http://rack-a.lan:8800");
         assert_eq!(face_of("http://rack-a.lan"), "");
+    }
+
+    #[test]
+    fn an_organisms_verb_gets_stdin_and_a_terminal_only_at_one() {
+        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), sock_gid: "998".into() };
+        let p = serde_json::json!({ "image": "hale-habitat:abc" });
+        let piped = in_image_io(&m, &p, &["organism", "x", "dna", "secret", "set", "K"], organism_io(false));
+        assert!(piped.contains("docker run --rm -i --network host"), "{piped}");
+        let at_terminal = in_image_io(&m, &p, &["organism", "x", "dna", "status"], organism_io(true));
+        assert!(at_terminal.contains("docker run --rm -i -t --network host"), "{at_terminal}");
+        assert!(!in_image(&m, &p, &["up"], false).contains(" -i "));
     }
 
     #[test]

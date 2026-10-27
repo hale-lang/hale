@@ -1807,6 +1807,26 @@ fn secret_name_ok(name: String) -> Bool {
     return true;
 }
 
+// The value of a secret: off a terminal, the whole of stdin (a pipe, a
+// file), with one trailing newline taken off, so a value of several lines
+// arrives whole; at a terminal, one line typed after a prompt. "" when
+// there is none, which the verb refuses by the secret's name.
+fn secret_value(name: String, target: String) -> String {
+    if !std::term::is_tty(0) {
+        let mut piped = std::io::fs::read_file("/dev/stdin") or "";
+        if std::str::ends_with(piped, "\n") { piped = piped[0..(len(piped) - 1)]; }
+        if std::str::ends_with(piped, "\r") { piped = piped[0..(len(piped) - 1)]; }
+        return piped;
+    }
+    eprintln(
+        "value for ",
+        name,
+        (if len(target) > 0 { " on " + target } else { " (this machine)" }),
+        ", on one line:",
+    );
+    return dna::trim_nl(std::io::stdin::read_line());
+}
+
 fn secret_verb(
     root: String,
     sub: String,
@@ -1861,14 +1881,10 @@ fn secret_verb(
             "secret rotate: " + name + " was never set (`hale dna secret set " + name + "` first)",
         );
     }
-    eprintln(
-        "value for ",
-        name,
-        (if len(target) > 0 { " on " + target } else { " (this machine)" }),
-        ", on one line:",
-    );
-    let value = dna::trim_nl(std::io::stdin::read_line());
-    if len(value) == 0 { return fail("secret " + sub + ": no value was given on stdin"); }
+    let value = secret_value(name, target);
+    if len(value) == 0 {
+        return fail("secret " + sub + ": no value on stdin for " + name + "; nothing was stored");
+    }
     // GH #647: the credential is the infrastructure's to keep — the value
     // reaches the body's shell on its stdin through a private file, never
     // in argv, here or over the transport
