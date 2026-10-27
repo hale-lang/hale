@@ -15,6 +15,7 @@ import {
   commandsPlanRemoveHost,
   commandsRemoveHost,
 } from "./head-client.js";
+import { hostLabel } from "./host-label.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -146,7 +147,7 @@ export async function refresh() {
     }
     actions.append(button("remove", () => planRemove(h)));
     tr.append(
-      cell(h.name),
+      cell(hostLabel(h.name)),
       s,
       cell(h.offers || "", "wrap"),
       cell(h.fingerprint || "none yet", "wrap"),

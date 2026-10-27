@@ -113,7 +113,7 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
     if latest_body(j, "habitat.host", host.name) != hb {
         rows = rows + row_line("habitat.host", host.name, hb);
     }
-    out = out + "host    " + host.name + " (" + host.provider + "; offers "
+    out = out + "host    " + dna::host_label(host.name) + " (" + host.provider + "; offers "
         + (if len(host.offers) > 0 { host.offers } else { "nothing" }) + ")\n";
 
     // the policy: the `local` profile's preset, a provider per role
@@ -152,7 +152,8 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
         }
         placed = placed + (if len(placed) > 0 { ", " } else { "" }) + role;
     }
-    out = out + "placed  the habitat's " + placed + " on " + host.name + " (compose)\n";
+    out = out + "placed  the habitat's " + placed + " on " + dna::host_label(host.name)
+        + " (compose)\n";
 
     // its forge and its identity, roles it allocates as it allocates its
     // memory: the forge the policy names until the Board allocates another

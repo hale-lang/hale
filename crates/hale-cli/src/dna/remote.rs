@@ -567,7 +567,10 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
             }
             for r in rows {
                 let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
-                println!("  {:<24} {:<8} {} on {}: {}{}", f("allocation"), f("role"), f("provider"), if f("applied").is_empty() { f("host") } else { f("applied") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                // the habitat's own machine is the host `local` in its rows; here it is the machine's name
+                let on = if f("applied").is_empty() { f("host") } else { f("applied") };
+                let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
+                println!("  {:<24} {:<8} {} on {}: {}{}", f("allocation"), f("role"), f("provider"), on, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }
