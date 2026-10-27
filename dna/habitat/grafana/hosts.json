@@ -9,7 +9,7 @@
   "editable": false,
   "graphTooltip": 1,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "time": {
     "from": "now-6h",
     "to": "now"
@@ -641,6 +641,70 @@
       "fieldConfig": {
         "defaults": {
           "unit": "Bps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "CPU frequency",
+      "description": "Each core's current frequency as the kernel's frequency driver reports it (as htop reads it): the machine's average and its fastest core. Linux machines; macOS reports none.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "avg by (host) (node_cpu_scaling_frequency_hertz{host=~\"$host\"})",
+          "legendFormat": "{{host}} average"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (host) (node_cpu_scaling_frequency_hertz{host=~\"$host\"})",
+          "legendFormat": "{{host}} fastest core"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz",
+          "min": 0,
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,

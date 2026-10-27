@@ -839,11 +839,12 @@ it, installed over the person's own login, where sudo can ask:
 
 On **Linux** it is the container `hale-node-exporter`
 (`prom/node-exporter`, pinned), on the host's network and process
-namespace, reading the root filesystem read-only, its `cpufreq`
-collector off (reading every core's frequency can block a scrape past
-Prometheus's timeout; no dashboard charts it), labelled
-`lang.hale.node-exporter=<version> <flags>`, restarted unless stopped; an
-install replaces a container of the habitat's labelled otherwise. On **macOS** it is
+namespace, reading the root filesystem read-only, labelled
+`lang.hale.node-exporter=<version>`, restarted unless stopped; an install
+replaces a container of the habitat's labelled otherwise. The release is
+1.11: 1.12's frequency collector also reads `cpuinfo_avg_freq`, which a
+7.0 kernel answers with EAGAIN for a core that has been idle, and the
+exporter's read then waits forever, so every scrape of the machine hangs. On **macOS** it is
 the release's own `node_exporter` (pinned, its archive checked against the
 release's SHA-256) under launchd, `lang.hale.node-exporter`: a
 LaunchAgent of the person's when the login has a GUI session (no sudo),
@@ -874,7 +875,7 @@ every `up`) is the habitat's senses' store as its one data source (uid
 `habitat-senses`) and the habitat's dashboards, `Hosts` its home: whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
-Linux and macOS alike. Its data is `<habitat>/grafana/data`. The operator
+Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator
 face's navigation links it as `dashboards`.
 
 Grafana signs in no one itself: its login form, basic authentication and

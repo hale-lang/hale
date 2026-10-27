@@ -15,20 +15,23 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// The node exporter release the habitat installs, and its macOS archives'
-/// SHA-256 (the release's `sha256sums.txt`).
-pub(super) const NODE_EXPORTER_VERSION: &str = "1.12.1";
-const NODE_EXPORTER_DARWIN_ARM64_SHA256: &str = "35b246a34af55a8f0c3f11067f17aecf9836cfd4689bde364776b3a4ad3a84d6";
-const NODE_EXPORTER_DARWIN_AMD64_SHA256: &str = "3506a6d788b768a3c2cd1f58dc97b9ff3fecc5ac9196623d582982db2aa9d0f6";
+/// SHA-256 (the release's `sha256sums.txt`). 1.11.1, not 1.12: 1.12's
+/// cpufreq collector reads `cpuinfo_avg_freq`, which a 7.0 kernel answers
+/// with EAGAIN for a core that has been idle, and Go's read of a sysfs file
+/// then waits on the poller forever, so every scrape of such a machine
+/// hangs. 1.11 reads the frequencies (`scaling_cur_freq`, as htop does)
+/// and nothing else.
+pub(super) const NODE_EXPORTER_VERSION: &str = "1.11.1";
+const NODE_EXPORTER_DARWIN_ARM64_SHA256: &str = "e987428618362c2d2540a68b722bd982ef1486c9961631298f20ea8fd57d3be4";
+const NODE_EXPORTER_DARWIN_AMD64_SHA256: &str = "782318ceb48cb5501271a666d1b015a9406c02cd45dbc9513deca005b91e03a5";
 /// The port every machine's exporter answers on (the exporter's own default).
 pub(super) const NODE_EXPORTER_PORT: u16 = 9100;
 /// The name the Linux container goes by and the launchd label on macOS.
 const NODE_EXPORTER_NAME: &str = "hale-node-exporter";
-/// What the Linux container runs with beyond its address: `cpufreq` off,
-/// since reading every core's frequency can block a scrape past
-/// Prometheus's timeout (an Arm server's firmware-backed frequency reads
-/// did), and no dashboard of the habitat's charts it. Its container is
-/// labelled with this, so an install replaces one made with other flags.
-const NODE_EXPORTER_LINUX_FLAGS: &str = "--no-collector.cpufreq";
+/// What the Linux container runs with beyond its address (none today).
+/// Its container is labelled with its version and these, so an install
+/// replaces one of the habitat's made otherwise.
+const NODE_EXPORTER_LINUX_FLAGS: &str = "";
 const NODE_EXPORTER_LABEL: &str = "lang.hale.node-exporter";
 
 /// The Grafana the habitat runs behind its face.
@@ -69,6 +72,8 @@ pub(super) fn install_script(sudo: &str) -> String {
     let n = NODE_EXPORTER_NAME;
     let l = NODE_EXPORTER_LABEL;
     let flags = NODE_EXPORTER_LINUX_FLAGS;
+    // the container's label: its version, and its flags when it has any
+    let want = if flags.is_empty() { v.to_string() } else { format!("{v} {flags}") };
     let arm = NODE_EXPORTER_DARWIN_ARM64_SHA256;
     let amd = NODE_EXPORTER_DARWIN_AMD64_SHA256;
     format!(
@@ -80,7 +85,7 @@ node_readings() {{ readings 2>/dev/null | grep -q '^node_'; }}
 case "$(uname -s)" in
 Linux)
   if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
-  want="$v {flags}"
+  want="{want}"
   if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said "ours container"; exit 0; fi
   if ! $d inspect "$n" >/dev/null 2>&1 && node_readings; then said theirs; exit 0; fi
   $d rm -f "$n" >/dev/null 2>&1 || true
@@ -383,7 +388,7 @@ mod tests {
         assert!(s.contains("<key>UserName</key><string>nobody</string>"));
         assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "docker's template survives the format");
         // the container's flags are its label: one made with others is replaced
-        assert!(s.contains(&format!("want=\"$v {NODE_EXPORTER_LINUX_FLAGS}\"")) && s.contains(&format!("--web.listen-address=\":$p\" {NODE_EXPORTER_LINUX_FLAGS}")));
+        assert!(s.contains(&format!("want=\"{NODE_EXPORTER_VERSION}\"")), "the label is the version alone while there are no flags");
     }
 
     #[test]

@@ -59,11 +59,11 @@ The habitat reads every machine it runs on. `hale habitat up` (on this machine, 
 
 The habitat's senses' store (its Prometheus) scrapes each machine as the job `host`, with a `host` label naming the machine. The habitat keeps the target list in step with its hosts: adding or removing a host rewrites it.
 
-A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike. `up` and `status` print its address:
+A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
 
 ```text
 grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in)
-node    local: node_exporter 1.12.1 on :9100, a container of the habitat's (hale-node-exporter)
+node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
 ```
 
 `HALE_DNA_NODE_EXPORTER=off` and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
