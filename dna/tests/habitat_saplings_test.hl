@@ -122,8 +122,10 @@ fn main() {
         "the habitat is born and its body runs: " + started.stdout + started.stderr,
     );
     std::test::assert(
-        std::str::contains(started.stdout, "sapling voice at "),
-        "up reads the toolchain's nursery: voice is pinned: " + started.stdout,
+        std::str::contains(started.stdout, "sapling hale at ")
+            && !std::str::contains(started.stdout, "sapling voice"),
+        "up reads the toolchain's nursery: the hale organism is pinned, no application: "
+            + started.stdout,
     );
     let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
     // the body runs before its head answers (the head's API child is built
@@ -178,8 +180,9 @@ fn main() {
             && std::json::find_string_field(sprout, "digest") == pinned
             && std::json::find_string_field(sprout, "nursery") == nursery
             && std::json::find_string_field(sprout, "purpose") == "a small organism to graft"
-            && len(element(saplings, "name", "voice")) > 0,
-        "the head lists the saplings, voice among them: " + saplings,
+            && len(element(saplings, "name", "hale")) > 0
+            && len(element(saplings, "name", "voice")) == 0,
+        "the head lists the saplings, the toolchain's hale among them: " + saplings,
     );
 
     // ---- a revision whose tree is not the one pinned is refused

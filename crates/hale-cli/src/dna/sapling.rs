@@ -20,32 +20,13 @@
 //! rows `Commands::place_allocation` and `Commands::apply_allocations`, and
 //! `graft … --host <name>` places the new organism on that host.
 
+use crate::dna::pack::digest_at;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::*;
 
-/// The digest a sapling is pinned by: the sha256 of the tree at a commit,
-/// as `git ls-tree -r --full-tree` lists it (each file's mode, kind, blob
-/// hash and path), `sha256:<hex>`. The commit too.
-pub(super) fn digest_at(repo: &Path, revision: &str) -> Result<(String, String), String> {
-    let git = |args: &[&str]| -> Result<String, String> {
-        let o = Command::new("git").arg("-C").arg(repo).args(args).output().map_err(|e| format!("git: {e}"))?;
-        if !o.status.success() {
-            return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
-        }
-        Ok(String::from_utf8_lossy(&o.stdout).to_string())
-    };
-    let commit = git(&["rev-parse", "--verify", "-q", &format!("{revision}^{{commit}}")])
-        .or_else(|_| git(&["rev-parse", "--verify", "-q", &format!("origin/{revision}^{{commit}}")]))
-        .map_err(|_| format!("`{revision}` names no commit of {}", repo.display()))?
-        .trim()
-        .to_string();
-    let tree = git(&["ls-tree", "-r", "--full-tree", &commit])?;
-    let hex: String = openssl::sha::sha256(tree.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
-    Ok((commit, format!("sha256:{hex}")))
-}
 
 /// The repository a sapling the toolchain carries names: `toolchain:<path>`,
 /// a tree under the toolchain's embedded nursery (`dna/nursery/<path>`),

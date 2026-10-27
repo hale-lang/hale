@@ -5490,7 +5490,8 @@ The live half is memory's, projected from the record by the spine
   packs it adopts at graft, by name, from its own nursery or else the
   toolchain's) and `set` (their parameters). A sapling is grafted by name
   into the habitat (`spec/habitat.md`, Nurseries and saplings); the
-  toolchain's nursery offers `voice`.
+  toolchain's nursery offers `hale`, and a repository may be its own
+  nursery (`repo = "."`).
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`

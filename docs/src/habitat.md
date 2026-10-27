@@ -7,8 +7,9 @@ A **habitat** is the root DNA organism shipped with the Hale toolchain (`spec/ha
 #    (named at its birth; `local` when no --name is given, and kept after)
 hale habitat up --name homelab
 
-# 2. Graft a new application or a pinned nursery sapling as a child of the habitat
+# 2. Graft a new application, or a sapling from a nursery the habitat trusts
 hale habitat graft my-service
+hale habitat nursery add https://github.com/hale-lang/voice
 hale habitat graft voice
 
 # 3. Inspect all running allocations, schema versions, and host placements
@@ -61,10 +62,11 @@ hale habitat nursery list
 hale habitat nursery add https://example.com/nursery.git
 hale habitat nursery refresh
 hale habitat nursery ratify <sapling>
+hale habitat nursery add https://github.com/hale-lang/voice   # voice is its own nursery
 hale habitat graft voice
 ```
 
-1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (such as `voice`, shipped in the toolchain nursery; `./<name>` denotes a local directory). The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row. The `hale` sapling (the organism that works on the Hale toolchain) is a tree the toolchain itself carries, with no remote. `hale habitat graft hale` makes it the organism's own repository in the habitat and checks its digest the same way. Like every graft, it mirrors that repository to the habitat's Forgejo; nothing of an organism's own goes to GitHub unless its Board allocates GitHub later.
+1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (`hale`, the one the toolchain carries, or one a trusted nursery offers, such as `voice`; `./<name>` denotes a local directory). A repository can be its own nursery: a `nursery.toml` at its root whose `[[sapling]]` says `repo = "."` (and no revision or digest) offers the repository itself, pinned at the commit the habitat reads. That is how `hale-lang/voice` is offered; the toolchain bundles no application. The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row. The `hale` sapling (the organism that works on the Hale toolchain) is a tree the toolchain itself carries, with no remote. `hale habitat graft hale` makes it the organism's own repository in the habitat and checks its digest the same way. Like every graft, it mirrors that repository to the habitat's Forgejo; nothing of an organism's own goes to GitHub unless its Board allocates GitHub later.
 2. **A genome's codebases attach at its graft:** a `[[dna.codebase]]` list in the sapling's `hale.toml` (each with `name`, `repo`, `branch`, `build`, `test`, `toolchain`) becomes `codebase.attached` rows of the grafted organism's record, once each; nothing is cloned until a leg works one. The toolchain nursery's `hale` sapling is **the hale organism**: its genome is its own small repository, and its codebases are `hale-lang/hale` and `hale-lang/voice`.
 3. **Updating sapling pins (`refresh` and `ratify`):** Running `hale habitat nursery refresh` (also run during `hale habitat up`) inspects all trusted nurseries. Newly discovered saplings are pinned automatically; if an already-pinned sapling offers a newer revision, the habitat files it for the Board without moving existing organisms. Run `hale habitat nursery ratify <sapling>` to pin the newer revision for future grafts.
 
@@ -82,7 +84,7 @@ The agent's tools are the head's rows that person may call (`Commands__hosts`, `
 
 ## Walkthrough: Deploying and Querying `voice` in a Habitat
 
-This walkthrough covers taking a machine with `hale`, `docker compose`, `git`, and a browser from a cold start to streaming an LLM completion response through the `voice` nursery sapling.
+This walkthrough covers taking a machine with `hale`, `docker compose`, `git`, and a browser from a cold start to streaming an LLM completion response through `voice`, grafted from its own repository as a nursery.
 
 ### 1. Start the Habitat and Inspect Status
 
@@ -103,9 +105,10 @@ Open the `face` URL in your browser. On a `local` habitat, the head redirects th
 
 ### 3. Graft the `voice` Sapling (Local or LAN Host)
 
-To graft `voice` from the bundled nursery onto the local machine:
+Trust voice's repository as a nursery (it offers itself), then graft it onto the local machine:
 
 ```sh
+hale habitat nursery add https://github.com/hale-lang/voice
 hale habitat nursery list
 hale habitat graft voice
 ```
@@ -311,7 +314,7 @@ Financial operations follow four structural rules:
 | **Habitat standard & operator browser face (`/index`, `/app/`)** | **Built:** Started automatically by `hale habitat up` ([The head and the face](./dna/head.md)) |
 | **Hosts, `compose` provider, and `ssh` host registration** | **Built:** `compose` provider places on `local`; `hale habitat host add\|probe\|remove` registers LAN hosts over SSH and placing allocations on them is **built** (`hale habitat place`, `apply`, `graft --host`) |
 | **An agent pairing with a person (MCP, `hale habitat brief`)** | **Built:** the head's commands over `mcp::Rpc` under the person's bearer and roles (`hale mcp --app`, the endpoint `hale habitat status` prints), every act a row in their name; `agents/operator.md` |
-| **Saplings & nurseries (`hale habitat graft <sapling>`, `nursery`)** | **Built:** Digest-pinned `[[sapling]]` entries, `hale habitat nursery add\|refresh\|list\|ratify`, and `voice` sapling |
+| **Saplings & nurseries (`hale habitat graft <sapling>`, `nursery`)** | **Built:** Digest-pinned `[[sapling]]` entries, `hale habitat nursery add\|refresh\|list\|ratify`; a repository as its own nursery (`repo = "."`), as `hale-lang/voice` is |
 | **Verified OIDC principal source** | **Built:** `git config dna.principal oidc` ([The head and the face](./dna/head.md), [The skin](./dna/skin.md)) |
 | **Per-client backend roles (Postgres, NATS, Vault)** | **Built:** Separate `owner`, `spine`, `head`, `reflexes`, and per-app roles ([The skin](./dna/skin.md)) |
 | **Monetary grant reservations & window enforcement** | **Built:** `spend.reserved`, `spend.settled`, `spend.compensated` ([The spine](./dna/spine.md)) |

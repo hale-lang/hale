@@ -427,9 +427,17 @@ the holes its birth proposed, with the sapling's `set` and the graft's
 checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
 
-The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
-commit and fetched from its public repository) and **the hale organism**
-(`hale`, a tree the toolchain carries). A sapling needs nothing beyond what an attached repository
+The toolchain's nursery offers one sapling, **the hale organism** (`hale`,
+a tree the toolchain carries): the organism that makes the toolchain. An
+application is not bundled. **A repository can be its own nursery**: a
+`nursery.toml` at its root whose sapling says `repo = "."` and no revision
+or digest offers the repository itself, pinned where the nursery is read
+(a git nursery at the commit it was read at, a directory at its `HEAD`)
+by that tree's digest; a later read at a newer commit is a proposal, as for
+any sapling. The toolchain's nursery refuses that form. `hale-lang/voice`
+is one: `hale habitat nursery add https://github.com/hale-lang/voice` (or
+the organisms screen's form) trusts it, and `hale habitat graft voice`
+grafts it. A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
 
@@ -458,8 +466,8 @@ that goes on attaches none twice.
 After `hale habitat up` on an empty box, every step is a row of the head's
 surface, called on its socket as the operator face calls its rows: a
 machine of the LAN is added over SSH (`add_host`), authorized by its owner
-and probed (`probe_host`); a nursery is trusted (`add_nursery`) and its
-voice ratified over the bundled pin (`ratify_sapling`); voice is grafted by
+and probed (`probe_host`); voice's own repository is trusted as its nursery
+(`add_nursery`, `repo = "."`) and voice pinned from it; voice is grafted by
 name onto the machine (`graft`) and applied there (`apply_allocations`)
 from its own compose; a streamed `/v1/chat/completions` through it, at the
 machine's name, answers as server-sent events from a local model on the

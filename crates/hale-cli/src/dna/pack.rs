@@ -38,7 +38,9 @@ pub(super) struct Sapling {
     #[serde(default)]
     pub(super) summary: String,
     pub(super) repo: String,
+    #[serde(default)]
     pub(super) revision: String,
+    #[serde(default)]
     pub(super) digest: String,
     #[serde(default)]
     pub(super) packs: Vec<String>,
@@ -88,8 +90,12 @@ fn index_of(text: &str, what: &str) -> Result<(Vec<Entry>, Vec<Sapling>), String
     }
     for s in &idx.sapling {
         let word = |w: &str| !w.is_empty() && !w.contains(char::is_whitespace);
-        if !word(&s.name) || s.name.contains('/') || !word(&s.repo) || !word(&s.revision) || !s.digest.starts_with("sha256:") || s.digest.len() != 71 {
-            return Err(format!("{what}: nursery.toml: a sapling needs a one-word name (no `/`), a repository, a revision and a `sha256:` digest"));
+        // `repo = "."` with no revision or digest: the nursery's own
+        // repository, pinned where it is read (`own_saplings`)
+        let own = s.repo == OWN_REPO && s.revision.is_empty() && s.digest.is_empty();
+        let pinned = word(&s.repo) && s.repo != OWN_REPO && word(&s.revision) && s.digest.starts_with("sha256:") && s.digest.len() == 71;
+        if !word(&s.name) || s.name.contains('/') || !(own || pinned) {
+            return Err(format!("{what}: nursery.toml: a sapling needs a one-word name (no `/`) and either a repository, a revision and a `sha256:` digest, or `repo = \".\"` alone (the nursery's own repository)"));
         }
     }
     Ok((idx.pack, idx.sapling))
@@ -190,6 +196,46 @@ fn stage_local_nursery(
     Ok(())
 }
 
+/// The digest a sapling is pinned by: the sha256 of the tree at a commit,
+/// as `git ls-tree -r --full-tree` lists it (each file's mode, kind, blob
+/// hash and path), `sha256:<hex>`. The commit too.
+pub(crate) fn digest_at(repo: &Path, revision: &str) -> Result<(String, String), String> {
+    let git = |args: &[&str]| -> Result<String, String> {
+        let o = Command::new("git").arg("-C").arg(repo).args(args).output().map_err(|e| format!("git: {e}"))?;
+        if !o.status.success() {
+            return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    let commit = git(&["rev-parse", "--verify", "-q", &format!("{revision}^{{commit}}")])
+        .or_else(|_| git(&["rev-parse", "--verify", "-q", &format!("origin/{revision}^{{commit}}")]))
+        .map_err(|_| format!("`{revision}` names no commit of {}", repo.display()))?
+        .trim()
+        .to_string();
+    let tree = git(&["ls-tree", "-r", "--full-tree", &commit])?;
+    let hex: String = openssl::sha::sha256(tree.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    Ok((commit, format!("sha256:{hex}")))
+}
+
+/// A sapling's `repo` naming the nursery's own repository.
+const OWN_REPO: &str = ".";
+
+/// The saplings of the nursery's own repository (`repo = "."`) pinned where
+/// the nursery was read: the repository it was read from (`repo`), the
+/// commit it was read at in `at`, and that tree's digest. So a repository
+/// can offer itself as a sapling without naming its own commit, which no
+/// file in it can; a later read at a newer commit is a proposal, as for any
+/// sapling.
+fn own_saplings(saplings: &mut [Sapling], repo: &str, at: &Path, commit: &str) -> Result<(), String> {
+    for s in saplings.iter_mut().filter(|s| s.repo == OWN_REPO) {
+        let (c, d) = digest_at(at, commit).map_err(|e| format!("the sapling `{}` is the nursery's own repository, which is not a git repository at {}: {e}", s.name, at.display()))?;
+        s.repo = repo.to_string();
+        s.revision = c;
+        s.digest = d;
+    }
+    Ok(())
+}
+
 /// The nursery `--from` names, or the toolchain's.
 pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let Some(from) = from else {
@@ -199,20 +245,25 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
             .map(|f| f.content)
             .unwrap_or("");
         let (entries, saplings) = index_of(text, "the toolchain's nursery")?;
+        if saplings.iter().any(|s| s.repo == OWN_REPO) {
+            return Err("the toolchain's nursery has no repository of its own to offer (`repo = \".\"`)".to_string());
+        }
         return Ok(Nursery { entries, saplings, root: None, source: format!("toolchain {}", env!("CARGO_PKG_VERSION")) });
     };
     let local = Path::new(from);
     if local.is_dir() {
         let root = local.canonicalize().map_err(|e| format!("{from}: {e}"))?;
         let text = fs::read_to_string(root.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
-        let (entries, saplings) = index_of(&text, from)?;
+        let (entries, mut saplings) = index_of(&text, from)?;
+        own_saplings(&mut saplings, &root.display().to_string(), &root, "HEAD")?;
         stage_local_nursery(from, &root, &entries, &saplings)?;
         return Ok(Nursery { entries, saplings, source: root.display().to_string(), root: Some(root) });
     }
     let staged = staged_nursery_dir(from);
     if staged.is_dir() {
         let text = fs::read_to_string(staged.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
-        let (entries, saplings) = index_of(&text, from)?;
+        let (entries, mut saplings) = index_of(&text, from)?;
+        own_saplings(&mut saplings, from, &staged, "HEAD")?;
         return Ok(Nursery { entries, saplings, source: from.to_string(), root: Some(staged) });
     }
     // a git repository: cloned once into the cache, fetched, and read at
@@ -249,7 +300,8 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let commit = git(&["rev-parse", "--verify", &format!("{want}^{{commit}}")], Some(&dir)).map_err(|_| format!("{from}: `{want}` names no commit of the nursery"))?;
     git(&["checkout", "-q", "--detach", &commit], Some(&dir))?;
     let text = fs::read_to_string(dir.join("nursery.toml")).map_err(|_| format!("{url}: no nursery.toml at its root"))?;
-    let (entries, saplings) = index_of(&text, url)?;
+    let (entries, mut saplings) = index_of(&text, url)?;
+    own_saplings(&mut saplings, url, &dir, &commit)?;
     Ok(Nursery { entries, saplings, root: Some(dir), source: format!("{url}@{commit}") })
 }
 
@@ -496,18 +548,39 @@ mod tests {
         }
     }
 
-    /// Phase 4: the toolchain's nursery offers voice as its first sapling,
-    /// pinned by repository, revision and digest (its shape only: CI has no
-    /// network to fetch it).
+    /// The toolchain's nursery carries the organism that makes the
+    /// toolchain (`hale`) and no application: an application such as voice
+    /// is a nursery of its own, which the Board trusts.
     #[test]
-    fn the_toolchains_nursery_offers_voice() {
+    fn the_toolchains_nursery_carries_the_hale_organism_alone() {
         let n = nursery(None).unwrap();
-        let v = n.saplings.iter().find(|s| s.name == "voice").expect("a voice sapling");
-        assert_eq!(v.repo, "https://github.com/hale-lang/voice");
-        assert!(v.revision.len() == 40 && v.revision.chars().all(|c| c.is_ascii_hexdigit()), "pinned at a commit: {}", v.revision);
-        assert!(v.digest.starts_with("sha256:") && v.digest.len() == 71, "{}", v.digest);
-        assert!(v.packs.iter().all(|p| n.entries.iter().any(|e| &e.name == p)), "its packs are the nursery's");
+        let names: Vec<&str> = n.saplings.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["hale"]);
+        assert!(n.saplings.iter().all(|s| s.packs.iter().all(|p| n.entries.iter().any(|e| &e.name == p))), "its packs are the nursery's");
         assert!(index_of("[[sapling]]\nname = \"a/b\"\nrepo = \"r\"\nrevision = \"v\"\ndigest = \"sha256:x\"\n", "t").is_err(), "a malformed sapling is refused");
+    }
+
+    /// A repository offers itself: `repo = "."` alone is accepted and pinned
+    /// where the nursery is read, at that commit with that tree's digest; a
+    /// `.` with a revision, or a missing revision elsewhere, is refused.
+    #[test]
+    fn a_repository_offers_itself_pinned_where_it_is_read() {
+        let own = "[[sapling]]\nname = \"app\"\nrepo = \".\"\n";
+        let (_, mut saplings) = index_of(own, "t").unwrap();
+        assert!(index_of("[[sapling]]\nname = \"app\"\nrepo = \".\"\nrevision = \"main\"\n", "t").is_err(), "`.` takes no revision");
+        assert!(index_of("[[sapling]]\nname = \"app\"\nrepo = \"https://x/y\"\n", "t").is_err(), "another repository is pinned");
+        let dir = std::env::temp_dir().join(format!("hale_own_sapling_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("nursery.toml"), own).unwrap();
+        let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap().status.success(), "git {args:?}");
+        git(&["init", "-q"]);
+        git(&["add", "nursery.toml"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]);
+        own_saplings(&mut saplings, "https://example.org/app", &dir, "HEAD").unwrap();
+        let (commit, digest) = digest_at(&dir, "HEAD").unwrap();
+        assert_eq!((saplings[0].repo.as_str(), saplings[0].revision.as_str(), saplings[0].digest.as_str()), ("https://example.org/app", commit.as_str(), digest.as_str()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
