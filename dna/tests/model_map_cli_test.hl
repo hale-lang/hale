@@ -190,6 +190,38 @@ main locus App {
             "first\nsecond",
             "is stored whole",
         );
+        // a carriage return of the value's own is kept: `value\r` whole, and
+        // a `\r` alone is a value, stored and not refused
+        let cr = in_dir(
+            app,
+            "sh\n-c\nprintf 'value\\r' | env XDG_STATE_HOME=\"$0\" \"$1\" dna secret set LEGS_GATEWAY_KEY\n"
+                + state + "\n" + toolchain(),
+        );
+        std::test::assert(cr.code == 0, "a value ending in a carriage return: " + cr.stderr);
+        std::test::assert_eq_str(std::io::fs::read_file(slot) or "", "value\r", "is kept whole");
+        let only_cr = in_dir(
+            app,
+            "sh\n-c\nprintf '\\r' | env XDG_STATE_HOME=\"$0\" \"$1\" dna secret set LEGS_GATEWAY_KEY\n"
+                + state + "\n" + toolchain(),
+        );
+        std::test::assert(only_cr.code == 0, "a carriage return alone: " + only_cr.stderr);
+        std::test::assert_eq_str(
+            std::io::fs::read_file(slot) or "",
+            "\r",
+            "is stored, not refused",
+        );
+        // one CRLF line end is taken off, as one newline is
+        let crlf = in_dir(
+            app,
+            "sh\n-c\nprintf 'first\\nsecond\\r\\n' | env XDG_STATE_HOME=\"$0\" \"$1\" dna secret set LEGS_GATEWAY_KEY\n"
+                + state + "\n" + toolchain(),
+        );
+        std::test::assert(crlf.code == 0, "a value ending in CRLF: " + crlf.stderr);
+        std::test::assert_eq_str(
+            std::io::fs::read_file(slot) or "",
+            "first\nsecond",
+            "loses that one line end",
+        );
         // nothing on stdin is refused by the secret's name, never taken
         let empty = in_dir(
             app,

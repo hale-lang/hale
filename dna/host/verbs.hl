@@ -1822,8 +1822,13 @@ fn secret_value(name: String, target: String) -> String {
     );
     if piped {
         let mut value = std::io::fs::read_file("/dev/stdin") or "";
-        if std::str::ends_with(value, "\n") { value = value[0..(len(value) - 1)]; }
-        if std::str::ends_with(value, "\r") { value = value[0..(len(value) - 1)]; }
+        // exactly one line end: a `\r\n` pair, or a `\n`; a `\r` alone is
+        // the value's own
+        if std::str::ends_with(value, "\r\n") {
+            value = value[0..(len(value) - 2)];
+        } else if std::str::ends_with(value, "\n") {
+            value = value[0..(len(value) - 1)];
+        }
         return value;
     }
     return dna::trim_nl(std::io::stdin::read_line());
