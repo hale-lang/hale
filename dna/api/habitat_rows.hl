@@ -288,8 +288,10 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
 // given only where it is reachable from the admin machine: on another host,
 // a port bound to every interface at the host's address, one bound to a
 // specific address at that address, and one bound to the host's loopback
-// not at all (its note says `loopback only on <host>`); on this machine at
-// the loopback, or at the address it is bound to.
+// not at all (its note says `loopback only on <host>`) unless the host's
+// listen address is itself the loopback, which makes it this machine (then
+// at `127.0.0.1`); on this machine at the loopback, or at the address it is
+// bound to.
 fn allocation_links(root: String, body: String, applied: String) -> String {
     let out = std::json::Builder { };
     out.begin_array();
@@ -311,8 +313,15 @@ fn allocation_links(root: String, body: String, applied: String) -> String {
             let loopback = bind == "localhost"
                 || bind == "::1"
                 || std::str::starts_with(bind, "127.");
+            // a host whose listen address is itself the loopback is this
+            // machine: its loopback is reachable here
+            let local_host = !here
+                && loopback
+                && std::str::starts_with(dna::host_listen_address(address), "127.");
             let at = if every || (here && loopback) {
                 address
+            } else if local_host {
+                "127.0.0.1"
             } else if loopback {
                 ""
             } else if std::str::contains(bind, ":") {

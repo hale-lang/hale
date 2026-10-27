@@ -282,8 +282,10 @@ allocation's `links` (`{service, url, note}`), a link only where it is
 reachable from the admin machine: on another host, a port bound to every
 interface at the host's address, one bound to a specific address at that
 address, and one bound to the host's loopback with no `url` and the note
-`loopback only on <host>`; on this machine at `127.0.0.1`, or at the
-address it is bound to. The operator face lists them under the organism's
+`loopback only on <host>`, unless the host's listen address is itself the
+loopback (the host is this machine), where it is linked at `127.0.0.1`; on
+this machine at `127.0.0.1`, or at the address it is bound to. The
+operator face lists them under the organism's
 allocation, a link where there is a `url` and the note where there is
 none: voice's `api`, whose `/` is its console, among them. Every allocation names its
 provider: the host's. A tenant's model map is the head's Board command
