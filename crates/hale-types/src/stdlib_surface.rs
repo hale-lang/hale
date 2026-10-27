@@ -317,6 +317,8 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "io", "udp", "Reader"],
     &["std", "bytes", "BytesBuilder"],
     &["std", "cli", "Resolver"],
+    // the incremental SHA-256 (crypto.hl)
+    &["std", "crypto", "Sha256"],
     &["std", "http", "Client"],
     &["std", "bus", "UnixTransport"],
     &["std", "http", "ClientRequest"],
@@ -710,6 +712,15 @@ pub const SURFACES: &[NsSurface] = &[
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
             row!("sha1", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha1)),
             row!("sha256", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha256)),
+            // SHA-256 without the whole input in memory: the file read in
+            // fixed-size blocks, and the `Sha256` locus's primitives (the
+            // C context's pointer as an Int, the BytesBuilder convention).
+            // One core with `sha256` (lotus_arena.c).
+            row!("sha256_file", SYSCALL, [Str] -> Bytes ! "IoError", Intrinsic(CryptoSha256File)),
+            row!("__sha256_finish", PURE, [Int] -> Bytes, Intrinsic(CryptoSha256FinishRaw)),
+            row!("__sha256_free", PURE, [Int] -> Int, Intrinsic(CryptoSha256FreeRaw)),
+            row!("__sha256_new", PURE, [] -> Int, Intrinsic(CryptoSha256NewRaw)),
+            row!("__sha256_update", PURE, [Int, Bytes] -> Int, Intrinsic(CryptoSha256UpdateRaw)),
             row!("sha512", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha512)),
         ],
         open_prefixes: &[],
@@ -1649,6 +1660,11 @@ pub enum IntrinsicId {
     CryptoHmacSha512,
     CryptoSha1,
     CryptoSha256,
+    CryptoSha256File,
+    CryptoSha256FinishRaw,
+    CryptoSha256FreeRaw,
+    CryptoSha256NewRaw,
+    CryptoSha256UpdateRaw,
     CryptoSha512,
     RingSpscEmitRaw,
     RingSpscInitRaw,

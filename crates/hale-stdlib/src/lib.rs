@@ -270,7 +270,8 @@ pub const AP_SOURCE: &str = concat!(
     // and `std::math::int_to_float`; nothing in the bundle precedes it.
     include_str!("../hl/rand.hl"),
     "\n",
-    // std::crypto::ed25519_keypair: one fn over a native primitive.
+    // std::crypto: ed25519_keypair, one fn over a native primitive, and
+    // the Sha256 locus over the SHA-256 core's context.
     include_str!("../hl/crypto.hl"),
     "\n",
     // std::observe::Probes (GH #1477): a locus over one native
@@ -452,8 +453,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
     (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
-    // std::crypto (crypto.hl): the Ed25519 key pair.
+    // std::crypto (crypto.hl): the Ed25519 key pair and the incremental
+    // SHA-256.
     (&["std", "crypto", "ed25519_keypair"], "__std_crypto_ed25519_keypair"),
+    (&["std", "crypto", "Sha256"], "__StdCryptoSha256"),
     // std::hex (hex.hl): base16 text of bytes.
     (&["std", "hex", "decode"], "__std_hex_decode"),
     (&["std", "hex", "digit"], "__std_hex_digit"),

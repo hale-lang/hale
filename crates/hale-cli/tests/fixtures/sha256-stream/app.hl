@@ -1,0 +1,40 @@
+// A long-lived locus hashing a stream as it reads it, 1 MiB at a time:
+// the `std::crypto::Sha256` update loop. Each piece is a fresh Bytes made
+// in a method call (the shape of a `BodyReader` chunk), and the hasher
+// holds its 112-byte context, not the input, so `hale verify` has nothing
+// to acknowledge.
+locus Hasher {
+    params {
+        path: String = "";
+        chunk: Int = 1048576;
+    }
+
+    fn absorb(h: std::crypto::Sha256, buf: std::bytes::BytesBuilder) {
+        let piece = buf.snapshot() or b"";
+        h.update(piece);
+    }
+
+    run() {
+        let f = std::io::file::open(self.path, "r") or {
+            println("error: " + err.kind);
+            return;
+        };
+        let buf = std::bytes::BytesBuilder { initial_cap: self.chunk };
+        let h = std::crypto::Sha256 { };
+        while true {
+            buf.clear();
+            let got = std::io::tcp::recv_into(f.fd, buf, self.chunk);
+            if got <= 0 {
+                break;
+            }
+            self.absorb(h, buf);
+            // the zero-copy spelling, no piece at all
+            h.update(buf.view());
+        }
+        println(std::hex::encode(h.finish()));
+    }
+}
+
+fn main() {
+    let h = Hasher { path: std::env::arg(1) };
+}

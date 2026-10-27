@@ -1275,6 +1275,9 @@ fn stmt_definitely_non_allocating(
 ///     dissolve) — never an arena. They are what `BytesBuilder`'s
 ///     `append*` methods wrap, so a method that calls one and
 ///     violates on failure drops its per-call scratch.
+///   - `std::crypto::__sha256_update` absorbs into the `Sha256`
+///     locus's malloc'd context (freed at its dissolve) and answers
+///     a status, so `Sha256.update` keeps no per-call scratch either.
 ///
 /// A wrong entry does not dangle — an elided body's allocations
 /// route to the caller's arena rather than being freed at return —
@@ -1295,6 +1298,7 @@ const NONALLOC_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "bytes", "builder", "__len"],
     &["std", "bytes", "builder", "__shift_front"],
     &["std", "bytes", "builder", "__xor_mask_into"],
+    &["std", "crypto", "__sha256_update"],
 ];
 
 fn path_call_is_nonalloc(q: &hale_syntax::ast::QualifiedName) -> bool {

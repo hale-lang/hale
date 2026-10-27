@@ -1,10 +1,12 @@
-// std::crypto's Hale half: the Ed25519 key pair (RFC 8032).
+// std::crypto's Hale half: the Ed25519 key pair (RFC 8032) and the
+// incremental SHA-256.
 //
 // The rest of std::crypto is native (rows of the stdlib table lowered
 // to C: the hashes, HMAC, CRC-32, ECDSA P-256, and Ed25519's signing and
 // verification over Monocypher). A key pair is two values, a tuple no
 // row's signature states, so it is this body over the native public-key
-// primitive.
+// primitive. `Sha256` holds state between calls, so it is a locus over
+// the native SHA-256 core's context, the shape of `BytesBuilder`.
 
 /// The Ed25519 key pair of a 32-byte seed (RFC 8032 § 5.1.5): `(public,
 /// secret)`, the 32-byte public key and the 64-byte secret key — the seed
@@ -19,4 +21,48 @@ fn __std_crypto_ed25519_keypair(seed: Bytes) -> (Bytes, Bytes) fallible(CryptoEr
         fail CryptoError { kind: "ed25519_keypair", detail: "the seed is not 32 bytes" };
     }
     return (public, std::bytes::concat(seed, public));
+}
+
+/// SHA-256 (FIPS 180-4) fed in pieces: `update(b)` absorbs bytes and
+/// `finish()` answers the 32-byte digest of everything absorbed since
+/// birth or since the last `finish()`, then starts over, so one hasher
+/// serves input after input. The digest equals `std::crypto::sha256` of
+/// the pieces concatenated, whatever their sizes. The state is the
+/// runtime's 112-byte context, not the input: hashing a stream as it is
+/// read or written holds no more memory than one piece.
+///
+///     let h = std::crypto::Sha256 { };
+///     while true {
+///         let piece = body.chunk() or { break; };
+///         h.update(piece);
+///     }
+///     let digest = h.finish();
+///
+/// The context is malloc'd at birth and freed at dissolve; a failed
+/// allocation is the `alloc_failed` violation at construction.
+locus __StdCryptoSha256 {
+    params {
+        // The runtime context's pointer as an Int (the BytesBuilder
+        // convention); 0 until birth. Not for callers to pass.
+        handle: Int = 0;
+    }
+    closure alloc_failed { captures: handle; epoch inline; }
+    birth() {
+        self.handle = std::crypto::__sha256_new();
+    }
+    birth_check { self.handle == 0 } -> violate alloc_failed;
+    dissolve() {
+        std::crypto::__sha256_free(self.handle);
+    }
+
+    /// Absorb `b`.
+    fn update(b: Bytes) {
+        std::crypto::__sha256_update(self.handle, b);
+    }
+
+    /// The 32-byte digest of everything absorbed since birth or the last
+    /// `finish()`; the hasher starts over.
+    fn finish() -> Bytes {
+        return std::crypto::__sha256_finish(self.handle);
+    }
 }
