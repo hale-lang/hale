@@ -133,8 +133,11 @@ daemon has it (read by a `stat` in the same image with the same mount,
 since the login's shell may see another socket, as a VM's docker on
 macOS has), and with
 `HALE_DNA_HABITAT_LISTEN` (the address `<name>` resolves to on the admin
-machine) and `HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind
-that address and are recorded at `http://<name>:<port>`. The admin machine
+machine; `0.0.0.0` on a machine whose login shell says `Darwin`, since
+its docker runs in a VM that owns none of the machine's addresses and
+publishes what listens on the VM's interfaces on the machine's own) and
+`HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind that
+address and are recorded at `http://<name>:<port>`. The admin machine
 waits on the head and the face at the recorded URL, then keeps a pointer in
 its local habitat's directory in place of a habitat: `remote.json` (the
 name, the host, the login, the image, the head's and face's URLs, the

@@ -125,18 +125,22 @@ struct Machine {
     uid: String,
     gid: String,
     user: String,
+    /// `uname -s` of the login's shell: `Darwin` when the machine's docker
+    /// runs in a VM (Colima, Docker Desktop), whose containers never own
+    /// the machine's own addresses.
+    os: String,
 }
 
 fn probe(t: &Target) -> Result<Machine, String> {
-    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
+    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; uname -s; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
     let lines: Vec<&str> = said.lines().map(str::trim).collect();
-    if lines.len() < 5 || lines[4] != "docker" {
+    if lines.len() < 6 || lines[5] != "docker" {
         return Err(format!("{} answers over SSH, but its docker does not (the habitat's machine needs docker and the user's access to its socket)", t.host));
     }
     if lines[0].is_empty() || !lines[0].starts_with('/') {
         return Err(format!("{} names no home directory for its user", t.host));
     }
-    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string() })
+    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string(), os: lines[4].to_string() })
 }
 
 /// The habitat's directory on its machine and what holds it (the user's
@@ -149,8 +153,20 @@ fn habitat_dir(m: &Machine) -> String {
     format!("{}/habitat/local", data_dir(m))
 }
 
+/// The address the habitat's person-facing listeners bind on the machine:
+/// the address its name resolves to here, which a Linux docker's host
+/// network owns; on a machine whose docker runs in a VM (macOS), every
+/// interface of the VM, since the VM owns none of the machine's addresses
+/// and its port forwarding publishes what listens there on the machine.
+fn listen_on(os: &str, resolved: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    if os == "Darwin" {
+        return Ok("0.0.0.0".to_string());
+    }
+    resolved()
+}
+
 /// The address the machine is reached at from here, as this machine
-/// resolves its name: the address its person-facing listeners bind there.
+/// resolves its name.
 fn listen_address(host: &str) -> Result<String, String> {
     use std::net::ToSocketAddrs;
     let addrs: Vec<std::net::SocketAddr> = (host, 0u16).to_socket_addrs().map_err(|e| format!("{host} does not resolve here: {e}"))?.collect();
@@ -453,7 +469,7 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     let t = Target { host: host.to_string(), user: user.map(str::to_string), port };
     super::progress(&format!("reaching {host} over SSH"));
     let m = probe(&t)?;
-    let listen = listen_address(host)?;
+    let listen = listen_on(&m.os, || listen_address(host))?;
     let tag = image.map(str::to_string).or_else(|| std::env::var("HALE_HABITAT_IMAGE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())).unwrap_or_else(|| default_habitat_image_tag(HABITAT_PIN.trim()));
     // a second `up` reconnects: the habitat there must be the one the
     // pointer names, by its record's identity
@@ -708,6 +724,13 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_docker_listens_on_the_vm_and_a_linux_docker_on_the_address() {
+        assert_eq!(listen_on("Darwin", || Err("unused".into())).unwrap(), "0.0.0.0");
+        assert_eq!(listen_on("Linux", || Ok("192.168.1.20".into())).unwrap(), "192.168.1.20");
+        assert!(listen_on("Linux", || Err("rack-a.lan does not resolve here".into())).is_err());
+    }
+
+    #[test]
     fn a_remote_word_is_quoted_whole() {
         assert_eq!(sq("a b"), "'a b'");
         assert_eq!(sq("it's"), "'it'\\''s'");
@@ -721,7 +744,7 @@ mod tests {
 
     #[test]
     fn the_run_there_carries_its_address_and_its_data() {
-        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into() };
+        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), os: "Linux".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc", "listen": "192.168.1.20", "host": "rack-a.lan" });
         let line = in_image(&m, &p, &["up", "--name", "x"], false);
         assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock 'hale-habitat:abc' -c %g /var/run/docker.sock) && exec docker run --rm --network host --user '1000':'1000' --group-add \"$sg\""), "{line}");
