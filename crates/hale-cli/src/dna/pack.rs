@@ -255,7 +255,9 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
         let root = local.canonicalize().map_err(|e| format!("{from}: {e}"))?;
         let text = fs::read_to_string(root.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
         let (entries, mut saplings) = index_of(&text, from)?;
-        own_saplings(&mut saplings, &root.display().to_string(), &root, "HEAD")?;
+        // named as given, as the staged read below names it, so both pin it
+        // the same; staging mirrors it under that name
+        own_saplings(&mut saplings, from, &root, "HEAD")?;
         stage_local_nursery(from, &root, &entries, &saplings)?;
         return Ok(Nursery { entries, saplings, source: root.display().to_string(), root: Some(root) });
     }
@@ -263,7 +265,9 @@ pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     if staged.is_dir() {
         let text = fs::read_to_string(staged.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
         let (entries, mut saplings) = index_of(&text, from)?;
-        own_saplings(&mut saplings, from, &staged, "HEAD")?;
+        // the nursery's own repository, as staging mirrored it (the staged
+        // nursery is its files alone, with no history to pin)
+        own_saplings(&mut saplings, from, &staged_repo_dir(from), "HEAD")?;
         return Ok(Nursery { entries, saplings, source: from.to_string(), root: Some(staged) });
     }
     // a git repository: cloned once into the cache, fetched, and read at
