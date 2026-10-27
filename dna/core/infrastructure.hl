@@ -613,7 +613,19 @@ locus ComposeProvider {
         } else {
             compose_service(a.role, a.instance)
         };
-        if len(service) == 0 && a.role != "services" { return observe_address(a.address); }
+        if len(service) == 0 && a.role != "services" {
+            let mut st = observe_address(a.address);
+            // the habitat's head and face run in its `face` service: its image
+            if a.role == "head" || a.role == "face" {
+                let img = run_tool(
+                    "docker\nps\n--filter\nlabel=com.docker.compose.project="
+                        + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
+                        + "\n--filter\nlabel=com.docker.compose.service=face\n--format\n{{.Image}}",
+                );
+                if img.code == 0 { st.runs = trim_nl(img.stdout); }
+            }
+            return st;
+        }
         // an organism's own services: every container of its project
         let by_service = if len(service) > 0 {
             "\n--filter\nlabel=com.docker.compose.service=" + service

@@ -6,6 +6,7 @@
 // observes after it. Moving a memory that holds a record is refused until
 // the person confirms starting it empty (a re-apply with fresh).
 import {
+  commandsIndex,
   commandsAllocations,
   commandsPolicy,
   commandsHosts,
@@ -25,6 +26,16 @@ function cell(text) {
   const td = document.createElement("td");
   td.textContent = text;
   return td;
+}
+
+// What fills an allocation: its containers' images; a record the habitat's
+// memory keeps is a schema there, not a server of its own; else the
+// provider's name.
+function runsOf(a) {
+  if (a.role === "memory" && a.service && a.service !== `memory-${a.instance}`) {
+    return `a schema on the habitat's Postgres${a.runs ? ` (${a.runs})` : ""}`;
+  }
+  return a.runs || a.provider;
 }
 
 function stateCell(a) {
@@ -98,8 +109,9 @@ async function apply(fresh) {
 }
 
 export async function refresh() {
-  let allocs, policy, hosts;
+  let allocs, policy, hosts, named;
   try {
+    const i = await commandsIndex({ endpoint }, { limit: 200 });
     const a = await commandsAllocations({ endpoint }, { limit: 1000 });
     const p = await commandsPolicy({ endpoint }, { limit: 200 });
     const h = await commandsHosts({ endpoint }, { limit: 200 });
@@ -109,6 +121,12 @@ export async function refresh() {
       return;
     }
     allocs = parse(a.value.allocations);
+    // an allocation by its organism's name: a grafted one's from the index,
+    // any other the habitat's own
+    const organisms = i.kind === "result" ? parse(i.value.organisms) : [];
+    const byKey = new Map(organisms.map((o) => [String(o.key).slice(0, 12), o.name]));
+    const habitat = i.kind === "result" && i.value.name ? i.value.name : "the habitat";
+    named = (key) => byKey.get(String(key).slice(0, 12)) || habitat;
     policy = parse(p.value.policy);
     hosts = parse(h.value.hosts);
   } catch (e) {
@@ -122,7 +140,7 @@ export async function refresh() {
     const tr = document.createElement("tr");
     const where = document.createElement("td");
     where.append(picker(a, names));
-    tr.append(cell(a.role), cell(a.instance), cell(a.provider), cell(a.runs || a.provider), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
+    tr.append(cell(a.role), cell(named(a.instance)), cell(a.provider), cell(runsOf(a)), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
     rows.append(tr);
   }
   $("allocations-empty").hidden = allocs.length > 0;
