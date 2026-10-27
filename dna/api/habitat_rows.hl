@@ -199,7 +199,11 @@ fn applied_at(a: dna::Allocation) -> dna::Allocation {
 // What the allocation's provider observes of it now.
 fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
     // the identity: the habitat's sign-in, answering at its issuer
-    if a.provider == "oidc-stub" { return dna::observe_address(a.address); }
+    // the identity (the habitat's sign-in, at its issuer) and the forge
+    // (Forgejo, at its address): up while they answer there
+    if a.provider == "oidc-stub" || a.provider == "forgejo" {
+        return dna::observe_address(a.address);
+    }
     if a.provider == "compose" { return dna::ComposeProvider { }.observe(a); }
     if a.provider == "ssh" { return dna::SshProvider { root: root }.observe(a); }
     return dna::AllocationState {
