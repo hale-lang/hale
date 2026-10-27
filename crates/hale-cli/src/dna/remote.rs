@@ -151,7 +151,7 @@ fn habitat_dir(m: &Machine) -> String {
 /// The address the machine is reached at from here, as this machine
 /// resolves its name: the address its person-facing listeners bind there.
 fn listen_address(host: &str) -> Result<String, String> {
-    super::first_ipv4(host)
+    super::ipv4_or_first(host, &super::resolved(host)?)
 }
 
 /// The toolchain image on the machine: there already, sent from this

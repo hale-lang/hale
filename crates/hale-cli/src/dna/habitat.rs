@@ -1914,9 +1914,26 @@ fn ensure_profile_head(genome: &Path, backends: &str, name: &str, face_url: &str
 /// tool): a host's listen address (`HALE_DNA_HOST_LISTEN`,
 /// `hale habitat resolve`), or why there is none.
 pub(crate) fn first_ipv4(name: &str) -> Result<String, String> {
+    ipv4_of(name, &resolved(name)?)
+}
+
+/// Every address `name` resolves to on this machine, through the
+/// toolchain's own resolver (the platform's getaddrinfo), in its order.
+pub(crate) fn resolved(name: &str) -> Result<Vec<std::net::SocketAddr>, String> {
     use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::SocketAddr> = (name, 0u16).to_socket_addrs().map_err(|e| format!("{name} does not resolve here: {e}"))?.collect();
+    Ok((name, 0u16).to_socket_addrs().map_err(|e| format!("{name} does not resolve here: {e}"))?.collect())
+}
+
+/// The first IPv4 address among `addrs`, `name`'s: a host's listen
+/// address as a project placed there is told it.
+pub(crate) fn ipv4_of(name: &str, addrs: &[std::net::SocketAddr]) -> Result<String, String> {
     addrs.iter().find(|a| a.is_ipv4()).map(|a| a.ip().to_string()).ok_or_else(|| format!("{name} resolves to no IPv4 address here"))
+}
+
+/// The first IPv4 address among `addrs`, else the first address of any
+/// family: where a habitat on another machine binds its face and head.
+pub(crate) fn ipv4_or_first(name: &str, addrs: &[std::net::SocketAddr]) -> Result<String, String> {
+    addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).map(|a| a.ip().to_string()).ok_or_else(|| format!("{name} resolves to no address here"))
 }
 
 /// The address the habitat declares its person-facing listeners on: the
@@ -3142,6 +3159,21 @@ mod tests {
 
     /// A host's listen address is its name's first IPv4 address, through
     /// the toolchain's own resolver; a name that resolves to none says so.
+    /// The two rules over one resolution: a project's listen address is
+    /// IPv4 only; a remote habitat's listener prefers IPv4 and falls back
+    /// to the first address.
+    #[test]
+    fn the_listen_rules_read_one_resolution_two_ways() {
+        let v6: std::net::SocketAddr = "[2001:db8::1]:0".parse().unwrap();
+        let v4: std::net::SocketAddr = "192.0.2.7:0".parse().unwrap();
+        assert_eq!(ipv4_of("h", &[v6, v4]).as_deref(), Ok("192.0.2.7"));
+        assert_eq!(ipv4_or_first("h", &[v6, v4]).as_deref(), Ok("192.0.2.7"));
+        assert!(ipv4_of("h", &[v6]).is_err());
+        assert_eq!(ipv4_or_first("h", &[v6]).as_deref(), Ok("2001:db8::1"));
+        assert!(ipv4_of("h", &[]).is_err());
+        assert!(ipv4_or_first("h", &[]).is_err());
+    }
+
     #[test]
     fn a_hosts_listen_address_is_its_first_ipv4() {
         assert_eq!(first_ipv4("127.0.0.1").as_deref(), Ok("127.0.0.1"));
