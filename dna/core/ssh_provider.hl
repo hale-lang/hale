@@ -280,9 +280,33 @@ fn ssh_render_dir(render: Render) -> String {
     return ".hale/habitat/" + render.project + "/" + dir[at..len(dir)];
 }
 
-// `docker compose` on an `ssh` host for `render`, as one shell line run in
-// its directory there.
-fn ssh_compose(render: Render, then: String) -> String {
+// The two facts every compose project placed on an `ssh` host is handed in
+// its environment, whatever it runs: the host's name
+// (`HALE_DNA_HOST_NAME`), and its listen address (`HALE_DNA_HOST_LISTEN`:
+// the first IPv4 address that name resolves to here, which the LAN reaches
+// it at). A project maps them to its own variables in its compose file;
+// the habitat knows none of its names. An apply on a host whose name
+// resolves to none is refused (`apply`); a withdrawal or an exec there goes
+// on without the address.
+fn host_facts(h: Host) -> String {
+    let listen = host_listen_address(h.address);
+    return "HALE_DNA_HOST_NAME='" + h.name + "' "
+        + (if len(listen) > 0 { "HALE_DNA_HOST_LISTEN='" + listen + "' " } else { "" });
+}
+
+// The first IPv4 address `name` resolves to here, "" for none: the
+// toolchain's own resolver (`hale habitat resolve`, the platform's
+// getaddrinfo), never an external tool that a machine may not have.
+fn host_listen_address(name: String) -> String {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let r = run_tool(hale + "\nhabitat\nresolve\n" + name);
+    return if r.code == 0 { trim_nl(r.stdout) } else { "" };
+}
+
+// `docker compose` on an `ssh` host `h` for `render`, as one shell line run
+// in its directory there, with the host's facts (`host_facts`) in its
+// environment.
+fn ssh_compose(h: Host, render: Render, then: String) -> String {
     let remote = ssh_render_dir(render);
     let mut files = "";
     let mut rest = render.files;
@@ -292,7 +316,8 @@ fn ssh_compose(render: Render, then: String) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(f) > 0 { files = files + " -f '" + f + "'"; }
     }
-    return "cd '" + remote + "' && COMPOSE_IGNORE_ORPHANS=1 docker compose -p '" + render.project
+    return "cd '" + remote + "' && " + host_facts(h)
+        + "COMPOSE_IGNORE_ORPHANS=1 docker compose -p '" + render.project
         + "'"
         + files + " " + then;
 }
@@ -369,6 +394,14 @@ locus SshProvider {
         if len(render.project) == 0 || len(render.dir) == 0 {
             return RenderApplied { why: "nothing to apply: the render names no project" };
         }
+        // a project placed here is told the host's listen address: a name
+        // that resolves to none is refused, never applied without it
+        if len(host_listen_address(h.address)) == 0 {
+            return RenderApplied {
+                why: "host `" + host + "`: its name " + h.address
+                    + " resolves to no IPv4 address here, so the project placed there cannot be told its listen address (HALE_DNA_HOST_LISTEN); fix the LAN's DNS for it, or add the host again under a name that resolves",
+            };
+        }
         let remote = ssh_render_dir(render);
         let made = ssh_run(self.root, h, "mkdir -p '" + remote + "'", "");
         if made.code != 0 {
@@ -395,7 +428,7 @@ locus SshProvider {
                 };
             }
         }
-        let up = ssh_run(self.root, h, ssh_compose(render, compose_up_args(render, " ")), "");
+        let up = ssh_run(self.root, h, ssh_compose(h, render, compose_up_args(render, " ")), "");
         if up.code != 0 {
             return RenderApplied {
                 why: "docker compose up on " + host + " failed: " + trim_nl(up.stderr),
@@ -408,7 +441,12 @@ locus SshProvider {
         if h.provider != "ssh" || h.state != "ready" {
             return RenderApplied { why: "host `" + host + "` is not a ready ssh host" };
         }
-        let down = ssh_run(self.root, h, ssh_compose(render, compose_down_args(render, " ")), "");
+        let down = ssh_run(
+            self.root,
+            h,
+            ssh_compose(h, render, compose_down_args(render, " ")),
+            "",
+        );
         if down.code != 0 {
             return RenderApplied {
                 why: "docker compose down on " + host + " failed: " + trim_nl(down.stderr),
