@@ -11,6 +11,7 @@
 //! admin machine reaches the head through that pointer; the verbs that
 //! act on the habitat's machine itself (`up`, `down`) run there over SSH.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
@@ -673,11 +674,22 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     if !up {
         return ExitCode::SUCCESS;
     }
+    // the organisms by their names: the habitat's own by the pointer's, each
+    // grafted one by the index's (an allocation names its record's identity)
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    names.insert(identity[..12.min(identity.len())].to_string(), p["name"].as_str().unwrap_or("").to_string());
     match http_surface_call(head, "Commands::index", &serde_json::json!({ "limit": 200 })) {
-        Ok(v) if v["ok"] == serde_json::json!(true) && v["name"].as_str().is_some_and(|n| n != p["name"].as_str().unwrap_or("")) => {
-            println!("{:<8}the head answers as the habitat `{}`, not this pointer's", "note", v["name"].as_str().unwrap_or(""));
+        Ok(v) => {
+            if v["ok"] == serde_json::json!(true) && v["name"].as_str().is_some_and(|n| n != p["name"].as_str().unwrap_or("")) {
+                println!("{:<8}the head answers as the habitat `{}`, not this pointer's", "note", v["name"].as_str().unwrap_or(""));
+            }
+            let organisms: Vec<serde_json::Value> = v["organisms"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            for o in organisms {
+                if let (Some(k), Some(n)) = (o["key"].as_str(), o["name"].as_str()) {
+                    names.insert(k[..12.min(k.len())].to_string(), n.to_string());
+                }
+            }
         }
-        Ok(_) => {}
         Err(e) => println!("{:<8}{e}", "note"),
     }
     match http_surface_call(head, "Commands::allocations", &serde_json::json!({ "limit": 200 })) {
@@ -692,7 +704,9 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
                 // the habitat's own machine is the host `local` in its rows; here it is the machine's name
                 let on = if f("applied").is_empty() { f("host") } else { f("applied") };
                 let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
-                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if f("organism").is_empty() { String::new() } else { format!(", {}", f("organism")) }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                let org = f("organism");
+                let org = names.get(&org[..12.min(org.len())]).cloned().unwrap_or(org);
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if org.is_empty() { String::new() } else { format!(", {org}") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }

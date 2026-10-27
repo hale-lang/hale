@@ -365,8 +365,42 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
-    out.extend(applied_lines(&head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false }))?));
+    match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false })) {
+        Ok(v) => out.extend(applied_lines(&v)),
+        // a first build of its images on the host outlives the head's
+        // deadline; the apply goes on in the head's keeping, so the graft
+        // follows the allocation until its provider observes it
+        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), host)?),
+        Err(e) => return Err(e),
+    }
     Ok(out)
+}
+
+/// An apply that outlived the head's deadline, followed through the
+/// allocation's state as its provider observes it: a line when it is up or
+/// degraded, a heartbeat while it is building, refused after half an hour.
+fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, String> {
+    let begun = std::time::Instant::now();
+    let mut said = begun;
+    loop {
+        let v = head_call("Commands::allocations", serde_json::json!({ "limit": 1000 }))?;
+        let rows: Vec<serde_json::Value> = v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+        if let Some(r) = rows.iter().find(|r| r["allocation"] == allocation) {
+            let state = r["state"].as_str().unwrap_or("");
+            if state == "up" || state == "degraded" {
+                return Ok(vec![format!("{:<8}{allocation} on {host}: {state} ({})", "applied", r["detail"].as_str().unwrap_or(""))]);
+            }
+        }
+        if begun.elapsed() > std::time::Duration::from_secs(1800) {
+            return Err(format!("{allocation} on {host} is not up after half an hour: `hale habitat status` shows what its provider sees, `hale habitat apply` tries again"));
+        }
+        if said.elapsed() >= std::time::Duration::from_secs(20) {
+            let t = begun.elapsed().as_secs();
+            super::progress(&format!("still applying {allocation} on {host} ({}m {:02}s): its images are building there", t / 60, t % 60));
+            said = std::time::Instant::now();
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
 }
 
 /// What `Commands::apply_allocations` answered, a line per allocation.

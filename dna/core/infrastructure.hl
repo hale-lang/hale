@@ -655,16 +655,26 @@ fn containers_state(what: String, seen: String) -> AllocationState {
     if std::str::index_of(seen, "\n") < 0 { return container_state(what, seen); }
     let mut up = 0;
     let mut n = 0;
+    let mut done = 0;
     let mut rest = seen + "\n";
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         if len(line) == 0 { continue; }
+        // a one-shot that finished (a migration that exited 0) is done,
+        // never a container that is down
+        if std::str::starts_with(line, "exited") && std::str::contains(line, "Exited (0)") {
+            done = done + 1;
+            continue;
+        }
         n = n + 1;
         if container_state(what, line).state == "up" { up = up + 1; }
     }
-    if up == n { return AllocationState { state: "up", detail: to_string(n) + " running" }; }
+    let finished = if done > 0 { ", " + to_string(done) + " finished" } else { "" };
+    if up == n {
+        return AllocationState { state: "up", detail: to_string(n) + " running" + finished };
+    }
     if up > 0 {
         return AllocationState {
             state: "degraded",

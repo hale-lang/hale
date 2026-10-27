@@ -181,9 +181,18 @@ fn main() {
         "running Up 2 minutes\nrunning Up 2 minutes\nexited Exited (0)",
         "the state lines without their images",
     );
+    // a one-shot that finished (exit 0, a migration) is done, never down
+    let st = dna::containers_state("memory", seen.states);
+    std::test::assert(
+        st.state == "up" && st.detail == "2 running, 1 finished",
+        "a finished one-shot is done: " + st.state + " (" + st.detail + ")",
+    );
     std::test::assert_eq_str(
-        dna::containers_state("memory", seen.states).state,
+        dna::containers_state(
+            "memory",
+            "running Up 2 minutes\nexited Exited (1) 5 seconds ago",
+        ).state,
         "degraded",
-        "read as before",
+        "one that failed is not",
     );
 }
