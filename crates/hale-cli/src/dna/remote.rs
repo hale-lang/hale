@@ -1123,7 +1123,10 @@ pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode 
     let graft = started["graft"].as_str().unwrap_or("").to_string();
     super::progress(&format!("grafting `{name}`{}", if host.is_empty() { String::new() } else { format!(" on {host}") }));
     let mut from = 0i64;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    let begun = std::time::Instant::now();
+    let deadline = begun + std::time::Duration::from_secs(3600);
+    let mut heard = begun;
+    let mut last = String::new();
     loop {
         let page = match http_surface_call(head, "Commands::graft_log", &serde_json::json!({ "graft": graft, "from": from })) {
             Ok(v) => v,
@@ -1135,6 +1138,16 @@ pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode 
         if let Some(text) = page["text"].as_str().filter(|t| !t.is_empty()) {
             print!("{text}");
             let _ = std::io::Write::flush(&mut std::io::stdout());
+            heard = std::time::Instant::now();
+            if let Some(l) = text.lines().rev().find(|l| !l.trim().is_empty()) {
+                last = l.trim().trim_start_matches("... ").to_string();
+            }
+        } else if heard.elapsed() >= std::time::Duration::from_secs(20) {
+            // a quiet log is a step still running, never a hang the person
+            // has to guess at: how long, and what it said last
+            let t = begun.elapsed().as_secs();
+            eprintln!("... still grafting `{name}` ({}m {:02}s){}", t / 60, t % 60, if last.is_empty() { String::new() } else { format!(": {last}") });
+            heard = std::time::Instant::now();
         }
         from = page["next"].as_i64().unwrap_or(from);
         if page["done"] == serde_json::json!(true) && page["text"].as_str().is_none_or(str::is_empty) {

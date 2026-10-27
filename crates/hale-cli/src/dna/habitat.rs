@@ -1716,10 +1716,14 @@ fn up(args: &[String]) -> ExitCode {
 }
 
 pub(super) fn progress(msg: &str) {
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) || PROGRESS_TO_LOG.load(std::sync::atomic::Ordering::Relaxed) {
         eprintln!("... {msg}");
     }
 }
+
+/// A graft the head started (`--no-head`) writes its progress into its log,
+/// which `Commands::graft_log` pages to the person following it.
+static PROGRESS_TO_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The habitat's placement, through its providers (phase 4): the host
 /// the `compose` provider produces (`local`, with what it offers), the
@@ -2866,7 +2870,10 @@ fn graft(args: &[String]) -> ExitCode {
                 on_host = Some(v.clone());
                 i += 1;
             }
-            "--no-head" => no_head = true,
+            "--no-head" => {
+                no_head = true;
+                PROGRESS_TO_LOG.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             "--forge" => {
                 let Some(v) = args.get(i + 1) else {
                     eprintln!("hale habitat graft: `--forge` takes a provider (forgejo, github, file, none)\n{}", usage_text());

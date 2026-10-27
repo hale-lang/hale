@@ -251,6 +251,7 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             if fetch_repo != repo {
                 let _ = git(&["remote", "set-url", "origin", &fetch_repo], Some(&store));
             }
+            super::progress(&format!("fetching `{name}` at {revision} from {repo}"));
             let fetched = git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"));
             if fetch_repo != repo {
                 let _ = git(&["remote", "set-url", "origin", &repo], Some(&store));
@@ -277,6 +278,7 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
         }
     }
     let lineage = serde_json::json!({ "sapling": name, "revision": revision, "digest": digest, "nursery": nursery });
+    super::progress(&format!("grafting `{name}` as the habitat's child: its record, memory and nerves"));
     out.extend(graft_lines(&store, true, library, pack, &Shape { profile: None, remote: None, body: None }, Some(&lineage))?);
     // its packs, proposed to the child's Board, from its own nursery (or the
     // toolchain's when its own offers none by the name)
@@ -296,8 +298,10 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
         }
     }
     // the sapling's packaging, ratified by the graft that chose it
+    super::progress(&format!("ratifying `{name}`'s packaging"));
     out.push(super::ratify_packaged(&crate::dna::organism_root(&store)?, &format!("the graft of the sapling `{name}`"), "its purpose, practices and positions"));
     // its own services, on the host its graft names
+    super::progress(&format!("placing `{name}`'s services and applying them on their host (a first build of its images there takes minutes)"));
     out.extend(place_services(&crate::dna::organism_root(&store)?)?);
     Ok(out)
 }
@@ -399,6 +403,8 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     let exit = log.with_extension("log.exit");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
     let mut code = String::new();
+    let begun = std::time::Instant::now();
+    let mut heard = begun;
     while std::time::Instant::now() < deadline {
         if live {
             if let Ok(s) = std::fs::read_to_string(&log) {
@@ -406,6 +412,13 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
                     print!("{}", &s[streamed..]);
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                     streamed = s.len();
+                    heard = std::time::Instant::now();
+                } else if heard.elapsed() >= std::time::Duration::from_secs(20) {
+                    // a quiet log is a step still running: how long, and what it said last
+                    let t = begun.elapsed().as_secs();
+                    let last = s.lines().rev().find(|l| !l.trim().is_empty()).map(|l| format!(": {}", l.trim().trim_start_matches("... "))).unwrap_or_default();
+                    eprintln!("... still grafting `{name}` ({}m {:02}s){last}", t / 60, t % 60);
+                    heard = std::time::Instant::now();
                 }
             }
         }
