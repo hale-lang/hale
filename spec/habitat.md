@@ -1035,6 +1035,15 @@ Chosen at the habitat's birth and kept.
 
 ## Graft and `[dna] needs`
 
+The `[dna]` table is read forward-compatibly: a key this toolchain does
+not know (one a newer toolchain reads, or a misspelling) is ignored with
+a warning naming it (`this toolchain does not know [dna] <key> and
+ignores it`), never refused, so an organism may declare what a newer
+habitat reads before the toolchain beside it knows it. The keys it knows
+are read and checked as each section says (`needs`, `brings`,
+`migrations`, `codebase`, `fleet`, `record`, `reflex`, and `host`, which
+this toolchain carries for a habitat that runs host commands).
+
 **A graft plans each body part before it makes anything.** The organism
 plane (`memory`, `nerves`, `senses`) reuses the habitat's unless
 `--own <part>[=<host>]` gives the organism a server of its own on that host
