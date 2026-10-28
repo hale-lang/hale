@@ -980,6 +980,13 @@ impl<'a> Bodies<'a> {
         locus.map_or(Ty::Unknown, |l| Ty::Named(l.to_string()))
     }
 
+    /// Is `ty` a fixed array of scalars laid out inline in the record
+    /// holding it (`Class::Inline`, a `bounded` list aside, whose
+    /// elements are anchored in the record's arena)?
+    fn inline_scalar_array(&self, ty: &Ty) -> bool {
+        self.classify(ty) == Class::Inline && !matches!(ty, Ty::Bounded(..))
+    }
+
     /// The type of a site the checker typed nothing at.
     fn unknown(&self) -> &'static Ty {
         static UNKNOWN: Ty = Ty::Unknown;
@@ -2048,6 +2055,20 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
+    /// Is the slot an assignment writes a fixed array of scalars laid out
+    /// inline in the record holding it (`x.nums = [1, 2]`)? Lowering
+    /// copies the value's bytes into the slot (`array_inline_spec`), so
+    /// the value, a literal or a local holding one, keeps its frame's
+    /// lifetime and nothing it allocated is kept through the parameter.
+    /// A `bounded` slot is not one: its elements are anchored in the
+    /// arena that owns the record.
+    fn inline_scalar_slot(&self, target: &LValue) -> bool {
+        match target.tail.last() {
+            Some(LValueSeg::Field(f)) => self.p.inline_scalar_array(self.views.place(f)),
+            _ => false,
+        }
+    }
+
     /// The locus this body is a member of.
     fn in_locus(&mut self, locus: Option<String>) {
         self.self_ty = self.p.locus_ty(locus.as_deref());
@@ -2896,7 +2917,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                             if let Some(&i) = self.param_index.get(&target.head.name) {
                                 self.param_mask |= param_bit(i);
                             }
-                            if self.storage_params.contains(&target.head.name) && !id.is_none() {
+                            // A slot laid out inline (a fixed array of
+                            // scalars) takes the value's bytes, and the
+                            // value is freed with the frame: nothing it
+                            // allocated is kept through the parameter.
+                            if self.storage_params.contains(&target.head.name)
+                                && !id.is_none()
+                                && !self.inline_scalar_slot(target)
+                            {
                                 self.param_writes.push(id.0);
                             }
                         }
@@ -4654,6 +4682,7 @@ mod tests {
         let src = r#"
             type Bag { b: String = ""; }
             type Outer { bag: Bag = Bag { }; }
+            type Nums { nums: [Int; 2] = [0, 0]; }
             locus H { params { name: String = ""; } }
             locus S {
                 params { bag: Bag = Bag { }; }
@@ -4668,6 +4697,9 @@ mod tests {
         assert_eq!(n(r#"fn a(x: Bag) { x = Bag { }; }"#), 0);
         assert_eq!(n(r#"fn a(h: H, s: String) { h.name = s; }"#), 0);
         assert_eq!(n(r#"fn a(s: String) { self.bag.b = s; }"#), 0);
+        // An inline array of scalars takes the value's bytes: no write
+        // keeps anything through the parameter.
+        assert_eq!(n(r#"fn a(x: Nums) { x.nums = [1, 2]; x.nums = [1; 2]; let a = [1, 2]; x.nums = a; }"#), 0);
     }
 
     #[test]

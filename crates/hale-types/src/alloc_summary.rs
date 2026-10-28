@@ -11026,7 +11026,7 @@ pub(crate) mod tests {
     /// A write through a parameter (spec/memory.md § "A method's write
     /// through a record parameter"): the locus, its writers, and `BODY`.
     const WRITERS: &str = r#"
-        type Bag { b: String = ""; n: Int = 0; }
+        type Bag { b: String = ""; n: Int = 0; nums: [Int; 2] = [0, 0]; }
         type Outer { bag: Bag = Bag { }; }
         locus S {
             params { bag: Bag = Bag { }; outer: Outer = Outer { }; }
@@ -11154,6 +11154,29 @@ pub(crate) mod tests {
         assert_eq!(store_verdicts(&s, "on_t"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
         assert_eq!(leaks_in(&s, "on_t"), [(Escape::HeldStore, LeakReason::InvokedUnboundedly)]);
         assert_eq!(store_verdicts(&s, "mine"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+    }
+
+    /// A write into an inline array of scalars through a parameter
+    /// (`x.nums = [1, 2]`, `[1; 2]`, a local holding a literal) copies the
+    /// value's bytes into the record; the literal is the frame's and is
+    /// freed with it. No store is kept through the parameter, so a writer
+    /// that only does that stores nothing, and a `run()` loop handing it
+    /// a record `self` holds is no finding.
+    #[test]
+    fn a_write_into_an_inline_scalar_array_keeps_nothing_through_the_parameter() {
+        for write in ["x.nums = [1, 2];", "x.nums = [1; 2];", "let a = [1, 2]; x.nums = a;"] {
+            let src = WRITERS.replace(
+                "BODY",
+                &format!("fn set(x: Bag) {{ {write} }} run() {{ while true {{ self.set(self.bag); }} }}"),
+            );
+            let s = summarize(&src);
+            let set = fns(&s, Some("S"), "set");
+            assert!(set.sites.iter().all(|x| x.escape == Escape::Local), "{write}: {:?}", set.sites);
+            assert!(!set.stores_through_params, "{write}");
+            assert_eq!(store_verdicts(&s, "run"), [], "{write}");
+            let (program, ids) = minted(&src);
+            assert_eq!(plain_advisory(&[&program], &ids, &[], true).len(), 0, "{write}");
+        }
     }
 
     /// The `run()` loop handing a writer a record `self` holds grows the

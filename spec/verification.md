@@ -2209,8 +2209,10 @@ assume the others in a build:
   these are is the owned-view column's (`OwnedViews::writes_param`: an
   assignment rooted at such a parameter, the writes its positional write
   summaries start from), so a local bound from the parameter, which the
-  local-place rule copies, is the frame's own, and a handle's store is
-  its locus's. Within the body a `param-store` site is judged as any
+  local-place rule copies, is the frame's own, a handle's store is
+  its locus's, and a write into a slot laid out inline (a fixed array of
+  scalars: `x.nums = [1, 2]`, `[1; 2]`, a local holding one) takes the
+  value's bytes, so the literal keeps its frame's lifetime. Within the body a `param-store` site is judged as any
   escaping one: in an unbounded loop of the body's own it accumulates
   (the record outlives the loop). Across calls the owner decides, so the
   writer's own site is not judged invoked unboundedly; each call that
