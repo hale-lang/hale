@@ -84,7 +84,7 @@ hale habitat organism place voice node --host gpu-1.lan          # sudo asks onc
 hale habitat organism unplace voice node --host gpu-1.lan
 ```
 
-The command runs in the organism's own source at the revision the habitat pins, with the host's `hale`, over your SSH login. Inputs such as voice's operator token are fetched for the run, handed over in a private file, and removed afterwards ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Host commands).
+The command runs in the organism's own source at the revision the habitat pins, with the host's `hale`, over your SSH login. Inputs such as voice's operator token are fetched for the run, handed over in a private file, and removed afterwards. When the declaration names its `service` (voice's is `voice-node-<id>`, a systemd unit on Linux and a launchd service on macOS), `place` ends by asking the host's service manager that it runs, and `unplace` that it is gone ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Host commands).
 
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 

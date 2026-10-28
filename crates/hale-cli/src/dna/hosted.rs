@@ -12,6 +12,7 @@
 //! inputs = ["id", "api_url", "operator_token_file"]
 //! api_service = "api"                                  # whose published URL is {api_url} (default "api")
 //! operator_token = ["voice-api", "admin-token"]        # run in that service's container: prints the token
+//! service = "voice-node-{id}"                          # what the install leaves running: a systemd unit or launchd label
 //! ```
 //!
 //! The command runs in the organism's source at the revision the habitat
@@ -36,6 +37,10 @@ pub(super) struct HostCommand {
     pub inputs: Vec<String>,
     pub api_service: String,
     pub operator_token: Vec<String>,
+    /// What the install leaves running on the host, outside compose: the
+    /// system service's name (a systemd unit on Linux, a launchd label in
+    /// the system domain on macOS), `{id}` filled in; "" when it names none.
+    pub service: String,
 }
 
 /// The inputs a host command may take, by name.
@@ -57,7 +62,7 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
             }
         };
         for k in t.keys() {
-            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "operator_token"].contains(&k.as_str()) {
+            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "operator_token", "service"].contains(&k.as_str()) {
                 return Err(format!("[dna.host.{name}] has no `{k}`"));
             }
         }
@@ -69,7 +74,14 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
             inputs: strs("inputs")?,
             api_service: t.get("api_service").and_then(|v| v.as_str()).unwrap_or("api").to_string(),
             operator_token: strs("operator_token")?,
+            service: match t.get("service") {
+                None => String::new(),
+                Some(v) => v.as_str().ok_or_else(|| format!("[dna.host.{name}] service is a string"))?.to_string(),
+            },
         };
+        if c.service.contains(|ch: char| !(ch.is_ascii_alphanumeric() || "-_.@{}".contains(ch))) {
+            return Err(format!("[dna.host.{name}] service `{}`: letters, digits, `-`, `_`, `.`, `@` and `{{id}}`", c.service));
+        }
         if c.install.is_empty() || c.uninstall.is_empty() {
             return Err(format!("[dna.host.{name}] names its install and its uninstall"));
         }
@@ -349,12 +361,16 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         values.insert("operator_token_file", token_file.clone());
     }
     let argv = fill(if install { &cmd.install } else { &cmd.uninstall }, &cmd.inputs, &values)?;
+    let service = if cmd.service.is_empty() { String::new() } else { fill(&[cmd.service.clone()], &cmd.inputs, &values)?.remove(0) };
 
     println!("{:<8}{organism}'s `{name}` on {host} ({platform}{}), as {organism} {revision} declares it", if install { "place" } else { "unplace" }, if cmd.root { ", as root through your sudo" } else { "" });
     println!("{:<8}{}", "runs", argv.join(" "));
     println!("{:<8}in {dir} on {host}, with {hale} ({})", "from", p.hale_version);
     if needs("operator_token_file") {
         println!("{:<8}{organism}'s operator token, read in its `{}` on {api_host}, in a 0600 file on {host} for the run alone", "token", cmd.api_service);
+    }
+    if !service.is_empty() {
+        println!("{:<8}{service}, {} on {host}", "service", if platform == "macos" { "a launchd service in the system domain" } else { "a systemd unit" });
     }
     if plan {
         return Ok(());
@@ -378,7 +394,30 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", needs("operator_token_file").then_some(token_file.as_str()));
     over_login(host, port, &script, None, tty)?;
     println!("{:<8}{organism}'s `{name}` {} on {host}", "done", if install { "placed" } else { "taken off" });
+    if !service.is_empty() {
+        // what the command says it leaves running, as the host's own service manager sees it
+        let state = service_state(&over_login(host, port, &service_script(&service), None, false)?);
+        let want = if install { "running" } else { "absent" };
+        if state != want {
+            return Err(format!("{organism}'s `{name}` finished, but its service {service} on {host} is {state}, not {want}"));
+        }
+        println!("{:<8}{service} on {host}: {state}", "service");
+    }
     Ok(())
+}
+
+/// What the host's service manager says of `service`: `running`, `stopped`
+/// (known, not running) or `absent`, a line of its own.
+fn service_script(service: &str) -> String {
+    let s = sq(service);
+    format!(
+        "if [ \"$(uname -s)\" = Darwin ]; then out=$(launchctl print system/{s} 2>/dev/null) || {{ echo 'state absent'; exit 0; }}; case \"$out\" in *'state = running'*) echo 'state running';; *) echo 'state stopped';; esac; \
+         else st=$(systemctl is-active {s} 2>/dev/null); case \"$st\" in active|activating|reloading) echo 'state running';; *) if systemctl cat {s} >/dev/null 2>&1; then echo 'state stopped'; else echo 'state absent'; fi;; esac; fi"
+    )
+}
+
+fn service_state(out: &str) -> String {
+    out.lines().find_map(|l| l.strip_prefix("state ")).map(|s| s.trim().to_string()).unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]
@@ -396,13 +435,15 @@ install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_ur
 uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
 inputs = ["id", "api_url", "operator_token_file"]
 operator_token = ["voice-api", "admin-token"]
+service = "voice-node-{id}"
 "#;
 
     #[test]
     fn a_host_command_is_read_and_checked() {
         let c = host_commands(VOICE).unwrap();
         let node = &c["node"];
-        assert!(node.root && node.platforms == ["linux", "macos"] && node.api_service == "api");
+        assert!(node.root && node.platforms == ["linux", "macos"] && node.api_service == "api" && node.service == "voice-node-{id}");
+        assert!(host_commands(&VOICE.replace("voice-node-{id}", "voice node")).unwrap_err().contains("service"));
         assert!(host_commands("[dna]\nneeds = []\n").unwrap().is_empty());
         let refuse = |extra: &str| host_commands(&VOICE.replace("root = true", extra)).unwrap_err();
         assert!(refuse("root = true\ncolor = \"red\"").contains("has no `color`"));
@@ -437,7 +478,9 @@ operator_token = ["voice-api", "admin-token"]
         let s = run_script("/home/x/.local/share/hale/hosted/voice", &["hale".into(), "run".into(), "node".into(), "install".into()], "/usr/local/bin/hale", true, "sudo", Some("/home/x/t"));
         assert!(s.starts_with("cd '/home/x/.local/share/hale/hosted/voice' || exit 1; tf='/home/x/t'; trap 'rm -f \"$tf\"' EXIT; "), "{s}");
         assert!(s.contains("sudo '/usr/local/bin/hale' 'run' 'node' 'install'"), "{s}");
-        for script in [s, prepare_script("voice", "https://github.com/hale-lang/voice", "v1.2.0")] {
+        assert_eq!(service_state("noise\nstate running\n"), "running");
+        assert_eq!(service_state(""), "unknown");
+        for script in [s, prepare_script("voice", "https://github.com/hale-lang/voice", "v1.2.0"), service_script("voice-node-gpu-1")] {
             assert!(Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
     }

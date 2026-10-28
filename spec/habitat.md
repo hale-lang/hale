@@ -975,6 +975,7 @@ uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-tok
 inputs = ["id", "api_url", "operator_token_file"]
 api_service = "api"                           # whose published address is {api_url} (default "api")
 operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
+service = "voice-node-{id}"                   # what the install leaves running
 ```
 
 `hale habitat organism place <organism> <command> --host <h> [--id <id>]
@@ -1003,6 +1004,13 @@ grafted organism that came from a sapling the habitat pins, and a
   `host add` makes the habitat's account; `root = true` runs it under the
   person's sudo, so only at a terminal. `--plan` prints what would run,
   where, and with what, and touches nothing on the host but the checkout.
+- **What it leaves running.** `service` names the system service the
+  install leaves on the host, outside compose (a systemd unit on Linux, a
+  launchd service in the system domain on macOS), its `{id}` filled as
+  the command's is: letters, digits, `-`, `_`, `.`, `@`. The plan names
+  it, and once the command exits 0 the host's own service manager is
+  asked for it: `running` after `place`, `absent` after `unplace`, and
+  anything else fails the verb, naming what it found.
 
 Not yet: the habitat records no row for a placed command (the
 infrastructure screen does not show it, and a host's removal does not run
