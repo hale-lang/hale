@@ -223,7 +223,7 @@ pub(super) fn containers_line(on: &str, outcome: &str) -> String {
         ("skip", why) => format!("no container exporter: {why}"),
         _ => format!("no container exporter: the install said nothing it did ({outcome:?})"),
     };
-    format!("{:<8}{on}: {said}", "containers")
+    format!("containers {on}: {said}")
 }
 
 /// What an install's outcome means, as `up` and `host add` say it of `on`.
@@ -292,7 +292,7 @@ pub(super) fn install_here(label: &str) -> Vec<String> {
         },
         match run_here(&containers_script(sudo_word(tty))) {
             Ok(o) => containers_line(label, &o),
-            Err(why) => format!("{:<8}{label}: no container exporter: {why}", "containers"),
+            Err(why) => format!("containers {label}: no container exporter: {why}"),
         },
     ]
 }
@@ -307,7 +307,7 @@ pub(super) fn install_over(host: &str, user: Option<&str>, port: Option<u16>) ->
         },
         match super::remote::login_script(host, user, port, containers_script) {
             Ok(o) => containers_line(host, &o),
-            Err(why) => format!("{:<8}{host}: no container exporter: {why}", "containers"),
+            Err(why) => format!("containers {host}: no container exporter: {why}"),
         },
     ]
 }
