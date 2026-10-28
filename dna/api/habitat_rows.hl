@@ -235,6 +235,15 @@ fn applied_at(a: dna::Allocation) -> dna::Allocation {
     return there;
 }
 
+// How an allocation runs, beside the provider that fills it: the habitat's
+// own Forgejo (its `forge` service) and sign-in stub (inside its `face`
+// service) run under compose like its memory; any other runs as its
+// provider says.
+fn allocation_runs_by(a: dna::Allocation) -> String {
+    if a.provider == "forgejo" || a.provider == "oidc-stub" { return "compose"; }
+    return a.provider;
+}
+
 // What the allocation's provider observes of it now.
 fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
     // the identity: the habitat's sign-in, answering at its issuer
@@ -312,6 +321,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("instance", a.instance);
         out.string_field("organism", std::json::find_string_field(body, "organism"));
         out.string_field("provider", a.provider);
+        out.string_field("runs_by", allocation_runs_by(a));
         out.string_field("host", a.host);
         out.string_field("service", a.service);
         out.string_field("address", a.address);

@@ -841,7 +841,9 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
                 let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
                 let org = f("organism");
                 let org = names.get(&org[..12.min(org.len())]).cloned().unwrap_or(org);
-                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if org.is_empty() { String::new() } else { format!(", {org}") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                // how it runs, and what fills it when that is another thing
+                let by = if f("runs_by").is_empty() || f("runs_by") == f("provider") { f("provider") } else { format!("{} ({})", f("runs_by"), f("provider")) };
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), by, on, if org.is_empty() { String::new() } else { format!(", {org}") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }

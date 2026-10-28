@@ -799,8 +799,13 @@ person who does not hold the Board is refused as the row says).
   brass). A refusal is shown as the row answered it, and a removal's
   report item by item.
 - **Infrastructure** (`infrastructure.js`): the allocations (role,
-  instance, provider, host, the state the provider observes) and the policy
-  (`Commands::policy`). A host picker per allocation calls
+  organism, how it runs, what fills it, host, the state the provider
+  observes) and the policy
+  (`Commands::policy`). How an allocation runs is the row's `runs_by`:
+  `compose` for the habitat's own Forgejo (its `forge` service) and
+  sign-in stub (inside its `face` service), whose `provider` names the
+  product (`forgejo`, `oidc-stub`) and is shown as what fills it; any
+  other allocation's provider, as it is. A host picker per allocation calls
   `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`
   and shows the pulse, what each provider observes of each allocation
   after it. A move of a memory that holds a record is refused by the row;
