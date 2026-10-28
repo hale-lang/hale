@@ -443,3 +443,65 @@ fn a_record_parameter_handed_on_through_a_carrier_outlives_both() {
         &["block=6162", "if=616263", "match=61626364", "free_block=6162636465"],
     );
 }
+
+/// The fix the one-owner refusal suggests: a call that would hand a
+/// writer both a record the locus holds and a parameter is refused at
+/// check time (`hale_types` `diag_quality`), and copying the parameter's
+/// fields into a local record first leaves the call one owner. The held
+/// record keeps what the writer stores into it, and the caller's record
+/// is untouched.
+#[test]
+fn the_copy_the_one_owner_refusal_suggests_keeps_the_held_record() {
+    let src = r#"
+type Bag { b: Bytes = b""; }
+
+fn fresh(n: Int) -> Bytes {
+    let buf = std::bytes::BytesBuilder { initial_cap: 16 };
+    let mut i = 0;
+    while i < n {
+        buf.append_u8(97 + i);
+        i = i + 1;
+    }
+    return buf.snapshot() or b"";
+}
+
+locus Sink {
+    params { held: Bag = Bag { }; }
+    fn put_two(a: Bag, b: Bag, p: Bytes) { a.b = p; b.b = p; }
+    fn copied(x: Bag, p: Bytes) {
+        let mine = Bag { b: x.b };
+        self.put_two(self.held, mine, p);
+    }
+}
+
+locus Driver {
+    params { sink: Sink = Sink { }; }
+    run() {
+        let bag = Bag { };
+        self.sink.copied(bag, fresh(3));
+        println("caller=", len(bag.b));
+    }
+}
+
+fn main() {
+    let d = Driver { };
+    println("held=", std::hex::encode(d.sink.held.b));
+}
+"#;
+    let bin = harness::unique_bin("member_param_write_copied");
+    let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &opts).expect("build");
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!stderr.contains("AddressSanitizer"), "ASan report:\n{stderr}");
+    assert!(out.status.success(), "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}", out.status);
+    for w in ["caller=0", "held=616263"] {
+        assert!(stdout.contains(w), "missing {w:?} in:\n{stdout}");
+    }
+}

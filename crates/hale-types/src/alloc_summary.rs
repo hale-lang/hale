@@ -1199,6 +1199,10 @@ pub struct FormShape {
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
+    /// The program's calls that hand a writer storage of two owners at
+    /// once (`crate::view_bindings::MixedOwners`), which the check
+    /// refuses: the owned-view column the summary was derived over.
+    pub mixed_owner_calls: Vec<crate::view_bindings::MixedOwners>,
     /// iris handoff P2.2: loci only ever instantiated eagerly.
     pub eager_only_loci: BTreeSet<String>,
     /// Flow loci: the types some `release(c: T)` clause names, the
@@ -1566,6 +1570,7 @@ impl AllocSummary {
         let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
         let own_key = |k: &FnKey| is_own(k);
         AllocSummary {
+            mixed_owner_calls: self.mixed_owner_calls.clone(),
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             flow_loci: self.flow_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
@@ -3997,6 +4002,8 @@ pub fn summarize_within(
     let param_order: BTreeMap<FnKey, Vec<String>> =
         bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
     resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
+    // The one-owner rule's refusals (`check.rs`), the program's own calls.
+    summary.mixed_owner_calls = views.program.mixed_owners().to_vec();
     Ok(summary)
 }
 

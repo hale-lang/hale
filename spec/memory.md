@@ -1240,7 +1240,15 @@ Two correctness invariants make this safe:
      publishes the locus's own arena instead, which owns the
      record; the write is a clone into it, so a String it
      replaces is not recycled as a `self.bag.b = p` store
-     recycles it. A
+     recycles it. **One owner per call:** a call publishes one
+     arena, so a call that hands such a callee both a place
+     under a field of `self` and (a part of) one of the
+     method's parameters, in two arguments
+     (`self.put_two(self.held, x, p)`) or in one carrier
+     (`self.put(if c { self.held } else { x }, p)`), is
+     refused by the check, which names both owners. Copy one
+     into a local record first (`let mine = Bag { b: x.b };`)
+     and hand that, or write the held record through `self`. A
      member the bus dispatch invokes is published no arena
      (its snapshot is the payload-arena fallback) and keeps
      its scratch. A shadowing `let` or binder of the name is

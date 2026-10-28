@@ -883,3 +883,51 @@ fn len_of_a_bounded_is_refused_for_count() {
     assert!(hits[1].contains("`bounded[Int; 4]`"), "{hits:?}");
     assert_eq!(ds.len(), 2, "nothing else: {ds:?}");
 }
+
+/// The one-owner rule (spec/memory.md, invariant 3 of the per-method
+/// scratch reclaim): a call publishes one arena for a callee that may
+/// write through its arguments, so handing it both a record a field of
+/// `self` holds and a parameter, which the caller owns, is refused at the
+/// call, in two arguments or in one carrier. The diagnostic names both
+/// owners and the fix. A call handing only one owner's storage, a reader,
+/// or a local copy beside the held record passes.
+#[test]
+fn a_writer_handed_a_held_record_and_a_parameter_is_refused() {
+    let program = |body: &str| {
+        format!(
+            r#"
+type Bag {{ b: Bytes = b""; }}
+locus Sink {{
+    params {{ held: Bag = Bag {{ }}; }}
+    fn put(x: Bag, p: Bytes) {{ x.b = p; }}
+    fn put_two(a: Bag, b: Bag, p: Bytes) {{ a.b = p; b.b = p; }}
+    fn read_two(a: Bag, b: Bag) -> Int {{ return len(a.b) + len(b.b); }}
+    {body}
+}}
+fn main() {{ let s = Sink {{ }}; }}
+"#
+        )
+    };
+    let refused = |m: &String| m.contains("a record this locus holds");
+    let two = diags(&program("fn mixed(x: Bag, p: Bytes) { self.put_two(self.held, x, p); }"));
+    let hit: Vec<&String> = two.iter().filter(|m| refused(m)).collect();
+    assert_eq!(hit.len(), 1, "two arguments of two owners: {two:?}");
+    assert!(
+        hit[0].contains("`self.held`") && hit[0].contains("the parameter `x`") && hit[0].contains("Copy one of them into a local record"),
+        "the diagnostic names both owners and the fix: {}",
+        hit[0]
+    );
+    let one = diags(&program(
+        "fn mixed(x: Bag, p: Bytes, choose: Bool) { self.put(if choose { self.held } else { x }, p); }",
+    ));
+    assert_eq!(one.iter().filter(|m| refused(m)).count(), 1, "one carrier of two owners: {one:?}");
+    for ok in [
+        "fn only_held(p: Bytes, c: Bool) { self.put(if c { self.held } else { self.held }, p); }",
+        "fn only_param(x: Bag, y: Bag, p: Bytes) { self.put_two(x, { y }, p); }",
+        "fn reads(x: Bag) -> Int { return self.read_two(self.held, x); }",
+        "fn copied(x: Bag, p: Bytes) { let mine = Bag { b: x.b }; self.put_two(self.held, mine, p); }",
+    ] {
+        let ds = diags(&program(ok));
+        assert!(!ds.iter().any(refused), "{ok}: {ds:?}");
+    }
+}

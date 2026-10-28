@@ -37882,12 +37882,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// or a literal holding it). Then the call publishes the arena that
     /// owns what the argument may be:
     ///
-    /// - a place under a field of `self` and nothing else: the locus's own
-    ///   arena;
-    /// - (a part of) one of the method's parameters, or a place the pass
-    ///   cannot name: the arena the method's own caller published, so a
-    ///   chain of methods handing the record on lands every write in the
+    /// - a place under a field of `self`, and no parameter: the locus's
+    ///   own arena, which outlives the method (a place the pass cannot
+    ///   name beside it is kept there too);
+    /// - (a part of) one of the method's parameters, or only a place the
+    ///   pass cannot name: the arena the method's own caller published, so
+    ///   a chain of methods handing the record on lands every write in the
     ///   arena of the frame that owns it.
+    ///
+    /// A call handing both a place under `self` and a parameter has two
+    /// owners and one arena to publish; the check refuses it
+    /// (`check.rs`, `mixed_owner_diags`).
     ///
     /// A fresh argument (a literal, a constructor, a fresh call result, a
     /// local holding one) and a callee that only reads keep this frame's
@@ -37906,7 +37911,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if handed.is_empty() {
             return self.current_arena_ptr();
         }
-        if let (true, Some(cs)) = (handed.iter().all(|h| h.only_self()), self.current_self.clone()) {
+        let held = handed.iter().any(|h| h.held()) && !handed.iter().any(|h| h.param());
+        if let (true, Some(cs)) = (held, self.current_self.clone()) {
             let info = self.user_loci.get(&cs.locus_name).cloned().expect("current_self points to a declared locus");
             let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
             let ptr_t = self.context.ptr_type(AddressSpace::default());

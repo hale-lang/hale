@@ -1145,6 +1145,7 @@ crates/hale-codegen/tests/math_nan_inf.rs#3 f21fbc665a9c2254
 crates/hale-codegen/tests/math_nan_inf.rs#4 f21fbc665a9c2254
 crates/hale-codegen/tests/math_nan_inf.rs#5 f21fbc665a9c2254
 crates/hale-codegen/tests/member_param_write.rs#10 b103407d5a5b1961
+crates/hale-codegen/tests/member_param_write.rs#15 e3a4d1ef24d92238
 crates/hale-codegen/tests/method_call_from_free_fn.rs#0 77651fdc2e82ae29
 crates/hale-codegen/tests/method_call_from_free_fn.rs#1 a7644663185c657d
 crates/hale-codegen/tests/method_return_dissolve.rs#0 6d056d7d6707304a

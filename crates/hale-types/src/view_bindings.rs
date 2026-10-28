@@ -214,6 +214,25 @@ pub struct OwnedViews {
     /// what the place markers they carry say they may be, as
     /// [`Handoff`] bits.
     handoffs: HashMap<(u32, u32), u8>,
+    /// The calls that hand a writer storage of two owners at once: a
+    /// place under a field of `self` and (a part of) a parameter, in two
+    /// arguments or in one.
+    /// Lowering publishes one arena per call, so the check refuses these
+    /// (`MixedOwners`).
+    mixed_owners: Vec<MixedOwners>,
+}
+
+/// A call that hands a callee which may write through its arguments
+/// both a place under a field of `self` and a place of another owner
+/// (`OwnedViews::mixed_owners`): the call, and the two owners as the
+/// diagnostic names them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MixedOwners {
+    pub span: Span,
+    /// The place under `self`, spelled as the program does (`self.held`).
+    pub held: String,
+    /// The other owner: `the parameter `x`` (or a part of it).
+    pub other: String,
 }
 
 /// The owned-view column of a checked program (GH #1554): the pass's
@@ -498,6 +517,13 @@ impl OwnedViews {
                 *self.handoffs.entry((c, at)).or_default() |= bits;
             }
         }
+        self.mixed_owners.extend(other.mixed_owners);
+    }
+
+    /// The calls handing a writer storage of two owners at once
+    /// ([`MixedOwners`]), in the order the pass met them.
+    pub fn mixed_owners(&self) -> &[MixedOwners] {
+        &self.mixed_owners
     }
 
     /// What the argument starting at `arg_start` of the call with this id
@@ -1173,6 +1199,7 @@ impl From<Found> for OwnedViews {
             cell_copies: found.cell_copies,
             cell_owned: found.cell_owned,
             handoffs: found.handoffs,
+            mixed_owners: found.mixed_owners,
         }
     }
 }
@@ -1187,6 +1214,7 @@ struct Found {
     cell_copies: Vec<CellCopy>,
     cell_owned: HashSet<u32>,
     handoffs: HashMap<(u32, u32), u8>,
+    mixed_owners: Vec<MixedOwners>,
 }
 
 /// Per body, what its calls reach, transitively: the fields it may
@@ -1791,6 +1819,9 @@ struct Walk<'p, 'a> {
     /// The non-fresh arguments handed to a callee that may write through
     /// them (`OwnedViews::handoffs`).
     handoffs: Vec<(u32, u32, u8)>,
+    /// The calls handing a writer two owners' storage
+    /// (`OwnedViews::mixed_owners`).
+    mixed_owners: Vec<MixedOwners>,
     /// Every parameter's name.
     params: BTreeSet<String>,
     /// Per variable, whether it may hold (a part of) the caller's value a
@@ -1941,6 +1972,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             writes_params: false,
             param_callees: BTreeSet::new(),
             handoffs: Vec::new(),
+            mixed_owners: Vec::new(),
             params: params.iter().map(|prm| prm.name.name.clone()).collect(),
             from_param: Vec::new(),
             binds: Vec::new(),
@@ -3235,6 +3267,13 @@ impl<'p, 'a> Walk<'p, 'a> {
         // A stdlib handle's member called as a method hands its receiver
         // to the fn as its first argument.
         let with_receiver: Vec<&Expr>;
+        // A method's receiver, which `args` may carry (a stdlib handle
+        // member's, a capacity slot's) but no lowering hands as an
+        // argument (`OwnedViews::handoffs`).
+        let callee_receiver: Option<&Expr> = match callee {
+            Expr::Field { receiver: r, .. } | Expr::Path2 { receiver: r, .. } => Some(r.as_ref()),
+            _ => None,
+        };
         let mut args = args;
         let mut writes = Writes::default();
         let mut ctor = false;
@@ -3570,6 +3609,9 @@ impl<'p, 'a> Walk<'p, 'a> {
         if callee_reads {
             self.cell_read(None);
         }
+        // The owners of what this call hands a writer, for the one-owner
+        // rule (`OwnedViews::mixed_owners`).
+        let (mut held, mut other): (Option<String>, Option<String>) = (None, None);
         for (i, a) in args.iter().enumerate() {
             if form_op || ctor {
                 continue;
@@ -3636,10 +3678,20 @@ impl<'p, 'a> Walk<'p, 'a> {
             // whatever carries it (a block, an `if`, a `match`, an `or`, a
             // literal holding it), for lowering to publish the arena that
             // owns it (`OwnedViews::handoffs`).
-            if let (true, Some(Expr::Call { id, .. })) = (into, call) {
-                let bits = keys.get(i).and_then(|k| k.as_ref()).map_or(0, Handoff::bits_of);
+            let is_receiver = callee_receiver.is_some_and(|r| std::ptr::eq(r, *a));
+            if let (true, false, Some(Expr::Call { id, .. })) = (into, is_receiver, call) {
+                let ks = keys.get(i).and_then(|k| k.as_ref());
+                let bits = ks.map_or(0, Handoff::bits_of);
                 if bits != 0 && !id.is_none() {
                     self.handoffs.push((id.0, a.span().start.0, bits));
+                }
+                if let Some(ks) = ks {
+                    if bits & Handoff::SELF != 0 && held.is_none() {
+                        held = Handoff::held_place(ks);
+                    }
+                    if bits & Handoff::PARAM != 0 && other.is_none() {
+                        other = Some(Handoff::other_owner(ks));
+                    }
                 }
             }
             if let (Some((v, _)), true) = (self.root_local(a), into) {
@@ -3675,6 +3727,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                     }
                 }
             }
+        }
+        if let (Some(held), Some(other), Some(Expr::Call { span: at, .. })) = (held, other, call) {
+            self.mixed_owners.push(MixedOwners { span: *at, held, other });
         }
         for (a, keys) in args.iter().zip(keys) {
             // An argument the callee may replace before it reads its
@@ -4281,6 +4336,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         for &(c, at, bits) in &self.handoffs {
             *found.handoffs.entry((c, at)).or_default() |= bits;
         }
+        found.mixed_owners.extend(self.mixed_owners.iter().cloned());
     }
 
     /// Does a write `w` into a local bound from a self field (`shared`,
@@ -4354,8 +4410,7 @@ impl Handoff {
     /// own markers), anything else (`?`, `?ret`) a place the pass cannot
     /// name.
     fn bits_of(keys: &BTreeSet<String>) -> u8 {
-        let places = keys.iter().filter_map(|k| k.strip_prefix(AT)).chain(part_markers(keys).map(|(_, q)| q));
-        places.fold(0, |b, q| {
+        Handoff::places(keys).fold(0, |b, q| {
             b | if q.starts_with('$') {
                 Handoff::PARAM
             } else if q == "self" || q.starts_with("self.") {
@@ -4368,14 +4423,36 @@ impl Handoff {
         })
     }
 
+    /// The first place under a field of `self` the markers name, as the
+    /// program spells it.
+    fn held_place(keys: &BTreeSet<String>) -> Option<String> {
+        Handoff::places(keys).find(|q| *q == "self" || q.starts_with("self.")).map(str::to_string)
+    }
+
+    /// The first parameter the markers name, as the one-owner diagnostic
+    /// names it.
+    fn other_owner(keys: &BTreeSet<String>) -> String {
+        let p = Handoff::places(keys).find_map(|q| q.strip_prefix('$')).unwrap_or("?");
+        let param = p.split('.').next().unwrap_or(p);
+        if param == p {
+            format!("the parameter `{param}`")
+        } else {
+            format!("`{p}`, under the parameter `{param}`")
+        }
+    }
+
+    fn places(keys: &BTreeSet<String>) -> impl Iterator<Item = &str> {
+        keys.iter().filter_map(|k| k.strip_prefix(AT)).chain(part_markers(keys).map(|(_, q)| q))
+    }
+
     /// It may be (a part of) one of the body's parameters.
     pub fn param(&self) -> bool {
         self.bits & Handoff::PARAM != 0
     }
 
-    /// It may be a place under a field of `self`, and nothing else.
-    pub fn only_self(&self) -> bool {
-        self.bits == Handoff::SELF
+    /// It may be a place under a field of `self`.
+    pub fn held(&self) -> bool {
+        self.bits & Handoff::SELF != 0
     }
 }
 
