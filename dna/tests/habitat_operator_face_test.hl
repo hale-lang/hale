@@ -139,6 +139,39 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
                     + dna::local_habitat_project(),
             ).stdout,
     );
+    // ---- what the habitat watches for: its reflexes, rendered for its store,
+    // loaded there, and read back as its alerts
+    std::test::assert(
+        std::str::contains(
+            up,
+            "reflexes 2 watched by its senses' store (disk-filling, disk-full-within-a-day;",
+        ),
+        "up says what the habitat's reflexes are: " + up,
+    );
+    let rules_url = face + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/rules";
+    let rules_until = std::time::now() + dna::wait_secs(60);
+    let mut loaded = fetch(cookie, rules_url);
+    while !std::str::contains(loaded.stdout, "\"disk-full-within-a-day\"")
+        && std::time::now() <= rules_until
+    {
+        std::time::sleep(1s);
+        loaded = fetch(cookie, rules_url);
+    }
+    std::test::assert(
+        std::str::contains(loaded.stdout, "\"name\":\"disk-filling\"")
+            && std::str::contains(loaded.stdout, "\"organism\":\"" + key + "\""),
+        "the habitat's store evaluates its reflexes: " + loaded.stdout,
+    );
+    // as a browser asks it: the session's cookie, through the face's relay
+    let alerts = fetch(
+        cookie
+            + "\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:ca93e7590466f972\n--data\n{\"limit\": 200}",
+        face + "/api/hale/v1/head/surface/call/Commands::alerts",
+    ).stdout;
+    std::test::assert(
+        std::str::contains(alerts, "\"ok\":true") && std::str::contains(alerts, "\"alerts\":\"["),
+        "the head reads the habitat's alerts from its store: " + alerts,
+    );
     if !linux { return false; }
     std::test::assert(
         std::str::contains(up, "node    local: node_exporter ")

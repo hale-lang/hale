@@ -68,6 +68,10 @@ node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale
 
 `HALE_DNA_NODE_EXPORTER=off` and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
+### Reflexes and Alerts
+
+An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks by default: one more than 90% full for ten minutes, or one that fills within a day at its recent rate. The operator face's **alerts** screen shows what is firing, and what is about to.
+
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 
 While a **pack** is a reusable template of rows adopted inside an existing organism (positions, mandates, practices, knowledge), a **sapling** is a complete, prebuilt organism template published in a nursery and pinned by repository URL, Git revision, file tree SHA-256 digest, and default packs.

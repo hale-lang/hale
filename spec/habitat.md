@@ -778,8 +778,9 @@ only for a crossing, color only for state (up, degraded, down).
 The page is one session with four screens, each a module of the same
 directory, switched by the hash (`#habitat`, `#hardware`,
 `#infrastructure`, `#organisms`), with no build step and no graph
-renderer; its navigation also links the organization shell and the
-habitat's Grafana (`/grafana/`, Readings below). Every call is the generated client's; the page speaks no other
+renderer; its navigation also links the organization shell, the
+habitat's Grafana (`/grafana/`, Readings below) and its alerts
+(`#alerts`, Reflexes below). Every call is the generated client's; the page speaks no other
 HTTP. The head relays the surface's reads and the Board's acts for a
 signed-in visitor: the standard face presents the visitor's session as the
 call's bearer on any `Commands::` row, and the row keeps its own gate (a
@@ -898,6 +899,49 @@ person is signed up in Grafana at their first visit, as an Editor.
 `HALE_DNA_GRAFANA=off` runs none, and a habitat with no senses' store of
 its own (its allocation publishes none) runs none and says so.
 
+### Reflexes: what an organism watches for
+
+A reflex is a condition over an organism's readings that someone should
+know about. It is one model whatever declares it and wherever it runs:
+a name, a condition (`when`, PromQL over the organism's senses), how
+long it must hold (`for`), how long it keeps firing once it stops
+holding (`keep`), a severity (`warning`, `critical`), the action it
+names (`concern`, `restart`, `notify`) and a summary whose `{label}` and
+`{value}` are filled from the alert. The manifest's `[dna.reflex.<name>]`
+declares one today:
+
+```toml
+[dna.reflex.disk-filling]
+when     = '100 * (1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) > 90'
+for      = "10m"
+keep     = "10m"
+severity = "warning"
+action   = "concern"
+summary  = "{host}:{mountpoint} is {value}% full"
+```
+
+Its evaluator is a Prometheus store: the model renders to a standard
+alerting rule group (each rule named for the reflex, labelled with
+`reflex`, `organism`, `severity` and `action`), so a heart run by hand
+hands the same rules to its own Prometheus as a habitat does to its
+senses' store. `hale habitat up` renders the habitat's own reflexes (its
+defaults, then its genome's declarations, which replace a default of the
+same name) into its store's `senses.d/reflexes.rules.yml`, makes the
+store's configuration read `senses.d/*.rules.yml`, and restarts the store
+when either moved. Its defaults watch every machine it uses:
+
+| Reflex | Fires when |
+|---|---|
+| `disk-filling` | a real filesystem is over 90% full for 10 minutes (keeps firing 10 minutes after it drops below) |
+| `disk-full-within-a-day` | at its last six hours' rate a real filesystem fills within a day, for an hour |
+
+`Commands::alerts`, a read, answers the store's alerts as it holds them:
+each with its labels, summary, state (`pending` while its condition holds
+but not yet for its time, `firing` after) and since when. The operator
+face's **alerts** screen lists them, firing first. Nothing acts on a
+reflex yet: its `action` is carried on the alert for the receiver that
+will act on it, and an alert is never recorded.
+
 ## Pairing: an agent beside a person
 
 The head serves its surface, `HeadCommands`, over a third transport beside
@@ -990,6 +1034,15 @@ Chosen at the habitat's birth and kept.
   `operator` backends.
 
 ## Graft and `[dna] needs`
+
+The `[dna]` table is read forward-compatibly: a key this toolchain does
+not know (one a newer toolchain reads, or a misspelling) is ignored with
+a warning naming it (`this toolchain does not know [dna] <key> and
+ignores it`), never refused, so an organism may declare what a newer
+habitat reads before the toolchain beside it knows it. The keys it knows
+are read and checked as each section says (`needs`, `brings`,
+`migrations`, `codebase`, `fleet`, `record`, `reflex`, and `host`, which
+this toolchain carries for a habitat that runs host commands).
 
 **A graft plans each body part before it makes anything.** The organism
 plane (`memory`, `nerves`, `senses`) reuses the habitat's unless

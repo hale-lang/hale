@@ -1097,6 +1097,11 @@ locus CommandAdmission {
         if self.personless(ctx) { return PolicyRows { why: "forbidden" }; }
         return habitat_policy(self.root, a.limit);
     }
+    // What the habitat's reflexes say now: its store's alerts (a read).
+    fn alerts(a: HabitatAsk, ctx: std::api::Context) -> AlertRows {
+        if self.personless(ctx) { return AlertRows { why: "forbidden" }; }
+        return habitat_alerts(self.root);
+    }
     // The habitat's placement (habitat_placement.hl): the Board's.
     fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
         if self.personless(ctx) { return PlaceReply { code: "forbidden" }; }
@@ -1283,6 +1288,9 @@ locus Commands {
     fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
         return self.admission.policy(a, ctx);
     }
+    fn alerts(a: HabitatAsk, ctx: std::api::Context) -> AlertRows {
+        return self.admission.alerts(a, ctx);
+    }
     fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
         return self.admission.place_allocation(a, ctx);
     }
@@ -1434,6 +1442,8 @@ api HeadCommands {
     rpc Commands::hosts;
     rpc Commands::allocations;
     rpc Commands::policy;
+    // What its reflexes say now: its senses' store's alerts. A read.
+    rpc Commands::alerts;
     // The habitat's placement (habitat_placement.hl): an allocation placed
     // on a host ("change a host"), and the allocations applied where they
     // are placed, with the pulse after. The Board's.
