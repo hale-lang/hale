@@ -175,8 +175,8 @@ curl $api/healthz
 `voice` mints its operator token on its first start and keeps it in its Postgres; it is never in the environment or a log. Print it on the host running `voice` (use `docker compose ls` there to find the compose project name; its api container is `<project>-api-1`):
 
 ```sh
+umask 077   # both files below are created private, mode 600
 ssh ops@rack-a.lan docker exec <project>-api-1 voice-api admin-token > admin.token
-chmod 600 admin.token
 ```
 
 The console (the api's `/`, the **organisms** screen's `api` link) asks for this token once and keeps it in the browser.
@@ -187,7 +187,7 @@ Configure a model (`echo-1`), billing account, project API key, and worker node 
 
 ```sh
 json='content-type: application/json'
-printf 'Authorization: Bearer %s\n' "$(cat admin.token)" > admin.h
+(umask 077; printf 'Authorization: Bearer %s\n' "$(cat admin.token)" > admin.h)
 curl -X POST $api/admin/v1/models   -H @admin.h -H "$json" -d '{"id": "echo-1"}'
 curl -X POST $api/admin/v1/accounts -H @admin.h -H "$json" -d '{"id": "static", "name": "Static"}'
 curl -X POST $api/admin/v1/projects -H @admin.h -H "$json" -d '{"id": "work", "name": "Work"}'
