@@ -791,11 +791,17 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
             return "`" + args + "` names no record on the habitat's memory";
         }
         let heart = heart_role(ckey);
+        // one line, the SQL on psql's stdin: `placed_exec` on this machine
+        // hands its script on as argv, which a newline would split (a
+        // heredoc's body then reached psql as nothing, and it exited 0);
+        // statements one by one, as DROP DATABASE must run outside a
+        // transaction
+        let sql = unmigrate_sql(id) + "; DROP DATABASE IF EXISTS " + heart
+            + "; DROP ROLE IF EXISTS " + heart + ";";
         let dropped = placed_exec(
             hkey, "memory",
-            "psql -q -v ON_ERROR_STOP=1 -U dna -d dna <<'SQL'\n" + unmigrate_sql(id)
-                + ";\nDROP DATABASE IF EXISTS " + heart + ";\nDROP ROLE IF EXISTS " + heart
-                + ";\nSQL",
+            "printf '%s\\n' '" + std::str::replace(sql, "'", "'\"'\"'")
+                + "' | psql -q -v ON_ERROR_STOP=1 -U dna -d dna",
         );
         if dropped.code != 0 {
             return "the record could not be dropped on the habitat's memory: "

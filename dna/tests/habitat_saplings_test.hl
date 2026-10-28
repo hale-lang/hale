@@ -368,11 +368,23 @@ fn main() {
     );
     let removed = at_terminal(scratch, "sprout", toolchain() + " habitat organism remove sprout");
     let left = dna::run_tool(in_memory);
+    // what is on the habitat's memory after it: the record's roles, and who
+    // is connected (a schema with its roles is one migrated again; one
+    // without them, one never dropped)
+    let after = if dna::trim_nl(left.stdout) == "0" {
+        ""
+    } else {
+        dna::run_tool(
+            "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter \"label=com.docker.compose.service=memory-$2\" | head -n 1); docker exec \"$id\" psql -tA -U dna -d dna -c \"select 'roles: ' || coalesce(string_agg(rolname, ' '), '-') from pg_roles where rolname in ('$3', '$4')\" -c \"select 'sessions: ' || coalesce(string_agg(usename || '/' || application_name || '/' || state, ' '), '-') from pg_stat_activity where datname = 'dna'\"\nsh\n"
+                + dna::local_habitat_project() + "\n" + hkey + "\n" + dna::spine_role(sid) + "\n"
+                + dna::head_role(sid),
+        ).stdout
+    };
     std::test::assert(
         removed.code == 0 && dna::trim_nl(left.stdout) == "0",
         "its schema is dropped on the habitat's memory, which goes on (removal exit "
             + to_string(removed.code) + "; schemas left: [" + dna::trim_nl(left.stdout) + "] "
-            + left.stderr + "): " + removed.stdout
+            + left.stderr + "; " + after + "): " + removed.stdout
             + removed.stderr,
     );
 
