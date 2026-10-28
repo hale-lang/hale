@@ -8,6 +8,34 @@ behavior.
 
 ## Unreleased
 
+## v0.30.1 — manifests a toolchain grows into, and the habitat's alerts (2026-10-28)
+
+An organism's manifest can now declare what a newer toolchain reads without breaking the toolchain beside it, and the habitat watches its machines' disks and shows what fires.
+
+**Manifests a toolchain grows into.** A `[dna]` key this toolchain does not know is ignored with a warning naming it, never refused. v0.30.0 refused voice's `[dna.host.node]` in `hale fetch`, so voice's current revision could not be grafted; v0.30.1 carries `[dna.host]` and warns of anything else it does not know (#1769).
+
+**Reflexes and alerts.** An organism declares what it watches for in its readings under `[dna.reflex.<name>]`: a PromQL condition, how long it holds, a severity, an action and a summary, rendered to standard Prometheus alerting rules, so a habitat and a heart run by hand evaluate the same rules. Every habitat watches its machines' disks (over 90% full for ten minutes, or filling within a day), and the operator face's **alerts** screen shows what is firing. Nothing acts on an alert yet (#1769).
+
+**The infrastructure screen** says how each allocation runs beside what fills it: the habitat's Forgejo and sign-in stub run under compose like its memory (#1768). The habitat chapter's voice walkthrough follows voice as its own nursery serves it (#1757).
+
+**The language.** A loop body in a locus method, hook or handler frees what each iteration makes when the iteration ends (#1765), and a method's write through a record, array or tuple parameter is made in its caller's arena, as a free function's is; it was made in the method's scratch and freed when it returned (#1767).
+
+No breaking changes against v0.30.0.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- The habitat chapter's voice walkthrough follows voice as its own nursery now serves it (`hale habitat nursery add https://github.com/hale-lang/voice`, then `hale habitat graft voice`): voice placed on a host publishes its api and NATS on that host's listen address, so the walkthrough reaches the api at the host's address instead of forwarding a port over `ssh -L`, and `voice`'s admin plane (`/admin/v1`, and its console) takes the operator token the api mints on its first start, printed on the voice host by `voice-api admin-token`.
+
+- A loop body in a locus method, lifecycle hook or handler (`run()` included) frees what each iteration makes when the iteration ends, unless it keeps a value in a binding declared before the loop (anything but a scalar or a locus reference), writes a `bounded` element into one, or makes a locus. `let c = body.chunk() or { break; }; h.update(c);` straight in `run()` now holds one chunk at a time: a 5 GB `BodyReader` download peaked at 5.3 MB (was 5,632 MB), and a `buf.snapshot()` per iteration over a 1 GiB file at 6.7 MB (was 1,058 MB). `hale verify` reports a loop that still keeps one value per iteration at the allocating call (`buf.snapshot()`), not at a fallback literal beside it. `LOTUS_ARENA_RESIDENCY=1` also prints the process's peak of arena chunk bytes (`[arena_residency peak]`).
+
+- A locus method that writes a heap value through a record, array or tuple parameter (`fn put(x: Bag, p: Bytes) { x.b = p; }`, `x.inner.b = p`, `a[i] = p`) now makes it in the caller's arena, as a free fn does; it was made in the method's own scratch, which its return freed under the caller's record (a use-after-free in a program with no loop). A method handing such a parameter to a callee that writes through it passes its caller's arena on.
+- A method handing a record its locus holds (`put_free(self.bag, p)`, or a block, `if` or `match` yielding `self.bag`) to a callee that writes through it now has the write made in the locus's own arena; it was made in the method's scratch and freed on return. A record reached through a block, `if` or `match` argument is followed to the parameter or `self` field it came from. Such writes are not recycled: each one stays in the locus arena until the locus dissolves.
+
+- The operator face's infrastructure screen and a remote `hale habitat status` say how each allocation runs beside what fills it: the habitat's own Forgejo and sign-in stub run under `compose` (`compose (forgejo)`), like its memory (#1768).
+
+- An organism declares what it watches for in its readings as reflexes (`[dna.reflex.<name>]`: a PromQL condition, how long it holds, a severity, an action and a summary), rendered to standard Prometheus alerting rules. Every habitat watches its machines' disks (over 90% full for 10 minutes, or filling within a day), and the operator face's new alerts screen shows what is firing (`Commands::alerts`). Nothing acts on an alert yet (#1769).
+- A `[dna]` key this toolchain does not know is ignored with a warning naming it, never refused, so an organism's manifest can declare what a newer toolchain reads (v0.30.0 refused voice's `[dna.host.node]` in `hale fetch`); `[dna.host]` is known (#1769).
+
 ## v0.30.0 — a habitat across a LAN (2026-10-27)
 
 A habitat now spans the machines of a LAN. `hale habitat up --host <name>` runs it on a machine that has docker and nothing else, from a laptop that holds only a pointer to it; machines join it as hosts in one step, under an account of the habitat's own; organisms are grafted onto them with a plan of which parts they share with the habitat; and the habitat reads every machine it uses and charts them behind its own sign-in.
