@@ -1258,19 +1258,23 @@ unless it can hand a value to the next iteration through the frame:
      a field or through an index) whose type is not a scalar (Int,
      Uint, Float, Decimal, Bool, Duration, Time) or a locus,
      interface or perspective reference;
-  2. it writes into a `bounded[T; N]` such a binding holds (`push`,
-     `set`, `truncate`, `clear` copy the element into the current
-     arena), or names an outside `bounded[T; N]` or `BytesMut` at
-     all;
-  3. it passes such a binding, a field of `self`, a path rooted in
-     either, or an alias of one declared in the body (`let o =
-     outer;`, `for r in outer.items`) to any call but a builtin that
-     only reads (`len`, `println`, …): the callee can write into it
-     from its caller arena, which is the iteration's — a free fn
-     through its parameter, a fn value held in a field
-     (`self.callback(outer, p)`), a method through a record
-     parameter. A call handed only the body's own values and locus
-     references (`h.update(c)`, `buf.snapshot()`) is admitted;
+  2. it names an outside `bounded[T; N]` or `BytesMut` at all (a
+     `bounded` write into a field or record is a call, rule 3);
+  3. it hands a call (any but a builtin that only reads, by a name
+     no fn can take: `len`, `println`, `to_string`, …) an argument
+     that is not on the allow-list: a literal, a scalar binding, a
+     bare locus reference (`self`, an outside binding holding one), a
+     value this iteration made (a body binding whose own value was on
+     the list, a path into one, a call's result), or an operator,
+     literal, `or` or carrier over those. Everything else is outside
+     storage or may be (an outside record and any path into it, a
+     field of `self` or of another locus such as `holder.bag`, an
+     element of an outside array or tuple, a match binder, a body
+     binding aliasing any of them), and the callee could write into
+     it from its caller arena, which is the iteration's: a free fn
+     through its parameter whatever its name (`push` included), a fn
+     value held in a field (`self.callback(outer, p)`), a method
+     through a record parameter;
   4. it makes a locus (a literal or a fresh factory call: the
      instance, its slot and its GH #815 teardown outlive the
      iteration);

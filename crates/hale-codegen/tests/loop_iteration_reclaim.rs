@@ -465,6 +465,54 @@ fn main() {
 
 const CALLED_THROUGH_OUT: &[&str] = &["callback=abcdefgh", "nested=12", "self_field=abcdefghiiiijj"];
 
+/// The review's last two routes: a user fn that happens to be called
+/// `push`, handed a field of `self` (no call is exempt by its name), and a
+/// free fn handed a record field of another locus (`holder.bag`: a path
+/// through a locus is that locus's storage, not the locus reference).
+const NAMED_AND_HELD: &str = r#"
+type Box { b: Bytes; }
+fn push(bag: Box, piece: Bytes) { bag.b = piece; }
+fn keep(bag: Box, piece: Bytes) { bag.b = piece; }
+locus Holder {
+    params { bag: Box = Box { b: b"" }; }
+}
+locus Probe {
+    params { bag: Box = Box { b: b"" }; }
+    run() {
+        let buf = std::bytes::BytesBuilder { initial_cap: 64 };
+        buf.append_str("abcdefgh");
+        let mut i = 0;
+        while i < 3 {
+            buf.append_u8(105);
+            let piece = buf.snapshot() or b"";
+            push(self.bag, piece);
+            i = i + 1;
+        }
+        println("named=", std::str::from_bytes(self.bag.b));
+        let holder = Holder { };
+        let mut j = 0;
+        while j < 2 {
+            buf.append_u8(106);
+            let piece = buf.snapshot() or b"";
+            keep(holder.bag, piece);
+            j = j + 1;
+        }
+        println("held=", std::str::from_bytes(holder.bag.b));
+    }
+}
+
+fn main() {
+    let p = Probe { };
+}
+"#;
+
+const NAMED_AND_HELD_OUT: &[&str] = &["named=abcdefghiii", "held=abcdefghiiijj"];
+
+#[test]
+fn what_a_push_named_fn_or_a_held_locus_field_takes_survives_under_asan() {
+    plain_and_asan("named_and_held", NAMED_AND_HELD, NAMED_AND_HELD_OUT);
+}
+
 /// Build `src` plainly and under AddressSanitizer (chunk pool off) and
 /// hold each run to `want`, with no sanitizer report.
 fn plain_and_asan(name: &str, src: &str, want: &[&str]) {
