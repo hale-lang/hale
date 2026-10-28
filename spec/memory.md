@@ -1262,10 +1262,16 @@ unless it can hand a value to the next iteration through the frame:
      `set`, `truncate`, `clear` copy the element into the current
      arena), or names an outside `bounded[T; N]` or `BytesMut` at
      all;
-  3. it makes a locus (a literal or a fresh factory call: the
+  3. it passes such a binding, a path rooted in one, or an alias of
+     either declared in the body (`let o = outer;`, `for r in
+     outer.items`) to a call that is not a method of a locus
+     (`self`, or an outside locus reference) or a builtin that only
+     reads (`len`, `println`, …): a free fn handed `outer` can write
+     into it from its caller arena, which is the iteration's;
+  4. it makes a locus (a literal or a fresh factory call: the
      instance, its slot and its GH #815 teardown outlive the
      iteration);
-  4. it holds a `reperspective`, a recovery op, a `violate` or a
+  5. it holds a `reperspective`, a recovery op, a `violate` or a
      shared-memory write.
 
 Everything else an iteration hands on keeps the lifetime it has

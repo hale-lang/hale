@@ -1112,6 +1112,7 @@ crates/hale-codegen/tests/log_routing.rs#0 e9b3a90b0626e56f
 crates/hale-codegen/tests/log_routing.rs#1 e9b3a90b0626e56f
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#1 5e4b3a84d9e8afcd
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#2 0548d595eaedd5a1
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#3 25eb3e78179713a3
 crates/hale-codegen/tests/lto_modes.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#0 3d391884ebf0d40e
 crates/hale-codegen/tests/main_return_call_teardown.rs#0 4a82c7b566896825

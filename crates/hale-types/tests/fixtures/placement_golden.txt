@@ -4133,6 +4133,10 @@ dynamic	__StdHttpBodyReader	on main
 row	Keep@main1	Keep	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#72c4598e
+row	Hand@main1	Hand	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App	the entry
 domain	pool:side

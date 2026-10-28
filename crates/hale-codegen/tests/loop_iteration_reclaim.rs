@@ -350,3 +350,80 @@ fn what_an_iteration_hands_on_survives_it_under_asan() {
         assert!(stdout.contains(want), "missing {want:?} in:\n{stdout}");
     }
 }
+
+/// A free fn handed a record declared before the loop writes into it
+/// (`push(bag.items, piece)`), and what it writes is made in its caller
+/// arena. With that loop reclaimed per iteration the record kept pointers
+/// into a freed iteration arena, read after the loop: a call that may
+/// write into an argument is handed none of the storage held outside the
+/// body, or the body is not reclaimed (`hale_types::iteration_reclaim`).
+/// The same through a nested loop, and through an alias of the record
+/// declared in the body. Under AddressSanitizer with the chunk pool off,
+/// a read of a freed iteration is a report.
+const HANDED_OUT: &str = r#"
+type Bag { items: bounded[Bytes; 8]; }
+fn keep(bag: Bag, piece: Bytes) { push(bag.items, piece) or discard; }
+locus Hand {
+    run() {
+        let buf = std::bytes::BytesBuilder { initial_cap: 64 };
+        buf.append_str("abcdefgh");
+        let outer = Bag { };
+        let mut i = 0;
+        while i < 3 {
+            let piece = buf.snapshot() or b"";
+            keep(outer, piece);
+            i = i + 1;
+        }
+        println("flat=", len(at(outer.items, 0) or b""), " ", std::str::from_bytes(at(outer.items, 2) or b""));
+        let nested = Bag { };
+        let mut j = 0;
+        while j < 2 {
+            let mut k = 0;
+            while k < 2 {
+                buf.append_u8(105);
+                let piece = buf.snapshot() or b"";
+                keep(nested, piece);
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        println("nested=", len(at(nested.items, 0) or b""), " ", len(at(nested.items, 3) or b""));
+        let aliased = Bag { };
+        let mut n = 0;
+        while n < 2 {
+            let o = aliased;
+            let piece = buf.snapshot() or b"";
+            keep(o, piece);
+            n = n + 1;
+        }
+        println("aliased=", len(at(aliased.items, 1) or b""));
+    }
+}
+
+fn main() {
+    let h = Hand { };
+}
+"#;
+
+// `let o = aliased` is a copy of the record (a local bound from a place is
+// yours, copied at its first write), so the writes land in the copy and
+// `aliased` stays empty: the alias arm is there for what ASan sees.
+const HANDED_OUT_OUT: &[&str] = &["flat=8 abcdefgh", "nested=9 12", "aliased=0"];
+
+#[test]
+fn what_a_free_fn_writes_into_an_outside_record_survives_under_asan() {
+    for asan in [false, true] {
+        let bin = harness::unique_bin(&format!("loop_iteration_reclaim_handed_out_{asan}"));
+        let opts = hale_codegen::BuildOptions { asan, ..build_opts::options() };
+        build_opts::build_source(HANDED_OUT, &bin, &opts).expect("build");
+        let out = Command::new(&bin).env("ASAN_OPTIONS", "detect_leaks=0").output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "asan={asan}: exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}", out.status);
+        assert!(!stderr.contains("AddressSanitizer"), "ASan report:\n{stderr}");
+        for want in HANDED_OUT_OUT {
+            assert!(stdout.contains(want), "asan={asan}: missing {want:?} in:\n{stdout}");
+        }
+    }
+}
