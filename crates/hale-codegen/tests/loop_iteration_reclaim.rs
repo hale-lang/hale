@@ -465,10 +465,12 @@ fn main() {
 
 const CALLED_THROUGH_OUT: &[&str] = &["callback=abcdefgh", "nested=12", "self_field=abcdefghiiiijj"];
 
-/// The review's last two routes: a user fn that happens to be called
-/// `push`, handed a field of `self` (no call is exempt by its name), and a
-/// free fn handed a record field of another locus (`holder.bag`: a path
-/// through a locus is that locus's storage, not the locus reference).
+/// The review's last routes: a user fn that happens to be called `push`,
+/// handed a field of `self` (no call is exempt by its name); a free fn
+/// handed a record field of another locus (`holder.bag`: a path through a
+/// locus is that locus's storage, not the locus reference); and the same
+/// through a body binding of the locus (`let alias = self;`, `let alias =
+/// holder;`), which is passed whole but owns no path through it.
 const NAMED_AND_HELD: &str = r#"
 type Box { b: Bytes; }
 fn push(bag: Box, piece: Bytes) { bag.b = piece; }
@@ -498,6 +500,24 @@ locus Probe {
             j = j + 1;
         }
         println("held=", std::str::from_bytes(holder.bag.b));
+        let mut k = 0;
+        while k < 2 {
+            buf.append_u8(107);
+            let alias = self;
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            k = k + 1;
+        }
+        println("self_alias=", std::str::from_bytes(self.bag.b));
+        let mut n = 0;
+        while n < 2 {
+            buf.append_u8(108);
+            let alias = holder;
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            n = n + 1;
+        }
+        println("holder_alias=", std::str::from_bytes(holder.bag.b));
     }
 }
 
@@ -506,7 +526,12 @@ fn main() {
 }
 "#;
 
-const NAMED_AND_HELD_OUT: &[&str] = &["named=abcdefghiii", "held=abcdefghiiijj"];
+const NAMED_AND_HELD_OUT: &[&str] = &[
+    "named=abcdefghiii",
+    "held=abcdefghiiijj",
+    "self_alias=abcdefghiiijjkk",
+    "holder_alias=abcdefghiiijjkkll",
+];
 
 #[test]
 fn what_a_push_named_fn_or_a_held_locus_field_takes_survives_under_asan() {

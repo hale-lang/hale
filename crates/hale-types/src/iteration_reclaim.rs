@@ -26,20 +26,23 @@
 //!   (anything but a scalar or a locus reference), whole or through a
 //!   field or an index;
 //! - hands a call anything but what the call cannot write through:
-//!   every argument of a call that is not a builtin that only reads
-//!   (`len`, `println`, `to_string`, …, names no fn can take) has to be
-//!   a literal, a scalar binding, a bare locus reference (`self`, an
-//!   outside binding holding one), a value this iteration made (a body
-//!   binding that is no alias, a path into one, a call's result), or an
-//!   expression of those. Anything else (an outside record, a field of
-//!   `self` or of another locus, `holder.bag`, an element of an outside
-//!   array or tuple, a match binder, an alias of any of them) refuses
-//!   the body: the callee could write into it (a free fn through its
-//!   parameter, `push(b.items, p)`, whatever its name; a fn value held
+//!   unless the callee is a builtin that only reads (`len`, `println`,
+//!   `to_string`, …, names no fn can take), every argument has to be
+//!   the iteration's own value or a locus reference passed whole. Each
+//!   value is one of three ([`Held`]): *owned* (a literal, a scalar, a
+//!   value this iteration made, a path into one), *whole* (`self`, an
+//!   outside locus reference, a body binding of one: passed whole it is
+//!   the locus, whose stores copy into its own arena, but `alias.bag` is
+//!   that locus's storage), or *outside* (an outside record, any path
+//!   through a locus or an outside value, an element of an outside
+//!   array, a match binder, a call's result when an argument was not
+//!   owned). A callee handed outside storage could write into it (a
+//!   free fn through its parameter, whatever its name; a fn value held
 //!   in a field, `self.callback(outer, p)`; a method through a record
-//!   parameter, `x.b = p`), and what it writes is made in its caller
-//!   arena, the iteration's. The downloader's calls (`body.chunk()`,
-//!   `h.update(c)`, `out.write_bytes(c)`, `buf.snapshot()`) are admitted;
+//!   parameter), and what it writes is made in its caller arena, the
+//!   iteration's. The downloader's calls (`body.chunk()`,
+//!   `h.update(c)`, `out.write_bytes(c)`, `buf.snapshot()`) are
+//!   admitted;
 //! - names an outside binding whose value grows in the frame's arena when
 //!   used (a `bounded[T; N]` or a `BytesMut` itself);
 //! - makes a locus (a literal or a factory call): its instance, its slot
@@ -48,14 +51,14 @@
 //!   (`reperspective`, a recovery op, `violate`, a shared-memory write).
 //!
 //! Names are resolved lexically: a `let` (or a `for` binder) inside the
-//! body shadows the outside binding from there on. A binding of the body
-//! is the iteration's own only when its value is admitted as an argument
-//! would be (`let c = buf.snapshot() or { break; }`); any other (`let o
-//! = outer;`, `for r in outer.items`, `let r = self.rec`, an `if` or
-//! `match` value, a later `o = outer.inner`) is an alias of outside
-//! storage and is judged as outside storage. A match-arm binder is not
-//! declared here, so an assignment to one, and passing one to a call,
-//! refuse the body: the conservative side.
+//! body shadows the outside binding from there on, and holds what its
+//! value is: a `let`, a tuple `let` and a `for` binder (an element of
+//! what is iterated) take it when declared, an assignment joins it in
+//! (`o = outer` makes `o` outside from then on, in every iteration), and
+//! a carrier, an `or` and a container literal are the join of their arms
+//! and parts. A match-arm binder is not declared here, so an assignment
+//! to one, and passing one to a call, refuse the body: the conservative
+//! side.
 
 use std::collections::BTreeMap;
 
@@ -102,17 +105,50 @@ fn read_only_builtin(name: &str) -> bool {
         || hale_syntax::parser::builtin_call_form(name).is_some_and(|(n, _)| n != "sum" && n != "prod")
 }
 
+/// What a value is, for handing it to a call: two facts, whether it may
+/// be passed whole and whether the storage its paths reach is the
+/// iteration's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Held {
+    /// Made by this iteration (or a scalar): passed whole, and every path
+    /// into it reaches the iteration's own storage.
+    Owned,
+    /// A locus reference (`self`, an outside locus, a body binding of
+    /// one, a value that may hold one): passed whole it is that locus,
+    /// whose stores copy into its own arena, but a path through it
+    /// (`alias.bag`) is that locus's storage, outside the iteration.
+    Whole,
+    /// Storage from outside the iteration, or what may be: not handed to
+    /// a call that could write into it, and not a path either.
+    Outside,
+}
+
+impl Held {
+    /// A value that may be any of two (a carrier's arms, an `or`'s
+    /// sides, a container's parts, a binding over the iterations).
+    fn join(self, other: Held) -> Held {
+        self.max(other)
+    }
+
+    /// What a field or an element of a value of this kind is.
+    fn path(self) -> Held {
+        match self {
+            Held::Owned => Held::Owned,
+            Held::Whole | Held::Outside => Held::Outside,
+        }
+    }
+}
+
 struct Walk<'a> {
     outer: &'a dyn Fn(&str) -> Option<OuterLocal>,
     produces_locus: &'a dyn Fn(&Expr) -> bool,
-    /// The body's bindings, innermost scope last: whether each is an
-    /// alias of storage held outside the body.
-    scopes: Vec<BTreeMap<String, bool>>,
+    /// The body's bindings, innermost scope last, with what each holds.
+    scopes: Vec<BTreeMap<String, Held>>,
 }
 
 impl Walk<'_> {
-    /// A binding of the body: whether it aliases outside storage.
-    fn local(&self, name: &str) -> Option<bool> {
+    /// A binding of the body: what it holds.
+    fn local(&self, name: &str) -> Option<Held> {
         self.scopes.iter().rev().find_map(|s| s.get(name).copied())
     }
 
@@ -120,85 +156,91 @@ impl Walk<'_> {
         self.local(name).is_some()
     }
 
-    fn declare(&mut self, name: &str, alias: bool) {
+    fn declare(&mut self, name: &str, held: Held) {
         if let Some(s) = self.scopes.last_mut() {
-            s.insert(name.to_string(), alias);
+            s.insert(name.to_string(), held);
         }
     }
 
-    /// Re-mark a binding of the body as an alias (an assignment gave it
-    /// outside storage).
-    fn mark_alias(&mut self, name: &str) {
+    /// A body binding assigned a value of kind `held`: it holds either,
+    /// whichever iteration or branch ran last.
+    fn assigned(&mut self, name: &str, held: Held) {
         if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
-            s.insert(name.to_string(), true);
+            let now = s[name].join(held);
+            s.insert(name.to_string(), now);
         }
     }
 
-    /// May `e` be handed to a call that could write through it: a
-    /// literal, a path (a constant, a fn), `self` or an outside locus
-    /// reference itself, a scalar binding, a value this iteration made (a
-    /// body binding that is no alias, a path into one, a call's result:
-    /// the call's own arguments are judged where it is), or an operator,
-    /// literal, `or` or range over those. Everything else is outside
-    /// storage, or may be (an `if` or `match` value, a block), and is not.
-    fn admitted(&self, e: &Expr) -> bool {
+    /// What `e` is, for handing it to a call ([`Held`]):
+    ///
+    /// - a literal, a scalar binding: owned;
+    /// - `self`, an outside locus reference, a path (a constant, a fn):
+    ///   whole only;
+    /// - a body binding: what it was bound or assigned;
+    /// - a field or element: owned through an owned value, else outside;
+    /// - a call's result: owned when every argument is (a method returns
+    ///   a copy in its caller's arena; a free fn returns what it was
+    ///   handed, made fresh, or a path of it), else outside (a free fn
+    ///   handed a locus may return a field of it);
+    /// - an operator, a literal of a container, an `or`, a range, a
+    ///   carrier: the join of its parts or arms (an arm with no tail
+    ///   diverges or is unit, `or { break; }`);
+    /// - anything else (an unknown name, a match binder): outside.
+    fn held(&self, e: &Expr) -> Held {
         match e {
-            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) | Expr::Call { .. } => true,
+            Expr::Literal(..) => Held::Owned,
+            Expr::Path(_) | Expr::KwSelf(_) => Held::Whole,
             Expr::Ident(i) => match self.local(&i.name) {
-                Some(alias) => !alias,
-                None => matches!((self.outer)(&i.name), Some(OuterLocal::Scalar | OuterLocal::Locus)),
+                Some(h) => h,
+                None => match (self.outer)(&i.name) {
+                    Some(OuterLocal::Scalar) => Held::Owned,
+                    Some(OuterLocal::Locus) => Held::Whole,
+                    _ => Held::Outside,
+                },
             },
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.owns_path(receiver),
-            Expr::Index { receiver, index, .. } => self.owns_path(receiver) && self.admitted(index),
-            Expr::Binary { left, right, .. } => self.admitted(left) && self.admitted(right),
-            Expr::Unary { operand, .. } => self.admitted(operand),
-            Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().all(|x| self.admitted(x)),
-            Expr::Struct { inits, .. } => inits.iter().all(|i| self.admitted(&i.value)),
-            Expr::ArrayRepeat { val, .. } => self.admitted(val),
-            Expr::Range { lo, hi, .. } => self.admitted(lo) && self.admitted(hi),
-            Expr::Or { inner, disposition, .. } => {
-                self.admitted(inner)
-                    && match disposition {
-                        OrDisposition::Substitute(x) => self.admitted(x),
-                        OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) | OrDisposition::Fail(..) => true,
-                    }
+            Expr::Call { args, .. } => {
+                if args.iter().all(|a| self.held(a) == Held::Owned) {
+                    Held::Owned
+                } else {
+                    Held::Outside
+                }
             }
-            // A carrier's value is an arm's tail: each has to be admitted
-            // (an arm with none diverges or is unit, `or { break; }`).
-            Expr::Block(b) => self.block_value_admitted(b),
-            Expr::If(i) => self.if_value_admitted(i),
-            Expr::Match(m) => m.arms.iter().all(|a| match &a.body {
-                MatchArmBody::Expr(x) => self.admitted(x),
-                MatchArmBody::Block(b) => self.block_value_admitted(b),
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.held(receiver).path(),
+            Expr::Index { receiver, index, .. } => self.held(receiver).path().join(self.held(index)),
+            Expr::Binary { left, right, .. } => self.held(left).join(self.held(right)),
+            Expr::Unary { operand, .. } => self.held(operand),
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().fold(Held::Owned, |h, x| h.join(self.held(x))),
+            Expr::Struct { inits, .. } => inits.iter().fold(Held::Owned, |h, i| h.join(self.held(&i.value))),
+            Expr::ArrayRepeat { val, .. } => self.held(val),
+            Expr::Range { lo, hi, .. } => self.held(lo).join(self.held(hi)),
+            Expr::Or { inner, disposition, .. } => self.held(inner).join(match disposition {
+                OrDisposition::Substitute(x) => self.held(x),
+                OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) | OrDisposition::Fail(..) => {
+                    Held::Owned
+                }
             }),
-            Expr::Sum(..) | Expr::Prod(..) | Expr::Approx { .. } => false,
+            Expr::Block(b) => self.block_held(b),
+            Expr::If(i) => self.if_held(i),
+            Expr::Match(m) => m.arms.iter().fold(Held::Owned, |h, a| {
+                h.join(match &a.body {
+                    MatchArmBody::Expr(x) => self.held(x),
+                    MatchArmBody::Block(b) => self.block_held(b),
+                })
+            }),
+            Expr::Sum(..) | Expr::Prod(..) | Expr::Approx { .. } => Held::Outside,
         }
     }
 
-    fn block_value_admitted(&self, b: &Block) -> bool {
-        b.tail.as_deref().is_none_or(|t| self.admitted(t))
+    fn block_held(&self, b: &Block) -> Held {
+        b.tail.as_deref().map_or(Held::Owned, |t| self.held(t))
     }
 
-    fn if_value_admitted(&self, i: &IfStmt) -> bool {
-        self.block_value_admitted(&i.then_block)
-            && match i.else_block.as_deref() {
-                None => true,
-                Some(ElseBranch::Else(b)) => self.block_value_admitted(b),
-                Some(ElseBranch::ElseIf(e)) => self.if_value_admitted(e),
-            }
-    }
-
-    /// Is the place `e` a path into a value this iteration made: rooted
-    /// in a body binding that is no alias (a field of `self` or of any
-    /// locus, of an outside record or array, is not).
-    fn owns_path(&self, e: &Expr) -> bool {
-        match e {
-            Expr::Ident(i) => self.local(&i.name) == Some(false),
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.owns_path(receiver),
-            Expr::Index { receiver, index, .. } => self.owns_path(receiver) && self.admitted(index),
-            Expr::Call { .. } => true,
-            _ => false,
-        }
+    fn if_held(&self, i: &IfStmt) -> Held {
+        self.block_held(&i.then_block).join(match i.else_block.as_deref() {
+            None => Held::Owned,
+            Some(ElseBranch::Else(b)) => self.block_held(b),
+            Some(ElseBranch::ElseIf(e)) => self.if_held(e),
+        })
     }
 
     fn block(&mut self, b: &Block) -> bool {
@@ -212,22 +254,23 @@ impl Walk<'_> {
         match s {
             Stmt::Let { name, value, .. } => {
                 let ok = self.expr(value);
-                let alias = !self.admitted(value);
-                self.declare(&name.name, alias);
+                let held = self.held(value);
+                self.declare(&name.name, held);
                 ok
             }
             Stmt::LetTuple { names, value, .. } => {
                 let ok = self.expr(value);
-                let alias = !self.admitted(value);
+                let held = self.held(value);
                 for n in names {
-                    self.declare(&n.name, alias);
+                    self.declare(&n.name, held);
                 }
                 ok
             }
             Stmt::Assign { target, value, .. } => {
                 let ok = self.assign_target(target) && self.expr(value);
-                if ok && !self.admitted(value) {
-                    self.mark_alias(&target.head.name);
+                if ok && target.tail.is_empty() {
+                    let held = self.held(value);
+                    self.assigned(&target.head.name, held);
                 }
                 ok
             }
@@ -237,8 +280,9 @@ impl Walk<'_> {
                 if !self.expr(iter) {
                     return false;
                 }
-                let alias = !self.admitted(iter);
-                self.scopes.push(BTreeMap::from([(name.name.clone(), alias)]));
+                // A binder is an element of what is iterated.
+                let held = self.held(iter).path();
+                self.scopes.push(BTreeMap::from([(name.name.clone(), held)]));
                 let ok = self.block(body);
                 self.scopes.pop();
                 ok
@@ -261,7 +305,8 @@ impl Walk<'_> {
     fn writable(&self, head: &str) -> bool {
         head == "self"
             || match self.local(head) {
-                Some(alias) => !alias,
+                // A store through a locus reference copies into it.
+                Some(held) => held != Held::Outside,
                 None => matches!((self.outer)(head), Some(OuterLocal::Scalar | OuterLocal::Locus)),
             }
     }
@@ -313,7 +358,7 @@ impl Walk<'_> {
                 // what it cannot write into outside the iteration.
                 let reads_only = matches!(callee.as_ref(), Expr::Ident(f)
                     if !self.declared(&f.name) && (self.outer)(&f.name).is_none() && read_only_builtin(&f.name));
-                (reads_only || args.iter().all(|a| self.admitted(a)))
+                (reads_only || args.iter().all(|a| self.held(a) != Held::Outside))
                     && !(self.produces_locus)(e)
                     && self.expr(callee)
                     && args.iter().all(|a| self.expr(a))
@@ -417,6 +462,32 @@ mod tests {
         assert!(reclaims("fn f() { while true { total = total + len(last); println(last); } }"));
         assert!(reclaims("fn f() { while true { let p = self.buf.snapshot() or b\"\"; h.update(p); keep(p, p); self.s.put(p); } }"));
         assert!(!reclaims("fn f() { while true { push(self.items, b\"x\") or discard; } }"));
+    }
+
+    /// A body binding of a locus reference is passed whole, never a path
+    /// through it: each way of binding one.
+    #[test]
+    fn a_body_binding_of_a_locus_is_whole_not_a_path() {
+        // `let` of `self` and of an outside locus, then a path through it
+        assert!(!reclaims("fn f() { while true { let a = self; keep(a.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { let a = h; keep(a.bag, b\"x\"); keep(a.bag.items, b\"x\"); } }"));
+        // passed whole it is admitted
+        assert!(reclaims("fn f() { while true { let a = self; let b = h; keep(a, b\"x\"); keep(b, i); } }"));
+        // an assignment joins: an owned binding assigned a locus, or outside storage
+        assert!(!reclaims("fn f() { while true { let a = T { }; a = h; keep(a.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { let a = T { }; a = last; keep(a, b\"x\"); } }"));
+        // a carrier's arms, an `or`'s sides, a match's arms
+        assert!(!reclaims("fn f() { while true { let a = if i > 0 { self } else { h }; keep(a.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { let a = { h }; keep(a.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { let a = get() or h; keep(a.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { let a = match i { 0 -> h, _ -> self, }; keep(a.bag, b\"x\"); } }"));
+        // a container holding a locus, a tuple `let`, a `for` binder
+        assert!(!reclaims("fn f() { while true { let w = W { h: h }; keep(w.h.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { let (a, b) = (h, 1); keep(a.bag, b\"x\"); } }"));
+        assert!(!reclaims("fn f() { while true { for a in self.children { keep(a, b\"x\"); } } }"));
+        // a call's result when it was handed a locus (it may be a field of it)
+        assert!(!reclaims("fn f() { while true { let a = field_of(h); keep(a, b\"x\"); } }"));
+        assert!(reclaims("fn f() { while true { let a = make(i); keep(a.items, b\"x\"); } }"));
     }
 
     /// The audit: each way a call can be handed storage that outlives the

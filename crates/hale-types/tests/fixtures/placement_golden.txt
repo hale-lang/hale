@@ -4137,7 +4137,7 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 row	Hand@main1	Hand	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
-== crates/hale-codegen/tests/loop_iteration_reclaim.rs#9a471e9e
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#165ef38f
 row	Probe@main1	Probe	main	default
 -- dynamic	sites in the seed
 dynamic	Holder	on main

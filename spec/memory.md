@@ -1262,15 +1262,18 @@ unless it can hand a value to the next iteration through the frame:
      `bounded` write into a field or record is a call, rule 3);
   3. it hands a call (any but a builtin that only reads, by a name
      no fn can take: `len`, `println`, `to_string`, …) an argument
-     that is not on the allow-list: a literal, a scalar binding, a
-     bare locus reference (`self`, an outside binding holding one), a
-     value this iteration made (a body binding whose own value was on
-     the list, a path into one, a call's result), or an operator,
-     literal, `or` or carrier over those. Everything else is outside
-     storage or may be (an outside record and any path into it, a
-     field of `self` or of another locus such as `holder.bag`, an
-     element of an outside array or tuple, a match binder, a body
-     binding aliasing any of them), and the callee could write into
+     that is neither owned nor a locus passed whole. A value is
+     *owned* (a literal, a scalar, a value this iteration made, a path
+     into one, a call's result when every argument was owned), *whole*
+     (`self`, an outside locus reference, or a body binding of one: as
+     an argument it is the locus, but any path through it, `alias.bag`,
+     is that locus's storage), or *outside* (an outside record and any
+     path into it, any path through a locus, an element of an outside
+     array or tuple, a match binder, a call's result handed anything
+     not owned). A `let`, a tuple `let` and a `for` binder take their
+     value's kind, an assignment joins it in, and a carrier, an `or`
+     and a container literal join their arms and parts. Handed outside
+     storage, the callee could write into
      it from its caller arena, which is the iteration's: a free fn
      through its parameter whatever its name (`push` included), a fn
      value held in a field (`self.callback(outer, p)`), a method
