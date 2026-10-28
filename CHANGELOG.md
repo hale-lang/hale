@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+## v0.30.2 — what runs where (2026-10-28)
+
+Every machine a habitat uses now reports its containers, and Grafana shows what runs where.
+
+**Containers.** Beside each host's node exporter, the habitat runs a container exporter (cAdvisor; on a Mac, inside docker's VM). Grafana's new **Containers** dashboard lists each container with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window. The Hosts dashboard links to it (#1771).
+
+**The allocation survey** counts a write through a record, array or tuple parameter as living with the record's owner, matching what v0.30.1's codegen does with it (#1770).
+
+No breaking changes against v0.30.1.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- The allocation survey now counts a write through a record, array or tuple parameter as living with the record's owner, no longer freed when the method returns. Such a value escapes as `param-store`, and a writer handed a record `self` holds stores as `held-store` into the locus arena, which is never recycled. A `run()` loop or bus handler that hands a writer `self.bag` is reported at the call. `--dump-alloc-summary` shows these as `store` lines (#1770).
+
+- Every machine the habitat uses also runs a container exporter (cAdvisor, `hale-cadvisor`; on a Mac inside docker's VM), and Grafana's new **Containers** dashboard shows what runs where: each container with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window (#1771).
+
 ## v0.30.1 — manifests a toolchain grows into, and the habitat's alerts (2026-10-28)
 
 An organism's manifest can now declare what a newer toolchain reads without breaking the toolchain beside it, and the habitat watches its machines' disks and shows what fires.
