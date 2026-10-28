@@ -922,8 +922,8 @@ grafted organism that came from a sapling the habitat pins, and a
   declaration is read from that checkout, so the command is the one the
   pinned revision declares.
 - **Its toolchain.** A command whose first word is `hale` runs with the
-  host's own `hale`, by its path; a host with none is refused, naming the
-  there first.
+  host's own `hale`, by its path; a host with none is refused: the
+  release the organism pins goes there first.
 - **Its inputs**, each named in `inputs` and filled where its argv says
   `{input}` (an input it does not declare, or one with no value, is
   refused): `id` (`--id`, by default the host's first label), `api_url` (the
