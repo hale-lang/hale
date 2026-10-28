@@ -976,7 +976,7 @@ inputs = ["id", "api_url", "operator_token_file"]
 api_service = "api"                           # whose published address is {api_url} (default "api")
 operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
 service = "voice-node-{id}"                   # what the install leaves running
-requires = ["gpu"]                            # what the host must have
+requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have
 ```
 
 `hale habitat organism place <organism> <command> --host <h> [--id <id>]
@@ -1008,8 +1008,9 @@ grafted organism that came from a sapling the habitat pins, and a
   sha256 and moved into place whole, one directory per version, never the
   person's own `hale`. A command whose first word is `hale` runs with it by
   its absolute path.
-- **What it requires**, from a vocabulary the habitat checks from the
-  host's facts: `docker` (docker answers the login), `systemd` (a Linux
+- **What it requires**, by platform (`requires = { linux = [...], macos =
+  [...] }`; a list is the same on every platform), from a vocabulary the
+  habitat checks from the host's facts: `docker` (docker answers the login), `systemd` (a Linux
   host whose system services run under systemd), `nvidia-gpu`
   (`nvidia-smi` lists a GPU), `apple-silicon` (an arm64 Mac), `gpu` (either
   of the two). A host that lacks one is refused before anything is

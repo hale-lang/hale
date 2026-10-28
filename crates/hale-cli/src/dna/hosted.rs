@@ -13,7 +13,7 @@
 //! api_service = "api"                                  # whose published URL is {api_url} (default "api")
 //! operator_token = ["voice-api", "admin-token"]        # run in that service's container: prints the token
 //! service = "voice-node-{id}"                          # what the install leaves running: a systemd unit or launchd label
-//! requires = ["docker", "gpu"]                         # what the host must have; checked before anything runs
+//! requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have (or a list: on every platform)
 //! ```
 //!
 //! The habitat provisions what any host command needs to run at all, which
@@ -50,8 +50,9 @@ pub(super) struct HostCommand {
     /// system service's name (a systemd unit on Linux, a launchd label in
     /// the system domain on macOS), `{id}` filled in; "" when it names none.
     pub service: String,
-    /// What the host must have before the command runs (`REQUIRES`).
-    pub requires: Vec<String>,
+    /// What the host must have before the command runs (`REQUIRES`), by
+    /// platform; a list declares the same on every platform.
+    pub requires: BTreeMap<String, Vec<String>>,
 }
 
 /// What a host command may require of a host, each checked from what the
@@ -93,9 +94,27 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
                 None => String::new(),
                 Some(v) => v.as_str().ok_or_else(|| format!("[dna.host.{name}] service is a string"))?.to_string(),
             },
-            requires: strs("requires")?,
+            requires: match t.get("requires") {
+                None => BTreeMap::new(),
+                Some(toml::Value::Array(_)) => {
+                    let all = strs("requires")?;
+                    PLATFORMS.iter().map(|p| (p.to_string(), all.clone())).collect()
+                }
+                Some(toml::Value::Table(by)) => {
+                    let mut out = BTreeMap::new();
+                    for (platform, v) in by {
+                        if !PLATFORMS.contains(&platform.as_str()) {
+                            return Err(format!("[dna.host.{name}] requires.{platform}: a platform is linux or macos"));
+                        }
+                        let list = v.as_array().ok_or_else(|| format!("[dna.host.{name}] requires.{platform} is a list of strings"))?.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(|| format!("[dna.host.{name}] requires.{platform} is a list of strings"))).collect::<Result<Vec<_>, _>>()?;
+                        out.insert(platform.clone(), list);
+                    }
+                    out
+                }
+                Some(_) => return Err(format!("[dna.host.{name}] requires is a list, or a table of lists by platform")),
+            },
         };
-        if let Some(q) = c.requires.iter().find(|q| !REQUIRES.contains(&q.as_str())) {
+        if let Some(q) = c.requires.values().flatten().find(|q| !REQUIRES.contains(&q.as_str())) {
             return Err(format!("[dna.host.{name}] requires `{q}`: one of {}", REQUIRES.join(", ")));
         }
         if c.service.contains(|ch: char| !(ch.is_ascii_alphanumeric() || "-_.@{}".contains(ch))) {
@@ -528,9 +547,10 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     if !cmd.platforms.is_empty() && !cmd.platforms.iter().any(|x| x == platform) {
         return Err(format!("`{name}` runs on {}; {host} is {}", cmd.platforms.join(" and "), if f.os.is_empty() { "unknown" } else { &f.os }));
     }
-    let unmet = unmet(&cmd.requires, &f);
+    let requires = cmd.requires.get(platform).cloned().unwrap_or_default();
+    let unmet = unmet(&requires, &f);
     if !unmet.is_empty() {
-        return Err(format!("`{name}` requires {}; {host} lacks {}", cmd.requires.join(", "), unmet.join(", ")));
+        return Err(format!("`{name}` requires {} on {platform}; {host} lacks {}", requires.join(", "), unmet.join(", ")));
     }
     // the toolchain it declares, else the habitat's own (this one's)
     let pinned = pinned_toolchain(&manifest);
@@ -564,8 +584,8 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     println!("{:<8}{organism}'s `{name}` on {host} ({platform}{}), as {organism} {revision} declares it", if install { "place" } else { "unplace" }, if cmd.root { ", as root through your sudo" } else { "" });
     println!("{:<8}{}", "runs", argv.join(" "));
     println!("{builds}");
-    if !cmd.requires.is_empty() {
-        println!("{:<8}{}: {host} has them", "needs", cmd.requires.join(", "));
+    if !requires.is_empty() {
+        println!("{:<8}{} on {platform}: {host} has them", "needs", requires.join(", "));
     }
     println!("{:<8}{tag}, {whose}: {}", "hale", if have_toolchain { format!("in {}/{TOOLCHAINS}/{tag} on {host}", f.home) } else if plan { format!("would install it in {}/{TOOLCHAINS}/{tag} from its release, checked against its sha256", f.home) } else { format!("installing it in {}/{TOOLCHAINS}/{tag} from its release", f.home) });
     println!("{:<8}in {dir} on {host}, with {hale}", "from");
@@ -699,7 +719,15 @@ service = "voice-node-{id}"
         assert!(unmet(&req(&["gpu"]), &mac).is_empty());
         assert_eq!(unmet(&req(&["gpu", "docker"]), &mac), ["docker"]);
         assert_eq!(unmet(&req(&["nvidia-gpu"]), &mac), ["nvidia-gpu"]);
-        assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"gpu\", \"docker\"]")).unwrap()["node"].requires == ["gpu", "docker"]);
+        let flat = host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"gpu\", \"docker\"]")).unwrap();
+        assert_eq!((flat["node"].requires["linux"].clone(), flat["node"].requires["macos"].clone()), (req(&["gpu", "docker"]), req(&["gpu", "docker"])));
+        // voice's: docker on Linux alone, where its runtimes are containers
+        let by = host_commands(&VOICE.replace("root = true", "root = true\nrequires = { linux = [\"docker\", \"nvidia-gpu\"], macos = [\"apple-silicon\"] }")).unwrap();
+        assert_eq!(by["node"].requires["linux"], req(&["docker", "nvidia-gpu"]));
+        assert_eq!(by["node"].requires["macos"], req(&["apple-silicon"]));
+        assert!(unmet(&by["node"].requires["macos"], &mac).is_empty());
+        assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = { windows = [\"gpu\"] }")).unwrap_err().contains("requires.windows"));
+        assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = { linux = [\"tpu\"] }")).unwrap_err().contains("requires `tpu`"));
         assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"tpu\"]")).unwrap_err().contains("requires `tpu`"));
     }
 
