@@ -20,6 +20,8 @@
         <a href="#hardware" id="nav-hardware">hardware</a>
         <a href="#infrastructure" id="nav-infrastructure">infrastructure</a>
         <a href="#organisms" id="nav-organisms">organisms</a>
+        <a href="/organization" id="nav-organization">organization</a>
+        <a href="/grafana/" id="nav-dashboards">dashboards</a>
       </nav>
       <span id="state" data-state="down">down</span>
     </header>
@@ -50,10 +52,7 @@
     <div id="screen-hardware" hidden>
       <section id="hosts">
         <h2>hosts</h2>
-        <table>
-          <thead><tr><th>name</th><th>state</th><th>offers</th><th>host key</th><th>allocations</th><th></th></tr></thead>
-          <tbody id="host-rows"></tbody>
-        </table>
+        <div id="host-rows"></div>
         <p id="hosts-empty" class="dim" hidden>no host but this machine</p>
         <p id="host-outcome" class="outcome" hidden></p>
         <div id="remove-confirm" class="crossing" hidden>
@@ -85,7 +84,7 @@
       <section id="allocations">
         <h2>allocations</h2>
         <table>
-          <thead><tr><th>role</th><th>instance</th><th>provider</th><th>host</th><th>state</th><th>place on</th></tr></thead>
+          <thead><tr><th>role</th><th>organism</th><th>provider</th><th>runs</th><th>host</th><th>state</th><th>place on</th></tr></thead>
           <tbody id="allocation-rows"></tbody>
         </table>
         <p id="allocations-empty" class="dim" hidden>nothing is allocated</p>

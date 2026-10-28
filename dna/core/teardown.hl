@@ -504,7 +504,7 @@ fn host_key_note(root: String, h: Host, action: String) -> String {
         h.name,
         "the line " + (if len(line) > 0 { "`" + line + "`" } else { "of the habitat's key" })
             + " in " + h.user + "@" + h.name
-            + ":~/.ssh/authorized_keys: the habitat cannot remove it; remove it on that machine",
+            + ":~/.ssh/authorized_keys: the habitat cannot remove it; the CLI does, over your own SSH login (an account the habitat made goes whole), else remove it on that machine",
         "1 line",
         "-",
         action,
@@ -780,6 +780,35 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         }
         return "";
     }
+    if action == "record-drop" {
+        // a tenant's record on the habitat's memory, dropped inside that
+        // server's container by its superuser (as the password's adoption
+        // is): the schema and roles of the record, the heart's database
+        let hkey = first;
+        let id = teardown_arg(args, 1);
+        let ckey = teardown_arg(args, 2);
+        if !teardown_word(hkey) || !teardown_word(id) || !teardown_word(ckey) {
+            return "`" + args + "` names no record on the habitat's memory";
+        }
+        let heart = heart_role(ckey);
+        // one line, the SQL on psql's stdin: `placed_exec` on this machine
+        // hands its script on as argv, which a newline would split (a
+        // heredoc's body then reached psql as nothing, and it exited 0);
+        // statements one by one, as DROP DATABASE must run outside a
+        // transaction
+        let sql = unmigrate_sql(id) + "; DROP DATABASE IF EXISTS " + heart
+            + "; DROP ROLE IF EXISTS " + heart + ";";
+        let dropped = placed_exec(
+            hkey, "memory",
+            "printf '%s\\n' '" + std::str::replace(sql, "'", "'\"'\"'")
+                + "' | psql -q -v ON_ERROR_STOP=1 -U dna -d dna",
+        );
+        if dropped.code != 0 {
+            return "the record could not be dropped on the habitat's memory: "
+                + trim_nl(dropped.stderr);
+        }
+        return "";
+    }
     if action == "dir-rm" {
         let habitat = local_habitat_dir() + "/";
         if !std::str::starts_with(first, habitat) || std::str::contains(first, "/../")
@@ -1011,6 +1040,26 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
         }
         let service = compose_service(role, key);
         let mut item = "";
+        // a record the habitat's memory keeps: its schema, its roles and any
+        // heart database of it dropped there; the server is the habitat's
+        let row_service = std::json::find_string_field(abody, "service");
+        if role == "memory"
+            && memory_reused(key)
+            && len(row_service) > 0
+            && row_service != service
+        {
+            item = teardown_item(
+                "record", subject,
+                "its record, a schema on the habitat's memory (" + row_service
+                    + "): its schema, its roles and any heart database of it dropped there; the server is the habitat's, kept",
+                "1 schema", "no: the record and every row of it are deleted", "record-drop", "",
+                std::str::replace(row_service, "memory-", "") + "\n"
+                    + std::json::find_string_field(abody, "organism") + "\n" + key,
+                50,
+            );
+            items = teardown_more(items, item);
+            continue;
+        }
         if provider == "operator" {
             item = teardown_item(
                 "allocations", subject,

@@ -12,6 +12,7 @@
 //! nerves' stream to this toolchain's; `up`, `status` and `down` follow
 //! with the habitat's genome.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -26,10 +27,15 @@ mod forget;
 #[path = "remote.rs"]
 mod remote;
 
+#[path = "readings.rs"]
+mod readings;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
 const HABITAT_PIN: &str = env!("HALE_HABITAT_PIN");
+/// The toolchain's repository: a habitat image is built from a commit of it.
+pub(super) const HALE_GIT: &str = "https://github.com/hale-lang/hale.git";
 
 pub(super) fn set_head_flag(url: String) {
     let _ = HEAD_FLAG.set(url);
@@ -73,7 +79,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat graft --resume <path on the habitat's machine> [flags]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
-       hale habitat [--head <url>] graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
+       hale habitat [--head <url>] graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
        hale habitat [--head <url>] place <key>/<role> <host>
        hale habitat [--head <url>] model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
        hale habitat [--head <url>] model-probe <organism> <mode>.<size>
@@ -202,11 +208,21 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      directory.
 --no-head            (graft) the act itself: a sapling's graft is otherwise
                      the head's Commands::graft while the head answers.
---host <name>        (graft) place the new organism on that host: its
-                     memory, nerves and senses' store, and its own services
-                     (a compose.yaml at its root), are allocations of the
-                     host, brought up there by its provider, and its
-                     addresses are derived from there.
+--host <name>        (graft) place the new organism's application, its own
+                     services (a compose.yaml at its root), on that host,
+                     brought up there by its provider.
+--own <part>[=<host>]
+--reuse <part>       (graft) how each body part is filled. The organism
+                     plane (memory, nerves, senses) reuses the habitat's,
+                     on its machine, unless --own gives it a server of its
+                     own (on <host>, else on --host). The application plane
+                     (database, broker) is the application's own when its
+                     manifest says it brings it ([dna] brings), else the
+                     habitat provisions it; --reuse has the habitat
+                     provide it, --own leaves it to the application.
+--plan               (graft) print the plan, part by part, and graft
+                     nothing. At a terminal a graft prints its plan and
+                     asks before it acts.
 model-map <organism> <category> <model>
                      point a grafted organism's model map at an endpoint
                      (the head's Commands::set_model_map: `hale dna models
@@ -260,9 +276,16 @@ host add <name>      add a machine on the LAN, by the name it resolves under,
                      as a host the habitat places on over SSH (port 22
                      unless --port, as --user or this user): prints the
                      host key first seen there (the one trusted after it)
-                     and the habitat's public key, the line to append to
-                     ~/.ssh/authorized_keys on that machine. Until it is
-                     appended the host is pending-key.
+                     and the habitat's public key. With no --user, the
+                     habitat logs in as an account of its own there,
+                     hale-<id>: over your own SSH login (as up --host
+                     reaches a machine), with your sudo, it makes that
+                     account (no sudo of its own; in the docker group,
+                     which is root-equivalent on the host), puts the key in
+                     it and probes the host ready. With --user, the key goes
+                     into that account. When your login does not reach the
+                     machine, what to do there is printed, and the host is
+                     pending-key.
 host probe <name>    probe it again over SSH: what it offers (docker
                      compose, the user's systemd, its OS and architecture);
                      a pending-key host whose key is now authorized is
@@ -271,8 +294,8 @@ host probe <name>    probe it again over SSH: what it offers (docker
 host remove <name>   remove it, planned first: the plan lists each allocation
                      placed or applied there and what stops or is deleted
                      on that host, the record's rows about it, and the line
-                     its authorized_keys took, which the habitat cannot
-                     remove. When the plan stops or deletes anything there,
+                     its authorized_keys took, which this CLI then removes
+                     over your own SSH login. When the plan stops or deletes anything there,
                      nothing is touched until the host's name is typed back
                      at a terminal; --plan prints the plan and exits.
                      The host verbs are the Board's commands of the
@@ -412,6 +435,11 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         },
         Some("graft") if args.get(1).is_some_and(|a| Path::new(a).is_dir() || a.contains('/')) && remote::pointer().is_some() => match remote::pointer() {
             Some(p) => remote::graft(&p, &args[1..]),
+            None => ExitCode::from(2),
+        },
+        // a bare name through a pointer is a sapling: the head grafts it
+        Some("graft") if args.get(1).is_some_and(|a| !a.starts_with('-')) && remote::pointer().is_some() => match remote::pointer() {
+            Some(p) => remote::graft_sapling(&p, &args[1..]),
             None => ExitCode::from(2),
         },
         Some("organism") if args.get(2).map(String::as_str) == Some("dna") => match remote::pointer() {
@@ -557,6 +585,47 @@ pub(crate) fn head_endpoint() -> Option<String> {
     head_url_at(&genome).as_deref().and_then(loopback_port).map(|base| format!("http://{}:{}", habitat_address(), base + 1))
 }
 
+/// The link that signs the person in to the habitat's face: the face's URL
+/// with the head's launch token, which opens `/` once and sets the session
+/// cookie (`dna/api/project_service/head.hl`). "" when no token is kept here.
+pub(super) fn sign_in_link(face: &str) -> String {
+    let token = head_token();
+    if token.is_empty() || face.is_empty() {
+        return String::new();
+    }
+    format!("{}/?token={token}", face.trim_end_matches('/'))
+}
+
+/// What a birth or a sapling's graft proposes is the packaging the person
+/// chose by that act, so the act ratifies it in their name: `hale dna review
+/// all approve --no-wait`, every pending group (purpose, the practices it
+/// ships with, positions, …) decided at once, its verdicts executed when
+/// the body runs. The organism starts governed instead of waiting on its
+/// own defaults; anything proposed after is the Board's to review. A
+/// directory grafted as a new application is not packaging anyone vetted,
+/// and keeps its proposals. A line saying what was done, or how to finish.
+pub(super) fn ratify_packaged(root: &Path, act: &str, what: &str) -> String {
+    let comment = format!("ratified at {act}: {what}, the packaging the act chose");
+    let ran = std::env::current_exe().map_err(|e| e.to_string()).and_then(|me| {
+        Command::new(me)
+            .current_dir(root)
+            .args(["dna", "review", "all", "approve", "--no-wait", "--comment", &comment])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| e.to_string())
+    });
+    match ran {
+        Ok(o) if o.status.success() => format!("ratified {what}, at {act}"),
+        Ok(o) => format!(
+            "{:<8}{what} proposed but not ratified ({}): `hale dna review all approve` in {} ratifies it",
+            "note",
+            String::from_utf8_lossy(&o.stderr).trim().lines().last().unwrap_or("no reason given"),
+            root.display()
+        ),
+        Err(e) => format!("{:<8}{what} proposed but not ratified ({e}): `hale dna review all approve` in {} ratifies it", "note", root.display()),
+    }
+}
+
 pub(crate) fn head_token() -> String {
     std::fs::read_to_string(face_state_dir().join("head.token"))
         .or_else(|_| std::fs::read_to_string(genome_dir().join(".hale/dna/head.token")))
@@ -650,6 +719,19 @@ fn host(args: &[String]) -> ExitCode {
         }
         i += 2;
     }
+    // with no --user, the habitat logs in as an account of its own there,
+    // made below over the person's login, never as the person
+    let own_user = verb == "add" && payload.get("user").is_none();
+    if own_user {
+        match habitat_identity() {
+            Some(id) => payload["user"] = serde_json::json!(remote::habitat_user(&id)),
+            None => {
+                eprintln!("hale habitat host add {name}: the habitat has no record identity yet (`hale habitat up` births it)");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let login_port = payload["port"].as_u64().and_then(|n| u16::try_from(n).ok());
     let member = if verb == "add" { "Commands::add_host" } else { "Commands::probe_host" };
     let v = match host_call(member, payload) {
         Ok(v) => v,
@@ -664,13 +746,62 @@ fn host(args: &[String]) -> ExitCode {
     }
     let offers = if field("offers").is_empty() { "nothing yet".to_string() } else { field("offers") };
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
+    // a ready host's probe checks its exporter too, over the person's own
+    // login: installed when it is missing, replaced when it runs with other
+    // flags than this toolchain's
+    if verb == "probe" && field("state") == "ready" && !readings::node_exporter_off() {
+        let login = if remote::is_habitat_user(&field("user")) { None } else { Some(field("user")) };
+        let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+        progress(&format!("checking the node exporter on {name}, over your SSH login"));
+        println!("{}", match remote::login_script(&name, login.as_deref(), port, readings::install_script) {
+            Ok(o) => readings::install_line(&name, &o),
+            Err(why) => format!("{:<8}{name}: no exporter: {why}", "node"),
+        });
+    }
     println!("{:<8}{offers}{}", "offers", if field("os").is_empty() { String::new() } else { format!(" ({} {})", field("os"), field("arch")) });
     if verb == "add" {
         println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
         println!("{:<8}{}", "key", v["public_key"].as_str().unwrap_or(""));
         if field("state") != "ready" {
-            println!("on {name}, append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", field("user"));
-            println!("{}", v["authorize"].as_str().unwrap_or(""));
+            // over the person's own login, as `up --host` reaches a machine:
+            // the key appended there, then the host probed again
+            let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+            let line = v["authorize"].as_str().unwrap_or("");
+            let done = if own_user {
+                println!("making the habitat's own account {} on {name} over your SSH login (no sudo of its own; on Linux in the docker group, which is root-equivalent on that host; on macOS a hidden account with no password); sudo may ask for your password:", field("user"));
+                remote::provision_user(&name, login_port, &field("user"), line)
+            } else {
+                remote::authorize_key(&name, &field("user"), port, line)
+            };
+            match done {
+                Ok(()) => {
+                    println!("authorized the habitat's key in {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user"));
+                    match host_call("Commands::probe_host", serde_json::json!({ "name": name })) {
+                        Ok(p) => {
+                            let ph: serde_json::Value = p["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                            let pf = |k: &str| ph[k].as_str().unwrap_or("").to_string();
+                            println!("{:<8}{name}: {}{}", "probed", pf("state"), if pf("offers").is_empty() { String::new() } else { format!(", offers {}", pf("offers")) });
+                            if pf("state") != "ready" {
+                                println!("{:<8}{}", "note", p["why"].as_str().unwrap_or("not ready yet: `hale habitat host probe` checks it again"));
+                            }
+                            if !readings::node_exporter_off() {
+                                // the machine's readings, over the same login the account was made over
+                                let login = if own_user { None } else { Some(field("user")) };
+                                progress(&format!("installing the node exporter on {name}, over your SSH login"));
+                                println!("{}", match remote::login_script(&name, login.as_deref(), if own_user { login_port } else { port }, readings::install_script) {
+                                    Ok(o) => readings::install_line(&name, &o),
+                                    Err(why) => format!("{:<8}{name}: no exporter: {why}", "node"),
+                                });
+                            }
+                        }
+                        Err(code) => return code,
+                    }
+                }
+                Err(why) => {
+                    println!("{name} was not set up over your SSH login ({why}); on {name}, {}append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", if own_user { format!("make the user {} (in the docker group), ", field("user")) } else { String::new() }, field("user"));
+                    println!("{line}");
+                }
+            }
         }
     } else if let Some(why) = v["why"].as_str().filter(|w| !w.is_empty()) {
         println!("{:<8}{why}", "note");
@@ -890,6 +1021,32 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     let h: serde_json::Value = v["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
     let field = |k: &str| h[k].as_str().unwrap_or("").to_string();
     println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
+    // the line its authorized_keys took, which the habitat cannot remove,
+    // taken off over the person's own login
+    let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+    if !readings::node_exporter_off() {
+        match remote::login_script(name, None, port, readings::remove_script) {
+            Ok(o) if o == "removed" => println!("the habitat's node exporter is removed from {name}, over your SSH login"),
+            Ok(_) => {}
+            Err(why) => println!("the habitat's node exporter is left on {name} ({why})"),
+        }
+    }
+    if remote::is_habitat_user(&field("user")) {
+        // the habitat's own account there, its home and key with it
+        match remote::remove_user(name, port, &field("user")) {
+            Ok(()) => println!("the habitat's account {} is removed from {name}, over your SSH login", field("user")),
+            Err(why) => println!("the habitat's account {} is left on {name} ({why}): remove it there (Linux `sudo userdel -r {}`, macOS `sudo dscl . -delete /Users/{}`)", field("user"), field("user"), field("user")),
+        }
+    } else {
+        for i in items.iter().filter(|i| i["group"] == "hosts" && i["host"] == name && i["args"].as_str().is_some_and(|a| !a.is_empty())) {
+            let line = i["args"].as_str().unwrap_or("");
+            let comment = line.rsplit(' ').next().unwrap_or("");
+            match remote::unauthorize_key(name, &field("user"), port, comment) {
+                Ok(()) => println!("the habitat's key is out of {}@{name}:~/.ssh/authorized_keys, over your SSH login", field("user")),
+                Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {}'s ~/.ssh/authorized_keys there", field("user")),
+            }
+        }
+    }
     ExitCode::SUCCESS
 }
 
@@ -929,11 +1086,12 @@ fn migrate_lines(root: &Path) -> Result<Vec<String>, String> {
         Ok(NervesPlan::NoServer(why)) => return Err(format!("nerves: {why}")),
         Err(e) => return Err(format!("nerves: {e}")),
     }
-    // the heart's roles, when the genome declares them
-    if needs_at(root).iter().any(|r| r == "database") {
+    // the heart's roles, when the genome declares them and its application
+    // does not own them
+    if provisioned_needs(root).iter().any(|r| r == "database") {
         out.push(provision_database(root, if own_servers() { "operator" } else { "own" })?);
     }
-    if needs_at(root).iter().any(|r| r == "broker") {
+    if provisioned_needs(root).iter().any(|r| r == "broker") {
         out.push(provision_broker(root)?);
     }
     out.extend(run_heart_migrations(root)?);
@@ -941,13 +1099,19 @@ fn migrate_lines(root: &Path) -> Result<Vec<String>, String> {
     // an environment that names servers of its own names its own store.
     // Nothing reads it but the reflexes, so one that cannot come up is said
     if !own_servers() {
-        match host_run("senses-up", root, &[]) {
-            Ok(o) if !o.starts_with("none: ") => out.push(format!("senses  up ({})", o.trim().trim_start_matches("HALE_DNA_SENSES_URL="))),
-            Ok(o) => out.push(format!("senses  not up: {}", o.trim().strip_prefix("none: ").unwrap_or(o.trim()))),
-            Err(e) => out.push(format!("senses  not up: {e}")),
-        }
+        out.push(senses_line(root));
     }
     Ok(out)
+}
+
+/// The senses' store of the organism at `root` brought up: what `up` and
+/// `migrate` say of it. One that cannot come up is said, and nothing stops.
+fn senses_line(root: &Path) -> String {
+    match host_run("senses-up", root, &[]) {
+        Ok(o) if !o.starts_with("none: ") => format!("senses  up ({})", o.trim().trim_start_matches("HALE_DNA_SENSES_URL=")),
+        Ok(o) => format!("senses  not up: {}", o.trim().strip_prefix("none: ").unwrap_or(o.trim())),
+        Err(e) => format!("senses  not up: {e}"),
+    }
 }
 
 /// Whether this environment names memory or nerves of its own.
@@ -958,6 +1122,16 @@ fn own_servers() -> bool {
 // ---------------------------------------------------------------
 // the allocation record (GH #1653)
 // ---------------------------------------------------------------
+
+/// The habitat's record identity: its pointer's when it runs on another
+/// machine, else its genome's.
+fn habitat_identity() -> Option<String> {
+    let id = match remote::pointer() {
+        Some(p) => p["identity"].as_str().map(str::to_string),
+        None => manifest_pin(&genome_dir().join("hale.toml")).ok().flatten(),
+    };
+    id.filter(|i| i.len() >= 12)
+}
 
 /// The directory of the organism at `root`'s allocations, `None` when it
 /// pins no record identity.
@@ -990,7 +1164,9 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
     if !row["roles"].is_object() {
         row["roles"] = serde_json::json!({});
     }
-    next_rows(&mut row, &id, role, version, slots, &local_habitat_project(), operator);
+    // a record the habitat's memory keeps names the habitat's server
+    let service = (role == "memory" && memory_root(root) != root).then(|| allocation_service_of(&genome_dir(), "memory")).flatten();
+    next_rows_as(&mut row, &id, role, version, slots, &local_habitat_project(), operator, service.as_deref());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     write_row(&path, &row)?;
     // into the habitat's record now, when it exists; else at its birth
@@ -1005,14 +1181,18 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
 /// role has no version of the habitat's: its schema is the heart's (a
 /// declared migration runs the heart's own tool, `run_heart_migrations`),
 /// so its allocation is recorded once and carries none.
-fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool) {
+///
+/// The allocation names `service_as` (a tenant's record on the habitat's
+/// memory names the habitat's server) when given.
+#[allow(clippy::too_many_arguments)]
+fn next_rows_as(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool, service_as: Option<&str>) {
     let heart = PROVISIONED_HEART_ROLES.contains(&role);
     let had = if heart { row["roles"][role].is_object().then_some(version) } else { row["roles"][role]["schema_version"].as_u64() };
     let recorded = row["roles"][role]["recorded"].as_bool().unwrap_or(false);
     let mut pending: Vec<serde_json::Value> = row["pending"].as_array().cloned().unwrap_or_default();
     // an allocation on the operator's own server is no service of the
     // habitat's project: it is named `operator`
-    let service = if operator { "operator".to_string() } else { format!("{role}-{}", &id[..12]) };
+    let service = if operator { "operator".to_string() } else { service_as.map(str::to_string).unwrap_or_else(|| format!("{role}-{}", &id[..12])) };
     let entity = format!("{}/{role}", &id[..12]);
     let slots: Vec<&str> = slots.split_whitespace().collect();
     if had.is_none() && !recorded {
@@ -1064,19 +1244,213 @@ pub(super) fn placed_cache(key: &str, role: &str) -> Option<serde_json::Value> {
 /// --host <name>`), taken by its birth as soon as its identity is pinned.
 pub(super) static GRAFT_HOST: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
 
-/// The organism keyed `key` placed on the host `GRAFT_HOST` names, before
-/// anything of it is brought up: its memory, nerves and senses' store are
-/// kept as placed there, so its birth brings them up there and derives their
-/// addresses from there. Nothing when the graft names no host.
+/// How a graft fills one of the organism's body parts: `Reuse`, what the
+/// habitat already offers, or `Own`, a part of the organism's own, on a
+/// host (`None`: the organism-plane part on the graft's `--host`, an
+/// application-plane part in the application's own compose).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Part {
+    Reuse,
+    Own(Option<String>),
+}
+
+/// The organism plane: what every organism has, and by default reuses
+/// from the habitat (on its machine).
+pub(super) const ORGANISM_PARTS: [&str; 3] = ["memory", "nerves", "senses"];
+/// The application plane's infrastructure a heart may ask the habitat for:
+/// by default the application's own (its compose), provisioned by the
+/// habitat only when the graft says `--reuse`.
+pub(super) const APPLICATION_PARTS: [&str; 2] = ["database", "broker"];
+
+/// The parts a graft chose (`--own <part>[=<host>]`, `--reuse <part>`);
+/// a part it names none for takes its plane's default (`part_choice`).
+pub(super) static GRAFT_PARTS: std::sync::OnceLock<BTreeMap<String, Part>> = std::sync::OnceLock::new();
+/// `graft --plan`: the plan printed, nothing grafted.
+pub(super) static GRAFT_PLAN_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the application being grafted brings itself (`[dna] brings`).
+pub(super) static GRAFT_BRINGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// How the graft fills `role`: its choice, else the default: the
+/// organism plane reuses the habitat's, and an application-plane part is
+/// the application's own when it brings it, else the habitat's.
+pub(super) fn part_choice(role: &str) -> Part {
+    GRAFT_PARTS.get().and_then(|m| m.get(role).cloned()).unwrap_or_else(|| default_part(role, GRAFT_BRINGS.get().map(Vec::as_slice).unwrap_or(&[])))
+}
+
+pub(super) fn default_part(role: &str, brings: &[String]) -> Part {
+    if APPLICATION_PARTS.contains(&role) && brings.iter().any(|b| b == role) { Part::Own(None) } else { Part::Reuse }
+}
+
+/// `--own <part>[=<host>]` and `--reuse <part>`, read into a choice per part:
+/// a part the graft does not take, or a dedicated server for an
+/// application-plane part (not built), refused by name.
+pub(super) fn parse_part(flag: &str, value: &str, into: &mut BTreeMap<String, Part>) -> Result<(), String> {
+    let (part, host) = match value.split_once('=') {
+        Some((p, h)) if !h.is_empty() => (p, Some(h.to_string())),
+        Some((p, _)) => (p, None),
+        None => (value, None),
+    };
+    if !ORGANISM_PARTS.contains(&part) && !APPLICATION_PARTS.contains(&part) {
+        return Err(format!("`{flag} {value}`: a part is one of {}, {}", ORGANISM_PARTS.join(", "), APPLICATION_PARTS.join(", ")));
+    }
+    let choice = match flag {
+        "--reuse" if host.is_some() => return Err(format!("`--reuse {value}`: a reused part runs where the habitat's does; `--own {part}=<host>` places one of its own")),
+        "--reuse" => Part::Reuse,
+        _ if APPLICATION_PARTS.contains(&part) && host.is_some() => {
+            return Err(format!("`--own {value}`: a {part} server of the organism's own on a host of its own is not built yet; `--own {part}` (the application's own, in its compose) or `--reuse {part}`"));
+        }
+        _ => Part::Own(host),
+    };
+    if into.insert(part.to_string(), choice).is_some() {
+        return Err(format!("`{part}` is chosen twice"));
+    }
+    Ok(())
+}
+
+/// The root whose memory server keeps the record at `root`: its own, or the
+/// habitat's genome when its graft made it a tenant of the habitat's memory
+/// (`parts.json`: memory = reuse), as `dna::memory_root` resolves it.
+pub(crate) fn memory_root(root: &Path) -> PathBuf {
+    let Some(dir) = allocation_dir(root) else { return root.to_path_buf() };
+    let reused = std::fs::read_to_string(dir.join("parts.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).is_some_and(|v| v["memory"] == "reuse");
+    let genome = genome_dir();
+    let mine = manifest_pin(&root.join("hale.toml")).ok().flatten();
+    let habitat = manifest_pin(&genome.join("hale.toml")).ok().flatten();
+    if !reused || habitat.is_none() || mine == habitat { root.to_path_buf() } else { genome }
+}
+
+/// `<role>-<key>`, the compose service of the organism at `root`'s role.
+fn allocation_service_of(root: &Path, role: &str) -> Option<String> {
+    let id = manifest_pin(&root.join("hale.toml")).ok().flatten()?;
+    (id.len() >= 12).then(|| format!("{role}-{}", &id[..12]))
+}
+
+/// The habitat's identity, as its face published it (`<habitat>/identity.env`,
+/// dna/face/start.sh under `HALE_DNA_IDENTITY=publish`): the issuer every
+/// organism it grafts signs in through. `None` before its face has run.
+pub(super) fn shared_issuer() -> Option<String> {
+    let text = std::fs::read_to_string(PathBuf::from(local_habitat_dir()).join("identity.env")).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("HALE_DNA_OIDC_ISSUER=")).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// The name a person knows the habitat's machine by: its declared address
+/// under `up --host`, else this machine.
+fn habitat_machine() -> String {
+    let at = habitat_address();
+    if at == "127.0.0.1" || at == "localhost" || at.is_empty() { "this machine".to_string() } else { at }
+}
+
+/// The plan of what the graft makes, part by part, for an organism that
+/// needs `needs` and runs compose services of its own (`has_app`): what each
+/// part reuses or owns, and where.
+pub(super) fn graft_plan(needs: &[String], has_app: bool) -> Vec<String> {
+    let here = habitat_machine();
+    let host = GRAFT_HOST.get().and_then(|h| h["host"].as_str()).map(str::to_string).unwrap_or_else(|| here.clone());
+    let brings = GRAFT_BRINGS.get().cloned().unwrap_or_default();
+    plan_lines(needs, has_app, &here, &host, &brings, shared_issuer().as_deref(), &part_choice)
+}
+
+/// One line of a graft's plan: the part, the choice, what it means, and the
+/// flag that flips it (columns by width, never by spaces in the text).
+fn plan_row(part: &str, choice: &str, what: &str, flip: &str) -> String {
+    let flip = if flip.is_empty() { String::new() } else { format!("  ({flip})") };
+    format!("  {part:<9} {choice:<6} {what}{flip}")
+}
+
+fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &[String], shared: Option<&str>, part_choice: &dyn Fn(&str) -> Part) -> Vec<String> {
+    let (here, host) = (here.to_string(), host.to_string());
+    let mut out = vec!["organism plane".to_string()];
+    for role in ORGANISM_PARTS {
+        if role == "senses" && !needs.iter().any(|r| r == "senses") {
+            continue;
+        }
+        out.push(match part_choice(role) {
+            Part::Reuse if role == "memory" => plan_row(role, "reuse", &format!("a schema of its own on the habitat's Postgres ({here})"), "--own memory=<host>: a server of its own"),
+            Part::Reuse => plan_row(role, "reuse", &format!("a server of its own on the habitat's machine ({here}); sharing the habitat's is not built"), &format!("--own {role}=<host>: elsewhere")),
+            Part::Own(h) => plan_row(role, "own", &format!("a server of its own on {}", h.unwrap_or_else(|| host.clone())), ""),
+        });
+    }
+    out.push(match shared {
+        Some(issuer) => plan_row("identity", "reuse", &format!("the habitat's sign-in ({issuer}): one account, every organism"), ""),
+        None => plan_row("identity", "own", "its own sign-in stub, beside its head (the habitat's face has published none)", ""),
+    });
+    out.push(plan_row("forge", "reuse", "the habitat's forge, by its policy (--forge to choose)", ""));
+    out.push("application plane".to_string());
+    out.push(if has_app { format!("  {:<9} its compose services on {host}", "services") } else { format!("  {:<9} none (no compose file at its root)", "services") });
+    for role in APPLICATION_PARTS {
+        if !needs.iter().any(|r| r == role) {
+            continue;
+        }
+        let server = if role == "database" { "Postgres" } else { "NATS" };
+        out.push(match part_choice(role) {
+            Part::Own(_) if !brings.iter().any(|b| b == role) => plan_row(role, "own", &format!("the application's own {server}: it does not say it brings one (`[dna] brings`), so its compose must provide it"), ""),
+            Part::Own(_) => plan_row(role, "own", &format!("the application's own {server}, in its compose"), &format!("--reuse {role}: one the habitat provisions and hands over")),
+            Part::Reuse => plan_row(role, "reuse", &format!("provisioned by the habitat on the organism's {} server, handed over as HALE_DNA_{}_*", if role == "database" { "memory" } else { "nerves" }, role.to_uppercase()), ""),
+        });
+    }
+    out
+}
+
+/// The organism keyed `key` placed as the graft chose, before anything of
+/// it is brought up: each organism-plane part the graft owns on a host is
+/// kept as placed there, so its birth brings it up there and derives its
+/// address from there; a reused part stays on the habitat's machine. The
+/// choice for each application-plane part is kept beside the allocations
+/// (`parts.json`), which every later act that provisions reads
+/// (`app_owns`). Nothing when the graft placed nothing and chose nothing.
 pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
-    let Some(h) = GRAFT_HOST.get() else { return Ok(None) };
     let dir = PathBuf::from(local_habitat_dir()).join("allocations").join(key);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    for role in ["memory", "nerves", "senses"] {
+    // the allocation's directory holds its passwords' files: yours alone,
+    // as the secrets' provisioning makes it, whichever makes it first
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        if !dir.is_dir() {
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut placed = Vec::new();
+    for role in ORGANISM_PARTS {
+        let h = match part_choice(role) {
+            Part::Reuse => continue,
+            Part::Own(Some(name)) => match sapling::graft_host(&name)? {
+                Some(h) => h,
+                None => continue,
+            },
+            Part::Own(None) => match GRAFT_HOST.get() {
+                Some(h) => h.clone(),
+                None => continue,
+            },
+        };
         let path = dir.join(format!("placed.{role}"));
         std::fs::write(&path, format!("{h}\n")).map_err(|e| format!("write {}: {e}", path.display()))?;
+        placed.push(format!("{role} on {}", h["host"].as_str().unwrap_or("")));
     }
-    Ok(Some(format!("{:<8}its memory, nerves and senses' store on {} ({})", "placed", h["host"].as_str().unwrap_or(""), h["provider"].as_str().unwrap_or(""))))
+    let parts: serde_json::Map<String, serde_json::Value> = ORGANISM_PARTS.iter().chain(APPLICATION_PARTS.iter()).map(|r| (r.to_string(), serde_json::json!(if part_choice(r) == Part::Reuse { "reuse" } else { "own" }))).collect();
+    write_row(&dir.join("parts.json"), &serde_json::Value::Object(parts))?;
+    Ok((!placed.is_empty()).then(|| format!("{:<8}its {}", "placed", placed.join(", "))))
+}
+
+/// Whether the application at `root` owns its `role` (an application-plane
+/// part: its compose provides it), as its graft chose: the habitat then
+/// provisions none. An organism grafted before choices were kept reuses.
+pub(super) fn app_owns(root: &Path, role: &str) -> bool {
+    let kept = allocation_dir(root).and_then(|dir| std::fs::read_to_string(dir.join("parts.json")).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+    match kept {
+        Some(v) => v[role] == "own",
+        // grafted before choices were kept: what it brings
+        None => brings_of(std::fs::read_to_string(root.join("hale.toml")).ok().as_deref()).unwrap_or_default().iter().any(|b| b == role),
+    }
+}
+
+/// The roles the habitat provisions for the organism at `root`: what it
+/// needs, less the application-plane parts its application owns.
+pub(super) fn provisioned_needs(root: &Path) -> Vec<String> {
+    needs_at(root).into_iter().filter(|r| !app_owns(root, r)).collect()
 }
 /// The forge provider a graft names for its organism (`--forge`), over the
 /// habitat's policy.
@@ -1300,7 +1674,11 @@ pub(super) fn heart_migrations(root: &Path) -> Result<Vec<HeartMigration>, Strin
         if command.is_empty() {
             return Err(format!("[dna.migrations.{role}] needs `command`, the argv that migrates it"));
         }
-        out.push(HeartMigration { role: role.clone(), command });
+        // a role its application owns is migrated by the application (its
+        // compose), never by the habitat
+        if !app_owns(root, role) {
+            out.push(HeartMigration { role: role.clone(), command });
+        }
     }
     Ok(out)
 }
@@ -1595,10 +1973,14 @@ fn up(args: &[String]) -> ExitCode {
 }
 
 pub(super) fn progress(msg: &str) {
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) || PROGRESS_TO_LOG.load(std::sync::atomic::Ordering::Relaxed) {
         eprintln!("... {msg}");
     }
 }
+
+/// A graft the head started (`--no-head`) writes its progress into its log,
+/// which `Commands::graft_log` pages to the person following it.
+static PROGRESS_TO_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The habitat's placement, through its providers (phase 4): the host
 /// the `compose` provider produces (`local`, with what it offers), the
@@ -1643,6 +2025,11 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
             std::fs::write(name_file(), format!("{name}\n")).map_err(|e| format!("write {}: {e}", name_file().display()))?;
         }
         out.extend(birth(&genome, backends, name, with_body)?);
+        // its senses' store, as a migration brings it up: what the reflexes
+        // read and the habitat's Grafana charts
+        if !own_servers() {
+            out.push(senses_line(&genome));
+        }
     }
     let own = allocation_dir(&genome);
     let versions = toolchain_versions(&genome);
@@ -1770,8 +2157,13 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
     // habitat's birth goes on after it
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut proposed = 0;
+    // a pack whose batch the record holds was proposed (and, at birth,
+    // ratified): memory decides, never the local marker, which a stopped
+    // birth may have lost
+    let recorded_rows = rows_of(genome);
     for (pack, args) in [("habitat", vec!["apply", "habitat", "--on-holes"]), ("standard", vec!["apply", "standard"])] {
-        if have.contains(&pack) {
+        let recorded = recorded_rows.iter().any(|r| r["kind"] == "batch.proposed" && r.to_string().contains(&format!("{pack}@")));
+        if have.contains(&pack) || recorded {
             continue;
         }
         let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -1785,7 +2177,7 @@ fn birth(genome: &Path, backends: &str, name: &str, with_body: bool) -> Result<V
         }
     }
     if proposed > 0 {
-        out.push("proposed the habitat's positions (`habitat`) and its law (`standard`): `hale dna review all approve` ratifies them".to_string());
+        out.push(ratify_packaged(&genome, "the habitat's birth", "the toolchain's foundational positions and law"));
     }
     // whole
     let _ = std::fs::remove_file(birth_pending());
@@ -2050,6 +2442,13 @@ fn habitat_listen_host() -> String {
 /// its `habitat.profile` row and in `head.url`): the loopback for a local
 /// habitat, the host's name for one on another machine
 /// (`HALE_DNA_HABITAT_ADDRESS`, which `up --host` hands its containers).
+/// The habitat's own machine as its readings name it: the address it is
+/// recorded at, or `local` on the loopback (as the head's `host_label`).
+fn host_label_here() -> String {
+    let at = habitat_address();
+    if at == "127.0.0.1" || at == "localhost" { "local".to_string() } else { at }
+}
+
 fn habitat_address() -> String {
     std::env::var(remote::ADDRESS_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string())
 }
@@ -2085,7 +2484,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let build_spec = if override_image.is_some() {
         String::new()
     } else {
-        format!("    build:\n      context: \"https://github.com/hale-lang/hale.git#{pin}\"\n")
+        format!("    build:\n      context: \"{HALE_GIT}#{pin}\"\n")
     };
 
     let hab_dir = local_habitat_dir();
@@ -2176,6 +2575,26 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         }
     }
 
+    // Grafana, behind the face: on the face's loopback at the block's
+    // GRAFANA_OFFSET, trusting the header only the two of them know
+    // (none without a senses' store of the habitat's own to chart: an
+    // operator's backends hold none)
+    let key = dir.file_name().map(|k| k.to_string_lossy().into_owned()).unwrap_or_default();
+    let senses = readings::senses_port(&dir, &key);
+    let grafana = match senses {
+        Some(senses) if !readings::grafana_off() => {
+            let reach = if is_macos { "host.docker.internal" } else { "127.0.0.1" };
+            readings::write_provisioning(Path::new(&hab_dir), &format!("http://{reach}:{senses}"))?;
+            Some((base + readings::GRAFANA_OFFSET, readings::grafana_header(Path::new(&hab_dir))?))
+        }
+        _ => None,
+    };
+    let grafana_note = (grafana.is_none() && senses.is_none() && !readings::grafana_off()).then(|| format!("{:<8}none: the habitat has no senses' store of its own to chart ({} publishes none)", "grafana", dir.join("ports.yaml").display()));
+    let grafana_env = grafana.as_ref().map(|(port, header)| format!("      HALE_DNA_GRAFANA_PORT: \"{port}\"\n      HALE_DNA_GRAFANA_HEADER: \"{header}\"\n")).unwrap_or_default();
+    // what the senses' store scrapes of the machines: this one, until the
+    // head writes the hosts it adds beside it
+    readings::seed_targets(&dir, &host_label_here())?;
+
     let drain_secs = drain_window().as_secs();
     let g = genome.display();
     let fstate = face_state_dir().display().to_string();
@@ -2205,10 +2624,14 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     services_block.push_str(&net_or_hosts);
     services_block.push_str(&format!("    working_dir: \"{g}\"\n"));
     services_block.push_str(&env_file_spec);
-    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
+    services_block.push_str(&format!("    environment:\n      HOME: \"{hab_dir}\"\n      USER: \"{user}\"\n      XDG_DATA_HOME: \"{data}\"\n      HALE_DNA_HABITAT: \"{hab_dir}\"\n      HALE_VAULT_DIR: \"{vault_str}\"\n      HALE_DNA_HEAD_STATE: \"{fstate}\"\n      HALE_DNA_FACE_HOME: \"/app/\"\n      HALE_DNA_IDENTITY: \"publish\"\n      HALE_DNA_LISTEN_HOST: \"{face_listen}\"\n      HALE_DNA_HABITAT_ADDRESS: \"{declared_at}\"\n"));
     services_block.push_str(loopback);
     services_block.push_str(&forwarded_env);
+    services_block.push_str(&grafana_env);
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"head\", \"{g}\"]\n    restart: on-failure\n"));
+    if let Some((port, header)) = &grafana {
+        services_block.push_str(&readings::grafana_service(&hab_dir, *port, &face_url, header, &user_spec));
+    }
 
     let compose_path = dir.join("compose.yaml");
     let existing_compose = std::fs::read_to_string(&compose_path).unwrap_or_else(|_| "services:\n".to_string());
@@ -2233,7 +2656,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let base_ports = existing_ports.split("# habitat-body-and-face\n").next().unwrap_or(&existing_ports).trim_end().to_string();
     let new_ports = if is_macos {
         let mut p = format!("{base_ports}\n# habitat-body-and-face\n  face:\n    ports:\n");
-        for offset in 0..HEAD_BLOCK {
+        for offset in (0..HEAD_BLOCK).filter(|o| *o != readings::GRAFANA_OFFSET) {
             let port = base + offset;
             p.push_str(&format!("      - \"{declared}:{port}:{port}\"\n"));
         }
@@ -2257,7 +2680,20 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         .arg(&ports_path)
         // their backends are the habitat's allocations, brought up by
         // their provider: `depends_on` orders the stop, never this start
-        .args(["up", "-d", "--no-deps", "body", "face"]);
+        .args(["up", "-d", "--no-deps", "body", "face"])
+        .args(grafana.as_ref().map(|_| "grafana"));
+    // a Grafana an earlier `up` started, when this one runs none (the
+    // project holds the organisms' allocations too: never --remove-orphans)
+    if grafana.is_none() {
+        if let Docker::Answered(ids) = docker(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={}", local_habitat_project()), "--filter", "label=com.docker.compose.service=grafana"]) {
+            let ids: Vec<&str> = ids.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            if !ids.is_empty() {
+                let mut a = vec!["rm", "-f"];
+                a.extend(ids);
+                let _ = docker(&a);
+            }
+        }
+    }
     if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
         cmd.stderr(std::process::Stdio::inherit());
     }
@@ -2290,10 +2726,19 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     if !face_ok {
         return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within 180s"));
     }
-    Ok(vec![
-        format!("{:<8}up (compose service face, {face_url}/)", "face"),
-        format!("{:<8}up (compose service body)", "body"),
-    ])
+    let mut lines = vec![format!("{:<8}up (compose service face, {face_url}/)", "face"), format!("{:<8}up (compose service body)", "body")];
+    let link = sign_in_link(&face_url);
+    if !link.is_empty() {
+        lines.push(format!("{:<8}{link}", "sign in"));
+    }
+    if grafana.is_some() {
+        lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in)", "grafana", readings::GRAFANA_PATH));
+    }
+    lines.extend(grafana_note);
+    if let Some(l) = readings::install_here(&host_label_here()) {
+        lines.push(l);
+    }
+    Ok(lines)
 }
 
 /// Phase 4: the habitat's face (and the head behind it) restarted, after
@@ -2357,7 +2802,16 @@ fn status() -> ExitCode {
     }
     println!("{:<8}{}", "body", body_state().unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
     match head_url_at(&genome).as_deref().and_then(loopback_port) {
-        Some(port) => println!("{:<8}http://{}:{port}/ ({})", "face", habitat_address(), face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string())),
+        Some(port) => {
+            println!("{:<8}http://{}:{port}/ ({})", "face", habitat_address(), face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
+            let link = sign_in_link(&format!("http://{}:{port}", habitat_address()));
+            if !readings::grafana_off() {
+                println!("{:<8}http://{}:{port}{}", "grafana", habitat_address(), readings::GRAFANA_PATH);
+            }
+            if !link.is_empty() && face_running().is_some() {
+                println!("{:<8}{link}", "sign in");
+            }
+        }
         None => println!("{:<8}not assigned: `hale habitat up` assigns its address", "face"),
     }
     if face_running().is_some() {
@@ -2382,8 +2836,12 @@ fn status() -> ExitCode {
             if role == "database" && !row["roles"]["database"].is_object() {
                 continue;
             }
-            // the heart's database is a tenant of the memory server
-            let service = if role == "database" { format!("memory-{key}") } else { format!("{role}-{key}") };
+            // the heart's database is a tenant of the memory server, and a
+            // record the habitat's memory keeps names the habitat's service
+            let own = format!("memory-{key}");
+            let memory_service = row["roles"]["memory"]["service"].as_str().filter(|s| s.starts_with("memory-")).unwrap_or(&own).to_string();
+            let tenant = memory_service != own;
+            let service = if role == "database" || role == "memory" { memory_service.clone() } else { format!("{role}-{key}") };
             let on_operator = row["roles"][role]["service"].as_str() == Some("operator");
             let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
@@ -2396,7 +2854,8 @@ fn status() -> ExitCode {
                 (Some(had), None) => format!(", schema {had}"),
                 (None, _) => String::new(),
             };
-            println!("  {role:<7} {service} {state}{version}{migration}");
+            let whose = if tenant && (role == "memory" || role == "database") { if role == "memory" { ", the habitat's: a schema of its own there" } else { ", the habitat's: a database of its own there" } } else { "" };
+            println!("  {role:<7} {service} {state}{whose}{version}{migration}");
         }
     }
     ExitCode::SUCCESS
@@ -2486,6 +2945,7 @@ fn down(args: &[String]) -> ExitCode {
 fn stop_processes(said: &mut Vec<String>) -> Result<(), String> {
     let project = local_habitat_project();
     for (service, timeout, msg) in [
+        ("grafana", None, "stopped the habitat's Grafana (compose service grafana)"),
         ("face", None, "stopped the habitat's face (compose service face)"),
         ("body", Some(drain_window().as_secs().to_string()), "stopped the habitat's body (compose service body), drained"),
     ] {
@@ -2752,6 +3212,24 @@ pub(super) fn needs_of(manifest_text: Option<&str>) -> Result<Vec<String>, Strin
     Ok(needs)
 }
 
+/// The application-plane parts the application brings itself (`[dna] brings`,
+/// a subset of its needs: its compose provides them, so by default the
+/// habitat provisions none, and `graft --reuse <part>` has it provide one).
+pub(super) fn brings_of(manifest_text: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(text) = manifest_text else { return Ok(Vec::new()) };
+    let table: toml::Table = text.parse().map_err(|e| format!("hale.toml does not parse: {e}"))?;
+    let brings: Vec<String> = match table.get("dna").and_then(|d| d.get("brings")) {
+        None => return Ok(Vec::new()),
+        Some(toml::Value::Array(a)) => a.iter().map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("[dna] brings holds {v}, not a part's name"))).collect::<Result<Vec<_>, _>>()?,
+        Some(other) => return Err(format!("[dna] brings is {other}, not a list of parts")),
+    };
+    let needs = needs_of(Some(text))?;
+    if let Some(b) = brings.iter().find(|b| !APPLICATION_PARTS.contains(&b.as_str()) || !needs.iter().any(|n| n == *b)) {
+        return Err(format!("[dna] brings `{b}`: what an application brings is one of its needs among {}", APPLICATION_PARTS.join(", ")));
+    }
+    Ok(brings)
+}
+
 fn graft(args: &[String]) -> ExitCode {
     let mut dir: Option<PathBuf> = None;
     let mut attach = false;
@@ -2765,6 +3243,7 @@ fn graft(args: &[String]) -> ExitCode {
     let mut body: Option<String> = None;
     let mut on_host: Option<String> = None;
     let mut no_head = false;
+    let mut parts: BTreeMap<String, Part> = BTreeMap::new();
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -2777,7 +3256,22 @@ fn graft(args: &[String]) -> ExitCode {
                 on_host = Some(v.clone());
                 i += 1;
             }
-            "--no-head" => no_head = true,
+            "--no-head" => {
+                no_head = true;
+                PROGRESS_TO_LOG.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            "--plan" => GRAFT_PLAN_ONLY.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--own" | "--reuse" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("hale habitat graft: `{a}` takes a part (memory, nerves, senses, database, broker)\n{}", usage_text());
+                    return ExitCode::from(2);
+                };
+                if let Err(e) = parse_part(a, v, &mut parts) {
+                    eprintln!("hale habitat graft: {e}");
+                    return ExitCode::from(2);
+                }
+                i += 1;
+            }
             "--forge" => {
                 let Some(v) = args.get(i + 1) else {
                     eprintln!("hale habitat graft: `--forge` takes a provider (forgejo, github, file, none)\n{}", usage_text());
@@ -2830,6 +3324,8 @@ fn graft(args: &[String]) -> ExitCode {
         eprintln!("hale habitat graft: which directory?\n{}", usage_text());
         return ExitCode::from(2);
     };
+    let chose_parts = !parts.is_empty() || GRAFT_PLAN_ONLY.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = GRAFT_PARTS.set(parts);
     // a bare name the habitat pins as a sapling: grafted from its nursery,
     // with no checkout (its --set values go to the packs it adopts)
     // phase 4: a graft's placement: the host its organism's allocations are
@@ -2850,7 +3346,9 @@ fn graft(args: &[String]) -> ExitCode {
         // a client of the head's `Commands::graft` while the head is up (the
         // operator face's act too); the act itself with `--no-head`, or
         // when no head answers
-        if !no_head && sets.is_empty() && pack {
+        // the head's act takes the plan as it stands and asks no one: a graft
+        // that chose its parts, or runs at a person's terminal, acts itself
+        if !no_head && !chose_parts && !std::io::IsTerminal::is_terminal(&std::io::stdin()) && sets.is_empty() && pack {
             if let Some(v) = sapling::head_graft(&dir.to_string_lossy(), on_host.as_deref().unwrap_or(""), library) {
                 if v["ok"] == serde_json::json!(true) {
                     print!("{}", v["said"].as_str().unwrap_or(""));
@@ -2979,6 +3477,39 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         }
     }
     let needs = needs_of(manifest.as_deref())?;
+    let _ = GRAFT_BRINGS.set(brings_of(manifest.as_deref())?);
+    // the plan, part by part, before anything is made: `--plan` prints it
+    // and stops; at a terminal the person confirms it (a graft the head
+    // started, with no terminal, takes it as planned); a graft that goes on
+    // where it stopped was planned when it began
+    if pinned.is_none() {
+        let has_app = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"].iter().any(|f| root.join(f).is_file());
+        let plan = graft_plan(&needs, has_app);
+        let what = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let on = GRAFT_HOST.get().and_then(|h| h["host"].as_str()).map(|h| format!(" onto {h}")).unwrap_or_default();
+        if GRAFT_PLAN_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+            println!("graft {what}{on}\n");
+            for l in &plan {
+                println!("{l}");
+            }
+            std::process::exit(0);
+        }
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            use std::io::{BufRead, Write};
+            println!("graft {what}{on}\n");
+            for l in &plan {
+                println!("{l}");
+            }
+            print!("\ngraft with these? [y/N] ");
+            let _ = std::io::stdout().flush();
+            let mut said = String::new();
+            let _ = std::io::stdin().lock().read_line(&mut said);
+            if !matches!(said.trim(), "y" | "Y" | "yes") {
+                eprintln!("nothing grafted (`--own <part>[=<host>]` and `--reuse <part>` change the plan; `--plan` prints it)");
+                std::process::exit(1);
+            }
+        }
+    }
     let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {}){}", "graft", root.display(), &parent[..12], needs.join(", "), if pinned.is_some() { "; the graft goes on where it stopped" } else { "" })];
     out.extend(if attach { super::init_under(dir, library, super::Lineage::Child(&parent))? } else { super::new_project_under(dir, shape.profile, shape.remote, shape.body, library, &parent)? });
     let root = if attach { root } else { project(dir)?.0 };
@@ -2994,10 +3525,17 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
             Err(e) => out.push(format!("{:<8}senses not up: {e}", "note")),
         }
     }
-    if needs.iter().any(|r| r == "database") {
+    // the application-plane parts the graft has the habitat provide; one
+    // the application owns is its compose's, and said so
+    for role in APPLICATION_PARTS {
+        if needs.iter().any(|r| r == role) && part_choice(role) != Part::Reuse {
+            out.push(format!("{role:<8} the application's own, in its compose (the habitat provisions none: `--reuse {role}` has it provide one)"));
+        }
+    }
+    if needs.iter().any(|r| r == "database") && part_choice("database") == Part::Reuse {
         out.push(provision_database(&root, &backends)?);
     }
-    if needs.iter().any(|r| r == "broker") {
+    if needs.iter().any(|r| r == "broker") && part_choice("broker") == Part::Reuse {
         if backends == "operator" {
             return Err("the `broker` heart role is a user of the organism's own nerves server, which the habitat configures; a habitat on the operator's backends does not configure the operator's NATS".to_string());
         }
@@ -3200,7 +3738,8 @@ fn attach_codebases(root: &Path) -> Result<Vec<String>, String> {
 }
 
 /// GH #1653: the `database` heart role provisioned for the organism at
-/// `root`, a tenant database of its memory server, and recorded as its
+/// `root`, a tenant database of the memory server its record is on (its
+/// own, or the habitat's when that keeps the record), and recorded as its
 /// allocation; the heart is handed `HALE_DNA_DATABASE_DSN`, which names
 /// its vault slot.
 pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, String> {
@@ -3210,7 +3749,8 @@ pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, 
     }
     let slots = o.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
     record_allocation(root, "database", 0, slots, backends == "operator")?;
-    Ok(format!("database a tenant database of the organism's memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
+    let whose = if memory_root(root) == root { "the organism's" } else { "the habitat's" };
+    Ok(format!("database a tenant database of {whose} memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
 }
 
 /// GH #1653: the `broker` heart role, recorded as the organism's
@@ -3278,6 +3818,17 @@ fn map_service_client(root: &Path) -> Result<Vec<String>, String> {
             return Err(format!("could not map the service client `{client}` in {}", root.display()));
         }
     }
+    // a habitat that shares its identity learns the client: its provider
+    // reads the list at each request (dna/oidc, HALE_DNA_OIDC_SERVICES_FILE)
+    if shared_issuer().is_some() {
+        let list = PathBuf::from(local_habitat_dir()).join("identity.services");
+        let known = std::fs::read_to_string(&list).unwrap_or_default();
+        if !known.split_whitespace().any(|c| c == client) {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&list).map_err(|e| format!("{}: {e}", list.display()))?;
+            writeln!(f, "{client}").map_err(|e| format!("{}: {e}", list.display()))?;
+        }
+    }
     let drawn = super::organism_secrets(root, false);
     Ok(vec![format!("{:<8}the heart's service client `{client}` (dna.oidc.service {mapping}; its secret the vault slot oidc-service-{client})", "oidc"), drawn].into_iter().filter(|l| !l.is_empty()).collect())
 }
@@ -3302,6 +3853,49 @@ mod tests {
     /// The two rules over one resolution: a project's listen address is
     /// IPv4 only; a remote habitat's listener prefers IPv4 and falls back
     /// to the first address.
+    /// A graft's plan, part by part: the organism plane reuses the
+    /// habitat's by default, an application-plane part is the application's
+    /// own only when it brings it, and each flag flips one part, placed.
+    #[test]
+    fn a_graft_plans_each_part_and_each_flag_flips_one() {
+        let mut m = BTreeMap::new();
+        parse_part("--own", "memory=box-1", &mut m).unwrap();
+        parse_part("--reuse", "database", &mut m).unwrap();
+        assert_eq!(m.get("memory"), Some(&Part::Own(Some("box-1".into()))));
+        assert_eq!(m.get("database"), Some(&Part::Reuse));
+        assert!(parse_part("--own", "memory", &mut m).unwrap_err().contains("chosen twice"));
+        assert!(parse_part("--reuse", "nerves=box-1", &mut BTreeMap::new()).is_err(), "a reused part runs where the habitat's does");
+        assert!(parse_part("--own", "database=box-1", &mut BTreeMap::new()).unwrap_err().contains("not built yet"));
+        assert!(parse_part("--own", "redis", &mut BTreeMap::new()).is_err());
+        let brings = vec!["database".to_string(), "broker".to_string()];
+        assert_eq!(default_part("database", &brings), Part::Own(None));
+        assert_eq!(default_part("database", &[]), Part::Reuse, "an application that brings none is provided one");
+        assert_eq!(default_part("memory", &brings), Part::Reuse);
+        let needs: Vec<String> = ["memory", "nerves", "database", "broker"].iter().map(|s| s.to_string()).collect();
+        let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, Some("http://rack-a.lan:8803"), &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
+        let text = lines.join("\n");
+        assert!(text.contains(&plan_row("memory", "own", "a server of its own on box-1", "")), "{text}");
+        assert!(text.contains(&plan_row("nerves", "reuse", "a server of its own on the habitat's machine (rack-a.lan); sharing the habitat's is not built", "--own nerves=<host>: elsewhere")), "{text}");
+        let defaults = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, None, &|r: &str| default_part(r, &brings)).join("\n");
+        assert!(defaults.contains(&plan_row("memory", "reuse", "a schema of its own on the habitat's Postgres (rack-a.lan)", "--own memory=<host>: a server of its own")), "{defaults}");
+        assert!(defaults.contains(&plan_row("identity", "own", "its own sign-in stub", "")[..]), "no published identity: {defaults}");
+        assert!(text.contains("services  its compose services on box-1"), "{text}");
+        assert!(text.contains(&plan_row("database", "reuse", "provisioned by the habitat", "")), "{text}");
+        assert!(text.contains(&plan_row("broker", "own", "the application's own NATS, in its compose", "")), "{text}");
+        assert!(!text.contains("senses"), "a part it does not need is not planned: {text}");
+        assert!(text.contains(&plan_row("identity", "reuse", "the habitat's sign-in (http://rack-a.lan:8803)", "")), "{text}");
+    }
+
+    /// What an application brings is among its application-plane needs.
+    #[test]
+    fn an_application_brings_only_what_it_needs() {
+        let ok = "[dna]\nneeds = [\"memory\", \"nerves\", \"database\", \"broker\"]\nbrings = [\"database\", \"broker\"]\n";
+        assert_eq!(brings_of(Some(ok)).unwrap(), ["database", "broker"]);
+        assert_eq!(brings_of(Some("[dna]\nneeds = [\"memory\", \"nerves\"]\n")).unwrap(), Vec::<String>::new());
+        assert!(brings_of(Some("[dna]\nneeds = [\"memory\", \"nerves\"]\nbrings = [\"database\"]\n")).is_err(), "not a need");
+        assert!(brings_of(Some("[dna]\nneeds = [\"memory\", \"nerves\"]\nbrings = [\"memory\"]\n")).is_err(), "not an application-plane part");
+    }
+
     #[test]
     fn the_listen_rules_read_one_resolution_two_ways() {
         let v6: std::net::SocketAddr = "[2001:db8::1]:0".parse().unwrap();
@@ -3397,13 +3991,13 @@ mod tests {
     fn a_heart_role_carries_no_version() {
         let mut row = serde_json::json!({});
         let id = "0123456789abcdef0123456789abcdef";
-        next_rows(&mut row, id, "database", 0, "postgres-heart_x", "p", false);
-        next_rows(&mut row, id, "database", 0, "postgres-heart_x", "p", false);
+        next_rows_as(&mut row, id, "database", 0, "postgres-heart_x", "p", false, None);
+        next_rows_as(&mut row, id, "database", 0, "postgres-heart_x", "p", false, None);
         let pending = row["pending"].as_array().unwrap();
         assert_eq!(pending.len(), 1, "allocated once, and no migration row of the habitat's: {pending:?}");
         assert_eq!(pending[0]["kind"], "habitat.allocated");
         assert!(row["roles"]["database"]["schema_version"].is_null());
-        next_rows(&mut row, id, "memory", 3, "", "p", false);
+        next_rows_as(&mut row, id, "memory", 3, "", "p", false, None);
         assert_eq!(row["roles"]["memory"]["schema_version"], 3);
     }
 
@@ -3434,7 +4028,7 @@ mod tests {
     fn allocation_rows_follow_the_version() {
         let id = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
         let mut row = serde_json::json!({ "root": "/a/checkout" });
-        next_rows(&mut row, id, "memory", 9, "postgres-owner-1234567890ab", "hale-habitat-local-x", false);
+        next_rows_as(&mut row, id, "memory", 9, "postgres-owner-1234567890ab", "hale-habitat-local-x", false, None);
         let kinds: Vec<&str> = row["pending"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["habitat.allocated", "habitat.migrated"]);
         let allocated = row["pending"][0]["body"].as_str().unwrap();
@@ -3443,16 +4037,16 @@ mod tests {
         // phase 4: every allocation names its provider and its host
         assert!(allocated.contains("\"provider\":\"compose\"") && allocated.contains("\"host\":\"local\""), "{allocated}");
         let mut adopted = serde_json::json!({});
-        next_rows(&mut adopted, id, "nerves", 2, "", "p", true);
+        next_rows_as(&mut adopted, id, "nerves", 2, "", "p", true, None);
         let on_operator = adopted["pending"][0]["body"].as_str().unwrap();
         assert!(on_operator.contains("\"provider\":\"operator\"") && on_operator.contains("\"host\":\"\"") && on_operator.contains("\"service\":\"operator\""), "{on_operator}");
         // flushed, then migrated again at the same version: nothing owed
         row["pending"] = serde_json::json!([]);
         row["roles"]["memory"]["recorded"] = serde_json::json!(true);
-        next_rows(&mut row, id, "memory", 9, "", "p", false);
+        next_rows_as(&mut row, id, "memory", 9, "", "p", false, None);
         assert!(row["pending"].as_array().unwrap().is_empty());
         // the version moves: one migrated row, from the old version
-        next_rows(&mut row, id, "memory", 10, "", "p", false);
+        next_rows_as(&mut row, id, "memory", 10, "", "p", false, None);
         let moved = &row["pending"][0];
         assert_eq!(moved["kind"], "habitat.migrated");
         assert!(moved["body"].as_str().unwrap().contains("\"from\":9") && moved["body"].as_str().unwrap().contains("\"schema_version\":10"));

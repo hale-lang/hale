@@ -5500,7 +5500,8 @@ The live half is memory's, projected from the record by the spine
   packs it adopts at graft, by name, from its own nursery or else the
   toolchain's) and `set` (their parameters). A sapling is grafted by name
   into the habitat (`spec/habitat.md`, Nurseries and saplings); the
-  toolchain's nursery offers `voice`.
+  toolchain's nursery offers `hale`, and a repository may be its own
+  nursery (`repo = "."`).
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`
@@ -6430,9 +6431,13 @@ path and query, headers (cookie, origin, host) and body, the answer
 written back as it came, an event stream held open until either end closes.
 `/` is the head's gate: the head answers it `204` when the person may
 open the shell (a session under OIDC, the launch-token cookie under a
-fixture's trusted-local session), and the face then serves the shell; any
-other answer (the sign-in redirect, the launch token's cookie and
-redirect to `/`, a refusal) is passed on unchanged. `/app/…` asks the
+fixture's trusted-local session), naming them on `X-Hale-Person` (the
+session's person, or the head's own principal), and the face then serves
+the shell; any other answer (the sign-in redirect, the launch token's
+cookie and redirect to `/`, a refusal) is passed on unchanged. A face
+given `HALE_DNA_GRAFANA_PORT` and `HALE_DNA_GRAFANA_HEADER` serves the
+habitat's Grafana under `/grafana/` behind the same gate, in the person's
+name (`spec/habitat.md`, Readings); without them `/grafana/` is a 404. `/app/…` asks the
 head's read (`GET /api/hale/v1/head`) as the same session which project is
 attached, and serves its `ui/` (`ops::application_asset`), or the
 head's refusal. The head has no static file and no `/app/`: those paths
@@ -6729,6 +6734,11 @@ otherwise.
 | `HALE_DNA_HABITAT_EXPECT=<record>` | unset | The record a `hale habitat down` run on a habitat's machine through a pointer must find there: when it is set and the habitat's genome pins another record, or none, nothing is stopped or removed. Not set by hand: `hale habitat down` on the admin machine sets it to the pointer's identity, after checking the same over SSH. |
 | `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |
 | `HALE_HABITAT_SSH_CONFIG=<file>` | unset | An SSH config file `hale habitat up --host` and the verbs of a habitat on another machine hand `ssh -F`; unset, `ssh` reads the person's own. |
+| `HALE_DNA_IDENTITY=publish` | unset | The face's launch whose sign-in provider is the habitat's, shared with every organism it grafts (`dna/face/start.sh`): its key is kept in the face's state (`HALE_DNA_HEAD_STATE/oidc.key`, made once) and the provider is published at `<habitat>/identity.env` (issuer, the key's public half, the client, where it answers). A launch under a habitat that published one starts no provider and signs in through it. Not set by hand: the habitat's compose render sets it on its `face` service. |
+| `HALE_DNA_GRAFANA=off` | on | `hale habitat up` runs no Grafana behind the habitat's face (and removes one an earlier `up` started); `status` names none. The DNA suite sets it for every fixture; `habitat_operator_face_test` opts in on its own `up`. |
+| `HALE_DNA_GRAFANA_PORT=<port>` | unset | The loopback port of the habitat's Grafana, which the standard face serves under `/grafana/` behind the head's gate. Not set by hand: the habitat's compose render sets it on its `face` service (the head block's sixth port). Unset, `/grafana/` is a 404. |
+| `HALE_DNA_GRAFANA_HEADER=<name>` | unset | The header the habitat's Grafana trusts for the signed-in person's name, drawn once per habitat (`X-Hale-Grafana-<32 hex>`, `<habitat>/grafana.secrets`, 0600): the face sets it on what it relays to Grafana, and nothing else on the machine knows it. Not set by hand. |
+| `HALE_DNA_FACE_HOME=<path>` | unset | The path the standard face lands a signed-in visitor on in place of the organization shell at `/` (`dna::face_home`); the shell is then at `/organization`. Not set by hand: the habitat's compose render sets it on its `face` service to `/app/`, the operator face. A value that is not a path of the face is ignored. |
 | `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
 | `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
@@ -6746,6 +6756,9 @@ otherwise.
 | `HALE_DNA_OIDC_KEY_X=<x>` | unset | The x coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_KEY_Y=<y>` | unset | The y coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
+| `HALE_DNA_NODE_EXPORTER=off` | on | No machine's node exporter is installed or removed by this run: not by `hale habitat up` on the habitat's machine, `host add` on a host, `host remove`, or a forget. The DNA suite sets it for every fixture (`habitat_operator_face_test` opts in on Linux); the run `up --host` makes inside the habitat's image always has it, since the person's machine installs the habitat machine's exporter over SSH instead. |
+| `HALE_DNA_OIDC_DIAL=<url>` | unset | Where the habitat's sign-in provider answers on its own machine (`http://<listen>:<port>`), as its face published it in `<habitat>/identity.env`: an organism's face launch probes it there before it signs in through the provider. Not set by hand. |
+| `HALE_DNA_OIDC_SERVICES_FILE=<path>` | unset | A file of more service clients' ids the stub issuer accepts, read at each request (`dna/oidc`). Not set by hand: the habitat's face hands its provider `<habitat>/identity.services`, which a graft appends each organism's heart's service client to. |
 | `HALE_DNA_FACE=<name>` | set by the host | The name of the named face (`dna::Face` param of the organism's main) an application is started as. |
 | `HALE_DNA_FACE_PORT=<port>` | set by the host | The loopback port a named face serves on, the `port` of its literal (also its one argument). |
 | `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |

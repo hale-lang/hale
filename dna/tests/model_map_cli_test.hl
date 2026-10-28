@@ -16,7 +16,8 @@ fn toolchain() -> String {
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
+            + dir
             + "\n" + argv,
     );
 }

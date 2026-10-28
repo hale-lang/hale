@@ -100,6 +100,83 @@ fn head_request(req: std::http::Request, head_port: Int) -> String {
         + req.body;
 }
 
+// The habitat's Grafana (`hale habitat up` runs it in the face's network,
+// on the loopback port HALE_DNA_GRAFANA_PORT): served under this path,
+// behind the head's gate at `/` as the shell is. Grafana trusts the person's
+// name on the header HALE_DNA_GRAFANA_HEADER names, a name drawn for the
+// habitat that only the face and Grafana know; the browser's own `X-Hale-*`
+// and `Authorization` lines never reach it. Grafana's build (its scripts,
+// styles and fonts, under `public/`) is the same for everyone and passes
+// ungated.
+const GRAFANA_PREFIX: String = "/grafana";
+
+fn env_or_empty(name: String) -> String {
+    return if std::env::var_exists(name) { std::str::trim(std::env::var(name)) } else { "" };
+}
+
+// The value of the header `name` (lower case) in an answer's head lines, ""
+// when it has none.
+fn answer_header(head: String, name: String) -> String {
+    let mut rest = head;
+    while len(rest) > 0 {
+        let cut = std::str::index_of(rest, "\r\n");
+        let line = if cut < 0 { rest } else { rest[0..cut] };
+        rest = if cut < 0 { "" } else { rest[(cut + 2)..len(rest)] };
+        if lower_name(line) == name {
+            let colon = std::str::index_of(line, ":");
+            return std::str::trim(line[(colon + 1)..len(line)]);
+        }
+    }
+    return "";
+}
+
+// The request as Grafana must see it: the browser's lines but the
+// connection's framing, its credentials and any `X-Hale-*`, then the
+// person's name on Grafana's header ("" for none), the body's length and a
+// close.
+fn grafana_request(req: std::http::Request, header: String, person: String) -> String {
+    let mut lines = "";
+    let mut rest = req.headers;
+    while len(rest) > 0 {
+        let cut = std::str::index_of(rest, "\r\n");
+        let line = if cut < 0 { rest } else { rest[0..cut] };
+        rest = if cut < 0 { "" } else { rest[(cut + 2)..len(rest)] };
+        let name = lower_name(line);
+        if len(name) > 0
+            && !std::str::starts_with(name, "x-hale-")
+            && name != "authorization"
+            && name != "connection"
+            && name != "content-length"
+            && name != "transfer-encoding"
+            && name != "keep-alive"
+            && name != "expect"
+            && name != "upgrade"
+        {
+            lines = lines + line + "\r\n";
+        }
+    }
+    if len(person) > 0 { lines = lines + header + ": " + person + "\r\n"; }
+    if req.method != "GET" && req.method != "HEAD" || len(req.body) > 0 {
+        lines = lines + "Content-Length: " + to_string(len(req.body)) + "\r\n";
+    }
+    return req.method + " " + req.path + " HTTP/1.1\r\n" + lines + "Connection: close\r\n\r\n"
+        + req.body;
+}
+
+// The organization shell's address when `/` lands elsewhere (a habitat's
+// face lands on its operator face, `dna::face_home`).
+const ORGANIZATION_PATH: String = "/organization";
+
+// A redirect to a path of this face.
+fn moved(to: String) -> std::http::Response {
+    return std::http::Response {
+        status: 302,
+        content_type: "text/plain; charset=utf-8",
+        headers: "Location: " + to + "\r\nCache-Control: no-store",
+        body: "",
+    };
+}
+
 fn refusal(status: Int, code: String, message: String) -> std::http::Response {
     let b = std::json::Builder { };
     b.begin_object();
@@ -187,6 +264,25 @@ locus Face {
     // The head's answer to `req`, relayed chunk by chunk until the head or
     // the browser closes: an event stream is held open this way.
     fn relay(req: std::http::Request) -> std::http::Response {
+        return self.relay_to(
+            req,
+            dna::listen_dial_host(),
+            self.head_port,
+            head_request(req, self.head_port),
+            "the head",
+        );
+    }
+
+    // `text` sent to `host:port` for `req`, and its answer relayed to the
+    // browser chunk by chunk until either closes. `who` names the server
+    // in a refusal.
+    fn relay_to(
+        req: std::http::Request,
+        host: String,
+        port: Int,
+        text: String,
+        who: String
+    ) -> std::http::Response {
         if req.conn_fd < 0 {
             return refusal(
                 500,
@@ -194,16 +290,16 @@ locus Face {
                 "an answer is written to its connection, and this request has none",
             );
         }
-        let fd = std::io::tcp::connect(dna::listen_dial_host(), self.head_port) or - 1;
+        let fd = std::io::tcp::connect(host, port) or - 1;
         if fd < 0 {
-            return refusal(502, "head_unreachable", "the head does not answer on the loopback");
+            return refusal(502, "head_unreachable", who + " does not answer on the loopback");
         }
         let armed = std::io::tcp::__set_recv_timeout_ns(fd, RELAY_RECV_NS);
         std::io::tcp::set_send_timeout(req.conn_fd, 10s) or discard;
         let up = std::io::tcp::Stream { conn_fd: fd };
         let mut sent = true;
-        up.send(head_request(req, self.head_port)) or { sent = false; };
-        if !sent { return refusal(502, "head_unreachable", "the head did not take the request"); }
+        up.send(text) or { sent = false; };
+        if !sent { return refusal(502, "head_unreachable", who + " did not take the request"); }
         let buf = std::bytes::BytesBuilder { };
         let mut wrote = false;
         let mut live = true;
@@ -211,7 +307,7 @@ locus Face {
             let moved = pump(fd, req.conn_fd, buf);
             if moved > 0 { wrote = true; } else { live = false; }
         }
-        if !wrote { return refusal(502, "head_unreachable", "the head closed without an answer"); }
+        if !wrote { return refusal(502, "head_unreachable", who + " closed without an answer"); }
         std::io::tcp::close_fd(req.conn_fd);
         return std::http::Response { status: 200, body: "", takeover_raw: true };
     }
@@ -274,9 +370,56 @@ locus Face {
         };
     }
 
+    // The habitat's Grafana, for the person the head's gate names.
+    fn grafana(req: std::http::Request, path: String, cut: Int) -> std::http::Response {
+        let port = integer(env_or_empty("HALE_DNA_GRAFANA_PORT"), 65535);
+        let header = env_or_empty("HALE_DNA_GRAFANA_HEADER");
+        if port < 1 || len(header) == 0 {
+            return refusal(404, "not_found", "this face serves no Grafana");
+        }
+        if req.method == "GET" && path == GRAFANA_PREFIX {
+            return moved(
+                GRAFANA_PREFIX + "/" + (if cut < 0 { "" } else { req.path[cut..len(req.path)] }),
+            );
+        }
+        let mut person = "";
+        if !std::str::starts_with(path, GRAFANA_PREFIX + "/public/") {
+            let mut at_root = req;
+            at_root.method = "GET";
+            at_root.path = "/";
+            at_root.body = "";
+            let gate = buffered(self.head_port, head_request(at_root, self.head_port));
+            if !gate.ok {
+                return refusal(502, "head_unreachable", "the head does not answer on the loopback");
+            }
+            if gate.status != 204 { return self.hand_over(req, gate.raw); }
+            person = answer_header(gate.head, "x-hale-person");
+            if len(person) == 0 {
+                return refusal(403, "forbidden", "the head named no person for this session");
+            }
+        }
+        return self.relay_to(
+            req,
+            "127.0.0.1",
+            port,
+            grafana_request(req, header, person),
+            "Grafana",
+        );
+    }
+
     fn handle(req: std::http::Request) -> std::http::Response {
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
+        if path == GRAFANA_PREFIX || std::str::starts_with(path, GRAFANA_PREFIX + "/") {
+            return self.grafana(req, path, cut);
+        }
+        // the app's directory: its pages' relative paths resolve under `/app/`
+        if req.method == "GET" && path == ops::APP_ASSETS_PREFIX {
+            return moved(
+                ops::APP_ASSETS_PREFIX + "/"
+                    + (if cut < 0 { "" } else { req.path[cut..len(req.path)] }),
+            );
+        }
         if req.method == "GET"
             && (
                 path == ops::APP_ASSETS_PREFIX
@@ -286,14 +429,18 @@ locus Face {
             return self.app_asset(req, path);
         }
         if req.method == "GET" && path == "/index" { return self.index_page(req); }
-        if req.method == "GET" && path == "/" {
-            // the head's gate: 204 lets the shell out, anything else is the head's to say
-            let gate = buffered(self.head_port, head_request(req, self.head_port));
+        if req.method == "GET" && (path == "/" || path == ORGANIZATION_PATH) {
+            // the head's gate at `/`: 204 lets the shell out, anything else is the head's to say
+            let mut at_root = req;
+            at_root.path = if path == "/" { req.path } else { "/" };
+            let gate = buffered(self.head_port, head_request(at_root, self.head_port));
             if !gate.ok {
                 return refusal(502, "head_unreachable", "the head does not answer on the loopback");
             }
             if gate.status != 204 { return self.hand_over(req, gate.raw); }
-            return self.web.response(path);
+            let home = dna::face_home();
+            if path == "/" && len(home) > 0 { return moved(home); }
+            return self.web.response("/");
         }
         if req.method == "GET" && self.web.serves(path) && cut < 0 {
             return self.web.response(path);

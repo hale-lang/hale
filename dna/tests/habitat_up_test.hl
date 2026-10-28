@@ -27,7 +27,7 @@ fn toolchain() -> String {
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         900,
-        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }
@@ -214,8 +214,12 @@ fn main() {
     std::test::assert(
         len(rows_of(genome, "habitat.profile")) > 0
             && std::str::contains(rows_of(genome, "batch.proposed"), "habitat@1")
-            && std::str::contains(rows_of(genome, "batch.proposed"), "standard@1"),
-        "born whole: its profile and both packs",
+            && std::str::contains(rows_of(genome, "batch.proposed"), "standard@1")
+            && std::str::contains(
+                first.stdout,
+                "ratified the toolchain's foundational positions and law, at the habitat's birth",
+            ),
+        "born whole: its profile and both packs, ratified by the birth: " + first.stdout,
     );
     std::test::assert(
         std::str::contains(
@@ -310,7 +314,7 @@ fn main() {
             && std::str::contains(keeper.stdout, "needs memory, nerves, database, broker)")
             && std::str::contains(
                 keeper.stdout,
-                "database a tenant database of the organism's memory server",
+                "database a tenant database of the habitat's memory server",
             ),
         "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr,
     );
@@ -337,10 +341,10 @@ fn main() {
         ),
         "and recorded as its allocation",
     );
+    // a tenant of the habitat's memory (the graft's default): its database
+    // is on the habitat's server
     let hp = dna::trim_nl(
-        dna::run_tool(
-            dna::allocation_compose(scratch + "/keeper") + "\nport\nmemory-" + kkey + "\n5432",
-        ).stdout,
+        dna::run_tool(dna::allocation_compose(genome) + "\nport\nmemory-" + key + "\n5432").stdout,
     );
     let role = dna::heart_role(kkey);
     let c = dna::pq_conn(
@@ -634,7 +638,7 @@ fn main() {
             && std::str::contains(ws.stdout, "needs memory, nerves, database)")
             && std::str::contains(
                 ws.stdout,
-                "database a tenant database of the organism's memory server",
+                "database a tenant database of the habitat's memory server",
             ),
         "the workspace's needs are the organism's: " + ws.stdout + ws.stderr,
     );
@@ -790,7 +794,10 @@ fn main() {
                     with_tenant,
                     "allocation " + tkey + " (/private" + tenant + ")",
                 ))
-            && std::str::contains(with_tenant, "memory  memory-" + tkey + " running"),
+            && std::str::contains(
+                with_tenant,
+                "memory  memory-" + key + " running, the habitat's: a schema of its own there",
+            ),
         "status names the tenant's allocation: " + with_tenant,
     );
     std::test::assert(
@@ -899,8 +906,11 @@ fn main() {
     );
     let after = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(
-        std::str::contains(after, "memory  memory-" + tkey + " running"),
-        "the tenant runs again: " + after,
+        std::str::contains(
+            after,
+            "memory  memory-" + key + " running, the habitat's: a schema of its own there",
+        ),
+        "the tenant's record is on the habitat's memory again: " + after,
     );
 
     let stopped = in_dir(scratch, toolchain() + "\nhabitat\ndown");

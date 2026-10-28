@@ -31,7 +31,7 @@ fn toolchain() -> String {
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         900,
-        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }
@@ -176,14 +176,20 @@ fn main() {
     // repository and its slots
     let grafted = in_dir(
         scratch,
-        toolchain() + "\nhabitat\ngraft\ntenant\n--no-library\n--no-pack",
+        toolchain() + "\nhabitat\ngraft\ntenant\n--no-library\n--no-pack\n--own\nmemory",
     );
     std::test::assert(
         grafted.code == 0,
         "an organism is grafted: " + grafted.stdout + grafted.stderr,
     );
     let tkey = dna::allocation_key(scratch + "/tenant");
-    let doomed = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ndoomed\n--no-library\n--no-pack");
+    // each with a memory server of its own (`--own memory`), whose volume
+    // the plans name; a tenant of the habitat's memory is
+    // habitat_saplings_test's
+    let doomed = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\ngraft\ndoomed\n--no-library\n--no-pack\n--own\nmemory",
+    );
     std::test::assert(
         doomed.code == 0,
         "a second organism is grafted: " + doomed.stdout + doomed.stderr,

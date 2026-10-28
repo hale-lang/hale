@@ -116,24 +116,36 @@ admin machine reaches it over SSH as the person's own login (`--user` and
 `--port`, else the SSH config's; `HALE_HABITAT_SSH_CONFIG` names a config
 file for `ssh -F`), never with the habitat's keypair, which is drawn there,
 in the habitat's vault, as a local `up` draws it. The toolchain image is put
-there first: there already, sent from the admin machine's docker (`docker
-save | docker load`), or pulled as the published image of this toolchain's
-version when that image's `hale --version` answers as the admin's does;
-nothing is compiled there, and an image of a platform other than the
-machine's docker (`<os>/<arch>`) is never used or sent: the published
-image is pulled for the machine's platform instead, or the run is refused
-naming both. Then the same `hale habitat up` runs there in
+there first: there already; sent from the admin machine's docker (`docker
+save | docker load`); for a release's build (the tag `v<version>` on
+`hale-lang/hale` names the toolchain's own commit), pulled as that
+release's published image when its `hale --version` answers as the
+admin's does; else built there from the toolchain's commit on
+`hale-lang/hale`, the source a local habitat's compose renders as its
+`build:`, which needs that docker's `buildx` plugin and the commit pushed.
+A build from any other commit shares the version string and never pulls
+the release's image. An image of a platform other than the machine's
+docker (`<os>/<arch>`) is never used or sent. Then the same `hale habitat up` runs there in
 that image, as the login's user, on the host's network, with the user's
 data directory (`~/.local/share/hale`: the habitat, its genome, record
-and vault) and the docker socket mounted, and with
+and vault) and the docker socket mounted, in the socket's group as the
+daemon has it (read by a `stat` in the same image with the same mount,
+since the login's shell may see another socket, as a VM's docker on
+macOS has), and with
 `HALE_DNA_HABITAT_LISTEN` (the address `<name>` resolves to on the admin
-machine) and `HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind
-that address and are recorded at `http://<name>:<port>`. The admin machine
+machine; `0.0.0.0` on a machine whose login shell says `Darwin`, since
+its docker runs in a VM that owns none of the machine's addresses and
+publishes what listens on the VM's interfaces on the machine's own) and
+`HALE_DNA_HABITAT_ADDRESS` (`<name>`): the face and head bind that
+address and are recorded at `http://<name>:<port>`. The admin machine
 waits on the head and the face at the recorded URL, then keeps a pointer in
 its local habitat's directory in place of a habitat: `remote.json` (the
 name, the host, the login, the image, the head's and face's URLs, the
 record's identity), `head.url`, and the head's launch token
-(`face-state/head.token`, 0600). A machine points at one habitat, and one
+(`face-state/head.token`, 0600). `up` and `status`, local or through a
+pointer, end with a `sign in` line while the face answers: the face's URL
+with that token (`/?token=…`), the link that opens the face once and sets
+its session, which is otherwise printed only in the face's own log. A machine points at one habitat, and one
 that runs a habitat of its own points at none.
 
 Every verb on the admin machine reaches the habitat's head through the
@@ -195,7 +207,26 @@ reads it by the vault file's path (a vault at `HALE_VAULT_ADDR` hands
 `ssh` a private copy written on the sealed side, removed after the call),
 and it appears in no output, log, row or error. `host add` prints the
 public key, `ssh-ed25519 <key> habitat-<id>`, and the one line the host's
-`~/.ssh/authorized_keys` takes, a step taken on that machine. **Host keys
+`~/.ssh/authorized_keys` takes. **The habitat logs in as an account of its
+own**, `hale-<id>` (`<id>` the record identity's first 12 hex digits),
+never as the person, unless `--user` names an account: one per habitat, so
+two habitats on one host never share a login. **The CLI sets it up when
+the person's own SSH login reaches the machine** (as `up --host` reaches
+one: their SSH config, `--port`, `HALE_HABITAT_SSH_CONFIG`): with their
+sudo, asked at their terminal, it makes the account (a system user with
+its own home and no sudo, in the `docker` group, which is root-equivalent
+on the host: the account keeps the habitat out of the person's account,
+not out of the host), puts the habitat's key in its `authorized_keys`, and
+probes the host again, so `hale habitat host add <name>` ends `ready`. A
+host with no `useradd` (a Linux host is needed) is refused by name. With
+`--user`, the line is appended to that account instead. When the login
+does not reach the machine, what to do there is printed. `hale habitat
+host remove` and, for a habitat on another machine, `hale habitat down
+--forget` undo it the same way: the habitat's account removed with its
+home, or, for an account `--user` named, the line taken off by its
+comment (`habitat-<id>`), every other line kept; a host the login does not
+reach keeps it, and the CLI says what to remove. The operator face, which
+cannot reach a machine, shows the line to copy. **Host keys
 are checked strictly**: the ed25519 key the host answers with when it is
 added is kept in its row and shown with its fingerprint (trust on first
 use), every connection trusts that key alone (a known-hosts file written
@@ -462,15 +493,32 @@ allocates it (the habitat's Forgejo on its own backends, `spec/dna.md`):
 nothing of an organism's own is on GitHub unless its Board allocates
 GitHub later. Its packs are proposed to the child's Board on
 the holes its birth proposed, with the sapling's `set` and the graft's
-`--set` values, each to the packs that take it. The graft's
+`--set` values, each to the packs that take it. **A sapling's packaging is
+ratified by its graft**: the person who grafts it chose it, so the graft
+then decides every pending group in their name (`hale dna review all
+approve --no-wait`, its verdicts executed when the child's body runs) and
+says `ratified its purpose, practices and positions`. So does the
+habitat's birth for the toolchain's foundational positions and law (the
+`habitat` and `standard` packs). Anything proposed after is the Board's to
+review, and a directory grafted as a new application keeps its proposals:
+no one vetted that packaging. A ratification that fails is said, with the
+command that finishes it. The graft's
 `habitat.grafted` row names the `sapling`, `revision`, `digest` and
 `nursery`. A graft that stopped part way goes on at the revision it was
 checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
 
-The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
-commit and fetched from its public repository) and **the hale organism**
-(`hale`, a tree the toolchain carries). A sapling needs nothing beyond what an attached repository
+The toolchain's nursery offers one sapling, **the hale organism** (`hale`,
+a tree the toolchain carries): the organism that makes the toolchain. An
+application is not bundled. **A repository can be its own nursery**: a
+`nursery.toml` at its root whose sapling says `repo = "."` and no revision
+or digest offers the repository itself, pinned where the nursery is read
+(a git nursery at the commit it was read at, a directory at its `HEAD`)
+by that tree's digest; a later read at a newer commit is a proposal, as for
+any sapling. The toolchain's nursery refuses that form. `hale-lang/voice`
+is one: `hale habitat nursery add https://github.com/hale-lang/voice` (or
+the organisms screen's form) trusts it, and `hale habitat graft voice`
+grafts it. A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
 
@@ -499,8 +547,8 @@ that goes on attaches none twice.
 After `hale habitat up` on an empty box, every step is a row of the head's
 surface, called on its socket as the operator face calls its rows: a
 machine of the LAN is added over SSH (`add_host`), authorized by its owner
-and probed (`probe_host`); a nursery is trusted (`add_nursery`) and its
-voice ratified over the bundled pin (`ratify_sapling`); voice is grafted by
+and probed (`probe_host`); voice's own repository is trusted as its nursery
+(`add_nursery`, `repo = "."`) and voice pinned from it; voice is grafted by
 name onto the machine (`graft`) and applied there (`apply_allocations`)
 from its own compose; a streamed `/v1/chat/completions` through it, at the
 machine's name, answers as server-sent events from a local model on the
@@ -604,7 +652,7 @@ grouped by what each item is:
   holds;
 - the hosts' entries, and the line each `ssh` host's
   `~/.ssh/authorized_keys` took, which the habitat cannot remove: it is
-  noted;
+  noted, and the CLI removes it over the person's own login (above);
 - what it runs on each `ssh` host, as the host answers over SSH: each
   allocation placed or applied there (its service stopped and removed, its
   volume deleted), the rest of the habitat's compose projects there, and
@@ -688,7 +736,7 @@ socket), so the habitat's head must be up.
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
 | `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
-| `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
+| `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
@@ -714,7 +762,10 @@ fixture's head does.
 
 The genome carries a `ui/` (`dna/habitat/ui`), written at birth and tracked,
 which the standard face serves under `/app/` as it serves any attached
-project's: the operator face. Its first screen shows the sign-in edge and
+project's: the operator face. A signed-in visitor lands on it: the render sets the
+`face` service's `HALE_DNA_FACE_HOME` to `/app/`, so `/` redirects there,
+the organization shell answers at `/organization` (linked from the
+operator face's navigation), and `/app` redirects to `/app/`. Its first screen shows the sign-in edge and
 the habitat's name, state, record revision and organisms, read by the
 page from the head's `Commands::index` row through the generated ES-module
 client committed beside it (`head-client.js`, from `dna/face/operator`). It
@@ -727,7 +778,8 @@ only for a crossing, color only for state (up, degraded, down).
 The page is one session with four screens, each a module of the same
 directory, switched by the hash (`#habitat`, `#hardware`,
 `#infrastructure`, `#organisms`), with no build step and no graph
-renderer. Every call is the generated client's; the page speaks no other
+renderer; its navigation also links the organization shell and the
+habitat's Grafana (`/grafana/`, Readings below). Every call is the generated client's; the page speaks no other
 HTTP. The head relays the surface's reads and the Board's acts for a
 signed-in visitor: the standard face presents the visitor's session as the
 call's bearer on any `Commands::` row, and the row keeps its own gate (a
@@ -765,6 +817,81 @@ person who does not hold the Board is refused as the row says).
   organism offers `remove`: its plan (`Commands::plan_remove_organism`)
   with a field for its name, which `Commands::remove_organism` checks with
   the plan's digest (a crossing, so brass).
+
+## Readings: the machines' exporters and Grafana
+
+The habitat reads the machines it runs on and charts them. Every machine
+it uses runs a **Prometheus node exporter** on `:9100`, and the habitat's
+senses' store scrapes each as the job `host`, its series labelled `host`
+(the habitat's own machine by the name `host_label` gives it, a host by
+its name). A **Grafana** behind the habitat's face charts them, its one
+data source the habitat's senses' store.
+
+**The exporter is the machine's.** One per machine, whichever habitats use
+it, installed over the person's own login, where sudo can ask:
+
+| When | Where |
+|---|---|
+| `hale habitat up` | this machine, the habitat's |
+| `hale habitat up --host <h>` | `<h>`, over SSH from the person's machine (the run inside the habitat's image installs none) |
+| `hale habitat host add <h>`, `host probe <h>` | `<h>`, over the same login its account was made over, once it is probed ready |
+| `host remove <h>`, `down --forget` | taken off each, the same way; a remote forget takes it off the habitat's machine and every host it named |
+
+On **Linux** it is the container `hale-node-exporter`
+(`prom/node-exporter`, pinned), on the host's network and process
+namespace, reading the root filesystem read-only, labelled
+`lang.hale.node-exporter=<version>`, restarted unless stopped; an install
+replaces a container of the habitat's labelled otherwise. The release is
+1.11: 1.12's frequency collector also reads `cpuinfo_avg_freq`, which a
+7.0 kernel answers with EAGAIN for a core that has been idle, and the
+exporter's read then waits forever, so every scrape of the machine hangs. On **macOS** it is
+the release's own `node_exporter` (pinned, its archive checked against the
+release's SHA-256) under launchd, `lang.hale.node-exporter`: a
+LaunchAgent of the person's when the login has a GUI session (no sudo),
+else a LaunchDaemon run as `nobody` (sudo, at a terminal). A container
+there would read the VM docker runs in, not the Mac. An exporter that
+already answers on `:9100` with node readings is scraped as it is and
+never touched; a removal takes off only the habitat's own (the container
+by its label, the launchd job by its label). An install that cannot run
+(sudo with no terminal, docker the login cannot reach, another OS) says
+why and stops nothing: `up` and `host add` go on. `HALE_DNA_NODE_EXPORTER=off`
+turns all of it off for a run.
+
+**What is scraped follows the record.** The store reads
+`senses.d/*.json` beside its allocation (mounted as a directory, so a file
+renamed into it is seen): `up` writes `hosts.json` with this machine
+(`host.docker.internal:9100`, the store's container reaching it over the
+host gateway) when there is none, and the head rewrites it whole from the
+`habitat.host` rows whenever one is written (`add_host`, `probe_host`) and
+after a host's removal, each host at `<address>:9100`. A grafted
+organism's store has the same job and an empty directory.
+
+**Grafana is behind the face.** `up` runs the compose service `grafana`
+(`grafana/grafana`, pinned) in the face's network namespace, on the
+loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
+published on macOS but for that port), served under `/grafana/` of the
+face. Its provisioning (`<habitat>/grafana/provisioning`, written at
+every `up`) is the habitat's senses' store as its one data source (uid
+`habitat-senses`) and the habitat's dashboards, `Hosts` its home: whether
+each machine answers, its uptime, CPUs and memory, and over time CPU busy,
+load per core, memory used, disk used, network and disk throughput, for
+Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator
+face's navigation links it as `dashboards`.
+
+Grafana signs in no one itself: its login form, basic authentication and
+anonymous access are off, and its admin password is drawn at each `up`.
+It trusts the person's name on one header (Grafana's proxy
+authentication), whose name is drawn once per habitat (`X-Hale-Grafana-`
+and 32 hex digits, in `<habitat>/grafana.secrets`, 0600) and known only to
+the face and Grafana. For every request under `/grafana/` but Grafana's
+public build (`/grafana/public/`, the same for everyone), the face asks
+the head's gate at `/` as the browser's session, exactly as for the
+shell: a refusal is passed on as it came, and a 204 names the person
+(`X-Hale-Person`), whom the face relays to Grafana under the header. The
+browser's own `X-Hale-*` and `Authorization` lines never reach Grafana. A
+person is signed up in Grafana at their first visit, as an Editor.
+`HALE_DNA_GRAFANA=off` runs none, and a habitat with no senses' store of
+its own (its allocation publishes none) runs none and says so.
 
 ## Pairing: an agent beside a person
 
@@ -858,6 +985,51 @@ Chosen at the habitat's birth and kept.
   `operator` backends.
 
 ## Graft and `[dna] needs`
+
+**A graft plans each body part before it makes anything.** The organism
+plane (`memory`, `nerves`, `senses`) reuses the habitat's unless
+`--own <part>[=<host>]` gives the organism a server of its own on that host
+(on the `--host` machine without one). A reused `memory` is a tenant of the
+habitat's own Postgres: the organism's record is a schema with roles of its
+own there (as every record is: `dna_<id>`, `dna_<id>_spine`, …), on no
+server of its own, and its heart's `database`, when the habitat provides
+one, is a database of that server too. Removing the organism drops its
+schema, its roles and that database there (`record-drop`, run inside the
+habitat's memory by its superuser), and keeps the server; forgetting the
+habitat removes them with its memory. A reused `nerves` or `senses` is a
+server of its own on the habitat's machine: the nerves' configuration
+carries one organization per NATS server (its users and their subjects are
+the server's), so sharing the habitat's needs an account per organism,
+which is not built. The application plane is the organism's own
+software: its compose services, placed on the `--host` machine, and the
+heart roles it needs (`database`, `broker`), which are the application's
+own when its manifest says it brings them (`[dna] brings = ["database",
+"broker"]`, a subset of its needs: its compose provides them) and are
+otherwise provisioned by the habitat. `--reuse <part>` has the habitat
+provide a heart role an application brings; `--own <part>` leaves it to
+the application. `graft --plan` prints the plan, part by part (each
+choice, where it runs, and the flag that changes it), and grafts nothing;
+a graft at a terminal prints it and acts only once the person confirms.
+A graft the head starts (the operator face's) asks no one and takes the
+plan as its defaults give it. The choice for each heart role is kept
+beside the organism's allocations (`parts.json`): `hale habitat migrate`
+and an upgrade provision, and run the heart migration of, only the roles
+the habitat provides. Identity is each organism's own sign-in stub for
+unless the habitat's face has published its identity (below).
+
+**One identity for the habitat and every organism it grafts.** The
+habitat's face starts its sign-in provider with `HALE_DNA_IDENTITY=publish`:
+its signing key is kept in the face's state, made once, so it outlives a
+restart, and the provider is published at `<habitat>/identity.env` (its
+issuer, the key's public half, the client `dna-local`, and where it
+answers). A graft points the child at it (`dna.oidc.issuer` in the child's
+configuration, which its head, its heart's handover and the host's code
+read) and registers the heart's service client in
+`<habitat>/identity.services`, which the provider reads at each request.
+An organism's face launch under that habitat starts no provider of its
+own: it signs in through the habitat's, so a person has one account for
+every organism, and what they may do in each is the positions they hold
+in its record. The plan says `identity reuse the habitat's sign-in`.
 
 A graft allocates each role the organism's genome needs, records the
 allocations in the habitat's record, writes a `habitat.grafted <child>`

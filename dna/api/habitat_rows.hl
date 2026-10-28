@@ -199,7 +199,11 @@ fn applied_at(a: dna::Allocation) -> dna::Allocation {
 // What the allocation's provider observes of it now.
 fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
     // the identity: the habitat's sign-in, answering at its issuer
-    if a.provider == "oidc-stub" { return dna::observe_address(a.address); }
+    // the identity (the habitat's sign-in, at its issuer) and the forge
+    // (Forgejo, at its address): up while they answer there
+    if a.provider == "oidc-stub" || a.provider == "forgejo" {
+        return dna::observe_address(a.address);
+    }
     if a.provider == "compose" { return dna::ComposeProvider { }.observe(a); }
     if a.provider == "ssh" { return dna::SshProvider { root: root }.observe(a); }
     return dna::AllocationState {
@@ -275,6 +279,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("applied", ran.host);
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
+        out.string_field("runs", seen.runs);
         let last = applies.get(entity) or LatestRow { };
         let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
         out.field(

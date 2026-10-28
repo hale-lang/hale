@@ -25,7 +25,7 @@ fn toolchain() -> String {
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         900,
-        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }
@@ -39,6 +39,113 @@ fn face_of(status: String) -> String {
     let rest = status[(at + 8)..len(status)];
     let end = std::str::index_of(rest, "/ (");
     return if end < 0 { "" } else { rest[0..end] };
+}
+
+// `curl` of `url` with `args` (newline-separated) before it: its body, then
+// its status on a line of its own.
+fn fetch(args: String, url: String) -> dna::RunResult {
+    return dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n" + args + (if len(args) > 0 { "\n" } else { "" }) + url,
+    );
+}
+
+fn status_of(r: dna::RunResult) -> String { return dna::last_line(std::str::trim(r.stdout)); }
+
+// The habitat's Grafana, behind its face (`up` printed where), and what its
+// senses read of this machine: through the face for the person the head's
+// gate names, and to nothing else. Whether this run installed the machine's
+// exporter (the fixture takes it off at its end).
+fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
+    std::test::assert(
+        std::str::contains(
+            up,
+            "grafana " + face + "/grafana/ (compose service grafana, behind the face's sign-in)",
+        ),
+        "up says where the habitat's Grafana is: " + up,
+    );
+    let token = dna::trim_nl(text_of(dna::local_habitat_dir() + "/face-state/head.token"));
+    let cookie = "-H\nCookie: dna_local=" + token;
+    // Grafana makes its database at its first start
+    let until = std::time::now() + dna::wait_secs(180);
+    let mut health = fetch(cookie, face + "/grafana/api/health");
+    while status_of(health) != "200" && std::time::now() <= until {
+        std::time::sleep(1s);
+        health = fetch(cookie, face + "/grafana/api/health");
+    }
+    std::test::assert_eq_str(
+        status_of(health),
+        "200",
+        "Grafana answers through the face: " + health.stdout,
+    );
+    let anonymous = fetch("", face + "/grafana/api/user");
+    std::test::assert_eq_str(
+        status_of(anonymous),
+        "401",
+        "without the session the head refuses it, and Grafana is not asked: " + anonymous.stdout,
+    );
+    let me = fetch(
+        cookie
+            + "\n-H\nX-Hale-Person: mallory\n-H\nX-WEBAUTH-USER: mallory\n-H\nAuthorization: Basic YWRtaW46YWRtaW4=",
+        face + "/grafana/api/user",
+    );
+    let login = std::json::find_string_field(me.stdout, "login");
+    std::test::assert(
+        status_of(me) == "200" && len(login) > 0 && login != "mallory" && login != "admin",
+        "with it, Grafana signs in the person the head names, never one a header or a password claims: "
+            + me.stdout,
+    );
+    // Grafana's own port, on the face's loopback, opens to nothing that
+    // does not know the habitat's header (reachable from here where the
+    // face shares the machine's network)
+    if linux {
+        let port = std::str::parse_int(face[len("http://127.0.0.1:")..len(face)]) or 0;
+        let direct = fetch(
+            "-H\nX-Hale-Person: mallory\n-H\nAuthorization: Basic YWRtaW46YWRtaW4=",
+            "http://127.0.0.1:" + to_string(port + 5) + "/grafana/api/user",
+        );
+        std::test::assert_eq_str(
+            status_of(direct),
+            "401",
+            "Grafana's port alone opens nothing: " + direct.stdout,
+        );
+    }
+    // the habitat's senses scrape this machine (the store reads senses.d/),
+    // which Grafana reads as its data source
+    let key = dna::allocation_key(dna::local_habitat_dir() + "/genome");
+    let targets = text_of(
+        dna::local_habitat_dir() + "/allocations/" + key + "/senses.d/hosts.json",
+    );
+    std::test::assert(
+        std::str::contains(targets, "\"host.docker.internal:9100\""),
+        "the senses' targets name this machine: " + targets,
+    );
+    let query = face
+        + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22host%22%7D";
+    let seen_until = std::time::now() + dna::wait_secs(120);
+    let mut seen = fetch(cookie, query);
+    let want = if linux { "\"1\"]" } else { "\"host\":\"local\"" };
+    while !std::str::contains(seen.stdout, want) && std::time::now() <= seen_until {
+        std::time::sleep(2s);
+        seen = fetch(cookie, query);
+    }
+    std::test::assert(
+        std::str::contains(seen.stdout, "\"job\":\"host\"")
+            && std::str::contains(seen.stdout, want),
+        "Grafana's data source is the habitat's senses, which scrape this machine"
+            + (if linux { " and read it" } else { "" }) + ": " + seen.stdout + " (curl "
+            + to_string(seen.code) + ": " + seen.stderr + ")\nGrafana's log:\n"
+            + dna::run_tool(
+                "sh\n-c\ndocker logs --tail 15 \"$(docker ps -q --filter label=com.docker.compose.service=grafana --filter label=com.docker.compose.project=$1)\" 2>&1\nsh\n"
+                    + dna::local_habitat_project(),
+            ).stdout,
+    );
+    if !linux { return false; }
+    std::test::assert(
+        std::str::contains(up, "node    local: node_exporter ")
+            || std::str::contains(up, "node    local: an exporter already answers on :9100"),
+        "up installs this machine's node exporter, or finds one: " + up,
+    );
+    return std::str::contains(up, "a container of the habitat's (hale-node-exporter)");
 }
 
 fn get(url: String) -> dna::RunResult {
@@ -93,7 +200,15 @@ fn main() {
     let scratch = dna::scratch_root("habitat-operator-face");
     dna::reap_on_exit(scratch);
 
-    let started = in_dir(scratch, toolchain() + "\nhabitat\nup\n--name\noperator-face");
+    // the one fixture whose habitat runs its Grafana, and on Linux its
+    // machine's node exporter (a Mac's is launchd's, never a fixture's)
+    let linux = dna::trim_nl(dna::run_tool("uname\n-s").stdout) == "Linux";
+    let started = in_dir(
+        scratch,
+        "env\nHALE_DNA_GRAFANA=on\nHALE_DNA_NODE_EXPORTER=" + (if linux { "on" } else { "off" })
+            + "\n"
+            + toolchain() + "\nhabitat\nup\n--name\noperator-face",
+    );
     std::test::assert(
         started.code == 0
             && std::str::contains(started.stdout, "body    up (compose service body)"),
@@ -102,6 +217,7 @@ fn main() {
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     let face = face_of(status);
     std::test::assert(std::str::starts_with(face, "http://127.0.0.1:"), "the face has an address");
+    let ours_exporter = grafana_and_readings(started.stdout, face, linux);
     // ---- its name: given at its birth, recorded, shown, and kept
     std::test::assert(
         std::str::contains(status, "\nname    operator-face\n"),
@@ -240,6 +356,31 @@ fn main() {
     // the relay carries is refused and the API child is not asked.
     let token = dna::trim_nl(text_of(dna::local_habitat_dir() + "/face-state/head.token"));
     std::test::assert(len(token) > 0, "the head's launch token is in its state");
+
+    // ---- a visitor lands on the operator face, the organization shell one link away
+    let cookie = "\n-H\nCookie: dna_local=" + token + "\n";
+    let landed = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code} %{redirect_url}" + cookie + face + "/",
+    );
+    std::test::assert(
+        std::str::trim(landed.stdout) == "302 " + face + "/app/",
+        "`/` lands on the operator face: " + landed.stdout,
+    );
+    let shell_page = dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}" + cookie + face + "/organization",
+    );
+    std::test::assert(
+        std::str::contains(shell_page.stdout, "src=\"/app.js\"")
+            && std::str::ends_with(std::str::trim(shell_page.stdout), "200"),
+        "the organization shell answers at /organization: " + shell_page.stdout,
+    );
+    let bare = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code} %{redirect_url}\n" + face + "/app",
+    );
+    std::test::assert(
+        std::str::trim(bare.stdout) == "302 " + face + "/app/",
+        "`/app` is the app's directory: " + bare.stdout,
+    );
     let no_graft = row_call(
         face, "graft", "fnv1a64:428819c34f30bc3a",
         "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}", "",
@@ -315,5 +456,14 @@ fn main() {
 
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
     std::test::assert_eq_int(down.code, 0, "down: " + down.stdout + down.stderr);
+    std::test::assert(
+        std::str::contains(down.stdout, "stopped the habitat's Grafana (compose service grafana)"),
+        "down stops the habitat's Grafana: " + down.stdout,
+    );
+    // the machine's exporter is the machine's: this fixture installed it, and takes it off
+    if ours_exporter {
+        let gone = dna::run_tool("docker\nrm\n-f\nhale-node-exporter");
+        std::test::assert_eq_int(gone.code, 0, "the fixture's exporter is removed: " + gone.stderr);
+    }
     dna::scratch_done(scratch);
 }

@@ -98,7 +98,7 @@ fn main() {
         "memory migrated for the record: " + migrated.stdout + migrated.stderr,
     );
     let started = dna::run_tool(
-        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; mkdir -p .hale; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; mkdir -p .hale; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
             + repo + "\n" + owner + "\n" + nats + "\n" + toolchain(),
     );
     let body = dna::trim_nl(started.stdout);

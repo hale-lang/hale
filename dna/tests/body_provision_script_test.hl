@@ -22,7 +22,7 @@ fn toolchain() -> String {
 // systemctl, docker, curl) are stubs in that home.
 fn in_dir(dir: String, fake: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off FAKE=\"$1\" HALE_DNA_TRANSPORT=local HALE_DNA_TRANSPORT_HOME=\"$1/home\" PATH=\"$1/bin:$PATH\" && shift && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off FAKE=\"$1\" HALE_DNA_TRANSPORT=local HALE_DNA_TRANSPORT_HOME=\"$1/home\" PATH=\"$1/bin:$PATH\" && shift && exec \"$@\"\nsh\n"
             + dir + "\n" + fake + "\n" + argv,
     );
 }

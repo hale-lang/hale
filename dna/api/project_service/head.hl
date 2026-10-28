@@ -1404,6 +1404,9 @@ locus Head {
                 false,
             );
         }
+        // who the gate at `/` lets through: the head's own principal, or
+        // under OIDC the person the session names
+        let mut gate_person = self.cfg.principal_name;
         // GH #989: under OIDC, a session a sign-in through the issuer set,
         // or nothing — the shell at `/` sends a browser to sign in, and
         // every read and command of the head's and the project's asks for it
@@ -1548,6 +1551,7 @@ locus Head {
                 if path == "/" { return ui::redirect("/auth/login", ""); }
                 return self.error(401, "unauthenticated", "sign in at /auth/login", false);
             }
+            gate_person = person;
         }
         // A fixture's trusted-local session (HALE_DNA_TRUSTED_LOCAL=1): the
         // shell at `/` and every POST carry the launch token — the URL once,
@@ -1610,10 +1614,20 @@ locus Head {
         // `/` is the face's gate, not a page: the head owns no static file.
         // A person who may open the shell is told so (204), and the face
         // serves it; every refusal above is the face's to pass on as it is.
+        // The answer names them (`X-Hale-Person`), for what the face serves
+        // behind the same gate in their name (the habitat's Grafana).
         if req.method == "GET" && path == "/" {
+            let named = if std::str::contains(gate_person, "\r")
+                || std::str::contains(gate_person, "\n")
+            {
+                ""
+            } else {
+                gate_person
+            };
             return std::http::Response {
                 status: 204,
-                headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff",
+                headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff"
+                    + (if len(named) > 0 { "\r\nX-Hale-Person: " + named } else { "" }),
                 body: "",
             };
         }

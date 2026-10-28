@@ -155,6 +155,9 @@ locus StubIssuer {
         y: String = STUB_Y;
         ttl: Int = 28800; // a face session's eight hours: the head forwards the ID token it signed in with
         services: String = ""; // the service clients' ids, space-separated; each secret is the vault's `oidc-service-<id>`
+        // a habitat's shared provider: a file of more service clients' ids,
+        // read at each request, which a graft appends an organism's to
+        services_file: String = "";
         service_ttl: Int = 600; // a service asks again rather than holding a token long
         codes: IssuedCodes = IssuedCodes { };
         exchanges: Int = 0;
@@ -334,9 +337,19 @@ locus StubIssuer {
     // the same way.
     fn service_token(id: String, secret: String) -> std::http::Response {
         let entry = "oidc-service-" + id;
+        let listed = self.services + " "
+            + std::str::replace(
+                if len(self.services_file) > 0 {
+                    std::io::fs::read_file(self.services_file) or ""
+                } else {
+                    ""
+                },
+                "\n",
+                " ",
+            );
         let known = len(id) > 0
             && std::secret::vault_name_is_safe(entry)
-            && std::str::contains(" " + self.services + " ", " " + id + " ");
+            && std::str::contains(" " + listed + " ", " " + id + " ");
         if !known
             || len(secret) == 0
             || !std::secret::Credential { vault: entry }.matches(std::bytes::from_string(secret))

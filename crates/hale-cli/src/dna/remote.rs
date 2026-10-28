@@ -11,10 +11,11 @@
 //! admin machine reaches the head through that pointer; the verbs that
 //! act on the habitat's machine itself (`up`, `down`) run there over SSH.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
-use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN};
+use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN, HALE_GIT};
 use crate::dna::local_habitat_dir;
 
 /// The pointer's file, in the local habitat's directory.
@@ -33,6 +34,7 @@ pub(super) const EXPECT_ENV: &str = "HALE_DNA_HABITAT_EXPECT";
 /// habitat's machine, as a local `up` hands it to its body and face.
 const FORWARDED: &[&str] = &[
     "HALE_DNA_DISCOVER",
+    "HALE_DNA_GRAFANA",
     "HALE_DNA_TRUSTED_LOCAL",
     "HALE_DNA_WAIT_SCALE",
     "HALE_DNA_FORGE",
@@ -111,23 +113,248 @@ impl Target {
     }
 }
 
+/// A script of the habitat's (`readings`) run on `host` over the person's
+/// own login, made with the `sudo` that suits the run: at a terminal the
+/// session has one (sudo asks there), its output shown as it comes and its
+/// outcome line kept back; elsewhere `sudo -n` and the output captured.
+/// The outcome, or why it failed.
+pub(super) fn login_script(host: &str, user: Option<&str>, port: Option<u16>, script: impl Fn(&str) -> String) -> Result<String, String> {
+    use std::io::{Read, Write};
+    let t = Target { host: host.to_string(), user: user.map(str::to_string), port };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut child = t
+        .ssh(tty)
+        .arg(script(super::readings::sudo_word(tty)))
+        .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(if tty { Stdio::inherit() } else { Stdio::piped() })
+        .spawn()
+        .map_err(|e| format!("ssh: {e}"))?;
+    let mut all = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let mut pending = String::new();
+        let mut buf = [0u8; 4096];
+        let mut shown = std::io::stdout();
+        while let Ok(n) = out.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+            all.push_str(&chunk);
+            if !tty {
+                continue;
+            }
+            // a terminal's: every line but the outcome, and a prompt (a
+            // line not ended yet that cannot be the outcome) at once
+            pending.push_str(&chunk);
+            while let Some(i) = pending.find('\n') {
+                let line: String = pending.drain(..=i).collect();
+                if !line.trim_start_matches('\r').starts_with("hale-node:") {
+                    let _ = shown.write_all(line.as_bytes());
+                }
+            }
+            if !pending.is_empty() && !"hale-node:".starts_with(pending.trim_start_matches('\r')) && !pending.trim_start_matches('\r').starts_with("hale-node:") {
+                let _ = shown.write_all(pending.as_bytes());
+                pending.clear();
+            }
+            let _ = shown.flush();
+        }
+    }
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    let status = child.wait().map_err(|e| format!("ssh: {e}"))?;
+    if status.success() {
+        Ok(super::readings::outcome_of(&all))
+    } else if status.code() == Some(255) {
+        Err(format!("ssh {host} did not connect{}", if err.trim().is_empty() { String::new() } else { format!(": {}", err.trim()) }))
+    } else {
+        Err(super::readings::last_words(&err, &all))
+    }
+}
+
+/// The habitat's key on a host it places on, put there or taken off over
+/// the person's own SSH login, as `up --host` reaches a machine: the line
+/// `add_host` answers, appended to `user`'s `~/.ssh/authorized_keys` once,
+/// or every line carrying the habitat's comment (`habitat-<key>`) removed.
+/// The habitat's own key never authorizes itself.
+pub(super) fn authorize_key(host: &str, user: &str, port: Option<u16>, line: &str) -> Result<(), String> {
+    let t = Target { host: host.to_string(), user: Some(user.to_string()).filter(|u| !u.is_empty()), port };
+    t.run(&authorize_script(line)).map(|_| ())
+}
+
+fn authorize_script(line: &str) -> String {
+    format!(
+        "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && {{ grep -qxF {l} ~/.ssh/authorized_keys || printf '%s\\n' {l} >> ~/.ssh/authorized_keys; }}",
+        l = sq(line)
+    )
+}
+
+pub(super) fn unauthorize_key(host: &str, user: &str, port: Option<u16>, comment: &str) -> Result<(), String> {
+    let t = Target { host: host.to_string(), user: Some(user.to_string()).filter(|u| !u.is_empty()), port };
+    t.run(&unauthorize_script(comment)).map(|_| ())
+}
+
+fn unauthorize_script(comment: &str) -> String {
+    format!(
+        "f=~/.ssh/authorized_keys; [ -f \"$f\" ] || exit 0; awk -v c={c} '$NF != c' \"$f\" > \"$f.hale.$$\" && cat \"$f.hale.$$\" > \"$f\"; rm -f \"$f.hale.$$\"",
+        c = sq(comment)
+    )
+}
+
+/// The account a habitat logs into a host as, when the person names none:
+/// one of its own (`hale-<allocation key>`), never the person's, made over
+/// their login (`provision_user`) and removed with the host
+/// (`remove_user`). One per habitat, so two habitats on one host never
+/// share a login, and one's teardown never removes the other's.
+pub(super) fn habitat_user(identity: &str) -> String {
+    format!("hale-{}", &identity[..12.min(identity.len())])
+}
+
+/// Whether `user` is an account the habitat made (`habitat_user`).
+pub(super) fn is_habitat_user(user: &str) -> bool {
+    user.strip_prefix("hale-").is_some_and(|k| k.len() == 12 && k.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The habitat's own account on a host, made over the person's login with
+/// their sudo (asked at their terminal), with no sudo of its own and the
+/// habitat's key its only `authorized_keys` line. On Linux a system user
+/// with its own home, in the `docker` group (which is root-equivalent: this
+/// keeps the habitat out of the person's account, not out of the host). On
+/// macOS a hidden user (`dscl`, a uid below 500, no password, so nothing
+/// but the key logs it in) admitted to Remote Login when Remote Login is
+/// limited to a group; docker there is the person's own and stays theirs,
+/// so a Mac host offers the habitat no compose. Any other system is
+/// refused by name.
+pub(super) fn provision_user(host: &str, port: Option<u16>, user: &str, line: &str) -> Result<(), String> {
+    let t = Target { host: host.to_string(), user: None, port };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let ran = t
+        .ssh(tty)
+        .arg(provision_script(user, line, tty))
+        .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if ran.success() {
+        Ok(())
+    } else {
+        Err(format!("making the account {user} there failed (above){}", if tty { "" } else { "; run it at a terminal, where sudo can ask" }))
+    }
+}
+
+fn provision_script(user: &str, line: &str, tty: bool) -> String {
+    let sudo = if tty { "sudo" } else { "sudo -n" };
+    format!(
+        r#"set -e; u={u}; l={l}; S="{s}"
+case "$(uname -s)" in
+Linux)
+  command -v useradd >/dev/null || {{ echo 'this host has no useradd: --user names an account you made' >&2; exit 1; }}
+  id "$u" >/dev/null 2>&1 || $S useradd --system --create-home --shell /bin/sh "$u"
+  if getent group docker >/dev/null; then $S usermod -aG docker "$u"; fi
+  h=$(getent passwd "$u" | cut -d: -f6); g=$(id -gn "$u") ;;
+Darwin)
+  if ! id "$u" >/dev/null 2>&1; then
+    taken=$(dscl . -list /Users UniqueID | awk '{{print $2}}')
+    uid=401; while [ $uid -lt 500 ] && printf '%s\n' "$taken" | grep -qx "$uid"; do uid=$((uid + 1)); done
+    [ $uid -lt 500 ] || {{ echo 'no free uid below 500 for a hidden account' >&2; exit 1; }}
+    $S dscl . -create "/Users/$u"
+    $S dscl . -create "/Users/$u" UniqueID "$uid"
+    $S dscl . -create "/Users/$u" PrimaryGroupID 20
+    $S dscl . -create "/Users/$u" UserShell /bin/sh
+    $S dscl . -create "/Users/$u" RealName "the hale habitat's account"
+    $S dscl . -create "/Users/$u" NFSHomeDirectory "/Users/$u"
+    $S dscl . -create "/Users/$u" Password '*'
+    $S dscl . -create "/Users/$u" IsHidden 1
+    $S install -d -m 755 -o "$u" -g staff "/Users/$u"
+  fi
+  if dscl . -read /Groups/com.apple.access_ssh >/dev/null 2>&1; then $S dseditgroup -o edit -a "$u" -t user com.apple.access_ssh; fi
+  h=$(dscl . -read "/Users/$u" NFSHomeDirectory | awk '{{print $2}}'); g=staff ;;
+*) echo "$(uname -s) is neither Linux nor macOS: --user names an account you made" >&2; exit 1 ;;
+esac
+$S install -d -m 700 -o "$u" -g "$g" "$h/.ssh"
+$S sh -c 'f="$1/.ssh/authorized_keys"; touch "$f"; grep -qxF "$2" "$f" || printf "%s\n" "$2" >> "$f"; chown "$3" "$f"; chmod 600 "$f"' sh "$h" "$l" "$u""#,
+        u = sq(user),
+        l = sq(line),
+        s = sudo
+    )
+}
+
+/// The habitat's own account taken off a host, its home with it, over the
+/// person's login with their sudo; nothing when it is not there.
+pub(super) fn remove_user(host: &str, port: Option<u16>, user: &str) -> Result<(), String> {
+    if !is_habitat_user(user) {
+        return Err(format!("{user} is not an account the habitat made"));
+    }
+    let t = Target { host: host.to_string(), user: None, port };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let sudo = if tty { "sudo" } else { "sudo -n" };
+    let ran = t
+        .ssh(tty)
+        .arg(remove_user_script(user, sudo))
+        .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if ran.success() {
+        Ok(())
+    } else {
+        Err(format!("removing the account {user} there failed{}", if tty { "" } else { " (sudo needs a terminal)" }))
+    }
+}
+
+/// The account removed, its sessions ended first: the habitat's own SSH
+/// session there, and on Linux the user manager logind started for it, are
+/// still exiting just after the habitat's last act, and `userdel` refuses a
+/// user with a process. Retried a few seconds; its home goes with it. On
+/// macOS the record is deleted with `dscl` and its home under /Users with
+/// it, and it leaves the Remote Login group.
+fn remove_user_script(user: &str, sudo: &str) -> String {
+    format!(
+        r#"u={u}; S="{s}"; id "$u" >/dev/null 2>&1 || exit 0
+case "$(uname -s)" in
+Darwin)
+  $S pkill -KILL -u "$u" 2>/dev/null
+  h=$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{{print $2}}')
+  if dscl . -read /Groups/com.apple.access_ssh >/dev/null 2>&1; then $S dseditgroup -o edit -d "$u" -t user com.apple.access_ssh 2>/dev/null; fi
+  $S dscl . -delete "/Users/$u" || exit 1
+  case "$h" in "/Users/$u") $S rm -rf "$h" ;; esac ;;
+*)
+  $S loginctl terminate-user "$u" 2>/dev/null; $S pkill -KILL -u "$u" 2>/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do $S userdel -r "$u" 2>/dev/null && exit 0; sleep 1; done; $S userdel -r "$u" ;;
+esac"#,
+        u = sq(user),
+        s = sudo
+    )
+}
+
+/// The comment the habitat's public key carries (`habitat-<allocation
+/// key>`, the record identity's first 12 hex digits).
+pub(super) fn key_comment(identity: &str) -> String {
+    format!("habitat-{}", &identity[..12.min(identity.len())])
+}
+
 /// A word for the remote shell, single-quoted.
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// What the machine says of itself: its user's home, uid, gid, name and the
-/// docker socket's group.
+/// What the machine says of itself: its user's home, uid, gid and name.
+/// The docker socket's group is not among them: it is the daemon's, read
+/// where the run there mounts it (`in_image`), since the login's shell may
+/// see another socket or none (a VM's docker, as Colima's on macOS).
 struct Machine {
     home: String,
     uid: String,
     gid: String,
     user: String,
-    sock_gid: String,
+    /// `uname -s` of the login's shell: `Darwin` when the machine's docker
+    /// runs in a VM (Colima, Docker Desktop), whose containers never own
+    /// the machine's own addresses.
+    os: String,
 }
 
 fn probe(t: &Target) -> Result<Machine, String> {
-    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; stat -c %g /var/run/docker.sock 2>/dev/null || echo 0; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
+    let said = t.run("printf '%s\\n' \"$HOME\"; id -u; id -g; id -un; uname -s; docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && echo docker")?;
     let lines: Vec<&str> = said.lines().map(str::trim).collect();
     if lines.len() < 6 || lines[5] != "docker" {
         return Err(format!("{} answers over SSH, but its docker does not (the habitat's machine needs docker and the user's access to its socket)", t.host));
@@ -135,7 +362,7 @@ fn probe(t: &Target) -> Result<Machine, String> {
     if lines[0].is_empty() || !lines[0].starts_with('/') {
         return Err(format!("{} names no home directory for its user", t.host));
     }
-    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string(), sock_gid: lines[4].to_string() })
+    Ok(Machine { home: lines[0].to_string(), uid: lines[1].to_string(), gid: lines[2].to_string(), user: lines[3].to_string(), os: lines[4].to_string() })
 }
 
 /// The habitat's directory on its machine and what holds it (the user's
@@ -148,38 +375,91 @@ fn habitat_dir(m: &Machine) -> String {
     format!("{}/habitat/local", data_dir(m))
 }
 
+/// The address the habitat's person-facing listeners bind on the machine:
+/// the address its name resolves to here, which a Linux docker's host
+/// network owns; on a machine whose docker runs in a VM (macOS), every
+/// interface of the VM, since the VM owns none of the machine's addresses
+/// and its port forwarding publishes what listens there on the machine.
+fn listen_on(os: &str, resolved: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    if os == "Darwin" {
+        return Ok("0.0.0.0".to_string());
+    }
+    resolved()
+}
+
 /// The address the machine is reached at from here, as this machine
-/// resolves its name: the address its person-facing listeners bind there.
+/// resolves its name.
 fn listen_address(host: &str) -> Result<String, String> {
     super::ipv4_or_first(host, &super::resolved(host)?)
 }
 
-/// The toolchain image on the machine: there already, sent from this
-/// machine's docker (`docker save | docker load`), or pulled from the
-/// published images when the one of this toolchain's version answers as
-/// this toolchain does. Nothing is compiled there.
 /// How the toolchain image reaches the machine, from the platforms
 /// (`<os>/<arch>`) of the machine's docker, of the tag there ("" when it
-/// has none) and of the tag here ("" when this docker has none): a tag of
-/// another platform is never used or sent, since the machine could not run
-/// it without emulation; the published image is pulled for the machine's
-/// platform instead.
+/// has none) and of the tag here ("" when this docker has none), and
+/// whether this toolchain is a release's build: there already; sent from
+/// this machine's docker (`docker save | docker load`); for a release's
+/// build, the published image pulled for the machine's platform; else built
+/// there from this toolchain's commit. A tag of another platform is never
+/// used or sent, since the machine could not run it without emulation.
 #[derive(Debug, PartialEq)]
 enum ImageRoute {
     There,
     Send,
     Pull { mismatch: Option<String> },
+    Build { mismatch: Option<String> },
 }
 
-fn image_route(machine: &str, there: &str, here: &str) -> ImageRoute {
+fn image_route(machine: &str, there: &str, here: &str, release: bool) -> ImageRoute {
     if !there.is_empty() && there == machine {
         return ImageRoute::There;
     }
     if !here.is_empty() && here == machine {
         return ImageRoute::Send;
     }
-    let other = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
-    ImageRoute::Pull { mismatch: other }
+    let mismatch = [there, here].iter().find(|p| !p.is_empty()).map(|p| p.to_string());
+    if release {
+        ImageRoute::Pull { mismatch }
+    } else {
+        ImageRoute::Build { mismatch }
+    }
+}
+
+/// The commit a tag names, from `git ls-remote <repo> refs/tags/<tag>
+/// refs/tags/<tag>^{}`: an annotated tag's peeled line, else the tag's own.
+fn tag_commit(ls_remote: &str, tag: &str) -> Option<String> {
+    let own = format!("refs/tags/{tag}");
+    let peeled = format!("refs/tags/{tag}^{{}}");
+    let mut found = None;
+    for (sha, name) in ls_remote.lines().filter_map(|l| l.split_once('\t')) {
+        if name.trim() == peeled {
+            return Some(sha.trim().to_string());
+        }
+        if name.trim() == own {
+            found = Some(sha.trim().to_string());
+        }
+    }
+    found
+}
+
+/// Whether this toolchain is the build of its version's release: the
+/// release tag `v<version>` on the toolchain's repository names this
+/// build's commit. A build from any other commit shares the version string
+/// and is never one; so is any build when the tag cannot be read.
+fn is_release_build() -> bool {
+    let pin = HABITAT_PIN.trim();
+    if pin.is_empty() {
+        return false;
+    }
+    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let out = Command::new("git")
+        .args(["ls-remote", HALE_GIT, &format!("refs/tags/{tag}"), &format!("refs/tags/{tag}^{{}}")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => tag_commit(&String::from_utf8_lossy(&o.stdout), &tag).is_some_and(|c| c == pin),
+        _ => false,
+    }
 }
 
 /// `<os>/<arch>` of a docker answer, `amd64` and `x86_64` alike.
@@ -200,7 +480,7 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
     let there = there.trim().split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
     let here = Command::new("docker").args(["image", "inspect", "--format", "{{.Os}} {{.Architecture}}", tag]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
     let here = here.split_once(' ').map(|(o, a)| platform(o, a)).unwrap_or_default();
-    let route = image_route(&machine, &there, &here);
+    let route = image_route(&machine, &there, &here, is_release_build());
     if route == ImageRoute::There {
         return Ok(format!("{:<8}{tag} (on {} already, {machine})", "image", t.host));
     }
@@ -215,23 +495,57 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
         }
         return Ok(format!("{:<8}{tag} (sent from this machine, {machine})", "image"));
     }
-    let mismatch = match route {
-        ImageRoute::Pull { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
+    let mismatch = match &route {
+        ImageRoute::Pull { mismatch: Some(p) } | ImageRoute::Build { mismatch: Some(p) } => format!(" ({tag} is {p} and {} runs {machine})", t.host),
         _ => String::new(),
     };
-    let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
-    super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
-    let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
-    if theirs.is_empty() || theirs != ours {
-        return Err(format!(
-            "no image of this toolchain for {machine} reaches {}: {tag} is neither there nor in this machine's docker for that platform{mismatch}, and {published} {} (`hale habitat image build` on a {machine} machine builds it, `--image <tag>` names another)",
-            t.host,
-            if theirs.is_empty() { "could not be pulled there".to_string() } else { format!("is another build ({})", theirs.lines().last().unwrap_or("")) }
+    if matches!(route, ImageRoute::Pull { .. }) {
+        let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+        super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
+        let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();
+        if !theirs.is_empty() && theirs == ours {
+            t.run(&format!("docker tag {} {}", sq(&published), sq(tag)))?;
+            return Ok(format!("{:<8}{tag} (pulled there as {published})", "image"));
+        }
+        super::progress(&format!(
+            "{published} {} on {}; building it there instead",
+            if theirs.is_empty() { format!("has no {machine} image") } else { "is another build".to_string() },
+            t.host
         ));
     }
-    t.run(&format!("docker tag {} {}", sq(&published), sq(tag)))?;
-    Ok(format!("{:<8}{tag} (pulled there as {published})", "image"))
+    build_there(t, tag, &machine, &mismatch)
+}
+
+/// The toolchain image built on the machine from this toolchain's commit
+/// on its repository, the source a local habitat's compose renders as its
+/// `build:`. Its docker needs BuildKit (the `buildx` plugin): the
+/// Dockerfile builds only the stages the chosen one needs.
+fn build_there(t: &Target, tag: &str, machine: &str, mismatch: &str) -> Result<String, String> {
+    let pin = HABITAT_PIN.trim();
+    if pin.is_empty() {
+        return Err(format!("no image of this toolchain reaches {}{mismatch}, and this toolchain was built outside a git checkout, so it names no commit to build one from (`--image <tag>` names an image there)", t.host));
+    }
+    let short = &pin[..12.min(pin.len())];
+    if t.run("docker buildx version >/dev/null 2>&1 && echo yes || echo no")?.trim() != "yes" {
+        return Err(format!(
+            "building the toolchain image on {h} needs docker's buildx plugin there, which it lacks (Docker Desktop and Linux's docker packages ship it; Homebrew's docker does not). With Homebrew, once:\n  ssh {h} 'brew install docker-buildx && mkdir -p ~/.docker/cli-plugins && ln -sfn \"$(brew --prefix)/opt/docker-buildx/bin/docker-buildx\" ~/.docker/cli-plugins/docker-buildx'",
+            h = t.host
+        ));
+    }
+    super::progress(&format!("building the image {tag} on {} from hale-lang/hale@{short}{mismatch}; once per toolchain commit, and a first build compiles the compiler (tens of minutes)", t.host));
+    let context = format!("{HALE_GIT}#{pin}");
+    let built = t
+        .ssh(false)
+        .arg(format!("docker build -t {} {}", sq(tag), sq(&context)))
+        .stdin(Stdio::null())
+        .stdout(std::process::Stdio::from(std::io::stderr()))
+        .status()
+        .map_err(|e| format!("ssh: {e}"))?;
+    if !built.success() {
+        return Err(format!("building {tag} on {} from {context} failed (above); the commit must be on GitHub, so push it, or `--image <tag>` names an image there", t.host));
+    }
+    Ok(format!("{:<8}{tag} (built on {} from hale-lang/hale@{short}, {machine})", "image", t.host))
 }
 
 /// The `docker run` on the machine that runs `hale habitat <args>` in the
@@ -267,6 +581,9 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
         (LISTEN_ENV, p["listen"].as_str().unwrap_or("127.0.0.1").to_string()),
         (ADDRESS_ENV, p["host"].as_str().unwrap_or("").to_string()),
         (EXPECT_ENV, p["identity"].as_str().unwrap_or("").to_string()),
+        // the machine's exporter is the person's login's to install over
+        // SSH (a Mac's is launchd's, outside the image), never the image's
+        ("HALE_DNA_NODE_EXPORTER", "off".to_string()),
     ];
     for k in FORWARDED {
         if let Ok(v) = std::env::var(k) {
@@ -275,9 +592,12 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
             }
         }
     }
+    // the socket's group as the run sees it: the daemon's socket, mounted
+    // the same way into the same image
     let mut line = format!(
-        "mkdir -p {d} && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add {sg} -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
+        "mkdir -p {d} && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock {i} -c %g /var/run/docker.sock) && exec docker run --rm {it}--network host --label {lb} --user {u}:{g} --group-add \"$sg\" -v {d}:{d} -v /var/run/docker.sock:/var/run/docker.sock -w {h}",
         d = sq(&data),
+        i = sq(image),
         lb = sq(&format!("hale.habitat.dir={}", habitat_dir(m))),
         it = match io {
             ImageIo::Terminal => "-i -t ",
@@ -286,7 +606,6 @@ fn in_image_io(m: &Machine, p: &serde_json::Value, args: &[&str], io: ImageIo) -
         },
         u = sq(&m.uid),
         g = sq(&m.gid),
-        sg = sq(&m.sock_gid),
         h = sq(&m.home),
     );
     for (k, v) in env {
@@ -395,7 +714,7 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     let t = Target { host: host.to_string(), user: user.map(str::to_string), port };
     super::progress(&format!("reaching {host} over SSH"));
     let m = probe(&t)?;
-    let listen = listen_address(host)?;
+    let listen = listen_on(&m.os, || listen_address(host))?;
     let tag = image.map(str::to_string).or_else(|| std::env::var("HALE_HABITAT_IMAGE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())).unwrap_or_else(|| default_habitat_image_tag(HABITAT_PIN.trim()));
     // a second `up` reconnects: the habitat there must be the one the
     // pointer names, by its record's identity
@@ -450,7 +769,21 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     write_pointer(&p, &token)?;
     out.push(format!("{:<8}{face}/", "face"));
     out.push(format!("{:<8}{url} (recorded here in {})", "head", head_url_file().display()));
+    let link = super::sign_in_link(&face);
+    if !link.is_empty() {
+        out.push(format!("{:<8}{link}", "sign in"));
+    }
     out.push(format!("{:<8}{}… ({})", "record", &identity[..12.min(identity.len())], if kept.is_some() { "reconnected; the pointer is the same habitat's" } else { "pointed at from this machine" }));
+    if !super::readings::grafana_off() {
+        out.push(format!("{:<8}{face}{}", "grafana", super::readings::GRAFANA_PATH));
+    }
+    if !super::readings::node_exporter_off() {
+        super::progress(&format!("installing the node exporter on {host}, over your SSH login"));
+        out.push(match login_script(host, user, port, super::readings::install_script) {
+            Ok(o) => super::readings::install_line(host, &o),
+            Err(why) => format!("{:<8}{host}: no exporter: {why}", "node"),
+        });
+    }
     Ok(out)
 }
 
@@ -463,16 +796,35 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
     let identity = p["identity"].as_str().unwrap_or("");
     println!("{:<8}on {} (record {}…)", "genome", p["host"].as_str().unwrap_or(""), &identity[..12.min(identity.len())]);
     let up = answers(head);
-    println!("{:<8}{}/ ({})", "face", p["face"].as_str().unwrap_or(""), if answers(p["face"].as_str().unwrap_or("")) { "up" } else { "down: `hale habitat up --host` starts it" });
+    let face_up = answers(p["face"].as_str().unwrap_or(""));
+    println!("{:<8}{}/ ({})", "face", p["face"].as_str().unwrap_or(""), if face_up { "up" } else { "down: `hale habitat up --host` starts it" });
+    let link = super::sign_in_link(p["face"].as_str().unwrap_or(""));
+    if face_up && !link.is_empty() {
+        println!("{:<8}{link}", "sign in");
+    }
+    if face_up && !super::readings::grafana_off() {
+        println!("{:<8}{}{}", "grafana", p["face"].as_str().unwrap_or(""), super::readings::GRAFANA_PATH);
+    }
     println!("{:<8}{head} ({})", "head", if up { "up" } else { "down" });
     if !up {
         return ExitCode::SUCCESS;
     }
+    // the organisms by their names: the habitat's own by the pointer's, each
+    // grafted one by the index's (an allocation names its record's identity)
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    names.insert(identity[..12.min(identity.len())].to_string(), p["name"].as_str().unwrap_or("").to_string());
     match http_surface_call(head, "Commands::index", &serde_json::json!({ "limit": 200 })) {
-        Ok(v) if v["ok"] == serde_json::json!(true) && v["name"].as_str().is_some_and(|n| n != p["name"].as_str().unwrap_or("")) => {
-            println!("{:<8}the head answers as the habitat `{}`, not this pointer's", "note", v["name"].as_str().unwrap_or(""));
+        Ok(v) => {
+            if v["ok"] == serde_json::json!(true) && v["name"].as_str().is_some_and(|n| n != p["name"].as_str().unwrap_or("")) {
+                println!("{:<8}the head answers as the habitat `{}`, not this pointer's", "note", v["name"].as_str().unwrap_or(""));
+            }
+            let organisms: Vec<serde_json::Value> = v["organisms"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            for o in organisms {
+                if let (Some(k), Some(n)) = (o["key"].as_str(), o["name"].as_str()) {
+                    names.insert(k[..12.min(k.len())].to_string(), n.to_string());
+                }
+            }
         }
-        Ok(_) => {}
         Err(e) => println!("{:<8}{e}", "note"),
     }
     match http_surface_call(head, "Commands::allocations", &serde_json::json!({ "limit": 200 })) {
@@ -484,7 +836,12 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
             }
             for r in rows {
                 let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
-                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), if f("applied").is_empty() { f("host") } else { f("applied") }, if f("organism").is_empty() { String::new() } else { format!(", {}", f("organism")) }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                // the habitat's own machine is the host `local` in its rows; here it is the machine's name
+                let on = if f("applied").is_empty() { f("host") } else { f("applied") };
+                let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
+                let org = f("organism");
+                let org = names.get(&org[..12.min(org.len())]).cloned().unwrap_or(org);
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if org.is_empty() { String::new() } else { format!(", {org}") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }
@@ -540,6 +897,20 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         eprintln!("hale habitat down: {why}");
         return ExitCode::from(1);
     }
+    // the hosts the habitat placed on, read before it is forgotten: its key
+    // comes off each over the person's own login once the forget is done
+    let hosts: Vec<serde_json::Value> = if forget {
+        http_surface_call(p["head"].as_str().unwrap_or(""), "Commands::hosts", &serde_json::json!({ "limit": 200 }))
+            .ok()
+            .and_then(|v| v["hosts"].as_str().and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(t).ok()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|h| h["name"].as_str().is_some_and(|n| !n.is_empty() && n != "local") && h["state"] != "removed")
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let comment = key_comment(&expected);
     let mut a: Vec<&str> = vec!["down"];
     a.extend(args.iter().map(String::as_str));
     let mut cmd = t.ssh(confirm);
@@ -557,10 +928,50 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     if !ran.success() {
         return ExitCode::from(ran.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1));
     }
+    if plan {
+        if !super::readings::node_exporter_off() {
+            println!("  - and from this machine, over your SSH login: the habitat's node exporter off {} and off each host below, where it installed one", t.host);
+        }
+        for h in &hosts {
+            let user = h["user"].as_str().unwrap_or("");
+            if is_habitat_user(user) {
+                println!("  - and from this machine, over your SSH login: the habitat's account {user} and its home off {}", h["name"].as_str().unwrap_or(""));
+            } else {
+                println!("  - and from this machine, over your SSH login: the habitat's key (`{comment}`) out of {user}@{}:~/.ssh/authorized_keys", h["name"].as_str().unwrap_or(""));
+            }
+        }
+    }
     if confirm {
         // gone there whole: the pointer goes last
         match remote_state(&t, &m) {
             Ok((_, _, identity)) if identity.is_empty() => {
+                for h in &hosts {
+                    let (name, user) = (h["name"].as_str().unwrap_or(""), h["user"].as_str().unwrap_or(""));
+                    let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+                    if is_habitat_user(user) {
+                        match remove_user(name, port, user) {
+                            Ok(()) => println!("the habitat's account {user} is removed from {name}"),
+                            Err(why) => println!("the habitat's account {user} is left on {name} ({why}): remove it there (Linux `sudo userdel -r {user}`, macOS `sudo dscl . -delete /Users/{user}`)"),
+                        }
+                        continue;
+                    }
+                    match unauthorize_key(name, user, port, &comment) {
+                        Ok(()) => println!("the habitat's key is out of {user}@{name}:~/.ssh/authorized_keys"),
+                        Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {user}'s ~/.ssh/authorized_keys there"),
+                    }
+                }
+                if !super::readings::node_exporter_off() {
+                    let machines = std::iter::once((t.host.clone(), t.user.clone(), t.port)).chain(hosts.iter().map(|h| {
+                        (h["name"].as_str().unwrap_or("").to_string(), None, h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0))
+                    }));
+                    for (name, user, port) in machines {
+                        match login_script(&name, user.as_deref(), port, super::readings::remove_script) {
+                            Ok(o) if o == "removed" => println!("the habitat's node exporter is removed from {name}"),
+                            Ok(_) => {}
+                            Err(why) => println!("the habitat's node exporter is left on {name} ({why})"),
+                        }
+                    }
+                }
                 remove_pointer();
                 println!("the pointer to the habitat on {} is removed from this machine", t.host);
             }
@@ -827,6 +1238,54 @@ pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
     }
 }
 
+/// A habitat verb run on the habitat's machine, in its toolchain image, as
+/// `organism … dna` is: for the verbs that act on the genome there
+/// (`nursery refresh`).
+pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> ExitCode {
+    let (t, m) = match checked_machine(p, verb) {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    let mut cmd = t.ssh(false);
+    cmd.arg(in_image(&m, p, args, false)).stdin(Stdio::null());
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat {verb}: ssh: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `hale habitat graft <sapling> [flags]` through a pointer: the graft run on
+/// the habitat's machine in its toolchain image, as `graft <dir>` is, with
+/// every flag passed on (`--host`, `--own`, `--reuse`, `--plan`, …): its plan
+/// and its progress print here as they happen, and at a terminal the person
+/// confirms the plan there. `--no-head`: it acts itself, never through the
+/// head, which would take the plan as it stands and ask no one.
+pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode {
+    let (t, m) = match checked_machine(p, "graft") {
+        Ok(tm) => tm,
+        Err(code) => return code,
+    };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut a: Vec<&str> = vec!["graft"];
+    a.extend(args.iter().map(String::as_str));
+    a.push("--no-head");
+    let mut cmd = t.ssh(tty);
+    cmd.arg(in_image(&m, p, &a, tty));
+    if !tty {
+        cmd.stdin(Stdio::null());
+    }
+    match cmd.status() {
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat graft: ssh: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 /// What an organism's verb through the pointer is given of stdin: a
 /// terminal at one, the stream as it is otherwise (never none: a value piped
 /// to `secret set` has to arrive).
@@ -857,13 +1316,30 @@ mod tests {
 
     #[test]
     fn an_image_of_another_platform_is_never_used_or_sent() {
-        assert_eq!(image_route("linux/amd64", "linux/amd64", ""), ImageRoute::There);
-        assert_eq!(image_route("linux/amd64", "", "linux/amd64"), ImageRoute::Send);
-        assert_eq!(image_route("linux/amd64", "", "linux/arm64"), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
-        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64"), ImageRoute::Send);
-        assert_eq!(image_route("linux/arm64", "", ""), ImageRoute::Pull { mismatch: None });
+        assert_eq!(image_route("linux/amd64", "linux/amd64", "", false), ImageRoute::There);
+        assert_eq!(image_route("linux/amd64", "", "linux/amd64", false), ImageRoute::Send);
+        assert_eq!(image_route("linux/amd64", "", "linux/arm64", true), ImageRoute::Pull { mismatch: Some("linux/arm64".into()) });
+        assert_eq!(image_route("linux/amd64", "linux/arm64", "linux/amd64", true), ImageRoute::Send);
+        assert_eq!(image_route("linux/arm64", "", "", true), ImageRoute::Pull { mismatch: None });
         assert_eq!(platform("linux", "x86_64"), "linux/amd64");
         assert_eq!(platform("linux", "aarch64"), "linux/arm64");
+    }
+
+    #[test]
+    fn a_build_from_another_commit_builds_its_image_there_and_never_pulls_the_release() {
+        assert_eq!(image_route("linux/arm64", "", "", false), ImageRoute::Build { mismatch: None });
+        assert_eq!(image_route("linux/arm64", "", "linux/amd64", false), ImageRoute::Build { mismatch: Some("linux/amd64".into()) });
+        assert_eq!(image_route("linux/arm64", "linux/arm64", "", false), ImageRoute::There);
+    }
+
+    #[test]
+    fn a_release_is_the_commit_its_tag_names() {
+        let annotated = "1111111111111111111111111111111111111111\trefs/tags/v0.29.0\n2222222222222222222222222222222222222222\trefs/tags/v0.29.0^{}\n";
+        assert_eq!(tag_commit(annotated, "v0.29.0").as_deref(), Some("2222222222222222222222222222222222222222"));
+        let light = "3333333333333333333333333333333333333333\trefs/tags/v0.29.0\n";
+        assert_eq!(tag_commit(light, "v0.29.0").as_deref(), Some("3333333333333333333333333333333333333333"));
+        assert_eq!(tag_commit("", "v0.29.0"), None);
+        assert_eq!(tag_commit("4444\trefs/tags/v0.29.1\n", "v0.29.0"), None);
     }
 
     #[test]
@@ -912,6 +1388,60 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_docker_listens_on_the_vm_and_a_linux_docker_on_the_address() {
+        assert_eq!(listen_on("Darwin", || Err("unused".into())).unwrap(), "0.0.0.0");
+        assert_eq!(listen_on("Linux", || Ok("192.168.1.20".into())).unwrap(), "192.168.1.20");
+        assert!(listen_on("Linux", || Err("rack-a.lan does not resolve here".into())).is_err());
+    }
+
+    /// The habitat's key goes into a host's authorized_keys once, and comes
+    /// out by its comment alone: every other line stays as it was.
+    #[test]
+    fn the_habitats_key_is_put_on_a_host_once_and_taken_off_alone() {
+        let home = std::env::temp_dir().join(format!("hale_authorize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let keys = home.join(".ssh/authorized_keys");
+        std::fs::write(&keys, "ssh-ed25519 AAAAperson person@laptop\n").unwrap();
+        let run = |script: &str| assert!(Command::new("sh").arg("-c").arg(script).env("HOME", &home).status().unwrap().success(), "{script}");
+        let comment = key_comment("0123456789abcdef");
+        assert_eq!(comment, "habitat-0123456789ab");
+        let line = format!("ssh-ed25519 AAAAhabitat {comment}");
+        run(&authorize_script(&line));
+        run(&authorize_script(&line));
+        assert_eq!(std::fs::read_to_string(&keys).unwrap(), format!("ssh-ed25519 AAAAperson person@laptop\n{line}\n"), "appended once");
+        run(&unauthorize_script(&comment));
+        assert_eq!(std::fs::read_to_string(&keys).unwrap(), "ssh-ed25519 AAAAperson person@laptop\n", "the habitat's line alone removed");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A habitat's own account is named from its record and is the only
+    /// account teardown deletes: any other name, the person's included, is
+    /// never one.
+    #[test]
+    fn only_the_habitats_own_account_is_ever_removed() {
+        let u = habitat_user("0123456789abcdef0123");
+        assert_eq!(u, "hale-0123456789ab");
+        assert!(is_habitat_user(&u));
+        for other in ["person", "hale", "hale-", "hale-0123456789a", "hale-0123456789abc", "hale-0123456789ag", "root"] {
+            assert!(!is_habitat_user(other), "{other}");
+        }
+        assert!(remove_user("box-1", None, "person").is_err(), "refused before any connection");
+        let removal = remove_user_script(&u, "sudo -n");
+        assert!(removal.contains("loginctl terminate-user") && removal.contains("pkill -KILL -u") && removal.contains("userdel -r"), "{removal}");
+        assert!(Command::new("sh").arg("-n").arg("-c").arg(&removal).status().unwrap().success(), "the removal parses as sh");
+        let script = provision_script(&u, "ssh-ed25519 AAAA habitat-0123456789ab", false);
+        assert!(script.contains("u='hale-0123456789ab'") && script.contains("'ssh-ed25519 AAAA habitat-0123456789ab'") && script.contains("S=\"sudo -n\"") && script.contains("$S useradd --system"), "{script}");
+        // a Mac's account: hidden, below uid 500, no password, admitted to Remote Login
+        assert!(script.contains("dscl . -create \"/Users/$u\" IsHidden 1") && script.contains("Password '*'") && script.contains("com.apple.access_ssh"), "{script}");
+        assert!(removal.contains("dscl . -delete \"/Users/$u\""), "{removal}");
+        for tty in [false, true] {
+            let parsed = Command::new("sh").arg("-n").arg("-c").arg(provision_script(&u, "ssh-ed25519 AAAA it's habitat-0123456789ab", tty)).status().unwrap();
+            assert!(parsed.success(), "the account script parses as sh");
+        }
+    }
+
+    #[test]
     fn a_remote_word_is_quoted_whole() {
         assert_eq!(sq("a b"), "'a b'");
         assert_eq!(sq("it's"), "'it'\\''s'");
@@ -925,7 +1455,7 @@ mod tests {
 
     #[test]
     fn an_organisms_verb_gets_stdin_and_a_terminal_only_at_one() {
-        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), sock_gid: "998".into() };
+        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), os: "Linux".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc" });
         let piped = in_image_io(&m, &p, &["organism", "x", "dna", "secret", "set", "K"], organism_io(false));
         assert!(piped.contains("docker run --rm -i --network host"), "{piped}");
@@ -936,10 +1466,10 @@ mod tests {
 
     #[test]
     fn the_run_there_carries_its_address_and_its_data() {
-        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), sock_gid: "998".into() };
+        let m = Machine { home: "/home/h".into(), uid: "1000".into(), gid: "1000".into(), user: "h".into(), os: "Linux".into() };
         let p = serde_json::json!({ "image": "hale-habitat:abc", "listen": "192.168.1.20", "host": "rack-a.lan" });
         let line = in_image(&m, &p, &["up", "--name", "x"], false);
-        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && exec docker run --rm --network host --label 'hale.habitat.dir=/home/h/.local/share/hale/habitat/local' --user '1000':'1000' --group-add '998'"), "{line}");
+        assert!(line.starts_with("mkdir -p '/home/h/.local/share/hale' && sg=$(docker run --rm --entrypoint stat -v /var/run/docker.sock:/var/run/docker.sock 'hale-habitat:abc' -c %g /var/run/docker.sock) && exec docker run --rm --network host --label 'hale.habitat.dir=/home/h/.local/share/hale/habitat/local' --user '1000':'1000' --group-add \"$sg\""), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_LISTEN=192.168.1.20'") && line.contains("-e 'HALE_DNA_HABITAT_ADDRESS=rack-a.lan'"), "{line}");
         assert!(line.contains("-e 'HALE_VAULT_DIR=/home/h/.local/share/hale/vault'"), "{line}");
         assert!(line.contains("-e 'HALE_DNA_HABITAT_EXPECT='"), "{line}");

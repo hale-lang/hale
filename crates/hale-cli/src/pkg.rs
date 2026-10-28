@@ -122,6 +122,11 @@ pub struct DnaManifest {
     /// (`dna::habitat::needs_of` reads and checks it).
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
     pub needs: Option<Vec<String>>,
+    /// `[dna] brings = ["database", "broker"]` — the heart roles among its
+    /// needs the application's own compose provides, which a graft leaves
+    /// to it unless `--reuse` (`dna::habitat::brings_of` reads and checks it).
+    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    pub brings: Option<Vec<String>>,
     /// GH #1653: `[dna.migrations.<role>] command = [...]` — a heart's
     /// own migration for a heart role it declares, which the habitat runs
     /// when the heart opts in (`dna::habitat::heart_migrations`).
@@ -587,6 +592,15 @@ fn short_sha(sha: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A heart's manifest, as voice's is: its needs, what it brings itself,
+    /// and its migration, all admitted by the strict `[dna]` table.
+    #[test]
+    fn a_hearts_manifest_with_what_it_brings_parses() {
+        let src = "[dna]\nneeds = [\"memory\", \"nerves\", \"database\", \"broker\"]\nbrings = [\"database\", \"broker\"]\n\n[dna.migrations.database]\ncommand = [\"hale\", \"run\", \"api\", \"migrate\"]\n";
+        let m: Manifest = toml::from_str(src).expect("parse");
+        assert_eq!(m.dna.brings.as_deref(), Some(&["database".to_string(), "broker".to_string()][..]));
+    }
 
     #[test]
     fn parses_minimal_manifest() {
