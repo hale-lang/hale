@@ -66,7 +66,7 @@ grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the fa
 node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
 ```
 
-Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Containers** dashboard shows what runs where: every container on every machine with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window.
+Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Containers** dashboard shows what runs where: every container on every machine with the organism and part it is, its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window. Every container the habitat runs is labelled `hale.habitat`, `hale.organism` and `hale.role` (an organism's own compose services through an override of the habitat's, never by editing its files), so the dashboard shows the habitat's containers by default, organism by organism, with **show: everything on the host** for whatever else a machine runs beside them.
 
 `HALE_DNA_NODE_EXPORTER=off` (both exporters) and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
