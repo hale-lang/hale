@@ -218,11 +218,15 @@ pub(super) fn is_habitat_user(user: &str) -> bool {
 }
 
 /// The habitat's own account on a host, made over the person's login with
-/// their sudo (asked at their terminal): a system user with its own home
-/// and no sudo, in the `docker` group (which is root-equivalent: this keeps
-/// the habitat out of the person's account, not out of the host), with the
-/// habitat's key its only `authorized_keys` line. Linux hosts; one that has
-/// no `useradd` is refused by name.
+/// their sudo (asked at their terminal), with no sudo of its own and the
+/// habitat's key its only `authorized_keys` line. On Linux a system user
+/// with its own home, in the `docker` group (which is root-equivalent: this
+/// keeps the habitat out of the person's account, not out of the host). On
+/// macOS a hidden user (`dscl`, a uid below 500, no password, so nothing
+/// but the key logs it in) admitted to Remote Login when Remote Login is
+/// limited to a group; docker there is the person's own and stays theirs,
+/// so a Mac host offers the habitat no compose. Any other system is
+/// refused by name.
 pub(super) fn provision_user(host: &str, port: Option<u16>, user: &str, line: &str) -> Result<(), String> {
     let t = Target { host: host.to_string(), user: None, port };
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
@@ -242,11 +246,34 @@ pub(super) fn provision_user(host: &str, port: Option<u16>, user: &str, line: &s
 fn provision_script(user: &str, line: &str, tty: bool) -> String {
     let sudo = if tty { "sudo" } else { "sudo -n" };
     format!(
-        "set -e; command -v useradd >/dev/null || {{ echo 'this host has no useradd (a Linux host is needed for a habitat account; --user names an account you made)' >&2; exit 1; }}; \
-         u={u}; id \"$u\" >/dev/null 2>&1 || {s} useradd --system --create-home --shell /bin/sh \"$u\"; \
-         if getent group docker >/dev/null; then {s} usermod -aG docker \"$u\"; fi; \
-         h=$(getent passwd \"$u\" | cut -d: -f6); {s} install -d -m 700 -o \"$u\" -g \"$(id -gn \"$u\")\" \"$h/.ssh\"; \
-         {s} sh -c 'f=\"$1/.ssh/authorized_keys\"; touch \"$f\"; grep -qxF \"$2\" \"$f\" || printf \"%s\\n\" \"$2\" >> \"$f\"; chown \"$3\" \"$f\"; chmod 600 \"$f\"' sh \"$h\" {l} \"$u\"",
+        r#"set -e; u={u}; l={l}; S="{s}"
+case "$(uname -s)" in
+Linux)
+  command -v useradd >/dev/null || {{ echo 'this host has no useradd: --user names an account you made' >&2; exit 1; }}
+  id "$u" >/dev/null 2>&1 || $S useradd --system --create-home --shell /bin/sh "$u"
+  if getent group docker >/dev/null; then $S usermod -aG docker "$u"; fi
+  h=$(getent passwd "$u" | cut -d: -f6); g=$(id -gn "$u") ;;
+Darwin)
+  if ! id "$u" >/dev/null 2>&1; then
+    taken=$(dscl . -list /Users UniqueID | awk '{{print $2}}')
+    uid=401; while [ $uid -lt 500 ] && printf '%s\n' "$taken" | grep -qx "$uid"; do uid=$((uid + 1)); done
+    [ $uid -lt 500 ] || {{ echo 'no free uid below 500 for a hidden account' >&2; exit 1; }}
+    $S dscl . -create "/Users/$u"
+    $S dscl . -create "/Users/$u" UniqueID "$uid"
+    $S dscl . -create "/Users/$u" PrimaryGroupID 20
+    $S dscl . -create "/Users/$u" UserShell /bin/sh
+    $S dscl . -create "/Users/$u" RealName "the hale habitat's account"
+    $S dscl . -create "/Users/$u" NFSHomeDirectory "/Users/$u"
+    $S dscl . -create "/Users/$u" Password '*'
+    $S dscl . -create "/Users/$u" IsHidden 1
+    $S install -d -m 755 -o "$u" -g staff "/Users/$u"
+  fi
+  if dscl . -read /Groups/com.apple.access_ssh >/dev/null 2>&1; then $S dseditgroup -o edit -a "$u" -t user com.apple.access_ssh; fi
+  h=$(dscl . -read "/Users/$u" NFSHomeDirectory | awk '{{print $2}}'); g=staff ;;
+*) echo "$(uname -s) is neither Linux nor macOS: --user names an account you made" >&2; exit 1 ;;
+esac
+$S install -d -m 700 -o "$u" -g "$g" "$h/.ssh"
+$S sh -c 'f="$1/.ssh/authorized_keys"; touch "$f"; grep -qxF "$2" "$f" || printf "%s\n" "$2" >> "$f"; chown "$3" "$f"; chmod 600 "$f"' sh "$h" "$l" "$u""#,
         u = sq(user),
         l = sq(line),
         s = sudo
@@ -276,13 +303,25 @@ pub(super) fn remove_user(host: &str, port: Option<u16>, user: &str) -> Result<(
 }
 
 /// The account removed, its sessions ended first: the habitat's own SSH
-/// session there, and the user manager logind started for it, are still
-/// exiting just after the habitat's last act, and `userdel` refuses a user
-/// with a process. Retried a few seconds; its home goes with it.
+/// session there, and on Linux the user manager logind started for it, are
+/// still exiting just after the habitat's last act, and `userdel` refuses a
+/// user with a process. Retried a few seconds; its home goes with it. On
+/// macOS the record is deleted with `dscl` and its home under /Users with
+/// it, and it leaves the Remote Login group.
 fn remove_user_script(user: &str, sudo: &str) -> String {
     format!(
-        "u={u}; id \"$u\" >/dev/null 2>&1 || exit 0; {s} loginctl terminate-user \"$u\" 2>/dev/null; {s} pkill -KILL -u \"$u\" 2>/dev/null; \
-         for _ in 1 2 3 4 5 6 7 8 9 10; do {s} userdel -r \"$u\" 2>/dev/null && exit 0; sleep 1; done; {s} userdel -r \"$u\"",
+        r#"u={u}; S="{s}"; id "$u" >/dev/null 2>&1 || exit 0
+case "$(uname -s)" in
+Darwin)
+  $S pkill -KILL -u "$u" 2>/dev/null
+  h=$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{{print $2}}')
+  if dscl . -read /Groups/com.apple.access_ssh >/dev/null 2>&1; then $S dseditgroup -o edit -d "$u" -t user com.apple.access_ssh 2>/dev/null; fi
+  $S dscl . -delete "/Users/$u" || exit 1
+  case "$h" in "/Users/$u") $S rm -rf "$h" ;; esac ;;
+*)
+  $S loginctl terminate-user "$u" 2>/dev/null; $S pkill -KILL -u "$u" 2>/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do $S userdel -r "$u" 2>/dev/null && exit 0; sleep 1; done; $S userdel -r "$u" ;;
+esac"#,
         u = sq(user),
         s = sudo
     )
@@ -912,7 +951,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
                     if is_habitat_user(user) {
                         match remove_user(name, port, user) {
                             Ok(()) => println!("the habitat's account {user} is removed from {name}"),
-                            Err(why) => println!("the habitat's account {user} is left on {name} ({why}): `sudo userdel -r {user}` there removes it"),
+                            Err(why) => println!("the habitat's account {user} is left on {name} ({why}): remove it there (Linux `sudo userdel -r {user}`, macOS `sudo dscl . -delete /Users/{user}`)"),
                         }
                         continue;
                     }
@@ -1392,7 +1431,10 @@ mod tests {
         assert!(removal.contains("loginctl terminate-user") && removal.contains("pkill -KILL -u") && removal.contains("userdel -r"), "{removal}");
         assert!(Command::new("sh").arg("-n").arg("-c").arg(&removal).status().unwrap().success(), "the removal parses as sh");
         let script = provision_script(&u, "ssh-ed25519 AAAA habitat-0123456789ab", false);
-        assert!(script.contains("u='hale-0123456789ab'") && script.contains("'ssh-ed25519 AAAA habitat-0123456789ab'") && script.contains("sudo -n useradd --system"), "{script}");
+        assert!(script.contains("u='hale-0123456789ab'") && script.contains("'ssh-ed25519 AAAA habitat-0123456789ab'") && script.contains("S=\"sudo -n\"") && script.contains("$S useradd --system"), "{script}");
+        // a Mac's account: hidden, below uid 500, no password, admitted to Remote Login
+        assert!(script.contains("dscl . -create \"/Users/$u\" IsHidden 1") && script.contains("Password '*'") && script.contains("com.apple.access_ssh"), "{script}");
+        assert!(removal.contains("dscl . -delete \"/Users/$u\""), "{removal}");
         for tty in [false, true] {
             let parsed = Command::new("sh").arg("-n").arg("-c").arg(provision_script(&u, "ssh-ed25519 AAAA it's habitat-0123456789ab", tty)).status().unwrap();
             assert!(parsed.success(), "the account script parses as sh");

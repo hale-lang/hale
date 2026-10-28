@@ -768,7 +768,7 @@ fn host(args: &[String]) -> ExitCode {
             let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
             let line = v["authorize"].as_str().unwrap_or("");
             let done = if own_user {
-                println!("making the habitat's own account {} on {name} over your SSH login (no sudo of its own; in the docker group, which is root-equivalent on that host); sudo may ask for your password:", field("user"));
+                println!("making the habitat's own account {} on {name} over your SSH login (no sudo of its own; on Linux in the docker group, which is root-equivalent on that host; on macOS a hidden account with no password); sudo may ask for your password:", field("user"));
                 remote::provision_user(&name, login_port, &field("user"), line)
             } else {
                 remote::authorize_key(&name, &field("user"), port, line)
@@ -1035,7 +1035,7 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         // the habitat's own account there, its home and key with it
         match remote::remove_user(name, port, &field("user")) {
             Ok(()) => println!("the habitat's account {} is removed from {name}, over your SSH login", field("user")),
-            Err(why) => println!("the habitat's account {} is left on {name} ({why}): `sudo userdel -r {}` there removes it", field("user"), field("user")),
+            Err(why) => println!("the habitat's account {} is left on {name} ({why}): remove it there (Linux `sudo userdel -r {}`, macOS `sudo dscl . -delete /Users/{}`)", field("user"), field("user"), field("user")),
         }
     } else {
         for i in items.iter().filter(|i| i["group"] == "hosts" && i["host"] == name && i["args"].as_str().is_some_and(|a| !a.is_empty())) {
