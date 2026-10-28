@@ -23,6 +23,7 @@
 pub mod alloc_routing;
 pub mod arrangement;
 pub mod alloc_summary;
+pub mod iteration_reclaim;
 pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;

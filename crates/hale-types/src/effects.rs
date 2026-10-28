@@ -492,6 +492,9 @@ fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
         alloc_summary::AllocKind::CellCopy(_) => {
             "a copy of a value read from a form's cell".to_string()
         }
+        alloc_summary::AllocKind::CallResult(callee) => {
+            format!("the fresh value `{callee}(..)` returns")
+        }
     }
 }
 

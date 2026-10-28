@@ -564,6 +564,18 @@ typedef struct lotus_arena {
      * arena must not both grow it. */
     void                *chunk_index;
     int                  chunk_index_lock;
+    /* An iteration arena (`lotus_arena_iteration_enter`) is OWNED by
+     * the arena it was carved from: `owner` points back at it, and the
+     * owner's `owned_head` list holds every iteration arena still
+     * alive under it. Destroying an arena destroys what it owns first,
+     * so a frame that leaves a loop by `return` (or a violation) frees
+     * the loop's last iteration with its own scratch, and a loop that
+     * restarts an outer iteration frees an inner loop's. NULL on every
+     * arena that is not an iteration arena and owns none. */
+    struct lotus_arena  *owner;
+    struct lotus_arena  *owned_head;
+    struct lotus_arena  *owned_prev;
+    struct lotus_arena  *owned_next;
 } lotus_arena_t;
 
 /* Per-thread freelist of default-sized chunks (2026-05-21
@@ -853,6 +865,10 @@ typedef struct lotus_arena_residency_entry {
 static lotus_arena_residency_entry_t *g_arena_residency_head = NULL;
 static pthread_mutex_t g_arena_residency_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_arena_residency_seq = 0;
+/* The chunk-bytes high-water mark (see `lotus_residency_chunk_held`). */
+static int g_residency_peak_on = 0;
+static _Atomic size_t g_residency_chunk_live = 0;
+static _Atomic size_t g_residency_chunk_peak = 0;
 
 static int g_arena_residency_enabled_cached = 0;
 static void lotus_arena_residency_enabled_init(void) {
@@ -999,6 +1015,10 @@ void lotus_arena_residency_dump_fd(int fd) {
         free(arr);
         return;
     }
+    fprintf(out,
+            "[arena_residency peak] chunk_bytes_peak=%zu chunk_bytes_live=%zu\n",
+            atomic_load_explicit(&g_residency_chunk_peak, memory_order_relaxed),
+            atomic_load_explicit(&g_residency_chunk_live, memory_order_relaxed));
     fprintf(out,
             "[arena_residency dump] %zu live arenas, "
             "sorted by bytes desc:\n", n);
@@ -1592,7 +1612,44 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_on_node(
 #endif
 
 LOTUS_HOT_ALIGN
+/* LOTUS_ARENA_RESIDENCY's high-water mark: the bytes of chunk capacity
+ * every arena of the process holds at once (a subregion's included,
+ * which the per-arena rows leave out), counted when a chunk joins an
+ * arena and when it leaves one, and its peak over the run. A loop whose
+ * iterations' values pile up in a frame's scratch shows here as a peak
+ * that grows with the trip count; one reclaimed per iteration holds it
+ * flat. Read once in a constructor so the off path is one load. */
+__attribute__((constructor))
+static void lotus_residency_peak_init(void) {
+    const char *env = getenv("LOTUS_ARENA_RESIDENCY");
+    g_residency_peak_on = env && env[0] && env[0] != '0';
+}
+
+static inline void lotus_residency_chunk_held(size_t cap) {
+    size_t live = atomic_fetch_add_explicit(&g_residency_chunk_live, cap, memory_order_relaxed) + cap;
+    size_t peak = atomic_load_explicit(&g_residency_chunk_peak, memory_order_relaxed);
+    while (live > peak
+           && !atomic_compare_exchange_weak_explicit(&g_residency_chunk_peak, &peak, live,
+                                                     memory_order_relaxed, memory_order_relaxed)) {
+    }
+}
+
+static inline void lotus_residency_chunk_dropped(size_t cap) {
+    atomic_fetch_sub_explicit(&g_residency_chunk_live, cap, memory_order_relaxed);
+}
+
+static lotus_arena_chunk_t *lotus_arena_new_chunk_for_impl(
+    struct lotus_arena *target, size_t cap);
+
 static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
+    struct lotus_arena *target, size_t cap)
+{
+    lotus_arena_chunk_t *c = lotus_arena_new_chunk_for_impl(target, cap);
+    if (g_residency_peak_on && c) lotus_residency_chunk_held(c->cap);
+    return c;
+}
+
+static lotus_arena_chunk_t *lotus_arena_new_chunk_for_impl(
     struct lotus_arena *target, size_t cap)
 {
     lotus_mark_thread_for_pool_dtor();
@@ -1713,6 +1770,7 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
 LOTUS_HOT_ALIGN
 static void lotus_arena_release_chunk(lotus_arena_chunk_t *c) {
     if (!c) return;
+    if (g_residency_peak_on) lotus_residency_chunk_dropped(c->cap);
     lotus_mark_thread_for_pool_dtor();
     /* F.32-4a (2026-05-24): huge-page-backed chunks bypass the
      * pool entirely (they're never default-sized; pool only
@@ -1867,6 +1925,10 @@ static void lotus_arena_init_struct(lotus_arena_t *a) {
     a->chunk_index = NULL;
     a->chunk_index_lock = 0;
     a->numa_node = -1;  /* topology arena-on-node: unbound by default */
+    a->owner = NULL;
+    a->owned_head = NULL;
+    a->owned_prev = NULL;
+    a->owned_next = NULL;
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
      * pointer; arenas with no children never acquire the lock.
@@ -3272,6 +3334,28 @@ static void lotus_chunk_index_free(lotus_arena_t *a);
 LOTUS_HOT_ALIGN
 void lotus_arena_destroy(lotus_arena_t *a) {
     if (!a) return;
+    /* Iteration arenas: what this arena owns dies first (an inner
+     * loop's last iteration under an outer one's, a loop's last
+     * iteration under the scratch of a frame that returned from inside
+     * it), then this arena leaves its owner's list. */
+    while (a->owned_head) {
+        lotus_arena_destroy(a->owned_head);
+    }
+    if (a->owner) {
+        lotus_arena_t *o = a->owner;
+        int mt = lotus_runtime_multithreaded();
+        if (mt) pthread_mutex_lock(&o->subregion_lock);
+        if (a->owned_prev) {
+            a->owned_prev->owned_next = a->owned_next;
+        } else {
+            o->owned_head = a->owned_next;
+        }
+        if (a->owned_next) a->owned_next->owned_prev = a->owned_prev;
+        if (mt) pthread_mutex_unlock(&o->subregion_lock);
+        a->owner = NULL;
+        a->owned_prev = NULL;
+        a->owned_next = NULL;
+    }
     /* GH #375: the caller-arena TLS is a set-and-forget channel —
      * stdlib call sites publish before each call, but nothing ever
      * UN-publishes. A method whose body published its own scratch
@@ -3375,6 +3459,65 @@ void lotus_arena_destroy(lotus_arena_t *a) {
     free(a);
 }
 
+/* ---- iteration arenas -------------------------------------------------
+ *
+ * A loop body in a frame with a per-call scratch (a locus method, a
+ * lifecycle hook, a handler) allocates into an arena of its own, made
+ * fresh for every iteration: the values an iteration makes and does not
+ * hand on are freed when the next iteration starts, or when the loop is
+ * left, instead of piling up in the frame's scratch until the frame
+ * returns. A `run()` that loops for the life of its locus is the frame
+ * that never returns.
+ *
+ * `cur` is the slot's arena (NULL before the loop's first iteration),
+ * `parent` the arena the loop runs in. The arena returned is a
+ * subregion of `parent` OWNED by it (`owner`), so a frame that leaves
+ * the loop by `return` frees the last iteration's arena with its own
+ * scratch (`lotus_arena_destroy` destroys what an arena owns). */
+LOTUS_HOT_ALIGN
+lotus_arena_t *lotus_arena_iteration_enter(lotus_arena_t *cur,
+                                           lotus_arena_t *parent) {
+    if (cur) {
+        /* The common iteration made a few values in one chunk and kept
+         * no state beside them: start the arena over in place (its one
+         * chunk emptied), as a delivery region is reused. Anything more
+         * (a chain of chunks, retires, an index, an arena it owns) and
+         * the arena is destroyed and made again. Never with the chunk
+         * pool off (ASan): a fresh arena per iteration, so a value read
+         * after its iteration is a reported use-after-free. */
+        const lotus_arena_chunk_t *h = cur->head;
+        int clean = !lotus_no_chunk_pool() && cur->owner == parent
+            && (!h || (!h->next && !h->via_mmap && h->cap <= LOTUS_ARENA_CHUNK_BYTES))
+            && !cur->fixed_size && !cur->chunk_byte_cap && !cur->cap_diag_name
+            && !cur->shared_concurrent && !cur->child_struct_free && !cur->retire_pending
+            && !cur->retire_shells && !cur->retire_free && !cur->retire_free_small
+            && !lotus_slot_state(cur) && !cur->chunk_index && !cur->owned_head;
+        if (clean) {
+            if (h) cur->head->used = 0;
+            return cur;
+        }
+        lotus_arena_destroy(cur);
+    }
+    lotus_arena_t *a = lotus_arena_create_subregion(parent);
+    if (!a || !parent) return a;
+    int mt = lotus_runtime_multithreaded();
+    if (mt) pthread_mutex_lock(&parent->subregion_lock);
+    a->owner = parent;
+    a->owned_prev = NULL;
+    a->owned_next = parent->owned_head;
+    if (parent->owned_head) parent->owned_head->owned_prev = a;
+    parent->owned_head = a;
+    if (mt) pthread_mutex_unlock(&parent->subregion_lock);
+    return a;
+}
+
+/* The loop is left: its last iteration's arena goes. NULL (a loop that
+ * ran no iteration) is a no-op. */
+void lotus_arena_iteration_leave(lotus_arena_t *cur) {
+    if (cur) lotus_arena_destroy(cur);
+}
+
+
 /*
  * v1.x-3 — Recognition projection class pools.
  *
@@ -3475,6 +3618,10 @@ static void lotus_recpool_init_cell_arena(char *cell_base, size_t cell_bytes) {
     a->slot_reuse         = NULL;
     a->chunk_index        = NULL;
     a->chunk_index_lock   = 0;
+    a->owner              = NULL;
+    a->owned_head         = NULL;
+    a->owned_prev         = NULL;
+    a->owned_next         = NULL;
 }
 
 static size_t lotus_recpool_bitmap_words_for(size_t cap_count) {
@@ -3585,6 +3732,10 @@ lotus_recpool_slab_t *lotus_recpool_slab_create(size_t cap_count,
     a->slot_reuse         = NULL;
     a->chunk_index        = NULL;
     a->chunk_index_lock   = 0;
+    a->owner              = NULL;
+    a->owned_head         = NULL;
+    a->owned_prev         = NULL;
+    a->owned_next         = NULL;
     p->slab_arena = a;
     return p;
 }
@@ -18232,7 +18383,7 @@ static void lotus_delivery_region_release(struct lotus_arena *r) {
         && !r->chunk_byte_cap && !r->cap_diag_name && !r->shared_concurrent
         && !r->child_struct_free && !r->retire_pending && !r->retire_shells
         && !r->retire_free && !r->retire_free_small && !lotus_slot_state(r)
-        && !r->chunk_index;
+        && !r->chunk_index && !r->owned_head && !r->owner;
     if (!clean) {
         lotus_arena_destroy(r);
         return;

@@ -626,6 +626,17 @@ dynamic	<hole>	on main|unresolved declaration `mat::Grid`	in the seed
 row	Renderer@main1	Renderer	main	default
 dynamic	<hole>	on main|unresolved declaration `gfx::Rect`	in the seed
 
+== crates/hale-cli/tests/fixtures/run-loop-reclaim/reclaimed.hl#843ac14c
+row	Download@main1	Download	main	default
+-- dynamic	sites in the seed
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdCryptoSha256	on main
+dynamic	__StdHttpBodyReader	on main
+
+== crates/hale-cli/tests/fixtures/run-loop-reclaim/still_grows.hl#e31bea78
+row	Grow@main1	Grow	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
 == crates/hale-cli/tests/fixtures/sha256-stream/app.hl#3ebbfedb
 row	Hasher@main1	Hasher	main	default
 shared	dynamic	sites in the seed #49573352
@@ -1398,16 +1409,16 @@ row	Rec@main1	Rec	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#04f73a4e
 row	Rec@main1	Rec	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#c7a08831
+== crates/hale-codegen/tests/alloc_model_rss.rs#e1949f40
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
+== crates/hale-codegen/tests/alloc_model_rss.rs#7cfb2316
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#f55749e4
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#5a9b68bb
+== crates/hale-codegen/tests/alloc_model_rss.rs#3156882a
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#47d2a245
@@ -4111,6 +4122,28 @@ dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#8ba74d58
+row	Download@main1	Download	main	default
+-- dynamic	sites in the seed
+dynamic	__StdCryptoSha256	on main
+dynamic	__StdHttpBodyReader	on main
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#4446c767
+row	Keep@main1	Keep	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#72c4598e
+row	Hand@main1	Hand	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#165ef38f
+row	Probe@main1	Probe	main	default
+shared	dynamic	sites in the seed #9f0a18e6
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#e20c8e75
+row	Probe@main1	Probe	main	default
+shared	dynamic	sites in the seed #9f0a18e6
 
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App	the entry
@@ -20631,6 +20664,10 @@ dynamic	__StdIoTcpConnInline	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
 dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
+
+== shared sites in the seed #9f0a18e6
+dynamic	Holder	on main
+dynamic	__StdBytesBytesBuilder	on main
 
 == shared sites in the seed #a43e7c60
 dynamic	B	on main

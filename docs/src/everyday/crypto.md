@@ -81,7 +81,7 @@ let on_disk = std::crypto::sha256_file("/models/weights.bin") or raise;
 - `finish()` answers the 32-byte digest of everything absorbed since the hasher was made or last finished, and starts it over, so one hasher can serve one input after another.
 - The hasher holds a fixed 112-byte state whatever it has absorbed; `sha256_file` holds one 1 MiB read buffer. Hashing a 10 GiB file either way peaked at about 1 to 2 MB above a program that hashes nothing, as fast as `sha256sum`.
 - `sha256_file` fails with `IoError` (`not_found`, `permission_denied`, …, the path in `err.path`) when the file cannot be opened or read.
-- In a long-lived locus, make each piece inside a method call (`fn absorb(h: std::crypto::Sha256, piece: Bytes)`) rather than in the loop body of `run()` itself: a method's scratch is freed when it returns, while a value made in `run()`'s own loop stays until the locus dissolves.
+- In a long-lived locus, each piece can be made in the loop body of `run()` itself: a loop iteration frees what it made when it ends, as long as it keeps nothing in a binding declared before the loop ([Memory & Lifetime](../systems/memory.md#per-iteration-loop-regions)).
 
 On x86-64 CPUs with the SHA extensions, the compression runs on them. On aarch64 Linux and macOS (a Grace CPU, Apple Silicon), it runs on the ARMv8 SHA-256 instructions when the OS reports them. Everywhere else, wasm32 included, it runs the portable C rounds (about 350 MB/s on the x86-64 machine measured above). All four entry points (`sha256`, `hmac_sha256`, `Sha256`, `sha256_file`) share the one implementation.
 

@@ -85,6 +85,8 @@ crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl 1d500adb8e506048
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl cacd1cb351f514df
 crates/hale-cli/tests/fixtures/qualified-type-fwd-lib/main.hl af67c9605fa68550
+crates/hale-cli/tests/fixtures/run-loop-reclaim/reclaimed.hl 163ab572b34c3cfc
+crates/hale-cli/tests/fixtures/run-loop-reclaim/still_grows.hl 1137b4b1a1d9bdda
 crates/hale-cli/tests/fixtures/sha256-stream/app.hl ec0a30b3147fad21
 crates/hale-cli/tests/fixtures/three-hop-app/main.hl d4275fdcef4d5b13
 crates/hale-cli/tests/fixtures/three-hop-lib-mid/wrap.hl 6f502960693db966
@@ -1108,6 +1110,11 @@ crates/hale-codegen/tests/locus_member_fallible_rejects.rs#3 16e53a310713e2e1
 crates/hale-codegen/tests/locus_member_fallible_rejects.rs#4 fb0e6eb50186ca11
 crates/hale-codegen/tests/log_routing.rs#0 e9b3a90b0626e56f
 crates/hale-codegen/tests/log_routing.rs#1 e9b3a90b0626e56f
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#1 5e4b3a84d9e8afcd
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#2 0548d595eaedd5a1
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#3 25eb3e78179713a3
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#5 8dfb5a30c3a0d770
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#6 fd64e49f44df2aa8
 crates/hale-codegen/tests/lto_modes.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#0 3d391884ebf0d40e
 crates/hale-codegen/tests/main_return_call_teardown.rs#0 4a82c7b566896825

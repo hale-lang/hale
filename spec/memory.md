@@ -1229,6 +1229,84 @@ chunks, set `used=0`) could amortize this to ~5–10 ns per
 call but is deferred — the leak's the load-bearing bug; the
 fast-path optimization can follow.
 
+**Per-iteration reclaim.** A loop body in a frame with a
+method scratch (a locus method, a lifecycle hook, a mode, a bus
+handler) allocates into a region of its own for each iteration:
+the iteration's region is a subregion owned by the arena the loop
+runs in, made at the body's entry
+(`lotus_arena_iteration_enter`, which first frees the previous
+iteration's, or empties it in place when it holds one chunk and
+nothing else, and never with the chunk pool off), freed where the
+loop is left
+(`lotus_arena_iteration_leave` at the loop's exit, which every
+`break` and the header's false edge reach), and owned by the
+scratch, so a `return`, a `fail` or a violation from inside the
+body frees it with the scratch (an arena's destroy frees what it
+owns first). A `return`'s or `fail`'s value is computed in the
+scratch, not the iteration's region, so the epilogue copies it out
+as before. Without this a `run()` that loops for its locus's life
+kept every iteration's values until the locus dissolved
+(`buf.snapshot()` per iteration over a 1 GiB file held 1 GB; a
+`BodyReader` drained by `chunk()` held the whole 5 GB body), while
+the same body moved into a method was flat.
+
+The rule is `hale_types::iteration_reclaim`, read by lowering and
+by the allocation summary alike. A body reclaims per iteration
+unless it can hand a value to the next iteration through the frame:
+
+  1. it assigns a binding declared before the loop (whole, through
+     a field or through an index) whose type is not a scalar (Int,
+     Uint, Float, Decimal, Bool, Duration, Time) or a locus,
+     interface or perspective reference;
+  2. it names an outside `bounded[T; N]` or `BytesMut` at all (a
+     `bounded` write into a field or record is a call, rule 3);
+  3. it hands a call (any but a builtin that only reads, by a name
+     no fn can take: `len`, `println`, `to_string`, …) an argument
+     that is neither owned nor a locus passed whole. A value is
+     *owned* (a literal, a scalar, a value this iteration made, a path
+     into one, a call's result when every argument was owned), *whole*
+     (`self`, an outside locus reference, or a body binding of one: as
+     an argument it is the locus, but any path through it, `alias.bag`,
+     is that locus's storage), or *outside* (an outside record and any
+     path into it, any path through a locus, an element of an outside
+     array or tuple, a match binder, a call's result handed anything
+     not owned). The kinds are computed in the one walk that judges
+     the body, keyed by declaration, never by spelling: a use is the
+     declaration the snapshot resolved it to under lexical scoping
+     (`Snapshot::binding_of`), a declaration inside the body is the
+     body's (its kind installed by the walk, or outside when the walk
+     installs none), one before it is classified by the reader, and a
+     use resolving to no local binding is outside. A `let`, a tuple
+     `let`, a `for` binder and a match-arm binder (the scrutinee, or a
+     part of it inside a constructor or tuple pattern) take their
+     value's kind,
+     an assignment joins it in, and a carrier (its tail read inside
+     its own scope), an `or` and a container literal join their arms
+     and parts. Handed outside
+     storage, the callee could write into
+     it from its caller arena, which is the iteration's: a free fn
+     through its parameter whatever its name (`push` included), a fn
+     value held in a field (`self.callback(outer, p)`), a method
+     through a record parameter;
+  4. it makes a locus (a literal or a fresh factory call: the
+     instance, its slot and its GH #815 teardown outlive the
+     iteration);
+  5. it holds a `reperspective`, a recovery op, a `violate` or a
+     shared-memory write.
+
+Everything else an iteration hands on keeps the lifetime it has
+without the rule: a store into `self` or any locus copies into that
+locus's arena (invariant 1 above), a send into the payload arena, a
+return into the caller's (invariant 2). Names resolve lexically: a
+`let` or `for` binder in the body shadows the outside binding. A
+body whose allocations never reach the region keeps no trace of it
+(the enter call is removed after the body is lowered). Free fns and
+`main` keep their loops on the frame's region. The allocation
+summary marks a site of such a body `per-iteration-reclaim`, and
+surveys the fresh String or Bytes a call in a locus member's loop
+returns (`AllocKind::CallResult`): a loop that still keeps one per
+iteration is reported at the call.
+
 Locus instantiation routing is unchanged. Child locus structs
 allocate via their own routes (parent arena if parent accepts
 them, lazy-global if the fn returns the child type, otherwise
