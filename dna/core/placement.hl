@@ -171,6 +171,14 @@ fn placed_forget(key: String, role: String, p: AppliedOn) -> RunResult {
 // `script` run by `sh -c` in the container of `role` of `key` where it is
 // placed (what reads a secrets file inside it, never on a command line).
 fn placed_exec(key: String, role: String, script: String) -> RunResult {
+    // one line: on this machine the script is an argument of a newline-
+    // separated argv (`run_tool`), where a newline would split it
+    if std::str::contains(script, "\n") {
+        return RunResult {
+            code: -1,
+            stderr: "placed_exec: a script is one line (it is an argument of a newline-separated argv)",
+        };
+    }
     let p = placed_on(key, role);
     let service = compose_service(placed_role(role), key);
     if p.host == "local" {

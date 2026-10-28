@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        668,
-        670,
+        669,
+        671,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -227,9 +227,7 @@ fn api() {
         habitat_allocate_forge  does={syscall,block,env,alloc}
         habitat_graft  does={syscall,block,env,alloc}
         habitat_graft_log  does={syscall,env,alloc}
-        habitat_host_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_host_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        habitat_host_probe  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_organism_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_organism_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         host_removal_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -258,10 +256,12 @@ fn host() {
     // Phase 4: `placement.hl` adds eight rows on each side; two of them,
     // `habitat_address` and `habitat_apply_verb`, reach imported code (the
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
+    // `secret_value` (a secret's value, piped or typed) adds one row on each
+    // side and reaches nothing imported.
     pinned(
         "host",
-        570,
-        577,
+        571,
+        578,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}

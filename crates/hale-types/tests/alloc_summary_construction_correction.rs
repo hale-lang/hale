@@ -332,8 +332,8 @@ fn own_scope_let_block_scope_test() {
             // program that holds one)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 486 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 486 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 487 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 487 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -574,34 +574,34 @@ fn reached_oidc() {
             "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5553..5602",
             "- fn StubIssuer::handle   [invoked-unboundedly]",
             "+ fn StubIssuer::handle",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7970..8290",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7970..8290",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8093..8275",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @8093..8275",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9000..9134",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9000..9134",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9840..9983",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9840..9983",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10499..10721",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10499..10721",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10619..10680",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @10619..10680",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11603..11789",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11603..11789",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12089..12292",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12089..12292",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @13545..13714",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @13545..13714",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @13741..13795",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @13741..13795",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8155..8475",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8155..8475",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8278..8460",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @8278..8460",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9185..9319",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9185..9319",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10025..10168",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10025..10168",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10684..10906",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10684..10906",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10804..10865",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @10804..10865",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11788..11974",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11788..11974",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12274..12477",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12274..12477",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @13730..13899",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @13730..13899",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @13926..13980",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @13926..13980",
             "- fn StubIssuer::json   [invoked-unboundedly]",
             "+ fn StubIssuer::json",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6842..6974",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6842..6974",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7027..7159",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7027..7159",
             "- fn StubIssuer::service_token   [invoked-unboundedly]",
             "+ fn StubIssuer::service_token",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @14637..14807",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @14637..14807",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @15132..15302",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @15132..15302",
             "- fn StubIssuer::token_answer   [invoked-unboundedly]",
             "+ fn StubIssuer::token_answer",
         ],
@@ -724,8 +724,10 @@ fn own_entries_run_to_exit_programs() {
     // whose codec of a presence triple decodes the same way; 11:
     // `tests/hale/api_json_value_test.hl`, whose codec decodes a JSON value's
     // record the same way; 12: `tests/hale/api_encode_linear_test.hl`, whose
-    // codec decodes its page of records the same way.
-    assert_eq!(moved, 12, "the run-to-exit programs among the targets that lose a site");
+    // codec decodes its page of records the same way; 13:
+    // `tests/hale/crypto_sha256_stream_test.hl`, whose `main` builds its
+    // assertion messages and failure fallbacks in its loops.
+    assert_eq!(moved, 13, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
@@ -833,6 +835,20 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/bounded_whole_assign_test.hl: fill StringConcat @1534..1552 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
+            // `tests/hale/crypto_sha256_stream_test.hl`: the failure fallbacks and
+            // assertion messages of the incremental SHA-256's test, and the
+            // hasher its loop over hashlib's pinned digests builds per size
+            "tests/hale/crypto_sha256_stream_test.hl: data BytesLit @730..733 InvokedUnboundedly",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5377..5439 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5377..5428 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5514..5531 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StructLit(\"std::crypto::Sha256\") @5552..5575 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6045..6072 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6531..6568 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6693..6719 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main BytesLit @6734..6737 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6908 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6897 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
             "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") @972..1095 InvokedUnboundedly",
             // the property test's copy of the per-byte escaper as it was:
@@ -1247,7 +1263,7 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 306",
+                "dna__core: 309",
                 "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
                 "dna__host: 652",

@@ -34,7 +34,7 @@ fn source() -> String {
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         900,
-        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && shift && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }

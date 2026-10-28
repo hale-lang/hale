@@ -275,9 +275,10 @@ type Render {
     dir: String = "";
     files: String = "";
     services: String = "";
-    // files beside the compose files that a service mounts (a server's
-    // configuration, its secrets file), copied with them to a host
-    // elsewhere and never passed to compose
+    // what the services need beside the compose files, each a file or a
+    // directory relative to `dir` (a server's configuration, its secrets
+    // file, a build context, a bind mount's source), shipped with them to a
+    // host elsewhere and never passed to compose
     mounted: String = "";
 }
 
@@ -337,6 +338,36 @@ fn published_of_config(config: String) -> String {
 type AllocationState {
     state: String = "down";
     detail: String = "";
+    // what fills the role, as its provider sees it: the images of its
+    // containers (`postgres:17`, `nats:2.11-alpine`), "" when not seen
+    runs: String = "";
+}
+
+// `docker ps` lines of `<image>|<state> <status>`: the state lines
+// `container_state` reads, and the images, each once.
+type SeenContainers {
+    states: String = "";
+    images: String = "";
+}
+
+@bounded_by(lines)
+fn seen_containers(lines: String) -> SeenContainers {
+    let mut out = SeenContainers { };
+    let mut rest = lines + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if len(line) == 0 { continue; }
+        let bar = std::str::index_of(line, "|");
+        let image = if bar < 0 { "" } else { line[0..bar] };
+        let state = if bar < 0 { line } else { line[(bar + 1)..len(line)] };
+        out.states = out.states + (if len(out.states) > 0 { "\n" } else { "" }) + state;
+        if len(image) > 0 && !has_word(out.images, image) {
+            out.images = out.images + (if len(out.images) > 0 { " " } else { "" }) + image;
+        }
+    }
+    return out;
 }
 
 interface Provider {
@@ -576,8 +607,25 @@ locus ComposeProvider {
         }
         // the service that holds the role (the heart's database is the
         // memory server's), never a name the row spelled otherwise
-        let service = compose_service(a.role, a.instance);
-        if len(service) == 0 && a.role != "services" { return observe_address(a.address); }
+        // a record on the habitat's memory is observed as that server
+        let service = if a.role == "memory" && memory_reused(a.instance) && len(a.service) > 0 {
+            a.service
+        } else {
+            compose_service(a.role, a.instance)
+        };
+        if len(service) == 0 && a.role != "services" {
+            let mut st = observe_address(a.address);
+            // the habitat's head and face run in its `face` service: its image
+            if a.role == "head" || a.role == "face" {
+                let img = run_tool(
+                    "docker\nps\n--filter\nlabel=com.docker.compose.project="
+                        + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
+                        + "\n--filter\nlabel=com.docker.compose.service=face\n--format\n{{.Image}}",
+                );
+                if img.code == 0 { st.runs = trim_nl(img.stdout); }
+            }
+            return st;
+        }
         // an organism's own services: every container of its project
         let by_service = if len(service) > 0 {
             "\n--filter\nlabel=com.docker.compose.service=" + service
@@ -587,13 +635,16 @@ locus ComposeProvider {
         let ps = run_tool(
             "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project="
                 + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
-                + by_service + "\n--format\n{{.State}} {{.Status}}",
+                + by_service + "\n--format\n{{.Image}}|{{.State}} {{.Status}}",
         );
         if ps.code != 0 { return AllocationState { detail: "docker: " + trim_nl(ps.stderr) }; }
-        return containers_state(
+        let seen = seen_containers(trim_nl(ps.stdout));
+        let mut st = containers_state(
             if len(service) > 0 { service } else { a.project },
-            trim_nl(ps.stdout),
+            seen.states,
         );
+        st.runs = seen.images;
+        return st;
     }
 }
 
@@ -621,16 +672,26 @@ fn containers_state(what: String, seen: String) -> AllocationState {
     if std::str::index_of(seen, "\n") < 0 { return container_state(what, seen); }
     let mut up = 0;
     let mut n = 0;
+    let mut done = 0;
     let mut rest = seen + "\n";
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         if len(line) == 0 { continue; }
+        // a one-shot that finished (a migration that exited 0) is done,
+        // never a container that is down
+        if std::str::starts_with(line, "exited") && std::str::contains(line, "Exited (0)") {
+            done = done + 1;
+            continue;
+        }
         n = n + 1;
         if container_state(what, line).state == "up" { up = up + 1; }
     }
-    if up == n { return AllocationState { state: "up", detail: to_string(n) + " running" }; }
+    let finished = if done > 0 { ", " + to_string(done) + " finished" } else { "" };
+    if up == n {
+        return AllocationState { state: "up", detail: to_string(n) + " running" + finished };
+    }
     if up > 0 {
         return AllocationState {
             state: "degraded",
@@ -643,7 +704,7 @@ fn containers_state(what: String, seen: String) -> AllocationState {
 // An allocation served at `address` (`http://<host>:<port>`): up while
 // something accepts connections there. The loopback is reached as this
 // process reaches this machine's (`loopback_host`); the habitat's declared
-// name (`hale habitat up --host keep` records `http://keep:<port>`) is
+// name (`hale habitat up --host rack` records `http://rack:<port>`) is
 // dialed by that name, then at the loopback, where a listener on every
 // interface of a docker VM answers as well.
 fn observe_address(address: String) -> AllocationState {

@@ -97,7 +97,7 @@ main locus App {
     // the leg: `hale dna work …` in the project, against the head, under `token` ("" = none)
     fn work(args: String, token: String, rc: Int) -> String {
         let r = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2\" HALE_DNA_API=\"$3\" HALE_DNA_ID_TOKEN=\"$4\" && unset HALE_VAULT_ADDR && shift 4 && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2\" HALE_DNA_API=\"$3\" HALE_DNA_ID_TOKEN=\"$4\" && unset HALE_VAULT_ADDR && shift 4 && exec \"$@\"\nsh\n"
                 + self.app + "\n" + self.vault + "\n" + self.api + "\n" + token + "\n" + toolchain()
                 + "\ndna\nwork\n" + args,
         );
@@ -297,7 +297,7 @@ main locus App {
         );
         // the vault holds no client secret: no token, and the verb says which entry
         let bare = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2/empty\" HALE_DNA_API=\"$3\" && unset HALE_VAULT_ADDR && shift 3 && exec \"$@\" dna work login --as alice\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_VAULT_DIR=\"$2/empty\" HALE_DNA_API=\"$3\" && unset HALE_VAULT_ADDR && shift 3 && exec \"$@\" dna work login --as alice\nsh\n"
                 + self.app + "\n" + self.vault + "\n" + self.api + "\n" + toolchain(),
         );
         std::test::assert(

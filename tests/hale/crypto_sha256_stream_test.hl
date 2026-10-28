@@ -1,0 +1,206 @@
+// tests/hale/crypto_sha256_stream_test.hl — SHA-256 without the whole
+// input in memory: the `std::crypto::Sha256` locus fed in pieces, and
+// `std::crypto::sha256_file`, each held to the one-shot
+// `std::crypto::sha256` of the same bytes. Sizes cross the 64-byte block
+// and the 56-byte padding boundary; pieces come whole, one byte at a time
+// and in mixed sizes that straddle blocks. A model-weights downloader
+// hashes each body chunk as it writes it to disk.
+
+// `n` deterministic bytes.
+fn data(n: Int) -> Bytes {
+    let b = std::bytes::BytesBuilder { initial_cap: n + 1 };
+    let mut i = 0;
+    while i < n {
+        b.append_u8((i * 37 + 11 + i / 251) % 256);
+        i = i + 1;
+    }
+    return b.snapshot() or b"";
+}
+
+fn hex(b: Bytes) -> String {
+    return std::hex::encode(b);
+}
+
+// The piece sizes of the mixed feed, cycled.
+fn piece(k: Int) -> Int {
+    let sizes = [1, 3, 64, 7, 55, 0, 129, 2, 63, 65];
+    return sizes[k % 10];
+}
+
+fn check_size(n: Int) {
+    let m = data(n);
+    let want = hex(std::crypto::sha256(m));
+    let what = "size " + to_string(n);
+
+    let whole = std::crypto::Sha256 { };
+    whole.update(m);
+    std::test::assert_eq_str(hex(whole.finish()), want, what + ": one update");
+
+    let bytewise = std::crypto::Sha256 { };
+    let mut i = 0;
+    while i < n {
+        bytewise.update(std::bytes::slice(m, i, i + 1));
+        i = i + 1;
+    }
+    std::test::assert_eq_str(hex(bytewise.finish()), want, what + ": one byte at a time");
+
+    let mixed = std::crypto::Sha256 { };
+    let mut at = 0;
+    let mut k = 0;
+    while at < n {
+        let mut end = at + piece(k);
+        if end > n {
+            end = n;
+        }
+        mixed.update(std::bytes::slice(m, at, end));
+        at = end;
+        k = k + 1;
+    }
+    std::test::assert_eq_str(hex(mixed.finish()), want, what + ": mixed pieces");
+}
+
+fn main() {
+    // FIPS 180-4's examples, through the locus.
+    let empty = std::crypto::Sha256 { };
+    std::test::assert_eq_str(
+        hex(empty.finish()),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "nothing absorbed",
+    );
+    let abc = std::crypto::Sha256 { };
+    abc.update(b"a");
+    abc.update(b"");
+    abc.update(b"bc");
+    std::test::assert_eq_str(
+        hex(abc.finish()),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "abc in pieces",
+    );
+    // finish starts over: the same hasher serves the next input.
+    abc.update(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+    std::test::assert_eq_str(
+        hex(abc.finish()),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        "the two-block example after a finish",
+    );
+    std::test::assert_eq_str(
+        hex(abc.finish()),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "a finish with nothing since the last",
+    );
+
+    // Every size through two blocks, then sizes around later boundaries.
+    let mut n = 0;
+    while n <= 130 {
+        check_size(n);
+        n = n + 1;
+    }
+    let more = [191, 192, 193, 255, 256, 257, 1000, 4095, 4096, 4097, 65599];
+    let mut j = 0;
+    while j < len(more) {
+        check_size(more[j]);
+        j = j + 1;
+    }
+
+    // Digests computed elsewhere (Python's hashlib over the same bytes),
+    // at the block and padding boundaries: the comparisons above hold the
+    // entry points to each other, and every entry point runs the one
+    // compression tier the machine selected (the x86-64 SHA extensions,
+    // the ARMv8 SHA-256 instructions, or the portable rounds), so only a
+    // digest from outside catches a tier that is wrong on its own.
+    let pinned_sizes = [
+        55,
+        56,
+        63,
+        64,
+        65,
+        119,
+        120,
+        127,
+        128,
+        129,
+        191,
+        192,
+        1000,
+        4096,
+        65599,
+        1048577,
+        3000001
+    ];
+    let pinned = [
+        "2900465fcb533e05a158fd2b3be0e5e3b03740d83060aa3580e0d98a96bf2384",
+        "31454ff48ef36af2f08fd511bdc37d9d5855ac23e992e5ff5445cb6b7674a674",
+        "5f6401b96532c36de4e65beec0409b69b1d181864c8009b7a04f43e5d56350d1",
+        "94eb5de4943613fd048dc93393ab06877405faa39c11f53e9386083339833e7e",
+        "fc518669b6eb4b4dd91827ecacef86689c725bd5bab888fd3b26dbb196eec954",
+        "b0dc41b1a384e2f1203f0351b38fbeaafceef577ce1191d5bfc25da39f721eae",
+        "5df24dd802ac26132ce608dcb5f09841eef039ee0f152acf98d26d17fe4e88e6",
+        "0fe729ff19257bd6fec853acc2ea355f6b34b58e6c0f684c3e188fcdfcd9baae",
+        "0aedd4856f8eba0963627336ad5144a9a7dbe12498e6066f0165fc97d8ddee4c",
+        "4f1757ae4bffbae86d775b831765b75af154d52f7deaa46dd378051a2d3ad57f",
+        "af3693744312c85b48ece39c2b1826d4ce6cd8aa7ff0db2709f1e95b95364077",
+        "0dc88f7329df669b2e5baf95676c6a50dfb5c1f618c853eba2f9090ee6b03a0d",
+        "0bcebe80fd1a990eaf1db275e6d284021de98baafae55bf96de5d67a68f7439b",
+        "ddac8baa8df5bd98a019468948621d336514fa4007e399a6c3e4d2f8c20e6801",
+        "3c943888cb3f79bad2acb70e38c5bafedfe290e71faf58999ab6b20e0fdf885f",
+        "a2a4c80e07ee2813148328dcdfab2cd7d06f5c6a85f26ee8275bc1529cefb96e",
+        "8ad09378dfc65bf62eb2c6e28cf39c5bac2b102ddd3b9fe335f4e6d4fd90d405",
+    ];
+    let mut q = 0;
+    while q < len(pinned_sizes) {
+        let m = data(pinned_sizes[q]);
+        let what = "hashlib's digest of " + to_string(pinned_sizes[q]) + " bytes";
+        std::test::assert_eq_str(hex(std::crypto::sha256(m)), pinned[q], what + ": sha256");
+        let fed = std::crypto::Sha256 { };
+        let mut at = 0;
+        let mut k = 0;
+        while at < len(m) {
+            // pieces of 97 to 12513 bytes, a 0 taken as 1, cut at the end
+            let step = if piece(k) == 0 { 1 } else { piece(k) * 97 };
+            let end = if at + step > len(m) { len(m) } else { at + step };
+            fed.update(std::bytes::slice(m, at, end));
+            at = end;
+            k = k + 1;
+        }
+        std::test::assert_eq_str(hex(fed.finish()), pinned[q], what + ": Sha256 in pieces");
+        q = q + 1;
+    }
+
+    // sha256_file: the same digest as the bytes it holds.
+    let path = std::io::fs::mktemp("/tmp/hale-sha256-", ".bin") or "";
+    std::test::assert(path != "", "a scratch file");
+    let sizes = [0, 1, 55, 56, 63, 64, 65, 127, 1048575, 1048576, 1048577, 3000001];
+    let mut s = 0;
+    while s < len(sizes) {
+        let m = data(sizes[s]);
+        std::io::fs::write_bytes(path, m) or {
+            std::test::assert(false, "write the scratch file: " + err.kind);
+            return;
+        };
+        let got = std::crypto::sha256_file(path) or {
+            std::test::assert(false, "sha256_file: " + err.kind);
+            b""
+        };
+        std::test::assert_eq_str(
+            hex(got),
+            hex(std::crypto::sha256(m)),
+            "sha256_file of " + to_string(sizes[s]) + " bytes",
+        );
+        s = s + 1;
+    }
+    std::io::fs::unlink(path) or { };
+
+    // A path that is not there is the IoError, kind not_found.
+    let missing = std::crypto::sha256_file(path) or {
+        std::test::assert_eq_str(err.kind, "not_found", "a missing file");
+        std::test::assert_eq_str(err.path, path, "the path in the error");
+        b"x"
+    };
+    std::test::assert_eq_str(hex(missing), "78", "a missing file fails");
+    // A directory cannot be read.
+    let dir = std::crypto::sha256_file("/") or {
+        std::test::assert(err.kind != "", "a directory fails: " + err.kind);
+        b"x"
+    };
+    std::test::assert_eq_str(hex(dir), "78", "a directory fails");
+}

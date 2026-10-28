@@ -35,7 +35,7 @@ fn toolchain() -> String {
 // own (HALE_VAULT_DIR under the scratch root).
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" && shift 2 && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" && shift 2 && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
             + dir + "\n" + root_of(dir) + "/vault\n" + argv,
     );
 }

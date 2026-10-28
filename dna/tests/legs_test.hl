@@ -39,7 +39,7 @@ fn toolchain() -> String {
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }
@@ -417,7 +417,7 @@ locus App {
     // ---- the leg: `hale dna work …` in the project, against the head; its exit code checked
     fn work_rc(args: String, rc: Int) -> String {
         let r = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
                 + self.app + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args,
         );
         std::test::assert_eq_int(
@@ -455,7 +455,7 @@ locus App {
     fn work_timeout(secs: Int, args: String) -> String {
         let r = dna::run_tool_timeout(
             secs,
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
                 + self.app + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args,
         );
         std::test::assert_eq_int(
@@ -467,7 +467,7 @@ locus App {
         return dna::trim_nl(r.stdout);
     }
     fn loop_argv(args: String) -> String {
-        return "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+        return "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
             + self.app + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args;
     }
     // The loop's exit within `secs`; -2 when it is still running.
@@ -700,7 +700,7 @@ locus App {
     fn extras() {
         // usage before the head: judged with the head unreachable, exit 2
         let free = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work next --as leg:free --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work next --as leg:free --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -709,7 +709,7 @@ locus App {
             "a free string is no position, judged before the head: " + free.stdout + free.stderr,
         );
         let words = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work renew --as position:agent --attempt x --token abc --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work renew --as position:agent --attempt x --token abc --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -718,7 +718,7 @@ locus App {
             "a token that is not a number is a usage error: " + words.stdout + words.stderr,
         );
         let down = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work next --as position:agent --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work next --as position:agent --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert(
@@ -1379,7 +1379,7 @@ locus App {
         std::test::assert_eq_str(self.legs_running(), "", "and nothing of it is left running");
         // usage judged before the head
         let many = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work loop --as position:agent --parallel 99 --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work loop --as position:agent --parallel 99 --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -1389,7 +1389,7 @@ locus App {
                 + many.stderr,
         );
         let which = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work loop --as position:agent --performer oracle --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work loop --as position:agent --performer oracle --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -1398,7 +1398,7 @@ locus App {
             "--performer names one of the three: " + which.stdout + which.stderr,
         );
         let which_run = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work run --as position:agent --performer oracle --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work run --as position:agent --performer oracle --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -1444,7 +1444,7 @@ locus App {
         // --effect names one of the three, and belongs to next and submit alone
         let a13 = self.ask();
         let bad = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work next --as position:agent --effect maybe --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work next --as position:agent --effect maybe --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -1453,7 +1453,7 @@ locus App {
             "--effect names one of the three: " + bad.stdout + bad.stderr,
         );
         let misplaced = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" dna work run --as position:agent --effect uncertain --api http://127.0.0.1:1\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && \"$2\" dna work run --as position:agent --effect uncertain --api http://127.0.0.1:1\nsh\n"
                 + self.app + "\n" + toolchain(),
         );
         std::test::assert(
@@ -1474,7 +1474,7 @@ locus App {
         // would carry one, and nowhere else
         std::io::fs::write_file(self.app + "/dna/org/work.hl", UNSEATED_WORK) or discard;
         let unseated = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_API=\"$3\" && \"$2\" dna work run --as position:agent --worker 9\nsh\n"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_API=\"$3\" && \"$2\" dna work run --as position:agent --worker 9\nsh\n"
                 + self.app + "\n" + toolchain() + "\n" + self.api,
         );
         std::test::assert(
@@ -1555,7 +1555,7 @@ locus App {
         std::test::assert_eq_int(self.lost_calls(), 1, "the backend was never called again");
         // a person resolves it: the owner settles the attempt on that word
         let resolved = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:"
                 + a15 + " --outcome failed --as tester\nsh\n" + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -1594,7 +1594,7 @@ locus App {
             "the lapsed lease does not hide the mark",
         );
         let resolved16 = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:"
                 + a16 + " --outcome ok --as tester\nsh\n" + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(
@@ -1642,7 +1642,7 @@ locus App {
             "and no leg is given it: " + after_lapse,
         );
         let resolved17 = dna::run_tool(
-            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:"
+            "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && \"$2\" dna effect resolve attempt:"
                 + a17 + " --outcome failed --as tester\nsh\n" + self.app + "\n" + toolchain(),
         );
         std::test::assert_eq_int(

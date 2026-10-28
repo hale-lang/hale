@@ -85,6 +85,7 @@ crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl 1d500adb8e506048
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl cacd1cb351f514df
 crates/hale-cli/tests/fixtures/qualified-type-fwd-lib/main.hl af67c9605fa68550
+crates/hale-cli/tests/fixtures/sha256-stream/app.hl ec0a30b3147fad21
 crates/hale-cli/tests/fixtures/three-hop-app/main.hl d4275fdcef4d5b13
 crates/hale-cli/tests/fixtures/three-hop-lib-mid/wrap.hl 6f502960693db966
 crates/hale-cli/tests/fixtures/three-hop-lib-util/box.hl f86b867c8ab3a29c
@@ -566,7 +567,7 @@ crates/hale-codegen/tests/cross_seed_locus_arg.rs#1 378fb322aa1631f1
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#2 3f427dff04bfba66
 crates/hale-codegen/tests/crypto_crc32.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/crypto_sha256_hmac.rs#0 7acd824db7868e98
-crates/hale-codegen/tests/crypto_sha256_hmac.rs#1 7acd824db7868e98
+crates/hale-codegen/tests/crypto_sha256_hmac.rs#2 7acd824db7868e98
 crates/hale-codegen/tests/decimal_alignment.rs#0 d4275fdcef4d5b13
 crates/hale-codegen/tests/decimal_alignment.rs#1 2c29348a0c1b33f7
 crates/hale-codegen/tests/decimal_alignment.rs#2 9e5e56b777057f87
@@ -1696,11 +1697,12 @@ crates/hale-stdlib/hl/api_rpc.hl ce165dc9a4bde371
 crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
 crates/hale-stdlib/hl/crypto.hl 21b957bbaa986ffd
+crates/hale-stdlib/hl/crypto_sha256.hl b68948b7c74811dd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
 crates/hale-stdlib/hl/http_client.hl eb5d0299409b2bc6
-crates/hale-stdlib/hl/http_read.hl 60754495cd502d3a
+crates/hale-stdlib/hl/http_read.hl 1fc27db38d44bca7
 crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/lang.hl cec111863280b6a7
@@ -1712,7 +1714,7 @@ crates/hale-stdlib/hl/name.hl a0cb9c4bfee2b3ec
 crates/hale-stdlib/hl/observe.hl 57acc70b336979c8
 crates/hale-stdlib/hl/process.hl 42d1930e7e552fa7
 crates/hale-stdlib/hl/rand.hl 0fcacf844a971187
-crates/hale-stdlib/hl/secret.hl ef10cedbbe98801b
+crates/hale-stdlib/hl/secret.hl c614724f5bda3c16
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
 crates/hale-stdlib/hl/str_view.hl c5e644fc5d3b4ffd
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5

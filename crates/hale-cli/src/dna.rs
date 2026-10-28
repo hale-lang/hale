@@ -366,7 +366,7 @@ fn allocation_service(root: &Path, role: &str) -> Option<String> {
 /// The origin a DSN derived from the organism's memory allocation records,
 /// as `dna::memory_allocation_name` spells it.
 fn memory_allocation_name(root: &Path) -> Option<String> {
-    allocation_service(root, "memory").map(|s| format!("habitat {}/{s}", local_habitat_project()))
+    allocation_service(&habitat::memory_root(root), "memory").map(|s| format!("habitat {}/{s}", local_habitat_project()))
 }
 
 /// The head's DSN this clone keeps, when it keeps one; refused when the
@@ -1382,6 +1382,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna secret set <NAME> [--body <user@host>]");
     eprintln!("                                    a credential from stdin (never argv, never the record) into its slot of the vault");
     eprintln!("                                    (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
+    eprintln!("                                    piped, the whole of stdin less one trailing newline; at a terminal, one typed line; none is refused");
     eprintln!("       hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)");
     eprintln!("       hale dna application remove [project] [--as <who>]");
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");

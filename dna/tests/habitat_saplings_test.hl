@@ -25,7 +25,7 @@ fn toolchain() -> String {
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         900,
-        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }
@@ -211,8 +211,13 @@ fn main() {
         grafted.code == 0
             && std::str::contains(grafted.stdout, "fetched sprout at v1")
             && std::str::contains(grafted.stdout, "as the habitat's child")
-            && std::str::contains(grafted.stdout, "pack    `crew` proposed"),
-        "the sapling is grafted by name: " + grafted.stdout + grafted.stderr,
+            && std::str::contains(grafted.stdout, "pack    `crew` proposed")
+            && std::str::contains(
+                grafted.stdout,
+                "ratified its purpose, practices and positions, at the graft of the sapling `sprout`",
+            ),
+        "the sapling is grafted by name, its packaging ratified by the graft: " + grafted.stdout
+            + grafted.stderr,
     );
     let store = dna::local_habitat_dir() + "/saplings/sprout";
     let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
@@ -328,8 +333,73 @@ fn main() {
         "the graft's row names v1, the revision grafted: " + brows,
     );
 
+    // ---- a tenant removed: sprout's record is a schema on the habitat's
+    // memory (its graft's default), dropped there with its roles; the
+    // habitat's memory goes on
+    let sid = dna::record_scope(store);
+    let hkey = dna::allocation_key(genome);
+    let in_memory = "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter \"label=com.docker.compose.service=memory-$2\" | head -n 1); [ -n \"$id\" ] && docker exec \"$id\" psql -tA -U dna -d dna -c \"select count(*) from information_schema.schemata where schema_name = '$3'\"\nsh\n"
+        + dna::local_habitat_project() + "\n" + hkey + "\n" + dna::schema_for(sid);
+    let counted = dna::run_tool(in_memory);
+    std::test::assert(
+        dna::trim_nl(counted.stdout) == "1",
+        "sprout's record is a schema on the habitat's memory: " + counted.stdout + counted.stderr
+            + "; its parts: "
+            + (std::io::fs::read_file(
+                dna::local_habitat_dir() + "/allocations/" + dna::allocation_key(store)
+                    + "/parts.json",
+            ) or "(none)")
+            + "; memory services: "
+            + dna::run_tool(
+                "sh\n-c\ndocker ps --format '{{.Label \"com.docker.compose.service\"}}' --filter label=com.docker.compose.project=$1\nsh\n"
+                    + dna::local_habitat_project(),
+            ).stdout,
+    );
+    let tplan = in_dir(scratch, toolchain() + "\nhabitat\norganism\nremove\nsprout\n--plan");
+    std::test::assert(
+        tplan.code == 0
+            && std::str::contains(
+                tplan.stdout,
+                "a schema on the habitat's memory (memory-" + hkey + ")",
+            )
+            && !std::str::contains(tplan.stdout, "memory-" + dna::allocation_key(store)),
+        "the plan drops its schema there and names no server of its own: " + tplan.stdout
+            + tplan.stderr,
+    );
+    let removed = at_terminal(scratch, "sprout", toolchain() + " habitat organism remove sprout");
+    let left = dna::run_tool(in_memory);
+    // what is on the habitat's memory after it: the record's roles, and who
+    // is connected (a schema with its roles is one migrated again; one
+    // without them, one never dropped)
+    let after = if dna::trim_nl(left.stdout) == "0" {
+        ""
+    } else {
+        dna::run_tool(
+            "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter \"label=com.docker.compose.service=memory-$2\" | head -n 1); docker exec \"$id\" psql -tA -U dna -d dna -c \"select 'roles: ' || coalesce(string_agg(rolname, ' '), '-') from pg_roles where rolname in ('$3', '$4')\" -c \"select 'sessions: ' || coalesce(string_agg(usename || '/' || application_name || '/' || state, ' '), '-') from pg_stat_activity where datname = 'dna'\"\nsh\n"
+                + dna::local_habitat_project() + "\n" + hkey + "\n" + dna::spine_role(sid) + "\n"
+                + dna::head_role(sid),
+        ).stdout
+    };
+    std::test::assert(
+        removed.code == 0 && dna::trim_nl(left.stdout) == "0",
+        "its schema is dropped on the habitat's memory, which goes on (removal exit "
+            + to_string(removed.code) + "; schemas left: [" + dna::trim_nl(left.stdout) + "] "
+            + left.stderr + "; " + after + "): " + removed.stdout
+            + removed.stderr,
+    );
+
     in_dir(scratch, toolchain() + "\nhabitat\ndown");
     dna::scratch_done(scratch);
+}
+
+// The shell command line `line` run in `dir` at a terminal, `typed`
+// typed at it (habitat_forget_test.hl's).
+fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
+    return in_dir(
+        dir,
+        "sh\n-c\nif [ -e /proc/version ]; then printf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null; else f=\"$PWD/term-alive-$$\" && : > \"$f\" && { sleep 0.2; printf '%s\\n' \"$1\"; while [ -f \"$f\" ]; do sleep 0.1; done; } | script -q /dev/null sh -c \"trap 'rm -f \\\"$f\\\"' EXIT; $2\"; fi\nsh\n"
+            + typed + "\n" + line,
+    );
 }
 
 // The nursery's entry for `bud` at `rev`.

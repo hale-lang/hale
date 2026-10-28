@@ -22,6 +22,8 @@ fn main() {
 | Function / Type | Signature | Description |
 |---|---|---|
 | `std::crypto::sha256` | `fn(Bytes) -> Bytes` | 32-byte SHA-256 digest (built-in, no OpenSSL dependency) |
+| `std::crypto::Sha256` | `Sha256 { }`: `update(Bytes)`, `finish() -> Bytes` | SHA-256 fed in pieces: the same 32 bytes as `sha256` of the pieces joined, holding a fixed 112-byte state |
+| `std::crypto::sha256_file` | `fn(String) -> Bytes fallible(IoError)` | 32-byte SHA-256 of a file, read 1 MiB at a time |
 | `std::crypto::sha512` | `fn(Bytes) -> Bytes` | 64-byte SHA-512 digest (built-in, no OpenSSL dependency) |
 | `std::crypto::sha1` | `fn(Bytes) -> Bytes` | 20-byte SHA-1 digest for legacy protocol interop (built-in) |
 | `std::crypto::hmac_sha256` | `fn(Bytes, Bytes) -> Bytes` | 32-byte HMAC-SHA256 authentication tag (`(key, data)`) |
@@ -61,6 +63,27 @@ let tag512    = std::crypto::hmac_sha512(key, data);  // 64 bytes
 ```
 
 Use `sha256` / `hmac_sha256` (or `sha512` / `hmac_sha512` for APIs requiring 512-bit tags) for new code. `std::crypto::sha1` (20 bytes) is provided for legacy protocol interoperability.
+
+### Hashing a stream or a large file
+
+`sha256(b)` needs all of `b` in memory. To verify a download against a pinned digest as it arrives, or a file larger than memory, feed a `std::crypto::Sha256` the pieces instead, or hash the file by its path:
+
+```hale,fragment
+let h = std::crypto::Sha256 { };
+h.update(b"hello, ");
+h.update(b"world");
+let digest = h.finish();               // == std::crypto::sha256(b"hello, world")
+
+let on_disk = std::crypto::sha256_file("/models/weights.bin") or raise;
+```
+
+- `update(piece)` absorbs any number of bytes, an empty piece included; the digest does not depend on how the input was split.
+- `finish()` answers the 32-byte digest of everything absorbed since the hasher was made or last finished, and starts it over, so one hasher can serve one input after another.
+- The hasher holds a fixed 112-byte state whatever it has absorbed; `sha256_file` holds one 1 MiB read buffer. Hashing a 10 GiB file either way peaked at about 1 to 2 MB above a program that hashes nothing, as fast as `sha256sum`.
+- `sha256_file` fails with `IoError` (`not_found`, `permission_denied`, …, the path in `err.path`) when the file cannot be opened or read.
+- In a long-lived locus, make each piece inside a method call (`fn absorb(h: std::crypto::Sha256, piece: Bytes)`) rather than in the loop body of `run()` itself: a method's scratch is freed when it returns, while a value made in `run()`'s own loop stays until the locus dissolves.
+
+On x86-64 CPUs with the SHA extensions, the compression runs on them. On aarch64 Linux and macOS (a Grace CPU, Apple Silicon), it runs on the ARMv8 SHA-256 instructions when the OS reports them. Everywhere else, wasm32 included, it runs the portable C rounds (about 350 MB/s on the x86-64 machine measured above). All four entry points (`sha256`, `hmac_sha256`, `Sha256`, `sha256_file`) share the one implementation.
 
 ---
 

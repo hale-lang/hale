@@ -656,7 +656,7 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 /// observe backends' and the client binding's, `client_expand`);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 10] = [
+    let windows: [(u32, &'static str, &'static str); 11] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
         (REST_FALLBACK_BASE, "api_rest_fallback.hl", hale_stdlib::API_REST_FALLBACK_SOURCE),
         (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
@@ -667,6 +667,7 @@ pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)
         (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
         (OBSERVE_BASE, "observe.hl", hale_stdlib::OBSERVE_SOURCE),
         (HTTP_READ_BASE, "http_read.hl", hale_stdlib::HTTP_READ_SOURCE),
+        (SHA256_BASE, "crypto_sha256.hl", hale_stdlib::SHA256_SOURCE),
     ];
     windows.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
@@ -934,6 +935,15 @@ pub const OBSERVE_BASE: u32 = TCP_SERVE_BASE + 0x000C_0000;
 /// the same last window of the runtime's space.
 pub const HTTP_READ_BASE: u32 = TCP_SERVE_BASE + 0x000E_0000;
 
+/// Where `crypto_sha256.hl` parses: past the streamed body readers, in the
+/// same last window of the runtime's space.
+pub const SHA256_BASE: u32 = TCP_SERVE_BASE + 0x000F_0000;
+
+/// Whether an offset is in the incremental SHA-256's appended source.
+pub fn is_sha256_pos(pos: u32) -> bool {
+    (SHA256_BASE..SHA256_BASE + hale_stdlib::SHA256_SOURCE.len() as u32).contains(&pos)
+}
+
 /// Whether an offset is in the streamed body readers' appended source.
 pub fn is_http_read_pos(pos: u32) -> bool {
     (HTTP_READ_BASE..HTTP_READ_BASE + hale_stdlib::HTTP_READ_SOURCE.len() as u32).contains(&pos)
@@ -946,14 +956,15 @@ pub fn is_observe_pos(pos: u32) -> bool {
 
 /// Whether an offset is in stdlib source appended to the program because
 /// it names it, and not in the stdlib copy: the TCP substrate's, the
-/// observe backends', the client binding's (`client_expand`) or the
-/// streamed body readers'. A `std::` path to one of its loci names the
-/// program's declaration.
+/// observe backends', the client binding's (`client_expand`), the
+/// streamed body readers' or the incremental SHA-256's. A `std::` path to
+/// one of its loci names the program's declaration.
 pub fn is_appended_stdlib_pos(pos: u32) -> bool {
     is_tcp_serve_pos(pos)
         || is_observe_pos(pos)
         || crate::client_expand::is_client_runtime_pos(pos)
         || is_http_read_pos(pos)
+        || is_sha256_pos(pos)
 }
 
 /// The backends of `std::observe`, once, for a program whose main locus
@@ -1099,6 +1110,30 @@ fn inject_http_read(programs: &mut [&mut Program]) {
     }
 }
 
+/// Whether the programs name `std::crypto::Sha256`.
+fn mentions_sha256(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| w[1] == "std" && w[2] == "crypto" && w[3] == "Sha256")
+}
+
+/// The incremental SHA-256, once, for a program that names it
+/// (`hale_stdlib::SHA256_SOURCE`): a program that hashes no stream carries
+/// none of it.
+fn inject_sha256(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdCryptoSha256")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::SHA256_SOURCE, SHA256_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the incremental SHA-256 did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
 /// Whether the programs name `std::io::tcp::Listener`.
 fn mentions_tcp_listener(programs: &[&mut Program]) -> bool {
     spells(programs, &|w| w[0] == "std" && w[1] == "io" && w[2] == "tcp" && w[3] == "Listener")
@@ -1233,6 +1268,9 @@ pub fn expand(
     }
     if mentions_http_read(programs) {
         inject_http_read(programs);
+    }
+    if mentions_sha256(programs) {
+        inject_sha256(programs);
     }
     let hubs = crate::hub_expand::binds_a_hub(programs);
     if !mentions_runtime(programs) && !hubs {

@@ -309,7 +309,13 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
         let memory = dna::placed_on(child, "memory");
         // its record, in its memory
         let mut record = "";
-        if std::str::contains(allocations, child + "/memory\t") && memory.host != "local" {
+        if dna::memory_reused(child) {
+            record = dna::teardown_item(
+                "organism", subject,
+                "its record, a schema on the habitat's memory, removed with it",
+                "-", "no", "covered", "", "", FORGET_STEP_COVERED,
+            );
+        } else if std::str::contains(allocations, child + "/memory\t") && memory.host != "local" {
             record = dna::teardown_item(
                 "organism", subject,
                 "its record, in its memory on " + memory.host

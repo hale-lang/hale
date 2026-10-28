@@ -950,21 +950,26 @@ fn migrated_head(owner: String, record_id: String) -> Dsn {
 // the owner's DSN. Roles belong to the server, not the database, so a
 // slice dropping its database leaves them behind. "" when nothing is
 // left, else why.
+// The record's schema and every role of it dropped, as one script: its
+// spine's, its head's and every owner's head role (GH #1026), whichever
+// owners it had. What `unmigrate` runs, and what a tenant's removal runs
+// inside the habitat's memory (dna/core/teardown.hl, `record-drop`).
+fn unmigrate_sql(record_id: String) -> String {
+    let base = schema_for(record_id);
+    let owned = (if len(base) > 40 { base[0..40] } else { base }) + "_head_";
+    return "DROP SCHEMA IF EXISTS " + base + " CASCADE; DROP ROLE IF EXISTS "
+        + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id)
+        + "; DO $d$ DECLARE r text; BEGIN FOR r IN SELECT rolname FROM pg_roles WHERE starts_with(rolname, '"
+        + owned + "') LOOP EXECUTE 'DROP ROLE ' || quote_ident(r); END LOOP; END $d$";
+}
+
 fn unmigrate(owner: String, record_id: String) -> String {
     let d = parse_dsn(owner);
     if !d.ok { return "the owner DSN: " + d.why; }
     let c = pq_conn(d);
     let st = c.open();
     if !st.ok { return "open: " + st.err.kind + " " + st.err.detail; }
-    // and every owner's head role (GH #1026), whichever owners it had
-    let base = schema_for(record_id);
-    let owned = (if len(base) > 40 { base[0..40] } else { base }) + "_head_";
-    let dropped = c.exec(
-        "DROP SCHEMA IF EXISTS " + base + " CASCADE; DROP ROLE IF EXISTS " + spine_role(record_id)
-            + "; DROP ROLE IF EXISTS " + head_role(record_id)
-            + "; DO $d$ DECLARE r text; BEGIN FOR r IN SELECT rolname FROM pg_roles WHERE starts_with(rolname, '"
-            + owned + "') LOOP EXECUTE 'DROP ROLE ' || quote_ident(r); END LOOP; END $d$",
-    );
+    let dropped = c.exec(unmigrate_sql(record_id));
     c.close();
     if !dropped.ok { return dropped.err.kind + " " + dropped.err.detail; }
     return "";

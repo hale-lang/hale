@@ -45,7 +45,7 @@ fn source() -> String {
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool_timeout(
         900,
-        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
     );
 }
@@ -54,7 +54,7 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 // and `extra` (NAME=value lines) with stdout and stderr in `log`: its pid.
 fn started(dir: String, extra: String, argv: String, log: String) -> String {
     let r = dna::run_tool(
-        "sh\n-c\ncd \"$1\" && log=$2 && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null || exit 1; nohup timeout --foreground 1500 env \"$@\" >\"$log\" 2>&1 </dev/null & echo $!\nsh\n"
+        "sh\n-c\ncd \"$1\" && log=$2 && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null || exit 1; nohup timeout --foreground 1500 env \"$@\" >\"$log\" 2>&1 </dev/null & echo $!\nsh\n"
             + dir + "\n" + log + "\n" + extra + argv,
     );
     return dna::trim_nl(r.stdout);
@@ -268,7 +268,7 @@ fn main() {
     std::test::assert(
         std::str::contains(
             grafted.stdout,
-            "database a tenant database of the organism's memory server",
+            "database a tenant database of the habitat's memory server",
         )
             && std::str::contains(
                 grafted.stdout,
@@ -535,7 +535,7 @@ fn main() {
     // the text is three lines: a shell builds it, one argument
     let proposed = dna::run_tool_timeout(
         300,
-        "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER && export HALE_DNA_DISCOVER=off && exec \"$2\" dna practice propose operating/limits/personal --text \"$(printf '%s\\nwindow_seconds: 600\\nrequests: 2' \"$3\")\" --because 'the first limit' --as \"$4\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$2\" dna practice propose operating/limits/personal --text \"$(printf '%s\\nwindow_seconds: 600\\nrequests: 2' \"$3\")\" --because 'the first limit' --as \"$4\"\nsh\n"
             + voice + "\n" + hale + "\n" + grammar + "\n" + member,
     );
     let at = std::str::index_of(proposed.stdout, "hale dna review k:");

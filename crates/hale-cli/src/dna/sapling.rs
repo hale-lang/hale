@@ -251,6 +251,7 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             if fetch_repo != repo {
                 let _ = git(&["remote", "set-url", "origin", &fetch_repo], Some(&store));
             }
+            super::progress(&format!("fetching `{name}` at {revision} from {repo}"));
             let fetched = git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"));
             if fetch_repo != repo {
                 let _ = git(&["remote", "set-url", "origin", &repo], Some(&store));
@@ -277,6 +278,7 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
         }
     }
     let lineage = serde_json::json!({ "sapling": name, "revision": revision, "digest": digest, "nursery": nursery });
+    super::progress(&format!("grafting `{name}` as the habitat's child: its record, memory and nerves"));
     out.extend(graft_lines(&store, true, library, pack, &Shape { profile: None, remote: None, body: None }, Some(&lineage))?);
     // its packs, proposed to the child's Board, from its own nursery (or the
     // toolchain's when its own offers none by the name)
@@ -295,7 +297,11 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             out.push(format!("{:<8}`{p}` proposed to the child's Board, as the sapling adopts it", "pack"));
         }
     }
+    // the sapling's packaging, ratified by the graft that chose it
+    super::progress(&format!("ratifying `{name}`'s packaging"));
+    out.push(super::ratify_packaged(&crate::dna::organism_root(&store)?, &format!("the graft of the sapling `{name}`"), "its purpose, practices and positions"));
     // its own services, on the host its graft names
+    super::progress(&format!("placing `{name}`'s services and applying them on their host (a first build of its images there takes minutes)"));
     out.extend(place_services(&crate::dna::organism_root(&store)?)?);
     Ok(out)
 }
@@ -319,6 +325,22 @@ pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String
     })))
 }
 
+/// The entries at a repository's root that its tracked files (`git
+/// ls-files`, one per line) are under, each once, in order: a file, or a
+/// directory with the files under it. Its `compose.yaml` and `hale.toml` are
+/// not among them.
+fn mounted_entries(tracked: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for f in tracked.lines() {
+        let top = f.split('/').next().unwrap_or("");
+        if top.is_empty() || top == "compose.yaml" || top == "hale.toml" || out.contains(&top) {
+            continue;
+        }
+        out.push(top);
+    }
+    out
+}
+
 /// The organism's own services (a repository's compose file at its root),
 /// an allocation of the host its graft placed it on, and applied there by
 /// the head (`Commands::apply_allocations`). Nothing for an organism with no
@@ -334,16 +356,51 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     // its own compose project on the host, named for it: its services are
     // its own, never the habitat's
     let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
-    // the files its services mount beside the compose file: the
-    // repository's own, at its root (what it tracks, never what the graft
-    // wrote)
+    // what its services need beside the compose file (build contexts, bind
+    // mounts' sources): each entry the repository tracks at its root, a
+    // file or a directory, shipped whole to a host elsewhere (what it
+    // tracks, never what the graft wrote at its root)
     let tracked = Command::new("git").arg("-C").arg(root).args(["ls-files"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-    let mounted: Vec<&str> = tracked.lines().filter(|f| !f.contains('/') && *f != "compose.yaml" && *f != "hale.toml").collect();
+    let mounted = mounted_entries(&tracked);
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
-    out.extend(applied_lines(&head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false }))?));
+    match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false })) {
+        Ok(v) => out.extend(applied_lines(&v)),
+        // a first build of its images on the host outlives the head's
+        // deadline; the apply goes on in the head's keeping, so the graft
+        // follows the allocation until its provider observes it
+        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), host)?),
+        Err(e) => return Err(e),
+    }
     Ok(out)
+}
+
+/// An apply that outlived the head's deadline, followed through the
+/// allocation's state as its provider observes it: a line when it is up or
+/// degraded, a heartbeat while it is building, refused after half an hour.
+fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, String> {
+    let begun = std::time::Instant::now();
+    let mut said = begun;
+    loop {
+        let v = head_call("Commands::allocations", serde_json::json!({ "limit": 1000 }))?;
+        let rows: Vec<serde_json::Value> = v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+        if let Some(r) = rows.iter().find(|r| r["allocation"] == allocation) {
+            let state = r["state"].as_str().unwrap_or("");
+            if state == "up" || state == "degraded" {
+                return Ok(vec![format!("{:<8}{allocation} on {host}: {state} ({})", "applied", r["detail"].as_str().unwrap_or(""))]);
+            }
+        }
+        if begun.elapsed() > std::time::Duration::from_secs(1800) {
+            return Err(format!("{allocation} on {host} is not up after half an hour: `hale habitat status` shows what its provider sees, `hale habitat apply` tries again"));
+        }
+        if said.elapsed() >= std::time::Duration::from_secs(20) {
+            let t = begun.elapsed().as_secs();
+            super::progress(&format!("still applying {allocation} on {host} ({}m {:02}s): its images are building there", t / 60, t % 60));
+            said = std::time::Instant::now();
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
 }
 
 /// What `Commands::apply_allocations` answered, a line per allocation.
@@ -397,6 +454,8 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     let exit = log.with_extension("log.exit");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
     let mut code = String::new();
+    let begun = std::time::Instant::now();
+    let mut heard = begun;
     while std::time::Instant::now() < deadline {
         if live {
             if let Ok(s) = std::fs::read_to_string(&log) {
@@ -404,6 +463,13 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
                     print!("{}", &s[streamed..]);
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                     streamed = s.len();
+                    heard = std::time::Instant::now();
+                } else if heard.elapsed() >= std::time::Duration::from_secs(20) {
+                    // a quiet log is a step still running: how long, and what it said last
+                    let t = begun.elapsed().as_secs();
+                    let last = s.lines().rev().find(|l| !l.trim().is_empty()).map(|l| format!(": {}", l.trim().trim_start_matches("... "))).unwrap_or_default();
+                    eprintln!("... still grafting `{name}` ({}m {:02}s){last}", t / 60, t % 60);
+                    heard = std::time::Instant::now();
                 }
             }
         }
@@ -618,12 +684,26 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                     return ExitCode::from(1);
                 }
             }
+            // the head read it into the record already; this machine holds
+            // no genome to read it again when it points at a habitat elsewhere
+            if super::remote::pointer().is_some() {
+                return ExitCode::SUCCESS;
+            }
             refreshed()
         }
-        (Some("refresh"), None, 1) => refreshed(),
+        (Some("refresh"), None, 1) => match super::remote::pointer() {
+            Some(p) => super::remote::run_there(&p, "nursery", &["nursery", "refresh"]),
+            None => refreshed(),
+        },
         (Some("ratify"), Some(name), 2) => match head_call("Commands::ratify_sapling", serde_json::json!({ "name": name })) {
             Ok(v) if v["ok"] == serde_json::json!(true) => {
-                let pin = pinned(name).unwrap_or_default();
+                // the pin as the head now answers it (this machine may hold
+                // no genome: a pointer to a habitat elsewhere)
+                let pin = head_call("Commands::saplings", serde_json::json!({ "limit": 200 }))
+                    .ok()
+                    .and_then(|v| v["saplings"].as_str().and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(t).ok()))
+                    .and_then(|s| s.into_iter().find(|e| e["name"] == name.as_str()))
+                    .unwrap_or_default();
                 println!("{:<8}{name} pinned at {} ({}); nothing grafted moves", "sapling", pin["revision"].as_str().unwrap_or(""), pin["digest"].as_str().unwrap_or(""));
                 ExitCode::SUCCESS
             }
@@ -681,6 +761,15 @@ fn refreshed() -> std::process::ExitCode {
 mod tests {
     use super::*;
 
+
+    /// A services render ships each root entry once: a directory whole
+    /// (a build context, a bind mount's source), never the compose file or
+    /// the manifest the graft wrote.
+    #[test]
+    fn mounted_entries_are_the_roots_entries() {
+        let tracked = "Dockerfile\napi/main.hl\napi/lib/x.hl\ncompose.yaml\ndeploy/nats/nats.conf\ndeploy/node/capabilities.json\nhale.toml\n.dockerignore\n";
+        assert_eq!(mounted_entries(tracked), vec!["Dockerfile", "api", "deploy", ".dockerignore"]);
+    }
 
     fn words(line: &str) -> Vec<String> {
         line.split(' ').map(str::to_string).collect()
@@ -848,7 +937,17 @@ pub(super) fn allocate_roles(child: &str, root: &Path) -> Result<Vec<String>, St
     if !["none", "github", "file", "forgejo"].contains(&forge.as_str()) {
         return Err(format!("`--forge {forge}`: a forge is forgejo, github, file or none"));
     }
-    let issuer = Command::new("git").arg("-C").arg(root).args(["config", "--get", "dna.oidc.issuer"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "http://127.0.0.1:8794".to_string());
+    let configured = || Command::new("git").arg("-C").arg(root).args(["config", "--get", "dna.oidc.issuer"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty());
+    // a habitat that publishes its identity is the organism's: it signs in
+    // through the habitat's provider, which its head, its handover and its
+    // host code all read from here
+    if let (None, Some(shared)) = (configured(), super::shared_issuer()) {
+        let set = Command::new("git").arg("-C").arg(root).args(["config", "--local", "dna.oidc.issuer", &shared]).status().is_ok_and(|s| s.success());
+        if !set {
+            return Err(format!("could not point {} at the habitat's identity ({shared})", root.display()));
+        }
+    }
+    let issuer = configured().unwrap_or_else(|| "http://127.0.0.1:8794".to_string());
     let path = PathBuf::from(local_habitat_dir()).join("allocations").join(key).join("forge.json");
     let cache = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
     let allocated = latest(&rows, "habitat.allocated");

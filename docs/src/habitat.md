@@ -49,9 +49,24 @@ In habitat commands, a **host** always refers to a physical or virtual machine w
 | Provider / Verb | Behavior |
 | --- | --- |
 | **`compose` provider (`local` profile)** | Produces the `local` host (advertising `compose`) and runs all habitat and child organism allocations (`memory-<id>`, `nerves-<id>`, `senses-<id>`, `forge`, and the habitat's `body` and `face`) as Docker Compose services on the local machine. |
-| `hale habitat host add <name> [--user <u>] [--port <n>]` | Probes a LAN machine over SSH using the habitat's vault-held SSH keypair, pins the first-seen host key in the record (refusing any subsequent host-key mismatch), prints the habitat's public key line to append to `~/.ssh/authorized_keys` on `<name>`, and marks the host `pending-key`. |
+| `hale habitat host add <name> [--user <u>] [--port <n>]` | Probes a LAN machine over SSH using the habitat's vault-held SSH keypair, pins the first-seen host key in the record (refusing any subsequent host-key mismatch), and, over your own SSH login and with your sudo, makes the habitat an account of its own on `<name>` (`hale-<id>`: no sudo, in the `docker` group, which is root-equivalent on the host) holding its public key, then probes it ready. `--user <u>` puts the key in that account instead. When your login does not reach `<name>`, it prints what to do there and marks the host `pending-key`. |
 | `hale habitat host probe <name>` | Re-probes `<name>` over SSH. Once `~/.ssh/authorized_keys` is updated, transitions the host from `pending-key` to `ready` and records its capabilities (`docker compose`, `systemd-user`, OS, and CPU architecture). |
 | `hale habitat host remove <name> [--plan]` | Removes a registered host from the habitat record, planned first: on a host with allocations the plan lists each one and what stops or is deleted there, and the removal waits for the host's name typed back at a terminal (`--plan` prints the plan and exits). |
+
+### Machine Readings and Dashboards (node exporters, Grafana)
+
+The habitat reads every machine it runs on. `hale habitat up` (on this machine, or on the machine `--host` names, over your SSH login) and `hale habitat host add` (on the new host) install a Prometheus **node exporter** on `:9100`: on Linux the container `hale-node-exporter`, on macOS the release's own `node_exporter` under launchd (a LaunchAgent when you are logged in at the Mac, otherwise a LaunchDaemon, for which sudo asks once at your terminal). A container on a Mac would read the VM docker runs in, not the Mac. If an exporter already answers on `:9100`, the habitat scrapes it as it is and never touches it. `host remove` and `down --forget` take the habitat's own exporter off again.
+
+The habitat's senses' store (its Prometheus) scrapes each machine as the job `host`, with a `host` label naming the machine. The habitat keeps the target list in step with its hosts: adding or removing a host rewrites it.
+
+A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
+
+```text
+grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in)
+node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
+```
+
+`HALE_DNA_NODE_EXPORTER=off` and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 
@@ -63,8 +78,11 @@ hale habitat nursery add https://example.com/nursery.git
 hale habitat nursery refresh
 hale habitat nursery ratify <sapling>
 hale habitat nursery add https://github.com/hale-lang/voice   # voice is its own nursery
-hale habitat graft voice
+hale habitat graft voice --host rack-a.lan --plan              # the plan, part by part; nothing grafted
+hale habitat graft voice --host rack-a.lan                     # prints the plan and asks
 ```
+
+A graft plans each body part first. The organism plane (its record in memory, its nerves, its senses) reuses the habitat's, on the habitat's machine; `--own memory=rack-b.lan` gives it a server of its own on a host instead. The application plane is the organism's own: its compose services on the `--host` machine, and the database or broker it brings (`[dna] brings` in its `hale.toml`, as voice brings its own Postgres and NATS); `--reuse database` has the habitat provision one instead.
 
 1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (`hale`, the one the toolchain carries, or one a trusted nursery offers, such as `voice`; `./<name>` denotes a local directory). A repository can be its own nursery: a `nursery.toml` at its root whose `[[sapling]]` says `repo = "."` (and no revision or digest) offers the repository itself, pinned at the commit the habitat reads. That is how `hale-lang/voice` is offered; the toolchain bundles no application. The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row. The `hale` sapling (the organism that works on the Hale toolchain) is a tree the toolchain itself carries, with no remote. `hale habitat graft hale` makes it the organism's own repository in the habitat and checks its digest the same way. Like every graft, it mirrors that repository to the habitat's Forgejo; nothing of an organism's own goes to GitHub unless its Board allocates GitHub later.
 2. **A genome's codebases attach at its graft:** a `[[dna.codebase]]` list in the sapling's `hale.toml` (each with `name`, `repo`, `branch`, `build`, `test`, `toolchain`) becomes `codebase.attached` rows of the grafted organism's record, once each; nothing is cloned until a leg works one. The toolchain nursery's `hale` sapling is **the hale organism**: its genome is its own small repository, and its codebases are `hale-lang/hale` and `hale-lang/voice`.
@@ -101,7 +119,7 @@ face    http://127.0.0.1:<port>/ (up, ...)
 
 ### 2. Sign In to the Operator Face
 
-Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)).
+Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
 
 ### 3. Graft the `voice` Sapling (Local or LAN Host)
 
@@ -118,7 +136,7 @@ hale habitat graft voice
 To place `voice` onto a remote LAN host over SSH instead (register the host with `host add` and `host probe` first):
 
 ```sh
-# Register the LAN host and append the printed habitat public key to ~/.ssh/authorized_keys on rack-a.lan:
+# Register the LAN host; over your own SSH login it authorizes the habitat's key there and probes it:
 hale habitat host add rack-a.lan --user ops
 
 # Verify SSH connectivity and host capabilities (docker compose, OS, arch):
@@ -217,7 +235,7 @@ curl -N $api/v1/chat/completions \
 ### Operational Notes
 
 - **Stopping and restarting:** `hale habitat status` reports any degraded or stopped allocations. `hale habitat down` stops the body, the face and every service and removes nothing; `hale habitat up` brings it back online.
-- **Forgetting a habitat:** `hale habitat down --forget` removes the habitat whole, plan first, like terraform. It prints everything it would remove, grouped: the habitat's record and memory (row count, organisms, newest row), each grafted organism (record, genome repository, Forgejo repository, allocations by host), the compose projects and volumes, the vault slots (by name, never a value), the Forgejo instance and its accounts, the hosts, and what it runs on each host over SSH, each line with its size or count and whether it is recoverable. Nothing is touched until you type the habitat's name back at a terminal; there is no `--yes`, and without a terminal it refuses. `--plan` prints the plan and exits. A forget that fails part way says what was done and what was not, and running it again plans from what remains. The one thing it cannot remove is the line each host's `~/.ssh/authorized_keys` took: it is noted, and the next plan shows it until you remove it there and a forget clears the note. A host that does not answer is planned as `unreachable: left on <host>`: the habitat's side goes and what is left there is named. Slots a person supplied (a GitHub token, a `--key-vault` slot) are kept. If anything changes between the plan and your confirmation, the act refuses with `plan_changed` and you plan again.
+- **Forgetting a habitat:** `hale habitat down --forget` removes the habitat whole, plan first, like terraform. It prints everything it would remove, grouped: the habitat's record and memory (row count, organisms, newest row), each grafted organism (record, genome repository, Forgejo repository, allocations by host), the compose projects and volumes, the vault slots (by name, never a value), the Forgejo instance and its accounts, the hosts, and what it runs on each host over SSH, each line with its size or count and whether it is recoverable. Nothing is touched until you type the habitat's name back at a terminal; there is no `--yes`, and without a terminal it refuses. `--plan` prints the plan and exits. A forget that fails part way says what was done and what was not, and running it again plans from what remains. The habitat cannot remove the line each host's `~/.ssh/authorized_keys` took, so the CLI does, over your own SSH login, by the key's `habitat-<id>` comment; a host your login does not reach keeps it, the CLI names the line, and the next plan shows the note until a forget clears it. A host that does not answer is planned as `unreachable: left on <host>`: the habitat's side goes and what is left there is named. Slots a person supplied (a GitHub token, a `--key-vault` slot) are kept. If anything changes between the plan and your confirmation, the act refuses with `plan_changed` and you plan again.
 - **Removing an organism:** `hale habitat organism remove <name>` plans and confirms the same way (its record and memory, genome repository, Forgejo repository and account, allocations by host, compose services, vault slots), typed back by the organism's name; the organisms screen of the operator face offers the same.
 - **Resuming interrupted grafts:** `hale habitat graft` verifies pinned file digests before grafting and resumes cleanly from its last completed step if interrupted.
 - **Model map and graft log rows:** `model-map` and `model-probe` are the head's `Commands::set_model_map` and `Commands::probe_model`; a key is named only by its vault slot. The face follows a graft's log through `Commands::graft_log`, which reads only the log of a graft the habitat itself started.

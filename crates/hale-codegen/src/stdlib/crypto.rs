@@ -1,6 +1,7 @@
 //! `std::crypto::*` path-call lowering.
 
 use hale_syntax::ast::Expr;
+use hale_types::stdlib_surface::IntrinsicId;
 use inkwell::values::BasicValueEnum;
 
 use crate::codegen::{
@@ -19,6 +20,19 @@ pub(crate) trait CryptoStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_sha256_raw(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_sha256_file_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
 
     fn lower_std_crypto_hmac_sha256(
         &mut self,
@@ -186,6 +200,122 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr");
         Ok((ptr, CodegenTy::Bytes))
+    }
+
+    /// The `std::crypto::Sha256` locus's primitives: `__sha256_new() ->
+    /// Int`, `__sha256_update(handle, b) -> Int`, `__sha256_finish(handle)
+    /// -> Bytes` (the 32-byte digest; the context starts over) and
+    /// `__sha256_free(handle) -> Int`. The handle is the C context's
+    /// pointer as an i64, passed to the runtime as one.
+    fn lower_std_crypto_sha256_raw(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let (surface, c_fn, arity) = match id {
+            IntrinsicId::CryptoSha256NewRaw => ("__sha256_new", "lotus_crypto_sha256_new", 0),
+            IntrinsicId::CryptoSha256UpdateRaw => {
+                ("__sha256_update", "lotus_crypto_sha256_update", 2)
+            }
+            IntrinsicId::CryptoSha256FinishRaw => {
+                ("__sha256_finish", "lotus_crypto_sha256_finish", 1)
+            }
+            IntrinsicId::CryptoSha256FreeRaw => ("__sha256_free", "lotus_crypto_sha256_free", 1),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "not a std::crypto::Sha256 primitive: {other:?}"
+                )))
+            }
+        };
+        if args.len() != arity {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::{surface} takes {arity} args, got {}",
+                args.len()
+            )));
+        }
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+        if arity >= 1 {
+            let (h, ty) = self.lower_expr(&args[0], scope)?;
+            if ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::crypto::{surface}: handle must be Int, got {ty:?}"
+                )));
+            }
+            call_args.push(h.into());
+        }
+        if arity == 2 {
+            let (b, ty) = self.lower_expr(&args[1], scope)?;
+            if !matches!(ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::crypto::{surface}: b must be Bytes, got {ty:?}"
+                )));
+            }
+            call_args.push(self.unpack_view_if_needed(b, &ty)?.into());
+        }
+        let f = self
+            .module
+            .get_function(c_fn)
+            .unwrap_or_else(|| panic!("{c_fn} declared"));
+        let v = self
+            .builder
+            .build_call(f, &call_args, "sha256.raw")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns a value");
+        let ty = if id == IntrinsicId::CryptoSha256FinishRaw {
+            CodegenTy::Bytes
+        } else {
+            CodegenTy::Int
+        };
+        Ok((v, ty))
+    }
+
+    /// `std::crypto::sha256_file(path: String) -> Bytes fallible(IoError)`:
+    /// the file read in fixed-size blocks through the SHA-256 core, so
+    /// memory stays one block whatever the file's size. NULL from the
+    /// runtime is the failure, errno its kind, the path its detail.
+    fn lower_std_crypto_sha256_file_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::sha256_file takes 1 arg (path), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::sha256_file: path must be String, got {path_ty:?}"
+            )));
+        }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_crypto_sha256_file")
+            .expect("lotus_crypto_sha256_file declared");
+        let out = self
+            .builder
+            .build_call(f, &[path_val.into()], "sha256_file.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr")
+            .into_pointer_value();
+        let is_err = self
+            .builder
+            .build_is_null(out, "sha256_file.is_err")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            path_val,
+            Some((out.into(), CodegenTy::Bytes)),
+            "crypto.sha256_file",
+        )
     }
 
     /// C3 (pond follow-up): lower

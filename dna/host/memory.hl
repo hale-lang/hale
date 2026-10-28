@@ -32,11 +32,14 @@ fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
         ""
     };
     if len(owner) == 0 {
-        let infra = ReferenceInfrastructure { root: root };
+        // its own memory allocation's server, or the habitat's when the
+        // habitat's memory keeps its record (`dna::memory_root`)
+        let server = dna::memory_root(root);
+        let infra = ReferenceInfrastructure { root: server };
         let db = if derive {
             infra.knowledge_database_if_up()
         } else {
-            infra.knowledge_database(root)
+            infra.knowledge_database(server)
         };
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
@@ -68,8 +71,10 @@ fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
     if !derive {
         out = out + "allocation.schema_version=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\n";
         let key = dna::allocation_key(root);
+        // a record on the habitat's memory holds no server's password of its own
+        let own_server = dna::memory_root(root) == root;
         out = out + "allocation.vault_slots="
-            + (if len(key) > 0 { postgres_owner_vault(key) + " " } else { "" })
+            + (if len(key) > 0 && own_server { postgres_owner_vault(key) + " " } else { "" })
             + dna::role_vault_name(dna::spine_role(who.id)) + " "
             + dna::role_vault_name(dna::head_role(who.id)) + "\n";
     }
@@ -102,11 +107,13 @@ fn database_provision_verb(root: String, derive: Bool) -> Answer {
         ""
     };
     if len(owner) == 0 {
-        let infra = ReferenceInfrastructure { root: root };
+        // the heart's database is a tenant of the server its record is on
+        let server = dna::memory_root(root);
+        let infra = ReferenceInfrastructure { root: server };
         let db = if derive {
             infra.knowledge_database_if_up()
         } else {
-            infra.knowledge_database(root)
+            infra.knowledge_database(server)
         };
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
