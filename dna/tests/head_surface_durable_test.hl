@@ -255,7 +255,7 @@ locus App {
         );
         std::test::assert_eq_str(
             members_of(d0),
-            "Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::policy Commands::preview_batch Commands::saplings Commands::take_task",
+            "Commands::alerts Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::policy Commands::preview_batch Commands::saplings Commands::take_task",
             "unseated: the surface lists the ungated rows only: " + d0,
         );
         // the calls below go over a connection made once the head answers
