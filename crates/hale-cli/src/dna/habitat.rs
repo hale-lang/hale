@@ -755,11 +755,10 @@ fn host(args: &[String]) -> ExitCode {
     if verb == "probe" && field("state") == "ready" && !readings::node_exporter_off() {
         let login = if remote::is_habitat_user(&field("user")) { None } else { Some(field("user")) };
         let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
-        progress(&format!("checking the node exporter on {name}, over your SSH login"));
-        println!("{}", match remote::login_script(&name, login.as_deref(), port, readings::install_script) {
-            Ok(o) => readings::install_line(&name, &o),
-            Err(why) => format!("{:<8}{name}: no exporter: {why}", "node"),
-        });
+        progress(&format!("checking the node and container exporters on {name}, over your SSH login"));
+        for l in readings::install_over(&name, login.as_deref(), port) {
+            println!("{l}");
+        }
     }
     println!("{:<8}{offers}{}", "offers", if field("os").is_empty() { String::new() } else { format!(" ({} {})", field("os"), field("arch")) });
     if verb == "add" {
@@ -790,11 +789,10 @@ fn host(args: &[String]) -> ExitCode {
                             if !readings::node_exporter_off() {
                                 // the machine's readings, over the same login the account was made over
                                 let login = if own_user { None } else { Some(field("user")) };
-                                progress(&format!("installing the node exporter on {name}, over your SSH login"));
-                                println!("{}", match remote::login_script(&name, login.as_deref(), if own_user { login_port } else { port }, readings::install_script) {
-                                    Ok(o) => readings::install_line(&name, &o),
-                                    Err(why) => format!("{:<8}{name}: no exporter: {why}", "node"),
-                                });
+                                progress(&format!("installing the node and container exporters on {name}, over your SSH login"));
+                                for l in readings::install_over(&name, login.as_deref(), if own_user { login_port } else { port }) {
+                                    println!("{l}");
+                                }
                             }
                         }
                         Err(code) => return code,
@@ -1028,10 +1026,8 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     // taken off over the person's own login
     let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
     if !readings::node_exporter_off() {
-        match remote::login_script(name, None, port, readings::remove_script) {
-            Ok(o) if o == "removed" => println!("the habitat's node exporter is removed from {name}, over your SSH login"),
-            Ok(_) => {}
-            Err(why) => println!("the habitat's node exporter is left on {name} ({why})"),
+        for l in readings::remove_over(name, None, port) {
+            println!("{l}");
         }
     }
     if remote::is_habitat_user(&field("user")) {
@@ -2601,7 +2597,8 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     // genome's, read by its store from now on (restarted when they moved)
     let reflexes_line = if senses.is_some() {
         let manifest = std::fs::read_to_string(genome.join("hale.toml")).unwrap_or_default();
-        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)?;
+        // (and the job of the machines' containers, beside its machines')
+        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)?;
         if moved {
             let _ = Command::new("env")
                 .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
@@ -2762,9 +2759,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
     lines.extend(grafana_note);
     lines.extend(reflexes_line);
-    if let Some(l) = readings::install_here(&host_label_here()) {
-        lines.push(l);
-    }
+    lines.extend(readings::install_here(&host_label_here()));
     Ok(lines)
 }
 
