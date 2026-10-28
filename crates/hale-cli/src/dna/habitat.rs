@@ -1351,6 +1351,13 @@ pub(super) fn graft_plan(needs: &[String], has_app: bool) -> Vec<String> {
     plan_lines(needs, has_app, &here, &host, &brings, shared_issuer().as_deref(), &part_choice)
 }
 
+/// One line of a graft's plan: the part, the choice, what it means, and the
+/// flag that flips it (columns by width, never by spaces in the text).
+fn plan_row(part: &str, choice: &str, what: &str, flip: &str) -> String {
+    let flip = if flip.is_empty() { String::new() } else { format!("  ({flip})") };
+    format!("  {part:<9} {choice:<6} {what}{flip}")
+}
+
 fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &[String], shared: Option<&str>, part_choice: &dyn Fn(&str) -> Part) -> Vec<String> {
     let (here, host) = (here.to_string(), host.to_string());
     let mut out = vec!["organism plane".to_string()];
@@ -1359,16 +1366,16 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
             continue;
         }
         out.push(match part_choice(role) {
-            Part::Reuse if role == "memory" => format!("  {role:<9} reuse  a schema of its own on the habitat's Postgres ({here})    (--own memory=<host>: a server of its own)"),
-            Part::Reuse => format!("  {role:<9} reuse  a server of its own on the habitat's machine ({here}); sharing the habitat's is not built    (--own {role}=<host>: elsewhere)"),
-            Part::Own(h) => format!("  {role:<9} own    a server of its own on {}", h.unwrap_or_else(|| host.clone())),
+            Part::Reuse if role == "memory" => plan_row(role, "reuse", &format!("a schema of its own on the habitat's Postgres ({here})"), "--own memory=<host>: a server of its own"),
+            Part::Reuse => plan_row(role, "reuse", &format!("a server of its own on the habitat's machine ({here}); sharing the habitat's is not built"), &format!("--own {role}=<host>: elsewhere")),
+            Part::Own(h) => plan_row(role, "own", &format!("a server of its own on {}", h.unwrap_or_else(|| host.clone())), ""),
         });
     }
     out.push(match shared {
-        Some(issuer) => format!("  {:<9} reuse  the habitat's sign-in ({issuer}): one account, every organism", "identity"),
-        None => format!("  {:<9} own    its own sign-in stub, beside its head (the habitat's face has published none)", "identity"),
+        Some(issuer) => plan_row("identity", "reuse", &format!("the habitat's sign-in ({issuer}): one account, every organism"), ""),
+        None => plan_row("identity", "own", "its own sign-in stub, beside its head (the habitat's face has published none)", ""),
     });
-    out.push(format!("  {:<9} reuse  the habitat's forge, by its policy (--forge to choose)", "forge"));
+    out.push(plan_row("forge", "reuse", "the habitat's forge, by its policy (--forge to choose)", ""));
     out.push("application plane".to_string());
     out.push(if has_app { format!("  {:<9} its compose services on {host}", "services") } else { format!("  {:<9} none (no compose file at its root)", "services") });
     for role in APPLICATION_PARTS {
@@ -1377,9 +1384,9 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
         }
         let server = if role == "database" { "Postgres" } else { "NATS" };
         out.push(match part_choice(role) {
-            Part::Own(_) if !brings.iter().any(|b| b == role) => format!("  {role:<9} own    the application's own {server}: it does not say it brings one (`[dna] brings`), so its compose must provide it"),
-            Part::Own(_) => format!("  {role:<9} own    the application's own {server}, in its compose    (--reuse {role}: one the habitat provisions and hands over)"),
-            Part::Reuse => format!("  {role:<9} reuse  provisioned by the habitat on the organism's {} server, handed over as HALE_DNA_{}_*", if role == "database" { "memory" } else { "nerves" }, role.to_uppercase()),
+            Part::Own(_) if !brings.iter().any(|b| b == role) => plan_row(role, "own", &format!("the application's own {server}: it does not say it brings one (`[dna] brings`), so its compose must provide it"), ""),
+            Part::Own(_) => plan_row(role, "own", &format!("the application's own {server}, in its compose"), &format!("--reuse {role}: one the habitat provisions and hands over")),
+            Part::Reuse => plan_row(role, "reuse", &format!("provisioned by the habitat on the organism's {} server, handed over as HALE_DNA_{}_*", if role == "database" { "memory" } else { "nerves" }, role.to_uppercase()), ""),
         });
     }
     out
@@ -3867,16 +3874,16 @@ mod tests {
         let needs: Vec<String> = ["memory", "nerves", "database", "broker"].iter().map(|s| s.to_string()).collect();
         let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, Some("http://rack-a.lan:8803"), &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
         let text = lines.join("\n");
-        assert!(text.contains("memory    own    a server of its own on box-1"), "{text}");
-        assert!(text.contains("nerves    reuse  a server of its own on the habitat's machine (rack-a.lan); sharing the habitat's is not built"), "{text}");
+        assert!(text.contains(&plan_row("memory", "own", "a server of its own on box-1", "")), "{text}");
+        assert!(text.contains(&plan_row("nerves", "reuse", "a server of its own on the habitat's machine (rack-a.lan); sharing the habitat's is not built", "--own nerves=<host>: elsewhere")), "{text}");
         let defaults = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, None, &|r: &str| default_part(r, &brings)).join("\n");
-        assert!(defaults.contains("memory    reuse  a schema of its own on the habitat's Postgres (rack-a.lan)"), "{defaults}");
-        assert!(defaults.contains("identity  own    its own sign-in stub"), "no published identity: {defaults}");
+        assert!(defaults.contains(&plan_row("memory", "reuse", "a schema of its own on the habitat's Postgres (rack-a.lan)", "--own memory=<host>: a server of its own")), "{defaults}");
+        assert!(defaults.contains(&plan_row("identity", "own", "its own sign-in stub", "")[..]), "no published identity: {defaults}");
         assert!(text.contains("services  its compose services on box-1"), "{text}");
-        assert!(text.contains("database  reuse  provisioned by the habitat"), "{text}");
-        assert!(text.contains("broker    own    the application's own NATS, in its compose"), "{text}");
+        assert!(text.contains(&plan_row("database", "reuse", "provisioned by the habitat", "")), "{text}");
+        assert!(text.contains(&plan_row("broker", "own", "the application's own NATS, in its compose", "")), "{text}");
         assert!(!text.contains("senses"), "a part it does not need is not planned: {text}");
-        assert!(text.contains("identity  reuse  the habitat's sign-in (http://rack-a.lan:8803)"), "{text}");
+        assert!(text.contains(&plan_row("identity", "reuse", "the habitat's sign-in (http://rack-a.lan:8803)", "")), "{text}");
     }
 
     /// What an application brings is among its application-plane needs.

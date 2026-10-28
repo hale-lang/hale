@@ -325,7 +325,9 @@ fn main() {
     let shipped_id = if at < 0 { "" } else { pinned[(at + 10)..(at + 50)] };
     let seen = in_dir(scratch, config, toolchain() + "\nhabitat\nstatus");
     std::test::assert(
-        len(shipped_id) == 40 && std::str::contains(seen.stdout, shipped_id),
+        // by its allocations' key, and by its name
+        len(shipped_id) == 40 && std::str::contains(seen.stdout, shipped_id[0..12] + "/memory")
+            && std::str::contains(seen.stdout, ", shipme: up"),
         "the head lists the organism grafted through the pointer: " + seen.stdout + seen.stderr,
     );
     // its head and face are recorded under the habitat's declared address

@@ -367,9 +367,12 @@ fn main() {
             + tplan.stderr,
     );
     let removed = at_terminal(scratch, "sprout", toolchain() + " habitat organism remove sprout");
+    let left = dna::run_tool(in_memory);
     std::test::assert(
-        removed.code == 0 && dna::trim_nl(dna::run_tool(in_memory).stdout) == "0",
-        "its schema is dropped on the habitat's memory, which goes on: " + removed.stdout
+        removed.code == 0 && dna::trim_nl(left.stdout) == "0",
+        "its schema is dropped on the habitat's memory, which goes on (removal exit "
+            + to_string(removed.code) + "; schemas left: [" + dna::trim_nl(left.stdout) + "] "
+            + left.stderr + "): " + removed.stdout
             + removed.stderr,
     );
 
