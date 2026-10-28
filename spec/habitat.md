@@ -976,6 +976,7 @@ inputs = ["id", "api_url", "operator_token_file"]
 api_service = "api"                           # whose published address is {api_url} (default "api")
 operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
 service = "voice-node-{id}"                   # what the install leaves running
+requires = ["gpu"]                            # what the host must have
 ```
 
 `hale habitat organism place <organism> <command> --host <h> [--id <id>]
@@ -988,9 +989,32 @@ grafted organism that came from a sapling the habitat pins, and a
   `~/.local/share/hale/hosted/<organism>`, where the command runs. Its
   declaration is read from that checkout, so the command is the one the
   pinned revision declares.
-- **Its toolchain.** A command whose first word is `hale` runs with the
-  host's own `hale`, by its path; a host with none is refused: the
-  release the organism pins goes there first.
+- **What the host is.** Before anything is touched, the verb reads the host
+  over the login: its OS and architecture, its package manager (apt-get,
+  dnf, Homebrew), what of the toolchain's prerequisites it has, the
+  toolchains the habitat installed there, and the facts `requires` is
+  checked against.
+- **What any toolchain builds with**, the same for every organism: git,
+  curl, tar, clang, and OpenSSL's and zlib's headers (Homebrew's
+  `openssl@3` on macOS, where clang and zlib are the Command Line Tools').
+  What the host lacks is installed first, with its package manager: under
+  the person's sudo for apt-get and dnf, so only at a terminal, and as the
+  login for Homebrew. A host with no package manager the habitat knows, or
+  a Mac without the Command Line Tools, is refused, naming what it lacks.
+- **Its toolchain.** The hale release the organism declares (`[dna]
+  toolchain = "<version>"` in its manifest, as a codebase's `toolchain` is),
+  else the habitat's own, installed from that release under the login's
+  `~/.local/share/hale/toolchains/<tag>/`, checked against the release's
+  sha256 and moved into place whole, one directory per version, never the
+  person's own `hale`. A command whose first word is `hale` runs with it by
+  its absolute path.
+- **What it requires**, from a vocabulary the habitat checks from the
+  host's facts: `docker` (docker answers the login), `systemd` (a Linux
+  host whose system services run under systemd), `nvidia-gpu`
+  (`nvidia-smi` lists a GPU), `apple-silicon` (an arm64 Mac), `gpu` (either
+  of the two). A host that lacks one is refused before anything is
+  installed, naming what it lacks; a requirement outside the vocabulary
+  refuses the declaration.
 - **Its inputs**, each named in `inputs` and filled where its argv says
   `{input}` (an input it does not declare, or one with no value, is
   refused): `id` (`--id`, by default the host's first label), `api_url` (the
@@ -1003,7 +1027,10 @@ grafted organism that came from a sapling the habitat pins, and a
 - **Who runs it.** Everything goes over the person's own SSH logins, as
   `host add` makes the habitat's account; `root = true` runs it under the
   person's sudo, so only at a terminal. `--plan` prints what would run,
-  where, and with what, and touches nothing on the host but the checkout.
+  where, and with what (the packages it would install, the toolchain and
+  whether it is there), and touches nothing on the host but the checkout;
+  a host without git stops the plan at installing it, since the
+  declaration is read from the checkout.
 - **What it leaves running.** `service` names the system service the
   install leaves on the host, outside compose (a systemd unit on Linux, a
   launchd service in the system domain on macOS), its `{id}` filled as
