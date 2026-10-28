@@ -68,6 +68,18 @@ node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale
 
 `HALE_DNA_NODE_EXPORTER=off` and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
+### An Organism's Own Host Commands (`organism place`)
+
+An organism can declare commands of its own for the habitat to run on a host, in its manifest under `[dna.host.<name>]`. voice declares `node`, which turns a machine into a voice node: it installs what the machine needs to serve models, outside compose, and registers it with voice's api.
+
+```sh
+hale habitat organism place voice node --host gpu-1.lan --plan   # what would run, and where
+hale habitat organism place voice node --host gpu-1.lan          # sudo asks once, at your terminal
+hale habitat organism unplace voice node --host gpu-1.lan
+```
+
+The command runs in the organism's own source at the revision the habitat pins, with the host's `hale`, over your SSH login. Inputs such as voice's operator token are fetched for the run, handed over in a private file, and removed afterwards ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Host commands).
+
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 
 While a **pack** is a reusable template of rows adopted inside an existing organism (positions, mandates, practices, knowledge), a **sapling** is a complete, prebuilt organism template published in a nursery and pinned by repository URL, Git revision, file tree SHA-256 digest, and default packs.

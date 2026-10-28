@@ -893,6 +893,56 @@ person is signed up in Grafana at their first visit, as an Editor.
 `HALE_DNA_GRAFANA=off` runs none, and a habitat with no senses' store of
 its own (its allocation publishes none) runs none and says so.
 
+## Host commands: an organism's own, on a host
+
+An organism may declare commands of its own that the habitat runs on a
+host it manages, in its manifest under `[dna.host.<name>]`. The habitat
+knows nothing of what a command does: voice's `node` installs whatever a
+machine needs to serve models, directly on the host, outside compose.
+
+```toml
+[dna.host.node]
+platforms = ["linux", "macos"]   # where it runs; empty: anywhere
+root = true                      # run under the person's sudo
+install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}", "--operator-token-file", "{operator_token_file}"]
+uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
+inputs = ["id", "api_url", "operator_token_file"]
+api_service = "api"                           # whose published address is {api_url} (default "api")
+operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
+```
+
+`hale habitat organism place <organism> <command> --host <h> [--id <id>]
+[--plan]` runs `install`, and `unplace` runs `uninstall`. Both need a
+grafted organism that came from a sapling the habitat pins, and a
+`ready` host:
+
+- **Its source.** The organism's sapling repository at its pinned
+  revision, cloned (then fetched) on the host under the login's
+  `~/.local/share/hale/hosted/<organism>`, where the command runs. Its
+  declaration is read from that checkout, so the command is the one the
+  pinned revision declares.
+- **Its toolchain.** A command whose first word is `hale` runs with the
+  host's own `hale`, by its path; a host with none is refused, naming the
+  there first.
+- **Its inputs**, each named in `inputs` and filled where its argv says
+  `{input}` (an input it does not declare, or one with no value, is
+  refused): `id` (`--id`, by default the host's first label), `api_url` (the
+  published address of `api_service` in the organism's `services`
+  allocation, as the head links it), `operator_token_file` (a 0600 file on
+  the host holding what `operator_token` prints in that service's
+  container, read over the person's login to the host the service runs on;
+  written for the run and removed however it ends; never on this machine's
+  disk, in the head, or in a command line).
+- **Who runs it.** Everything goes over the person's own SSH logins, as
+  `host add` makes the habitat's account; `root = true` runs it under the
+  person's sudo, so only at a terminal. `--plan` prints what would run,
+  where, and with what, and touches nothing on the host but the checkout.
+
+Not yet: the habitat records no row for a placed command (the
+infrastructure screen does not show it, and a host's removal does not run
+its `uninstall`), and the token of an api on the habitat's own machine is
+not read.
+
 ## Pairing: an agent beside a person
 
 The head serves its surface, `HeadCommands`, over a third transport beside

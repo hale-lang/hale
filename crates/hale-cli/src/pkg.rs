@@ -138,6 +138,11 @@ pub struct DnaManifest {
     /// `dna::habitat::manifest_codebases` reads them).
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
     pub codebase: Option<Vec<toml::Table>>,
+    /// `[dna.host.<name>]` — a host command of the organism's own, which the
+    /// habitat runs on a host it manages (`hale habitat organism place`;
+    /// `dna::habitat::hosted::host_commands` reads and checks it).
+    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    pub host: Option<toml::Table>,
 }
 
 /// GH #566 F5: the fleet the DNA expresses — its name and fleet seed
