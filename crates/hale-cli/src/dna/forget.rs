@@ -936,7 +936,7 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     }
     print_plan(&plan.items, &name);
     if !super::readings::node_exporter_off() {
-        println!("  - and the habitat's node exporter off this machine, if it installed one (an exporter it found is left)");
+        println!("  - and the habitat's node and container exporters off this machine, where it installed them (an exporter it found is left)");
     }
     if !plan.started.is_empty() {
         println!("(the habitat's memories were stopped, and were started to read the records)");
@@ -975,7 +975,7 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     }
     println!();
     if execute(&plan.items, &name) {
-        if let Some(l) = super::readings::remove_here().filter(|l| !l.is_empty()) {
+        for l in super::readings::remove_here() {
             println!("{l}");
         }
         println!("the habitat `{name}` is forgotten");

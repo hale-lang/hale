@@ -863,9 +863,23 @@ by its label, the launchd job by its label). An install that cannot run
 why and stops nothing: `up` and `host add` go on. `HALE_DNA_NODE_EXPORTER=off`
 turns all of it off for a run.
 
+**Containers too.** Beside its node exporter every machine runs a
+container exporter: cAdvisor (`ghcr.io/google/cadvisor`, pinned) as the
+container `hale-cadvisor` wherever docker runs, a Mac's inside docker's
+VM, where its containers are. It runs on the host's network on `:9338`,
+privileged, reading docker's containers only (docker's socket mounted by
+its own path, which a desktop VM's symlink would not resolve), keeping of
+their labels only `com.docker.compose.project` and
+`com.docker.compose.service`, and collecting CPU, memory, network and OOM
+events every 15 s. It is installed, found, replaced (labelled
+`lang.hale.cadvisor=<image>`) and removed where and when the node
+exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
+scrapes it as the job `containers` from `senses.d/containers/*.json`,
+which `up` adds to the habitat's store configuration when it has none.
+
 **What is scraped follows the record.** The store reads
 `senses.d/*.json` beside its allocation (mounted as a directory, so a file
-renamed into it is seen): `up` writes `hosts.json` with this machine
+renamed into it is seen): `up` writes `hosts.json` (and `containers/targets.json`, at `:9338`) with this machine
 (`host.docker.internal:9100`, the store's container reaching it over the
 host gateway) when there is none, and the head rewrites it whole from the
 `habitat.host` rows whenever one is written (`add_host`, `probe_host`) and
@@ -878,7 +892,10 @@ loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
 published on macOS but for that port), served under `/grafana/` of the
 face. Its provisioning (`<habitat>/grafana/provisioning`, written at
 every `up`) is the habitat's senses' store as its one data source (uid
-`habitat-senses`) and the habitat's dashboards, `Hosts` its home: whether
+`habitat-senses`) and the habitat's dashboards. `Containers` shows what
+runs where: each machine's running count, every container with its
+compose project and service, image and uptime, its CPU, memory and
+network, and the restarts and OOM kills in the window. `Hosts` is its home: whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator
