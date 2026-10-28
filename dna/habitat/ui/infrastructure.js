@@ -144,7 +144,7 @@ export async function refresh() {
     const tr = document.createElement("tr");
     const where = document.createElement("td");
     where.append(picker(a, names));
-    tr.append(cell(a.role), cell(named(a.instance)), cell(a.provider), cell(runsOf(a, grafted(a.instance))), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
+    tr.append(cell(a.role), cell(named(a.instance)), cell(a.runs_by || a.provider), cell(runsOf(a, grafted(a.instance))), cell(a.host ? hostLabel(a.host) : "none"), stateCell(a), where);
     rows.append(tr);
   }
   $("allocations-empty").hidden = allocs.length > 0;
