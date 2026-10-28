@@ -119,11 +119,19 @@ the order you should reach for them:
    after delivery.
 
 One structural consequence to internalize: **a `run()` loop is a
-single never-ending activation.** Nothing scratch-based reclaims
-inside it, and pending retires never flush. Hot per-iteration
-work belongs in a *method called from* the loop — the method
-boundary is the reclaim point. (This is why every churn example
-in this guide runs its body through a method.)
+single never-ending activation.** Its method scratch never resets
+and pending retires never flush. What an iteration makes is
+reclaimed when the iteration ends — a method's loop body gets a
+region of its own per iteration — as long as the body keeps
+nothing past it: it assigns no binding declared before the loop a
+value that is not a scalar or a locus reference, makes no locus,
+and uses no outer `bounded` or `BytesMut`. So `let c =
+body.chunk() or { break; }; h.update(c);` straight in `run()` is
+flat. A body that has to carry a heap value from one iteration to
+the next, or that churns a field of `self`, belongs in a *method
+called from* the loop — the method boundary is the reclaim point
+for those. (This is why the churn examples in this guide run
+their bodies through a method.)
 
 ---
 
@@ -2088,8 +2096,10 @@ thread / pool / subject / fd counts in CI — see
   it dissolves when the handler returns and can never fire.
   Compiler error; `accept` it instead. (In `run()` is fine.)
 - **Churning heap state directly in a `run()` loop** — a run loop
-  is one never-ending activation; nothing reclaims. Route
-  per-iteration work through a method.
+  is one never-ending activation: an iteration's own values are
+  reclaimed when it ends, but a heap value carried in a binding
+  from before the loop, or a field of `self` replaced each time,
+  is not. Route that work through a method.
 - **Deep `} else { if` ladders** — `else if` and `match` are
   first-class; String-match the command routers.
 - **Floating state** — every named piece of state has one locus

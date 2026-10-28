@@ -183,6 +183,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let subregion_fn = self
             .module
             .add_function("lotus_arena_create_subregion", subregion_ty, None);
+        // An iteration arena: `lotus_arena_iteration_enter(cur, parent)`
+        // frees the previous iteration's arena (`cur`, NULL before the
+        // first) and returns a fresh one owned by `parent`;
+        // `lotus_arena_iteration_leave(cur)` frees the last one when the
+        // loop is left (`Cx::lower_loop_body`).
+        self.module.add_function(
+            "lotus_arena_iteration_enter",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_arena_iteration_leave",
+            self.context.void_type().fn_type(&[ptr_t.into()], false),
+            None,
+        );
         let arena_alloc_ty =
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
         let arena_alloc_fn = self

@@ -136,11 +136,15 @@ fn same_field_replaces(before: &mut AllocSummary, now: &AllocSummary) {
 }
 
 /// `summary` with the reclaim boundary's correction (E3b) cleared: no
-/// fn's frame classified, and no site reclaimed at its fn's return.
+/// fn's frame classified, and no site reclaimed at its fn's return. The
+/// call-result survey is cleared too: a call's fresh String or Bytes is
+/// known only where the call resolves, which the stdlib's copy decides,
+/// a difference that is not this correction.
 fn without_frames(summary: &AllocSummary) -> AllocSummary {
     let mut s = summary.clone();
     for f in s.fns.values_mut() {
         f.frame = None;
+        f.call_results.clear();
         for site in &mut f.sites {
             if site.reclaim == hale_types::alloc_summary::ReclaimScope::FnReturn {
                 site.reclaim = hale_types::alloc_summary::ReclaimScope::EnclosingLocus;

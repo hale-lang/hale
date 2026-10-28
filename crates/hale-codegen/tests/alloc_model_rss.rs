@@ -224,21 +224,20 @@ const ARRAY_FIELD_REPLACE: &str = r#"
 "#;
 
 #[test]
-fn store_latest_field_replace_grows_inplace_stays_flat() {
-    // Model side: the whole-value replace is still an unbounded site —
-    // 2026-07-01 inline fixed arrays changed the MECHANISM but not the
-    // verdict. The store itself is now an in-place element memcpy into
-    // the inline field (nothing persists in the locus arena; the walker
-    // records the RHS as Local, not StoredToSelf), but the RHS array
-    // LITERAL arena-allocates in run()'s method scratch each iteration,
-    // and scratch reclaims at method EXIT — one long-running activation
-    // accumulates 32 B × trips regardless (measured 96 MB over 3M).
-    // The in-place indexed write has no allocation site at all.
+fn store_latest_field_replace_and_inplace_write_both_stay_flat() {
+    // Model side: the store is an in-place element memcpy into the
+    // inline field (2026-07-01 inline fixed arrays: nothing persists in
+    // the locus arena; the walker records the RHS as Local), and the RHS
+    // array LITERAL is made in the loop iteration's own arena, freed when
+    // the iteration ends (`hale_types::iteration_reclaim`: the body
+    // assigns only `self` and a scalar counter). Before per-iteration
+    // reclaim the literal piled up in run()'s method scratch, 32 B × trips
+    // (measured 96 MB over 3M), and this site was flagged. The in-place
+    // indexed write has no allocation site at all.
     assert!(
-        model_has_unbounded_site(ARRAY_FIELD_REPLACE),
-        "whole-value `self.recent = [..]` replace must stay flagged: the \
-         RHS literal accumulates in the activation's scratch even though \
-         the inline-array store itself no longer persists anything"
+        !model_has_unbounded_site(ARRAY_FIELD_REPLACE),
+        "whole-value `self.recent = [..]` replace in a loop body that keeps \
+         nothing past its iteration is reclaimed per iteration — no finding"
     );
     assert!(
         !model_has_unbounded_site(INPLACE_FIELD_WRITE),
@@ -246,25 +245,17 @@ fn store_latest_field_replace_grows_inplace_stays_flat() {
          unbounded"
     );
 
-    // Runtime side: RSS confirms. The replace accumulates ~96 MB of
-    // scratch-literal growth over 3M trips (was ~130 MB pre-inline, when
-    // the store also leaked a persisted copy per trip into the locus
-    // arena); the in-place write sits at the runtime floor (~5 MB).
+    // Runtime side: RSS confirms. The replace used to accumulate ~96 MB
+    // of scratch-literal growth over 3M trips; with the literal freed per
+    // iteration it sits at the in-place write's floor (~4 MB).
     let inplace_rss = build_and_rss("inplace_field_write", INPLACE_FIELD_WRITE);
     let replace_rss = build_and_rss("array_field_replace", ARRAY_FIELD_REPLACE);
-
-    // Threshold recalibrated 2026-07-01: pre-inline the gap was ~76 MB
-    // (scratch literal + a persisted copy per trip in the locus arena);
-    // inline arrays removed the ~35 MB persist component, leaving the
-    // scratch-literal growth. Measured self-RSS 2026-09-20: 96 MB of
-    // replace against a 4 MB in-place baseline.
     assert!(
-        replace_rss >= inplace_rss + 25,
-        "store-latest field replace should add >25MB over the in-place \
-         baseline: replace={}MB, inplace={}MB. If the gap collapsed, \
-         per-iteration literal allocation now reclaims mid-activation — \
-         revisit the model's scratch-accumulation verdict before trusting \
-         any store-latest-is-bounded refinement.",
+        replace_rss < inplace_rss + 25,
+        "a whole-value replace in a per-iteration-reclaimed loop should stay \
+         at the in-place baseline: replace={}MB, inplace={}MB. If it grew, \
+         the RHS literal no longer dies with its iteration, and the model's \
+         `per-iteration-reclaim` verdict for it is a false bound.",
         replace_rss,
         inplace_rss
     );
@@ -490,6 +481,10 @@ fn model_leaks(src: &str) -> Vec<String> {
         .collect()
 }
 
+// The run loop carries `held`, a record declared before it, from one
+// iteration to the next, so it is not reclaimed per iteration
+// (`hale_types::iteration_reclaim`) and stays on run()'s one activation:
+// the frame this rule is about.
 const CALLERS_ARENA: &str = r#"
     type Row { text: String; }
     fn tag_row(r: Row) -> Int { let t = r.text + "-" + to_string(len(r.text)); return len(t); }
@@ -497,8 +492,9 @@ const CALLERS_ARENA: &str = r#"
         params { n: Int = 1000000; sink: Int = 0; }
         run() {
             let r = Row { text: "abcdefghijklmnopqrstuvwxyz" };
+            let mut held = r;
             let mut i = 0;
-            while i < self.n { self.sink = self.sink + tag_row(r); i = i + 1; }
+            while i < self.n { self.sink = self.sink + tag_row(held); held = r; i = i + 1; }
             print("sink="); println(self.sink);
             print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
@@ -506,6 +502,10 @@ const CALLERS_ARENA: &str = r#"
     fn main() { App { }; }
 "#;
 
+// The run loop carries `held`, a record declared before it, from one
+// iteration to the next, so it is not reclaimed per iteration
+// (`hale_types::iteration_reclaim`) and stays on run()'s one activation:
+// the frame this rule is about.
 const OWN_SUBREGION: &str = r#"
     type Row { text: String; }
     fn tag(s: String) -> Int { let t = s + "-" + to_string(len(s)); return len(t); }
@@ -513,8 +513,9 @@ const OWN_SUBREGION: &str = r#"
         params { n: Int = 1000000; sink: Int = 0; }
         run() {
             let r = Row { text: "abcdefghijklmnopqrstuvwxyz" };
+            let mut held = r;
             let mut i = 0;
-            while i < self.n { self.sink = self.sink + tag(r.text); i = i + 1; }
+            while i < self.n { self.sink = self.sink + tag(held.text); held = r; i = i + 1; }
             print("sink="); println(self.sink);
             print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
@@ -605,6 +606,10 @@ const ACCUMULATOR_IN_METHOD: &str = r#"
     fn main() { App { }; }
 "#;
 
+// The run loop carries `held`, a record declared before it, from one
+// iteration to the next, so it is not reclaimed per iteration
+// (`hale_types::iteration_reclaim`) and stays on run()'s one activation:
+// the frame this rule is about.
 const ACCUMULATOR_IN_RUN: &str = r#"
     type Row { text: String; }
     fn join_n(r: Row, n: Int) -> String {
@@ -616,8 +621,9 @@ const ACCUMULATOR_IN_RUN: &str = r#"
     locus App {
         params { n: Int = 10000; sink: Int = 0; r: Row = Row { text: "abcdefgh" }; }
         run() {
+            let mut held = self.r;
             let mut i = 0;
-            while i < self.n { self.sink = self.sink + len(join_n(self.r, 20)); i = i + 1; }
+            while i < self.n { self.sink = self.sink + len(join_n(held, 20)); held = self.r; i = i + 1; }
             print("sink="); println(self.sink);
             print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }

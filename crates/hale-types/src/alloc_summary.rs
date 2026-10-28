@@ -134,6 +134,12 @@ pub enum AllocKind {
     /// place, copied at its first write (spec/types.md § A local bound
     /// from a place is yours).
     CellCopy(&'static str),
+    /// The fresh String or Bytes a call returns into the caller's arena
+    /// (`buf.snapshot()`, `body.chunk()`): the callee's declared return,
+    /// by the callee as written. Kept beside the sites
+    /// ([`FnSummary::call_results`]), read only by the leak survey: a
+    /// loop that keeps one per iteration is named at the call.
+    CallResult(String),
 }
 
 impl AllocKind {
@@ -149,8 +155,46 @@ impl AllocKind {
                 format!("place-copy ({reason})")
             }
             AllocKind::CellCopy(reason) => format!("cell-copy ({reason})"),
+            AllocKind::CallResult(callee) => format!("fresh value `{callee}(..)` returns"),
         }
     }
+}
+
+/// A fresh String or Bytes a call in a loop returns
+/// ([`FnSummary::call_results`]): the callee, and the site it is judged
+/// as ([`AllocKind::CallResult`]).
+#[derive(Debug, Clone)]
+pub struct CallResult {
+    pub callee: FnKey,
+    pub site: AllocSite,
+}
+
+/// The stdlib's locus names, and its free fns that return one, by their
+/// declared (mangled) names: read from the stdlib's own source, whether
+/// or not a summary holds its analysis copy, so the judgment of a loop
+/// body ([`Walker::loop_reclaims`]) is the same over the program alone
+/// and beside the copy (its own rows are the program's alone).
+fn stdlib_locus_facts() -> &'static (BTreeSet<String>, BTreeSet<String>) {
+    static FACTS: std::sync::OnceLock<(BTreeSet<String>, BTreeSet<String>)> = std::sync::OnceLock::new();
+    FACTS.get_or_init(|| {
+        let mut loci = BTreeSet::new();
+        let mut fns = BTreeSet::new();
+        if let Some(p) = crate::stdlib_bodies::program() {
+            for item in flat_decls(&p.items) {
+                if let TopDecl::Locus(l) = item {
+                    loci.insert(l.name.name.clone());
+                }
+            }
+            for item in flat_decls(&p.items) {
+                if let TopDecl::Fn(f) = item {
+                    if f.ret.as_ref().and_then(type_expr_name).is_some_and(|t| loci.contains(&t)) {
+                        fns.insert(f.name.name.clone());
+                    }
+                }
+            }
+        }
+        (loci, fns)
+    })
 }
 
 /// Phase D / D2: the `@form(...)` names whose inserts grow without bound
@@ -195,6 +239,21 @@ enum StrTy {
     Str,
     StrArray,
     Other,
+}
+
+/// Is `te` an owned String or Bytes, as a primitive or written as the
+/// bare name: what a call returning one hands its caller is a fresh
+/// value in the caller's arena (a view is not).
+fn is_fresh_heap_type(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Primitive(PrimType::String | PrimType::Bytes, _) => true,
+        TypeExpr::Named { path, generic_args, .. } => {
+            generic_args.is_empty()
+                && path.segments.len() == 1
+                && matches!(path.segments[0].name.as_str(), "String" | "Bytes")
+        }
+        _ => false,
+    }
 }
 
 /// Is `te` a String type: `String` or `StringView`, as a primitive or
@@ -624,6 +683,10 @@ pub struct AllocSite {
     /// (`(field, params)`): `retired_store` once every caller is shown
     /// to pass none of it ([`resolve_param_provenance`]).
     pub(crate) retire_if_params: Option<(String, BTreeSet<String>)>,
+    /// The site's innermost loop body reclaims per iteration
+    /// (`crate::iteration_reclaim`): the value lives in that iteration's
+    /// own arena, freed when the iteration ends.
+    pub iteration_reclaimed: bool,
     pub span: Span,
 }
 
@@ -631,6 +694,8 @@ impl AllocSite {
     pub fn verdict(&self) -> SiteVerdict {
         if self.loop_depth == 0 {
             SiteVerdict::OncePerInvocation
+        } else if self.iteration_reclaimed {
+            SiteVerdict::PerIterationReclaim
         } else if self.store_latest_copy() {
             // Retired by the next store into the field, at that store.
             SiteVerdict::PerIterationReclaim
@@ -1011,6 +1076,12 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
+    /// The fresh Strings and Bytes the body's calls inside loops return
+    /// into its arena ([`AllocKind::CallResult`]), with each loop's
+    /// verdict as a site's. Not in `sites`: the budgets and certificates
+    /// that count sites count literals, and these are read only by the
+    /// leak survey ([`AllocSummary::leak_sites`]).
+    pub call_results: Vec<CallResult>,
     /// GH #1490 (step 4): what each publish of the body carries.
     pub(crate) sends: Vec<Taint>,
     /// What a free fn's body allocates into, as lowering routes it
@@ -1465,7 +1536,10 @@ impl AllocSummary {
                 }
                 calls.push(e);
             }
-            fns.insert(f.key.clone(), FnSummary { calls, ..f.clone() });
+            // A call into the copy is unresolved alone, so it returns
+            // nothing the program alone knows of.
+            let call_results = f.call_results.iter().filter(|r| !copy(&r.callee)).cloned().collect();
+            fns.insert(f.key.clone(), FnSummary { calls, call_results, ..f.clone() });
         }
         // The program alone numbers its function-value dispatches after
         // all of its interface dispatches, each in the fns' order.
@@ -2023,6 +2097,23 @@ impl AllocSummary {
                     });
                 }
             }
+            // A fresh String or Bytes a call returns, kept once per
+            // iteration of the body's own unbounded loop: named at the
+            // call, as a literal is named at the literal.
+            for s in f.call_results.iter().map(|r| &r.site) {
+                if s.verdict() == SiteVerdict::AccumulatesUnbounded
+                    && self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers)
+                        == SiteVerdict::AccumulatesUnbounded
+                {
+                    out.push(LeakSite {
+                        owner: f.key.clone(),
+                        kind: s.kind.clone(),
+                        escape: s.escape,
+                        reason: LeakReason::InUnboundedLoop,
+                        span: s.span,
+                    });
+                }
+            }
         }
         out
     }
@@ -2576,6 +2667,9 @@ pub fn summarize_within(
     // the String fields of every struct type and locus, so a `+` is
     // read as a concatenation by its operands' declared types.
     let mut string_rets: BTreeSet<FnKey> = BTreeSet::new();
+    // The fns and methods that return a fresh String or Bytes (a call's
+    // result in a loop: `Walker::record_call`).
+    let mut heap_rets: BTreeSet<FnKey> = BTreeSet::new();
     // GH #1490 (step 4): every fn's and method's parameters with their
     // defaults — a default is evaluated in the CALLER's scope, so a call
     // that leaves a parameter passes what the default reads there — and
@@ -2887,6 +2981,9 @@ pub fn summarize_within(
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
                     silence(&key, decl.unbounded, &decl.bounded_by);
                     known.insert((None, key.fn_name.clone()), key.clone());
+                    if decl.ret.as_ref().is_some_and(is_fresh_heap_type) {
+                        heap_rets.insert(key.clone());
+                    }
                     if decl.ret.as_ref().is_some_and(is_string_type) {
                         string_rets.insert(key.clone());
                     }
@@ -3012,6 +3109,9 @@ pub fn summarize_within(
                                 };
                                 silence(&key, decl.unbounded, &decl.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
+                                if decl.ret.as_ref().is_some_and(is_fresh_heap_type) {
+                                    heap_rets.insert(key.clone());
+                                }
                                 if decl.ret.as_ref().is_some_and(is_string_type) {
                                     string_rets.insert(key.clone());
                                 }
@@ -3368,6 +3468,9 @@ pub fn summarize_within(
             self_replace: None,
             let_call: None,
             in_place_sites: Vec::new(),
+            call_results: Vec::new(),
+            heap_rets: &heap_rets,
+            claimed: (Vec::new(), Vec::new()),
             sends: Vec::new(),
             retired_init: false,
             cell_copies: cell_copies.get(&scope_index(ids)).unwrap_or(&no_cell_copies),
@@ -3389,6 +3492,7 @@ pub fn summarize_within(
                 mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
+                call_results: w.call_results,
                 sends: w.sends,
                 frame: None,
             },
@@ -4985,7 +5089,10 @@ pub fn unbounded_alloc_diags(
                      until the locus dissolves — it is never reclaimed per iteration, \
                      so it grows without bound (or acknowledge an \
                      intentionally-/domain-bounded shape with `@unbounded` \
-                     on the enclosing fn, lifecycle hook or mode). Bound the loop; \
+                     on the enclosing fn, lifecycle hook or mode). Keep it in its \
+                     iteration: a method's loop body that assigns no binding declared \
+                     before the loop with a value that is not a scalar or a locus frees \
+                     what each iteration makes when the iteration ends. Bound the loop; \
                      store it in a \
                      capacity-bounded form (`@form(ring_buffer)` / `@form(lru_cache)` / \
                      a `capacity` slot) instead of a replaced field; mutate fixed state \
@@ -5686,6 +5793,14 @@ struct Walker<'a> {
     let_call: Option<(Span, Span)>,
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
+    /// [`FnSummary::call_results`].
+    call_results: Vec<CallResult>,
+    /// The fns and methods whose declared return is a String or Bytes:
+    /// a call to one returns a fresh value into the caller's arena.
+    heap_rets: &'a BTreeSet<FnKey>,
+    /// Which `sites` and `call_results` an inner loop already judged
+    /// ([`Walker::judge_iteration`]).
+    claimed: (Vec<bool>, Vec<bool>),
     /// `FnSummary::sends`.
     sends: Vec<Taint>,
     /// GH #1490 (step 4): the expression walked next is a whole field
@@ -5698,6 +5813,238 @@ struct Walker<'a> {
 }
 
 impl<'a> Walker<'a> {
+    /// Does this loop `body` reclaim per iteration, as lowering decides
+    /// (`crate::iteration_reclaim`)? Only a locus member's frame has the
+    /// per-call scratch the iteration arenas hang off. The bindings
+    /// outside the body are judged by their declarations
+    /// ([`Walker::outer_kinds`]), a locus by its literal or a free fn
+    /// returning one.
+    fn loop_reclaims(&self, body: &Block) -> bool {
+        if self.enclosing_locus.is_none() {
+            return false;
+        }
+        let kinds = self.outer_kinds();
+        let outer = |n: &str| kinds.get(n).copied();
+        let produces_locus = |e: &Expr| self.makes_locus(e);
+        crate::iteration_reclaim::reclaims_per_iteration(body, &outer, &produces_locus)
+    }
+
+    /// Does `e` make a locus: a literal of one, or a call of a free fn
+    /// whose declared return is one.
+    fn makes_locus(&self, e: &Expr) -> bool {
+        let (std_loci, std_makers) = stdlib_locus_facts();
+        match e {
+            Expr::Struct { path, .. } => {
+                let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                slot_locus(path, self.locus_types, self.rename_map).is_some_and(|l| self.is_locus_name(&l))
+                    || crate::stdlib_bodies::mangled_locus_name(&segs).is_some_and(|m| std_loci.contains(m))
+            }
+            Expr::Call { callee, .. } => {
+                let std_maker = match callee.as_ref() {
+                    Expr::Path(qp) => {
+                        let segs: Vec<&str> = qp.segments.iter().map(|s| s.name.as_str()).collect();
+                        crate::ownership::stdlib_mangled_for_path(&segs).is_some_and(|m| std_makers.contains(m))
+                    }
+                    _ => false,
+                };
+                std_maker || self.receiver_type_name(e).is_some_and(|t| self.is_locus_name(&t))
+            }
+            _ => false,
+        }
+    }
+
+    /// Is `name` a locus: the program's, or the stdlib's whether or not
+    /// its analysis copy is beside the program ([`stdlib_locus_facts`]).
+    fn is_locus_name(&self, name: &str) -> bool {
+        self.locus_types.contains(name) || stdlib_locus_facts().0.contains(name)
+    }
+
+    /// What each binding of the body holds, by its declaration: a
+    /// parameter, a `let`, a tuple `let`'s names, a `for` binder. A name
+    /// declared more than once takes the widest of its kinds.
+    fn outer_kinds(&self) -> BTreeMap<String, crate::iteration_reclaim::OuterLocal> {
+        use crate::iteration_reclaim::OuterLocal;
+        let mut out: BTreeMap<String, OuterLocal> = BTreeMap::new();
+        fn rank(k: OuterLocal) -> u8 {
+            match k {
+                OuterLocal::Scalar => 0,
+                OuterLocal::Locus => 1,
+                OuterLocal::Heap => 2,
+                OuterLocal::Buffer => 3,
+            }
+        }
+        fn join(out: &mut BTreeMap<String, OuterLocal>, name: &str, k: OuterLocal) {
+            let merged = match out.get(name) {
+                None => k,
+                Some(&prev) if prev == k => k,
+                Some(&prev) => {
+                    if rank(prev).max(rank(k)) >= 2 {
+                        if rank(prev) > rank(k) { prev } else { k }
+                    } else {
+                        OuterLocal::Heap
+                    }
+                }
+            };
+            out.insert(name.to_string(), merged);
+        }
+        for p in &self.fn_params {
+            let k = match self.var_types.get(p) {
+                Some(t) if self.is_locus_name(t) => OuterLocal::Locus,
+                _ => OuterLocal::Heap,
+            };
+            join(&mut out, p, k);
+        }
+        fn walk_block(w: &Walker<'_>, b: &Block, out: &mut BTreeMap<String, OuterLocal>) {
+            for st in &b.stmts {
+                walk_stmt(w, st, out);
+            }
+        }
+        fn walk_stmt(w: &Walker<'_>, st: &Stmt, out: &mut BTreeMap<String, OuterLocal>) {
+            match st {
+                Stmt::Let { name, ty, value, .. } => {
+                    let k = w.declared_kind(ty.as_ref(), value, out);
+                    join(out, &name.name, k);
+                }
+                Stmt::LetTuple { names, .. } => {
+                    for n in names {
+                        join(out, &n.name, OuterLocal::Heap);
+                    }
+                }
+                Stmt::For { name, iter, body, .. } => {
+                    let k = if matches!(iter, Expr::Range { .. }) { OuterLocal::Scalar } else { OuterLocal::Heap };
+                    join(out, &name.name, k);
+                    walk_block(w, body, out);
+                }
+                Stmt::While { body, .. } => walk_block(w, body, out),
+                Stmt::Block(b) => walk_block(w, b, out),
+                Stmt::If(i) => walk_if(w, i, out),
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(b) = &arm.body {
+                            walk_block(w, b, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn walk_if(w: &Walker<'_>, i: &IfStmt, out: &mut BTreeMap<String, OuterLocal>) {
+            walk_block(w, &i.then_block, out);
+            match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => walk_block(w, b, out),
+                Some(ElseBranch::ElseIf(e)) => walk_if(w, e, out),
+                None => {}
+            }
+        }
+        walk_block(self, self.fn_body, &mut out);
+        out
+    }
+
+    /// What a `let` declared `ty` and bound to `value` holds: a scalar by
+    /// its type, a scalar literal or a scalar expression over the
+    /// bindings declared so far (`known`), a locus by its type or its
+    /// making; anything else may point into an arena.
+    fn declared_kind(
+        &self,
+        ty: Option<&TypeExpr>,
+        value: &Expr,
+        known: &BTreeMap<String, crate::iteration_reclaim::OuterLocal>,
+    ) -> crate::iteration_reclaim::OuterLocal {
+        use crate::iteration_reclaim::OuterLocal;
+        if let Some(te) = ty {
+            return match te {
+                TypeExpr::Primitive(
+                    PrimType::Int
+                    | PrimType::Uint
+                    | PrimType::Float
+                    | PrimType::Decimal(_)
+                    | PrimType::Bool
+                    | PrimType::Time
+                    | PrimType::Duration,
+                    _,
+                ) => OuterLocal::Scalar,
+                TypeExpr::Primitive(PrimType::BytesMut, _) | TypeExpr::Bounded { .. } => OuterLocal::Buffer,
+                _ if type_expr_name(te).is_some_and(|n| self.is_locus_name(&n)) => OuterLocal::Locus,
+                _ => OuterLocal::Heap,
+            };
+        }
+        if self.makes_locus(value) {
+            return OuterLocal::Locus;
+        }
+        if self.scalar_expr(value, known) {
+            OuterLocal::Scalar
+        } else {
+            OuterLocal::Heap
+        }
+    }
+
+    /// Is `e` certainly a scalar: a numeric, boolean or time literal, a
+    /// comparison or logic, arithmetic over scalars, a scalar binding, a
+    /// builtin returning a scalar (`len`).
+    fn scalar_expr(&self, e: &Expr, known: &BTreeMap<String, crate::iteration_reclaim::OuterLocal>) -> bool {
+        use crate::iteration_reclaim::OuterLocal;
+        match e {
+            Expr::Literal(l, _) => matches!(
+                l,
+                Literal::Int(_) | Literal::Float(_) | Literal::Decimal(_) | Literal::Bool(_) | Literal::Time(_) | Literal::Quantity { .. }
+            ),
+            Expr::Ident(i) => known.get(&i.name) == Some(&OuterLocal::Scalar),
+            Expr::Unary { operand, .. } => self.scalar_expr(operand, known),
+            Expr::Binary { op, left, right, .. } => match op {
+                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq | BinOp::And | BinOp::Or => true,
+                _ => self.scalar_expr(left, known) && self.scalar_expr(right, known),
+            },
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(id) if self.local(&id.name).is_none() && self.own_fn(&id.name).is_none() => {
+                    crate::builtin_sigs::bare_builtin_sig(&id.name).is_some_and(|s| {
+                        matches!(
+                            s.returns,
+                            crate::builtin_sigs::Returns::Prim(PrimType::Int | PrimType::Float | PrimType::Bool)
+                        )
+                    })
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// A loop body was just walked, its sites from `marks` on: the ones
+    /// no inner loop judged are this loop's, reclaimed per iteration when
+    /// the body is (`reclaims`) and the value stays in the iteration (a
+    /// `Local` literal, concatenation or call result; a locus literal has
+    /// an arena of its own, a cell copy is made before the body).
+    fn judge_iteration(&mut self, marks: (usize, usize), reclaims: bool) {
+        let eligible = |site: &AllocSite, locus_types: &BTreeSet<String>| {
+            site.escape == Escape::Local
+                && match &site.kind {
+                    AllocKind::StructLit(n) => !locus_types.contains(n) && !stdlib_locus_facts().0.contains(n),
+                    AllocKind::ArrayLit
+                    | AllocKind::ArrayRepeat
+                    | AllocKind::BytesLit
+                    | AllocKind::StringConcat
+                    | AllocKind::CallResult(_) => true,
+                    AllocKind::CollectionInsert(_) | AllocKind::CellCopy(_) => false,
+                }
+        };
+        let locus_types = self.locus_types;
+        self.claimed.0.resize(self.sites.len(), false);
+        for i in marks.0..self.sites.len() {
+            if !std::mem::replace(&mut self.claimed.0[i], true) && reclaims && eligible(&self.sites[i], locus_types) {
+                self.sites[i].iteration_reclaimed = true;
+            }
+        }
+        self.claimed.1.resize(self.call_results.len(), false);
+        for i in marks.1..self.call_results.len() {
+            if !std::mem::replace(&mut self.claimed.1[i], true)
+                && reclaims
+                && eligible(&self.call_results[i].site, locus_types)
+            {
+                self.call_results[i].site.iteration_reclaimed = true;
+            }
+        }
+    }
+
     /// GH #265: record a syntactic effect site (publish / spawn) in
     /// the fn currently being summarized.
     fn push_effect_site(
@@ -5762,6 +6109,7 @@ impl<'a> Walker<'a> {
             bare_stmt: false,
             self_replace: None,
             retire_if_params: None,
+            iteration_reclaimed: false,
             span,
         }
     }
@@ -6114,6 +6462,7 @@ impl<'a> Walker<'a> {
             bare_stmt: false,
             self_replace: None,
             retire_if_params: None,
+            iteration_reclaimed: false,
             span,
         });
     }
@@ -6616,6 +6965,7 @@ impl<'a> Walker<'a> {
                             bare_stmt: false,
                             self_replace: None,
                             retire_if_params: None,
+                            iteration_reclaimed: false,
                             span: *span,
                         });
                     }
@@ -6724,7 +7074,10 @@ impl<'a> Walker<'a> {
                 self.strs.push(BTreeMap::from([(name.name.clone(), binder)]));
                 let iter_t = self.taint_of(iter);
                 self.taints.push(BTreeMap::from([(name.name.clone(), iter_t)]));
+                let reclaims = self.loop_reclaims(body);
+                let marks = (self.sites.len(), self.call_results.len());
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.judge_iteration(marks, reclaims);
                 self.taints.pop();
                 self.strs.pop();
                 self.locals.pop();
@@ -6758,7 +7111,10 @@ impl<'a> Walker<'a> {
                 self.loop_stack.push(bounded);
                 self.infinite_stack.push(infinite);
                 self.loops_as_written += 1;
+                let reclaims = self.loop_reclaims(body);
+                let marks = (self.sites.len(), self.call_results.len());
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.judge_iteration(marks, reclaims);
                 self.loops_as_written -= 1;
                 self.loop_stack.pop();
                 self.infinite_stack.pop();
@@ -7001,6 +7357,7 @@ impl<'a> Walker<'a> {
                         bare_stmt: false,
                         self_replace: None,
                         retire_if_params,
+                        iteration_reclaimed: false,
                         span,
                     });
                 }
@@ -7244,6 +7601,19 @@ impl<'a> Walker<'a> {
                 arg_taints: vec![Taint::none(), Taint::none()],
                 self_call,
             });
+        }
+        // A call in a loop of a locus member whose callee returns a fresh
+        // String or Bytes leaves it in this frame's arena (the caller
+        // arena it publishes), one per iteration unless the iteration is
+        // reclaimed (`crate::iteration_reclaim`, which only a locus
+        // member's frame has).
+        if depth > 0 && escape == Escape::Local && self.enclosing_locus.is_some() {
+            if let Callee::Resolved(key) = &resolved {
+                if self.heap_rets.contains(key) {
+                    let site = self.site(AllocKind::CallResult(key.fn_name.clone()), escape, depth, span);
+                    self.call_results.push(CallResult { callee: key.clone(), site });
+                }
+            }
         }
         self.calls.push(CallEdge {
             recv_ty,
@@ -8204,7 +8574,7 @@ mod tests {
             type Tmp { a: Int; }
             locus L {
                 bus { subscribe "in" as on_in of type T; }
-                fn on_in(m: T) { while true { let tmp = Tmp { a: m.n }; let _ = tmp.a; } }
+                fn on_in(m: T) { let mut keep = Tmp { a: 0 }; while true { let tmp = Tmp { a: m.n }; keep = tmp; } }
             }
             fn main() { }
         "#;
@@ -9004,21 +9374,62 @@ mod tests {
     #[test]
     fn struct_in_while_true_is_leak_precursor() {
         // The empirically-validated model: a value alloc in an unbounded
-        // loop accumulates (reclaim@locus-dissolve), so the verdict is
-        // ACCUMULATES-UNBOUNDED — even though it never escapes.
+        // loop whose body keeps it past the iteration (here in a binding
+        // declared before the loop, so the body is not reclaimed per
+        // iteration) accumulates (reclaim@locus-dissolve), so the verdict
+        // is ACCUMULATES-UNBOUNDED — even though it never escapes the fn.
         let src = r#"
             type Q { a: Int; }
             locus C {
-                run { let mut i = 0; while true { let q = Q { a: i }; i = i + 1; } }
+                run { let mut i = 0; let mut last = Q { a: 0 }; while true { let q = Q { a: i }; last = q; i = i + 1; } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, Some("C"), "run");
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_)) && s.loop_depth > 0).expect("struct");
+        assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
+        assert!(st.in_unbounded_loop);
+        assert!(!st.iteration_reclaimed);
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    /// The same literal in a body that keeps nothing past its iteration
+    /// (a scalar counter is all it assigns from outside): the body has an
+    /// arena of its own per iteration (`crate::iteration_reclaim`), so
+    /// the site is reclaimed per iteration, and so is the fresh Bytes a
+    /// call returns there.
+    #[test]
+    fn a_loop_body_that_keeps_nothing_reclaims_per_iteration() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                fn piece(b: Bytes) -> Bytes { return b; }
+                run { let mut i = 0; while true { let q = Q { a: i }; let c = self.piece(b"y"); i = i + len(c); } }
             }
             fn main() { }
         "#;
         let s = summarize(src);
         let f = fns(&s, Some("C"), "run");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
-        assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
-        assert!(st.in_unbounded_loop);
-        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+        assert!(st.iteration_reclaimed);
+        assert_eq!(st.verdict(), SiteVerdict::PerIterationReclaim);
+        let [call] = f.call_results.as_slice() else { panic!("one call result: {:?}", f.call_results) };
+        assert_eq!(call.site.kind, AllocKind::CallResult("piece".to_string()));
+        assert!(call.site.iteration_reclaimed);
+        assert!(s.leak_sites().is_empty(), "{:?}", s.leak_sites());
+        // Kept in a binding from before the loop, the call is the leak,
+        // named at the call.
+        let kept = r#"
+            locus C {
+                fn piece(b: Bytes) -> Bytes { return b; }
+                run { let mut last = b""; let b = b"y"; while true { let c = self.piece(b); last = c; } }
+            }
+            fn main() { }
+        "#;
+        let leaks = summarize(kept).leak_sites();
+        assert_eq!(leaks.len(), 1, "{leaks:?}");
+        assert_eq!(leaks[0].kind, AllocKind::CallResult("piece".to_string()));
     }
 
     #[test]
@@ -9359,7 +9770,7 @@ mod tests {
     fn a_stdlib_decorator_counts_what_its_removal_adds() {
         let judged = |deco: &str| {
             let runtime = format!(
-                "type __StdTestQ {{ a: Int; }}\nlocus __StdTestLoop {{\n    {deco}\n    run {{ while true {{ let q = __StdTestQ {{ a: 1 }}; }} }}\n}}\n"
+                "type __StdTestQ {{ a: Int; }}\nlocus __StdTestLoop {{\n    {deco}\n    run {{ let mut keep = __StdTestQ {{ a: 0 }}; while true {{ let q = __StdTestQ {{ a: 1 }}; keep = q; }} }}\n}}\n"
             );
             let rt = hale_syntax::parse_source_at(&runtime, crate::rpc_expand::RUNTIME_BASE).expect("parse");
             let (program, ids) = minted_with("locus Mine { run { } }", |p| p.items.extend(rt.items));
@@ -9384,7 +9795,7 @@ mod tests {
     fn diags_are_located_and_nonempty_for_a_leak() {
         let src = r#"
             type Q { a: Int; }
-            locus C { run { while true { let q = Q { a: 1 }; } } }
+            locus C { run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 1 }; keep = q; } } }
             fn main() { }
         "#;
         let (program, ids) = minted(src);
@@ -9401,7 +9812,7 @@ mod tests {
         // default (non-survey) scope reports it.
         let src = r#"
             type Q { a: Int; }
-            @bounded locus C { run { while true { let q = Q { a: 1 }; } } }
+            @bounded locus C { run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 1 }; keep = q; } } }
             fn main() { }
         "#;
         let (program, ids) = minted(src);
@@ -9417,7 +9828,7 @@ mod tests {
         let src = r#"
             type Q { a: Int; }
             @bounded locus C {
-                @unbounded run { while true { let q = Q { a: 1 }; } }
+                @unbounded run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 1 }; keep = q; } }
             }
             fn main() { }
         "#;
@@ -9505,7 +9916,7 @@ mod tests {
         // The same locus parsed at 0 and at the api binding's base, beside
         // the author's program, in a harness bundle (no origin rows): the
         // span alone decides.
-        let synth = "locus S { run { while true { let q = Q { a: 3 }; } } }\n";
+        let synth = "locus S { run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 3 }; keep = q; } } }\n";
         let harness = crate::snapshot::Snapshot::default();
         let reported = |base: u32| {
             let generated = hale_syntax::parse_source_at(synth, base).expect("parse");

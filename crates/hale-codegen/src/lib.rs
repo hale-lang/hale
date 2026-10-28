@@ -53,6 +53,7 @@ pub(crate) mod h2_runtime;
 pub(crate) mod ed25519_runtime;
 pub(crate) mod conversion;
 pub(crate) mod form;
+pub(crate) mod iteration_arena;
 pub(crate) mod locus;
 pub use hale_types::mangle;
 pub use hale_types::ownership;

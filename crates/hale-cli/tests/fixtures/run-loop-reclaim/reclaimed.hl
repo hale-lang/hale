@@ -1,0 +1,53 @@
+// A long-lived locus whose `run()` loops make a fresh Bytes per
+// iteration directly in the loop body: a snapshot of a builder, with a
+// `break` handler and with a fallback literal, and a `BodyReader`'s
+// chunks hashed and written out as they arrive. No binding declared
+// before a loop is assigned a value that is not a scalar, so each loop
+// body frees what its iteration made when the iteration ends, and
+// `hale verify` has nothing to name.
+locus Download {
+    params {
+        url: String = "";
+        path: String = "";
+        n: Int = 4;
+    }
+
+    run() {
+        let buf = std::bytes::BytesBuilder { initial_cap: 65536 };
+        let mut k = 0;
+        let mut total = 0;
+        while true {
+            if k == self.n {
+                break;
+            }
+            let c = buf.snapshot() or { break; };
+            total = total + len(c);
+            k = k + 1;
+        }
+        while true {
+            let c = buf.snapshot() or b"";
+            total = total + len(c);
+            if total > 1000 {
+                break;
+            }
+        }
+        let u = std::http::parse_url(self.url) or std::http::Url { };
+        let body = std::http::BodyReader { req: std::http::ClientRequest { url: u, body: b"" } };
+        let out = std::io::file::open(self.path, "w") or {
+            println("error: " + err.kind);
+            return;
+        };
+        let h = std::crypto::Sha256 { };
+        while true {
+            let c = body.chunk() or { break; };
+            h.update(c);
+            out.write_bytes(c) or { break; };
+            total = total + len(c);
+        }
+        println("bytes=", total, " sha256=", std::hex::encode(h.finish()));
+    }
+}
+
+fn main() {
+    let d = Download { url: std::env::arg(1), path: std::env::arg(2) };
+}

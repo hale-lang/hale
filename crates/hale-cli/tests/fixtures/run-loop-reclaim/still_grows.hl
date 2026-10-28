@@ -1,0 +1,23 @@
+// A `run()` loop that keeps each iteration's snapshot in a binding
+// declared before the loop: the loop runs on the frame's scratch, every
+// snapshot stays until the locus dissolves, and `hale verify` names the
+// call that makes it.
+locus Grow {
+    params {
+        n: Int = 4;
+    }
+
+    run() {
+        let buf = std::bytes::BytesBuilder { initial_cap: 65536 };
+        let mut last = b"";
+        while true {
+            let c = buf.snapshot() or { break; };
+            last = c;
+        }
+        println(len(last));
+    }
+}
+
+fn main() {
+    let g = Grow { };
+}

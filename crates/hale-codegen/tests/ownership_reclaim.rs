@@ -1,4 +1,4 @@
-//! The `ownership_reclaim` integration-test binary: 26 test files of this area, kept
+//! The `ownership_reclaim` integration-test binary: 27 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -29,6 +29,8 @@ mod framework_elision;
 mod freefn_locus_rebind;
 #[path = "held_failure_outlives_reclaim.rs"]
 mod held_failure_outlives_reclaim;
+#[path = "loop_iteration_reclaim.rs"]
+mod loop_iteration_reclaim;
 #[path = "method_return_dissolve.rs"]
 mod method_return_dissolve;
 #[path = "method_scratch_elision.rs"]

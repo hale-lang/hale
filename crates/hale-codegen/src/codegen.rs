@@ -232,6 +232,8 @@ pub(crate) enum BlockEnd {
     Terminated,
 }
 
+pub(crate) use crate::iteration_arena::IterArena;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopFrame<'ctx> {
     continue_bb: BasicBlock<'ctx>,
@@ -1654,6 +1656,9 @@ fn build_resolved_lowered(
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
         current_method_scratch: None,
+        iter_arenas: Vec::new(),
+        iter_arena_suspended: 0,
+        iter_arena_leaves: Vec::new(),
         current_method_caller_arena: None,
         current_user_fn_exit_bb: None,
         current_user_fn_ret_alloca: None,
@@ -4141,6 +4146,18 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// entry (= the arena the caller published before invoking
     /// us).
     pub(crate) current_method_caller_arena: Option<PointerValue<'ctx>>,
+    /// The loop bodies being lowered that reclaim per iteration
+    /// (`lower_loop_body`, `hale_types::iteration_reclaim`), innermost
+    /// last: `current_arena_ptr` routes an allocation of the innermost
+    /// one's body into its iteration arena.
+    pub(crate) iter_arenas: Vec<IterArena<'ctx>>,
+    /// Above zero while a `return`'s or `fail`'s value is lowered: what
+    /// leaves the frame is made in the frame's own arena, where the
+    /// epilogue copies it from, never in an iteration's.
+    pub(crate) iter_arena_suspended: u32,
+    /// The slots of the iteration arenas a loop being lowered opened,
+    /// whose last iteration the loop's exit frees (`lower_loop_stmt`).
+    pub(crate) iter_arena_leaves: Vec<PointerValue<'ctx>>,
     /// v1.x-FORM-2 PR6: per-call fallible-fn state. Set in
     /// `lower_user_fn_body` when `sig.fallible` is `Some`; cleared
     /// when the body finishes. `Stmt::Fail` writes the payload
@@ -19127,7 +19144,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Stmt::If(if_stmt) => self.lower_if(if_stmt, scope),
             Stmt::While { cond, body, .. } => {
-                self.lower_while(cond, body, scope)
+                self.lower_loop_stmt(|cx| cx.lower_while(cond, body, scope))
             }
             Stmt::For { name, iter, body, id, .. } => {
                 // An element of an array read from a place views it, as
@@ -19135,7 +19152,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let owned = self.owned_views.node(*id);
                 let cell_owned = self.owned_views.cell_owned(*id);
                 let cow = self.owned_views.cow_bind(*id, &name.name).map(|f| f.to_vec());
-                self.lower_for(name, iter, body, owned, cell_owned, cow, scope)
+                self.lower_loop_stmt(|cx| cx.lower_for(name, iter, body, owned, cell_owned, cow, scope))
             }
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
@@ -19203,7 +19220,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_return(None, scope)
             }
             Stmt::Block(b) => self.lower_block(b, scope),
-            Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
+            Stmt::Return(expr_opt, _) => self.outside_iteration_arenas(|cx| cx.lower_return(expr_opt.as_ref(), scope)),
             Stmt::Recovery { op, args, modifier, span } => {
                 // `for N` bounds how many times this child is
                 // restarted; on the failure that exhausts it the
@@ -19703,7 +19720,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Terminated)
             }
             Stmt::Match(m) => self.lower_match_stmt(m, scope),
-            Stmt::Fail { value, .. } => self.lower_fail(value, scope),
+            Stmt::Fail { value, .. } => self.outside_iteration_arenas(|cx| cx.lower_fail(value, scope)),
             Stmt::Expr(Expr::Or { inner, disposition, .. }) => {
                 // v1.x-FORM-4: `r.remove(k) or raise;` /
                 // `r.remove(k) or ();` as a bare statement.
@@ -19823,7 +19840,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: header_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -22320,7 +22337,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -22463,7 +22480,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -22767,7 +22784,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -22929,7 +22946,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -23080,7 +23097,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Lower the body; pop the BCE frame on EVERY exit path
         // (including the error early-return) so the registry stays
         // balanced.
-        let body_res = self.lower_block(body, scope);
+        let body_res = self.lower_loop_body(body, scope);
         if bce_pushed {
             self.bce_loops.pop();
         }
@@ -23229,7 +23246,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -23414,7 +23431,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             continue_bb: inc_bb,
             break_bb: exit_bb,
         });
-        let body_end = self.lower_block(body, scope)?;
+        let body_end = self.lower_loop_body(body, scope)?;
         self.loops.pop();
         if body_end == BlockEnd::Open {
             self.builder
@@ -37740,6 +37757,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         if let Some(p) = self.current_arena_override {
+            return Ok(p);
+        }
+        // A loop body reclaimed per iteration allocates into its
+        // iteration's arena (`crate::iteration_arena`).
+        if let Some(p) = self.iteration_arena_ptr()? {
             return Ok(p);
         }
         let ptr_t = self.context.ptr_type(AddressSpace::default());

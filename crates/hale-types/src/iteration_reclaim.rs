@@ -1,0 +1,294 @@
+//! Per-iteration reclaim: which loop bodies free what an iteration
+//! makes when the iteration ends.
+//!
+//! A frame with a per-call scratch (a locus method, a lifecycle hook, a
+//! handler) allocates into that scratch until it returns, so a loop in
+//! it used to keep every iteration's values until the frame returned: a
+//! `run()` that loops for its locus's whole life kept them until the
+//! locus dissolved, while the same body moved into a method stayed flat.
+//! Lowering now gives such a loop body an arena of its own for each
+//! iteration (`lotus_arena_iteration_enter`), freed when the next
+//! iteration starts or the loop is left. This module is the one rule
+//! deciding which bodies get it, read by lowering
+//! (`hale_codegen::Cx::lower_loop_body`) and by the allocation summary
+//! (`crate::alloc_summary`), which reports the sites such a body makes
+//! as reclaimed per iteration.
+//!
+//! What an iteration hands on keeps the ownership it has without the
+//! rule: a value stored into `self` (or any locus) is copied into that
+//! locus's arena, a sent value into the payload arena, a returned one
+//! into the caller's (the `return` is lowered outside the iteration's
+//! arena). What the rule refuses is the one way left for a value to
+//! outlive its iteration: a binding declared before the body. So a body
+//! reclaims per iteration unless it
+//!
+//! - assigns a binding declared outside it that can hold arena memory
+//!   (anything but a scalar or a locus reference), whole or through a
+//!   field or an index;
+//! - writes an element into a `bounded[T; N]` held by such a binding
+//!   (`push(kept.items, r)`, `set`, `truncate`, `clear`): the element is
+//!   copied into the current arena, which is the iteration's;
+//! - names an outside binding whose value grows in the frame's arena when
+//!   used (a `bounded[T; N]` or a `BytesMut` itself);
+//! - makes a locus (a literal or a factory call): its instance, its slot
+//!   and the GH #815 per-iteration teardown live past the iteration;
+//! - holds a statement whose teardown runs outside the body's view
+//!   (`reperspective`, a recovery op, `violate`, a shared-memory write).
+//!
+//! Names are resolved lexically: a `let` (or a `for` binder) inside the
+//! body shadows the outside binding from there on. A match-arm binder is
+//! not declared here, so an assignment to one, and a use of one sharing
+//! an outside buffer's name, refuse the body: the conservative side.
+
+use std::collections::BTreeSet;
+
+use hale_syntax::ast::*;
+
+/// What a binding declared outside the loop body holds, as the reader
+/// knows it (lowering from the binding's type, the summary from its
+/// declaration).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OuterLocal {
+    /// An Int, Float, Bool, Duration, Decimal or Time: no arena memory.
+    Scalar,
+    /// A locus (or interface, perspective) reference: an assignment
+    /// re-points it, and a store through it copies into that locus.
+    Locus,
+    /// Anything that may point into an arena.
+    Heap,
+    /// A `bounded[T; N]` or a `BytesMut`: using it at all may grow it in
+    /// the frame's current arena.
+    Buffer,
+}
+
+/// Does `body` reclaim per iteration? `outer` classifies a name bound
+/// outside the body (`None`: no such local, e.g. a field or a constant
+/// spelled without `self`, which an assignment then refuses on);
+/// `produces_locus` says whether a struct literal or call makes a locus.
+pub fn reclaims_per_iteration(
+    body: &Block,
+    outer: &dyn Fn(&str) -> Option<OuterLocal>,
+    produces_locus: &dyn Fn(&Expr) -> bool,
+) -> bool {
+    let mut w = Walk { outer, produces_locus, scopes: Vec::new() };
+    w.block(body)
+}
+
+/// The `bounded[T; N]` intrinsics that write into their first argument.
+const BOUNDED_WRITES: [&str; 4] = ["push", "set", "truncate", "clear"];
+
+/// The binding a place expression reads (`kept.items[i]` → `kept`).
+fn root_ident(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident(i) => Some(i.name.as_str()),
+        Expr::KwSelf(_) => Some("self"),
+        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => root_ident(receiver),
+        _ => None,
+    }
+}
+
+struct Walk<'a> {
+    outer: &'a dyn Fn(&str) -> Option<OuterLocal>,
+    produces_locus: &'a dyn Fn(&Expr) -> bool,
+    scopes: Vec<BTreeSet<String>>,
+}
+
+impl Walk<'_> {
+    fn declared(&self, name: &str) -> bool {
+        self.scopes.iter().any(|s| s.contains(name))
+    }
+
+    fn declare(&mut self, name: &str) {
+        if let Some(s) = self.scopes.last_mut() {
+            s.insert(name.to_string());
+        }
+    }
+
+    fn block(&mut self, b: &Block) -> bool {
+        self.scopes.push(BTreeSet::new());
+        let ok = b.stmts.iter().all(|s| self.stmt(s)) && b.tail.as_deref().is_none_or(|t| self.expr(t));
+        self.scopes.pop();
+        ok
+    }
+
+    fn stmt(&mut self, s: &Stmt) -> bool {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                let ok = self.expr(value);
+                self.declare(&name.name);
+                ok
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                let ok = self.expr(value);
+                for n in names {
+                    self.declare(&n.name);
+                }
+                ok
+            }
+            Stmt::Assign { target, value, .. } => self.assign_target(target) && self.expr(value),
+            Stmt::If(i) => self.if_stmt(i),
+            Stmt::Match(m) => self.match_stmt(m),
+            Stmt::For { name, iter, body, .. } => {
+                if !self.expr(iter) {
+                    return false;
+                }
+                self.scopes.push(BTreeSet::from([name.name.clone()]));
+                let ok = self.block(body);
+                self.scopes.pop();
+                ok
+            }
+            Stmt::While { cond, body, .. } => self.expr(cond) && self.block(body),
+            Stmt::Return(e, _) => e.as_ref().is_none_or(|e| self.expr(e)),
+            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject) && self.expr(value) && or_disposition.as_ref().is_none_or(|d| self.disposition(d))
+            }
+            Stmt::Block(b) => self.block(b),
+            Stmt::Expr(e) => self.expr(e),
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => true,
+            Stmt::Reperspective { .. } | Stmt::Recovery { .. } | Stmt::Violate { .. } | Stmt::ShmWrite { .. } => false,
+        }
+    }
+
+    /// May `head` be written from the body: `self`, a binding the body
+    /// declares, or an outside one holding no arena memory of its own.
+    fn writable(&self, head: &str) -> bool {
+        head == "self" || self.declared(head) || matches!((self.outer)(head), Some(OuterLocal::Scalar | OuterLocal::Locus))
+    }
+
+    fn assign_target(&mut self, target: &LValue) -> bool {
+        let held = self.writable(target.head.name.as_str());
+        held && target.tail.iter().all(|seg| match seg {
+            LValueSeg::Field(_) => true,
+            LValueSeg::Index(e) => self.expr(e),
+        })
+    }
+
+    fn if_stmt(&mut self, i: &IfStmt) -> bool {
+        self.expr(&i.cond)
+            && self.block(&i.then_block)
+            && match i.else_block.as_deref() {
+                None => true,
+                Some(ElseBranch::Else(b)) => self.block(b),
+                Some(ElseBranch::ElseIf(e)) => self.if_stmt(e),
+            }
+    }
+
+    fn match_stmt(&mut self, m: &MatchStmt) -> bool {
+        self.expr(&m.scrutinee)
+            && m.arms.iter().all(|arm| {
+                arm.guard.as_ref().is_none_or(|g| self.expr(g))
+                    && match &arm.body {
+                        MatchArmBody::Expr(e) => self.expr(e),
+                        MatchArmBody::Block(b) => self.block(b),
+                    }
+            })
+    }
+
+    fn disposition(&mut self, d: &OrDisposition) -> bool {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => true,
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident(i) => self.declared(&i.name) || (self.outer)(&i.name) != Some(OuterLocal::Buffer),
+            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => true,
+            Expr::Binary { left, right, .. } => self.expr(left) && self.expr(right),
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Call { callee, args, .. } => {
+                // A `bounded` intrinsic that writes copies its element into
+                // the current arena: a write into what the root holds.
+                let writes_into = match (callee.as_ref(), args.first()) {
+                    (Expr::Ident(f), Some(target)) if BOUNDED_WRITES.contains(&f.name.as_str()) => root_ident(target),
+                    _ => None,
+                };
+                writes_into.is_none_or(|root| self.writable(root))
+                    && !(self.produces_locus)(e)
+                    && self.expr(callee)
+                    && args.iter().all(|a| self.expr(a))
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+            Expr::Index { receiver, index, .. } => self.expr(receiver) && self.expr(index),
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().all(|x| self.expr(x)),
+            Expr::Struct { inits, .. } => !(self.produces_locus)(e) && inits.iter().all(|i| self.expr(&i.value)),
+            Expr::Block(b) => self.block(b),
+            Expr::If(i) => self.if_stmt(i),
+            Expr::Match(m) => self.match_stmt(m),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
+            Expr::Approx { left, right, tolerance, .. } => self.expr(left) && self.expr(right) && self.expr(tolerance),
+            Expr::Range { lo, hi, .. } => self.expr(lo) && self.expr(hi),
+            Expr::ArrayRepeat { val, .. } => self.expr(val),
+            Expr::Or { inner, disposition, .. } => self.expr(inner) && self.disposition(disposition),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body_of(src: &str) -> Block {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        for item in &program.items {
+            if let TopDecl::Fn(f) = item {
+                for s in &f.body.stmts {
+                    if let Stmt::While { body, .. } = s {
+                        return body.clone();
+                    }
+                }
+            }
+        }
+        panic!("no while loop in the fn");
+    }
+
+    fn outer(name: &str) -> Option<OuterLocal> {
+        match name {
+            "i" | "total" => Some(OuterLocal::Scalar),
+            "h" | "buf" => Some(OuterLocal::Locus),
+            "last" => Some(OuterLocal::Heap),
+            "ring" => Some(OuterLocal::Buffer),
+            _ => None,
+        }
+    }
+
+    fn reclaims(src: &str) -> bool {
+        reclaims_per_iteration(&body_of(src), &outer, &|_| false)
+    }
+
+    #[test]
+    fn scalar_counters_and_locus_calls_reclaim() {
+        assert!(reclaims(
+            "fn f() { while true { let c = buf.snapshot() or { break; }; h.update(c); total = total + len(c); i += 1; } }"
+        ));
+    }
+
+    #[test]
+    fn a_heap_binding_from_outside_refuses() {
+        assert!(!reclaims("fn f() { while true { let c = buf.snapshot() or { break; }; last = c; } }"));
+    }
+
+    #[test]
+    fn a_shadowing_let_reclaims() {
+        assert!(reclaims("fn f() { while true { let last = buf.snapshot() or { break; }; last = b\"\"; } }"));
+    }
+
+    #[test]
+    fn a_buffer_named_refuses() {
+        assert!(!reclaims("fn f() { while true { ring.push(1); } }"));
+    }
+
+    #[test]
+    fn a_bounded_write_into_an_outside_record_refuses() {
+        assert!(!reclaims("fn f() { while true { push(last.items, 1) or discard; } }"));
+        assert!(reclaims("fn f() { while true { push(self.items, 1) or discard; } }"));
+        assert!(reclaims("fn f() { while true { let kept = T { }; push(kept.items, 1) or discard; } }"));
+    }
+
+    #[test]
+    fn an_unknown_assigned_name_refuses() {
+        assert!(!reclaims("fn f() { while true { nobody = 1; } }"));
+    }
+}
