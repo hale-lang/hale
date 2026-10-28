@@ -410,6 +410,85 @@ fn main() {
 // `aliased` stays empty: the alias arm is there for what ASan sees.
 const HANDED_OUT_OUT: &[&str] = &["flat=8 abcdefgh", "nested=9 12", "aliased=0"];
 
+/// The same write through a free fn held in a fn-typed locus field:
+/// `self.callback(outer, piece)` is a call of `keep`, not a method of the
+/// locus, so it is judged as the free call it is; and through a field of
+/// `self` handed to the free fn (`keep(self.bag, piece)`), which before
+/// per-iteration reclaim lived as long as `run()` did. Flat and nested.
+const CALLED_THROUGH: &str = r#"
+type Bag { items: bounded[Bytes; 8]; }
+fn keep(bag: Bag, piece: Bytes) { push(bag.items, piece) or discard; }
+locus Probe {
+    params {
+        callback: fn(Bag, Bytes) = keep;
+        bag: Bag = Bag { };
+    }
+    run() {
+        let buf = std::bytes::BytesBuilder { initial_cap: 64 };
+        buf.append_str("abcdefgh");
+        let outer = Bag { };
+        let mut i = 0;
+        while i < 3 {
+            let piece = buf.snapshot() or b"";
+            self.callback(outer, piece);
+            i = i + 1;
+        }
+        println("callback=", std::str::from_bytes(at(outer.items, 2) or b""));
+        let nested = Bag { };
+        let mut j = 0;
+        while j < 2 {
+            let mut k = 0;
+            while k < 2 {
+                buf.append_u8(105);
+                let piece = buf.snapshot() or b"";
+                self.callback(nested, piece);
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        println("nested=", len(at(nested.items, 3) or b""));
+        let mut n = 0;
+        while n < 2 {
+            buf.append_u8(106);
+            let piece = buf.snapshot() or b"";
+            keep(self.bag, piece);
+            n = n + 1;
+        }
+        println("self_field=", std::str::from_bytes(at(self.bag.items, 1) or b""));
+    }
+}
+
+fn main() {
+    let p = Probe { };
+}
+"#;
+
+const CALLED_THROUGH_OUT: &[&str] = &["callback=abcdefgh", "nested=12", "self_field=abcdefghiiiijj"];
+
+/// Build `src` plainly and under AddressSanitizer (chunk pool off) and
+/// hold each run to `want`, with no sanitizer report.
+fn plain_and_asan(name: &str, src: &str, want: &[&str]) {
+    for asan in [false, true] {
+        let bin = harness::unique_bin(&format!("loop_iteration_reclaim_{name}_{asan}"));
+        let opts = hale_codegen::BuildOptions { asan, ..build_opts::options() };
+        build_opts::build_source(src, &bin, &opts).expect("build");
+        let out = Command::new(&bin).env("ASAN_OPTIONS", "detect_leaks=0").output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{name} asan={asan}: exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}", out.status);
+        assert!(!stderr.contains("AddressSanitizer"), "{name}: ASan report:\n{stderr}");
+        for w in want {
+            assert!(stdout.contains(w), "{name} asan={asan}: missing {w:?} in:\n{stdout}");
+        }
+    }
+}
+
+#[test]
+fn what_a_callback_or_a_free_fn_writes_into_outside_storage_survives_under_asan() {
+    plain_and_asan("called_through", CALLED_THROUGH, CALLED_THROUGH_OUT);
+}
+
 #[test]
 fn what_a_free_fn_writes_into_an_outside_record_survives_under_asan() {
     for asan in [false, true] {

@@ -125,7 +125,8 @@ reclaimed when the iteration ends — a method's loop body gets a
 region of its own per iteration — as long as the body keeps
 nothing past it: it assigns no binding declared before the loop a
 value that is not a scalar or a locus reference, hands no such
-binding to a free fn (which could write into it), makes no locus,
+binding and no field of `self` to a call (which could write into
+it), makes no locus,
 and uses no outer `bounded` or `BytesMut`. So `let c =
 body.chunk() or { break; }; h.update(c);` straight in `run()` is
 flat. A body that has to carry a heap value from one iteration to

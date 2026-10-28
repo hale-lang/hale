@@ -1262,12 +1262,15 @@ unless it can hand a value to the next iteration through the frame:
      `set`, `truncate`, `clear` copy the element into the current
      arena), or names an outside `bounded[T; N]` or `BytesMut` at
      all;
-  3. it passes such a binding, a path rooted in one, or an alias of
-     either declared in the body (`let o = outer;`, `for r in
-     outer.items`) to a call that is not a method of a locus
-     (`self`, or an outside locus reference) or a builtin that only
-     reads (`len`, `println`, …): a free fn handed `outer` can write
-     into it from its caller arena, which is the iteration's;
+  3. it passes such a binding, a field of `self`, a path rooted in
+     either, or an alias of one declared in the body (`let o =
+     outer;`, `for r in outer.items`) to any call but a builtin that
+     only reads (`len`, `println`, …): the callee can write into it
+     from its caller arena, which is the iteration's — a free fn
+     through its parameter, a fn value held in a field
+     (`self.callback(outer, p)`), a method through a record
+     parameter. A call handed only the body's own values and locus
+     references (`h.update(c)`, `buf.snapshot()`) is admitted;
   4. it makes a locus (a literal or a fresh factory call: the
      instance, its slot and its GH #815 teardown outlive the
      iteration);
