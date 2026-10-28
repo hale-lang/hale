@@ -1227,7 +1227,9 @@ Two correctness invariants make this safe:
      p)`) publishes that snapshot as the callee's caller
      arena instead of the scratch when the callee may write
      through the parameter it lands in (the owned-view
-     column's hand-offs), so a chain of methods handing the
+     column's hand-offs, whose write summaries forward a
+     parameter a relay hands on through a carrier as one
+     handed by name), so a chain of methods handing the
      record on stores into the arena of the frame that owns
      it; a callee that only reads it keeps the scratch. The
      rule goes by provenance, not spelling: any argument

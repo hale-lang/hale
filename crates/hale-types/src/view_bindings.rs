@@ -2527,18 +2527,18 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    /// The parameter `e` is, or is read from (`p`, `p.f`, `p[i]`), by
-    /// position — not through a local, which the local-place rule copies
-    /// at its first write.
-    fn direct_param(&self, e: &Expr) -> Option<usize> {
-        match e {
-            Expr::Ident(id) => match self.lookup(&id.name) {
-                Some(None) => self.param_index.get(&id.name).copied(),
-                _ => None,
-            },
-            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => self.direct_param(receiver),
-            _ => None,
-        }
+    /// The parameters (by position) a value may be, or be a part of, by
+    /// its place markers (`$p`, `$p.f`, a literal's part holding one),
+    /// whatever carried it there.
+    fn params_in(&self, keys: Option<&BTreeSet<String>>) -> Vec<usize> {
+        let Some(keys) = keys else { return Vec::new() };
+        let mut out: Vec<usize> = Handoff::places(keys)
+            .filter_map(|q| q.strip_prefix('$'))
+            .filter_map(|q| self.param_index.get(q.split('.').next().unwrap_or(q)).copied())
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// May `e` be (a part of) the caller's value a parameter refers to:
@@ -3620,20 +3620,24 @@ impl<'p, 'a> Walk<'p, 'a> {
                 || (bounded && i == 0)
                 || summarized.as_ref().is_some_and(|c| self.summarized(c, |s, j| s.writes_params[j]));
             if self.summary.is_none() {
-                // The summary pass: a parameter handed on, by position
-                // (a bounded intrinsic or a callee the pass cannot
+                // The summary pass: each parameter the argument may be (a
+                // part of) is handed on, by position, by its place markers,
+                // so a carrier (a block, an `if`, a `match`, an `or`, a
+                // literal holding a part) forwards it as the parameter by
+                // name does (a bounded intrinsic or a callee the pass cannot
                 // identify writes it).
-                if let Some(m) = self.direct_param(a) {
+                let from = self.params_in(keys.get(i).and_then(|k| k.as_ref()));
+                for &m in &from {
                     if unknown || (bounded && i == 0) {
                         self.param_mask |= param_bit(m);
                     } else if let Some(c) = &summarized {
                         self.param_passes.push((c.clone(), i, m));
                     }
                 }
-                // A bounded intrinsic on a local bound from a parameter
-                // writes the caller's list: no first-class value, it is
-                // never copied.
-                if bounded && i == 0 && self.direct_param(a).is_none() && self.rooted_at_param(a) {
+                // A bounded intrinsic on a value that may hold the caller's
+                // list but names no parameter: no first-class value, it is
+                // never copied, so every parameter may be written.
+                if bounded && i == 0 && from.is_empty() && self.rooted_at_param(a) {
                     self.param_mask = u64::MAX;
                 }
                 if self.rooted_at_param(a) {
@@ -3694,20 +3698,54 @@ impl<'p, 'a> Walk<'p, 'a> {
                     }
                 }
             }
+            // What the argument may be, by its place markers, whatever
+            // carried it (a block, an `if`, a `match`, an `or`, a literal
+            // holding a part): the spelled shapes below are the places it
+            // names directly, and the markers add those a carrier hands on.
+            let carried: Vec<String> = if into {
+                keys.get(i).and_then(|k| k.as_ref()).map_or(Vec::new(), |ks| Handoff::places(ks).map(str::to_string).collect())
+            } else {
+                Vec::new()
+            };
             if let (Some((v, _)), true) = (self.root_local(a), into) {
                 let record_param = only(&|c| matches!(c, Class::Scalar | Class::Record));
                 self.place_passed.push((v, record_param && matches!(a, Expr::Ident(_)), self.first_field(a)));
+            } else {
+                for q in &carried {
+                    if let Some((v, rest)) = q.strip_prefix('@').map(|r| r.split_once('.').unwrap_or((r, ""))) {
+                        if let Ok(v) = v.parse::<usize>() {
+                            let first = rest.split('.').next().filter(|f| !f.is_empty()).map(str::to_string);
+                            self.place_passed.push((v, false, first));
+                        }
+                    }
+                }
             }
-            if let Some(place) = self.arg_place(a).filter(|_| into) {
-                let at = self.tick();
-                self.root_writes.push((place, at, true));
+            if into {
+                let mut places: Vec<String> = self.arg_place(a).into_iter().collect();
+                places.extend(carried.iter().filter(|q| q.starts_with('@') || q.starts_with('$')).cloned());
+                places.sort();
+                places.dedup();
+                for place in places {
+                    let at = self.tick();
+                    self.root_writes.push((place, at, true));
+                }
             }
             // A field of `self` handed to a call that may write through
             // it is written as a store into it would be (`self.f[0].k =
             // 1`): a local or a literal part still viewing the field is
             // owned before the call (`let lit = R { arr: self.source };
-            // poke_arr(self.source);`).
+            // poke_arr(self.source);`), by name or through a carrier.
+            let mut held_fields: Vec<String> = carried
+                .iter()
+                .filter_map(|q| q.strip_prefix("self."))
+                .map(|q| q.split('.').next().unwrap_or(q).to_string())
+                .collect();
             if let (Some(f), true) = (self_first_field(a), into) {
+                held_fields.push(f);
+            }
+            held_fields.sort();
+            held_fields.dedup();
+            for f in held_fields {
                 let id = self.p.field_id(&f);
                 self.write(Writes::field(id), None);
             }
@@ -4539,6 +4577,12 @@ mod tests {
         assert_eq!(bits(r#"fn a(x: Bag, y: Bag) { self.put(if self.n > 0 { x } else { y }, "s"); }"#), [param, param]);
         assert_eq!(bits(r#"fn a(x: Bag) { self.put(match self.n { 0 -> x, _ -> x, }, "s"); }"#), [param, param]);
         assert_eq!(bits(r#"fn a() { put_free(self.bag, "s"); self.put({ self.outer.bag }, "s"); }"#), [param, me, me]);
+        // A relay that hands its parameter on through a carrier writes
+        // through that position, so a caller above it hands off too.
+        assert_eq!(
+            bits(r#"fn relay_block(x: Bag, s: String) { self.put({ x }, s); } fn a(x: Bag) { self.relay_block(x, "s"); }"#),
+            [param, param, param]
+        );
         assert_eq!(bits(r#"fn a(x: Bag) { let r = read_free(x); let q = self.read(x); }"#), [param]);
         assert_eq!(bits(r#"fn a() { let y = Bag { }; self.put(y, "s"); self.put(Bag { }, "s"); }"#), [param]);
     }

@@ -921,6 +921,13 @@ fn main() {{ let s = Sink {{ }}; }}
         "fn mixed(x: Bag, p: Bytes, choose: Bool) { self.put(if choose { self.held } else { x }, p); }",
     ));
     assert_eq!(one.iter().filter(|m| refused(m)).count(), 1, "one carrier of two owners: {one:?}");
+    // Through a wrapper that hands both on through carriers: the wrapper
+    // writes through both its positions, so the call to it is refused.
+    let wrapped = diags(&program(
+        "fn wrap(a: Bag, b: Bag, p: Bytes) { self.put_two({ a }, { b }, p); }\n    \
+         fn mixed(x: Bag, p: Bytes) { self.wrap(self.held, x, p); }",
+    ));
+    assert_eq!(wrapped.iter().filter(|m| refused(m)).count(), 1, "a wrapper of two owners: {wrapped:?}");
     for ok in [
         "fn only_held(p: Bytes, c: Bool) { self.put(if c { self.held } else { self.held }, p); }",
         "fn only_param(x: Bag, y: Bag, p: Bytes) { self.put_two(x, { y }, p); }",

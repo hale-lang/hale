@@ -505,3 +505,36 @@ fn main() {
         assert!(stdout.contains(w), "missing {w:?} in:\n{stdout}");
     }
 }
+
+/// A caller above a relay that hands the record on through a carrier: the
+/// relay forwards its parameter by provenance, so its own callers see it
+/// as a writer of that position and publish the arena that owns the
+/// record. Before, the relay's positional summary was empty (only a
+/// parameter handed by name counted), so `outer` published its own
+/// scratch to the relay, which handed it to `put`, and the caller's
+/// record kept a block `outer`'s return freed. The same through a block,
+/// an `if` and a `match`, and two levels above a carrier relay.
+#[test]
+fn a_caller_above_a_carrier_relay_outlives_both() {
+    asan_clean(
+        "carrier_callers",
+        r#"fn put(x: Bag, p: Bytes) { x.b = p; }
+    fn relay_block(x: Bag, p: Bytes) { self.put({ x }, p); }
+    fn relay_if(x: Bag, p: Bytes) { self.put(if len(p) > 0 { x } else { x }, p); }
+    fn relay_match(x: Bag, p: Bytes) { self.put(match len(p) { 0 -> x, _ -> x, }, p); }
+    fn outer_block(x: Bag, p: Bytes) { self.relay_block(x, p); }
+    fn outer_if(x: Bag, p: Bytes) { self.relay_if(x, p); }
+    fn outer_match(x: Bag, p: Bytes) { self.relay_match(x, p); }
+    fn top(x: Bag, p: Bytes) { self.mid(x, p); }
+    fn mid(x: Bag, p: Bytes) { self.outer_block({ x }, p); }"#,
+        r#"s.outer_block(bag, fresh(2));
+    println("block=", std::hex::encode(bag.b));
+    s.outer_if(bag, fresh(3));
+    println("if=", std::hex::encode(bag.b));
+    s.outer_match(bag, fresh(4));
+    println("match=", std::hex::encode(bag.b));
+    s.top(bag, fresh(5));
+    println("chain=", std::hex::encode(bag.b));"#,
+        &["block=6162", "if=616263", "match=61626364", "chain=6162636465"],
+    );
+}
