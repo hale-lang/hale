@@ -1555,6 +1555,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[], false),
             None,
         );
+        // declare ptr @lotus_caller_arena_owning(ptr snapshot, ptr own)
+        self.module.add_function(
+            "lotus_caller_arena_owning",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         // iris handoff-2: publisher-attribution TLS + topic shapes.
         // declare void @lotus_obs_note_publisher(ptr self)
         // declare void @lotus_obs_topic_shape(ptr subject, ptr shape)

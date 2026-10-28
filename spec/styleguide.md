@@ -1549,6 +1549,39 @@ lifecycle events: hold a `std::observe::Otlp` param, placed `pinned`,
 and let the OTLP environment name the collector, rather than logging
 births and failures by hand. **[convention]**
 
+### C14. Hand a writer one owner's records per call
+
+A method that hands a record to a callee which writes through it hands
+it the arena the record's owner allocates in: the locus's own arena for
+a record a field of `self` holds, its caller's for a record parameter.
+One call has one such arena, so a call that hands a writer records of
+both owners is refused. That covers two arguments, or one carrier that
+may be either:
+
+```hale
+type Bag { b: Bytes = b""; }
+
+locus Sink {
+    params { held: Bag = Bag { }; }
+    fn put_two(a: Bag, b: Bag, p: Bytes) { a.b = p; b.b = p; }
+    fn refill(x: Bag, p: Bytes) {
+        let mine = Bag { b: x.b };
+        self.put_two(self.held, mine, p);
+    }
+}
+
+fn main() { let s = Sink { }; }
+```
+
+- **Copy one side into a local record first.** `self.put_two(self.held,
+  x, p)` and `self.put(if c { self.held } else { x }, p)` are refused,
+  and the diagnostic names both owners. Build a local from the
+  parameter's fields (`let mine = Bag { b: x.b };`) and hand that. Or
+  write the held record through `self` (`self.held.b = p`). **[error]**
+- **One owner is fine through any carrier.** `self.put({ x }, p)` and
+  `put_free(if c { self.held } else { self.outer.bag }, p)` each hand one
+  owner's storage, and each callee's writes land in that owner's arena.
+
 ## 4. Speed rules
 
 **First ask: is this path hot?** Hot means a per-frame/per-message
@@ -2001,7 +2034,7 @@ certify a path — plus one tier you get for free because your
 
 | Tier | Check | Status |
 |---|---|---|
-| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9); a default that reads the caller's scope (C11) | build fails |
+| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9); a default that reads the caller's scope (C11); a writer handed a held record and a parameter in one call (C14) | build fails |
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |

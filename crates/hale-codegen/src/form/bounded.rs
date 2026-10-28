@@ -840,14 +840,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !Self::bounded_elem_is_ptr(elem) {
             return Ok(());
         }
-        // The mark holds the parameter's own slot, so a binding that
-        // shadows the name (a `let`, a loop or pattern binder) is not it.
-        let is_param = |r: &str| match (scope.locals.get(&Self::param_place_key(r)), scope.locals.get(r)) {
-            (Some((mark, _)), Some((slot, _))) => mark == slot,
-            _ => false,
-        };
         match root(recv) {
-            Some(r) if is_param(r) => Err(CodegenError::UnsupportedAt(
+            Some(r) if Self::is_member_param(scope, r) => Err(CodegenError::UnsupportedAt(
                 format!("`{intrinsic}` of a pointer-shaped element into a bounded place under the member parameter `{r}`"),
                 recv.span(),
             )),

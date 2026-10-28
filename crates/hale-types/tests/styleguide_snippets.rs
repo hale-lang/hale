@@ -611,3 +611,30 @@ fn claim_an_error_class_is_one_of_five() {
         other
     );
 }
+
+/// C14: a writer handed a held record and a parameter in one call is
+/// refused (two arguments, or one carrier), and the local copy the rule
+/// suggests passes (the C14 snippet).
+#[test]
+fn claim_a_writer_is_handed_one_owner_per_call() {
+    let head = "type Bag { b: Bytes = b\"\"; }\n\
+                locus Sink {\n\
+                params { held: Bag = Bag { }; }\n\
+                fn put(x: Bag, p: Bytes) { x.b = p; }\n\
+                fn put_two(a: Bag, b: Bag, p: Bytes) { a.b = p; b.b = p; }\n";
+    for body in [
+        "fn go(x: Bag, p: Bytes) { self.put_two(self.held, x, p); }",
+        "fn go(x: Bag, p: Bytes, c: Bool) { self.put(if c { self.held } else { x }, p); }",
+    ] {
+        let errs = build_errs(&format!("{head}{body}\n}}\nfn main() {{ let s = Sink {{ }}; }}"));
+        assert!(
+            errs.iter().any(|m| m.contains("a record this locus holds") && m.contains("the parameter `x`")),
+            "spec/styleguide.md C14 says `{body}` is refused, naming both owners: {errs:?}"
+        );
+    }
+    let copied = build_errs(&format!(
+        "{head}fn go(x: Bag, p: Bytes) {{ let mine = Bag {{ b: x.b }}; self.put_two(self.held, mine, p); }}\n}}\n\
+         fn main() {{ let s = Sink {{ }}; }}"
+    ));
+    assert!(copied.is_empty(), "C14 says the local copy passes: {copied:?}");
+}
