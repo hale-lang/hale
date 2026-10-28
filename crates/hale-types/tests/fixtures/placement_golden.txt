@@ -4204,6 +4204,12 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 row	~	Driver	main	default
 row	~.sink	Sink	main	inherited
 
+== crates/hale-codegen/tests/member_param_write.rs#9455a46c
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.sink	Sink	main	inherited
+
 == crates/hale-codegen/tests/method_call_from_free_fn.rs#6592aad6
 row	CounterL@main1	CounterL	main	default
 

@@ -208,11 +208,12 @@ pub struct OwnedViews {
     /// The bindings (by id) the cell-read rule owns: a `for` over a
     /// map's entries copies each entry it binds only for this rule.
     cell_owned: HashSet<u32>,
-    /// The arguments, by the id of the parameter use at their root, that
-    /// hand a place under the body's own parameter (`p`, `p.f`, `p[i]`)
-    /// to a callee that may write through the very parameter it lands in
-    /// (`Summaries::param_masks`), or to one the pass cannot identify.
-    param_handoffs: HashSet<u32>,
+    /// The arguments, by their call's id and their own span's start, that
+    /// a callee which may write through the parameter they land in (or
+    /// one the pass cannot identify) is handed and that are not fresh:
+    /// what the place markers they carry say they may be, as
+    /// [`Handoff`] bits.
+    handoffs: HashMap<(u32, u32), u8>,
 }
 
 /// The owned-view column of a checked program (GH #1554): the pass's
@@ -492,15 +493,23 @@ impl OwnedViews {
         }
         self.cell_copies.extend(other.cell_copies);
         self.cell_owned.extend(other.cell_owned.into_iter().filter_map(&id));
-        self.param_handoffs.extend(other.param_handoffs.into_iter().filter_map(&id));
+        for ((c, at), bits) in other.handoffs {
+            if let Some(c) = id(c) {
+                *self.handoffs.entry((c, at)).or_default() |= bits;
+            }
+        }
     }
 
-    /// Does the argument whose root is the parameter use with this id
-    /// hand a place under the parameter to a callee that may write
-    /// through it? A locus member publishes, for such a call, the arena
-    /// its own caller published, which owns the parameter's storage.
-    pub fn hands_written_param(&self, id: NodeId) -> bool {
-        !id.is_none() && self.param_handoffs.contains(&id.0)
+    /// What the argument starting at `arg_start` of the call with this id
+    /// may be, when the callee may write through it and it is not fresh:
+    /// `None` for a fresh argument (a literal, a constructor, a call's
+    /// fresh result, a local holding one), a callee that only reads it,
+    /// or a call the column has no row for.
+    pub fn handoff(&self, call: NodeId, arg_start: u32) -> Option<Handoff> {
+        if call.is_none() {
+            return None;
+        }
+        self.handoffs.get(&(call.0, arg_start)).map(|&bits| Handoff { bits })
     }
 
     /// Does the cell-read rule own the binding (a `let`, a `for`, by id)
@@ -1163,7 +1172,7 @@ impl From<Found> for OwnedViews {
             cow_binds: found.cow_binds,
             cell_copies: found.cell_copies,
             cell_owned: found.cell_owned,
-            param_handoffs: found.param_handoffs,
+            handoffs: found.handoffs,
         }
     }
 }
@@ -1177,7 +1186,7 @@ struct Found {
     cow_binds: HashMap<(Site, String), Vec<(String, bool)>>,
     cell_copies: Vec<CellCopy>,
     cell_owned: HashSet<u32>,
-    param_handoffs: HashSet<u32>,
+    handoffs: HashMap<(u32, u32), u8>,
 }
 
 /// Per body, what its calls reach, transitively: the fields it may
@@ -1779,9 +1788,9 @@ struct Walk<'p, 'a> {
     reads: bool,
     writes_params: bool,
     param_callees: BTreeSet<Callee>,
-    /// The arguments handing a place under a parameter to a callee that
-    /// may write through it (`OwnedViews::param_handoffs`).
-    param_handoffs: Vec<u32>,
+    /// The non-fresh arguments handed to a callee that may write through
+    /// them (`OwnedViews::handoffs`).
+    handoffs: Vec<(u32, u32, u8)>,
     /// Every parameter's name.
     params: BTreeSet<String>,
     /// Per variable, whether it may hold (a part of) the caller's value a
@@ -1931,7 +1940,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             reads: false,
             writes_params: false,
             param_callees: BTreeSet::new(),
-            param_handoffs: Vec::new(),
+            handoffs: Vec::new(),
             params: params.iter().map(|prm| prm.name.name.clone()).collect(),
             from_param: Vec::new(),
             binds: Vec::new(),
@@ -3622,9 +3631,15 @@ impl<'p, 'a> Walk<'p, 'a> {
             let into = !(bounded && i == 0)
                 && (unknown || !classes.is_empty())
                 && !only(&|c| matches!(c, Class::Scalar | Class::Handle | Class::Form(_)));
-            if into && self.direct_param(a).is_some() {
-                if let Some(id) = root_ident(a).map(|r| r.id).filter(|id| !id.is_none()) {
-                    self.param_handoffs.push(id.0);
+            // A callee that may write through this argument, handed one
+            // that is not fresh: what it may be, by its place markers,
+            // whatever carries it (a block, an `if`, a `match`, an `or`, a
+            // literal holding it), for lowering to publish the arena that
+            // owns it (`OwnedViews::handoffs`).
+            if let (true, Some(Expr::Call { id, .. })) = (into, call) {
+                let bits = keys.get(i).and_then(|k| k.as_ref()).map_or(0, Handoff::bits_of);
+                if bits != 0 && !id.is_none() {
+                    self.handoffs.push((id.0, a.span().start.0, bits));
                 }
             }
             if let (Some((v, _)), true) = (self.root_local(a), into) {
@@ -4263,7 +4278,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             found.cow_binds.insert(key, fields.into_iter().collect());
         }
         found.sites.extend(out);
-        found.param_handoffs.extend(self.param_handoffs.iter().copied());
+        for &(c, at, bits) in &self.handoffs {
+            *found.handoffs.entry((c, at)).or_default() |= bits;
+        }
     }
 
     /// Does a write `w` into a local bound from a self field (`shared`,
@@ -4318,12 +4335,47 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 }
 
-/// The identifier at the root of a place (`p`, `p.f`, `p[i].g`).
-fn root_ident(e: &Expr) -> Option<&Ident> {
-    match e {
-        Expr::Ident(i) => Some(i),
-        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => root_ident(receiver),
-        _ => None,
+/// What a non-fresh argument handed to a writer may be
+/// (`OwnedViews::handoff`): (a part of) the body's parameter, a place
+/// under a field of `self`, or a place the pass cannot name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Handoff {
+    bits: u8,
+}
+
+impl Handoff {
+    const PARAM: u8 = 1;
+    const SELF: u8 = 2;
+    const OTHER: u8 = 4;
+
+    /// The bits of a value's place markers (`AT`, and a literal's `PART`
+    /// places): `$p…` a parameter, `self…` a field of `self`, `@n…` a
+    /// local of the frame (no bit: what it was bound from is among its
+    /// own markers), anything else (`?`, `?ret`) a place the pass cannot
+    /// name.
+    fn bits_of(keys: &BTreeSet<String>) -> u8 {
+        let places = keys.iter().filter_map(|k| k.strip_prefix(AT)).chain(part_markers(keys).map(|(_, q)| q));
+        places.fold(0, |b, q| {
+            b | if q.starts_with('$') {
+                Handoff::PARAM
+            } else if q == "self" || q.starts_with("self.") {
+                Handoff::SELF
+            } else if q.starts_with('@') {
+                0
+            } else {
+                Handoff::OTHER
+            }
+        })
+    }
+
+    /// It may be (a part of) one of the body's parameters.
+    pub fn param(&self) -> bool {
+        self.bits & Handoff::PARAM != 0
+    }
+
+    /// It may be a place under a field of `self`, and nothing else.
+    pub fn only_self(&self) -> bool {
+        self.bits == Handoff::SELF
     }
 }
 
@@ -4377,31 +4429,41 @@ mod tests {
         flagged(&LOCUS.replace("BODY", body))
     }
 
-    /// An argument handing on a place under the body's own parameter is
-    /// recorded exactly when the callee may write through the parameter it
-    /// lands in, directly or by handing it on again
-    /// (`OwnedViews::param_handoffs`): a callee that only reads it, and a
-    /// place of the frame's own, are not.
+    /// An argument handed to a callee that may write through it is a
+    /// hand-off unless it is fresh, whatever carries it, with what it may
+    /// be (`OwnedViews::handoffs`): a parameter, directly or through a
+    /// block, an `if` or a `match`; a field of `self`, the same; nothing
+    /// for a literal, a local of the frame's own or a reader.
     #[test]
-    fn a_parameter_handed_to_a_callee_writing_through_it_is_a_handoff() {
+    fn a_non_fresh_argument_handed_to_a_writer_is_a_handoff() {
         let src = r#"
             type Bag { b: String = ""; }
+            type Outer { bag: Bag = Bag { }; }
             fn put_free(x: Bag, s: String) { x.b = s; }
             fn read_free(x: Bag) -> String { return x.b; }
             locus S {
+                params { bag: Bag = Bag { }; outer: Outer = Outer { }; n: Int = 0; }
                 fn put(x: Bag, s: String) { x.b = s; }
                 fn read(x: Bag) -> String { return x.b; }
                 fn relay(x: Bag, s: String) { self.put(x, s); }
                 BODY
             }
         "#;
-        let n = |body: &str| found(&src.replace("BODY", body)).param_handoffs.len();
-        let base = n("");
-        assert_eq!(base, 1, "relay's own hand-off");
-        assert_eq!(n(r#"fn a(x: Bag) { put_free(x, "s"); }"#), base + 1);
-        assert_eq!(n(r#"fn a(x: Bag) { self.relay(x, "s"); }"#), base + 1);
-        assert_eq!(n(r#"fn a(x: Bag) { let r = read_free(x); let q = self.read(x); }"#), base);
-        assert_eq!(n(r#"fn a(x: Bag) { let y = Bag { }; self.put(y, "s"); }"#), base);
+        let bits = |body: &str| -> Vec<u8> {
+            let mut v: Vec<u8> = found(&src.replace("BODY", body)).handoffs.values().copied().collect();
+            v.sort();
+            v
+        };
+        let (param, me) = (Handoff::PARAM, Handoff::SELF);
+        assert_eq!(bits(""), [param], "relay's own hand-off");
+        assert_eq!(bits(r#"fn a(x: Bag) { put_free(x, "s"); }"#), [param, param]);
+        assert_eq!(bits(r#"fn a(x: Bag) { self.relay(x, "s"); }"#), [param, param]);
+        assert_eq!(bits(r#"fn a(x: Bag) { self.put({ x }, "s"); }"#), [param, param]);
+        assert_eq!(bits(r#"fn a(x: Bag, y: Bag) { self.put(if self.n > 0 { x } else { y }, "s"); }"#), [param, param]);
+        assert_eq!(bits(r#"fn a(x: Bag) { self.put(match self.n { 0 -> x, _ -> x, }, "s"); }"#), [param, param]);
+        assert_eq!(bits(r#"fn a() { put_free(self.bag, "s"); self.put({ self.outer.bag }, "s"); }"#), [param, me, me]);
+        assert_eq!(bits(r#"fn a(x: Bag) { let r = read_free(x); let q = self.read(x); }"#), [param]);
+        assert_eq!(bits(r#"fn a() { let y = Bag { }; self.put(y, "s"); self.put(Bag { }, "s"); }"#), [param]);
     }
 
     #[test]

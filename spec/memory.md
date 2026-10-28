@@ -1229,7 +1229,18 @@ Two correctness invariants make this safe:
      through the parameter it lands in (the owned-view
      column's hand-offs), so a chain of methods handing the
      record on stores into the arena of the frame that owns
-     it; a callee that only reads it keeps the scratch. A
+     it; a callee that only reads it keeps the scratch. The
+     rule goes by provenance, not spelling: any argument
+     handed to such a callee that is not fresh (a literal, a
+     constructor, a fresh call result, a local holding one)
+     is a hand-off, through a block, an `if`, a `match` or an
+     `or` (`self.put({ x }, p)`) as much as by name. One that
+     may only be a place under a field of `self`
+     (`put_free(self.bag, p)`, `self.o.put({ self.bag }, p)`)
+     publishes the locus's own arena instead, which owns the
+     record; the write is a clone into it, so a String it
+     replaces is not recycled as a `self.bag.b = p` store
+     recycles it. A
      member the bus dispatch invokes is published no arena
      (its snapshot is the payload-arena fallback) and keeps
      its scratch. A shadowing `let` or binder of the name is

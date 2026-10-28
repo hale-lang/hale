@@ -37849,6 +37849,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !caller_storage {
             return Ok(None);
         }
+        self.caller_storage_arena(slot).map(Some)
+    }
+
+    /// The arena that owns storage a method was handed: the caller arena
+    /// snapshotted at entry (`slot`), or the method's scratch when the
+    /// snapshot is the payload-arena fallback of a delivered member
+    /// (`lotus_caller_arena_owning`).
+    fn caller_storage_arena(&mut self, slot: PointerValue<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let snapshot = self.builder.build_load(ptr_t, slot, "member_param.caller_arena").map_err(e)?;
@@ -37863,40 +37871,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("lotus_caller_arena_owning returns ptr")
             .into_pointer_value();
-        Ok(Some(arena))
+        Ok(arena)
     }
 
-    /// The arena a call handed `args` publishes as its caller arena: the
-    /// current one, unless an argument is a place under a member parameter
-    /// of caller storage ([`Cx::member_param_arena`]) that the callee may
-    /// write through (the owned-view column's `hands_written_param`: the
-    /// callee writes through the very parameter it lands in, or is one
-    /// the summaries cannot name). Then the call publishes the arena this
-    /// method's own caller published, so what the callee writes lives as
-    /// long as the storage does, however many methods hand the parameter
-    /// on. A callee that only reads it keeps this frame's arena, so its
-    /// result and a free fn's temporaries are freed with this frame.
+    /// The arena a call handed `args` publishes as its caller arena. The
+    /// current one, unless the call hands a callee that may write through
+    /// it an argument that is not fresh (the owned-view column's
+    /// `handoff`, by the call's id and the argument's span: its place
+    /// markers, whatever carries it, a block, an `if`, a `match`, an `or`
+    /// or a literal holding it). Then the call publishes the arena that
+    /// owns what the argument may be:
+    ///
+    /// - a place under a field of `self` and nothing else: the locus's own
+    ///   arena;
+    /// - (a part of) one of the method's parameters, or a place the pass
+    ///   cannot name: the arena the method's own caller published, so a
+    ///   chain of methods handing the record on lands every write in the
+    ///   arena of the frame that owns it.
+    ///
+    /// A fresh argument (a literal, a constructor, a fresh call result, a
+    /// local holding one) and a callee that only reads keep this frame's
+    /// arena, so its result and a free fn's temporaries are freed with the
+    /// frame. A free fn's frame already allocates in its caller's arena.
     pub(crate) fn call_site_arena(
         &mut self,
         args: &[Expr],
-        scope: &Scope<'ctx>,
+        _scope: &Scope<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        fn root(e: &Expr) -> Option<&hale_syntax::ast::Ident> {
-            match e {
-                Expr::Ident(i) => Some(i),
-                Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => root(receiver),
-                _ => None,
-            }
+        let Some(call) = self.current_call else {
+            return self.current_arena_ptr();
+        };
+        let handed: Vec<hale_types::view_bindings::Handoff> =
+            args.iter().filter_map(|a| self.owned_views.handoff(call, a.span().start.0)).collect();
+        if handed.is_empty() {
+            return self.current_arena_ptr();
         }
-        if self.current_method_caller_arena.is_some() {
-            for a in args {
-                let Some(r) = root(a).filter(|r| self.owned_views.hands_written_param(r.id)) else { continue };
-                if let Some(arena) = self.member_param_arena(&r.name, scope)? {
-                    return Ok(arena);
-                }
-            }
+        if let (true, Some(cs)) = (handed.iter().all(|h| h.only_self()), self.current_self.clone()) {
+            let info = self.user_loci.get(&cs.locus_name).cloned().expect("current_self points to a declared locus");
+            let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, cs.self_ptr, info.arena_field_idx, "self.__arena.ptr")
+                .map_err(e)?;
+            return Ok(self.builder.build_load(ptr_t, slot, "self.__arena.for_handoff").map_err(e)?.into_pointer_value());
         }
-        self.current_arena_ptr()
+        match self.current_method_caller_arena {
+            Some(slot) => self.caller_storage_arena(slot),
+            None => self.current_arena_ptr(),
+        }
     }
 
     fn emit_set_caller_arena_to(&mut self, arena: PointerValue<'ctx>) -> Result<(), CodegenError> {

@@ -341,3 +341,105 @@ fn main() { App { }; }
         }
     }
 }
+
+/// A record a field of `self` holds (`self.bag`, `self.outer.bag`)
+/// handed to a callee that writes through it, as a place or through a
+/// block or an `if`: the locus's arena owns the record, so the call
+/// publishes that arena. Before, the call published the method's
+/// scratch, so the record kept a block its return freed (a
+/// use-after-free, through a free fn or another locus's method).
+const SELF_HELD: &str = r#"
+type Bag { b: Bytes; s: String; }
+type Outer { bag: Bag; }
+
+fn put_free(x: Bag, p: Bytes) { x.b = p; }
+
+locus Sink {
+    fn put(x: Bag, p: Bytes) { x.b = p; }
+    fn name(x: Bag, s: String) { x.s = s; }
+}
+
+locus Holder {
+    params {
+        bag: Bag = Bag { b: b"", s: "" };
+        outer: Outer = Outer { bag: Bag { b: b"", s: "" } };
+        sink: Sink = Sink { };
+    }
+    fn fill(n: Int) {
+        let buf = std::bytes::BytesBuilder { initial_cap: 16 };
+        let mut i = 0;
+        while i <= n {
+            buf.append_u8(97 + i);
+            i = i + 1;
+        }
+        let piece = buf.snapshot() or b"";
+        put_free(self.bag, piece);
+        self.sink.name({ self.bag }, "f" + to_string(n * 1000));
+        self.sink.put(if n > 100 { self.bag } else { self.outer.bag }, piece);
+    }
+    fn churn(k: Int) {
+        let mut i = 0;
+        while i < k {
+            self.fill(i % 7);
+            i = i + 1;
+        }
+    }
+    fn show() {
+        println("bag=", std::hex::encode(self.bag.b), " ", self.bag.s, " outer=", std::hex::encode(self.outer.bag.b));
+    }
+}
+
+fn main() {
+    let h = Holder { };
+    h.fill(1);
+    h.show();
+    h.churn(ROUNDS);
+    h.show();
+}
+"#;
+
+#[test]
+fn a_record_a_locus_holds_handed_to_a_writer_outlives_the_method() {
+    let src = SELF_HELD.replace("ROUNDS", "10");
+    let bin = harness::unique_bin("member_param_write_self_held_asan");
+    let opts = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(&src, &bin, &opts).expect("build");
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!stderr.contains("AddressSanitizer"), "ASan report:\n{stderr}");
+    assert!(out.status.success(), "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}", out.status);
+    for w in ["bag=6162 f1000 outer=6162", "bag=616263 f2000 outer=616263"] {
+        assert!(stdout.contains(w), "missing {w:?} in:\n{stdout}");
+    }
+}
+
+/// A record parameter handed on through a carrier: a block, an `if` and
+/// a `match` yielding the parameter carry the caller's record itself, not
+/// a copy, so the writer is handed the arena that owns it, as for the
+/// parameter handed by name.
+#[test]
+fn a_record_parameter_handed_on_through_a_carrier_outlives_both() {
+    asan_clean(
+        "carriers",
+        r#"fn put(x: Bag, p: Bytes) { x.b = p; }
+    fn via_block(x: Bag, p: Bytes) { self.put({ x }, p); }
+    fn via_if(x: Bag, p: Bytes) { self.put(if len(p) > 0 { x } else { x }, p); }
+    fn via_match(x: Bag, p: Bytes) { self.put(match len(p) { 0 -> x, _ -> x, }, p); }
+    fn via_free_block(x: Bag, p: Bytes) { put_free({ x }, p); }"#,
+        r#"s.via_block(bag, fresh(2));
+    println("block=", std::hex::encode(bag.b));
+    s.via_if(bag, fresh(3));
+    println("if=", std::hex::encode(bag.b));
+    s.via_match(bag, fresh(4));
+    println("match=", std::hex::encode(bag.b));
+    s.via_free_block(bag, fresh(5));
+    println("free_block=", std::hex::encode(bag.b));"#,
+        &["block=6162", "if=616263", "match=61626364", "free_block=6162636465"],
+    );
+}
