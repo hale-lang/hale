@@ -30,6 +30,9 @@ mod remote;
 #[path = "readings.rs"]
 mod readings;
 
+#[path = "reflexes.rs"]
+mod reflexes;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -2594,6 +2597,29 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     // what the senses' store scrapes of the machines: this one, until the
     // head writes the hosts it adds beside it
     readings::seed_targets(&dir, &host_label_here())?;
+    // and what it watches for: the habitat's reflexes, its defaults and its
+    // genome's, read by its store from now on (restarted when they moved)
+    let reflexes_line = if senses.is_some() {
+        let manifest = std::fs::read_to_string(genome.join("hale.toml")).unwrap_or_default();
+        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)?;
+        if moved {
+            let _ = Command::new("env")
+                .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+                .arg(local_habitat_project())
+                .arg("--project-directory")
+                .arg(&dir)
+                .arg("-f")
+                .arg(dir.join("compose.yaml"))
+                .arg("-f")
+                .arg(dir.join("ports.yaml"))
+                .args(["restart", &format!("senses-{key}")])
+                .output();
+        }
+        let names: Vec<String> = reflexes::habitat_defaults().into_iter().map(|r| r.name).chain(reflexes::declared(&manifest).unwrap_or_default().into_iter().map(|r| r.name)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        Some(format!("{:<8}{} watched by its senses' store ({}; the operator face's alerts)", "reflexes", names.len(), names.join(", ")))
+    } else {
+        None
+    };
 
     let drain_secs = drain_window().as_secs();
     let g = genome.display();
@@ -2735,6 +2761,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in)", "grafana", readings::GRAFANA_PATH));
     }
     lines.extend(grafana_note);
+    lines.extend(reflexes_line);
     if let Some(l) = readings::install_here(&host_label_here()) {
         lines.push(l);
     }

@@ -138,6 +138,10 @@ pub struct DnaManifest {
     /// `dna::habitat::manifest_codebases` reads them).
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
     pub codebase: Option<Vec<toml::Table>>,
+    /// `[dna.reflex.<name>]` — what the organism watches for in its senses
+    /// (`dna::habitat::reflexes::declared` reads and checks it).
+    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    pub reflex: Option<toml::Table>,
 }
 
 /// GH #566 F5: the fleet the DNA expresses — its name and fleet seed

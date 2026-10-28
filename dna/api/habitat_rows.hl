@@ -16,6 +16,17 @@ import "../core" as dna;
 // What a reader asks: at most `limit` entries.
 type HabitatAsk { limit: Int = 200; }
 
+// What the habitat's reflexes say now: its senses' store's alerts, as the
+// store answers them (`/api/v1/alerts`: each with its `labels`, among them
+// `alertname` and `reflex`, its `annotations` (`summary`), its `state`,
+// `pending` while its condition has not yet held long enough, else
+// `firing`, its `activeAt` and its `value`). A read: nothing is acted on.
+type AlertRows {
+    ok: Bool = false;
+    why: String = "";
+    alerts: String = "[]";
+}
+
 type HostRows {
     ok: Bool = false;
     why: String = "";
@@ -108,6 +119,34 @@ fn habitat_journal_by(root: String, author: String) -> dna::RecordJournal {
     let j = dna::RecordJournal { repo: root, author: author };
     let moved = j.refresh();
     return j;
+}
+
+fn habitat_alerts(root: String) -> AlertRows {
+    let key = dna::allocation_key(root);
+    let port = dna::allocation_port_of(key, "senses-" + key);
+    if len(key) == 0 || len(port) == 0 {
+        return AlertRows { why: "the habitat has no senses' store of its own" };
+    }
+    let url = "http://" + dna::loopback_host() + ":" + port + "/api/v1/alerts";
+    let r = std::http::get(url) or std::http::ClientResponse {
+        status: -1,
+        headers: err.kind + " " + err.detail,
+        body: b"",
+    };
+    if r.status != 200 {
+        return AlertRows {
+            why: "the habitat's senses' store did not answer at " + url + " ("
+                + (if r.status < 0 { r.headers } else { to_string(r.status) }) + ")",
+        };
+    }
+    let alerts = std::json::find_field_raw(
+        std::json::find_field_raw(std::str::from_bytes(r.body), "data"),
+        "alerts",
+    );
+    return AlertRows {
+        ok: true,
+        alerts: if std::str::starts_with(alerts, "[") { alerts } else { "[]" },
+    };
 }
 
 fn habitat_hosts(root: String, limit: Int) -> HostRows {
