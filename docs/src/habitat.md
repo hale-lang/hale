@@ -66,7 +66,13 @@ grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the fa
 node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
 ```
 
-`HALE_DNA_NODE_EXPORTER=off` and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
+Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Containers** dashboard shows what runs where: every container on every machine with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window.
+
+`HALE_DNA_NODE_EXPORTER=off` (both exporters) and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
+
+### Reflexes and Alerts
+
+An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks by default: one more than 90% full for ten minutes, or one that fills within a day at its recent rate. The operator face's **alerts** screen shows what is firing, and what is about to.
 
 ### An Organism's Own Host Commands (`organism place`)
 
@@ -177,31 +183,34 @@ A moved memory starts empty, because nothing migrates. A memory that holds its o
 
 The operator face's **organisms** screen lists each of `voice`'s allocations with what its services publish: a link where the port is reachable from your machine (`api` opens `voice`'s console, its admin UI served at the api's `/`), and `loopback only on <host>` for a port bound to that host's loopback.
 
-`voice`'s Compose definition publishes port `8080` bound to loopback (`127.0.0.1:8080:8080`) on the host running `voice` so that its unauthenticated `/admin/v1/*` plane is never exposed directly to the LAN. If you placed `voice` on a remote host (`rack-a.lan`), open a local SSH port forward first (or run the commands in Steps 4–7 directly on `rack-a.lan`) so `http://localhost:8080` reaches `voice`'s loopback interface:
+`voice`'s Compose definition publishes its api (port `8080`) and its NATS (port `4222`) on the listen address of the host it is placed on (`HALE_DNA_HOST_LISTEN`), so a browser or a node on another machine reaches them at the host's name; on this machine they stay on `127.0.0.1`. Every plane of the api takes a bearer, so nothing rests on loopback: a project key on `/v1`, a node's enrollment token on `/node/v1`, and the **operator token** on `/admin/v1`. Name the api's address once (`localhost:8080` when `voice` runs on this machine, `rack-a.lan:8080` when it is placed there) and check that it answers:
 
 ```sh
-# Only when voice is placed on a remote host (rack-a.lan):
-ssh -fNL 8080:127.0.0.1:8080 ops@rack-a.lan
+api=http://rack-a.lan:8080        # or http://localhost:8080 on this machine
+curl $api/healthz
 ```
 
-Verify that `voice`'s API server is listening on `localhost:8080`:
+`voice` mints its operator token on its first start and keeps it in its Postgres; it is never in the environment or a log. Print it on the host running `voice` (use `docker compose ls` there to find the compose project name; its api container is `<project>-api-1`):
 
 ```sh
-curl http://localhost:8080/healthz
+(umask 077; ssh ops@rack-a.lan docker exec <project>-api-1 voice-api admin-token > admin.token)   # created mode 600
 ```
+
+The console (the api's `/`, the **organisms** screen's `api` link) asks for this token once and keeps it in the browser.
 
 ### 5. Configure a Model, Project Key, and Node Seat on `voice`
 
-Configure a model (`echo-1`), billing account, project API key, and worker node seat via `voice`'s admin API (or via the web UI at `http://localhost:8080/`). Using the built-in `static` engine requires no external weights or GPU:
+Configure a model (`echo-1`), billing account, project API key, and worker node seat via `voice`'s admin API (or via the console at `$api/`, which asks for the operator token). Every admin call presents the operator token, here from a header file so it is on no command line. Using the built-in `static` engine requires no external weights or GPU:
 
 ```sh
-api=localhost:8080; json='content-type: application/json'
-curl -X POST $api/admin/v1/models   -H "$json" -d '{"id": "echo-1"}'
-curl -X POST $api/admin/v1/accounts -H "$json" -d '{"id": "static", "name": "Static"}'
-curl -X POST $api/admin/v1/projects -H "$json" -d '{"id": "work", "name": "Work"}'
-curl -X POST $api/admin/v1/projects/work/keys -H "$json" -d '{"name": "laptop"}'
-curl -X POST $api/admin/v1/nodes    -H "$json" -d '{"id": "local"}'
-curl -X POST $api/admin/v1/nodes/local/seats -H "$json" -d '{
+json='content-type: application/json'
+(umask 077; printf 'Authorization: Bearer %s\n' "$(cat admin.token)" > admin.h)
+curl -X POST $api/admin/v1/models   -H @admin.h -H "$json" -d '{"id": "echo-1"}'
+curl -X POST $api/admin/v1/accounts -H @admin.h -H "$json" -d '{"id": "static", "name": "Static"}'
+curl -X POST $api/admin/v1/projects -H @admin.h -H "$json" -d '{"id": "work", "name": "Work"}'
+curl -X POST $api/admin/v1/projects/work/keys -H @admin.h -H "$json" -d '{"name": "laptop"}'
+curl -X POST $api/admin/v1/nodes    -H @admin.h -H "$json" -d '{"id": "local"}'
+curl -X POST $api/admin/v1/nodes/local/seats -H @admin.h -H "$json" -d '{
   "id": "static", "engine": "static", "account": "static",
   "serves": [{"model": "echo-1"}], "config": {"text": "hello from voice"}}'
 ```
@@ -210,6 +219,7 @@ curl -X POST $api/admin/v1/nodes/local/seats -H "$json" -d '{
 - Save the `"enrollment_token": "vn-..."` returned by `/admin/v1/nodes` and start `voice`'s node container with it (use `docker compose ls` to find the compose project name):
 
 ```sh
+# on the host running voice:
 VOICE_ENROLLMENT_TOKEN=vn-... docker compose -p <project> up -d node
 ```
 
@@ -221,7 +231,7 @@ Store the `vk-...` API key in a vault slot (`hale dna secret set <SLOT>` inside 
 
 ```sh
 hale habitat model-map voice think.standard echo-1 \
-  --endpoint http://localhost:8080/v1/chat/completions \
+  --endpoint $api/v1/chat/completions \
   --key-vault <slot>
 hale habitat model-probe voice think.standard
 ```
@@ -231,13 +241,13 @@ hale habitat model-probe voice think.standard
 Query `voice`'s OpenAI-compatible `/v1/chat/completions` endpoint directly with `curl -N`:
 
 ```sh
-curl -N http://localhost:8080/v1/chat/completions \
+curl -N $api/v1/chat/completions \
   -H 'Authorization: Bearer vk-...' \
   -H 'content-type: application/json' \
   -d '{"model": "echo-1", "stream": true, "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
-`voice` streams back Server-Sent Event chunks (`data: {...}` with `chat.completion.chunk`) terminated by `data: [DONE]`, and records usage under `GET /admin/v1/usage`.
+`voice` streams back Server-Sent Event chunks (`data: {...}` with `chat.completion.chunk`) terminated by `data: [DONE]`, and records usage under `GET /admin/v1/usage` (under the operator token).
 
 ### Operational Notes
 

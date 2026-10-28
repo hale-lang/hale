@@ -1405,6 +1405,32 @@ fn walk_bundle(
     TypingWalk { diags, record: typed, by_decl }
 }
 
+/// The one-owner rule (spec/memory.md, invariant 3 of the per-method
+/// scratch reclaim): a call publishes one arena for its callee to write
+/// into, so a call that hands a callee which may write through its
+/// arguments both a record a field of `self` holds and (a part of) one
+/// of the method's parameters, which its caller owns, is refused, at the
+/// call. The owners are the owned-view column's place
+/// markers, carried through blocks, `if`, `match` and `or`.
+fn mixed_owner_diags(summary: &crate::alloc_summary::AllocSummary) -> Vec<Diag> {
+    summary
+        .mixed_owner_calls
+        .iter()
+        .map(|m| {
+            Diag::ty(
+                m.span,
+                format!(
+                    "this call hands a callee that may write through its arguments both `{}`, a record this locus holds, \
+                     and {}, which the caller owns: what the callee writes into one of them would be made in the \
+                     other's arena and outlive its owner. Copy one of them into a local record first, a literal built from \
+                     its fields, and hand the local, or write the locus's record through `self` directly",
+                    m.held, m.other
+                ),
+            )
+        })
+        .collect()
+}
+
 /// The bundle rules of the check, over the walk's results: the target's
 /// refusals and admission, the walk's diagnostics, then every
 /// bundle-wide rule and the reveal rule (its per-declaration results
@@ -1431,6 +1457,7 @@ pub fn check_bundle_rules(
     diags.extend(publish_in_default_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
+    diags.extend(mixed_owner_diags(inputs.alloc_summary));
     diags.extend(bounded_return_diags(bundle, top));
     diags.extend(literal_default_missing_field_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());

@@ -20,6 +20,7 @@
         <a href="#hardware" id="nav-hardware">hardware</a>
         <a href="#infrastructure" id="nav-infrastructure">infrastructure</a>
         <a href="#organisms" id="nav-organisms">organisms</a>
+        <a href="#alerts" id="nav-alerts">alerts</a>
         <a href="/organization" id="nav-organization">organization</a>
         <a href="/grafana/" id="nav-dashboards">dashboards</a>
       </nav>
@@ -78,6 +79,17 @@
           <label>port <input id="add-port" type="number" min="1" max="65535" value="22"></label>
           <button type="submit">add</button>
         </form>
+      </section>
+    </div>
+    <div id="screen-alerts" hidden>
+      <section id="alerts">
+        <h2>alerts</h2>
+        <table>
+          <thead><tr><th>state</th><th>reflex</th><th>host</th><th>what</th><th>for</th></tr></thead>
+          <tbody id="alert-rows"></tbody>
+        </table>
+        <p id="alerts-empty" class="dim" hidden>nothing is firing</p>
+        <p id="alerts-outcome" class="outcome" hidden></p>
       </section>
     </div>
     <div id="screen-infrastructure" hidden>

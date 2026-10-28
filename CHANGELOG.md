@@ -8,6 +8,113 @@ behavior.
 
 ## Unreleased
 
+## v0.30.2 — what runs where (2026-10-28)
+
+Every machine a habitat uses now reports its containers, and Grafana shows what runs where.
+
+**Containers.** Beside each host's node exporter, the habitat runs a container exporter (cAdvisor; on a Mac, inside docker's VM). Grafana's new **Containers** dashboard lists each container with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window. The Hosts dashboard links to it (#1771).
+
+**The allocation survey** counts a write through a record, array or tuple parameter as living with the record's owner, matching what v0.30.1's codegen does with it (#1770).
+
+No breaking changes against v0.30.1.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- The allocation survey now counts a write through a record, array or tuple parameter as living with the record's owner, no longer freed when the method returns. Such a value escapes as `param-store`, and a writer handed a record `self` holds stores as `held-store` into the locus arena, which is never recycled. A `run()` loop or bus handler that hands a writer `self.bag` is reported at the call. `--dump-alloc-summary` shows these as `store` lines (#1770).
+
+- Every machine the habitat uses also runs a container exporter (cAdvisor, `hale-cadvisor`; on a Mac inside docker's VM), and Grafana's new **Containers** dashboard shows what runs where: each container with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window (#1771).
+
+## v0.30.1 — manifests a toolchain grows into, and the habitat's alerts (2026-10-28)
+
+An organism's manifest can now declare what a newer toolchain reads without breaking the toolchain beside it, and the habitat watches its machines' disks and shows what fires.
+
+**Manifests a toolchain grows into.** A `[dna]` key this toolchain does not know is ignored with a warning naming it, never refused. v0.30.0 refused voice's `[dna.host.node]` in `hale fetch`, so voice's current revision could not be grafted; v0.30.1 carries `[dna.host]` and warns of anything else it does not know (#1769).
+
+**Reflexes and alerts.** An organism declares what it watches for in its readings under `[dna.reflex.<name>]`: a PromQL condition, how long it holds, a severity, an action and a summary, rendered to standard Prometheus alerting rules, so a habitat and a heart run by hand evaluate the same rules. Every habitat watches its machines' disks (over 90% full for ten minutes, or filling within a day), and the operator face's **alerts** screen shows what is firing. Nothing acts on an alert yet (#1769).
+
+**The infrastructure screen** says how each allocation runs beside what fills it: the habitat's Forgejo and sign-in stub run under compose like its memory (#1768). The habitat chapter's voice walkthrough follows voice as its own nursery serves it (#1757).
+
+**The language.** A loop body in a locus method, hook or handler frees what each iteration makes when the iteration ends (#1765), and a method's write through a record, array or tuple parameter is made in its caller's arena, as a free function's is; it was made in the method's scratch and freed when it returned (#1767).
+
+No breaking changes against v0.30.0.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- The habitat chapter's voice walkthrough follows voice as its own nursery now serves it (`hale habitat nursery add https://github.com/hale-lang/voice`, then `hale habitat graft voice`): voice placed on a host publishes its api and NATS on that host's listen address, so the walkthrough reaches the api at the host's address instead of forwarding a port over `ssh -L`, and `voice`'s admin plane (`/admin/v1`, and its console) takes the operator token the api mints on its first start, printed on the voice host by `voice-api admin-token`.
+
+- A loop body in a locus method, lifecycle hook or handler (`run()` included) frees what each iteration makes when the iteration ends, unless it keeps a value in a binding declared before the loop (anything but a scalar or a locus reference), writes a `bounded` element into one, or makes a locus. `let c = body.chunk() or { break; }; h.update(c);` straight in `run()` now holds one chunk at a time: a 5 GB `BodyReader` download peaked at 5.3 MB (was 5,632 MB), and a `buf.snapshot()` per iteration over a 1 GiB file at 6.7 MB (was 1,058 MB). `hale verify` reports a loop that still keeps one value per iteration at the allocating call (`buf.snapshot()`), not at a fallback literal beside it. `LOTUS_ARENA_RESIDENCY=1` also prints the process's peak of arena chunk bytes (`[arena_residency peak]`).
+
+- A locus method that writes a heap value through a record, array or tuple parameter (`fn put(x: Bag, p: Bytes) { x.b = p; }`, `x.inner.b = p`, `a[i] = p`) now makes it in the caller's arena, as a free fn does; it was made in the method's own scratch, which its return freed under the caller's record (a use-after-free in a program with no loop). A method handing such a parameter to a callee that writes through it passes its caller's arena on.
+- A method handing a record its locus holds (`put_free(self.bag, p)`, or a block, `if` or `match` yielding `self.bag`) to a callee that writes through it now has the write made in the locus's own arena; it was made in the method's scratch and freed on return. A record reached through a block, `if` or `match` argument is followed to the parameter or `self` field it came from. Such writes are not recycled: each one stays in the locus arena until the locus dissolves.
+
+- The operator face's infrastructure screen and a remote `hale habitat status` say how each allocation runs beside what fills it: the habitat's own Forgejo and sign-in stub run under `compose` (`compose (forgejo)`), like its memory (#1768).
+
+- An organism declares what it watches for in its readings as reflexes (`[dna.reflex.<name>]`: a PromQL condition, how long it holds, a severity, an action and a summary), rendered to standard Prometheus alerting rules. Every habitat watches its machines' disks (over 90% full for 10 minutes, or filling within a day), and the operator face's new alerts screen shows what is firing (`Commands::alerts`). Nothing acts on an alert yet (#1769).
+- A `[dna]` key this toolchain does not know is ignored with a warning naming it, never refused, so an organism's manifest can declare what a newer toolchain reads (v0.30.0 refused voice's `[dna.host.node]` in `hale fetch`); `[dna.host]` is known (#1769).
+
+## v0.30.0 — a habitat across a LAN (2026-10-27)
+
+A habitat now spans the machines of a LAN. `hale habitat up --host <name>` runs it on a machine that has docker and nothing else, from a laptop that holds only a pointer to it; machines join it as hosts in one step, under an account of the habitat's own; organisms are grafted onto them with a plan of which parts they share with the habitat; and the habitat reads every machine it uses and charts them behind its own sign-in.
+
+**A habitat on another machine.** `hale habitat up --host <name>` brings the habitat up on a LAN machine over the person's own SSH login, building its toolchain image there from the person's `hale` when it has none, and leaves a pointer here; `status`, `graft`, the nursery verbs and `down --forget` act through it (#1749, #1750, #1753). The habitat's body and face run as compose services beside its memory, nerves, senses and forge (#1748), and an organism's faces, heads and consoles are linked at the habitat's declared address (#1751, #1752).
+
+**Hosts in one step.** `hale habitat host add <name>` makes the habitat an account of its own there over the person's login and sudo (`hale-<id>`, no sudo of its own; on Linux in the docker group, on macOS a hidden account with no password), authorizes its key and probes the host ready; `host remove` and a remote forget take the account off (#1756). A project applied on a host is handed the host's name and listen address, and the `ssh` provider ships a project placed there whole (#1754, #1755).
+
+**Grafts that plan each part.** A graft prints, part by part, what the organism shares with the habitat and what is its own, and asks: its record is a schema of its own on the habitat's Postgres, its nerves and senses run on the habitat's machine, it signs in through the habitat's identity provider, and its application plane is its own (`--own <part>[=<host>]`, `--reuse <part>`, `--plan`, `[dna] brings`). Birth and a sapling's graft ratify what the person chose (#1756).
+
+**The machines' readings.** Every machine the habitat uses runs a Prometheus node exporter (a container on Linux, launchd's on macOS, or one already there), its senses' store scrapes them, and a Grafana behind the face's sign-in charts them at `/grafana/` (#1756).
+
+**The language.** `std::http`'s streamed readers present a vault-held bearer the program never reads and follow redirects under one deadline; chunked bodies read in linear time; `std::crypto` hashes a stream or a file without holding it, on the SHA-256 instructions of x86-64, Apple Silicon and Grace CPUs (#1762, #1763). `hale dna secret set` stores a piped value whole (#1760).
+
+**Breaking changes, measured against v0.29.0:** a habitat born before v0.30.0 is not migrated: `hale habitat down --forget` and a fresh `up` (a grafted organism's record now lives on the habitat's Postgres, and the habitat's compose files gained the senses' targets and Grafana). The toolchain no longer bundles the voice sapling: voice is its own nursery (`hale habitat nursery add https://github.com/hale-lang/voice`) (#1753).
+
+The item-level notes follow, one entry per change with every PR reference.
+
+### The habitat's body and face run in compose
+
+- `hale habitat up` runs the habitat's own `body` (`hale dna dev <genome> --no-iris`) and `face` (`hale dna head <genome>`) as services of the habitat's compose project alongside `memory`, `nerves`, `senses`, `forgejo` and `oidc`, so a host runs nothing outside Docker. The toolchain embeds the root `Dockerfile` and `hale.pin` (defaulting to the commit the binary was built from) and writes them into `<habitat>/allocations/<habitat_key>/` beside `compose.yaml`, building from `https://github.com/hale-lang/hale.git#<pin>`. `--image <tag>` and `HALE_HABITAT_IMAGE=<tag>` (flag over env) skip the build and use an existing local image; `hale habitat image build [<checkout>]` builds the image once from a local checkout as context.
+- `hale habitat down` runs `docker compose down` on the habitat's project and leaves the volumes; `hale habitat down --forget` keeps its plan-then-confirm. No `systemd` or `launchd` units are written or started for the habitat, and `--foreground` is removed (`--no-body` stays for backing-only fixtures).
+- The head's URL (`http://127.0.0.1:<head_port>`) is recorded on `habitat.profile` (`head_url`) and in `<habitat>/head.url` so `hale habitat` and `hale dna` verbs on the same machine reach the head without a database query; `--head <url>` and `HALE_DNA_HEAD_URL` reach a head elsewhere (precedence: `--head` flag, `HALE_DNA_HEAD_URL` env, `<habitat>/head.url`, `habitat.profile`).
+- A process inside the habitat derives the address it dials for an allocation from the recorded `127.0.0.1:<port>` and where it runs: on Linux `body` and `face` share the host's network and dial it as recorded; on macOS the render sets `HALE_DNA_LOOPBACK_HOST=host.docker.internal` on both and they dial the published port there. `body` and `face` mount the host's docker socket, which is root on the host: a habitat is trusted as the machine's administrator is.
+
+### A habitat on another machine
+
+- `hale habitat up --host <name> [--user <user>] [--port <n>]` runs the habitat on a LAN machine that has docker and nothing else, over the person's own SSH login (`HALE_HABITAT_SSH_CONFIG` hands `ssh -F` a config file). The toolchain image is there already, sent from this machine's docker, or pulled as this toolchain's published image when its `hale --version` matches; nothing is compiled there. The same `hale habitat up` runs there in that image; its face and head bind the address `<name>` resolves to and are recorded at `http://<name>:<port>`. This machine keeps a pointer (`remote.json`, `head.url`, the head's launch token) in place of a habitat: every head verb goes through it, `status` asks the head, `down` and `down --forget` run there over SSH (the forget still confirmed by the habitat's name typed at the terminal, the pointer removed last), and `migrate`, `handover` and `graft <dir>` are refused. Run again, `up --host` finds the same habitat by its record's identity and changes nothing.
+- The habitat's OIDC stub records its issuer and endpoints under the habitat's declared address (`HALE_DNA_HABITAT_ADDRESS`), and the head answers as it, so a remote face is signed into from the admin machine's browser. Plain-http identity endpoints are admitted for the loopback or exactly that address, no other host.
+- A habitat's head block is never placed over the senses' scrape ports (9464-9466).
+
+- Through a pointer to a habitat on another machine (`hale habitat up --host`), `hale habitat graft <dir>` runs on the habitat's machine: the pointer's record is checked there, a directory here is shipped there as the habitat's copy (`<habitat>/grafted/<name>`, the organism's home, removed with the organism or the habitat), every flag is passed through, and a failed graft leaves no copy. `hale habitat organism <name> dna <verb> [args…]` runs an organism's own verbs (`review`, `task create`, `work run`, …) in its directory, there through a pointer and here locally.
+
+- A grafted organism's face and head are recorded under the habitat's declared address, so on a habitat on another machine the operator face's links to it reach it from the admin machine; a local habitat records `127.0.0.1` as before.
+
+- The operator face links to a grafted organism's own console: an organism's services allocation records the addresses its compose services publish (`published`: each port and the address it is bound to, read from compose's own reading of the render at the graft), `Commands::allocations` resolves them against the host the allocation runs on as `links`, a link only where it is reachable from the admin machine (`loopback only on <host>` otherwise, except a host that is this machine under a local habitat), read from the last successful apply, and the organisms screen lists them under the organism's allocation (voice's `api` opens its admin UI). The habitat walkthrough no longer asks for `scripts/hale-toolchain.sh`: voice's image downloads the released toolchain itself.
+
+- `hale habitat up --host` builds the toolchain image on the host from your `hale`'s commit when it is neither there nor in your Docker, instead of refusing; the published image is pulled only when your `hale` is that release's own build (#1753).
+
+- Every compose project the habitat applies on an `ssh` host is handed that host's name and listen address (`HALE_DNA_HOST_NAME`, `HALE_DNA_HOST_LISTEN`) in its environment; a project maps them in its own compose file. The bundled voice is pinned at `9dd6eb3f`, whose compose maps them: a voice placed on a host tells its nodes NATS at the host's name and publishes NATS and its api on the host's listen address, so a node and a browser on another machine reach it.
+
+- The `ssh` provider ships a compose project placed on a host whole, as one tar of its compose files and each entry the repository tracks at its root, so a service built from the repository (`build: .`) or bind-mounting one of its directories runs there; it copied only root-level files before.
+
+- A habitat's birth ratifies the toolchain's foundational positions and law, and a sapling's graft ratifies its purpose, practices and positions, in the name of the person who chose them (#1756).
+- `hale habitat host add` sets a host up in one step over your own SSH login: an account of the habitat's own (`hale-<id>`, no sudo of its own: on Linux in the docker group, on macOS a hidden account with no password), its key, the probe. `host remove` and a remote `down --forget` take the account off again (#1756).
+- `hale habitat graft` plans each body part: the organism's record is a schema of its own on the habitat's Postgres, its nerves and senses run on the habitat's machine, and the application plane is the organism's own. `--own <part>[=<host>]`, `--reuse <part>`, `--plan`, and `[dna] brings` in the manifest (#1756).
+- Grafted organisms sign in through the habitat's identity provider, which keeps its key across restarts (#1756).
+- The habitat installs a Prometheus node exporter on every machine it uses (node_exporter 1.11.1: a container on Linux, launchd's on macOS, or one already there; `host probe` checks it), its senses' store scrapes them, and a Grafana behind the face's sign-in charts them at `/grafana/` (#1756).
+- The operator face's infrastructure screen names each allocation's organism and says what fills it; the hardware screen shows a block per host (#1756).
+
+- `hale dna secret set` with its value piped stores the whole of stdin, less one trailing newline (a value of several lines arrives whole), and refuses an empty one by the secret's name (`no value on stdin for <NAME>`), storing nothing; at a terminal it reads the typed line as before. Through a pointer, `hale habitat organism <name> dna secret set` forwards stdin, so a piped value reaches the habitat's machine, and allocates a terminal only when there is one.
+
+- A DNA fixture's teardown and `hale habitat sweep <root>` take down every compose project the root owns, including the projects its directories name (a host's `.hale/habitat/<project>`, a habitat born in the root) once their containers are gone, so no network or volume outlives a fixture; `habitat_placement_test` no longer leaks a docker network per run.
+
+### std::http: a vault bearer and redirects on streamed reads; std::crypto: SHA-256 over a stream
+
+- `std::http::BodyReader` and `SseReader` take `bearer: std::secret::Credential`, presented as `Authorization: Bearer`. The credential writes the request's head onto the connection itself, so the token is never a value the program can read. A source that resolves to nothing fails the opening `send_failed` with nothing sent. `hale check` now refuses a `reveal_text()` into the `req` of a reader built with `deferred`, which kept the revealed header readable in `req` until the opening (downstream handoff).
+- `ClientRequest.follow_redirects: Int = 0`: a streamed reader follows up to that many redirects (301, 302, 303, 307, 308) under its one deadline, and its `status` and `headers` are the final target's. Same scheme or an upgrade to https only (`redirect_refused`), `too_many_redirects` past the limit, and `Authorization` and the `bearer` are dropped once the origin changes. The whole-body calls still return a 3xx as is.
+- A streamed reader's chunked body is read without copying the whole buffer on every read of an unfinished chunk, which made memory and time quadratic in the chunk's size (2 MiB chunks peaked at 278 MB). A 5 GB body in 16 MiB chunks now peaks at 71 MB and reads in 4.8 s.
+- `std::crypto::Sha256` (`update(Bytes)`, `finish() -> Bytes`) and `std::crypto::sha256_file(path)` hash without holding the input: a 10 GiB file in 5.4 MB peak RSS, as fast as `sha256sum` on CPUs with the SHA extensions. One SHA-256 core now serves `sha256`, `hmac_sha256` and both, and the one-shot path no longer copies and pads the whole message.
+
+- `std::crypto`'s SHA-256 (`sha256`, `hmac_sha256`, `Sha256`, `sha256_file`) runs on the ARMv8 SHA-256 instructions on aarch64 Linux and macOS when the OS reports them (a Grace CPU, Apple Silicon), beside the x86-64 SHA-extension tier; any other target keeps the portable rounds. The tests now hold SHA-256 to digests computed outside the runtime at the block and padding boundaries, so a compression tier that is wrong on its own fails on the machine that selects it.
+
 ## v0.29.0 — a habitat run from a browser (2026-10-23)
 
 A habitat now runs from a browser. After `hale habitat up`, a person signs in to the operator face, adds machines of the LAN over SSH, places the habitat's services on them, and grafts organisms from the nursery onto the host they choose. Every step is a row of the habitat's head, in that person's name. On the language side, an HTTP client reads a response as it arrives, a REST surface can hand everything else to a handler of the program's own, and a deployment of several programs is declared in source as a fleet.

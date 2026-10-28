@@ -564,6 +564,18 @@ typedef struct lotus_arena {
      * arena must not both grow it. */
     void                *chunk_index;
     int                  chunk_index_lock;
+    /* An iteration arena (`lotus_arena_iteration_enter`) is OWNED by
+     * the arena it was carved from: `owner` points back at it, and the
+     * owner's `owned_head` list holds every iteration arena still
+     * alive under it. Destroying an arena destroys what it owns first,
+     * so a frame that leaves a loop by `return` (or a violation) frees
+     * the loop's last iteration with its own scratch, and a loop that
+     * restarts an outer iteration frees an inner loop's. NULL on every
+     * arena that is not an iteration arena and owns none. */
+    struct lotus_arena  *owner;
+    struct lotus_arena  *owned_head;
+    struct lotus_arena  *owned_prev;
+    struct lotus_arena  *owned_next;
 } lotus_arena_t;
 
 /* Per-thread freelist of default-sized chunks (2026-05-21
@@ -853,6 +865,10 @@ typedef struct lotus_arena_residency_entry {
 static lotus_arena_residency_entry_t *g_arena_residency_head = NULL;
 static pthread_mutex_t g_arena_residency_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_arena_residency_seq = 0;
+/* The chunk-bytes high-water mark (see `lotus_residency_chunk_held`). */
+static int g_residency_peak_on = 0;
+static _Atomic size_t g_residency_chunk_live = 0;
+static _Atomic size_t g_residency_chunk_peak = 0;
 
 static int g_arena_residency_enabled_cached = 0;
 static void lotus_arena_residency_enabled_init(void) {
@@ -999,6 +1015,10 @@ void lotus_arena_residency_dump_fd(int fd) {
         free(arr);
         return;
     }
+    fprintf(out,
+            "[arena_residency peak] chunk_bytes_peak=%zu chunk_bytes_live=%zu\n",
+            atomic_load_explicit(&g_residency_chunk_peak, memory_order_relaxed),
+            atomic_load_explicit(&g_residency_chunk_live, memory_order_relaxed));
     fprintf(out,
             "[arena_residency dump] %zu live arenas, "
             "sorted by bytes desc:\n", n);
@@ -1592,7 +1612,44 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_on_node(
 #endif
 
 LOTUS_HOT_ALIGN
+/* LOTUS_ARENA_RESIDENCY's high-water mark: the bytes of chunk capacity
+ * every arena of the process holds at once (a subregion's included,
+ * which the per-arena rows leave out), counted when a chunk joins an
+ * arena and when it leaves one, and its peak over the run. A loop whose
+ * iterations' values pile up in a frame's scratch shows here as a peak
+ * that grows with the trip count; one reclaimed per iteration holds it
+ * flat. Read once in a constructor so the off path is one load. */
+__attribute__((constructor))
+static void lotus_residency_peak_init(void) {
+    const char *env = getenv("LOTUS_ARENA_RESIDENCY");
+    g_residency_peak_on = env && env[0] && env[0] != '0';
+}
+
+static inline void lotus_residency_chunk_held(size_t cap) {
+    size_t live = atomic_fetch_add_explicit(&g_residency_chunk_live, cap, memory_order_relaxed) + cap;
+    size_t peak = atomic_load_explicit(&g_residency_chunk_peak, memory_order_relaxed);
+    while (live > peak
+           && !atomic_compare_exchange_weak_explicit(&g_residency_chunk_peak, &peak, live,
+                                                     memory_order_relaxed, memory_order_relaxed)) {
+    }
+}
+
+static inline void lotus_residency_chunk_dropped(size_t cap) {
+    atomic_fetch_sub_explicit(&g_residency_chunk_live, cap, memory_order_relaxed);
+}
+
+static lotus_arena_chunk_t *lotus_arena_new_chunk_for_impl(
+    struct lotus_arena *target, size_t cap);
+
 static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
+    struct lotus_arena *target, size_t cap)
+{
+    lotus_arena_chunk_t *c = lotus_arena_new_chunk_for_impl(target, cap);
+    if (g_residency_peak_on && c) lotus_residency_chunk_held(c->cap);
+    return c;
+}
+
+static lotus_arena_chunk_t *lotus_arena_new_chunk_for_impl(
     struct lotus_arena *target, size_t cap)
 {
     lotus_mark_thread_for_pool_dtor();
@@ -1713,6 +1770,7 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk(size_t cap) {
 LOTUS_HOT_ALIGN
 static void lotus_arena_release_chunk(lotus_arena_chunk_t *c) {
     if (!c) return;
+    if (g_residency_peak_on) lotus_residency_chunk_dropped(c->cap);
     lotus_mark_thread_for_pool_dtor();
     /* F.32-4a (2026-05-24): huge-page-backed chunks bypass the
      * pool entirely (they're never default-sized; pool only
@@ -1867,6 +1925,10 @@ static void lotus_arena_init_struct(lotus_arena_t *a) {
     a->chunk_index = NULL;
     a->chunk_index_lock = 0;
     a->numa_node = -1;  /* topology arena-on-node: unbound by default */
+    a->owner = NULL;
+    a->owned_head = NULL;
+    a->owned_prev = NULL;
+    a->owned_next = NULL;
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
      * pointer; arenas with no children never acquire the lock.
@@ -3272,6 +3334,28 @@ static void lotus_chunk_index_free(lotus_arena_t *a);
 LOTUS_HOT_ALIGN
 void lotus_arena_destroy(lotus_arena_t *a) {
     if (!a) return;
+    /* Iteration arenas: what this arena owns dies first (an inner
+     * loop's last iteration under an outer one's, a loop's last
+     * iteration under the scratch of a frame that returned from inside
+     * it), then this arena leaves its owner's list. */
+    while (a->owned_head) {
+        lotus_arena_destroy(a->owned_head);
+    }
+    if (a->owner) {
+        lotus_arena_t *o = a->owner;
+        int mt = lotus_runtime_multithreaded();
+        if (mt) pthread_mutex_lock(&o->subregion_lock);
+        if (a->owned_prev) {
+            a->owned_prev->owned_next = a->owned_next;
+        } else {
+            o->owned_head = a->owned_next;
+        }
+        if (a->owned_next) a->owned_next->owned_prev = a->owned_prev;
+        if (mt) pthread_mutex_unlock(&o->subregion_lock);
+        a->owner = NULL;
+        a->owned_prev = NULL;
+        a->owned_next = NULL;
+    }
     /* GH #375: the caller-arena TLS is a set-and-forget channel —
      * stdlib call sites publish before each call, but nothing ever
      * UN-publishes. A method whose body published its own scratch
@@ -3375,6 +3459,65 @@ void lotus_arena_destroy(lotus_arena_t *a) {
     free(a);
 }
 
+/* ---- iteration arenas -------------------------------------------------
+ *
+ * A loop body in a frame with a per-call scratch (a locus method, a
+ * lifecycle hook, a handler) allocates into an arena of its own, made
+ * fresh for every iteration: the values an iteration makes and does not
+ * hand on are freed when the next iteration starts, or when the loop is
+ * left, instead of piling up in the frame's scratch until the frame
+ * returns. A `run()` that loops for the life of its locus is the frame
+ * that never returns.
+ *
+ * `cur` is the slot's arena (NULL before the loop's first iteration),
+ * `parent` the arena the loop runs in. The arena returned is a
+ * subregion of `parent` OWNED by it (`owner`), so a frame that leaves
+ * the loop by `return` frees the last iteration's arena with its own
+ * scratch (`lotus_arena_destroy` destroys what an arena owns). */
+LOTUS_HOT_ALIGN
+lotus_arena_t *lotus_arena_iteration_enter(lotus_arena_t *cur,
+                                           lotus_arena_t *parent) {
+    if (cur) {
+        /* The common iteration made a few values in one chunk and kept
+         * no state beside them: start the arena over in place (its one
+         * chunk emptied), as a delivery region is reused. Anything more
+         * (a chain of chunks, retires, an index, an arena it owns) and
+         * the arena is destroyed and made again. Never with the chunk
+         * pool off (ASan): a fresh arena per iteration, so a value read
+         * after its iteration is a reported use-after-free. */
+        const lotus_arena_chunk_t *h = cur->head;
+        int clean = !lotus_no_chunk_pool() && cur->owner == parent
+            && (!h || (!h->next && !h->via_mmap && h->cap <= LOTUS_ARENA_CHUNK_BYTES))
+            && !cur->fixed_size && !cur->chunk_byte_cap && !cur->cap_diag_name
+            && !cur->shared_concurrent && !cur->child_struct_free && !cur->retire_pending
+            && !cur->retire_shells && !cur->retire_free && !cur->retire_free_small
+            && !lotus_slot_state(cur) && !cur->chunk_index && !cur->owned_head;
+        if (clean) {
+            if (h) cur->head->used = 0;
+            return cur;
+        }
+        lotus_arena_destroy(cur);
+    }
+    lotus_arena_t *a = lotus_arena_create_subregion(parent);
+    if (!a || !parent) return a;
+    int mt = lotus_runtime_multithreaded();
+    if (mt) pthread_mutex_lock(&parent->subregion_lock);
+    a->owner = parent;
+    a->owned_prev = NULL;
+    a->owned_next = parent->owned_head;
+    if (parent->owned_head) parent->owned_head->owned_prev = a;
+    parent->owned_head = a;
+    if (mt) pthread_mutex_unlock(&parent->subregion_lock);
+    return a;
+}
+
+/* The loop is left: its last iteration's arena goes. NULL (a loop that
+ * ran no iteration) is a no-op. */
+void lotus_arena_iteration_leave(lotus_arena_t *cur) {
+    if (cur) lotus_arena_destroy(cur);
+}
+
+
 /*
  * v1.x-3 — Recognition projection class pools.
  *
@@ -3475,6 +3618,10 @@ static void lotus_recpool_init_cell_arena(char *cell_base, size_t cell_bytes) {
     a->slot_reuse         = NULL;
     a->chunk_index        = NULL;
     a->chunk_index_lock   = 0;
+    a->owner              = NULL;
+    a->owned_head         = NULL;
+    a->owned_prev         = NULL;
+    a->owned_next         = NULL;
 }
 
 static size_t lotus_recpool_bitmap_words_for(size_t cap_count) {
@@ -3585,6 +3732,10 @@ lotus_recpool_slab_t *lotus_recpool_slab_create(size_t cap_count,
     a->slot_reuse         = NULL;
     a->chunk_index        = NULL;
     a->chunk_index_lock   = 0;
+    a->owner              = NULL;
+    a->owned_head         = NULL;
+    a->owned_prev         = NULL;
+    a->owned_next         = NULL;
     p->slab_arena = a;
     return p;
 }
@@ -18232,7 +18383,7 @@ static void lotus_delivery_region_release(struct lotus_arena *r) {
         && !r->chunk_byte_cap && !r->cap_diag_name && !r->shared_concurrent
         && !r->child_struct_free && !r->retire_pending && !r->retire_shells
         && !r->retire_free && !r->retire_free_small && !lotus_slot_state(r)
-        && !r->chunk_index;
+        && !r->chunk_index && !r->owned_head && !r->owner;
     if (!clean) {
         lotus_arena_destroy(r);
         return;
@@ -29834,6 +29985,19 @@ lotus_arena_t *lotus_caller_arena_or_global(void) {
     return p;
 }
 
+/* The arena that owns what a locus member's record parameter reaches:
+ * `snapshot`, the caller arena the member took at its entry, when a
+ * caller published one; `own` (the member's scratch) when none did and
+ * the snapshot is the payload-arena fallback above, as for a member the
+ * bus dispatch invokes, which publishes no arena (its payload's lifetime
+ * is the delivery's, which the scratch does not outlive the use of). */
+lotus_arena_t *lotus_caller_arena_owning(lotus_arena_t *snapshot, lotus_arena_t *own) {
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    int fallback = snapshot == g_bus_payload_arena;
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    return fallback ? own : snapshot;
+}
+
 /* Migration helper: same lock-init-alloc pattern that nearly every
  * stdlib primitive in this file repeats, factored into a single
  * fn so the migration becomes "replace the open-coded block with
@@ -32235,9 +32399,23 @@ void *lotus_crypto_sha1(const void *b) {
 /*
  * C3 (pond follow-up): SHA-256 per FIPS 180-4 of a Bytes blob,
  * returning the 32-byte digest as Bytes. Stand-alone — no
- * libcrypto / OpenSSL dependency. Single-shot API; callers that
- * need streaming can build it on top. Mirrors the lotus_crypto_sha1
- * surface (anchored in the bus payload arena).
+ * libcrypto / OpenSSL dependency. One core, three entry points:
+ * the one-shot `std::crypto::sha256`, the incremental
+ * `std::crypto::Sha256` locus (init / update / final over a
+ * malloc'd `lotus_sha256_ctx`, carried as an Int handle), and
+ * `std::crypto::sha256_file`, which feeds a file through the same
+ * context in fixed-size reads. HMAC-SHA256 hashes through it too.
+ *
+ * The compression function has three tiers chosen once per process:
+ * the portable C rounds below; on x86-64 the SHA extensions (SHA-NI:
+ * `sha256rnds2` / `sha256msg1` / `sha256msg2`) when CPUID reports them;
+ * and on aarch64 Linux and macOS the ARMv8 SHA-256 instructions
+ * (`sha256h` / `sha256h2` / `sha256su0` / `sha256su1`) when the OS
+ * reports them. wasm32 and every other target take the portable rounds.
+ * All compute the same FIPS 180-4 function over the same state and the
+ * same `lotus_sha256_k` constants; the tests hold every entry point to
+ * digests computed elsewhere (FIPS 180-4's examples, Python's hashlib)
+ * on whichever tier the machine selects.
  */
 static const uint32_t lotus_sha256_k[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -32262,51 +32440,17 @@ static uint32_t lotus_sha256_rotr(uint32_t v, int n) {
     return (v >> n) | (v << (32 - n));
 }
 
-/* Core SHA-256 compute: hash `msg[0..len]` into `out[0..32]`.
- * `out` must point to a writable 32-byte buffer. Pure function;
- * no arena allocation here so HMAC can reuse it. */
-static void lotus_sha256_compute(const unsigned char *msg,
-                                  int64_t len,
-                                  unsigned char out[32]) {
-    uint32_t h0 = 0x6a09e667u;
-    uint32_t h1 = 0xbb67ae85u;
-    uint32_t h2 = 0x3c6ef372u;
-    uint32_t h3 = 0xa54ff53au;
-    uint32_t h4 = 0x510e527fu;
-    uint32_t h5 = 0x9b05688cu;
-    uint32_t h6 = 0x1f83d9abu;
-    uint32_t h7 = 0x5be0cd19u;
-
-    /* Padded message: original + 0x80 + zeros + 8-byte BE bit-length.
-     * Total length a multiple of 64. */
-    uint64_t bit_len = (uint64_t)len * 8u;
-    int64_t padded_len = len + 1;
-    int64_t mod = padded_len % 64;
-    int64_t pad_zeros = (mod <= 56) ? (56 - mod) : (56 + 64 - mod);
-    padded_len += pad_zeros + 8;
-
-    unsigned char *buf = (unsigned char *)malloc((size_t)padded_len);
-    if (!buf) {
-        /* Out-of-memory: fall back to all-zero digest. Same shape
-         * as the sha1 path's empty-bytes guard — recoverable in
-         * principle by callers checking len. */
-        memset(out, 0, 32);
-        return;
-    }
-    if (len > 0) memcpy(buf, msg, (size_t)len);
-    buf[len] = 0x80;
-    for (int64_t i = len + 1; i < padded_len - 8; i++) buf[i] = 0;
-    for (int i = 0; i < 8; i++) {
-        buf[padded_len - 1 - i] = (unsigned char)(bit_len >> (i * 8));
-    }
-
-    for (int64_t off = 0; off < padded_len; off += 64) {
+/* Portable compression: `nblocks` 64-byte blocks at `p` into `h`. */
+static void lotus_sha256_blocks_portable(uint32_t h[8],
+                                         const unsigned char *p,
+                                         size_t nblocks) {
+    while (nblocks--) {
         uint32_t w[64];
         for (int i = 0; i < 16; i++) {
-            w[i] = ((uint32_t)buf[off + i * 4 + 0] << 24)
-                 | ((uint32_t)buf[off + i * 4 + 1] << 16)
-                 | ((uint32_t)buf[off + i * 4 + 2] << 8)
-                 | ((uint32_t)buf[off + i * 4 + 3]);
+            w[i] = ((uint32_t)p[i * 4 + 0] << 24)
+                 | ((uint32_t)p[i * 4 + 1] << 16)
+                 | ((uint32_t)p[i * 4 + 2] << 8)
+                 | ((uint32_t)p[i * 4 + 3]);
         }
         for (int i = 16; i < 64; i++) {
             uint32_t s0 = lotus_sha256_rotr(w[i - 15], 7)
@@ -32318,8 +32462,8 @@ static void lotus_sha256_compute(const unsigned char *msg,
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
 
-        uint32_t a = h0, b = h1, c = h2, d = h3;
-        uint32_t e = h4, f = h5, g = h6, hh = h7;
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+        uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
         for (int i = 0; i < 64; i++) {
             uint32_t S1 = lotus_sha256_rotr(e, 6)
                        ^ lotus_sha256_rotr(e, 11)
@@ -32340,18 +32484,259 @@ static void lotus_sha256_compute(const unsigned char *msg,
             b = a;
             a = temp1 + temp2;
         }
-        h0 += a; h1 += b; h2 += c; h3 += d;
-        h4 += e; h5 += f; h6 += g; h7 += hh;
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+        p += 64;
     }
-    free(buf);
+}
 
-    uint32_t hs[8] = { h0, h1, h2, h3, h4, h5, h6, h7 };
-    for (int i = 0; i < 8; i++) {
-        out[i * 4 + 0] = (unsigned char)(hs[i] >> 24);
-        out[i * 4 + 1] = (unsigned char)(hs[i] >> 16);
-        out[i * 4 + 2] = (unsigned char)(hs[i] >> 8);
-        out[i * 4 + 3] = (unsigned char)(hs[i]);
+#if defined(__x86_64__)
+/* SHA-NI needs the SHA bit (CPUID leaf 7, EBX bit 29) and SSE4.1 /
+ * SSSE3 (leaf 1, ECX) for the blend and the byte shuffle. Asked of the
+ * CPU directly through <cpuid.h> (already included above for the AVX2
+ * check), never `__builtin_cpu_supports` (GH #970). */
+static int lotus_have_sha_ni(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        unsigned a = 0, b = 0, c = 0, d = 0;
+        int ok = 0;
+        if (__get_cpuid(1, &a, &b, &c, &d)
+            && (c & bit_SSE4_1) && (c & bit_SSSE3)
+            && __get_cpuid_count(7, 0, &a, &b, &c, &d)
+            && (b & bit_SHA)) {
+            ok = 1;
+        }
+        cached = ok;
     }
+    return cached;
+}
+
+/* The same compression on the SHA extensions. The state is kept as
+ * ABEF / CDGH (the layout `sha256rnds2` works on); each pass of the
+ * loop is four rounds, and groups 4..15 of the message schedule are
+ * computed from the previous four with `sha256msg1` / `sha256msg2`. */
+__attribute__((target("sha,sse4.1,ssse3")))
+static void lotus_sha256_blocks_shani(uint32_t h[8],
+                                      const unsigned char *p,
+                                      size_t nblocks) {
+    const __m128i bswap = _mm_set_epi64x(0x0c0d0e0f08090a0bULL,
+                                         0x0405060700010203ULL);
+    __m128i tmp = _mm_loadu_si128((const __m128i *)&h[0]);   /* ABCD */
+    __m128i st1 = _mm_loadu_si128((const __m128i *)&h[4]);   /* EFGH */
+    tmp = _mm_shuffle_epi32(tmp, 0xB1);                      /* CDAB */
+    st1 = _mm_shuffle_epi32(st1, 0x1B);                      /* EFGH -> HGFE */
+    __m128i st0 = _mm_alignr_epi8(tmp, st1, 8);              /* ABEF */
+    st1 = _mm_blend_epi16(st1, tmp, 0xF0);                   /* CDGH */
+
+    while (nblocks--) {
+        __m128i abef = st0, cdgh = st1;
+        __m128i m[4];
+        for (int i = 0; i < 4; i++) {
+            m[i] = _mm_shuffle_epi8(
+                _mm_loadu_si128((const __m128i *)(p + 16 * i)), bswap);
+        }
+#pragma GCC unroll 16
+        for (int g = 0; g < 16; g++) {
+            __m128i w = m[g & 3];
+            __m128i t = _mm_add_epi32(
+                w, _mm_loadu_si128((const __m128i *)&lotus_sha256_k[4 * g]));
+            st1 = _mm_sha256rnds2_epu32(st1, st0, t);
+            t = _mm_shuffle_epi32(t, 0x0E);
+            st0 = _mm_sha256rnds2_epu32(st0, st1, t);
+            if (g < 12) {
+                /* W[t..t+3] for group g+4 from groups g..g+3. */
+                __m128i x = _mm_sha256msg1_epu32(m[g & 3], m[(g + 1) & 3]);
+                x = _mm_add_epi32(
+                    x, _mm_alignr_epi8(m[(g + 3) & 3], m[(g + 2) & 3], 4));
+                m[g & 3] = _mm_sha256msg2_epu32(x, m[(g + 3) & 3]);
+            }
+        }
+        st0 = _mm_add_epi32(st0, abef);
+        st1 = _mm_add_epi32(st1, cdgh);
+        p += 64;
+    }
+
+    tmp = _mm_shuffle_epi32(st0, 0x1B);                      /* FEBA */
+    st1 = _mm_shuffle_epi32(st1, 0xB1);                      /* DCHG */
+    st0 = _mm_blend_epi16(tmp, st1, 0xF0);                   /* DCBA */
+    st1 = _mm_alignr_epi8(st1, tmp, 8);                      /* ABEF */
+    _mm_storeu_si128((__m128i *)&h[0], st0);
+    _mm_storeu_si128((__m128i *)&h[4], st1);
+}
+#endif
+
+#if defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__))
+#define LOTUS_SHA256_ARMV8 1
+#include <arm_neon.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_SHA2
+#define HWCAP_SHA2 (1UL << 6)
+#endif
+#else
+#include <sys/sysctl.h>
+#endif
+
+/* The ARMv8 SHA-256 instructions (FEAT_SHA256), asked of the OS: the
+ * auxiliary vector's HWCAP on Linux, `hw.optional.arm.FEAT_SHA256` on
+ * macOS (always 1 on Apple Silicon; asked anyway). Any other aarch64 OS
+ * takes the portable rounds. */
+static int lotus_have_armv8_sha2(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        int ok = 0;
+#if defined(__linux__)
+        ok = (getauxval(AT_HWCAP) & HWCAP_SHA2) != 0;
+#else
+        int v = 0;
+        size_t n = sizeof v;
+        ok = sysctlbyname("hw.optional.arm.FEAT_SHA256", &v, &n, NULL, 0) == 0 && v != 0;
+#endif
+        cached = ok;
+    }
+    return cached;
+}
+
+/* The same compression on the ARMv8 SHA-256 instructions. The state is
+ * ABCD / EFGH as `sha256h` / `sha256h2` take it; each pass of the loop is
+ * four rounds, and groups 4..15 of the message schedule are computed from
+ * the previous four with `sha256su0` / `sha256su1`. */
+__attribute__((target("sha2")))
+static void lotus_sha256_blocks_armv8(uint32_t h[8],
+                                      const unsigned char *p,
+                                      size_t nblocks) {
+    uint32x4_t st0 = vld1q_u32(&h[0]);
+    uint32x4_t st1 = vld1q_u32(&h[4]);
+    while (nblocks--) {
+        uint32x4_t abcd = st0, efgh = st1;
+        uint32x4_t m[4];
+        for (int i = 0; i < 4; i++) {
+            m[i] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 16 * i)));
+        }
+#pragma GCC unroll 16
+        for (int g = 0; g < 16; g++) {
+            uint32x4_t t = vaddq_u32(m[g & 3], vld1q_u32(&lotus_sha256_k[4 * g]));
+            uint32x4_t prev = st0;
+            st0 = vsha256hq_u32(st0, st1, t);
+            st1 = vsha256h2q_u32(st1, prev, t);
+            if (g < 12) {
+                /* W[t..t+3] for group g+4 from groups g..g+3. */
+                m[g & 3] = vsha256su1q_u32(vsha256su0q_u32(m[g & 3], m[(g + 1) & 3]),
+                                           m[(g + 2) & 3], m[(g + 3) & 3]);
+            }
+        }
+        st0 = vaddq_u32(st0, abcd);
+        st1 = vaddq_u32(st1, efgh);
+        p += 64;
+    }
+    vst1q_u32(&h[0], st0);
+    vst1q_u32(&h[4], st1);
+}
+#endif
+
+static void lotus_sha256_blocks(uint32_t h[8], const unsigned char *p,
+                                size_t nblocks) {
+#if defined(__x86_64__)
+    if (lotus_have_sha_ni()) {
+        lotus_sha256_blocks_shani(h, p, nblocks);
+        return;
+    }
+#elif defined(LOTUS_SHA256_ARMV8)
+    if (lotus_have_armv8_sha2()) {
+        lotus_sha256_blocks_armv8(h, p, nblocks);
+        return;
+    }
+#endif
+    lotus_sha256_blocks_portable(h, p, nblocks);
+}
+
+/* The hashing state: the eight words, the bytes absorbed so far, and
+ * the tail of the input not yet a whole 64-byte block. */
+typedef struct lotus_sha256_ctx {
+    uint32_t h[8];
+    uint64_t total;
+    unsigned char buf[64];
+    uint32_t buf_len;
+} lotus_sha256_ctx;
+
+static void lotus_sha256_init(lotus_sha256_ctx *c) {
+    static const uint32_t iv[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
+    };
+    memcpy(c->h, iv, sizeof iv);
+    c->total = 0;
+    c->buf_len = 0;
+}
+
+/* Absorb `len` bytes: top up a partial block first, then compress the
+ * whole blocks straight from `msg`, then keep the remainder. Memory is
+ * the context's 64-byte tail whatever `len` is. */
+static void lotus_sha256_update(lotus_sha256_ctx *c,
+                                const unsigned char *msg, size_t len) {
+    c->total += (uint64_t)len;
+    if (c->buf_len > 0) {
+        size_t take = 64 - c->buf_len;
+        if (take > len) take = len;
+        memcpy(c->buf + c->buf_len, msg, take);
+        c->buf_len += (uint32_t)take;
+        msg += take;
+        len -= take;
+        if (c->buf_len < 64) return;
+        lotus_sha256_blocks(c->h, c->buf, 1);
+        c->buf_len = 0;
+    }
+    size_t whole = len / 64;
+    if (whole > 0) {
+        lotus_sha256_blocks(c->h, msg, whole);
+        msg += whole * 64;
+        len -= whole * 64;
+    }
+    if (len > 0) {
+        memcpy(c->buf, msg, len);
+        c->buf_len = (uint32_t)len;
+    }
+}
+
+/* Pad (0x80, zeros, the 64-bit big-endian bit length) and write the
+ * digest to `out`. Leaves the context spent; re-init to reuse it. */
+static void lotus_sha256_final(lotus_sha256_ctx *c, unsigned char out[32]) {
+    uint64_t bit_len = c->total * 8u;
+    unsigned char pad[128];
+    size_t n = c->buf_len;
+    memcpy(pad, c->buf, n);
+    pad[n++] = 0x80;
+    size_t padded = (n <= 56) ? 64 : 128;
+    memset(pad + n, 0, padded - 8 - n);
+    for (int i = 0; i < 8; i++) {
+        pad[padded - 1 - i] = (unsigned char)(bit_len >> (i * 8));
+    }
+    lotus_sha256_blocks(c->h, pad, padded / 64);
+    for (int i = 0; i < 8; i++) {
+        out[i * 4 + 0] = (unsigned char)(c->h[i] >> 24);
+        out[i * 4 + 1] = (unsigned char)(c->h[i] >> 16);
+        out[i * 4 + 2] = (unsigned char)(c->h[i] >> 8);
+        out[i * 4 + 3] = (unsigned char)(c->h[i]);
+    }
+}
+
+/* Core SHA-256 compute: hash `msg[0..len]` into `out[0..32]`.
+ * `out` must point to a writable 32-byte buffer. Pure function;
+ * no allocation at all, so HMAC can reuse it. */
+static void lotus_sha256_compute(const unsigned char *msg,
+                                  int64_t len,
+                                  unsigned char out[32]) {
+    lotus_sha256_ctx c;
+    lotus_sha256_init(&c);
+    if (len > 0) lotus_sha256_update(&c, msg, (size_t)len);
+    lotus_sha256_final(&c, out);
+}
+
+static void *lotus_sha256_digest_bytes(const unsigned char digest[32]) {
+    void *blob = lotus_caller_or_global_bytes_create(32);
+    if (!blob) return lotus_bytes_empty_global();
+    memcpy(lotus_bytes_data(blob), digest, 32);
+    return blob;
 }
 
 void *lotus_crypto_sha256(const void *b) {
@@ -32361,9 +32746,106 @@ void *lotus_crypto_sha256(const void *b) {
 
     unsigned char digest[32];
     lotus_sha256_compute(msg, len, digest);
+    return lotus_sha256_digest_bytes(digest);
+}
 
+/*
+ * The `std::crypto::Sha256` locus's primitives. The handle is the
+ * malloc'd context's address as an Int (0 = none), the BytesBuilder
+ * convention: `__sha256_new` at birth, `__sha256_free` at dissolve.
+ * `__sha256_finish` answers the digest of everything absorbed since
+ * birth (or since the last finish) and starts the context over, so
+ * one hasher serves file after file. A 0 handle absorbs nothing and
+ * finishes to an empty Bytes, never a digest.
+ */
+int64_t lotus_crypto_sha256_new(void) {
+    lotus_sha256_ctx *c = (lotus_sha256_ctx *)malloc(sizeof *c);
+    if (!c) return 0;
+    lotus_sha256_init(c);
+    return (int64_t)(intptr_t)c;
+}
+
+int64_t lotus_crypto_sha256_update(int64_t handle, const void *b) {
+    lotus_sha256_ctx *c = (lotus_sha256_ctx *)(intptr_t)handle;
+    if (!c) return 0;
+    if (b) {
+        int64_t len = lotus_bytes_len(b);
+        if (len > 0) {
+            lotus_sha256_update(
+                c, (const unsigned char *)b + sizeof(int64_t), (size_t)len);
+        }
+    }
+    return 1;
+}
+
+void *lotus_crypto_sha256_finish(int64_t handle) {
+    lotus_sha256_ctx *c = (lotus_sha256_ctx *)(intptr_t)handle;
+    if (!c) return lotus_bytes_empty_global();
+    unsigned char digest[32];
+    lotus_sha256_final(c, digest);
+    lotus_sha256_init(c);
+    return lotus_sha256_digest_bytes(digest);
+}
+
+int64_t lotus_crypto_sha256_free(int64_t handle) {
+    free((void *)(intptr_t)handle);
+    return 0;
+}
+
+/*
+ * `std::crypto::sha256_file(path)`: the file's SHA-256 without holding
+ * it. Reads `LOTUS_SHA256_FILE_BLOCK` bytes at a time into one malloc'd
+ * buffer and absorbs each read, so memory is that buffer whatever the
+ * file's size. NULL with errno set on failure (open, read, or the
+ * buffer), which the lowering turns into an IoError.
+ */
+#define LOTUS_SHA256_FILE_BLOCK ((size_t)1 << 20)
+
+/* wasm32's libc headers have no O_CLOEXEC (no exec to close across). */
+#if defined(O_CLOEXEC)
+#define LOTUS_SHA256_FILE_FLAGS (O_RDONLY | O_CLOEXEC)
+#else
+#define LOTUS_SHA256_FILE_FLAGS O_RDONLY
+#endif
+
+void *lotus_crypto_sha256_file(const char *path) {
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+    int fd = open(path, LOTUS_SHA256_FILE_FLAGS);
+    if (fd < 0) return NULL;
+    unsigned char *buf = (unsigned char *)malloc(LOTUS_SHA256_FILE_BLOCK);
+    if (!buf) {
+        close(fd);
+        errno = ENOMEM;
+        return NULL;
+    }
+    lotus_sha256_ctx c;
+    lotus_sha256_init(&c);
+    for (;;) {
+        ssize_t r = read(fd, buf, LOTUS_SHA256_FILE_BLOCK);
+        if (r > 0) {
+            lotus_sha256_update(&c, buf, (size_t)r);
+            continue;
+        }
+        if (r == 0) break;
+        if (errno == EINTR) continue;
+        int saved = errno;
+        free(buf);
+        close(fd);
+        errno = saved;
+        return NULL;
+    }
+    free(buf);
+    close(fd);
+    unsigned char digest[32];
+    lotus_sha256_final(&c, digest);
     void *blob = lotus_caller_or_global_bytes_create(32);
-    if (!blob) return lotus_bytes_empty_global();
+    if (!blob) {
+        errno = ENOMEM;
+        return NULL;
+    }
     memcpy(lotus_bytes_data(blob), digest, 32);
     return blob;
 }

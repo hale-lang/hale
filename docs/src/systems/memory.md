@@ -58,10 +58,28 @@ Not every allocation inside a locus belongs to its long-lived arena:
 | Allocation Scope | Where It Allocates | When It Frees |
 |---|---|---|
 | Method / handler transient values | Per-activation scratch sub-region | Immediately when the method or handler returns |
+| A method's loop body that keeps nothing past its iteration | Per-iteration region | When the next iteration starts, or the loop is left |
 | Scratch-local free `fn` | Function-local scratch region | Immediately when the free function returns |
 | Non-scratch free `fn` | Caller's active region | When the caller's activation or scope ends |
 | Persisted field (`self.field = val`) | Locus lifetime arena | When the locus dissolves (or on field replacement retirement) |
 | Stack-local scalar array (`[T; N]`) | CPU stack frame (up to 8 KiB) | When the function frame returns |
+
+### Per-Iteration Loop Regions
+
+A loop in a method, a handler or a lifecycle hook (`run()` included) frees what each iteration makes when the iteration ends, so a `run()` that loops for its locus's whole life holds one iteration's values at a time, not every one it ever made:
+
+```hale,fragment
+run() {
+    let body = std::http::BodyReader { req: request };
+    let h = std::crypto::Sha256 { };
+    while true {
+        let c = body.chunk() or { break; };   // freed when the iteration ends
+        h.update(c);
+    }
+}
+```
+
+Each iteration gets a region of its own when the loop body keeps nothing past the iteration. The one thing that can is a binding declared before the loop: a body that assigns such a binding a value that is not a scalar or a locus reference (`last = c`, `acc = acc + s`, `arr[i] = s`) runs on the method's scratch as before, and so does a body that hands a call anything but the iteration's own values, scalars and bare locus references (an outside record, a field of `self` or of another locus, an element of an outside array: a free function, a function value held in a field or a method could write into it), and a body that makes a locus or uses a `bounded[T; N]` or `BytesMut` declared outside it. The downloader's calls (`body.chunk()`, `h.update(c)`, `out.write_bytes(c)`) are fine, and so are builtins that only read (`len`, `println`). Everything else an iteration hands on keeps the lifetime it has anyway: a value stored into `self` is copied into the locus, a sent value into the payload arena, a returned one into the caller's. `hale verify` names the call or literal of a loop that still keeps one value per iteration. Free functions and `main` keep their loops on the frame's region.
 
 ### Whole-Field Replacement Retirement
 
@@ -70,7 +88,7 @@ When a method or bus handler overwrites a field on `self` (`self.latest = Thing 
 For `String` and `Bytes` fields whose lengths vary across writes, retired blocks are retained at their size-class capacity and reused by future stores. As a result, repeated whole-field replacement inside handlers or methods keeps the locus arena flat at the high-water mark of the largest stored value.
 
 > [!TIP]
-> In-place scalar mutation (`self.latest.count = v`, `self.arr[i] = v`) avoids the clone-and-retire cycle altogether and is required inside tight loops in `run()` that do not cross a method or handler activation boundary.
+> In-place scalar mutation (`self.latest.count = v`, `self.arr[i] = v`) avoids the clone-and-retire cycle altogether and is required inside tight loops in `run()` that do not cross a method or handler activation boundary: a loop iteration frees its own values, but the retires of a field it replaces flush only when the activation ends.
 
 ## Capacity Slots (`heap` and `pool`)
 

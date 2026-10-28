@@ -119,11 +119,21 @@ the order you should reach for them:
    after delivery.
 
 One structural consequence to internalize: **a `run()` loop is a
-single never-ending activation.** Nothing scratch-based reclaims
-inside it, and pending retires never flush. Hot per-iteration
-work belongs in a *method called from* the loop — the method
-boundary is the reclaim point. (This is why every churn example
-in this guide runs its body through a method.)
+single never-ending activation.** Its method scratch never resets
+and pending retires never flush. What an iteration makes is
+reclaimed when the iteration ends — a method's loop body gets a
+region of its own per iteration — as long as the body keeps
+nothing past it: it assigns no binding declared before the loop a
+value that is not a scalar or a locus reference, hands a call only
+its own values, scalars and bare locus references (a callee could
+write into anything else), makes no locus,
+and uses no outer `bounded` or `BytesMut`. So `let c =
+body.chunk() or { break; }; h.update(c);` straight in `run()` is
+flat. A body that has to carry a heap value from one iteration to
+the next, or that churns a field of `self`, belongs in a *method
+called from* the loop — the method boundary is the reclaim point
+for those. (This is why the churn examples in this guide run
+their bodies through a method.)
 
 ---
 
@@ -1414,6 +1424,16 @@ fn handle(req: std::http::Request) -> std::http::Response {
   long as the stream may run (`0` for none). Do not speak HTTP/1.1 over
   `std::io::tcp` to stream: the reader de-chunks, splits events, takes
   https and keeps the deadline. **[convention]**
+- **A streamed request presents its credential as `bearer:`.** A
+  `BodyReader` or `SseReader` behind a token takes the
+  `std::secret::Credential` itself, `bearer: self.key`, and never a
+  header built with `reveal_text()`: the credential writes its line onto
+  the wire, so no field of the reader, deferred or not, ever holds the
+  token. `hale check` refuses the reveal into a deferred reader's `req`.
+  A download that may redirect sets `follow_redirects` to a small bound
+  on the reader's request, never a large one to be safe: the reader
+  drops the credential itself when the origin changes and refuses a
+  downgrade to http. **[convention]**
 - **A relay that answers something else reads with a bounded wait.**
   When the relay also serves a control channel (a cancel, a new
   assignment), read with `up.event_within(ms)` (or `chunk_within`): on
@@ -1528,6 +1548,46 @@ and a scrape never delays the pool. The same holds for the runtime's
 lifecycle events: hold a `std::observe::Otlp` param, placed `pinned`,
 and let the OTLP environment name the collector, rather than logging
 births and failures by hand. **[convention]**
+
+### C14. Hand a writer one owner's records per call
+
+A method that hands a record to a callee which writes through it hands
+it the arena the record's owner allocates in: the locus's own arena for
+a record a field of `self` holds, its caller's for a record parameter.
+One call has one such arena, so a call that hands a writer records of
+both owners is refused. That covers two arguments, or one carrier that
+may be either:
+
+```hale
+type Bag { b: Bytes = b""; }
+
+locus Sink {
+    params { held: Bag = Bag { }; }
+    fn put_two(a: Bag, b: Bag, p: Bytes) { a.b = p; b.b = p; }
+    fn refill(x: Bag, p: Bytes) {
+        let mine = Bag { b: x.b };
+        self.put_two(self.held, mine, p);
+    }
+}
+
+fn main() { let s = Sink { }; }
+```
+
+- **Copy one side into a local record first.** `self.put_two(self.held,
+  x, p)` and `self.put(if c { self.held } else { x }, p)` are refused,
+  and the diagnostic names both owners. Build a local from the
+  parameter's fields (`let mine = Bag { b: x.b };`) and hand that. Or
+  write the held record through `self` (`self.held.b = p`). **[error]**
+- **One owner is fine through any carrier.** `self.put({ x }, p)` and
+  `put_free(if c { self.held } else { self.outer.bag }, p)` each hand one
+  owner's storage, and each callee's writes land in that owner's arena.
+- **A held record handed to a writer per message grows the locus.**
+  The write is a clone into the locus's arena, and the value it replaces
+  is not recycled, so `self.put(self.held, p)` in a handler or a `run()`
+  loop keeps every value until the locus dissolves; the survey reports
+  it at the call. Write the held record through `self` (`self.held.b =
+  p`), a store that recycles what it replaces, or hand the writer a
+  record the iteration builds. **[warning]**
 
 ## 4. Speed rules
 
@@ -1926,6 +1986,50 @@ String forms `cp_at` / `cp_size` look for the String's end before every
 read, so a walk with them is quadratic (1 MB of text: 2.4 s, against
 0.5 ms over the view). **[convention]**
 
+### S17. Hash a stream as it passes, never the collected whole
+
+`std::crypto::sha256(b)` needs all of `b` in memory, so hashing a
+download or a file that way holds the whole input. Feed a
+`std::crypto::Sha256` the pieces as they pass instead: `update(piece)`
+absorbs into a fixed 112-byte context, and `finish()` answers the same
+32 bytes `sha256` would of the pieces joined. A file on disk is one call,
+`std::crypto::sha256_file(path)`, which reads it 1 MiB at a time. Make
+each piece inside a method call, as `absorb` does below: a piece built in
+the loop body of `run()` itself stays in the locus's region until the
+locus dissolves, while a method's scratch goes when it returns.
+
+```hale
+locus Verifier {
+    params {
+        path: String = "";
+    }
+    fn absorb(h: std::crypto::Sha256, buf: std::bytes::BytesBuilder) {
+        let piece = buf.snapshot() or b"";
+        h.update(piece);
+    }
+    run() {
+        let f = std::io::file::open(self.path, "r") or { return; };
+        let buf = std::bytes::BytesBuilder { initial_cap: 1048576 };
+        let h = std::crypto::Sha256 { };
+        while true {
+            buf.clear();
+            if std::io::tcp::recv_into(f.fd, buf, 1048576) <= 0 { break; }
+            self.absorb(h, buf);
+        }
+        println(std::hex::encode(h.finish()));
+    }
+}
+
+fn main() { let v = Verifier { path: std::env::arg(1) }; }
+```
+
+Measured over a 10 GiB file, as peak resident set: `sha256_file` 5.4 MB
+and this loop 6.7 MB, against 4.7 MB for a program that hashes nothing;
+the same loop with the piece made in `run()`'s own body grew by the
+input (1 GiB held 1 GB). Both ran as fast as `sha256sum` (4.7 to 4.9 s
+against 4.9 s, on a CPU with the SHA extensions). `hale verify` passes
+the loop above with no `@unbounded`. **[convention]**
+
 ---
 
 ## 5. The enforcement ladder
@@ -1937,7 +2041,7 @@ certify a path — plus one tier you get for free because your
 
 | Tier | Check | Status |
 |---|---|---|
-| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9); a default that reads the caller's scope (C11) | build fails |
+| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9); a default that reads the caller's scope (C11); a writer handed a held record and a parameter in one call (C14) | build fails |
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
@@ -2034,8 +2138,10 @@ thread / pool / subject / fd counts in CI — see
   it dissolves when the handler returns and can never fire.
   Compiler error; `accept` it instead. (In `run()` is fine.)
 - **Churning heap state directly in a `run()` loop** — a run loop
-  is one never-ending activation; nothing reclaims. Route
-  per-iteration work through a method.
+  is one never-ending activation: an iteration's own values are
+  reclaimed when it ends, but a heap value carried in a binding
+  from before the loop, or a field of `self` replaced each time,
+  is not. Route that work through a method.
 - **Deep `} else { if` ladders** — `else if` and `match` are
   first-class; String-match the command routers.
 - **Floating state** — every named piece of state has one locus

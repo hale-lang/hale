@@ -183,6 +183,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let subregion_fn = self
             .module
             .add_function("lotus_arena_create_subregion", subregion_ty, None);
+        // An iteration arena: `lotus_arena_iteration_enter(cur, parent)`
+        // frees the previous iteration's arena (`cur`, NULL before the
+        // first) and returns a fresh one owned by `parent`;
+        // `lotus_arena_iteration_leave(cur)` frees the last one when the
+        // loop is left (`Cx::lower_loop_body`).
+        self.module.add_function(
+            "lotus_arena_iteration_enter",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_arena_iteration_leave",
+            self.context.void_type().fn_type(&[ptr_t.into()], false),
+            None,
+        );
         let arena_alloc_ty =
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
         let arena_alloc_fn = self
@@ -1538,6 +1553,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_caller_arena_get",
             ptr_t.fn_type(&[], false),
+            None,
+        );
+        // declare ptr @lotus_caller_arena_owning(ptr snapshot, ptr own)
+        self.module.add_function(
+            "lotus_caller_arena_owning",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
             None,
         );
         // iris handoff-2: publisher-attribution TLS + topic shapes.
@@ -3927,6 +3948,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let sha256_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_sha256", sha256_ty, None);
+        // The incremental SHA-256 (the `std::crypto::Sha256` locus) and
+        // `sha256_file`, over the same core:
+        // declare i64 @lotus_crypto_sha256_new()
+        // declare i64 @lotus_crypto_sha256_update(i64 handle, ptr bytes)
+        // declare ptr @lotus_crypto_sha256_finish(i64 handle)
+        // declare i64 @lotus_crypto_sha256_free(i64 handle)
+        // declare ptr @lotus_crypto_sha256_file(ptr path)  ; NULL + errno
+        self.module.add_function(
+            "lotus_crypto_sha256_new",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_update",
+            i64_t.fn_type(&[i64_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_finish",
+            ptr_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_free",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_file",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
         // declare ptr @lotus_crypto_hmac_sha256(ptr key, ptr msg)
         let hmac_sha256_ty =
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);

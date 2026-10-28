@@ -626,6 +626,21 @@ dynamic	<hole>	on main|unresolved declaration `mat::Grid`	in the seed
 row	Renderer@main1	Renderer	main	default
 dynamic	<hole>	on main|unresolved declaration `gfx::Rect`	in the seed
 
+== crates/hale-cli/tests/fixtures/run-loop-reclaim/reclaimed.hl#843ac14c
+row	Download@main1	Download	main	default
+-- dynamic	sites in the seed
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdCryptoSha256	on main
+dynamic	__StdHttpBodyReader	on main
+
+== crates/hale-cli/tests/fixtures/run-loop-reclaim/still_grows.hl#e31bea78
+row	Grow@main1	Grow	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== crates/hale-cli/tests/fixtures/sha256-stream/app.hl#3ebbfedb
+row	Hasher@main1	Hasher	main	default
+shared	dynamic	sites in the seed #49573352
+
 == crates/hale-cli/tests/fixtures/topology/pipeline.hl#44a7d963
 root	App	the entry
 row	App@literal1	App	main	default
@@ -677,7 +692,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/api_rpc.hl#dd570c71
 
-== crates/hale-stdlib/hl/crypto.hl#79bd629e
+== crates/hale-stdlib/hl/crypto.hl#c68ea340
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
@@ -685,7 +700,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#c45746aa
+== crates/hale-stdlib/hl/http_client.hl#b5d700ce
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -1394,16 +1409,16 @@ row	Rec@main1	Rec	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#04f73a4e
 row	Rec@main1	Rec	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#c7a08831
+== crates/hale-codegen/tests/alloc_model_rss.rs#e1949f40
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#3e082300
+== crates/hale-codegen/tests/alloc_model_rss.rs#7cfb2316
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#f55749e4
 row	App@main1	App	main	default
 
-== crates/hale-codegen/tests/alloc_model_rss.rs#5a9b68bb
+== crates/hale-codegen/tests/alloc_model_rss.rs#3156882a
 row	App@main1	App	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#47d2a245
@@ -4108,6 +4123,28 @@ row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#8ba74d58
+row	Download@main1	Download	main	default
+-- dynamic	sites in the seed
+dynamic	__StdCryptoSha256	on main
+dynamic	__StdHttpBodyReader	on main
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#4446c767
+row	Keep@main1	Keep	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#72c4598e
+row	Hand@main1	Hand	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#165ef38f
+row	Probe@main1	Probe	main	default
+shared	dynamic	sites in the seed #9f0a18e6
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#e20c8e75
+row	Probe@main1	Probe	main	default
+shared	dynamic	sites in the seed #9f0a18e6
+
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App	the entry
 domain	pool:side
@@ -4158,6 +4195,22 @@ row	Counter@main1	Counter	main	default
 
 == crates/hale-codegen/tests/math_and_int_float.rs#f0fd4633
 row	Scaler@main1	Scaler	main	default
+
+== crates/hale-codegen/tests/member_param_write.rs#f3d985ca
+row	Sink@main2	Sink	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+shared	Driver@main1	Driver #516e9e49
+
+== crates/hale-codegen/tests/member_param_write.rs#9455a46c
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.sink	Sink	main	inherited
+
+== crates/hale-codegen/tests/member_param_write.rs#a1cb81ce
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+shared	Driver@main1	Driver #516e9e49
 
 == crates/hale-codegen/tests/method_call_from_free_fn.rs#6592aad6
 row	CounterL@main1	CounterL	main	default
@@ -8278,6 +8331,13 @@ row	App@literal1	App	main	default
 row	~	Board	main	default
 row	~.w	Worker	main	inherited
 
+== tests/hale/crypto_sha256_stream_test.hl
+template	__StdCryptoSha256@main3	unbounded (built in a loop)
+row	__StdCryptoSha256@main1	__StdCryptoSha256	main	default
+row	__StdCryptoSha256@main2	__StdCryptoSha256	main	default
+row	__StdCryptoSha256@main3	__StdCryptoSha256	main	default
+shared	dynamic	sites in the seed #49573352
+
 == tests/hale/decimal_scale_wire_test.hl
 row	Sink@main1	Sink	main	default
 row	Source@main2	Source	main	default
@@ -8337,8 +8397,11 @@ dynamic	Cache	on main|unresolved arguments	in the seed
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 shared	App@literal1.srv	__StdHttpServer #7ea4240c
+shared	App@literal1.srv2	__StdHttpServer #7ea4240c
 -- dynamic	sites in the seed
+dynamic	Gated	on main
 dynamic	Keyed	on main
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpBodyReader	on main
@@ -8350,6 +8413,7 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdSecretCredential	on main
 
 == tests/hale/http_request_cap_test.hl
 root	App	the entry
@@ -17791,6 +17855,10 @@ row	~.j.rows	Rows	main	inherited
 row	~	Conn	main	default
 row	~.stream	__StdIoTcpStream	main	inherited
 
+== shared Driver #516e9e49
+row	~	Driver	main	default
+row	~.sink	Sink	main	inherited
+
 == shared Gateway #55c1acba
 row	~	Gateway	pool:ws	entry	off owner
 row	~.buf	__StdBytesBytesBuilder	pool:ws	inherited
@@ -20594,6 +20662,10 @@ dynamic	__StdIoTcpConnFlow	on pool:one|pool:zero
 dynamic	__StdIoTcpConnInline	on pool:one|pool:zero
 dynamic	__StdIoTcpStream	on pool:one|pool:zero
 
+== shared sites in the seed #49573352
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdCryptoSha256	on main
+
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
 dynamic	Grand	on main|pinned:App@literal1.s
@@ -20612,6 +20684,10 @@ dynamic	__StdIoTcpConnInline	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
 dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
+
+== shared sites in the seed #9f0a18e6
+dynamic	Holder	on main
+dynamic	__StdBytesBytesBuilder	on main
 
 == shared sites in the seed #a43e7c60
 dynamic	B	on main

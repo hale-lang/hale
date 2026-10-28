@@ -34,6 +34,20 @@ const NODE_EXPORTER_NAME: &str = "hale-node-exporter";
 const NODE_EXPORTER_LINUX_FLAGS: &str = "";
 const NODE_EXPORTER_LABEL: &str = "lang.hale.node-exporter";
 
+/// The container exporter every machine runs beside its node exporter:
+/// cAdvisor, as a container wherever docker runs (on a Mac, inside docker's
+/// VM, where the containers are), on its own port, reading docker's
+/// containers only, keeping their compose project and service and nothing
+/// else of their labels, and collecting CPU, memory, network and OOM
+/// events every 15 s (its heavier collectors off). docker's socket is
+/// mounted by its own path besides `/var/run`: inside a desktop VM it is a
+/// symlink to the person's machine, which no container resolves.
+pub(super) const CADVISOR_IMAGE: &str = "ghcr.io/google/cadvisor:v0.60.6";
+pub(super) const CADVISOR_PORT: u16 = 9338;
+const CADVISOR_NAME: &str = "hale-cadvisor";
+const CADVISOR_LABEL: &str = "lang.hale.cadvisor";
+const CONTAINERS_OUTCOME: &str = "hale-containers:";
+
 /// The Grafana the habitat runs behind its face.
 pub(super) const GRAFANA_IMAGE: &str = "grafana/grafana:13.3.0";
 /// Grafana's port: this offset in the habitat's head block (the face, the
@@ -42,8 +56,9 @@ pub(super) const GRAFANA_IMAGE: &str = "grafana/grafana:13.3.0";
 pub(super) const GRAFANA_OFFSET: u16 = 5;
 /// The path the face serves Grafana under.
 pub(super) const GRAFANA_PATH: &str = "/grafana/";
-/// The habitat's dashboard of its machines.
+/// The habitat's dashboards: its machines, and what runs on them.
 const HOSTS_DASHBOARD: &str = include_str!("../../../../dna/habitat/grafana/hosts.json");
+const CONTAINERS_DASHBOARD: &str = include_str!("../../../../dna/habitat/grafana/containers.json");
 
 /// Whether `HALE_DNA_NODE_EXPORTER=off` keeps this run from installing or
 /// removing any machine's exporter (the DNA suite's fixtures; the run a
@@ -155,7 +170,60 @@ printf '{OUTCOME} %s\n' "$gone"
 
 /// The outcome a script's output ends with ("" when it said none).
 pub(super) fn outcome_of(text: &str) -> String {
-    text.lines().rev().find_map(|l| l.trim_end_matches('\r').strip_prefix(OUTCOME)).map(|o| o.trim().to_string()).unwrap_or_default()
+    text.lines().rev().find_map(|l| { let l = l.trim_end_matches('\r'); l.strip_prefix(OUTCOME).or_else(|| l.strip_prefix(CONTAINERS_OUTCOME)) }).map(|o| o.trim().to_string()).unwrap_or_default()
+}
+
+/// The container exporter installed where the script runs, through
+/// whatever docker the login reaches (its own access, else `sudo`): its
+/// last line says `ours`, `theirs` (something else already answers on its
+/// port with container readings) or `skip <why>`. The container is
+/// labelled with its image, so an install replaces one made otherwise.
+pub(super) fn containers_script(sudo: &str) -> String {
+    let n = CADVISOR_NAME;
+    let l = CADVISOR_LABEL;
+    let img = CADVISOR_IMAGE;
+    let p = CADVISOR_PORT;
+    format!(
+        r#"set -e
+S="{sudo}"; n={n}; l={l}; img={img}; p={p}
+said() {{ printf '{CONTAINERS_OUTCOME} %s\n' "$*"; }}
+readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
+if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
+if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $img" ]; then said ours; exit 0; fi
+if ! $d inspect "$n" >/dev/null 2>&1 && readings 2>/dev/null | grep -q '^container_'; then said theirs; exit 0; fi
+$d rm -f "$n" >/dev/null 2>&1 || true
+$d run -d --name "$n" --label "$l=$img" --restart unless-stopped --privileged --net host \
+  -v /:/rootfs:ro -v /var/run:/var/run:ro -v /var/run/docker.sock:/var/run/docker.sock:ro -v /sys:/sys:ro -v /var/lib/docker/:/var/lib/docker:ro --device /dev/kmsg \
+  "$img" -port="$p" -docker_only=true -housekeeping_interval=15s -store_container_labels=false \
+  -whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service \
+  -enable_metrics=cpu,memory,network,oom_event >/dev/null
+said ours
+"#
+    )
+}
+
+/// The habitat's container exporter removed where the script runs (one it
+/// did not start is never touched): `removed` or `none`.
+pub(super) fn containers_remove_script(sudo: &str) -> String {
+    let n = CADVISOR_NAME;
+    let l = CADVISOR_LABEL;
+    format!(
+        r#"S="{sudo}"; n={n}; l={l}
+if docker info >/dev/null 2>&1; then d=docker; else d="$S docker"; fi
+if [ -n "$($d ps -aq --filter "name=^$n\$" --filter "label=$l" 2>/dev/null)" ]; then $d rm -f "$n" >/dev/null && printf '{CONTAINERS_OUTCOME} removed\n'; else printf '{CONTAINERS_OUTCOME} none\n'; fi
+"#
+    )
+}
+
+/// What a container exporter's install did, as `up` and `host add` say it.
+pub(super) fn containers_line(on: &str, outcome: &str) -> String {
+    let said = match outcome.split_once(' ').map_or((outcome, ""), |(a, b)| (a, b)) {
+        ("ours", _) => format!("cAdvisor {} on :{CADVISOR_PORT}, a container of the habitat's ({CADVISOR_NAME})", CADVISOR_IMAGE.rsplit(':').next().unwrap_or("")),
+        ("theirs", _) => format!("a container exporter already answers on :{CADVISOR_PORT}: scraped as it is"),
+        ("skip", why) => format!("no container exporter: {why}"),
+        _ => format!("no container exporter: the install said nothing it did ({outcome:?})"),
+    };
+    format!("containers {on}: {said}")
 }
 
 /// What an install's outcome means, as `up` and `host add` say it of `on`.
@@ -209,30 +277,71 @@ pub(super) fn sudo_word(tty: bool) -> &'static str {
     }
 }
 
-/// The habitat's own machine, installed here unless the run says not to.
-pub(super) fn install_here(label: &str) -> Option<String> {
+/// The habitat's own machine's exporters (its node's and its containers'),
+/// installed here unless the run says not to.
+pub(super) fn install_here(label: &str) -> Vec<String> {
     if node_exporter_off() {
-        return None;
+        return Vec::new();
     }
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    super::progress("installing the node exporter on this machine");
-    Some(match run_here(&install_script(sudo_word(tty))) {
-        Ok(o) => install_line(label, &o),
-        Err(why) => format!("{:<8}{label}: no exporter: {why}", "node"),
-    })
+    super::progress("installing the node and container exporters on this machine");
+    vec![
+        match run_here(&install_script(sudo_word(tty))) {
+            Ok(o) => install_line(label, &o),
+            Err(why) => format!("{:<8}{label}: no exporter: {why}", "node"),
+        },
+        match run_here(&containers_script(sudo_word(tty))) {
+            Ok(o) => containers_line(label, &o),
+            Err(why) => format!("containers {label}: no container exporter: {why}"),
+        },
+    ]
 }
 
-/// The habitat's exporter taken off this machine.
-pub(super) fn remove_here() -> Option<String> {
+/// Both exporters installed on `host` over the person's login, as `up
+/// --host`, `host add` and `host probe` do it.
+pub(super) fn install_over(host: &str, user: Option<&str>, port: Option<u16>) -> Vec<String> {
+    vec![
+        match super::remote::login_script(host, user, port, install_script) {
+            Ok(o) => install_line(host, &o),
+            Err(why) => format!("{:<8}{host}: no exporter: {why}", "node"),
+        },
+        match super::remote::login_script(host, user, port, containers_script) {
+            Ok(o) => containers_line(host, &o),
+            Err(why) => format!("containers {host}: no container exporter: {why}"),
+        },
+    ]
+}
+
+/// Both of the habitat's exporters taken off `host` over the person's login:
+/// what was removed, or why not.
+pub(super) fn remove_over(host: &str, user: Option<&str>, port: Option<u16>) -> Vec<String> {
+    let mut out = Vec::new();
+    for (what, script) in [("node exporter", remove_script as fn(&str) -> String), ("container exporter", containers_remove_script)] {
+        match super::remote::login_script(host, user, port, script) {
+            Ok(o) if o == "removed" => out.push(format!("the habitat's {what} is removed from {host}")),
+            Ok(_) => {}
+            Err(why) => out.push(format!("the habitat's {what} is left on {host} ({why})")),
+        }
+    }
+    out
+}
+
+/// The habitat's exporters taken off this machine: what was removed, or
+/// why not.
+pub(super) fn remove_here() -> Vec<String> {
     if node_exporter_off() {
-        return None;
+        return Vec::new();
     }
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    Some(match run_here(&remove_script(sudo_word(tty))) {
-        Ok(o) if o == "removed" => "the habitat's node exporter is removed from this machine".to_string(),
-        Ok(_) => String::new(),
-        Err(why) => format!("the habitat's node exporter is left on this machine ({why})"),
-    })
+    let mut out = Vec::new();
+    for (what, script) in [("node exporter", remove_script(sudo_word(tty))), ("container exporter", containers_remove_script(sudo_word(tty)))] {
+        match run_here(&script) {
+            Ok(o) if o == "removed" => out.push(format!("the habitat's {what} is removed from this machine")),
+            Ok(_) => {}
+            Err(why) => out.push(format!("the habitat's {what} is left on this machine ({why})")),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------
@@ -247,15 +356,34 @@ pub(super) fn remove_here() -> Option<String> {
 pub(super) fn seed_targets(allocation: &Path, label: &str) -> Result<(), String> {
     let dir = allocation.join("senses.d");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let file = dir.join("hosts.json");
-    if file.exists() {
-        return Ok(());
+    let containers = dir.join("containers");
+    std::fs::create_dir_all(&containers).map_err(|e| format!("create {}: {e}", containers.display()))?;
+    for (file, port) in [(dir.join("hosts.json"), NODE_EXPORTER_PORT), (containers.join("targets.json"), CADVISOR_PORT)] {
+        if file.exists() {
+            continue;
+        }
+        let text = serde_json::to_string_pretty(&serde_json::json!([
+            { "targets": [format!("host.docker.internal:{port}")], "labels": { "host": label } }
+        ]))
+        .unwrap_or_default();
+        std::fs::write(&file, format!("{text}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
     }
-    let text = serde_json::to_string_pretty(&serde_json::json!([
-        { "targets": [format!("host.docker.internal:{NODE_EXPORTER_PORT}")], "labels": { "host": label } }
-    ]))
-    .unwrap_or_default();
-    std::fs::write(&file, format!("{text}\n")).map_err(|e| format!("write {}: {e}", file.display()))
+    Ok(())
+}
+
+/// The store's scrape job of the machines' containers, from
+/// `senses.d/containers/`, added to its configuration when it has none:
+/// whether it was.
+pub(super) fn ensure_containers_job(allocation: &Path) -> Result<bool, String> {
+    let conf = allocation.join("senses.yml");
+    let Ok(text) = std::fs::read_to_string(&conf) else { return Ok(false) };
+    if text.contains("job_name: containers") || !text.contains("scrape_configs:\n") {
+        return Ok(false);
+    }
+    let job = "  # The machines' containers (cAdvisor), labelled `host`, from senses.d/containers/.\n  - job_name: containers\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/containers/*.json\"]\n";
+    let text = text.replacen("scrape_configs:\n", &format!("scrape_configs:\n{job}"), 1);
+    std::fs::write(&conf, text).map_err(|e| format!("write {}: {e}", conf.display()))?;
+    Ok(true)
 }
 
 // ---------------------------------------------------------------
@@ -307,6 +435,7 @@ pub(super) fn write_provisioning(hab_dir: &Path, prometheus_url: &str) -> Result
     let provider = "apiVersion: 1\nproviders:\n  - name: habitat\n    folder: habitat\n    type: file\n    disableDeletion: true\n    allowUiUpdates: false\n    options:\n      path: /etc/grafana/provisioning/dashboards\n";
     std::fs::write(boards.join("habitat.yaml"), provider).map_err(|e| format!("write {}: {e}", boards.display()))?;
     std::fs::write(boards.join("hosts.json"), HOSTS_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
+    std::fs::write(boards.join("containers.json"), CONTAINERS_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
     Ok(())
 }
 
@@ -438,8 +567,33 @@ mod tests {
     }
 
     #[test]
-    fn the_hosts_dashboard_is_json() {
+    fn the_dashboards_are_json() {
         let v: serde_json::Value = serde_json::from_str(HOSTS_DASHBOARD).expect("hosts.json parses");
         assert_eq!(v["uid"], "hale-hosts");
+        let v: serde_json::Value = serde_json::from_str(CONTAINERS_DASHBOARD).expect("containers.json parses");
+        assert_eq!(v["uid"], "hale-containers");
+    }
+
+    #[test]
+    fn the_container_exporter_keeps_only_compose_labels_and_is_shell() {
+        let s = containers_script("sudo -n");
+        assert!(s.contains("-whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service") && s.contains("-store_container_labels=false"), "{s}");
+        assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "{s}");
+        for script in [s, containers_remove_script("sudo")] {
+            assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
+        }
+        assert_eq!(outcome_of("x\nhale-containers: ours\n"), "ours");
+    }
+
+    #[test]
+    fn the_containers_job_is_added_once() {
+        let d = std::env::temp_dir().join(format!("hale-containers-job-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("senses.yml"), "global:\n  scrape_interval: 5s\nscrape_configs:\n  - job_name: spine\n").unwrap();
+        assert!(ensure_containers_job(&d).unwrap());
+        assert!(!ensure_containers_job(&d).unwrap());
+        let t = std::fs::read_to_string(d.join("senses.yml")).unwrap();
+        assert!(t.contains("scrape_configs:\n  # The machines' containers") && t.contains("  - job_name: spine"), "{t}");
+        std::fs::remove_dir_all(&d).ok();
     }
 }

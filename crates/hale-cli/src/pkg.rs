@@ -107,42 +107,67 @@ pub struct Manifest {
     pub dna: DnaManifest,
 }
 
-/// The `[dna]` section.
+/// The `[dna]` section. A key this toolchain does not know is kept aside
+/// (`unknown`) and warned of, never refused: an organism's manifest may
+/// declare what a newer toolchain reads before the toolchain beside it
+/// knows it, and a typo is still named (`warn_unknown_dna`).
 #[derive(Deserialize, Default, Clone, Debug)]
-#[serde(deny_unknown_fields)]
 pub struct DnaManifest {
     pub fleet: Option<String>,
     /// GH #1590: `[dna] record = "<identity>"` — the record this genome
     /// belongs to, pinned by `hale habitat graft` / `hale dna upgrade`. The DNA host
     /// reads it (`dna::record_identity_at`); the toolchain only carries it.
-    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it; read in Hale
+    #[allow(dead_code)] // declared so it is known (not warned of); read in Hale
     pub record: Option<String>,
     /// GH #1653: `[dna] needs = ["memory", "nerves", "senses"]` — the roles
     /// the organism needs from the habitat, satisfied at graft
     /// (`dna::habitat::needs_of` reads and checks it).
-    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    #[allow(dead_code)] // declared so it is known (not warned of)
     pub needs: Option<Vec<String>>,
     /// `[dna] brings = ["database", "broker"]` — the heart roles among its
     /// needs the application's own compose provides, which a graft leaves
     /// to it unless `--reuse` (`dna::habitat::brings_of` reads and checks it).
-    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    #[allow(dead_code)] // declared so it is known (not warned of)
     pub brings: Option<Vec<String>>,
     /// GH #1653: `[dna.migrations.<role>] command = [...]` — a heart's
     /// own migration for a heart role it declares, which the habitat runs
     /// when the heart opts in (`dna::habitat::heart_migrations`).
-    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    #[allow(dead_code)] // declared so it is known (not warned of)
     pub migrations: Option<toml::Table>,
     /// D8: `[[dna.codebase]]` — the codebases the organism works on,
     /// each attached at its graft with phase 3's fields (`name`, `repo`,
     /// `branch`, `build`, `test`, `toolchain`;
     /// `dna::habitat::manifest_codebases` reads them).
-    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    #[allow(dead_code)] // declared so it is known (not warned of)
     pub codebase: Option<Vec<toml::Table>>,
+    /// `[dna.reflex.<name>]` — what the organism watches for in its senses
+    /// (`dna::habitat::reflexes::declared` reads and checks it).
+    #[allow(dead_code)] // declared so it is known (not warned of)
+    pub reflex: Option<toml::Table>,
     /// `[dna.host.<name>]` — a host command of the organism's own, which the
     /// habitat runs on a host it manages (`hale habitat organism place`;
     /// `dna::habitat::hosted::host_commands` reads and checks it).
-    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
     pub host: Option<toml::Table>,
+    /// Every other key of `[dna]`, which this toolchain does not know.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// A warning, once per process, for each `[dna]` key of `manifest` this
+/// toolchain does not know: it is ignored, not refused.
+fn warn_unknown_dna(manifest: &Path, dna: &DnaManifest) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    for key in dna.unknown.keys() {
+        let said = format!("{}:{key}", manifest.display());
+        let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+        if seen.contains(&said) {
+            continue;
+        }
+        seen.push(said);
+        eprintln!("hale: {}: this toolchain does not know `[dna] {key}` and ignores it (a newer toolchain may read it; or it is misspelled)", manifest.display());
+    }
 }
 
 /// GH #566 F5: the fleet the DNA expresses — its name and fleet seed
@@ -153,6 +178,7 @@ pub fn read_dna_fleet(manifest: &Path) -> Result<Option<(String, PathBuf)>, Stri
     }
     let src = fs::read_to_string(manifest).map_err(|e| format!("read {}: {}", manifest.display(), e))?;
     let m: Manifest = toml::from_str(&src).map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
+    warn_unknown_dna(manifest, &m.dna);
     let Some(name) = m.dna.fleet else { return Ok(None) };
     let fleets = seeds_only(manifest, m.fleets)?;
     let Some(rel) = fleets.get(&name) else {
@@ -469,7 +495,9 @@ pub fn fetch(repo_root: &Path) -> Result<(), String> {
 fn read_manifest(path: &Path) -> Result<Manifest, String> {
     let src = fs::read_to_string(path)
         .map_err(|e| format!("read {}: {}", path.display(), e))?;
-    toml::from_str(&src).map_err(|e| format!("parse {}: {}", path.display(), e))
+    let m: Manifest = toml::from_str(&src).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    warn_unknown_dna(path, &m.dna);
+    Ok(m)
 }
 
 pub(crate) fn read_lockfile(path: &Path) -> Result<Lockfile, String> {
@@ -605,6 +633,17 @@ mod tests {
         let src = "[dna]\nneeds = [\"memory\", \"nerves\", \"database\", \"broker\"]\nbrings = [\"database\", \"broker\"]\n\n[dna.migrations.database]\ncommand = [\"hale\", \"run\", \"api\", \"migrate\"]\n";
         let m: Manifest = toml::from_str(src).expect("parse");
         assert_eq!(m.dna.brings.as_deref(), Some(&["database".to_string(), "broker".to_string()][..]));
+    }
+
+    /// A manifest newer than the toolchain: a `[dna]` table this one does not
+    /// know is kept aside, not refused; the ones it knows are read.
+    #[test]
+    fn a_dna_key_this_toolchain_does_not_know_is_kept_aside() {
+        let src = "[dna]\nneeds = [\"memory\"]\n\n[dna.host.node]\ninstall = [\"hale\", \"run\", \"node\", \"install\"]\n\n[dna.someday]\nwhat = 1\n";
+        let m: Manifest = toml::from_str(src).expect("a newer manifest parses");
+        assert!(m.dna.host.is_some(), "host commands are known");
+        assert_eq!(m.dna.unknown.keys().collect::<Vec<_>>(), ["someday"]);
+        assert_eq!(m.dna.needs.as_deref(), Some(&["memory".to_string()][..]));
     }
 
     #[test]

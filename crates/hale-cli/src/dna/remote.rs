@@ -149,11 +149,14 @@ pub(super) fn login_script(host: &str, user: Option<&str>, port: Option<u16>, sc
             pending.push_str(&chunk);
             while let Some(i) = pending.find('\n') {
                 let line: String = pending.drain(..=i).collect();
-                if !line.trim_start_matches('\r').starts_with("hale-node:") {
+                let bare = line.trim_start_matches('\r');
+                if !bare.starts_with("hale-node:") && !bare.starts_with("hale-containers:") {
                     let _ = shown.write_all(line.as_bytes());
                 }
             }
-            if !pending.is_empty() && !"hale-node:".starts_with(pending.trim_start_matches('\r')) && !pending.trim_start_matches('\r').starts_with("hale-node:") {
+            let p = pending.trim_start_matches('\r');
+            let held = ["hale-node:", "hale-containers:"].iter().any(|m| m.starts_with(p) || p.starts_with(m));
+            if !pending.is_empty() && !held {
                 let _ = shown.write_all(pending.as_bytes());
                 pending.clear();
             }
@@ -778,11 +781,8 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
         out.push(format!("{:<8}{face}{}", "grafana", super::readings::GRAFANA_PATH));
     }
     if !super::readings::node_exporter_off() {
-        super::progress(&format!("installing the node exporter on {host}, over your SSH login"));
-        out.push(match login_script(host, user, port, super::readings::install_script) {
-            Ok(o) => super::readings::install_line(host, &o),
-            Err(why) => format!("{:<8}{host}: no exporter: {why}", "node"),
-        });
+        super::progress(&format!("installing the node and container exporters on {host}, over your SSH login"));
+        out.extend(super::readings::install_over(host, user, port));
     }
     Ok(out)
 }
@@ -841,7 +841,9 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
                 let on = if on == "local" { p["host"].as_str().unwrap_or("local").to_string() } else { on };
                 let org = f("organism");
                 let org = names.get(&org[..12.min(org.len())]).cloned().unwrap_or(org);
-                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), f("provider"), on, if org.is_empty() { String::new() } else { format!(", {org}") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
+                // how it runs, and what fills it when that is another thing
+                let by = if f("runs_by").is_empty() || f("runs_by") == f("provider") { f("provider") } else { format!("{} ({})", f("runs_by"), f("provider")) };
+                println!("  {:<24} {:<8} {} on {}{}: {}{}", f("allocation"), f("role"), by, on, if org.is_empty() { String::new() } else { format!(", {org}") }, f("state"), if f("detail").is_empty() { String::new() } else { format!(" ({})", f("detail")) });
             }
             ExitCode::SUCCESS
         }
@@ -965,10 +967,8 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
                         (h["name"].as_str().unwrap_or("").to_string(), None, h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0))
                     }));
                     for (name, user, port) in machines {
-                        match login_script(&name, user.as_deref(), port, super::readings::remove_script) {
-                            Ok(o) if o == "removed" => println!("the habitat's node exporter is removed from {name}"),
-                            Ok(_) => {}
-                            Err(why) => println!("the habitat's node exporter is left on {name} ({why})"),
+                        for l in super::readings::remove_over(&name, user.as_deref(), port) {
+                            println!("{l}");
                         }
                     }
                 }
