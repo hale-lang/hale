@@ -74,6 +74,18 @@ Beside each node exporter runs a container exporter (cAdvisor, the container `ha
 
 An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks by default: one more than 90% full for ten minutes, or one that fills within a day at its recent rate. The operator face's **alerts** screen shows what is firing, and what is about to.
 
+### An Organism's Own Host Commands (`organism place`)
+
+An organism can declare commands of its own for the habitat to run on a host, in its manifest under `[dna.host.<name>]`. voice declares `node`, which turns a machine into a voice node: it installs what the machine needs to serve models, outside compose, and registers it with voice's api.
+
+```sh
+hale habitat organism place voice node --host gpu-1.lan --plan   # what would run, and where
+hale habitat organism place voice node --host gpu-1.lan          # sudo asks once, at your terminal
+hale habitat organism unplace voice node --host gpu-1.lan
+```
+
+The command runs in the organism's own source at the revision the habitat pins, with the host's `hale`, over your SSH login. Inputs such as voice's operator token are fetched for the run, handed over in a private file, and removed afterwards. When the declaration names its `service` (voice's is `voice-node-<id>`, a systemd unit on Linux and a launchd service on macOS), `place` ends by asking the host's service manager that it runs, and `unplace` that it is gone ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Host commands).
+
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 
 While a **pack** is a reusable template of rows adopted inside an existing organism (positions, mandates, practices, knowledge), a **sapling** is a complete, prebuilt organism template published in a nursery and pinned by repository URL, Git revision, file tree SHA-256 digest, and default packs.
