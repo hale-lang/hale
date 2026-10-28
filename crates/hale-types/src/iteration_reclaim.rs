@@ -450,8 +450,7 @@ mod tests {
     /// [`OUTER_PARAMS`]), resolved by the mint as lowering's is.
     fn judge(src: &str, outer: &dyn Fn(&str) -> Option<OuterLocal>) -> bool {
         let src = src.replacen("fn f()", OUTER_PARAMS, 1);
-        let mut program = hale_syntax::parse_source(&src).expect("parses");
-        let ids = crate::snapshot::mint([("app.hl", &mut program)], &[]);
+        let (program, ids) = crate::alloc_summary::tests::minted(&src);
         let decl_of = decl_of(&ids);
         for item in &program.items {
             if let TopDecl::Fn(f) = item {

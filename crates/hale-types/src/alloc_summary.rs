@@ -8243,12 +8243,14 @@ fn note_escape(e: &Expr, esc: Escape, out: &mut EscapeSink<'_>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hale_syntax::parse_source;
 
     /// A parsed program and the identities minted over it.
-    fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
+    /// `src` parsed and minted, as an entry point would (also the
+    /// `iteration_reclaim` tests' one mint).
+    pub(crate) fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
         minted_with(src, |_| {})
     }
 
