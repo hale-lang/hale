@@ -87,6 +87,8 @@ When a local read from a field is mutated and written back to the same field wit
 | **`@form(vec)` loop variable** (`for x in v.items`) | Visits the vec's cells in place; writing through `x` updates the stored element. |
 | **Locus field via handle** (`l.name = s;`) | Copies `s` into locus `l`'s arena and recycles the replaced value so repeated external writes never grow `l`'s arena. |
 
+A method that writes into a record parameter (`fn put(x: Bag, p: Bytes) { x.b = p; }`) writes the caller's record, so the value is kept as long as that record, never only for the call. The method may pass the record on to another writer, directly or through a block, `if` or `match`, and the same holds at every step. A record a field of `self` holds (`put_free(self.bag, p)`) is kept in the locus's arena. One call can hand a writer only one owner's records. `self.put_two(self.held, x, p)`, or `self.put(if c { self.held } else { x }, p)`, mixes the locus's record with the caller's and is rejected. Copy one side into a local record first (`let mine = Bag { b: x.b };`) and hand that, or write the held record through `self`.
+
 ## Arrays (`[T; N]`) and Tuples
 
 Use `[T; N]` for fixed-length inline arrays, `[T]` for slice views, and `(a, b)` for small ad-hoc tuples:

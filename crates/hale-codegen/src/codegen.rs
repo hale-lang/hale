@@ -15714,7 +15714,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&mangled)
             .cloned()
             .expect("specialized fn was just declared");
-        let caller_arena = self.current_arena_ptr()?;
+        let caller_arena = self.call_site_arena(args, scope)?;
         let mut llvm_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(sig.params.len() + 1);
         llvm_args.push(caller_arena.into());
@@ -16121,7 +16121,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // intermediate state the arg-lowering walks into.
         let caller_arena_at_call = match caller_arena {
             Some(arena) => arena,
-            None => self.current_arena_ptr()?,
+            None => self.call_site_arena(args, scope)?,
         };
         let mut llvm_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(sig.params.len() + 1);
@@ -16449,7 +16449,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // ok/fail payload back in this arena before the
         // callee's scratch is destroyed. Mirrors the non-
         // fallible heap-returning method call discipline.
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         // GH #1530: as a non-fallible call, a seam splitting the result
         let func = match self.take_fused_call(locus_name, method_name, func, success_ty.as_ref())? {
             Some((clone, dest)) => {
@@ -18596,6 +18596,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                 }
+                // A write through a member parameter of caller storage
+                // (`x.b = p`, `x.inner.b = p`, `xs[i] = p` in a method
+                // given `x: Bag`, `xs: [Bytes; 4]`) is a write into the
+                // caller's record: what it stores is made in the arena
+                // that owns the record, which the caller published
+                // (`Cx::member_param_arena`), never in this call's scratch,
+                // which its return frees under the caller.
+                if target.head.name != "self" && !target.tail.is_empty() {
+                    if let Some(arena) = self.member_param_arena(&target.head.name, scope)? {
+                        let (slot_ptr, slot_ty, slot_name, owner) = self.resolve_lvalue_chain(target, scope)?;
+                        if let Some(owner) = owner {
+                            return self.finish_locus_field_assign(
+                                slot_ptr, slot_ty, slot_name, op, value, scope, owner, target,
+                            );
+                        }
+                        return self.finish_lvalue_assign(
+                            slot_ptr, slot_ty, slot_name, op, value, scope, LvalueRoot::CallerStorage(arena),
+                        );
+                    }
+                }
                 // Resolve the target into a (slot_ptr, slot_ty)
                 // pair. Bare locals come from the scope; `self.X`
                 // GEPs into the current method's self-struct.
@@ -18785,7 +18805,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             );
                         }
                         return self.finish_lvalue_assign(
-                            slot_ptr, slot_ty, slot_name, op, value, scope, true,
+                            slot_ptr, slot_ty, slot_name, op, value, scope, LvalueRoot::SelfLocus,
                         );
                     }
                     let field_name = match &target.tail[0] {
@@ -18986,7 +19006,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         );
                     }
                     return self.finish_lvalue_assign(
-                        slot_ptr, slot_ty, slot_name, op, value, scope, false,
+                        slot_ptr, slot_ty, slot_name, op, value, scope, LvalueRoot::Frame,
                     );
                 };
 
@@ -30439,7 +30459,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // prepend the caller's arena. Captured here
                 // BEFORE arg lowering — same discipline as
                 // lower_user_fn_call.
-                let caller_arena = self.current_arena_ptr()?;
+                let caller_arena = self.call_site_arena(args, scope)?;
                 let ptr_t = self.context.ptr_type(AddressSpace::default());
                 let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                     Vec::with_capacity(args.len() + 1);
@@ -30714,7 +30734,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Reading our `current_arena_ptr()` AFTER arg lowering
         // (which may itself nest method calls and clobber TLS)
         // gives the callee the freshest caller view.
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         // GH #1530: as an external call, a seam splitting the result
         let ret_ty = sig.ret.as_ref().map(|t| self.type_expr_to_codegen_ty(t)).transpose()?;
         let self_locus = self.current_self.as_ref().map(|s| s.locus_name.clone()).unwrap_or_default();
@@ -30778,7 +30798,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 args.len()
             )));
         }
-        let caller_arena = self.current_arena_ptr()?;
+        let caller_arena = self.call_site_arena(args, scope)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(args.len() + 1);
@@ -31230,7 +31250,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // epilogue lands its heap-return deep-copy in the
         // caller's arena. Same shape as the self-method-call
         // counterpart above.
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         // GH #1530: a seam splitting the set this returns calls the
         // method's fused clone, handing it the set's storage
         let ret_ty = sig.ret.as_ref().map(|t| self.type_expr_to_codegen_ty(t)).transpose()?;
@@ -31941,7 +31961,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         llvm_args.push(out_err_slot.into());
         llvm_param_tys.push(ptr_t.into());
         let fn_ty = self.context.bool_type().fn_type(&llvm_param_tys, false);
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         let call = self
             .builder
             .build_indirect_call(
@@ -32020,7 +32040,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // sites — the locus method behind this vtable slot now
         // opens a per-call scratch and deep-copies any heap
         // return into TLS.
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         let call = self
             .builder
             .build_indirect_call(
@@ -32201,7 +32221,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             },
         };
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         let call = self
             .builder
             .build_indirect_call(
@@ -34111,7 +34131,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             llvm_args.push(v.into());
         }
-        self.emit_set_caller_arena()?;
+        self.emit_set_caller_arena_for(args, scope)?;
         let call = self
             .builder
             .build_call(func, &llvm_args, &format!("{}.{}.known_success.call", locus_name, method_name))
@@ -34512,7 +34532,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(e)?;
                 self.builder.build_load(ptr_t, slot, "bounded.assign.arena").map_err(e)?.into_pointer_value()
             }
-            None => self.current_arena_ptr()?,
+            // A record a member parameter names is the caller's: its
+            // elements anchor in the arena that owns it
+            // (`Cx::member_param_arena`).
+            None => match self.member_param_arena(&target.head.name, scope)? {
+                Some(arena) => arena,
+                None => self.current_arena_ptr()?,
+            },
         };
         let size = self.llvm_bounded_storage_type(elem, cap).size_of().expect("a sized bounded storage");
         self.builder.build_memmove(dest, 8, src.into_pointer_value(), 8, size).map_err(e)?;
@@ -35433,8 +35459,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// The tail of an lvalue assignment the chain walker resolved:
-    /// `self.a.b = v` and `local.a = v` alike. `root_is_self` says
-    /// which. A self-rooted slot is locus storage and takes the
+    /// `self.a.b = v`, `local.a = v` and `param.a = v` alike. `root`
+    /// says which. A self-rooted slot is locus storage and takes the
     /// in-place path (anchored in `self.__arena`, single-owner,
     /// String bytes overwritten when the new value fits). A slot
     /// under a LOCAL root is the frame's own value and never that:
@@ -35448,7 +35474,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// pointer stored over. A local's struct field takes a copy of a
     /// place (as `let` does) or the fresh value itself, again by
     /// pointer. Nothing under a local root is ever mutated in place,
-    /// so what two locals share is never observable.
+    /// so what two locals share is never observable. A slot under a
+    /// member parameter of caller storage is replaced the same way, with
+    /// the value deep-copied into the arena that owns the caller's
+    /// storage (`LvalueRoot::CallerStorage`) rather than the frame's.
     fn finish_lvalue_assign(
         &mut self,
         slot_ptr: PointerValue<'ctx>,
@@ -35457,8 +35486,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         op: &AssignOp,
         value: &Expr,
         scope: &Scope<'ctx>,
-        root_is_self: bool,
+        root: LvalueRoot<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        let root_is_self = matches!(root, LvalueRoot::SelfLocus);
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
         let new_val = if matches!(op, AssignOp::Eq) {
             if rhs_ty != slot_ty {
@@ -35491,6 +35521,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
             v
         };
+        // Whatever the caller's storage reaches after the write is in the
+        // arena that owns it: the value is made in this frame (its
+        // scratch, or an iteration's arena), and a place's value is the
+        // place's own pointer, so every pointer-shaped value is copied
+        // in, each String and Bytes leaf with it. A scalar, and an inline
+        // array's element bytes, are stored as a local's are.
+        if let LvalueRoot::CallerStorage(dest) = root {
+            let pointer_shaped = match &slot_ty {
+                CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Enum(_) => true,
+                CodegenTy::Array(..) => Self::array_inline_spec(&slot_ty).is_none(),
+                _ => false,
+            };
+            if pointer_shaped {
+                let owned = self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?;
+                self.builder
+                    .build_store(slot_ptr, owned)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                return Ok(BlockEnd::Open);
+            }
+        }
         if !root_is_self {
             match &slot_ty {
                 // Every operator: `+=` builds a fresh String, and the
@@ -37746,6 +37796,139 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// IMMEDIATELY BEFORE emitting the primitive's call instruction.
     pub(crate) fn emit_set_caller_arena(&mut self) -> Result<(), CodegenError> {
         let arena = self.current_arena_ptr()?;
+        self.emit_set_caller_arena_to(arena)
+    }
+
+    /// [`Cx::emit_set_caller_arena`] for a call handed `args`: it
+    /// publishes [`Cx::call_site_arena`], so a callee writing through a
+    /// member parameter this method hands on writes into the arena that
+    /// owns the parameter's storage.
+    pub(crate) fn emit_set_caller_arena_for(&mut self, args: &[Expr], scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        let arena = self.call_site_arena(args, scope)?;
+        self.emit_set_caller_arena_to(arena)
+    }
+
+    /// Whether `name` is a locus member's own parameter in `scope`, not a
+    /// binding that shadows it: the mark `param_place_key` names holds the
+    /// parameter's own slot, so a `let`, a loop or a pattern binder of the
+    /// name is not it.
+    pub(crate) fn is_member_param(scope: &Scope<'ctx>, name: &str) -> bool {
+        match (scope.locals.get(&Self::param_place_key(name)), scope.locals.get(name)) {
+            (Some((mark, _)), Some((slot, _))) => mark == slot,
+            _ => false,
+        }
+    }
+
+    /// The arena that owns what the member parameter `name` reaches, when
+    /// `name` is a parameter of a record, array or tuple type of a method
+    /// with a per-call scratch: the arena its caller published at the
+    /// call, snapshotted at the method's entry. Such a parameter is the
+    /// caller's storage, passed by pointer, so a value written into it has
+    /// to live as long as that storage, not as long as this call's
+    /// scratch, as a free fn's write lands in its `__caller_arena`. A
+    /// member the bus dispatch invokes was published no arena (its
+    /// snapshot is the payload-arena fallback), and keeps its scratch
+    /// (`lotus_caller_arena_owning`). `None` for anything else: a local,
+    /// `self`, a locus handle, a scalar, String or Bytes parameter, a
+    /// method with no scratch.
+    pub(crate) fn member_param_arena(
+        &mut self,
+        name: &str,
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        let Some(slot) = self.current_method_caller_arena else {
+            return Ok(None);
+        };
+        if !Self::is_member_param(scope, name) {
+            return Ok(None);
+        }
+        let caller_storage = matches!(
+            scope.locals.get(name).map(|(_, t)| t),
+            Some(CodegenTy::TypeRef(_) | CodegenTy::Array(..) | CodegenTy::Tuple(_))
+        );
+        if !caller_storage {
+            return Ok(None);
+        }
+        self.caller_storage_arena(slot).map(Some)
+    }
+
+    /// The arena that owns storage a method was handed: the caller arena
+    /// snapshotted at entry (`slot`), or the method's scratch when the
+    /// snapshot is the payload-arena fallback of a delivered member
+    /// (`lotus_caller_arena_owning`).
+    fn caller_storage_arena(&mut self, slot: PointerValue<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let snapshot = self.builder.build_load(ptr_t, slot, "member_param.caller_arena").map_err(e)?;
+        let scratch_slot = self.current_method_scratch.expect("a caller-arena snapshot implies a scratch");
+        let scratch = self.builder.build_load(ptr_t, scratch_slot, "member_param.scratch").map_err(e)?;
+        let owning = self.module.get_function("lotus_caller_arena_owning").expect("lotus_caller_arena_owning declared");
+        let arena = self
+            .builder
+            .build_call(owning, &[snapshot.into(), scratch.into()], "member_param.arena")
+            .map_err(e)?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_caller_arena_owning returns ptr")
+            .into_pointer_value();
+        Ok(arena)
+    }
+
+    /// The arena a call handed `args` publishes as its caller arena. The
+    /// current one, unless the call hands a callee that may write through
+    /// it an argument that is not fresh (the owned-view column's
+    /// `handoff`, by the call's id and the argument's span: its place
+    /// markers, whatever carries it, a block, an `if`, a `match`, an `or`
+    /// or a literal holding it). Then the call publishes the arena that
+    /// owns what the argument may be:
+    ///
+    /// - a place under a field of `self`, and no parameter: the locus's
+    ///   own arena, which outlives the method (a place the pass cannot
+    ///   name beside it is kept there too);
+    /// - (a part of) one of the method's parameters, or only a place the
+    ///   pass cannot name: the arena the method's own caller published, so
+    ///   a chain of methods handing the record on lands every write in the
+    ///   arena of the frame that owns it.
+    ///
+    /// A call handing both a place under `self` and a parameter has two
+    /// owners and one arena to publish; the check refuses it
+    /// (`check.rs`, `mixed_owner_diags`).
+    ///
+    /// A fresh argument (a literal, a constructor, a fresh call result, a
+    /// local holding one) and a callee that only reads keep this frame's
+    /// arena, so its result and a free fn's temporaries are freed with the
+    /// frame. A free fn's frame already allocates in its caller's arena.
+    pub(crate) fn call_site_arena(
+        &mut self,
+        args: &[Expr],
+        _scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let Some(call) = self.current_call else {
+            return self.current_arena_ptr();
+        };
+        let handed: Vec<hale_types::view_bindings::Handoff> =
+            args.iter().filter_map(|a| self.owned_views.handoff(call, a.span().start.0)).collect();
+        if handed.is_empty() {
+            return self.current_arena_ptr();
+        }
+        let held = handed.iter().any(|h| h.held()) && !handed.iter().any(|h| h.param());
+        if let (true, Some(cs)) = (held, self.current_self.clone()) {
+            let info = self.user_loci.get(&cs.locus_name).cloned().expect("current_self points to a declared locus");
+            let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, cs.self_ptr, info.arena_field_idx, "self.__arena.ptr")
+                .map_err(e)?;
+            return Ok(self.builder.build_load(ptr_t, slot, "self.__arena.for_handoff").map_err(e)?.into_pointer_value());
+        }
+        match self.current_method_caller_arena {
+            Some(slot) => self.caller_storage_arena(slot),
+            None => self.current_arena_ptr(),
+        }
+    }
+
+    fn emit_set_caller_arena_to(&mut self, arena: PointerValue<'ctx>) -> Result<(), CodegenError> {
         let set_fn = self
             .module
             .get_function("lotus_set_caller_arena")
@@ -37938,6 +38121,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 
 
+}
+
+/// Where the storage an assignment writes is rooted
+/// (`Cx::finish_lvalue_assign`).
+#[derive(Clone, Copy)]
+pub(crate) enum LvalueRoot<'ctx> {
+    /// `self`: locus storage, written in place into `self.__arena`.
+    SelfLocus,
+    /// A local of this frame: its own value, replaced in the frame's
+    /// arena.
+    Frame,
+    /// A member parameter of caller storage (`Cx::member_param_arena`):
+    /// the caller's record, replaced in the arena that owns it, given.
+    CallerStorage(PointerValue<'ctx>),
 }
 
 /// The locus whose storage holds an assignment's slot

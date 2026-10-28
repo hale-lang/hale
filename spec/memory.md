@@ -1216,6 +1216,45 @@ Two correctness invariants make this safe:
      would clobber TLS, leaving the epilogue to deep-copy
      into the wrong arena (whichever nested callee was
      called last).
+  3. A record, array or tuple parameter of a method is the
+     caller's storage, passed by pointer, so a heap value
+     stored under it (`x.b = p`, `x.inner.b = p`, `a[i] = p`,
+     a `bounded` field assigned whole) is deep-copied into
+     the same entry snapshot of the caller's arena, never
+     into the scratch, as a free fn's store lands in its
+     `__caller_arena`. A call the method hands a place under
+     such a parameter (`self.put(x, p)`, `put_free(x.inner,
+     p)`) publishes that snapshot as the callee's caller
+     arena instead of the scratch when the callee may write
+     through the parameter it lands in (the owned-view
+     column's hand-offs, whose write summaries forward a
+     parameter a relay hands on through a carrier as one
+     handed by name), so a chain of methods handing the
+     record on stores into the arena of the frame that owns
+     it; a callee that only reads it keeps the scratch. The
+     rule goes by provenance, not spelling: any argument
+     handed to such a callee that is not fresh (a literal, a
+     constructor, a fresh call result, a local holding one)
+     is a hand-off, through a block, an `if`, a `match` or an
+     `or` (`self.put({ x }, p)`) as much as by name. One that
+     may only be a place under a field of `self`
+     (`put_free(self.bag, p)`, `self.o.put({ self.bag }, p)`)
+     publishes the locus's own arena instead, which owns the
+     record; the write is a clone into it, so a String it
+     replaces is not recycled as a `self.bag.b = p` store
+     recycles it. **One owner per call:** a call publishes one
+     arena, so a call that hands such a callee both a place
+     under a field of `self` and (a part of) one of the
+     method's parameters, in two arguments
+     (`self.put_two(self.held, x, p)`) or in one carrier
+     (`self.put(if c { self.held } else { x }, p)`), is
+     refused by the check, which names both owners. Copy one
+     into a local record first (`let mine = Bag { b: x.b };`)
+     and hand that, or write the held record through `self`. A
+     member the bus dispatch invokes is published no arena
+     (its snapshot is the payload-arena fallback) and keeps
+     its scratch. A shadowing `let` or binder of the name is
+     a local of the method's own.
 
 Cost: two mallocs (subregion arena struct + initial 64 KiB
 chunk) and two frees per method call. For typical short
@@ -1320,7 +1359,9 @@ The free-fn path (`lotus_arena_create_subregion(__caller_arena)`
 at entry, destroyed at exit, with allocations routed to
 `__caller_arena` directly post-cross-seed-segv-fix) is
 unchanged. Free fns called from inside a method body get
-`__caller_arena = method's scratch` — anything they alloc
+`__caller_arena = method's scratch` (or, handed a place under one of
+the method's record parameters, the method's caller's arena: invariant
+3 above) — anything they alloc
 lives in the same scratch and gets reclaimed at the outer
 method's exit. The cross-seed-segv test pattern (foreign
 vec push from inside a free fn) continues to work because

@@ -4196,6 +4196,22 @@ row	Counter@main1	Counter	main	default
 == crates/hale-codegen/tests/math_and_int_float.rs#f0fd4633
 row	Scaler@main1	Scaler	main	default
 
+== crates/hale-codegen/tests/member_param_write.rs#f3d985ca
+row	Sink@main2	Sink	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+shared	Driver@main1	Driver #516e9e49
+
+== crates/hale-codegen/tests/member_param_write.rs#9455a46c
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.sink	Sink	main	inherited
+
+== crates/hale-codegen/tests/member_param_write.rs#a1cb81ce
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+shared	Driver@main1	Driver #516e9e49
+
 == crates/hale-codegen/tests/method_call_from_free_fn.rs#6592aad6
 row	CounterL@main1	CounterL	main	default
 
@@ -17838,6 +17854,10 @@ row	~.j.rows	Rows	main	inherited
 == shared Conn #f768b6d8
 row	~	Conn	main	default
 row	~.stream	__StdIoTcpStream	main	inherited
+
+== shared Driver #516e9e49
+row	~	Driver	main	default
+row	~.sink	Sink	main	inherited
 
 == shared Gateway #55c1acba
 row	~	Gateway	pool:ws	entry	off owner

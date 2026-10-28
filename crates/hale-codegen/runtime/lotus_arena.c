@@ -29985,6 +29985,19 @@ lotus_arena_t *lotus_caller_arena_or_global(void) {
     return p;
 }
 
+/* The arena that owns what a locus member's record parameter reaches:
+ * `snapshot`, the caller arena the member took at its entry, when a
+ * caller published one; `own` (the member's scratch) when none did and
+ * the snapshot is the payload-arena fallback above, as for a member the
+ * bus dispatch invokes, which publishes no arena (its payload's lifetime
+ * is the delivery's, which the scratch does not outlive the use of). */
+lotus_arena_t *lotus_caller_arena_owning(lotus_arena_t *snapshot, lotus_arena_t *own) {
+    pthread_mutex_lock(&g_bus_payload_arena_mutex);
+    int fallback = snapshot == g_bus_payload_arena;
+    pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    return fallback ? own : snapshot;
+}
+
 /* Migration helper: same lock-init-alloc pattern that nearly every
  * stdlib primitive in this file repeats, factored into a single
  * fn so the migration becomes "replace the open-coded block with
