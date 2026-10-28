@@ -4139,9 +4139,11 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 
 == crates/hale-codegen/tests/loop_iteration_reclaim.rs#165ef38f
 row	Probe@main1	Probe	main	default
--- dynamic	sites in the seed
-dynamic	Holder	on main
-dynamic	__StdBytesBytesBuilder	on main
+shared	dynamic	sites in the seed #9f0a18e6
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#5fd5ecf3
+row	Probe@main1	Probe	main	default
+shared	dynamic	sites in the seed #9f0a18e6
 
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App	the entry
@@ -20662,6 +20664,10 @@ dynamic	__StdIoTcpConnInline	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
 dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
+
+== shared sites in the seed #9f0a18e6
+dynamic	Holder	on main
+dynamic	__StdBytesBytesBuilder	on main
 
 == shared sites in the seed #a43e7c60
 dynamic	B	on main

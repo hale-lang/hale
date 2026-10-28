@@ -1270,9 +1270,12 @@ unless it can hand a value to the next iteration through the frame:
      is that locus's storage), or *outside* (an outside record and any
      path into it, any path through a locus, an element of an outside
      array or tuple, a match binder, a call's result handed anything
-     not owned). A `let`, a tuple `let` and a `for` binder take their
-     value's kind, an assignment joins it in, and a carrier, an `or`
-     and a container literal join their arms and parts. Handed outside
+     not owned). The kinds are computed in the one walk that judges
+     the body, with its scopes live where each expression is: a
+     `let`, a tuple `let` and a `for` binder take their value's kind,
+     an assignment joins it in, and a carrier (its tail read inside
+     its own scope), an `or` and a container literal join their arms
+     and parts. Handed outside
      storage, the callee could write into
      it from its caller arena, which is the iteration's: a free fn
      through its parameter whatever its name (`push` included), a fn

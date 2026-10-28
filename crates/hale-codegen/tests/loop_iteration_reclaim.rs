@@ -538,6 +538,96 @@ fn what_a_push_named_fn_or_a_held_locus_field_takes_survives_under_asan() {
     plain_and_asan("named_and_held", NAMED_AND_HELD, NAMED_AND_HELD_OUT);
 }
 
+/// A sample of `iteration_reclaim`'s binding forms over a locus source
+/// (its unit test `every_binding_form_gives_its_source_kind` covers every
+/// form against every source): each binds `alias` to `self` or another
+/// locus (`spare` is a second one, for the arms that do not run), codex's two through a block tail that shadows an outside
+/// scalar `n`, and hands a path through it to a free fn that writes
+/// there. Each loop stays on the scratch, so what the free fn wrote is
+/// read after the loop.
+const BOUND_FORMS: &str = r#"
+type Box { b: Bytes; }
+fn keep(bag: Box, piece: Bytes) { bag.b = piece; }
+locus Holder {
+    params { bag: Box = Box { b: b"" }; }
+}
+locus Probe {
+    params { bag: Box = Box { b: b"" }; }
+    run() {
+        let buf = std::bytes::BytesBuilder { initial_cap: 64 };
+        buf.append_str("abcdefgh");
+        let holder = Holder { };
+        let spare = Holder { };
+        let n = 0;
+        let mut i_tail_self = 0;
+        while i_tail_self < 2 {
+            buf.append_u8(109);
+            let alias = { let n = self; n };
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            i_tail_self = i_tail_self + 1;
+        }
+        println("tail_self=", len(self.bag.b));
+        let mut i_tail_holder = 0;
+        while i_tail_holder < 2 {
+            buf.append_u8(110);
+            let alias = { let n = holder; n };
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            i_tail_holder = i_tail_holder + 1;
+        }
+        println("tail_holder=", len(holder.bag.b));
+        let mut i_if = 0;
+        while i_if < 2 {
+            buf.append_u8(111);
+            let alias = if n > 0 { spare } else { holder };
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            i_if = i_if + 1;
+        }
+        println("if=", len(holder.bag.b));
+        let mut i_match = 0;
+        while i_match < 2 {
+            buf.append_u8(112);
+            let alias = match n { 0 -> holder, _ -> spare, };
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            i_match = i_match + 1;
+        }
+        println("match=", len(holder.bag.b));
+        let mut i_tuple = 0;
+        while i_tuple < 2 {
+            buf.append_u8(113);
+            let (alias, z) = (holder, 1);
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            i_tuple = i_tuple + 1;
+        }
+        println("tuple=", len(holder.bag.b));
+        let mut i_assigned = 0;
+        while i_assigned < 2 {
+            buf.append_u8(114);
+            let mut alias = spare; alias = holder;
+            let piece = buf.snapshot() or b"";
+            keep(alias.bag, piece);
+            i_assigned = i_assigned + 1;
+        }
+        println("assigned=", len(holder.bag.b));
+    }
+}
+
+fn main() {
+    let p = Probe { };
+}
+"#;
+
+const BOUND_FORMS_OUT: &[&str] = &["tail_self=10", "tail_holder=12", "if=14", "match=16", "tuple=18", "assigned=20"];
+
+#[test]
+fn every_sampled_binding_form_of_a_locus_survives_under_asan() {
+    plain_and_asan("bound_forms", BOUND_FORMS, BOUND_FORMS_OUT);
+}
+
 /// Build `src` plainly and under AddressSanitizer (chunk pool off) and
 /// hold each run to `want`, with no sanitizer report.
 fn plain_and_asan(name: &str, src: &str, want: &[&str]) {

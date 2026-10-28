@@ -91,7 +91,7 @@ pub fn reclaims_per_iteration(
     produces_locus: &dyn Fn(&Expr) -> bool,
 ) -> bool {
     let mut w = Walk { outer, produces_locus, scopes: Vec::new() };
-    w.block(body)
+    w.block(body).is_some()
 }
 
 /// The builtins that only read their arguments, by names no fn can take:
@@ -171,130 +171,73 @@ impl Walk<'_> {
         }
     }
 
-    /// What `e` is, for handing it to a call ([`Held`]):
-    ///
-    /// - a literal, a scalar binding: owned;
-    /// - `self`, an outside locus reference, a path (a constant, a fn):
-    ///   whole only;
-    /// - a body binding: what it was bound or assigned;
-    /// - a field or element: owned through an owned value, else outside;
-    /// - a call's result: owned when every argument is (a method returns
-    ///   a copy in its caller's arena; a free fn returns what it was
-    ///   handed, made fresh, or a path of it), else outside (a free fn
-    ///   handed a locus may return a field of it);
-    /// - an operator, a literal of a container, an `or`, a range, a
-    ///   carrier: the join of its parts or arms (an arm with no tail
-    ///   diverges or is unit, `or { break; }`);
-    /// - anything else (an unknown name, a match binder): outside.
-    fn held(&self, e: &Expr) -> Held {
-        match e {
-            Expr::Literal(..) => Held::Owned,
-            Expr::Path(_) | Expr::KwSelf(_) => Held::Whole,
-            Expr::Ident(i) => match self.local(&i.name) {
-                Some(h) => h,
-                None => match (self.outer)(&i.name) {
-                    Some(OuterLocal::Scalar) => Held::Owned,
-                    Some(OuterLocal::Locus) => Held::Whole,
-                    _ => Held::Outside,
-                },
-            },
-            Expr::Call { args, .. } => {
-                if args.iter().all(|a| self.held(a) == Held::Owned) {
-                    Held::Owned
-                } else {
-                    Held::Outside
-                }
-            }
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.held(receiver).path(),
-            Expr::Index { receiver, index, .. } => self.held(receiver).path().join(self.held(index)),
-            Expr::Binary { left, right, .. } => self.held(left).join(self.held(right)),
-            Expr::Unary { operand, .. } => self.held(operand),
-            Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().fold(Held::Owned, |h, x| h.join(self.held(x))),
-            Expr::Struct { inits, .. } => inits.iter().fold(Held::Owned, |h, i| h.join(self.held(&i.value))),
-            Expr::ArrayRepeat { val, .. } => self.held(val),
-            Expr::Range { lo, hi, .. } => self.held(lo).join(self.held(hi)),
-            Expr::Or { inner, disposition, .. } => self.held(inner).join(match disposition {
-                OrDisposition::Substitute(x) => self.held(x),
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) | OrDisposition::Fail(..) => {
-                    Held::Owned
-                }
-            }),
-            Expr::Block(b) => self.block_held(b),
-            Expr::If(i) => self.if_held(i),
-            Expr::Match(m) => m.arms.iter().fold(Held::Owned, |h, a| {
-                h.join(match &a.body {
-                    MatchArmBody::Expr(x) => self.held(x),
-                    MatchArmBody::Block(b) => self.block_held(b),
-                })
-            }),
-            Expr::Sum(..) | Expr::Prod(..) | Expr::Approx { .. } => Held::Outside,
-        }
-    }
-
-    fn block_held(&self, b: &Block) -> Held {
-        b.tail.as_deref().map_or(Held::Owned, |t| self.held(t))
-    }
-
-    fn if_held(&self, i: &IfStmt) -> Held {
-        self.block_held(&i.then_block).join(match i.else_block.as_deref() {
-            None => Held::Owned,
-            Some(ElseBranch::Else(b)) => self.block_held(b),
-            Some(ElseBranch::ElseIf(e)) => self.if_held(e),
-        })
-    }
-
-    fn block(&mut self, b: &Block) -> bool {
+    /// A block, walked in its own scope: its value's kind (its tail's,
+    /// computed while its bindings are live; owned when it has none, as an
+    /// arm that diverges or is unit, `or { break; }`), or `None` when it
+    /// refuses the body.
+    fn block(&mut self, b: &Block) -> Option<Held> {
         self.scopes.push(BTreeMap::new());
-        let ok = b.stmts.iter().all(|s| self.stmt(s)) && b.tail.as_deref().is_none_or(|t| self.expr(t));
+        let ok = b.stmts.iter().all(|s| self.stmt(s));
+        let held = if ok {
+            match b.tail.as_deref() {
+                Some(t) => self.expr(t),
+                None => Some(Held::Owned),
+            }
+        } else {
+            None
+        };
         self.scopes.pop();
-        ok
+        held
     }
 
     fn stmt(&mut self, s: &Stmt) -> bool {
         match s {
-            Stmt::Let { name, value, .. } => {
-                let ok = self.expr(value);
-                let held = self.held(value);
-                self.declare(&name.name, held);
-                ok
-            }
-            Stmt::LetTuple { names, value, .. } => {
-                let ok = self.expr(value);
-                let held = self.held(value);
-                for n in names {
-                    self.declare(&n.name, held);
+            Stmt::Let { name, value, .. } => match self.expr(value) {
+                Some(held) => {
+                    self.declare(&name.name, held);
+                    true
                 }
-                ok
-            }
+                None => false,
+            },
+            Stmt::LetTuple { names, value, .. } => match self.expr(value) {
+                Some(held) => {
+                    for n in names {
+                        self.declare(&n.name, held);
+                    }
+                    true
+                }
+                None => false,
+            },
             Stmt::Assign { target, value, .. } => {
-                let ok = self.assign_target(target) && self.expr(value);
-                if ok && target.tail.is_empty() {
-                    let held = self.held(value);
-                    self.assigned(&target.head.name, held);
-                }
-                ok
-            }
-            Stmt::If(i) => self.if_stmt(i),
-            Stmt::Match(m) => self.match_stmt(m),
-            Stmt::For { name, iter, body, .. } => {
-                if !self.expr(iter) {
+                if !self.assign_target(target) {
                     return false;
                 }
+                let Some(held) = self.expr(value) else { return false };
+                if target.tail.is_empty() {
+                    self.assigned(&target.head.name, held);
+                }
+                true
+            }
+            Stmt::If(i) => self.if_expr(i).is_some(),
+            Stmt::Match(m) => self.match_expr(m).is_some(),
+            Stmt::For { name, iter, body, .. } => {
                 // A binder is an element of what is iterated.
-                let held = self.held(iter).path();
-                self.scopes.push(BTreeMap::from([(name.name.clone(), held)]));
-                let ok = self.block(body);
+                let Some(held) = self.expr(iter) else { return false };
+                self.scopes.push(BTreeMap::from([(name.name.clone(), held.path())]));
+                let ok = self.block(body).is_some();
                 self.scopes.pop();
                 ok
             }
-            Stmt::While { cond, body, .. } => self.expr(cond) && self.block(body),
-            Stmt::Return(e, _) => e.as_ref().is_none_or(|e| self.expr(e)),
-            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::While { cond, body, .. } => self.expr(cond).is_some() && self.block(body).is_some(),
+            Stmt::Return(e, _) => e.as_ref().is_none_or(|e| self.expr(e).is_some()),
+            Stmt::Fail { value, .. } => self.expr(value).is_some(),
             Stmt::Send { subject, value, or_disposition, .. } => {
-                self.expr(subject) && self.expr(value) && or_disposition.as_ref().is_none_or(|d| self.disposition(d))
+                self.expr(subject).is_some()
+                    && self.expr(value).is_some()
+                    && or_disposition.as_ref().is_none_or(|d| self.disposition(d).is_some())
             }
-            Stmt::Block(b) => self.block(b),
-            Stmt::Expr(e) => self.expr(e),
+            Stmt::Block(b) => self.block(b).is_some(),
+            Stmt::Expr(e) => self.expr(e).is_some(),
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => true,
             Stmt::Reperspective { .. } | Stmt::Recovery { .. } | Stmt::Violate { .. } | Stmt::ShmWrite { .. } => false,
         }
@@ -312,69 +255,136 @@ impl Walk<'_> {
     }
 
     fn assign_target(&mut self, target: &LValue) -> bool {
-        let held = self.writable(target.head.name.as_str());
-        held && target.tail.iter().all(|seg| match seg {
-            LValueSeg::Field(_) => true,
-            LValueSeg::Index(e) => self.expr(e),
-        })
-    }
-
-    fn if_stmt(&mut self, i: &IfStmt) -> bool {
-        self.expr(&i.cond)
-            && self.block(&i.then_block)
-            && match i.else_block.as_deref() {
-                None => true,
-                Some(ElseBranch::Else(b)) => self.block(b),
-                Some(ElseBranch::ElseIf(e)) => self.if_stmt(e),
-            }
-    }
-
-    fn match_stmt(&mut self, m: &MatchStmt) -> bool {
-        self.expr(&m.scrutinee)
-            && m.arms.iter().all(|arm| {
-                arm.guard.as_ref().is_none_or(|g| self.expr(g))
-                    && match &arm.body {
-                        MatchArmBody::Expr(e) => self.expr(e),
-                        MatchArmBody::Block(b) => self.block(b),
-                    }
+        self.writable(target.head.name.as_str())
+            && target.tail.iter().all(|seg| match seg {
+                LValueSeg::Field(_) => true,
+                LValueSeg::Index(e) => self.expr(e).is_some(),
             })
     }
 
-    fn disposition(&mut self, d: &OrDisposition) -> bool {
+    /// An `if`, statement or value: the join of its arms' kinds.
+    fn if_expr(&mut self, i: &IfStmt) -> Option<Held> {
+        self.expr(&i.cond)?;
+        let then = self.block(&i.then_block)?;
+        let other = match i.else_block.as_deref() {
+            None => Held::Owned,
+            Some(ElseBranch::Else(b)) => self.block(b)?,
+            Some(ElseBranch::ElseIf(e)) => self.if_expr(e)?,
+        };
+        Some(then.join(other))
+    }
+
+    /// A `match`, statement or value: the join of its arms' kinds.
+    fn match_expr(&mut self, m: &MatchStmt) -> Option<Held> {
+        self.expr(&m.scrutinee)?;
+        let mut held = Held::Owned;
+        for arm in &m.arms {
+            if let Some(g) = &arm.guard {
+                self.expr(g)?;
+            }
+            let arm_held = match &arm.body {
+                MatchArmBody::Expr(e) => self.expr(e)?,
+                MatchArmBody::Block(b) => self.block(b)?,
+            };
+            held = held.join(arm_held);
+        }
+        Some(held)
+    }
+
+    /// An `or`'s other side: the substitute's kind (a disposition that
+    /// diverges or discards adds none).
+    fn disposition(&mut self, d: &OrDisposition) -> Option<Held> {
         match d {
-            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
-            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => true,
+            OrDisposition::Substitute(e) => self.expr(e),
+            OrDisposition::Fail(e, _) => self.expr(e).map(|_| Held::Owned),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => Some(Held::Owned),
         }
     }
 
-    fn expr(&mut self, e: &Expr) -> bool {
+    /// Walk `e` with the body's scopes as they stand where it is, and
+    /// answer what its value is ([`Held`]), or `None` when it refuses the
+    /// body. The one place a kind is computed:
+    ///
+    /// - a literal, a scalar binding: owned;
+    /// - `self`, an outside locus reference, a path (a constant, a fn):
+    ///   whole;
+    /// - a body binding: what it was bound or assigned;
+    /// - a field or element: owned through an owned value, else outside;
+    /// - a call's result: owned when every argument is (a method returns
+    ///   a copy in its caller's arena; a free fn returns what it was
+    ///   handed, made fresh, or a path of it), else outside (a free fn
+    ///   handed a locus may return a field of it);
+    /// - an operator, a container literal, an `or`, a range, a carrier:
+    ///   the join of its parts or arms;
+    /// - anything else (an unknown name, a match binder): outside.
+    ///
+    /// A call (but a builtin that only reads) handed an outside argument,
+    /// a locus made, or an outside buffer named, refuses the body.
+    fn expr(&mut self, e: &Expr) -> Option<Held> {
+        let join_all = |w: &mut Self, xs: &mut dyn Iterator<Item = &Expr>| -> Option<Held> {
+            let mut held = Held::Owned;
+            for x in xs {
+                held = held.join(w.expr(x)?);
+            }
+            Some(held)
+        };
         match e {
-            Expr::Ident(i) => self.declared(&i.name) || (self.outer)(&i.name) != Some(OuterLocal::Buffer),
-            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => true,
-            Expr::Binary { left, right, .. } => self.expr(left) && self.expr(right),
+            Expr::Literal(..) => Some(Held::Owned),
+            Expr::Path(_) | Expr::KwSelf(_) => Some(Held::Whole),
+            Expr::Ident(i) => match self.local(&i.name) {
+                Some(held) => Some(held),
+                None => match (self.outer)(&i.name) {
+                    Some(OuterLocal::Buffer) => None,
+                    Some(OuterLocal::Scalar) => Some(Held::Owned),
+                    Some(OuterLocal::Locus) => Some(Held::Whole),
+                    Some(OuterLocal::Heap) | None => Some(Held::Outside),
+                },
+            },
+            Expr::Binary { left, right, .. } => Some(self.expr(left)?.join(self.expr(right)?)),
             Expr::Unary { operand, .. } => self.expr(operand),
             Expr::Call { callee, args, .. } => {
-                // A call that may write into its arguments is handed only
-                // what it cannot write into outside the iteration.
+                if (self.produces_locus)(e) {
+                    return None;
+                }
                 let reads_only = matches!(callee.as_ref(), Expr::Ident(f)
                     if !self.declared(&f.name) && (self.outer)(&f.name).is_none() && read_only_builtin(&f.name));
-                (reads_only || args.iter().all(|a| self.held(a) != Held::Outside))
-                    && !(self.produces_locus)(e)
-                    && self.expr(callee)
-                    && args.iter().all(|a| self.expr(a))
+                if !reads_only {
+                    self.expr(callee)?;
+                }
+                let mut all_owned = true;
+                for a in args {
+                    let held = self.expr(a)?;
+                    // A call that may write into its arguments is handed
+                    // only what it cannot write into outside the iteration.
+                    if held == Held::Outside && !reads_only {
+                        return None;
+                    }
+                    all_owned &= held == Held::Owned;
+                }
+                Some(if all_owned { Held::Owned } else { Held::Outside })
             }
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
-            Expr::Index { receiver, index, .. } => self.expr(receiver) && self.expr(index),
-            Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().all(|x| self.expr(x)),
-            Expr::Struct { inits, .. } => !(self.produces_locus)(e) && inits.iter().all(|i| self.expr(&i.value)),
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => Some(self.expr(receiver)?.path()),
+            Expr::Index { receiver, index, .. } => Some(self.expr(receiver)?.path().join(self.expr(index)?)),
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => join_all(self, &mut xs.iter()),
+            Expr::Struct { inits, .. } => {
+                if (self.produces_locus)(e) {
+                    return None;
+                }
+                join_all(self, &mut inits.iter().map(|i| &i.value))
+            }
             Expr::Block(b) => self.block(b),
-            Expr::If(i) => self.if_stmt(i),
-            Expr::Match(m) => self.match_stmt(m),
-            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
-            Expr::Approx { left, right, tolerance, .. } => self.expr(left) && self.expr(right) && self.expr(tolerance),
-            Expr::Range { lo, hi, .. } => self.expr(lo) && self.expr(hi),
+            Expr::If(i) => self.if_expr(i),
+            Expr::Match(m) => self.match_expr(m),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x).map(|_| Held::Outside),
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left)?;
+                self.expr(right)?;
+                self.expr(tolerance)?;
+                Some(Held::Outside)
+            }
+            Expr::Range { lo, hi, .. } => Some(self.expr(lo)?.join(self.expr(hi)?)),
             Expr::ArrayRepeat { val, .. } => self.expr(val),
-            Expr::Or { inner, disposition, .. } => self.expr(inner) && self.disposition(disposition),
+            Expr::Or { inner, disposition, .. } => Some(self.expr(inner)?.join(self.disposition(disposition)?)),
         }
     }
 }
@@ -488,6 +498,60 @@ mod tests {
         // a call's result when it was handed a locus (it may be a field of it)
         assert!(!reclaims("fn f() { while true { let a = field_of(h); keep(a, b\"x\"); } }"));
         assert!(reclaims("fn f() { while true { let a = make(i); keep(a.items, b\"x\"); } }"));
+    }
+
+    /// Every binding form × every source, the kind each must give the
+    /// binding, checked through both uses: handing the binding whole
+    /// (refused only when outside) and handing a path through it
+    /// (admitted only when owned). `n` is an outside scalar, shadowed in
+    /// the "shadowed" source by a body binding of a locus.
+    #[test]
+    fn every_binding_form_gives_its_source_kind() {
+        let outer = |name: &str| match name {
+            "n" | "i" => Some(OuterLocal::Scalar),
+            "h" | "buf" => Some(OuterLocal::Locus),
+            "last" => Some(OuterLocal::Heap),
+            _ => None,
+        };
+        // (source name, the statements before the form, the expression, its kind)
+        let sources: [(&str, &str, &str, Held); 6] = [
+            ("self", "", "self", Held::Whole),
+            ("outer locus", "", "h", Held::Whole),
+            ("outer record", "", "last", Held::Outside),
+            ("outer scalar", "", "n", Held::Owned),
+            ("scalar shadowed by a locus", "let n = h; ", "n", Held::Whole),
+            ("fresh value", "", "T { k: 1 }", Held::Owned),
+        ];
+        // (form, how `a` is bound from `X`, whether `a` is an element or field of it)
+        let forms: [(&str, &str, bool); 9] = [
+            ("let", "let a = X;", false),
+            ("block tail", "let a = { X };", false),
+            ("block tail shadowing", "let a = { let n = X; n };", false),
+            ("if", "let a = if i > 0 { X } else { X };", false),
+            ("match", "let a = match i { 0 -> X, _ -> X, };", false),
+            ("or", "let a = buf.snapshot() or X;", false),
+            ("tuple", "let (a, z) = (X, 1);", false),
+            ("assignment", "let a = 1; a = X;", false),
+            ("container", "let w = W { f: X }; let a = w.f;", true),
+        ];
+        for (sname, pre, x, kind) in sources {
+            for (fname, form, element) in forms {
+                let kind = if element { kind.path() } else { kind };
+                // `or`'s other side is a call's fresh result: the join.
+                for (use_, admitted) in [("keep(a, b\"x\");", kind != Held::Outside), ("keep(a.bag, b\"x\");", kind == Held::Owned)] {
+                    let src = format!("fn f() {{ while true {{ {pre}{} {use_} }} }}", form.replace('X', x));
+                    let got = reclaims_per_iteration(&body_of(&src), &outer, &|_| false);
+                    assert_eq!(got, admitted, "{fname} of {sname} ({kind:?}), `{use_}`: {src}");
+                }
+            }
+            // a `for` binder is an element of what is iterated
+            let kind_el = kind.path();
+            for (use_, admitted) in [("keep(a, b\"x\");", kind_el != Held::Outside), ("keep(a.bag, b\"x\");", kind_el == Held::Owned)] {
+                let src = format!("fn f() {{ while true {{ {pre}for a in [{x}] {{ {use_} }} }} }}");
+                let got = reclaims_per_iteration(&body_of(&src), &outer, &|_| false);
+                assert_eq!(got, admitted, "for over {sname} ({kind_el:?}), `{use_}`: {src}");
+            }
+        }
     }
 
     /// The audit: each way a call can be handed storage that outlives the
