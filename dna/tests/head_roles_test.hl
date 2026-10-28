@@ -274,7 +274,7 @@ locus App {
         );
         std::test::assert_eq_str(
             members_of(none),
-            "Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::policy Commands::preview_batch Commands::saplings Commands::take_task",
+            "Commands::alerts Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::policy Commands::preview_batch Commands::saplings Commands::take_task",
             "seated nowhere: the ungated rows only",
         );
         // the served description is the surface `hale check --api` printed:
