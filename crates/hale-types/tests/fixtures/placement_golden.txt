@@ -8283,8 +8283,10 @@ row	~	Board	main	default
 row	~.w	Worker	main	inherited
 
 == tests/hale/crypto_sha256_stream_test.hl
+template	__StdCryptoSha256@main3	unbounded (built in a loop)
 row	__StdCryptoSha256@main1	__StdCryptoSha256	main	default
 row	__StdCryptoSha256@main2	__StdCryptoSha256	main	default
+row	__StdCryptoSha256@main3	__StdCryptoSha256	main	default
 shared	dynamic	sites in the seed #49573352
 
 == tests/hale/decimal_scale_wire_test.hl

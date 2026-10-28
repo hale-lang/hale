@@ -567,7 +567,7 @@ crates/hale-codegen/tests/cross_seed_locus_arg.rs#1 378fb322aa1631f1
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#2 3f427dff04bfba66
 crates/hale-codegen/tests/crypto_crc32.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/crypto_sha256_hmac.rs#0 7acd824db7868e98
-crates/hale-codegen/tests/crypto_sha256_hmac.rs#1 7acd824db7868e98
+crates/hale-codegen/tests/crypto_sha256_hmac.rs#2 7acd824db7868e98
 crates/hale-codegen/tests/decimal_alignment.rs#0 d4275fdcef4d5b13
 crates/hale-codegen/tests/decimal_alignment.rs#1 2c29348a0c1b33f7
 crates/hale-codegen/tests/decimal_alignment.rs#2 9e5e56b777057f87

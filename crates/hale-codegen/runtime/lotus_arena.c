@@ -32242,13 +32242,16 @@ void *lotus_crypto_sha1(const void *b) {
  * `std::crypto::sha256_file`, which feeds a file through the same
  * context in fixed-size reads. HMAC-SHA256 hashes through it too.
  *
- * The compression function has two tiers chosen once per process:
- * the portable C rounds below, and on x86-64 the SHA extensions
- * (SHA-NI: `sha256rnds2` / `sha256msg1` / `sha256msg2`) when CPUID
- * reports them. Both compute the same FIPS 180-4 function over the
- * same state and the same `lotus_sha256_k` constants; the tests hold
- * every entry point to `sha256sum` and to each other on whichever
- * tier the machine selects.
+ * The compression function has three tiers chosen once per process:
+ * the portable C rounds below; on x86-64 the SHA extensions (SHA-NI:
+ * `sha256rnds2` / `sha256msg1` / `sha256msg2`) when CPUID reports them;
+ * and on aarch64 Linux and macOS the ARMv8 SHA-256 instructions
+ * (`sha256h` / `sha256h2` / `sha256su0` / `sha256su1`) when the OS
+ * reports them. wasm32 and every other target take the portable rounds.
+ * All compute the same FIPS 180-4 function over the same state and the
+ * same `lotus_sha256_k` constants; the tests hold every entry point to
+ * digests computed elsewhere (FIPS 180-4's examples, Python's hashlib)
+ * on whichever tier the machine selects.
  */
 static const uint32_t lotus_sha256_k[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -32398,11 +32401,85 @@ static void lotus_sha256_blocks_shani(uint32_t h[8],
 }
 #endif
 
+#if defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__))
+#define LOTUS_SHA256_ARMV8 1
+#include <arm_neon.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_SHA2
+#define HWCAP_SHA2 (1UL << 6)
+#endif
+#else
+#include <sys/sysctl.h>
+#endif
+
+/* The ARMv8 SHA-256 instructions (FEAT_SHA256), asked of the OS: the
+ * auxiliary vector's HWCAP on Linux, `hw.optional.arm.FEAT_SHA256` on
+ * macOS (always 1 on Apple Silicon; asked anyway). Any other aarch64 OS
+ * takes the portable rounds. */
+static int lotus_have_armv8_sha2(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        int ok = 0;
+#if defined(__linux__)
+        ok = (getauxval(AT_HWCAP) & HWCAP_SHA2) != 0;
+#else
+        int v = 0;
+        size_t n = sizeof v;
+        ok = sysctlbyname("hw.optional.arm.FEAT_SHA256", &v, &n, NULL, 0) == 0 && v != 0;
+#endif
+        cached = ok;
+    }
+    return cached;
+}
+
+/* The same compression on the ARMv8 SHA-256 instructions. The state is
+ * ABCD / EFGH as `sha256h` / `sha256h2` take it; each pass of the loop is
+ * four rounds, and groups 4..15 of the message schedule are computed from
+ * the previous four with `sha256su0` / `sha256su1`. */
+__attribute__((target("sha2")))
+static void lotus_sha256_blocks_armv8(uint32_t h[8],
+                                      const unsigned char *p,
+                                      size_t nblocks) {
+    uint32x4_t st0 = vld1q_u32(&h[0]);
+    uint32x4_t st1 = vld1q_u32(&h[4]);
+    while (nblocks--) {
+        uint32x4_t abcd = st0, efgh = st1;
+        uint32x4_t m[4];
+        for (int i = 0; i < 4; i++) {
+            m[i] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(p + 16 * i)));
+        }
+#pragma GCC unroll 16
+        for (int g = 0; g < 16; g++) {
+            uint32x4_t t = vaddq_u32(m[g & 3], vld1q_u32(&lotus_sha256_k[4 * g]));
+            uint32x4_t prev = st0;
+            st0 = vsha256hq_u32(st0, st1, t);
+            st1 = vsha256h2q_u32(st1, prev, t);
+            if (g < 12) {
+                /* W[t..t+3] for group g+4 from groups g..g+3. */
+                m[g & 3] = vsha256su1q_u32(vsha256su0q_u32(m[g & 3], m[(g + 1) & 3]),
+                                           m[(g + 2) & 3], m[(g + 3) & 3]);
+            }
+        }
+        st0 = vaddq_u32(st0, abcd);
+        st1 = vaddq_u32(st1, efgh);
+        p += 64;
+    }
+    vst1q_u32(&h[0], st0);
+    vst1q_u32(&h[4], st1);
+}
+#endif
+
 static void lotus_sha256_blocks(uint32_t h[8], const unsigned char *p,
                                 size_t nblocks) {
 #if defined(__x86_64__)
     if (lotus_have_sha_ni()) {
         lotus_sha256_blocks_shani(h, p, nblocks);
+        return;
+    }
+#elif defined(LOTUS_SHA256_ARMV8)
+    if (lotus_have_armv8_sha2()) {
+        lotus_sha256_blocks_armv8(h, p, nblocks);
         return;
     }
 #endif

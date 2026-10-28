@@ -102,6 +102,70 @@ fn main() {
         j = j + 1;
     }
 
+    // Digests computed elsewhere (Python's hashlib over the same bytes),
+    // at the block and padding boundaries: the comparisons above hold the
+    // entry points to each other, and every entry point runs the one
+    // compression tier the machine selected (the x86-64 SHA extensions,
+    // the ARMv8 SHA-256 instructions, or the portable rounds), so only a
+    // digest from outside catches a tier that is wrong on its own.
+    let pinned_sizes = [
+        55,
+        56,
+        63,
+        64,
+        65,
+        119,
+        120,
+        127,
+        128,
+        129,
+        191,
+        192,
+        1000,
+        4096,
+        65599,
+        1048577,
+        3000001
+    ];
+    let pinned = [
+        "2900465fcb533e05a158fd2b3be0e5e3b03740d83060aa3580e0d98a96bf2384",
+        "31454ff48ef36af2f08fd511bdc37d9d5855ac23e992e5ff5445cb6b7674a674",
+        "5f6401b96532c36de4e65beec0409b69b1d181864c8009b7a04f43e5d56350d1",
+        "94eb5de4943613fd048dc93393ab06877405faa39c11f53e9386083339833e7e",
+        "fc518669b6eb4b4dd91827ecacef86689c725bd5bab888fd3b26dbb196eec954",
+        "b0dc41b1a384e2f1203f0351b38fbeaafceef577ce1191d5bfc25da39f721eae",
+        "5df24dd802ac26132ce608dcb5f09841eef039ee0f152acf98d26d17fe4e88e6",
+        "0fe729ff19257bd6fec853acc2ea355f6b34b58e6c0f684c3e188fcdfcd9baae",
+        "0aedd4856f8eba0963627336ad5144a9a7dbe12498e6066f0165fc97d8ddee4c",
+        "4f1757ae4bffbae86d775b831765b75af154d52f7deaa46dd378051a2d3ad57f",
+        "af3693744312c85b48ece39c2b1826d4ce6cd8aa7ff0db2709f1e95b95364077",
+        "0dc88f7329df669b2e5baf95676c6a50dfb5c1f618c853eba2f9090ee6b03a0d",
+        "0bcebe80fd1a990eaf1db275e6d284021de98baafae55bf96de5d67a68f7439b",
+        "ddac8baa8df5bd98a019468948621d336514fa4007e399a6c3e4d2f8c20e6801",
+        "3c943888cb3f79bad2acb70e38c5bafedfe290e71faf58999ab6b20e0fdf885f",
+        "a2a4c80e07ee2813148328dcdfab2cd7d06f5c6a85f26ee8275bc1529cefb96e",
+        "8ad09378dfc65bf62eb2c6e28cf39c5bac2b102ddd3b9fe335f4e6d4fd90d405",
+    ];
+    let mut q = 0;
+    while q < len(pinned_sizes) {
+        let m = data(pinned_sizes[q]);
+        let what = "hashlib's digest of " + to_string(pinned_sizes[q]) + " bytes";
+        std::test::assert_eq_str(hex(std::crypto::sha256(m)), pinned[q], what + ": sha256");
+        let fed = std::crypto::Sha256 { };
+        let mut at = 0;
+        let mut k = 0;
+        while at < len(m) {
+            // pieces of 97 to 12513 bytes, a 0 taken as 1, cut at the end
+            let step = if piece(k) == 0 { 1 } else { piece(k) * 97 };
+            let end = if at + step > len(m) { len(m) } else { at + step };
+            fed.update(std::bytes::slice(m, at, end));
+            at = end;
+            k = k + 1;
+        }
+        std::test::assert_eq_str(hex(fed.finish()), pinned[q], what + ": Sha256 in pieces");
+        q = q + 1;
+    }
+
     // sha256_file: the same digest as the bytes it holds.
     let path = std::io::fs::mktemp("/tmp/hale-sha256-", ".bin") or "";
     std::test::assert(path != "", "a scratch file");
