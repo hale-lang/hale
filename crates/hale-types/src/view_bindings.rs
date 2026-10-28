@@ -210,10 +210,16 @@ pub struct OwnedViews {
     cell_owned: HashSet<u32>,
     /// The arguments, by their call's id and their own span's start, that
     /// a callee which may write through the parameter they land in (or
-    /// one the pass cannot identify) is handed and that are not fresh:
-    /// what the place markers they carry say they may be, as
-    /// [`Handoff`] bits.
+    /// one the pass cannot identify) is handed: what the place markers
+    /// they carry say they may be, as [`Handoff`] bits (none: a fresh
+    /// argument).
     handoffs: HashMap<(u32, u32), u8>,
+    /// The assignments (by id) that write through a parameter of caller
+    /// storage (a record, an enum, a tuple, an array): rooted at the
+    /// parameter itself, with a path below it (`x.b = v`, `x.inner.b =
+    /// v`, `xs[i] = v`). The same writes `Summaries::param_masks` starts
+    /// from; a handle parameter's store is its locus's own.
+    param_writes: HashSet<u32>,
     /// The calls that hand a writer storage of two owners at once: a
     /// place under a field of `self` and (a part of) a parameter, in two
     /// arguments or in one.
@@ -517,6 +523,7 @@ impl OwnedViews {
                 *self.handoffs.entry((c, at)).or_default() |= bits;
             }
         }
+        self.param_writes.extend(other.param_writes.into_iter().filter_map(&id));
         self.mixed_owners.extend(other.mixed_owners);
     }
 
@@ -532,10 +539,28 @@ impl OwnedViews {
     /// fresh result, a local holding one), a callee that only reads it,
     /// or a call the column has no row for.
     pub fn handoff(&self, call: NodeId, arg_start: u32) -> Option<Handoff> {
+        self.writer_arg(call, arg_start).filter(|h| !h.fresh())
+    }
+
+    /// What the argument starting at `arg_start` of the call with this id
+    /// may be, when the callee may write through it, fresh or not: `None`
+    /// for a callee that only reads it, or a call the column has no row
+    /// for. The allocation summary reads it to place what a writer stores
+    /// through its parameters ([`OwnedViews::handoff`] is the non-fresh
+    /// part, which lowering publishes an arena for).
+    pub fn writer_arg(&self, call: NodeId, arg_start: u32) -> Option<Handoff> {
         if call.is_none() {
             return None;
         }
         self.handoffs.get(&(call.0, arg_start)).map(|&bits| Handoff { bits })
+    }
+
+    /// Does the assignment with this id write through a parameter of
+    /// caller storage (`x.b = v` given `x: Bag`; `OwnedViews::param_writes`)?
+    /// What it stores lands in the arena that owns the caller's value,
+    /// not in the body's frame.
+    pub fn writes_param(&self, id: NodeId) -> bool {
+        !id.is_none() && self.param_writes.contains(&id.0)
     }
 
     /// Does the cell-read rule own the binding (a `let`, a `for`, by id)
@@ -1199,6 +1224,7 @@ impl From<Found> for OwnedViews {
             cell_copies: found.cell_copies,
             cell_owned: found.cell_owned,
             handoffs: found.handoffs,
+            param_writes: found.param_writes,
             mixed_owners: found.mixed_owners,
         }
     }
@@ -1214,6 +1240,7 @@ struct Found {
     cell_copies: Vec<CellCopy>,
     cell_owned: HashSet<u32>,
     handoffs: HashMap<(u32, u32), u8>,
+    param_writes: HashSet<u32>,
     mixed_owners: Vec<MixedOwners>,
 }
 
@@ -1816,9 +1843,15 @@ struct Walk<'p, 'a> {
     reads: bool,
     writes_params: bool,
     param_callees: BTreeSet<Callee>,
-    /// The non-fresh arguments handed to a callee that may write through
-    /// them (`OwnedViews::handoffs`).
+    /// The arguments handed to a callee that may write through them,
+    /// with what each may be (`OwnedViews::handoffs`; no bits: fresh).
     handoffs: Vec<(u32, u32, u8)>,
+    /// The assignments writing through a parameter of caller storage
+    /// (`OwnedViews::param_writes`).
+    param_writes: Vec<u32>,
+    /// The parameters of caller storage: a record, an enum, a tuple or
+    /// an array the caller holds, which a write through reaches.
+    storage_params: BTreeSet<String>,
     /// The calls handing a writer two owners' storage
     /// (`OwnedViews::mixed_owners`).
     mixed_owners: Vec<MixedOwners>,
@@ -1932,10 +1965,14 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut handle_only_params = BTreeSet::new();
         let mut scalar_params = BTreeSet::new();
         let mut param_tys = BTreeMap::new();
+        let mut storage_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
             let ty = views.binding(&prm.name).clone();
             let class = p.classify(&ty);
+            if matches!(class, Class::Record | Class::Value | Class::Inline) {
+                storage_params.insert(prm.name.name.clone());
+            }
             if class.surely_handle() {
                 handle_only_params.insert(prm.name.name.clone());
             }
@@ -1972,6 +2009,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             writes_params: false,
             param_callees: BTreeSet::new(),
             handoffs: Vec::new(),
+            param_writes: Vec::new(),
+            storage_params,
             mixed_owners: Vec::new(),
             params: params.iter().map(|prm| prm.name.name.clone()).collect(),
             from_param: Vec::new(),
@@ -2857,6 +2896,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                             if let Some(&i) = self.param_index.get(&target.head.name) {
                                 self.param_mask |= param_bit(i);
                             }
+                            if self.storage_params.contains(&target.head.name) && !id.is_none() {
+                                self.param_writes.push(id.0);
+                            }
                         }
                         _ => {}
                     }
@@ -3677,16 +3719,17 @@ impl<'p, 'a> Walk<'p, 'a> {
             let into = !(bounded && i == 0)
                 && (unknown || !classes.is_empty())
                 && !only(&|c| matches!(c, Class::Scalar | Class::Handle | Class::Form(_)));
-            // A callee that may write through this argument, handed one
-            // that is not fresh: what it may be, by its place markers,
-            // whatever carries it (a block, an `if`, a `match`, an `or`, a
-            // literal holding it), for lowering to publish the arena that
-            // owns it (`OwnedViews::handoffs`).
+            // A callee that may write through this argument: what it may
+            // be, by its place markers, whatever carries it (a block, an
+            // `if`, a `match`, an `or`, a literal holding it), for lowering
+            // to publish the arena that owns it when it is not fresh, and
+            // for the allocation summary to place what the callee stores
+            // through it (`OwnedViews::handoffs`; no bits: fresh).
             let is_receiver = callee_receiver.is_some_and(|r| std::ptr::eq(r, *a));
             if let (true, false, Some(Expr::Call { id, .. })) = (into, is_receiver, call) {
                 let ks = keys.get(i).and_then(|k| k.as_ref());
                 let bits = ks.map_or(0, Handoff::bits_of);
-                if bits != 0 && !id.is_none() {
+                if !id.is_none() {
                     self.handoffs.push((id.0, a.span().start.0, bits));
                 }
                 if let Some(ks) = ks {
@@ -4374,6 +4417,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         for &(c, at, bits) in &self.handoffs {
             *found.handoffs.entry((c, at)).or_default() |= bits;
         }
+        found.param_writes.extend(self.param_writes.iter().copied());
         found.mixed_owners.extend(self.mixed_owners.iter().cloned());
     }
 
@@ -4492,6 +4536,12 @@ impl Handoff {
     pub fn held(&self) -> bool {
         self.bits & Handoff::SELF != 0
     }
+
+    /// It is fresh: a literal, a constructor, a call's fresh result, a
+    /// local holding one ([`OwnedViews::writer_arg`]).
+    pub fn fresh(&self) -> bool {
+        self.bits == 0
+    }
 }
 
 #[cfg(test)]
@@ -4565,7 +4615,8 @@ mod tests {
             }
         "#;
         let bits = |body: &str| -> Vec<u8> {
-            let mut v: Vec<u8> = found(&src.replace("BODY", body)).handoffs.values().copied().collect();
+            let mut v: Vec<u8> =
+                found(&src.replace("BODY", body)).handoffs.values().copied().filter(|&b| b != 0).collect();
             v.sort();
             v
         };
@@ -4585,6 +4636,38 @@ mod tests {
         );
         assert_eq!(bits(r#"fn a(x: Bag) { let r = read_free(x); let q = self.read(x); }"#), [param]);
         assert_eq!(bits(r#"fn a() { let y = Bag { }; self.put(y, "s"); self.put(Bag { }, "s"); }"#), [param]);
+        // A fresh argument handed to a writer is recorded with no bits
+        // (`OwnedViews::writer_arg`), for the allocation summary; a
+        // reader's is not recorded at all.
+        let fresh = |body: &str| found(&src.replace("BODY", body)).handoffs.values().filter(|&&b| b == 0).count();
+        assert_eq!(fresh(r#"fn a() { let y = Bag { }; self.put(y, "s"); self.put(Bag { }, "s"); }"#), 2);
+        assert_eq!(fresh(r#"fn a(x: Bag) { let r = read_free(x); let q = self.read(x); }"#), 0);
+    }
+
+    /// The assignments writing through a parameter of caller storage
+    /// (`OwnedViews::param_writes`): rooted at the parameter, at any
+    /// depth below it; not a write into a local bound from it (the
+    /// local-place rule copies that local), a parameter rebound whole, a
+    /// handle's store, or `self`'s.
+    #[test]
+    fn a_write_rooted_at_a_storage_parameter_is_a_param_write() {
+        let src = r#"
+            type Bag { b: String = ""; }
+            type Outer { bag: Bag = Bag { }; }
+            locus H { params { name: String = ""; } }
+            locus S {
+                params { bag: Bag = Bag { }; }
+                BODY
+            }
+        "#;
+        let n = |body: &str| found(&src.replace("BODY", body)).param_writes.len();
+        assert_eq!(n(r#"fn a(x: Bag, s: String) { x.b = s; }"#), 1);
+        assert_eq!(n(r#"fn a(o: Outer, s: String) { o.bag.b = s; o.bag.b += s; }"#), 2);
+        assert_eq!(n(r#"fn a(xs: [String; 4], s: String) { xs[0] = s; }"#), 1);
+        assert_eq!(n(r#"fn a(x: Bag, s: String) { let y = x; y.b = s; }"#), 0);
+        assert_eq!(n(r#"fn a(x: Bag) { x = Bag { }; }"#), 0);
+        assert_eq!(n(r#"fn a(h: H, s: String) { h.name = s; }"#), 0);
+        assert_eq!(n(r#"fn a(s: String) { self.bag.b = s; }"#), 0);
     }
 
     #[test]

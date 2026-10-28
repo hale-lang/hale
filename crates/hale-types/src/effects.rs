@@ -495,6 +495,9 @@ fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
         alloc_summary::AllocKind::CallResult(callee) => {
             format!("the fresh value `{callee}(..)` returns")
         }
+        alloc_summary::AllocKind::CallStore(callee) => {
+            format!("the value `{callee}(..)` stores through what it is handed")
+        }
     }
 }
 

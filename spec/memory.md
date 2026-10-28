@@ -1254,7 +1254,15 @@ Two correctness invariants make this safe:
      member the bus dispatch invokes is published no arena
      (its snapshot is the payload-arena fallback) and keeps
      its scratch. A shadowing `let` or binder of the name is
-     a local of the method's own.
+     a local of the method's own. The allocation survey
+     places these writes where they land, never in the
+     scratch (`spec/verification.md` § "A write through a
+     parameter is the owner's"): a value stored through such
+     a parameter escapes as `param-store`, judged by the
+     calls that hand the record, and a call handing a writer
+     a record `self` holds stores as `held-store`, kept until
+     the locus dissolves, so a `run()` loop or a handler
+     doing so is reported at the call.
 
 Cost: two mallocs (subregion arena struct + initial 64 KiB
 chunk) and two frees per method call. For typical short

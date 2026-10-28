@@ -140,6 +140,12 @@ pub enum AllocKind {
     /// ([`FnSummary::call_results`]), read only by the leak survey: a
     /// loop that keeps one per iteration is named at the call.
     CallResult(String),
+    /// What a call's callee stores through the arguments it is handed
+    /// (an assignment through its parameter, or a writer it hands the
+    /// parameter on to), placed at the call, where the arena it lands in
+    /// is known: the escape says whose ([`FnSummary::call_stores`]). The
+    /// callee as written.
+    CallStore(String),
 }
 
 impl AllocKind {
@@ -156,6 +162,7 @@ impl AllocKind {
             }
             AllocKind::CellCopy(reason) => format!("cell-copy ({reason})"),
             AllocKind::CallResult(callee) => format!("fresh value `{callee}(..)` returns"),
+            AllocKind::CallStore(callee) => format!("store through `{callee}(..)`"),
         }
     }
 }
@@ -465,12 +472,35 @@ fn type_expr_name(te: &TypeExpr) -> Option<String> {
 /// arena/subregion reclaims it). The escaping variants persist past the
 /// scope and so accumulate in the owner across invocations — the leak
 /// channel the bound solver cares about.
+///
+/// Two escapes come from a write through a parameter (spec/memory.md §
+/// "A method's write through a record parameter"): what a body stores
+/// through a parameter of caller storage lands in the arena that owns
+/// the caller's value, never in the body's frame, and nothing recycles it
+/// when the body returns (the value it replaces is not retired).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Escape {
     Local,
     Returned,
     StoredToSelf,
     Sent,
+    /// Stored into caller-owned storage through a parameter: an
+    /// assignment rooted at a parameter of caller storage (`x.b = v`,
+    /// `x.inner.b = v`, `xs[i] = v`; the owned-view column's
+    /// `writes_param`), or a call handing a writer (a callee that stores
+    /// through its parameters, transitively) one of the body's own
+    /// parameters or a place the pass cannot name (the column's
+    /// hand-offs). It lives as long as the record's owner, which is
+    /// above the body: its growth across calls is judged at each call
+    /// that hands the record ([`AllocSummary::call_stores`]), its growth
+    /// within the body's own loop here.
+    ParamStore,
+    /// Stored into the locus's own arena through a record `self` holds:
+    /// a call handing a writer a place under a field of `self`, and
+    /// nothing of a parameter's (the column's hand-offs), whose writes
+    /// lowering lands in the locus arena. It lives until the locus
+    /// dissolves, as a store into `self` does, but is not retired.
+    HeldStore,
 }
 
 impl Escape {
@@ -480,6 +510,8 @@ impl Escape {
             Escape::Returned => "escaping=return",
             Escape::StoredToSelf => "escaping=self-store",
             Escape::Sent => "escaping=bus-send",
+            Escape::ParamStore => "escaping=param-store",
+            Escape::HeldStore => "escaping=held-store",
         }
     }
     /// Does this value survive its method's return — i.e. persist across
@@ -502,8 +534,14 @@ impl Escape {
     /// scratch-local opens no scratch, its body allocates into its
     /// caller's arena, and the boundary there is the caller's
     /// (`ReclaimScope`, E3b).
+    ///
+    /// A `HeldStore` persists in the locus as a `StoredToSelf` does. A
+    /// `ParamStore` survives its method's return too, but the record's
+    /// owner is above the body: whether it accumulates across calls is
+    /// the question each call that hands the record answers, by what it
+    /// hands (its own site at the call, [`AllocSummary::call_stores`]).
     fn persists_across_calls(&self) -> bool {
-        matches!(self, Escape::StoredToSelf | Escape::Returned)
+        matches!(self, Escape::StoredToSelf | Escape::Returned | Escape::HeldStore)
     }
 }
 
@@ -1082,6 +1120,27 @@ pub struct FnSummary {
     /// that count sites count literals, and these are read only by the
     /// leak survey ([`AllocSummary::leak_sites`]).
     pub call_results: Vec<CallResult>,
+    /// What the body's calls store through the records they hand a
+    /// writer, one site per call ([`AllocKind::CallStore`]): a callee
+    /// that stores an allocation through a parameter, directly or by
+    /// handing it on ([`FnSummary::stores_through_params`]), lands it in
+    /// the arena the call publishes. The escape is whose that arena is,
+    /// by the owned-view column's hand-offs, as lowering reads them: a
+    /// record `self` holds and nothing of a parameter's, the locus's
+    /// (`HeldStore`); one of the body's parameters or a place the pass
+    /// cannot name, the caller's (`ParamStore`); only fresh arguments,
+    /// this frame's (`Local`). Not in `sites`: the budgets and
+    /// certificates count the callee's own sites at the callee; these are
+    /// read by the leak survey and the dump.
+    pub call_stores: Vec<AllocSite>,
+    /// The calls handing a writer anything, before the summary knows
+    /// which callees store through their parameters: `call_stores`'
+    /// candidates.
+    pub(crate) store_calls: Vec<AllocSite>,
+    /// The body may store an allocation through a parameter into the
+    /// arena that owns the caller's value: a `ParamStore` site of its
+    /// own, or a call handing a parameter on to a callee that does.
+    pub stores_through_params: bool,
     /// GH #1490 (step 4): what each publish of the body carries.
     pub(crate) sends: Vec<Taint>,
     /// What a free fn's body allocates into, as lowering routes it
@@ -1569,7 +1628,7 @@ impl AllocSummary {
         }
         let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
         let own_key = |k: &FnKey| is_own(k);
-        AllocSummary {
+        let mut out = AllocSummary {
             mixed_owner_calls: self.mixed_owner_calls.clone(),
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             flow_loci: self.flow_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
@@ -1596,7 +1655,12 @@ impl AllocSummary {
             // Classified over the stdlib's declarations whether or not
             // the copy's rows are beside: the program's set either way.
             scratch_local: self.scratch_local.clone(),
-        }
+        };
+        // What the program's calls store through the records they hand,
+        // judged over its own rows: a writer of the copy is a call the
+        // program alone does not resolve.
+        resolve_call_stores(&mut out);
+        out
     }
 }
 
@@ -1905,7 +1969,7 @@ impl AllocSummary {
                 if self.eager_only_loci.contains(l)
                     && matches!(
                         site.escape,
-                        Escape::Local | Escape::StoredToSelf
+                        Escape::Local | Escape::StoredToSelf | Escape::HeldStore
                     )
                 {
                     return SiteVerdict::PerIterationReclaim;
@@ -2082,7 +2146,9 @@ impl AllocSummary {
             if skip_unbounded && self.unbounded_fns.contains(&f.key) {
                 continue;
             }
-            for s in &f.sites {
+            // A call's store through what it hands a writer is judged at
+            // the call, where the arena it lands in is known.
+            for s in f.sites.iter().chain(&f.call_stores) {
                 if self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers) == SiteVerdict::AccumulatesUnbounded {
                     let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded)
                         && !returned_loop_bounded_by_activation(s, scratchless.contains(&f.key))
@@ -2230,6 +2296,22 @@ impl AllocSummary {
                     s.span.start.0,
                     s.span.end.0,
                     field,
+                    flag
+                ));
+            }
+            // What a call stores through the records it hands a writer,
+            // with the escape of the arena it lands in.
+            for s in &f.call_stores {
+                let v = self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers);
+                let flag = if matches!(v, SiteVerdict::AccumulatesUnbounded) { "  <-- LEAK" } else { "" };
+                out.push_str(&format!(
+                    "    store {:<16} {:<20} {:<22} {:<22} @{}..{}{}\n",
+                    s.kind.label(),
+                    s.escape.label(),
+                    v.label(),
+                    s.reclaim.label(),
+                    s.span.start.0,
+                    s.span.end.0,
                     flag
                 ));
             }
@@ -3420,7 +3502,8 @@ pub fn summarize_within(
                 ids: &crate::snapshot::Snapshot,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
-        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
+        let column = if is_stdlib_copy(ids) { &views.stdlib } else { &views.program };
+        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids, column) };
         let field_types = enclosing_locus
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
@@ -3474,8 +3557,10 @@ pub fn summarize_within(
             let_call: None,
             in_place_sites: Vec::new(),
             call_results: Vec::new(),
+            store_calls: Vec::new(),
+            views: column,
             heap_rets: &heap_rets,
-            claimed: (Vec::new(), Vec::new()),
+            claimed: (Vec::new(), Vec::new(), Vec::new()),
             sends: Vec::new(),
             retired_init: false,
             cell_copies: cell_copies.get(&scope_index(ids)).unwrap_or(&no_cell_copies),
@@ -3498,6 +3583,9 @@ pub fn summarize_within(
                 decl_index,
                 in_place_sites: w.in_place_sites,
                 call_results: w.call_results,
+                stores_through_params: false,
+                call_stores: Vec::new(),
+                store_calls: w.store_calls,
                 sends: w.sends,
                 frame: None,
             },
@@ -4002,9 +4090,77 @@ pub fn summarize_within(
     let param_order: BTreeMap<FnKey, Vec<String>> =
         bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
     resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
+    resolve_call_stores(&mut summary);
     // The one-owner rule's refusals (`check.rs`), the program's own calls.
     summary.mixed_owner_calls = views.program.mixed_owners().to_vec();
     Ok(summary)
+}
+
+/// What each call stores through the records it hands a writer
+/// ([`FnSummary::call_stores`]). A body stores through its parameters
+/// ([`FnSummary::stores_through_params`]) when it has a `ParamStore` site
+/// of its own, or a call that hands a parameter on (a `ParamStore`
+/// candidate) to a callee that does: the least fixpoint over the
+/// resolved calls, an interface dispatch's alternatives each. Then every
+/// candidate whose callee stores through its parameters is a site of the
+/// call. A callee the summary cannot resolve stores nothing it knows of.
+fn resolve_call_stores(summary: &mut AllocSummary) {
+    let callees = |f: &FnSummary, at: Span| -> Vec<FnKey> {
+        f.calls
+            .iter()
+            .filter(|c| c.span == at)
+            .filter_map(|c| match &c.callee {
+                Callee::Resolved(k) => Some(k.clone()),
+                Callee::Unresolved(_) => None,
+            })
+            .collect()
+    };
+    let own_store = |f: &FnSummary| {
+        f.sites.iter().chain(f.call_results.iter().map(|r| &r.site)).any(|s| s.escape == Escape::ParamStore)
+    };
+    let mut storing: BTreeSet<FnKey> = summary.fns.values().filter(|f| own_store(f)).map(|f| f.key.clone()).collect();
+    loop {
+        let mut next = Vec::new();
+        for f in summary.fns.values().filter(|f| !storing.contains(&f.key)) {
+            let relays = f
+                .store_calls
+                .iter()
+                .filter(|c| c.escape == Escape::ParamStore)
+                .any(|c| callees(f, c.span).iter().any(|k| storing.contains(k)));
+            if relays {
+                next.push(f.key.clone());
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        storing.extend(next);
+    }
+    // A candidate whose call resolves to nothing stores nothing the
+    // summary knows of, whatever the column says of its arguments.
+    for f in summary.fns.values_mut() {
+        let calls = &f.calls;
+        f.store_calls.retain(|c| calls.iter().any(|e| e.span == c.span && matches!(e.callee, Callee::Resolved(_))));
+    }
+    let stores: BTreeMap<FnKey, Vec<AllocSite>> = summary
+        .fns
+        .values()
+        .map(|f| {
+            let kept = f
+                .store_calls
+                .iter()
+                .filter(|c| callees(f, c.span).iter().any(|k| storing.contains(k)))
+                .cloned()
+                .collect();
+            (f.key.clone(), kept)
+        })
+        .collect();
+    for (k, kept) in stores {
+        if let Some(f) = summary.fns.get_mut(&k) {
+            f.stores_through_params = storing.contains(&k);
+            f.call_stores = kept;
+        }
+    }
 }
 
 /// GH #1490 (step 4): each locus's bus handlers.
@@ -5063,6 +5219,35 @@ pub fn unbounded_alloc_diags(
         .iter()
         .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
+            // A value written through a parameter (or through a record
+            // `self` holds, handed to a writer) lives with the record's
+            // owner and is never recycled when the writer returns.
+            if matches!(ls.escape, Escape::ParamStore | Escape::HeldStore) {
+                let whose = if ls.escape == Escape::HeldStore {
+                    "the locus's own arena (the record is one `self` holds)"
+                } else {
+                    "the arena that owns the caller's record"
+                };
+                let where_ = match ls.reason {
+                    LeakReason::InUnboundedLoop => "inside an unbounded loop",
+                    _ => "in a fn invoked unboundedly (a per-message bus handler, or reached through a call inside an unbounded loop)",
+                };
+                return Diag::warn(
+                    ls.span,
+                    format!(
+                        "unbounded allocation: this {} {where_} is written through a parameter into \
+                         {whose}, not into `{}`'s frame — a write through a parameter is not \
+                         recycled when the writer returns, and the value it replaces is not \
+                         retired — so it accumulates until that owner dissolves (or acknowledge an \
+                         intentionally-/domain-bounded shape with `@unbounded` on the enclosing fn). \
+                         Bound the loop; hand the writer a record the iteration builds, which the \
+                         iteration's frame owns; or store into the field of `self` directly \
+                         (`self.bag.b = v`), a store that recycles the String it replaces.",
+                        ls.kind.label(),
+                        ls.owner.display()
+                    ),
+                );
+            }
             let where_ = match ls.reason {
                 LeakReason::InUnboundedLoop => "inside an unbounded loop",
                 LeakReason::InvokedUnboundedly => {
@@ -5802,12 +5987,17 @@ struct Walker<'a> {
     in_place_sites: Vec<AllocSite>,
     /// [`FnSummary::call_results`].
     call_results: Vec<CallResult>,
+    /// `FnSummary::store_calls`.
+    store_calls: Vec<AllocSite>,
+    /// The owned-view column of this body's scope: which assignments
+    /// write through a parameter, and what each call hands a writer.
+    views: &'a crate::view_bindings::OwnedViews,
     /// The fns and methods whose declared return is a String or Bytes:
     /// a call to one returns a fresh value into the caller's arena.
     heap_rets: &'a BTreeSet<FnKey>,
-    /// Which `sites` and `call_results` an inner loop already judged
-    /// ([`Walker::judge_iteration`]).
-    claimed: (Vec<bool>, Vec<bool>),
+    /// Which `sites`, `call_results` and `store_calls` an inner loop
+    /// already judged ([`Walker::judge_iteration`]).
+    claimed: (Vec<bool>, Vec<bool>, Vec<bool>),
     /// `FnSummary::sends`.
     sends: Vec<Taint>,
     /// GH #1490 (step 4): the expression walked next is a whole field
@@ -6022,7 +6212,7 @@ impl<'a> Walker<'a> {
     /// the body is (`reclaims`) and the value stays in the iteration (a
     /// `Local` literal, concatenation or call result; a locus literal has
     /// an arena of its own, a cell copy is made before the body).
-    fn judge_iteration(&mut self, marks: (usize, usize), reclaims: bool) {
+    fn judge_iteration(&mut self, marks: (usize, usize, usize), reclaims: bool) {
         let eligible = |site: &AllocSite, locus_types: &BTreeSet<String>| {
             site.escape == Escape::Local
                 && match &site.kind {
@@ -6031,7 +6221,8 @@ impl<'a> Walker<'a> {
                     | AllocKind::ArrayRepeat
                     | AllocKind::BytesLit
                     | AllocKind::StringConcat
-                    | AllocKind::CallResult(_) => true,
+                    | AllocKind::CallResult(_)
+                    | AllocKind::CallStore(_) => true,
                     AllocKind::CollectionInsert(_) | AllocKind::CellCopy(_) => false,
                 }
         };
@@ -6049,6 +6240,12 @@ impl<'a> Walker<'a> {
                 && eligible(&self.call_results[i].site, locus_types)
             {
                 self.call_results[i].site.iteration_reclaimed = true;
+            }
+        }
+        self.claimed.2.resize(self.store_calls.len(), false);
+        for i in marks.2..self.store_calls.len() {
+            if !std::mem::replace(&mut self.claimed.2[i], true) && reclaims && eligible(&self.store_calls[i], locus_types) {
+                self.store_calls[i].iteration_reclaimed = true;
             }
         }
     }
@@ -6921,8 +7118,14 @@ impl<'a> Walker<'a> {
                 {
                     self.self_replace = Some((value.span(), *span));
                 }
+                // A write through a parameter of caller storage (the
+                // owned-view column's `writes_param`, the writes the
+                // positional summaries start from) stores into the arena
+                // that owns the caller's value.
                 let mut esc = if target.head.name == "self" {
                     Escape::StoredToSelf
+                } else if self.views.writes_param(*id) {
+                    Escape::ParamStore
                 } else {
                     self.escaping.of_assign(*id)
                 };
@@ -7083,7 +7286,7 @@ impl<'a> Walker<'a> {
                 let iter_t = self.taint_of(iter);
                 self.taints.push(BTreeMap::from([(name.name.clone(), iter_t)]));
                 let reclaims = self.loop_reclaims(body);
-                let marks = (self.sites.len(), self.call_results.len());
+                let marks = (self.sites.len(), self.call_results.len(), self.store_calls.len());
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.judge_iteration(marks, reclaims);
                 self.taints.pop();
@@ -7120,7 +7323,7 @@ impl<'a> Walker<'a> {
                 self.infinite_stack.push(infinite);
                 self.loops_as_written += 1;
                 let reclaims = self.loop_reclaims(body);
-                let marks = (self.sites.len(), self.call_results.len());
+                let marks = (self.sites.len(), self.call_results.len(), self.store_calls.len());
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.judge_iteration(marks, reclaims);
                 self.loops_as_written -= 1;
@@ -7373,8 +7576,8 @@ impl<'a> Walker<'a> {
                 self.walk_expr(right, depth, Escape::Local);
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
-            Expr::Call { callee, args, span, .. } => {
-                self.record_call(callee, args, *span, depth, escape);
+            Expr::Call { callee, args, span, id } => {
+                self.record_call(callee, args, *span, *id, depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }
@@ -7442,7 +7645,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, depth: u32, escape: Escape) {
+    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, id: NodeId, depth: u32, escape: Escape) {
         let arity = args.len();
         // GH #1490 (step 4): what each argument carries, for the callee's
         // parameters' provenance, and whether the call is on `self`.
@@ -7610,12 +7813,45 @@ impl<'a> Walker<'a> {
                 self_call,
             });
         }
+        // A call handing a callee that may write through them any
+        // arguments (the owned-view column's hand-offs, fresh ones
+        // included): what the callee stores through them lands in the
+        // arena the call publishes, as lowering picks it
+        // (`call_site_arena`): the locus's, when every non-fresh one may
+        // only be a record `self` holds; the caller's, when one may be a
+        // parameter or a place the pass cannot name; this frame's when
+        // all are fresh. A candidate until the summary knows whether the
+        // callee stores anything through its parameters
+        // ([`FnSummary::call_stores`]).
+        let handed: Vec<crate::view_bindings::Handoff> =
+            args.iter().filter_map(|a| self.views.writer_arg(id, a.span().start.0)).collect();
+        if !handed.is_empty() {
+            let placed: Vec<_> = handed.iter().filter(|h| !h.fresh()).collect();
+            let store = if placed.is_empty() {
+                Escape::Local
+            } else if placed.iter().any(|h| h.held()) && !placed.iter().any(|h| h.param()) {
+                Escape::HeldStore
+            } else {
+                Escape::ParamStore
+            };
+            // The callee as written, which the program alone spells the
+            // same whether or not it resolves the call.
+            let written = match callee {
+                Expr::Ident(i) => i.name.clone(),
+                Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+                Expr::Field { name, .. } | Expr::Path2 { name, .. } => name.name.clone(),
+                _ => "<expr>".to_string(),
+            };
+            let site = self.site(AllocKind::CallStore(written), store, depth, span);
+            self.store_calls.push(site);
+        }
         // A call in a loop of a locus member whose callee returns a fresh
         // String or Bytes leaves it in this frame's arena (the caller
         // arena it publishes), one per iteration unless the iteration is
         // reclaimed (`crate::iteration_reclaim`, which only a locus
-        // member's frame has).
-        if depth > 0 && escape == Escape::Local && self.enclosing_locus.is_some() {
+        // member's frame has). Written through a parameter, the value is
+        // stored into the caller's record instead, one per iteration.
+        if depth > 0 && matches!(escape, Escape::Local | Escape::ParamStore) && self.enclosing_locus.is_some() {
             if let Callee::Resolved(key) = &resolved {
                 if self.heap_rets.contains(key) {
                     let site = self.site(AllocKind::CallResult(key.fn_name.clone()), escape, depth, span);
@@ -8130,6 +8366,7 @@ impl Escaping<'_> {
 fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
+    views: &crate::view_bindings::OwnedViews,
 ) -> BTreeMap<SiteId, Escape> {
     let mut out: BTreeMap<SiteId, Escape> = BTreeMap::new();
     // `let x = y;`: x's statement and the declaration y names.
@@ -8138,6 +8375,13 @@ fn collect_escaping_decls(
         Flow::Escapes(i, esc) => {
             if let Some(d) = ids.declaration_of(i.id) {
                 note_obligation(&mut out, d, esc);
+            }
+        }
+        // A name written through a parameter (`x.b = v`): the owned-view
+        // column says which assignments do.
+        Flow::Written { assign, value } => {
+            if let (true, Some(d)) = (views.writes_param(assign), ids.declaration_of(value.id)) {
+                note_obligation(&mut out, d, Escape::ParamStore);
             }
         }
         Flow::Alias { let_id, from } => {
@@ -8158,7 +8402,7 @@ fn collect_escaping_decls(
         let mut changed = false;
         for (alias, source) in &aliases {
             match out.get(alias).copied() {
-                Some(esc @ (Escape::Returned | Escape::StoredToSelf)) => {
+                Some(esc @ (Escape::Returned | Escape::StoredToSelf | Escape::ParamStore)) => {
                     let before = out.get(source).copied();
                     note_obligation(&mut out, *source, esc);
                     changed |= out.get(source).copied() != before;
@@ -8183,7 +8427,7 @@ fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
         (None, e) => {
             out.insert(d, e);
         }
-        (Some(Escape::Sent), e @ (Escape::Returned | Escape::StoredToSelf)) => {
+        (Some(Escape::Sent), e @ (Escape::Returned | Escape::StoredToSelf | Escape::ParamStore)) => {
             out.insert(d, e);
         }
         _ => {}
@@ -8195,6 +8439,10 @@ fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
 enum Flow<'e> {
     Escapes(&'e hale_syntax::ast::Ident, Escape),
     Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
+    /// A name assigned into a path below a binding that is not `self`
+    /// (`x.b = v`): an escape when the assignment writes through a
+    /// parameter (`OwnedViews::writes_param`).
+    Written { assign: hale_syntax::ast::NodeId, value: &'e hale_syntax::ast::Ident },
 }
 
 type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
@@ -8216,6 +8464,9 @@ fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
         Stmt::Send { value, .. } => note_escape(value, Escape::Sent, out),
         Stmt::Assign { target, value, .. } if target.head.name == "self" => {
             note_escape(value, Escape::StoredToSelf, out)
+        }
+        Stmt::Assign { target, value: Expr::Ident(value), id, .. } if !target.tail.is_empty() => {
+            out(Flow::Written { assign: *id, value })
         }
         Stmt::If(if_stmt) => collect_escaping_in_if(if_stmt, out),
         Stmt::Match(m) => {
@@ -10770,5 +11021,164 @@ pub(crate) mod tests {
         let s = summarize(src);
         let marked: Vec<bool> = fns(&s, None, "g").calls.iter().map(|c| c.unresolved_local).collect();
         assert_eq!(marked, [true, true, true, true, true, true, true, true, false, false, false, false]);
+    }
+
+    /// A write through a parameter (spec/memory.md § "A method's write
+    /// through a record parameter"): the locus, its writers, and `BODY`.
+    const WRITERS: &str = r#"
+        type Bag { b: String = ""; n: Int = 0; }
+        type Outer { bag: Bag = Bag { }; }
+        locus S {
+            params { bag: Bag = Bag { }; outer: Outer = Outer { }; }
+            bus { subscribe "t" as on_t of type String; }
+            fn put(x: Bag, s: String) { x.b = s + "!"; }
+            fn read(x: Bag) -> String { return x.b; }
+            fn relay(x: Bag, s: String) { self.put({ x }, s); }
+            BODY
+        }
+    "#;
+
+    fn writers(body: &str) -> AllocSummary {
+        summarize(&WRITERS.replace("BODY", body))
+    }
+
+    /// What a body's own sites escape as, in body order.
+    fn site_escapes(s: &AllocSummary, name: &str) -> Vec<Escape> {
+        fns(s, Some("S"), name).sites.iter().map(|x| x.escape).collect()
+    }
+
+    /// The final verdict of each of a body's call stores, with its escape.
+    fn store_verdicts(s: &AllocSummary, name: &str) -> Vec<(Escape, SiteVerdict)> {
+        let f = fns(s, Some("S"), name);
+        let unbounded = s.unbounded_invoked();
+        let scratchless = s.scratchless_longlived();
+        let repeated = s.repeated_in_longlived(&scratchless);
+        let callers = s.callers();
+        f.call_stores
+            .iter()
+            .map(|x| (x.escape, s.final_verdict(&f.key, x, &unbounded, &scratchless, &repeated, &callers)))
+            .collect()
+    }
+
+    /// The leak sites of one body: escape and reason.
+    fn leaks_in(s: &AllocSummary, name: &str) -> Vec<(Escape, LeakReason)> {
+        s.leak_sites().into_iter().filter(|l| l.owner.fn_name == name).map(|l| (l.escape, l.reason)).collect()
+    }
+
+    /// A value written through a parameter is stored into the caller's
+    /// record, in the arena that owns it: `ParamStore`, whether it is the
+    /// value written or a binding of it. It survives the writer's return,
+    /// so a loop of the writer's own grows it; across calls the owner
+    /// decides, at the call (the writer invoked unboundedly with a record
+    /// its caller builds fresh accumulates nothing).
+    #[test]
+    fn a_direct_write_through_a_parameter_is_a_param_store() {
+        let s = writers(
+            r#"fn let_bound(x: Bag, s: String) { let t = s + "?"; x.b = t; }
+               fn appended(x: Bag, s: String) { x.b += s; }
+               fn fill(x: Bag, xs: [String]) { for v in xs { x.b = v + "!"; } }
+               fn refill(x: Bag, xs: [String]) { for v in xs { x.b = self.read(x); } }
+               fn on_t(m: String) { let b = Bag { }; self.put(b, m); }"#,
+        );
+        assert_eq!(site_escapes(&s, "put"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "let_bound"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "appended"), [Escape::ParamStore]);
+        assert!(fns(&s, Some("S"), "put").stores_through_params);
+        assert!(!fns(&s, Some("S"), "read").stores_through_params);
+        // Once per call of the writer, and nothing across calls at the writer.
+        assert!(s.unbounded_invoked().contains(&named(&s, Some("S"), "put")));
+        assert_eq!(leaks_in(&s, "put"), []);
+        // The writer's own loop: every iteration's value stays with the record.
+        assert_eq!(leaks_in(&s, "fill"), [(Escape::ParamStore, LeakReason::InUnboundedLoop)]);
+        // A fresh String a call returns, written through the parameter.
+        assert_eq!(leaks_in(&s, "refill"), [(Escape::ParamStore, LeakReason::InUnboundedLoop)]);
+        // A fresh record the handler builds dies with the handler's frame.
+        assert_eq!(store_verdicts(&s, "on_t"), [(Escape::Local, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(leaks_in(&s, "on_t"), []);
+    }
+
+    /// A nested path below the parameter, a field's field or an element,
+    /// is the same write; a local bound from the parameter is the
+    /// frame's own copy (the local-place rule), and `self`'s field is a
+    /// store into `self`.
+    #[test]
+    fn a_nested_write_through_a_parameter_is_a_param_store() {
+        let s = writers(
+            r#"fn deep(o: Outer, s: String) { o.bag.b = s + "!"; }
+               fn elem(xs: [String; 4], s: String) { xs[0] = s + "!"; }
+               fn copied(x: Bag, s: String) { let y = x; y.b = s + "!"; }
+               fn held(s: String) { self.bag.b = s + "!"; }"#,
+        );
+        assert_eq!(site_escapes(&s, "deep"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "elem"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "copied"), [Escape::Local]);
+        assert_eq!(site_escapes(&s, "held"), [Escape::StoredToSelf]);
+        assert!(!fns(&s, Some("S"), "copied").stores_through_params);
+    }
+
+    /// A relay that hands its parameter on to a writer through a carrier
+    /// (`self.put({ x }, s)`) stores through it too: a `ParamStore` at
+    /// its call, and its own callers place the store by what they hand
+    /// it. A reader handed the record stores nothing.
+    #[test]
+    fn a_relay_through_a_carrier_stores_through_its_parameter() {
+        let s = writers(
+            r#"fn twice(x: Bag, s: String) { self.relay(if s == "" { x } else { x }, s); }
+               fn on_t(m: String) { self.twice(self.bag, m); let r = self.read(self.bag); }"#,
+        );
+        assert!(fns(&s, Some("S"), "relay").stores_through_params);
+        assert!(fns(&s, Some("S"), "twice").stores_through_params);
+        assert_eq!(store_verdicts(&s, "relay"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(store_verdicts(&s, "twice"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(leaks_in(&s, "relay"), []);
+        // The handler hands the chain a record `self` holds: each delivery
+        // stores one more value into the locus arena.
+        assert_eq!(store_verdicts(&s, "on_t"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
+        assert_eq!(leaks_in(&s, "on_t"), [(Escape::HeldStore, LeakReason::InvokedUnboundedly)]);
+    }
+
+    /// A record `self` holds, handed to a writer, takes the write into
+    /// the locus arena (`HeldStore`), which lives until the locus
+    /// dissolves and is not retired: once in a one-shot hook, growth in a
+    /// handler. Handed with a parameter, the write is the caller's
+    /// (`ParamStore`).
+    #[test]
+    fn a_self_held_record_handed_to_a_writer_is_a_held_store() {
+        let s = writers(
+            r#"birth() { self.put(self.bag, "start"); }
+               fn on_t(m: String) { self.put(self.outer.bag, m); }
+               fn mine(x: Bag, s: String) { self.put(x, s); }"#,
+        );
+        assert_eq!(store_verdicts(&s, "birth"), [(Escape::HeldStore, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(leaks_in(&s, "birth"), []);
+        assert_eq!(store_verdicts(&s, "on_t"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
+        assert_eq!(leaks_in(&s, "on_t"), [(Escape::HeldStore, LeakReason::InvokedUnboundedly)]);
+        assert_eq!(store_verdicts(&s, "mine"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+    }
+
+    /// The `run()` loop handing a writer a record `self` holds grows the
+    /// locus arena once per iteration, and the advisory (`hale verify`)
+    /// names it at the call, not at the writer. A method's loop handing
+    /// it a record each iteration builds keeps the store in the
+    /// iteration.
+    #[test]
+    fn a_run_loop_handing_a_held_record_to_a_writer_is_flagged_at_the_call() {
+        let src = WRITERS.replace(
+            "BODY",
+            r#"run() { while true { self.put(self.bag, "x"); } }
+               fn each(xs: [String]) { for v in xs { let b = Bag { }; self.put(b, v); } }"#,
+        );
+        let s = summarize(&src);
+        assert_eq!(store_verdicts(&s, "run"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
+        assert_eq!(store_verdicts(&s, "each"), [(Escape::Local, SiteVerdict::PerIterationReclaim)]);
+        assert_eq!(leaks_in(&s, "put"), []);
+        assert_eq!(leaks_in(&s, "each"), []);
+        let (program, ids) = minted(&src);
+        let diags = plain_advisory(&[&program], &ids, &[], true);
+        let call = src.find("self.put(self.bag").expect("the call") as u32;
+        let at: Vec<u32> = diags.iter().map(|d| d.span.start.0).collect();
+        assert_eq!(at, [call], "{diags:?}");
+        assert!(diags[0].message.contains("store through `put(..)`"), "{}", diags[0].message);
+        assert!(diags[0].message.contains("the locus's own arena"), "{}", diags[0].message);
     }
 }

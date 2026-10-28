@@ -2199,6 +2199,42 @@ assume the others in a build:
   method (4.6 MB), and ~96 MB consumed directly in `run`'s loop
   (`alloc_model_rss.rs::a_returned_loop_accumulator_reclaims_with_its_activation`).
 
+  **A write through a parameter is the owner's.** A value a body stores
+  through a parameter of caller storage (a record, an enum, a tuple, an
+  array: `x.b = v`, `x.inner.b = v`, `xs[i] = v`, `x.b += v`, or a binding
+  of a value written so) lands in the arena that owns the caller's
+  value, not in the body's frame, and nothing recycles it when the body
+  returns (`spec/memory.md` § invariant 3 of the method scratch): its
+  sites escape as `escaping=param-store`, never `local`. Which writes
+  these are is the owned-view column's (`OwnedViews::writes_param`: an
+  assignment rooted at such a parameter, the writes its positional write
+  summaries start from), so a local bound from the parameter, which the
+  local-place rule copies, is the frame's own, and a handle's store is
+  its locus's. Within the body a `param-store` site is judged as any
+  escaping one: in an unbounded loop of the body's own it accumulates
+  (the record outlives the loop). Across calls the owner decides, so the
+  writer's own site is not judged invoked unboundedly; each call that
+  hands a writer is. A callee stores through its parameters when it has
+  such a site, or hands a parameter on (by name or through a carrier) to
+  a callee that does, to a fixpoint over the resolved calls; a call
+  handing one any argument it may write through (the column's
+  hand-offs, fresh ones included) is a site of its own, `store through
+  `<callee>(..)``, placed at the call (the dump's `store` lines, which
+  the leak survey reads and `@budget` does not: the callee's own sites
+  are counted there). Its escape is the arena lowering publishes for the
+  call (`call_site_arena`): `escaping=held-store` when every argument
+  that is not fresh may only be a record `self` holds — the locus's own
+  arena, until the locus dissolves, and not retired as a `self.bag.b =
+  v` store is, so it persists across calls as a store to `self` does;
+  `escaping=param-store` when one may be a parameter or a place the
+  pass cannot name — the caller's, judged again where that caller is
+  called; `local` when all are fresh — this frame's. So a handler or a
+  `run()` loop handing a writer `self.bag` is reported at the call, and
+  the same call handed a record its iteration builds is not. A write of
+  a value the body did not allocate (`x.b = s`) is copied into the
+  owner's arena by lowering but is no site, as a `self.b = s` store's
+  copy is none.
+
   **A flow's `run()` is one activation when nothing in it repeats
   without a bound.** A flow child's arena is reclaimed when its `run()`
   returns (`spec/semantics.md` § "`release(c)` and flow children"), so a

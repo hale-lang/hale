@@ -1581,6 +1581,13 @@ fn main() { let s = Sink { }; }
 - **One owner is fine through any carrier.** `self.put({ x }, p)` and
   `put_free(if c { self.held } else { self.outer.bag }, p)` each hand one
   owner's storage, and each callee's writes land in that owner's arena.
+- **A held record handed to a writer per message grows the locus.**
+  The write is a clone into the locus's arena, and the value it replaces
+  is not recycled, so `self.put(self.held, p)` in a handler or a `run()`
+  loop keeps every value until the locus dissolves; the survey reports
+  it at the call. Write the held record through `self` (`self.held.b =
+  p`), a store that recycles what it replaces, or hand the writer a
+  record the iteration builds. **[warning]**
 
 ## 4. Speed rules
 

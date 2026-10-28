@@ -109,6 +109,7 @@ fn describe_kind(kind: &AllocKind) -> String {
             format!("a copy of a value read from a form's cell ({reason})")
         }
         AllocKind::CallResult(callee) => format!("the fresh value `{callee}(..)` returns"),
+        AllocKind::CallStore(callee) => format!("the value `{callee}(..)` stores through what it is handed"),
     }
 }
 
