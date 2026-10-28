@@ -2616,7 +2616,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
                 .output();
         }
         let names: Vec<String> = reflexes::habitat_defaults().into_iter().map(|r| r.name).chain(reflexes::declared(&manifest).unwrap_or_default().into_iter().map(|r| r.name)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        Some(format!("{:<8}{} watched by its senses' store ({}; the operator face's alerts)", "reflexes", names.len(), names.join(", ")))
+        Some(format!("reflexes {} watched by its senses' store ({}; the operator face's alerts)", names.len(), names.join(", ")))
     } else {
         None
     };
