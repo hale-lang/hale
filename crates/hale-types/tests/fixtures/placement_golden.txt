@@ -4141,7 +4141,7 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 row	Probe@main1	Probe	main	default
 shared	dynamic	sites in the seed #9f0a18e6
 
-== crates/hale-codegen/tests/loop_iteration_reclaim.rs#5fd5ecf3
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#e20c8e75
 row	Probe@main1	Probe	main	default
 shared	dynamic	sites in the seed #9f0a18e6
 

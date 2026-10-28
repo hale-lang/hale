@@ -5826,7 +5826,8 @@ impl<'a> Walker<'a> {
         let kinds = self.outer_kinds();
         let outer = |n: &str| kinds.get(n).copied();
         let produces_locus = |e: &Expr| self.makes_locus(e);
-        crate::iteration_reclaim::reclaims_per_iteration(body, &outer, &produces_locus)
+        let decl_of = crate::iteration_reclaim::decl_of(self.escaping.ids);
+        crate::iteration_reclaim::reclaims_per_iteration(body, &outer, &produces_locus, &decl_of)
     }
 
     /// Does `e` make a locus: a literal of one, or a call of a free fn

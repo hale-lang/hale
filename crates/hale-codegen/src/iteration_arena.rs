@@ -119,7 +119,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let outer = |name: &str| scope.locals.get(name).map(|(_, ty)| outer_local(ty));
         let table = self.owner_table;
         let produces_locus = |e: &Expr| table.entry_of(e).is_some();
-        reclaims_per_iteration(body, &outer, &produces_locus)
+        let decl_of = hale_types::iteration_reclaim::decl_of(self.uses);
+        reclaims_per_iteration(body, &outer, &produces_locus, &decl_of)
     }
 
     /// Lower a loop's body, the builder at the body's entry: with an

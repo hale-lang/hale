@@ -1721,6 +1721,7 @@ fn build_resolved_lowered(
         current_instantiation_replica_index: 0,
         owner_table,
         owned_views,
+        uses: &resolved.snapshot,
         cell_part_flags: HashMap::new(),
         cow_exempt_slots: HashSet::new(),
         placement: &resolved.placement,
@@ -4570,6 +4571,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// — a locus instantiation with no row in it is a
     /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: &'p crate::ownership::OwnerTable,
+    /// The snapshot `merged` was minted with: where each use resolves
+    /// (`Snapshot::binding_of`), which `iteration_arena` reads to judge a
+    /// loop body by declaration rather than by spelling.
+    pub(crate) uses: &'p hale_types::snapshot::Snapshot,
     /// The bindings of a field's String, Bytes or compound value that a
     /// later write may replace while they are live, and the writes that
     /// copy on write: the view's owned-view column

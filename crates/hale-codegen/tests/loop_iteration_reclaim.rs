@@ -541,7 +541,8 @@ fn what_a_push_named_fn_or_a_held_locus_field_takes_survives_under_asan() {
 /// A sample of `iteration_reclaim`'s binding forms over a locus source
 /// (its unit test `every_binding_form_gives_its_source_kind` covers every
 /// form against every source): each binds `alias` to `self` or another
-/// locus (`spare` is a second one, for the arms that do not run), codex's two through a block tail that shadows an outside
+/// locus (`spare` is a second one, for the arms that do not run), the
+/// last two through a match-arm binder `n` over `self` and over `holder`, codex's two through a block tail that shadows an outside
 /// scalar `n`, and hands a path through it to a free fn that writes
 /// there. Each loop stays on the scratch, so what the free fn wrote is
 /// read after the loop.
@@ -613,6 +614,22 @@ locus Probe {
             i_assigned = i_assigned + 1;
         }
         println("assigned=", len(holder.bag.b));
+        let mut i_match_self = 0;
+        while i_match_self < 2 {
+            buf.append_u8(115);
+            let piece = buf.snapshot() or b"";
+            match self { n -> { keep(n.bag, piece); } }
+            i_match_self = i_match_self + 1;
+        }
+        println("match_self=", len(self.bag.b));
+        let mut i_match_holder = 0;
+        while i_match_holder < 2 {
+            buf.append_u8(116);
+            let piece = buf.snapshot() or b"";
+            match holder { n -> { keep(n.bag, piece); } }
+            i_match_holder = i_match_holder + 1;
+        }
+        println("match_holder=", len(holder.bag.b));
     }
 }
 
@@ -621,7 +638,16 @@ fn main() {
 }
 "#;
 
-const BOUND_FORMS_OUT: &[&str] = &["tail_self=10", "tail_holder=12", "if=14", "match=16", "tuple=18", "assigned=20"];
+const BOUND_FORMS_OUT: &[&str] = &[
+    "tail_self=10",
+    "tail_holder=12",
+    "if=14",
+    "match=16",
+    "tuple=18",
+    "assigned=20",
+    "match_self=22",
+    "match_holder=24",
+];
 
 #[test]
 fn every_sampled_binding_form_of_a_locus_survives_under_asan() {

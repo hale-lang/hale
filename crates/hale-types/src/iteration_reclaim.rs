@@ -81,16 +81,35 @@ pub enum OuterLocal {
     Buffer,
 }
 
+/// Where a use resolves: the snapshot's answer (`Snapshot::binding_of`,
+/// resolved once by the mint under lexical scoping) for an identifier
+/// expression's id, or an assignment statement's id for the binding its
+/// head writes: the declaration's site index and its span. `None` for a
+/// use that names no local binding (a field, a fn, a constant) and for a
+/// node the mint did not number.
+pub type DeclOf<'a> = dyn Fn(NodeId) -> Option<(u32, hale_syntax::Span)> + 'a;
+
+/// [`DeclOf`] over a snapshot: its resolution of the uses it minted.
+pub fn decl_of(ids: &crate::snapshot::Snapshot) -> impl Fn(NodeId) -> Option<(u32, hale_syntax::Span)> + '_ {
+    move |node| {
+        let d = ids.declaration_of(node)?;
+        ids.site(d).map(|site| (d.index, site.span))
+    }
+}
+
 /// Does `body` reclaim per iteration? `outer` classifies a name bound
 /// outside the body (`None`: no such local, e.g. a field or a constant
-/// spelled without `self`, which an assignment then refuses on);
-/// `produces_locus` says whether a struct literal or call makes a locus.
+/// spelled without `self`, which an assignment then refuses on); it is
+/// asked only of a use the snapshot resolves to a declaration outside the
+/// body. `produces_locus` says whether a struct literal or call makes a
+/// locus; `decl_of` is where each use resolves ([`DeclOf`]).
 pub fn reclaims_per_iteration(
     body: &Block,
     outer: &dyn Fn(&str) -> Option<OuterLocal>,
     produces_locus: &dyn Fn(&Expr) -> bool,
+    decl_of: &DeclOf<'_>,
 ) -> bool {
-    let mut w = Walk { outer, produces_locus, scopes: Vec::new() };
+    let mut w = Walk { outer, produces_locus, decl_of, span: body.span, kinds: BTreeMap::new() };
     w.block(body).is_some()
 }
 
@@ -142,32 +161,57 @@ impl Held {
 struct Walk<'a> {
     outer: &'a dyn Fn(&str) -> Option<OuterLocal>,
     produces_locus: &'a dyn Fn(&Expr) -> bool,
-    /// The body's bindings, innermost scope last, with what each holds.
-    scopes: Vec<BTreeMap<String, Held>>,
+    decl_of: &'a DeclOf<'a>,
+    /// The body's span: a declaration inside it is the body's own.
+    span: hale_syntax::Span,
+    /// What each of the body's declarations holds, by its site.
+    kinds: BTreeMap<u32, Held>,
+}
+
+/// Where a use stands, by the snapshot's resolution.
+enum Resolved {
+    /// A declaration of the body, with what it holds; a body declaration
+    /// the walk installed no kind for (a binder it does not read) is
+    /// outside.
+    Body(Held),
+    /// A declaration before the body: the reader classifies it by name.
+    Outer,
+    /// No local binding (a fn, a constant, a topic) or an unnumbered use.
+    Unresolved,
 }
 
 impl Walk<'_> {
-    /// A binding of the body: what it holds.
-    fn local(&self, name: &str) -> Option<Held> {
-        self.scopes.iter().rev().find_map(|s| s.get(name).copied())
+    fn contains(&self, at: hale_syntax::Span) -> bool {
+        self.span.start.0 <= at.start.0 && at.end.0 <= self.span.end.0
     }
 
-    fn declared(&self, name: &str) -> bool {
-        self.local(name).is_some()
-    }
-
-    fn declare(&mut self, name: &str, held: Held) {
-        if let Some(s) = self.scopes.last_mut() {
-            s.insert(name.to_string(), held);
+    fn resolve(&self, node: NodeId) -> Resolved {
+        match (self.decl_of)(node) {
+            None => Resolved::Unresolved,
+            Some((d, at)) if self.contains(at) => Resolved::Body(self.kinds.get(&d).copied().unwrap_or(Held::Outside)),
+            Some(_) => Resolved::Outer,
         }
     }
 
-    /// A body binding assigned a value of kind `held`: it holds either,
-    /// whichever iteration or branch ran last.
-    fn assigned(&mut self, name: &str, held: Held) {
-        if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
-            let now = s[name].join(held);
-            s.insert(name.to_string(), now);
+    /// Install a declaration of the body (its site is its node's id).
+    fn declare(&mut self, node: NodeId, held: Held) {
+        if !node.is_none() {
+            self.kinds.insert(node.0, held);
+        }
+    }
+
+    /// A pattern's binders, of a value of kind `held`: a binding of the
+    /// whole value is that value; one inside a constructor or a tuple is
+    /// a part of it.
+    fn bind_pattern(&mut self, p: &Pattern, held: Held) {
+        match p {
+            Pattern::Binding(i) => self.declare(i.id, held),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+                for a in args {
+                    self.bind_pattern(a, held.path());
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
 
@@ -176,25 +220,20 @@ impl Walk<'_> {
     /// arm that diverges or is unit, `or { break; }`), or `None` when it
     /// refuses the body.
     fn block(&mut self, b: &Block) -> Option<Held> {
-        self.scopes.push(BTreeMap::new());
-        let ok = b.stmts.iter().all(|s| self.stmt(s));
-        let held = if ok {
-            match b.tail.as_deref() {
-                Some(t) => self.expr(t),
-                None => Some(Held::Owned),
-            }
-        } else {
-            None
-        };
-        self.scopes.pop();
-        held
+        if !b.stmts.iter().all(|s| self.stmt(s)) {
+            return None;
+        }
+        match b.tail.as_deref() {
+            Some(t) => self.expr(t),
+            None => Some(Held::Owned),
+        }
     }
 
     fn stmt(&mut self, s: &Stmt) -> bool {
         match s {
-            Stmt::Let { name, value, .. } => match self.expr(value) {
+            Stmt::Let { value, id, .. } => match self.expr(value) {
                 Some(held) => {
-                    self.declare(&name.name, held);
+                    self.declare(*id, held);
                     true
                 }
                 None => false,
@@ -202,31 +241,36 @@ impl Walk<'_> {
             Stmt::LetTuple { names, value, .. } => match self.expr(value) {
                 Some(held) => {
                     for n in names {
-                        self.declare(&n.name, held);
+                        self.declare(n.id, held);
                     }
                     true
                 }
                 None => false,
             },
-            Stmt::Assign { target, value, .. } => {
-                if !self.assign_target(target) {
+            Stmt::Assign { target, value, id, .. } => {
+                if !self.assign_target(target, *id) {
                     return false;
                 }
                 let Some(held) = self.expr(value) else { return false };
+                // A body binding assigned a value holds either, whichever
+                // iteration or branch ran last.
                 if target.tail.is_empty() {
-                    self.assigned(&target.head.name, held);
+                    if let Some((d, at)) = (self.decl_of)(*id) {
+                        if self.contains(at) {
+                            let now = self.kinds.get(&d).copied().unwrap_or(Held::Outside).join(held);
+                            self.kinds.insert(d, now);
+                        }
+                    }
                 }
                 true
             }
             Stmt::If(i) => self.if_expr(i).is_some(),
             Stmt::Match(m) => self.match_expr(m).is_some(),
-            Stmt::For { name, iter, body, .. } => {
+            Stmt::For { iter, body, id, .. } => {
                 // A binder is an element of what is iterated.
                 let Some(held) = self.expr(iter) else { return false };
-                self.scopes.push(BTreeMap::from([(name.name.clone(), held.path())]));
-                let ok = self.block(body).is_some();
-                self.scopes.pop();
-                ok
+                self.declare(*id, held.path());
+                self.block(body).is_some()
             }
             Stmt::While { cond, body, .. } => self.expr(cond).is_some() && self.block(body).is_some(),
             Stmt::Return(e, _) => e.as_ref().is_none_or(|e| self.expr(e).is_some()),
@@ -245,17 +289,18 @@ impl Walk<'_> {
 
     /// May `head` be written from the body: `self`, a binding the body
     /// declares, or an outside one holding no arena memory of its own.
-    fn writable(&self, head: &str) -> bool {
+    fn writable(&self, head: &str, assign: NodeId) -> bool {
         head == "self"
-            || match self.local(head) {
+            || match self.resolve(assign) {
                 // A store through a locus reference copies into it.
-                Some(held) => held != Held::Outside,
-                None => matches!((self.outer)(head), Some(OuterLocal::Scalar | OuterLocal::Locus)),
+                Resolved::Body(held) => held != Held::Outside,
+                Resolved::Outer => matches!((self.outer)(head), Some(OuterLocal::Scalar | OuterLocal::Locus)),
+                Resolved::Unresolved => false,
             }
     }
 
-    fn assign_target(&mut self, target: &LValue) -> bool {
-        self.writable(target.head.name.as_str())
+    fn assign_target(&mut self, target: &LValue, assign: NodeId) -> bool {
+        self.writable(target.head.name.as_str(), assign)
             && target.tail.iter().all(|seg| match seg {
                 LValueSeg::Field(_) => true,
                 LValueSeg::Index(e) => self.expr(e).is_some(),
@@ -276,9 +321,10 @@ impl Walk<'_> {
 
     /// A `match`, statement or value: the join of its arms' kinds.
     fn match_expr(&mut self, m: &MatchStmt) -> Option<Held> {
-        self.expr(&m.scrutinee)?;
+        let scrutinee = self.expr(&m.scrutinee)?;
         let mut held = Held::Owned;
         for arm in &m.arms {
+            self.bind_pattern(&arm.pattern, scrutinee);
             if let Some(g) = &arm.guard {
                 self.expr(g)?;
             }
@@ -331,14 +377,15 @@ impl Walk<'_> {
         match e {
             Expr::Literal(..) => Some(Held::Owned),
             Expr::Path(_) | Expr::KwSelf(_) => Some(Held::Whole),
-            Expr::Ident(i) => match self.local(&i.name) {
-                Some(held) => Some(held),
-                None => match (self.outer)(&i.name) {
+            Expr::Ident(i) => match self.resolve(i.id) {
+                Resolved::Body(held) => Some(held),
+                Resolved::Outer => match (self.outer)(&i.name) {
                     Some(OuterLocal::Buffer) => None,
                     Some(OuterLocal::Scalar) => Some(Held::Owned),
                     Some(OuterLocal::Locus) => Some(Held::Whole),
                     Some(OuterLocal::Heap) | None => Some(Held::Outside),
                 },
+                Resolved::Unresolved => Some(Held::Outside),
             },
             Expr::Binary { left, right, .. } => Some(self.expr(left)?.join(self.expr(right)?)),
             Expr::Unary { operand, .. } => self.expr(operand),
@@ -347,7 +394,7 @@ impl Walk<'_> {
                     return None;
                 }
                 let reads_only = matches!(callee.as_ref(), Expr::Ident(f)
-                    if !self.declared(&f.name) && (self.outer)(&f.name).is_none() && read_only_builtin(&f.name));
+                    if matches!(self.resolve(f.id), Resolved::Unresolved) && read_only_builtin(&f.name));
                 if !reads_only {
                     self.expr(callee)?;
                 }
@@ -393,13 +440,24 @@ impl Walk<'_> {
 mod tests {
     use super::*;
 
-    fn body_of(src: &str) -> Block {
-        let program = hale_syntax::parse_source(src).expect("parses");
+    /// The names the test bodies use from outside the loop, declared as
+    /// the fn's parameters so the mint resolves them (an undeclared name is
+    /// unresolved, and outside).
+    const OUTER_PARAMS: &str =
+        "fn f(i: Int, total: Int, n: Int, h: H, buf: H, body: H, out: H, last: L, ring: R)";
+
+    /// Judge the fn's first `while` body of `src` (whose `fn f()` takes
+    /// [`OUTER_PARAMS`]), resolved by the mint as lowering's is.
+    fn judge(src: &str, outer: &dyn Fn(&str) -> Option<OuterLocal>) -> bool {
+        let src = src.replacen("fn f()", OUTER_PARAMS, 1);
+        let mut program = hale_syntax::parse_source(&src).expect("parses");
+        let ids = crate::snapshot::mint([("app.hl", &mut program)], &[]);
+        let decl_of = decl_of(&ids);
         for item in &program.items {
             if let TopDecl::Fn(f) = item {
                 for s in &f.body.stmts {
                     if let Stmt::While { body, .. } = s {
-                        return body.clone();
+                        return reclaims_per_iteration(body, outer, &|_| false, &decl_of);
                     }
                 }
             }
@@ -418,7 +476,7 @@ mod tests {
     }
 
     fn reclaims(src: &str) -> bool {
-        reclaims_per_iteration(&body_of(src), &outer, &|_| false)
+        judge(src, &outer)
     }
 
     #[test]
@@ -500,20 +558,31 @@ mod tests {
         assert!(reclaims("fn f() { while true { let a = make(i); keep(a.items, b\"x\"); } }"));
     }
 
-    /// Every binding form × every source, the kind each must give the
-    /// binding, checked through both uses: handing the binding whole
-    /// (refused only when outside) and handing a path through it
-    /// (admitted only when owned). `n` is an outside scalar, shadowed in
-    /// the "shadowed" source by a body binding of a locus.
+    /// Every binder form × every source, the kind each must give the
+    /// binding `a`, checked through both uses: handing `a` whole (refused
+    /// only when outside) and handing a path through it (admitted only
+    /// when owned). `n` is an outside scalar; the "shadowed" source rebinds
+    /// it to a locus inside the body, and the forms marked shadowing bind
+    /// `n` itself, so a use resolved by spelling would find the outside
+    /// scalar. Each form is `(name, template, what a is of X)`: `X` is the
+    /// source, `U` the use of `a`.
     #[test]
-    fn every_binding_form_gives_its_source_kind() {
+    fn every_binder_form_gives_its_source_kind() {
+        #[derive(Clone, Copy)]
+        enum Of {
+            /// `a` is X itself.
+            Whole,
+            /// `a` is a part of X (an element, a field, a pattern's part).
+            Part,
+            /// `a` is no binding the walk installs (an `or`'s `err`).
+            Unbound,
+        }
         let outer = |name: &str| match name {
             "n" | "i" => Some(OuterLocal::Scalar),
             "h" | "buf" => Some(OuterLocal::Locus),
             "last" => Some(OuterLocal::Heap),
             _ => None,
         };
-        // (source name, the statements before the form, the expression, its kind)
         let sources: [(&str, &str, &str, Held); 6] = [
             ("self", "", "self", Held::Whole),
             ("outer locus", "", "h", Held::Whole),
@@ -522,36 +591,89 @@ mod tests {
             ("scalar shadowed by a locus", "let n = h; ", "n", Held::Whole),
             ("fresh value", "", "T { k: 1 }", Held::Owned),
         ];
-        // (form, how `a` is bound from `X`, whether `a` is an element or field of it)
-        let forms: [(&str, &str, bool); 9] = [
-            ("let", "let a = X;", false),
-            ("block tail", "let a = { X };", false),
-            ("block tail shadowing", "let a = { let n = X; n };", false),
-            ("if", "let a = if i > 0 { X } else { X };", false),
-            ("match", "let a = match i { 0 -> X, _ -> X, };", false),
-            ("or", "let a = buf.snapshot() or X;", false),
-            ("tuple", "let (a, z) = (X, 1);", false),
-            ("assignment", "let a = 1; a = X;", false),
-            ("container", "let w = W { f: X }; let a = w.f;", true),
+        let forms: [(&str, &str, Of); 17] = [
+            ("let", "let a = X; U", Of::Whole),
+            ("let shadowing", "let n = X; let a = n; U", Of::Whole),
+            ("block tail", "let a = { X }; U", Of::Whole),
+            ("block tail shadowing", "let a = { let n = X; n }; U", Of::Whole),
+            ("if", "let a = if i > 0 { X } else { X }; U", Of::Whole),
+            ("match value", "let a = match i { 0 -> X, _ -> X, }; U", Of::Whole),
+            ("or", "let a = buf.snapshot() or X; U", Of::Whole),
+            ("tuple let", "let (a, z) = (X, 1); U", Of::Whole),
+            ("assignment", "let a = 1; a = X; U", Of::Whole),
+            ("container", "let w = W { f: X }; let a = w.f; U", Of::Part),
+            ("for", "for a in [X] { U }", Of::Part),
+            ("match binder", "match X { a -> { U } }", Of::Whole),
+            ("match binder shadowing", "match X { n -> { let a = n; U } }", Of::Whole),
+            ("match constructor binder", "match X { Some(a) -> { U }, _ -> { }, }", Of::Part),
+            ("match tuple binder", "match (X, 1) { (a, z) -> { U } }", Of::Part),
+            ("match nested binder", "match X { Some((a, z)) -> { U }, _ -> { }, }", Of::Part),
+            ("or error binder", "let c = buf.snapshot() or { let a = err; U b\"\" };", Of::Unbound),
         ];
+        let mut checked = 0;
         for (sname, pre, x, kind) in sources {
-            for (fname, form, element) in forms {
-                let kind = if element { kind.path() } else { kind };
-                // `or`'s other side is a call's fresh result: the join.
+            for (fname, form, of) in forms {
+                let kind = match of {
+                    Of::Whole => kind,
+                    Of::Part => kind.path(),
+                    Of::Unbound => Held::Outside,
+                };
                 for (use_, admitted) in [("keep(a, b\"x\");", kind != Held::Outside), ("keep(a.bag, b\"x\");", kind == Held::Owned)] {
-                    let src = format!("fn f() {{ while true {{ {pre}{} {use_} }} }}", form.replace('X', x));
-                    let got = reclaims_per_iteration(&body_of(&src), &outer, &|_| false);
-                    assert_eq!(got, admitted, "{fname} of {sname} ({kind:?}), `{use_}`: {src}");
+                    let body = form.replace('X', x).replace('U', use_);
+                    let src = format!("fn f() {{ while true {{ {pre}{body} }} }}");
+                    assert_eq!(judge(&src, &outer), admitted, "{fname} of {sname} ({kind:?}), `{use_}`: {src}");
+                    checked += 1;
                 }
             }
-            // a `for` binder is an element of what is iterated
-            let kind_el = kind.path();
-            for (use_, admitted) in [("keep(a, b\"x\");", kind_el != Held::Outside), ("keep(a.bag, b\"x\");", kind_el == Held::Owned)] {
-                let src = format!("fn f() {{ while true {{ {pre}for a in [{x}] {{ {use_} }} }} }}");
-                let got = reclaims_per_iteration(&body_of(&src), &outer, &|_| false);
-                assert_eq!(got, admitted, "for over {sname} ({kind_el:?}), `{use_}`: {src}");
+        }
+        assert_eq!(checked, 6 * 17 * 2);
+    }
+
+    /// Every construct of the grammar that binds a name in a body, by the
+    /// snapshot's own walk (`resolve_uses`): each either has its kind
+    /// installed by the walk or is judged outside. The list is the AST's
+    /// binder positions; a new one (a `Stmt` or `Pattern` variant that
+    /// binds) has to be added here and to the walk, or this fails to
+    /// compile (the matches are exhaustive).
+    #[test]
+    fn every_binder_construct_is_installed_or_outside() {
+        fn binds(s: &Stmt) -> &'static str {
+            match s {
+                Stmt::Let { .. } => "installed: the value's kind",
+                Stmt::LetTuple { .. } => "installed: the value's kind, each name",
+                Stmt::For { .. } => "installed: an element of the iterated value",
+                Stmt::Match(_) => "installed: each pattern binder, the scrutinee or a part",
+                Stmt::ShmWrite { .. } => "refused: the body is not reclaimed",
+                Stmt::Assign { .. }
+                | Stmt::If(_)
+                | Stmt::While { .. }
+                | Stmt::Return(..)
+                | Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Fail { .. }
+                | Stmt::Yield(_)
+                | Stmt::Terminate(_)
+                | Stmt::Reperspective { .. }
+                | Stmt::Block(_)
+                | Stmt::Recovery { .. }
+                | Stmt::Violate { .. }
+                | Stmt::Send { .. }
+                | Stmt::Expr(_) => "binds nothing",
             }
         }
+        fn pattern_binds(p: &Pattern) -> &'static str {
+            match p {
+                Pattern::Binding(_) => "installed",
+                Pattern::Constructor { .. } | Pattern::Tuple(..) => "its parts, installed",
+                Pattern::Literal(..) | Pattern::Wildcard(_) => "binds nothing",
+            }
+        }
+        // `or`'s `err` resolves to no declaration (the mint gives it none),
+        // so every use of it is unresolved, and outside; an `Expr::Match`
+        // binds as `Stmt::Match` does; fn parameters are outside every body.
+        let _ = (binds, pattern_binds);
+        let outer = |_: &str| None;
+        assert!(!judge("fn f() { while true { let c = buf.snapshot() or { keep(err, b\"x\"); b\"\" }; } }", &outer));
     }
 
     /// The audit: each way a call can be handed storage that outlives the

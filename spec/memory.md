@@ -1271,8 +1271,15 @@ unless it can hand a value to the next iteration through the frame:
      path into it, any path through a locus, an element of an outside
      array or tuple, a match binder, a call's result handed anything
      not owned). The kinds are computed in the one walk that judges
-     the body, with its scopes live where each expression is: a
-     `let`, a tuple `let` and a `for` binder take their value's kind,
+     the body, keyed by declaration, never by spelling: a use is the
+     declaration the snapshot resolved it to under lexical scoping
+     (`Snapshot::binding_of`), a declaration inside the body is the
+     body's (its kind installed by the walk, or outside when the walk
+     installs none), one before it is classified by the reader, and a
+     use resolving to no local binding is outside. A `let`, a tuple
+     `let`, a `for` binder and a match-arm binder (the scrutinee, or a
+     part of it inside a constructor or tuple pattern) take their
+     value's kind,
      an assignment joins it in, and a carrier (its tail read inside
      its own scope), an `or` and a container literal join their arms
      and parts. Handed outside
