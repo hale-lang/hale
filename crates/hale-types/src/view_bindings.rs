@@ -208,6 +208,11 @@ pub struct OwnedViews {
     /// The bindings (by id) the cell-read rule owns: a `for` over a
     /// map's entries copies each entry it binds only for this rule.
     cell_owned: HashSet<u32>,
+    /// The arguments, by the id of the parameter use at their root, that
+    /// hand a place under the body's own parameter (`p`, `p.f`, `p[i]`)
+    /// to a callee that may write through the very parameter it lands in
+    /// (`Summaries::param_masks`), or to one the pass cannot identify.
+    param_handoffs: HashSet<u32>,
 }
 
 /// The owned-view column of a checked program (GH #1554): the pass's
@@ -487,6 +492,15 @@ impl OwnedViews {
         }
         self.cell_copies.extend(other.cell_copies);
         self.cell_owned.extend(other.cell_owned.into_iter().filter_map(&id));
+        self.param_handoffs.extend(other.param_handoffs.into_iter().filter_map(&id));
+    }
+
+    /// Does the argument whose root is the parameter use with this id
+    /// hand a place under the parameter to a callee that may write
+    /// through it? A locus member publishes, for such a call, the arena
+    /// its own caller published, which owns the parameter's storage.
+    pub fn hands_written_param(&self, id: NodeId) -> bool {
+        !id.is_none() && self.param_handoffs.contains(&id.0)
     }
 
     /// Does the cell-read rule own the binding (a `let`, a `for`, by id)
@@ -1149,6 +1163,7 @@ impl From<Found> for OwnedViews {
             cow_binds: found.cow_binds,
             cell_copies: found.cell_copies,
             cell_owned: found.cell_owned,
+            param_handoffs: found.param_handoffs,
         }
     }
 }
@@ -1162,6 +1177,7 @@ struct Found {
     cow_binds: HashMap<(Site, String), Vec<(String, bool)>>,
     cell_copies: Vec<CellCopy>,
     cell_owned: HashSet<u32>,
+    param_handoffs: HashSet<u32>,
 }
 
 /// Per body, what its calls reach, transitively: the fields it may
@@ -1763,6 +1779,9 @@ struct Walk<'p, 'a> {
     reads: bool,
     writes_params: bool,
     param_callees: BTreeSet<Callee>,
+    /// The arguments handing a place under a parameter to a callee that
+    /// may write through it (`OwnedViews::param_handoffs`).
+    param_handoffs: Vec<u32>,
     /// Every parameter's name.
     params: BTreeSet<String>,
     /// Per variable, whether it may hold (a part of) the caller's value a
@@ -1912,6 +1931,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             reads: false,
             writes_params: false,
             param_callees: BTreeSet::new(),
+            param_handoffs: Vec::new(),
             params: params.iter().map(|prm| prm.name.name.clone()).collect(),
             from_param: Vec::new(),
             binds: Vec::new(),
@@ -3602,6 +3622,11 @@ impl<'p, 'a> Walk<'p, 'a> {
             let into = !(bounded && i == 0)
                 && (unknown || !classes.is_empty())
                 && !only(&|c| matches!(c, Class::Scalar | Class::Handle | Class::Form(_)));
+            if into && self.direct_param(a).is_some() {
+                if let Some(id) = root_ident(a).map(|r| r.id).filter(|id| !id.is_none()) {
+                    self.param_handoffs.push(id.0);
+                }
+            }
             if let (Some((v, _)), true) = (self.root_local(a), into) {
                 let record_param = only(&|c| matches!(c, Class::Scalar | Class::Record));
                 self.place_passed.push((v, record_param && matches!(a, Expr::Ident(_)), self.first_field(a)));
@@ -4238,6 +4263,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             found.cow_binds.insert(key, fields.into_iter().collect());
         }
         found.sites.extend(out);
+        found.param_handoffs.extend(self.param_handoffs.iter().copied());
     }
 
     /// Does a write `w` into a local bound from a self field (`shared`,
@@ -4292,6 +4318,15 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 }
 
+/// The identifier at the root of a place (`p`, `p.f`, `p[i].g`).
+fn root_ident(e: &Expr) -> Option<&Ident> {
+    match e {
+        Expr::Ident(i) => Some(i),
+        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => root_ident(receiver),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4340,6 +4375,33 @@ mod tests {
 
     fn with(body: &str) -> Vec<String> {
         flagged(&LOCUS.replace("BODY", body))
+    }
+
+    /// An argument handing on a place under the body's own parameter is
+    /// recorded exactly when the callee may write through the parameter it
+    /// lands in, directly or by handing it on again
+    /// (`OwnedViews::param_handoffs`): a callee that only reads it, and a
+    /// place of the frame's own, are not.
+    #[test]
+    fn a_parameter_handed_to_a_callee_writing_through_it_is_a_handoff() {
+        let src = r#"
+            type Bag { b: String = ""; }
+            fn put_free(x: Bag, s: String) { x.b = s; }
+            fn read_free(x: Bag) -> String { return x.b; }
+            locus S {
+                fn put(x: Bag, s: String) { x.b = s; }
+                fn read(x: Bag) -> String { return x.b; }
+                fn relay(x: Bag, s: String) { self.put(x, s); }
+                BODY
+            }
+        "#;
+        let n = |body: &str| found(&src.replace("BODY", body)).param_handoffs.len();
+        let base = n("");
+        assert_eq!(base, 1, "relay's own hand-off");
+        assert_eq!(n(r#"fn a(x: Bag) { put_free(x, "s"); }"#), base + 1);
+        assert_eq!(n(r#"fn a(x: Bag) { self.relay(x, "s"); }"#), base + 1);
+        assert_eq!(n(r#"fn a(x: Bag) { let r = read_free(x); let q = self.read(x); }"#), base);
+        assert_eq!(n(r#"fn a(x: Bag) { let y = Bag { }; self.put(y, "s"); }"#), base);
     }
 
     #[test]

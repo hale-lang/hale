@@ -4196,6 +4196,14 @@ row	Counter@main1	Counter	main	default
 == crates/hale-codegen/tests/math_and_int_float.rs#f0fd4633
 row	Scaler@main1	Scaler	main	default
 
+== crates/hale-codegen/tests/member_param_write.rs#f3d985ca
+row	Sink@main2	Sink	main	default
+row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+-- Driver@main1	Driver
+row	~	Driver	main	default
+row	~.sink	Sink	main	inherited
+
 == crates/hale-codegen/tests/method_call_from_free_fn.rs#6592aad6
 row	CounterL@main1	CounterL	main	default
 

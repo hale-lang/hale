@@ -1389,7 +1389,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let out_err_slot = self.alloca_for(&payload_ty, "or.out_err.slot")?;
 
-        let caller_arena_at_call = self.current_arena_ptr()?;
+        let caller_arena_at_call = self.call_site_arena(args, scope)?;
         let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(sig.params.len() + 3);
         llvm_args.push(caller_arena_at_call.into());

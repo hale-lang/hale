@@ -1216,6 +1216,24 @@ Two correctness invariants make this safe:
      would clobber TLS, leaving the epilogue to deep-copy
      into the wrong arena (whichever nested callee was
      called last).
+  3. A record, array or tuple parameter of a method is the
+     caller's storage, passed by pointer, so a heap value
+     stored under it (`x.b = p`, `x.inner.b = p`, `a[i] = p`,
+     a `bounded` field assigned whole) is deep-copied into
+     the same entry snapshot of the caller's arena, never
+     into the scratch, as a free fn's store lands in its
+     `__caller_arena`. A call the method hands a place under
+     such a parameter (`self.put(x, p)`, `put_free(x.inner,
+     p)`) publishes that snapshot as the callee's caller
+     arena instead of the scratch when the callee may write
+     through the parameter it lands in (the owned-view
+     column's hand-offs), so a chain of methods handing the
+     record on stores into the arena of the frame that owns
+     it; a callee that only reads it keeps the scratch. A
+     member the bus dispatch invokes is published no arena
+     (its snapshot is the payload-arena fallback) and keeps
+     its scratch. A shadowing `let` or binder of the name is
+     a local of the method's own.
 
 Cost: two mallocs (subregion arena struct + initial 64 KiB
 chunk) and two frees per method call. For typical short
@@ -1320,7 +1338,9 @@ The free-fn path (`lotus_arena_create_subregion(__caller_arena)`
 at entry, destroyed at exit, with allocations routed to
 `__caller_arena` directly post-cross-seed-segv-fix) is
 unchanged. Free fns called from inside a method body get
-`__caller_arena = method's scratch` — anything they alloc
+`__caller_arena = method's scratch` (or, handed a place under one of
+the method's record parameters, the method's caller's arena: invariant
+3 above) — anything they alloc
 lives in the same scratch and gets reclaimed at the outer
 method's exit. The cross-seed-segv test pattern (foreign
 vec push from inside a free fn) continues to work because
