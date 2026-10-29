@@ -93,10 +93,11 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
             return Err(format!("[dna.host.{name}] operator_token is {SUPERSEDED}"));
         }
         for k in t.keys() {
-            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "service", "requires"].contains(&k.as_str()) {
+            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "service", "requires", "readings"].contains(&k.as_str()) {
                 return Err(format!("[dna.host.{name}] has no `{k}`"));
             }
         }
+        super::placements::check_readings(name, t)?;
         let c = HostCommand {
             platforms: strs("platforms")?,
             root: t.get("root").map(|v| v.as_bool().ok_or_else(|| format!("[dna.host.{name}] root is true or false"))).transpose()?.unwrap_or(false),
@@ -796,6 +797,7 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     if !service.is_empty() {
         println!("{:<8}{service}, {} on {host}", "service", if platform == "macos" { "a launchd service in the system domain" } else { "a systemd unit" });
     }
+    println!("{}", super::placements::plan_line(host, &manifest, name, install));
     if plan {
         return Ok(());
     }
@@ -835,6 +837,7 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         }
         println!("{:<8}{service} on {host}: {state}", "service");
     }
+    super::placements::record(organism, name, host, &id, &service, platform, &manifest, &tag, install)?;
     Ok(())
 }
 
@@ -990,7 +993,7 @@ readers = ["api"]
         assert_eq!((f.home.as_str(), f.os.as_str(), f.arch.as_str()), ("/home/x", "Linux", "aarch64"));
         assert_eq!(f.pkg, Some(("apt-get".to_string(), "/usr/bin/apt-get".to_string())));
         assert_eq!(f.toolchains, ["v0.30.0"]);
-        // what spark lacked: OpenSSL's headers
+        // a host lacking only OpenSSL's headers
         assert_eq!(missing_packages(&f).unwrap(), (vec!["openssl".to_string()], vec!["libssl-dev"]));
         let dnf = Facts { pkg: Some(("dnf".into(), "/usr/bin/dnf".into())), ..facts("have curl\nhave tar\n") };
         assert_eq!(missing_packages(&dnf).unwrap().1, ["git", "clang", "openssl-devel", "zlib-devel"]);

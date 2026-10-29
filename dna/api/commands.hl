@@ -1201,6 +1201,20 @@ locus CommandAdmission {
         if self.personless(ctx) { return HostRemoval { code: "forbidden" }; }
         return habitat_host_remove(self.root, r, self.author(ctx));
     }
+    // The services placed on its hosts (habitat_placed.hl): recorded by the
+    // CLI once a placement ran, the Board's; and read.
+    fn record_placed(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        if self.personless(ctx) { return PlacementReply { code: "forbidden" }; }
+        return habitat_record_placed(self.root, p, self.author(ctx));
+    }
+    fn record_unplaced(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        if self.personless(ctx) { return PlacementReply { code: "forbidden" }; }
+        return habitat_record_unplaced(self.root, p, self.author(ctx));
+    }
+    fn placements(a: HabitatAsk, ctx: std::api::Context) -> PlacementRows {
+        if self.personless(ctx) { return PlacementRows { why: "forbidden" }; }
+        return habitat_placements(self.root);
+    }
     // The habitat's organisms (habitat_organisms.hl): removed, the Board's.
     fn plan_remove_organism(n: OrganismNamed, ctx: std::api::Context) -> OrganismPlan {
         if self.personless(ctx) { return OrganismPlan { code: "forbidden" }; }
@@ -1339,6 +1353,15 @@ locus Commands {
     fn remove_host(r: HostRemove, ctx: std::api::Context) -> HostRemoval {
         return self.admission.remove_host(r, ctx);
     }
+    fn record_placed(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        return self.admission.record_placed(p, ctx);
+    }
+    fn record_unplaced(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        return self.admission.record_unplaced(p, ctx);
+    }
+    fn placements(a: HabitatAsk, ctx: std::api::Context) -> PlacementRows {
+        return self.admission.placements(a, ctx);
+    }
     fn plan_remove_organism(n: OrganismNamed, ctx: std::api::Context) -> OrganismPlan {
         return self.admission.plan_remove_organism(n, ctx);
     }
@@ -1471,6 +1494,13 @@ api HeadCommands {
     rpc Commands::probe_host requires: [owner];
     rpc Commands::plan_remove_host requires: [owner];
     rpc Commands::remove_host requires: [owner];
+    // The services placed on its hosts (habitat_placed.hl): a placement
+    // `hale habitat organism place` ran, and one `unplace` took off,
+    // recorded by the CLI (the Board's), and the placements that hold, a
+    // read.
+    rpc Commands::record_placed requires: [owner];
+    rpc Commands::record_unplaced requires: [owner];
+    rpc Commands::placements;
     // The habitat's organisms (habitat_organisms.hl): one removed, planned
     // first (`plan_remove_organism`, a read of the Board's) and executed
     // only with the organism's name typed back as `confirm`.

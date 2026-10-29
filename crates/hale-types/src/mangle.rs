@@ -2020,6 +2020,19 @@ impl<'a> Mangler<'a> {
                         self.rewrite_ident(&mut codec.locus.name);
                     }
                 }
+                // GH #1781: a hub's stream rows name topics as an
+                // entry does, and the hub pass matches them against
+                // the publishers by name: a row left bare while the
+                // topic was renamed bound no published topic, so a
+                // seed whose main holds a hub could not be imported.
+                // A role keeps its name; only an alias head moves.
+                for hub in &mut bb.hubs {
+                    self.rewrite_alias_head_joined(&mut hub.topic);
+                    self.rewrite_ident(&mut hub.topic.name);
+                    for role in &mut hub.requires {
+                        self.rewrite_alias_head_joined(role);
+                    }
+                }
             }
             LocusMember::Placement(pb) => {
                 // F.31: placement entries key on main-locus params

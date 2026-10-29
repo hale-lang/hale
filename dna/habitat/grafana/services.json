@@ -1,0 +1,592 @@
+{
+  "uid": "hale-containers",
+  "title": "Services",
+  "description": "What runs where: every container on the habitat's machines, as their container exporters read them, and every service the habitat placed on a host (a systemd unit or a launchd service), as its own readings serve them.",
+  "tags": [
+    "habitat"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "scope",
+        "label": "show",
+        "type": "custom",
+        "query": "the habitat's : .+,everything on the host : .*",
+        "options": [
+          {
+            "text": "the habitat's",
+            "value": ".+",
+            "selected": true
+          },
+          {
+            "text": "everything on the host",
+            "value": ".*",
+            "selected": false
+          }
+        ],
+        "current": {
+          "text": "the habitat's",
+          "value": ".+",
+          "selected": true
+        },
+        "description": "The habitat's containers carry hale.habitat; everything else a host runs carries none. A service the habitat placed is always the habitat's."
+      },
+      {
+        "name": "host",
+        "label": "host",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "habitat-senses"
+        },
+        "query": {
+          "query": "label_values(up{job=~\"containers|services\"}, host)",
+          "refId": "hosts"
+        },
+        "definition": "label_values(up{job=~\"containers|services\"}, host)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "organism",
+        "label": "organism",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "habitat-senses"
+        },
+        "query": {
+          "query": "query_result(group by (organism) (label_replace(container_last_seen{job=\"containers\", container_label_hale_organism!=\"\"}, \"organism\", \"$1\", \"container_label_hale_organism\", \"(.+)\")) or group by (organism) (up{job=\"services\", organism!=\"\"}))",
+          "refId": "organisms"
+        },
+        "definition": "query_result(group by (organism) (label_replace(container_last_seen{job=\"containers\", container_label_hale_organism!=\"\"}, \"organism\", \"$1\", \"container_label_hale_organism\", \"(.+)\")) or group by (organism) (up{job=\"services\", organism!=\"\"}))",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1,
+        "regex": "/organism=\"([^\"]+)\"/"
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Hosts",
+      "type": "link",
+      "url": "/grafana/d/hale-hosts"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Running",
+      "description": "Containers each machine runs now, as its container exporter last saw them, and the services placed there that answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "count by (host) ((max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"} * 0 + 1, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(up{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))) == 1)",
+          "legendFormat": "{{host}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Running now",
+      "description": "What runs where: each container (kind container, with its organism and part) and each placed service (kind systemd or launchd), whether it is up, how long it has been, its memory and its CPU. A placed service whose readings do not answer is down, and stays in the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"} * 0 + 1, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(up{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(time() - container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(time() - hale_process_start_time_seconds{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(hale_process_resident_memory_bytes{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or sum by (kind, host, organism, part, name, image) (label_replace(rate(hale_process_cpu_seconds_total{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__rate_interval]), \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "kind": 0,
+              "host": 1,
+              "organism": 2,
+              "part": 3,
+              "name": 4,
+              "image": 5,
+              "Value #A": 6,
+              "Value #B": 7,
+              "Value #C": 8,
+              "Value #D": 9
+            },
+            "renameByName": {
+              "name": "container or service",
+              "Value #A": "state",
+              "Value #B": "up for",
+              "Value #C": "memory",
+              "Value #D": "CPU"
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "host"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "up for"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "memory"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "up",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "0": {
+                        "text": "down",
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPU",
+      "description": "Cores each container or placed service keeps busy (1 = one core).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or sum by (kind, host, organism, name) (label_replace(rate(hale_process_cpu_seconds_total{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__rate_interval]), \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "legendFormat": "{{host}} {{organism}} {{name}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Memory",
+      "description": "Each container's working set (what the kernel would not reclaim from it), and each placed service's resident memory.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "max by (kind, host, organism, name) (label_replace(label_replace(label_replace(container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, name) (label_replace(hale_process_resident_memory_bytes{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "legendFormat": "{{host}} {{organism}} {{name}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Network",
+      "description": "Containers' traffic, in above the line, out below. A container on its host's network shows none of its own, nor does a placed service.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (host, organism, name) (label_replace(label_replace(label_replace(rate(container_network_receive_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"))",
+          "legendFormat": "{{host}} {{organism}} {{name}} in"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "-sum by (host, organism, name) (label_replace(label_replace(label_replace(rate(container_network_transmit_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"))",
+          "legendFormat": "{{host}} {{organism}} {{name}} out"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Restarts and OOM kills in the window",
+      "description": "Containers and placed services that started again, and containers the kernel killed for memory, within the dashboard's time range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "habitat-senses"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "(sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(changes(container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or sum by (kind, host, organism, name) (label_replace(changes(hale_process_start_time_seconds{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__range]), \"name\", \"$1\", \"service\", \"(.*)\"))) > 0",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "habitat-senses"
+          },
+          "expr": "sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(increase(container_oom_events_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) > 0",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "name": "container or service",
+              "Value #A": "restarts",
+              "Value #B": "OOM kills"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

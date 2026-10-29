@@ -313,6 +313,56 @@ fn main() {
         "the head observes it over SSH: " + seen,
     );
 
+    // ---- a service placed on it (the row `hale habitat organism place`
+    // records once the organism's host command ran there): the head lists
+    // it, `status` names it under its host with its readings, and the
+    // host's removal plans its uninstall first
+    let placement = "{\"organism\":\"probe\",\"command\":\"node\",\"host\":\"localhost\",\"id\":\"one\",\"service\":\"probe-node-one\",\"platform\":\"linux\",\"readings\":9464,\"toolchain\":\"v0.30.1\",\"target\":\"localhost:9464\",\"state\":\"placed\"}";
+    let recorded = j.append(j.revision(), "habitat.placed", "probe/node/localhost/one", placement);
+    std::test::assert(
+        recorded.ok,
+        "the placement is a row of the habitat's record: " + recorded.error,
+    );
+    let listed = element(surface_read(face, "Commands::placements", "placements"), "id", "one");
+    std::test::assert(
+        std::json::find_string_field(listed, "service") == "probe-node-one"
+            && std::json::find_string_field(listed, "target") == "localhost:9464",
+        "the head lists the placement: " + listed,
+    );
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus");
+    std::test::assert(
+        std::str::contains(status.stdout, "host localhost\n")
+            && std::str::contains(
+                status.stdout,
+                "  probe's node one  probe-node-one (systemd) on localhost  http://localhost:9464/metrics",
+            ),
+        "status lists the placement under its host: " + status.stdout + status.stderr,
+    );
+    let planned_off = in_dir(scratch, toolchain() + "\nhabitat\nhost\nremove\nlocalhost\n--plan");
+    std::test::assert(
+        std::str::contains(
+            planned_off.stdout,
+            "probe's `node` one taken off localhost by its uninstall",
+        )
+            && std::str::contains(planned_off.stdout, "~/.local/share/hale/hosted/probe")
+            && std::str::contains(planned_off.stdout, "~/.local/share/hale/toolchains/v0.30.1"),
+        "the removal's plan takes the placed service off first: " + planned_off.stdout
+            + planned_off.stderr,
+    );
+    // taken off (what `unplace` records): the head lists it no more
+    let off = j.append(
+        j.revision(),
+        "habitat.unplaced",
+        "probe/node/localhost/one",
+        std::str::replace(placement, "\"state\":\"placed\"", "\"state\":\"unplaced\""),
+    );
+    std::test::assert(off.ok, "the unplacement is a row: " + off.error);
+    std::test::assert(
+        len(element(surface_read(face, "Commands::placements", "placements"), "id", "one")) == 0
+            && len(element(surface_read(face, "Commands::placements", "history"), "id", "one")) > 0,
+        "an unplaced service holds no more, and the record keeps what it installed",
+    );
+
     // ---- removed plan-then-confirm: the plan names the allocation and what
     // stops on the host, and nothing is touched until the host's name is
     // typed back at a terminal
