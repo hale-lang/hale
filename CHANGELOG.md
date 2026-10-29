@@ -8,6 +8,22 @@ behavior.
 
 ## Unreleased
 
+## v0.30.3 — voice nodes from the habitat (2026-10-28)
+
+A habitat can now turn a machine it manages into an organism's own kind of node, and its alerts screen loads wherever it is installed.
+
+**Host commands.** An organism declares commands of its own for the habitat to run on a host (`[dna.host.<name>]`), and `hale habitat organism place <organism> <command> --host <h>` runs one there, in the organism's source at the revision the habitat pins, over your SSH login and under your sudo when it needs root. It hands the command the api's address and its operator token, in a private file removed afterwards, and ends by checking that the service it declares is running. voice's `node` turns a Linux or macOS machine into an inference node this way (#1764).
+
+**The alerts screen** loads in a habitat born from an installed `hale`: its script was missing from the toolchain's copy of the operator face (#1774).
+
+No breaking changes against v0.30.2.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- An organism can declare commands of its own for the habitat to run on a host it manages (`[dna.host.<name>]`: `install`, `uninstall`, `platforms`, `root`, `inputs`, `api_service`, `operator_token`, `service`). `hale habitat organism place <organism> <command> --host <h> [--id <id>] [--plan]` runs `install` in the organism's source at the revision the habitat pins, with the host's own `hale`, over your SSH login (under your sudo when it needs root), handing it the api's published URL and its operator token in a 0600 file removed afterwards; `unplace` runs `uninstall`. When the declaration names its `service`, the verb ends by checking it is running (or gone) with the host's service manager. voice's `node` turns a Linux or macOS machine into an inference node this way (#1764).
+
+- The habitat's alerts screen loads in a habitat born from an installed `hale`: its script (`alerts.js`) was missing from the toolchain's copy of the operator face and answered 404 (#1774).
+
 ## v0.30.2 — what runs where (2026-10-28)
 
 Every machine a habitat uses now reports its containers, and Grafana shows what runs where.

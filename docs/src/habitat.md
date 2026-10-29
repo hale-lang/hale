@@ -66,13 +66,25 @@ grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the fa
 node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
 ```
 
-Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Containers** dashboard shows what runs where: every container on every machine with its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window.
+Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Containers** dashboard shows what runs where: every container on every machine with the organism and part it is, its compose project and service, image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window. Every container the habitat runs is labelled `hale.habitat`, `hale.organism` and `hale.role` (an organism's own compose services through an override of the habitat's, never by editing its files), so the dashboard shows the habitat's containers by default, organism by organism, with **show: everything on the host** for whatever else a machine runs beside them.
 
 `HALE_DNA_NODE_EXPORTER=off` (both exporters) and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
 ### Reflexes and Alerts
 
 An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks by default: one more than 90% full for ten minutes, or one that fills within a day at its recent rate. The operator face's **alerts** screen shows what is firing, and what is about to.
+
+### An Organism's Own Host Commands (`organism place`)
+
+An organism can declare commands of its own for the habitat to run on a host, in its manifest under `[dna.host.<name>]`. voice declares `node`, which turns a machine into a voice node: it installs what the machine needs to serve models, outside compose, and registers it with voice's api.
+
+```sh
+hale habitat organism place voice node --host gpu-1.lan --plan   # what would run, and where
+hale habitat organism place voice node --host gpu-1.lan          # sudo asks once, at your terminal
+hale habitat organism unplace voice node --host gpu-1.lan
+```
+
+The command runs in the organism's own source at the revision the habitat pins, over your SSH login. The habitat provisions what it needs to run at all: it installs what the host lacks of hale's build prerequisites (git, curl, tar, clang, OpenSSL's and zlib's headers) with the host's package manager, and the hale release the organism declares (`[dna] toolchain = "v0.30.1"` in its `hale.toml`; else the habitat's own) into a directory of its own on the host. A declaration's `requires` (`docker`, `systemd`, `nvidia-gpu`, `apple-silicon`, `gpu`; a list, or a table by platform such as `{ linux = ["docker", "gpu"], macos = ["gpu"] }`) is checked against the host before anything is installed; `--plan` shows all of it. Inputs such as voice's operator token are fetched for the run, handed over in a private file, and removed afterwards. When the declaration names its `service` (voice's is `voice-node-<id>`, a systemd unit on Linux and a launchd service on macOS), `place` ends by asking the host's service manager that it runs, and `unplace` that it is gone ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Host commands).
 
 ### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 

@@ -73,6 +73,19 @@ pub(super) fn grafana_off() -> bool {
     std::env::var("HALE_DNA_GRAFANA").is_ok_and(|v| v.trim() == "off")
 }
 
+/// The container labels cAdvisor carries onto every reading: compose's
+/// project and service, and the habitat's own (`dna::compose_labels`:
+/// which habitat, which organism, which part), which the Containers
+/// dashboard groups and filters by.
+const CONTAINER_LABELS: &str = "com.docker.compose.project,com.docker.compose.service,hale.habitat,hale.organism,hale.role";
+
+/// `docker run`'s labels for a container of the habitat's own, a part
+/// `role` of the habitat (as `dna::compose_labels` writes a service's).
+fn docker_labels(role: &str) -> String {
+    let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));
+    format!("--label {} --label hale.organism=habitat --label {}", q(&format!("hale.habitat={}", super::habitat_label())), q(&format!("hale.role={role}")))
+}
+
 /// What a script says it did, on its last line: `hale-node: <outcome>`.
 const OUTCOME: &str = "hale-node:";
 
@@ -87,8 +100,11 @@ pub(super) fn install_script(sudo: &str) -> String {
     let n = NODE_EXPORTER_NAME;
     let l = NODE_EXPORTER_LABEL;
     let flags = NODE_EXPORTER_LINUX_FLAGS;
-    // the container's label: its version, and its flags when it has any
-    let want = if flags.is_empty() { v.to_string() } else { format!("{v} {flags}") };
+    // the container's label: its version, its flags when it has any, and
+    // the habitat whose it is (so one labelled for another is replaced)
+    let hab = super::habitat_label();
+    let want = if flags.is_empty() { format!("{v} {hab}") } else { format!("{v} {flags} {hab}") };
+    let labels = docker_labels("exporter");
     let arm = NODE_EXPORTER_DARWIN_ARM64_SHA256;
     let amd = NODE_EXPORTER_DARWIN_AMD64_SHA256;
     format!(
@@ -104,7 +120,7 @@ Linux)
   if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said "ours container"; exit 0; fi
   if ! $d inspect "$n" >/dev/null 2>&1 && node_readings; then said theirs; exit 0; fi
   $d rm -f "$n" >/dev/null 2>&1 || true
-  $d run -d --name "$n" --label "$l=$want" --restart unless-stopped --net host --pid host -v /:/host:ro,rslave "prom/node-exporter:v$v" --path.rootfs=/host --web.listen-address=":$p" {flags} >/dev/null
+  $d run -d --name "$n" --label "$l=$want" {labels} --restart unless-stopped --net host --pid host -v /:/host:ro,rslave "prom/node-exporter:v$v" --path.rootfs=/host --web.listen-address=":$p" {flags} >/dev/null
   said "ours container" ;;
 Darwin)
   case "$(uname -m)" in arm64) a=arm64; sum={arm} ;; x86_64) a=amd64; sum={amd} ;; *) said "skip no node_exporter build for $(uname -m)"; exit 0 ;; esac
@@ -183,19 +199,23 @@ pub(super) fn containers_script(sudo: &str) -> String {
     let l = CADVISOR_LABEL;
     let img = CADVISOR_IMAGE;
     let p = CADVISOR_PORT;
+    // its label: the image, the labels it carries onto every reading, and the
+    // habitat whose it is; one that differs in any is replaced
+    let want = format!("{img} {CONTAINER_LABELS} {}", super::habitat_label());
+    let labels = docker_labels("exporter");
     format!(
         r#"set -e
-S="{sudo}"; n={n}; l={l}; img={img}; p={p}
+S="{sudo}"; n={n}; l={l}; img={img}; p={p}; want="{want}"
 said() {{ printf '{CONTAINERS_OUTCOME} %s\n' "$*"; }}
 readings() {{ if command -v curl >/dev/null 2>&1; then curl -fsS --max-time 5 "http://127.0.0.1:$p/metrics"; elif command -v wget >/dev/null 2>&1; then wget -qO- -T 5 "http://127.0.0.1:$p/metrics"; fi; }}
 if docker info >/dev/null 2>&1; then d=docker; elif $S docker info >/dev/null 2>&1; then d="$S docker"; else said "skip docker does not answer this login"; exit 0; fi
-if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $img" ]; then said ours; exit 0; fi
+if [ "$($d inspect -f '{{{{.State.Running}}}} {{{{index .Config.Labels "'$l'"}}}}' "$n" 2>/dev/null)" = "true $want" ]; then said ours; exit 0; fi
 if ! $d inspect "$n" >/dev/null 2>&1 && readings 2>/dev/null | grep -q '^container_'; then said theirs; exit 0; fi
 $d rm -f "$n" >/dev/null 2>&1 || true
-$d run -d --name "$n" --label "$l=$img" --restart unless-stopped --privileged --net host \
+$d run -d --name "$n" --label "$l=$want" {labels} --restart unless-stopped --privileged --net host \
   -v /:/rootfs:ro -v /var/run:/var/run:ro -v /var/run/docker.sock:/var/run/docker.sock:ro -v /sys:/sys:ro -v /var/lib/docker/:/var/lib/docker:ro --device /dev/kmsg \
   "$img" -port="$p" -docker_only=true -housekeeping_interval=15s -store_container_labels=false \
-  -whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service \
+  -whitelisted_container_labels={CONTAINER_LABELS} \
   -enable_metrics=cpu,memory,network,oom_event >/dev/null
 said ours
 "#
@@ -450,6 +470,7 @@ pub(super) fn grafana_service(hab_dir: &str, port: u16, face_url: &str, header: 
     let admin_password = if getrandom(&mut bytes).is_ok() { bytes.iter().map(|b| format!("{b:02x}")).collect::<String>() } else { format!("{:x}", std::process::id() as u64 * 0x9e37_79b9) };
     let mut s = String::from("  grafana:\n");
     s.push_str(&format!("    image: \"{GRAFANA_IMAGE}\"\n"));
+    s.push_str(&super::compose_labels("habitat", "grafana"));
     s.push_str("    network_mode: \"service:face\"\n");
     s.push_str(user_spec);
     s.push_str("    depends_on:\n      - \"face\"\n");
@@ -516,8 +537,10 @@ mod tests {
         // a Mac's daemon runs as nobody; the format's braces are the shell's
         assert!(s.contains("<key>UserName</key><string>nobody</string>"));
         assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "docker's template survives the format");
-        // the container's flags are its label: one made with others is replaced
-        assert!(s.contains(&format!("want=\"{NODE_EXPORTER_VERSION}\"")), "the label is the version alone while there are no flags");
+        // the container's version and the habitat whose it is are its label:
+        // one made by another habitat, or another version, is replaced
+        assert!(s.contains(&format!("want=\"{NODE_EXPORTER_VERSION} {}\"", super::super::habitat_label())), "the label is the version and the habitat while there are no flags");
+        assert!(s.contains("--label 'hale.habitat=") && s.contains("--label hale.organism=habitat --label 'hale.role=exporter'"), "{s}");
     }
 
     #[test]
@@ -577,7 +600,8 @@ mod tests {
     #[test]
     fn the_container_exporter_keeps_only_compose_labels_and_is_shell() {
         let s = containers_script("sudo -n");
-        assert!(s.contains("-whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service") && s.contains("-store_container_labels=false"), "{s}");
+        assert!(s.contains("-whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service,hale.habitat,hale.organism,hale.role") && s.contains("-store_container_labels=false"), "{s}");
+        assert!(s.contains(&format!("want=\"{CADVISOR_IMAGE} {CONTAINER_LABELS} ")), "a cAdvisor carrying other labels is replaced: {s}");
         assert!(s.contains("'{{.State.Running}} {{index .Config.Labels \"'$l'\"}}'"), "{s}");
         for script in [s, containers_remove_script("sudo")] {
             assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");

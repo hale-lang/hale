@@ -33,6 +33,9 @@ mod readings;
 #[path = "reflexes.rs"]
 mod reflexes;
 
+#[path = "hosted.rs"]
+mod hosted;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -881,7 +884,12 @@ fn organism_dna(args: &[String]) -> ExitCode {
 
 fn organism(args: &[String]) -> ExitCode {
     use std::io::{BufRead, IsTerminal, Write};
-    let usage = "usage: hale habitat organism remove <name> [--plan]";
+    match args.first().map(String::as_str) {
+        Some("place") => return hosted::place(&args[1..], true),
+        Some("unplace") => return hosted::place(&args[1..], false),
+        _ => {}
+    }
+    let usage = "usage: hale habitat organism remove <name> [--plan] | place|unplace <name> <command> --host <host> [--id <id>] [--plan]";
     let (name, plan_only) = match (args.first().map(String::as_str), args.get(1), args.get(2).map(String::as_str), args.len()) {
         (Some("remove"), Some(n), None, 2) if !n.starts_with('-') => (n.clone(), false),
         (Some("remove"), Some(n), Some("--plan"), 3) if !n.starts_with('-') => (n.clone(), true),
@@ -1768,6 +1776,27 @@ fn name_file() -> PathBuf {
 /// The name a habitat has when its birth named none.
 const DEFAULT_HABITAT_NAME: &str = "local";
 
+/// The habitat's name as the labels on its containers carry it: the one it
+/// was born with here, else the one this machine's pointer names for a
+/// habitat on another machine (as `dna::habitat_name_here`).
+pub(super) fn habitat_label() -> String {
+    std::fs::read_to_string(name_file())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| remote::pointer().and_then(|p| p["name"].as_str().map(str::to_string)).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| DEFAULT_HABITAT_NAME.to_string())
+}
+
+/// A compose service's `labels:` block for a part `role` of the organism
+/// `organism`, as `dna::compose_labels` writes one: the habitat, the
+/// organism and the part, which the container exporter carries onto every
+/// reading.
+pub(super) fn compose_labels(organism: &str, role: &str) -> String {
+    let q = |v: &str| serde_json::to_string(v).unwrap_or_default();
+    format!("    labels:\n      hale.habitat: {}\n      hale.organism: {}\n      hale.role: {}\n", q(&habitat_label()), q(organism), q(role))
+}
+
 /// Whether `name` is a DNS label: 1 to 63 lowercase letters, digits and
 /// `-`, neither first nor last a `-`.
 fn habitat_name_ok(name: &str) -> bool {
@@ -2629,6 +2658,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let fstate = face_state_dir().display().to_string();
     let mut services_block = String::from("# habitat-body-and-face\n  body:\n");
     services_block.push_str(&format!("    image: \"{image}\"\n"));
+    services_block.push_str(&compose_labels("habitat", "body"));
     services_block.push_str(&build_spec);
     services_block.push_str("    init: true\n");
     services_block.push_str(&user_spec);
@@ -2647,6 +2677,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let backends_of_body: Vec<String> = ["memory", "nerves"].iter().map(|r| format!("{r}-{key}")).filter(|svc| !key.is_empty() && present.contains(&format!("\n  {svc}:\n"))).collect();
     let depends = if backends_of_body.is_empty() { String::new() } else { format!("    depends_on:\n{}", backends_of_body.iter().map(|svc| format!("      - \"{svc}\"\n")).collect::<String>()) };
     services_block.push_str(&format!("    volumes:\n{mounts_yaml}\n    command: [\"dna\", \"dev\", \"{g}\", \"--no-iris\"]\n    restart: on-failure\n    stop_grace_period: {drain_secs}s\n{depends}  face:\n    image: \"{image}\"\n"));
+    services_block.push_str(&compose_labels("habitat", "face"));
     services_block.push_str(&build_spec);
     services_block.push_str("    init: true\n");
     services_block.push_str(&user_spec);

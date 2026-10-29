@@ -227,6 +227,7 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
 /// pack and the `law` items its document marks.
 pub const HABITAT_FILES: &[EmbeddedFile] = at![
     "dna/habitat/README.md",
+    "dna/habitat/ui/alerts.js",
     "dna/habitat/ui/hardware.js",
     "dna/habitat/ui/infrastructure.js",
     "dna/habitat/ui/organisms.js",
@@ -578,6 +579,25 @@ mod tests {
     /// listed file is in one of them or is the launcher. A seed that
     /// imports a directory no list carries fails the CLI's check of the
     /// materialized tree instead (hale-cli's `dna_head.rs`).
+    /// A habitat born from an installed toolchain has only the files
+    /// `HABITAT_FILES` lists: every file of its operator face
+    /// (`dna/habitat/ui`) is listed, so a screen's script cannot ship in the
+    /// checkout and be missing from every installed habitat (alerts.js was).
+    #[test]
+    fn the_habitat_set_is_its_readme_and_its_ui() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut on_disk: Vec<String> = vec!["dna/habitat/README.md".to_string()];
+        for e in std::fs::read_dir(root.join("dna/habitat/ui")).unwrap().filter_map(|e| e.ok()) {
+            if e.path().is_file() {
+                on_disk.push(format!("dna/habitat/ui/{}", e.file_name().to_string_lossy()));
+            }
+        }
+        on_disk.sort();
+        let mut listed: Vec<String> = HABITAT_FILES.iter().map(|f| f.path.to_string()).collect();
+        listed.sort();
+        assert_eq!(listed, on_disk, "a file of the habitat's operator face (dna/habitat/ui) was added or removed without updating HABITAT_FILES in hale-dna");
+    }
+
     #[test]
     fn the_head_set_is_the_repo_directories() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

@@ -161,11 +161,19 @@ fn placement_export(j: dna::Journal, latest: LatestRows) -> String {
 // The render of an organism's own services (`role` `services`): its compose
 // file, in the project its placement names.
 fn services_render(body: String) -> dna::Render {
-    return dna::Render {
+    let r = dna::Render {
         project: std::json::find_string_field(body, "project"),
         dir: std::json::find_string_field(body, "render_dir"),
         files: std::json::find_string_field(body, "render_files"),
         mounted: std::json::find_string_field(body, "render_mounted"),
+    };
+    // each of its services labelled as the habitat's, for the organism it is
+    return dna::Render {
+        project: r.project,
+        dir: r.dir,
+        files: r.files,
+        mounted: r.mounted,
+        labels: dna::render_labels(r, dna::organism_label(r.dir)),
     };
 }
 

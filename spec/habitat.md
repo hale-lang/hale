@@ -869,13 +869,31 @@ container `hale-cadvisor` wherever docker runs, a Mac's inside docker's
 VM, where its containers are. It runs on the host's network on `:9338`,
 privileged, reading docker's containers only (docker's socket mounted by
 its own path, which a desktop VM's symlink would not resolve), keeping of
-their labels only `com.docker.compose.project` and
-`com.docker.compose.service`, and collecting CPU, memory, network and OOM
+their labels only `com.docker.compose.project`,
+`com.docker.compose.service`, `hale.habitat`, `hale.organism` and
+`hale.role`, and collecting CPU, memory, network and OOM
 events every 15 s. It is installed, found, replaced (labelled
-`lang.hale.cadvisor=<image>`) and removed where and when the node
-exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
+`lang.hale.cadvisor=<image> <the labels it keeps> <habitat>`, so one keeping
+others or made by another habitat is replaced) and removed where and when
+the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
 scrapes it as the job `containers` from `senses.d/containers/*.json`,
 which `up` adds to the habitat's store configuration when it has none.
+
+**Whose a container is.** Every container the habitat runs carries three
+labels: `hale.habitat` (the habitat's name), `hale.organism` (the organism
+it is a part of, by its directory's name; the habitat's own genome is
+`habitat`) and `hale.role` (the part: `memory`, `nerves`, `senses`,
+`body`, `face`, `grafana`, `forge`, `exporter`, and `services` for an
+organism's own compose services). The habitat writes them into the
+compose files it owns (an allocation's, the forge's, the body and face's,
+Grafana's) and onto the exporters it runs. An organism's own compose
+files are never touched: when its services are applied, the habitat asks
+compose which services those files define and adds an override of its
+own labelling each, kept under `<habitat>/labels/<project>.yaml` and, on
+an SSH host, beside the habitat's copy of the render
+(`.hale-labels.yaml`). A habitat's compose files are rewritten whenever
+their text changes, so compose recreates a service whose labels moved and
+keeps its volume.
 
 **What is scraped follows the record.** The store reads
 `senses.d/*.json` beside its allocation (mounted as a directory, so a file
@@ -893,9 +911,13 @@ published on macOS but for that port), served under `/grafana/` of the
 face. Its provisioning (`<habitat>/grafana/provisioning`, written at
 every `up`) is the habitat's senses' store as its one data source (uid
 `habitat-senses`) and the habitat's dashboards. `Containers` shows what
-runs where: each machine's running count, every container with its
-compose project and service, image and uptime, its CPU, memory and
-network, and the restarts and OOM kills in the window. `Hosts` is its home: whether
+runs where: each machine's running count, every container with the
+organism and part it is (its `hale.*` labels), its compose project and
+service, image and uptime, its CPU, memory and network, and the restarts
+and OOM kills in the window. It shows the habitat's containers by default
+(`show`: the habitat's, those carrying `hale.habitat`; or everything on
+the host, which a host's other workloads compete with) and filters by
+organism and host. `Hosts` is its home: whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator
@@ -958,6 +980,92 @@ but not yet for its time, `firing` after) and since when. The operator
 face's **alerts** screen lists them, firing first. Nothing acts on a
 reflex yet: its `action` is carried on the alert for the receiver that
 will act on it, and an alert is never recorded.
+
+## Host commands: an organism's own, on a host
+
+An organism may declare commands of its own that the habitat runs on a
+host it manages, in its manifest under `[dna.host.<name>]`. The habitat
+knows nothing of what a command does: voice's `node` installs whatever a
+machine needs to serve models, directly on the host, outside compose.
+
+```toml
+[dna.host.node]
+platforms = ["linux", "macos"]   # where it runs; empty: anywhere
+root = true                      # run under the person's sudo
+install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}", "--operator-token-file", "{operator_token_file}"]
+uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
+inputs = ["id", "api_url", "operator_token_file"]
+api_service = "api"                           # whose published address is {api_url} (default "api")
+operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
+service = "voice-node-{id}"                   # what the install leaves running
+requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have
+```
+
+`hale habitat organism place <organism> <command> --host <h> [--id <id>]
+[--plan]` runs `install`, and `unplace` runs `uninstall`. Both need a
+grafted organism that came from a sapling the habitat pins, and a
+`ready` host:
+
+- **Its source.** The organism's sapling repository at its pinned
+  revision, cloned (then fetched) on the host under the login's
+  `~/.local/share/hale/hosted/<organism>`, where the command runs. Its
+  declaration is read from that checkout, so the command is the one the
+  pinned revision declares.
+- **What the host is.** Before anything is touched, the verb reads the host
+  over the login: its OS and architecture, its package manager (apt-get,
+  dnf, Homebrew), what of the toolchain's prerequisites it has, the
+  toolchains the habitat installed there, and the facts `requires` is
+  checked against.
+- **What any toolchain builds with**, the same for every organism: git,
+  curl, tar, clang, and OpenSSL's and zlib's headers (Homebrew's
+  `openssl@3` on macOS, where clang and zlib are the Command Line Tools').
+  What the host lacks is installed first, with its package manager: under
+  the person's sudo for apt-get and dnf, so only at a terminal, and as the
+  login for Homebrew. A host with no package manager the habitat knows, or
+  a Mac without the Command Line Tools, is refused, naming what it lacks.
+- **Its toolchain.** The hale release the organism declares (`[dna]
+  toolchain = "<version>"` in its manifest, as a codebase's `toolchain` is),
+  else the habitat's own, installed from that release under the login's
+  `~/.local/share/hale/toolchains/<tag>/`, checked against the release's
+  sha256 and moved into place whole, one directory per version, never the
+  person's own `hale`. A command whose first word is `hale` runs with it by
+  its absolute path.
+- **What it requires**, by platform (`requires = { linux = [...], macos =
+  [...] }`; a list is the same on every platform), from a vocabulary the
+  habitat checks from the host's facts: `docker` (docker answers the login), `systemd` (a Linux
+  host whose system services run under systemd), `nvidia-gpu`
+  (`nvidia-smi` lists a GPU), `apple-silicon` (an arm64 Mac), `gpu` (either
+  of the two). A host that lacks one is refused before anything is
+  installed, naming what it lacks; a requirement outside the vocabulary
+  refuses the declaration.
+- **Its inputs**, each named in `inputs` and filled where its argv says
+  `{input}` (an input it does not declare, or one with no value, is
+  refused): `id` (`--id`, by default the host's first label), `api_url` (the
+  published address of `api_service` in the organism's `services`
+  allocation, as the head links it), `operator_token_file` (a 0600 file on
+  the host holding what `operator_token` prints in that service's
+  container, read over the person's login to the host the service runs on;
+  written for the run and removed however it ends; never on this machine's
+  disk, in the head, or in a command line).
+- **Who runs it.** Everything goes over the person's own SSH logins, as
+  `host add` makes the habitat's account; `root = true` runs it under the
+  person's sudo, so only at a terminal. `--plan` prints what would run,
+  where, and with what (the packages it would install, the toolchain and
+  whether it is there), and touches nothing on the host but the checkout;
+  a host without git stops the plan at installing it, since the
+  declaration is read from the checkout.
+- **What it leaves running.** `service` names the system service the
+  install leaves on the host, outside compose (a systemd unit on Linux, a
+  launchd service in the system domain on macOS), its `{id}` filled as
+  the command's is: letters, digits, `-`, `_`, `.`, `@`. The plan names
+  it, and once the command exits 0 the host's own service manager is
+  asked for it: `running` after `place`, `absent` after `unplace`, and
+  anything else fails the verb, naming what it found.
+
+Not yet: the habitat records no row for a placed command (the
+infrastructure screen does not show it, and a host's removal does not run
+its `uninstall`), and the token of an api on the habitat's own machine is
+not read.
 
 ## Pairing: an agent beside a person
 
