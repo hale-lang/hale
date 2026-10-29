@@ -2222,7 +2222,13 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     }
     if main_text.contains("main locus Org") && main_text.contains("nats::NatsConn {") && !main_text.contains("credential:") {
         out.push(format!(
-            "note    {}/main.hl's `nerves` connection presents no credential (GH #989): no URL carries a password now, so it cannot connect. Add `user: \"spine\", credential: std::secret::Credential {{ vault: dna::nerves_role_vault(\"spine\") }},` to its `nats::NatsConn`, as `hale habitat graft` writes it; an application's own connection takes `user: \"app\"` and the vault entry HALE_DNA_NATS_VAULT_APP names",
+            "note    {}/main.hl's `nerves` connection presents no credential (GH #989): no URL carries a password now, so it cannot connect. Add `user: dna::nerves_role_user(\"spine\"), credential: std::secret::Credential {{ vault: dna::nerves_role_vault(\"spine\") }},` to its `nats::NatsConn`, as `hale habitat graft` writes it; an application's own connection takes `user: \"app\"` and the vault entry HALE_DNA_NATS_VAULT_APP names",
+            ORG_SEED
+        ));
+    }
+    if main_text.contains("main locus Org") && main_text.contains("nats::NatsConn {") && main_text.contains("user: \"spine\"") {
+        out.push(format!(
+            "note    {}/main.hl's `nerves` connection is the user `spine`: each organization is an account of its own now, its users named for its record, so `spine` is no user on any server. Write `user: dna::nerves_role_user(\"spine\"),` in its place",
             ORG_SEED
         ));
     }
@@ -3115,9 +3121,10 @@ main locus Org {{
         // user and the organization's token.
         nerves: nats::NatsConn = nats::NatsConn {{
             url: dna::nerves_spine_url(),
-            // the spine's account: its password is the vault's, presented
-            // on CONNECT and nowhere else (GH #989)
-            user: "spine",
+            // the spine's user of the organization's account, named for
+            // its record: its password is the vault's, presented on
+            // CONNECT and nowhere else (GH #989)
+            user: dna::nerves_role_user("spine"),
             credential: std::secret::Credential {{ vault: dna::nerves_role_vault("spine") }},
             name: "organization",
             subject_prefix: dna::nerves_subject_prefix(),

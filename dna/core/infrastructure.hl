@@ -522,8 +522,13 @@ fn compose_services(render: Render, sep: String) -> String {
 }
 
 // `up` for `render`: every service it names, or all of them.
+// `--build`: a service built from the render's own context (an organism's
+// application) is built again from the revision being applied, never left
+// on an image an earlier revision built under the same tag; docker's
+// cache keeps an unchanged context's build cheap, and a service that
+// only names an image builds nothing.
 fn compose_up_args(render: Render, sep: String) -> String {
-    return "up" + sep + "-d" + sep + "--wait" + compose_services(render, sep);
+    return "up" + sep + "-d" + sep + "--build" + sep + "--wait" + compose_services(render, sep);
 }
 
 // What `render` brought up taken down: the services it names, removed
@@ -667,7 +672,13 @@ locus ComposeProvider {
         // the service that holds the role (the heart's database is the
         // memory server's), never a name the row spelled otherwise
         // a record on the habitat's memory is observed as that server
-        let service = if a.role == "memory" && memory_reused(a.instance) && len(a.service) > 0 {
+        // and an organization on the habitat's nerves as that server
+        let service = if (
+            (a.role == "memory" && memory_reused(a.instance))
+                || (a.role == "nerves" && nerves_reused(a.instance))
+        )
+            && len(a.service) > 0
+        {
             a.service
         } else {
             compose_service(a.role, a.instance)

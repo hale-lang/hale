@@ -56,7 +56,9 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
                     + ") are not written (`hale dna upgrade` writes them from the vault's provisioning)",
             );
         }
-        let infra = ReferenceInfrastructure { root: root };
+        // its own server, or the habitat's for an account the habitat's
+        // server keeps (`dna::nerves_root`)
+        let infra = ReferenceInfrastructure { root: dna::nerves_root(root) };
         if derive {
             server = infra.nerves_if_up();
             if len(server) == 0 {
@@ -66,7 +68,7 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
                 );
             }
         } else {
-            let up = infra.nerves_server(root);
+            let up = infra.nerves_server(dna::nerves_root(root));
             if !up.present { return answer("none: " + up.why + "\n"); }
             server = up.dsn;
         }
@@ -75,7 +77,7 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     if derive { return answer(nerves_urls(root, org, url)); }
     let c = nats::NatsClient {
         url: dna::reach_url(url),
-        user: "owner",
+        user: dna::nerves_user(org, "owner"),
         credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
         name: "dna-owner",
         timeout: 2s,
@@ -118,11 +120,46 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
 
 }
 
-// GH #1653: the nerves allocation's configuration and its secrets live with
-// the organism's allocations in the local habitat, never in a checkout.
-fn nats_conf_path(root: String) -> String { return allocation_files(root) + "/nats.conf"; }
+// GH #1653: the nerves server's configuration lives with the allocations
+// of the organism whose server it is (`dna::nerves_root`: its own, or the
+// habitat's for an organism whose account the habitat's server holds),
+// never in a checkout; each organization's account and its secrets are
+// files of the server's `nerves.d/`, named by the organization's key.
+fn nats_conf_path(root: String) -> String {
+    return allocation_files(dna::nerves_root(root)) + "/nats.conf";
+}
+fn nats_accounts_dir(root: String) -> String {
+    let dir = allocation_files(dna::nerves_root(root));
+    if len(dir) == 0 { return ""; }
+    let made = dna::run_tool("mkdir\n-p\n-m\n700\n" + dir + "/nerves.d");
+    return if made.code == 0 { dir + "/nerves.d" } else { "" };
+}
 fn nats_secrets_path(root: String) -> String {
-    return allocation_files(root) + "/nats.secrets.conf";
+    return nats_accounts_dir(root) + "/" + dna::allocation_key(root) + ".secrets.conf";
+}
+fn nats_account_path(root: String) -> String {
+    return nats_accounts_dir(root) + "/" + dna::allocation_key(root) + ".account.conf";
+}
+
+// The organization's account written beside its server, and the server's
+// configuration rewritten to hold every account there: whether either
+// changed (the server then restarts to read them).
+fn write_nerves_conf(root: String, org: String, app: String, heart: String) -> Bool {
+    let mut moved = false;
+    let account = nats_account_path(root);
+    let text = dna::nerves_account_text(dna::allocation_key(root), org, app, heart);
+    if (std::io::fs::read_file(account) or "") != text {
+        std::io::fs::write_file(account, text) or discard;
+        moved = true;
+    }
+    return server_conf_rewrite(root) || moved;
+}
+
+// The server's nats.conf rewritten from the accounts its `nerves.d/` holds
+// (an account and its secrets, both written): whether it changed.
+fn server_conf_rewrite(root: String) -> Bool {
+    if len(nats_accounts_dir(root)) == 0 { return false; }
+    return dna::nerves_server_conf_write(allocation_files(dna::nerves_root(root)));
 }
 
 // What `nerves_migrate` did: the stream exists as this toolchain wants it.
@@ -239,7 +276,7 @@ fn nerves_drop_verb(root: String) -> Answer {
     }
     let c = nats::NatsClient {
         url: dna::reach_url(dna::nerves_server_url(owner)),
-        user: "owner",
+        user: dna::nerves_user(org, "owner"),
         credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
         name: "dna-owner",
         timeout: 2s,
@@ -286,7 +323,7 @@ fn nerves_urls(root: String, org: String, url: String) -> String {
     let app = attached_application(root);
     if len(app) > 0 && len(dna::nerves_app_refusal(app)) == 0 {
         out = out + dna::NATS_APP_URL_ENV + "=" + url + "\n";
-        out = out + dna::NATS_APP_USER_ENV + "=" + dna::nerves_app_user(app) + "\n";
+        out = out + dna::NATS_APP_USER_ENV + "=" + dna::nerves_app_user(org, app) + "\n";
         out = out + dna::NATS_APP_VAULT_ENV + "=" + dna::nerves_app_vault(org, app) + "\n";
     }
     out = out + "HALE_DNA_NATS_VAULT_REFLEXES=" + dna::nerves_vault_name(org, "reflexes") + "\n";

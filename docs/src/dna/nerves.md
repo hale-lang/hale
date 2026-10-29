@@ -15,31 +15,33 @@ Only a running spine **node** ([The Spine](./spine.md#a-node)) publishes to NATS
 
 ## Broker Configuration & Accounts
 
-In local development, the broker runs as the `nerves-<id>` container inside your machine's local habitat ([Memory and the Record](./memory.md#the-local-habitat)): a `nats:2` server bound to `127.0.0.1` on a host port in the `42000` range (stored in `ports.yaml`) and configured by `<habitat>/allocations/<id>/nats.conf`. For multi-host deployments, run a NATS server with JetStream enabled (`-js` or `jetstream {}` in `nats.conf`), deploy the generated `nats.conf` and `nats.secrets.conf`, and pass `HALE_DNA_NATS_URL_OWNER` during migration.
+In local development, the broker runs as a `nerves-<id>` container inside your machine's local habitat ([Memory and the Record](./memory.md#the-local-habitat)): a `nats:2` server bound to `127.0.0.1` on a host port in the `42000` range (stored in `ports.yaml`). An organism grafted with the habitat's defaults has no server of its own: its organization is an **account** on the habitat's NATS server. An organism grafted with `--own nerves` gets a server of its own, holding its one account. For multi-host deployments, run a NATS server with JetStream enabled, deploy the generated files, and pass `HALE_DNA_NATS_URL_OWNER` during migration.
 
-`nats.conf` contains no plaintext passwords; it references environment variables loaded from `nats.secrets.conf` (written from the vault with mode `0600`). For a project named `refproj`, the generated account permissions are:
+Each organization a server holds is an account of its own (`ORG_<KEY>`, the record's first 12 hex digits), so nothing of one organization reaches another on a shared server. Its users are named by role and record key, and their passwords are variables of the account's secrets file (`<key>.secrets.conf`, written from the vault with mode `0600`), which the account includes first. The server's `nats.conf` includes every account in its `nerves.d/` directory and is rewritten whenever one comes or goes. For a project named `refproj` whose record key is `3f2a9c0b7d11`, the generated account reads:
 
 ```text
-    # creates the organization's stream; held by no process that runs it
-    { user: owner, password: $NATS_OWNER_PASSWORD }
-    # the spine: a node's host publishes the organization's facts, and the
-    # organization reads them through its durable consumers (`spine`, an
-    # owner's `spine_<owner>`, and `heart` for the applications' events).
-    # `*` stands for the organization's token: this server carries one
-    # organization. A node also tells the heads every row it lands.
-    { user: spine, password: $NATS_SPINE_PASSWORD,
-      permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
-    # the application `refproj` the record attaches: publishes on its own
-    # subjects alone, reads nothing of DNA's (#987)
-    { user: app-refproj, password: $NATS_APP_REFPROJ_PASSWORD,
-      permissions: { publish: ["*.app.refproj.>"], subscribe: ["_INBOX.>"] } }
-    # the reflexes (#988): publish their firings on their own subjects,
-    # read nothing
-    { user: reflexes, password: $NATS_REFLEXES_PASSWORD,
-      permissions: { publish: ["*.app.reflexes.>"], subscribe: ["_INBOX.>"] } }
-    # the head: subscribes, publishes nothing
-    { user: head, password: $NATS_HEAD_PASSWORD,
-      permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }
+include ./3f2a9c0b7d11.secrets.conf
+ORG_3F2A9C0B7D11: {
+  jetstream: enabled
+  users = [
+      # creates the organization's stream; held by no process that runs it
+      { user: owner-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_OWNER_PASSWORD }
+      # the spine: a node's host publishes the organization's facts, and the
+      # organization reads them through its durable consumers
+      { user: spine-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_SPINE_PASSWORD,
+        permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
+      # the application `refproj` the record attaches: publishes on its own
+      # subjects alone, reads nothing of DNA's
+      { user: app-refproj-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_APP_REFPROJ_PASSWORD,
+        permissions: { publish: ["*.app.refproj.>"], subscribe: ["_INBOX.>"] } }
+      # the reflexes: publish their firings on their own subjects, read nothing
+      { user: reflexes-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_REFLEXES_PASSWORD,
+        permissions: { publish: ["*.app.reflexes.>"], subscribe: ["_INBOX.>"] } }
+      # the head: subscribes, publishes nothing
+      { user: head-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_HEAD_PASSWORD,
+        permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }
+  ]
+}
 ```
 
 ### NATS User Accounts

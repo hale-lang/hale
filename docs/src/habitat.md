@@ -62,9 +62,11 @@ The habitat's senses' store (its Prometheus) scrapes each machine as the job `ho
 A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
 
 ```text
-grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in)
+grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in; started at its first use, stopped after 15 minutes unused)
 node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
 ```
+
+Grafana runs only while someone uses it. `up` creates its service without starting it; the first time you open `/grafana/`, the face starts it and shows a "starting the habitat's dashboards" page that reloads itself every few seconds until Grafana answers (if Grafana does not come up within a minute, the page says why and stops reloading; reload it to try again). Once nobody has used it for 15 minutes, the face stops it again. A dashboard left open in a browser tab refreshes itself every 30 seconds, and that counts as use. `HALE_DNA_GRAFANA=on` keeps Grafana running from `up` to `down` instead.
 
 Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Services** dashboard shows what runs where, whatever a machine's system: every container on every machine with the organism and part it is, its image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window, and in the same table and graphs every service the habitat placed on a host with `organism place` (kind `systemd` or `launchd`), read from its own readings: whether it answers (one that does not shows as down), its uptime, memory and CPU. Every container the habitat runs is labelled `hale.habitat`, `hale.organism` and `hale.role` (an organism's own compose services through an override of the habitat's, never by editing its files), so the dashboard shows the habitat's containers by default, organism by organism, with **show: everything on the host** for whatever else a machine runs beside them.
 
@@ -275,6 +277,35 @@ curl -N $api/v1/chat/completions \
 - **No model:** every face screen works with the models catalog empty. Without a model, asks and leg work become handed Tasks that a person takes and reports done as text from the face; nothing waits on a model or times out into a leg ([Workflows: with no model](./dna/workflow.md#with-no-model)).
 - **SSH host key verification:** `hale habitat host probe` rejects any host whose SSH host key has changed since `host add`; a host in `pending-key` state is waiting for the habitat's public key line in `~/.ssh/authorized_keys`.
 - **Agent operator brief:** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items). It reads the record alone, never the vault.
+
+---
+
+## Running on a Small Machine
+
+A habitat fits on a laptop. Measured on a running habitat (`docker stats`), with Grafana stopped, which is how it spends most of its time:
+
+| Service | Memory |
+| --- | --- |
+| `face` (the face, the head and its children) | about 105 MiB |
+| `forge` (Forgejo) | about 98 MiB |
+| `body` | about 91 MiB |
+| the habitat's memory (Postgres) | about 81 MiB |
+| the habitat's senses (Prometheus) | about 45 MiB |
+| `hale-cadvisor` (the container exporter) | about 20 MiB |
+| the habitat's nerves (NATS) | about 7 MiB |
+| **the habitat** | **about 450 MiB** |
+| `grafana`, while someone uses it | about 170 MiB more (capped at 384 MiB) |
+
+Before Grafana ran on demand and was trimmed, it alone held about 500 MiB, half the habitat.
+
+An organism grafted with the habitat's defaults adds no server of its own for its record or its nerves: its record is a schema on the habitat's Postgres and its organization an account on the habitat's NATS. It adds only its own services (voice's coordinator holds about 200 MiB). An organism grafted with `--own memory` or `--own nerves`, or one that needs senses of its own, adds that server: a Postgres about 80 MiB, a NATS under 10 MiB, a Prometheus about 45 MiB.
+
+**On a Mac**, the containers run inside Docker Desktop's VM, so the VM's memory is the habitat's budget. 3 GB is enough for the habitat, a few organisms and the VM's own needs (Docker Desktop → Settings → Resources → Memory). A model served by a node outside Docker (voice's `node` placed on the Mac itself, for example) uses the Mac's unified memory directly, not the VM's, so leave room for it outside the VM: on a 16 GB MacBook Air, a 3 GB VM leaves the rest for macOS and the model.
+
+Two things need more than that, once:
+
+- **Building the habitat's image.** A released `hale` pulls its own image (`ghcr.io/hale-lang/hale:<version>`), checks that it runs the same toolchain, and uses it, so nothing is built. A `hale` built from source has no published image and builds it once per toolchain commit: it compiles the compiler and then the head's seven programs in parallel, the largest of which alone peaks near 4.5 GB. For that build, raise the VM (8 GB or more) and lower it afterwards, or build the image on a larger machine and start the habitat from it with `--image <tag>` (or `HALE_HABITAT_IMAGE`).
+- **A face that has to build the head.** The image already holds the head's programs, so the face starts without compiling. A face whose image does not hold them (an image of another toolchain commit) builds them on its first start, which takes the same several GB. That is why the face and body have no memory cap: a cap below the build's peak would kill the build.
 
 ---
 
