@@ -36,6 +36,9 @@ mod reflexes;
 #[path = "hosted.rs"]
 mod hosted;
 
+#[path = "placements.rs"]
+mod placements;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -301,7 +304,10 @@ host remove <name>   remove it, planned first: the plan lists each allocation
                      placed or applied there and what stops or is deleted
                      on that host, the record's rows about it, and the line
                      its authorized_keys took, which this CLI then removes
-                     over your own SSH login. When the plan stops or deletes anything there,
+                     over your own SSH login. The services placed there
+                     (organism place) are taken off first, each by its
+                     own uninstall over your SSH login, with what placing
+                     installed there. When the plan stops or deletes anything there,
                      nothing is touched until the host's name is typed back
                      at a terminal; --plan prints the plan and exits.
                      The host verbs are the Board's commands of the
@@ -338,7 +344,9 @@ brief                the Board's hat as a prompt, with the habitat's live
                      endpoint `status` prints). It reads the record
                      alone, never the vault: no secret value is in it.
 status               the habitat, its genome and body, its face and, while
-                     the face runs, its head's MCP endpoint, and each
+                     the face runs, its head's MCP endpoint, the services
+                     placed on its hosts (organism place) under their
+                     hosts with their readings endpoints, and each
                      allocation: its organism, whether each role's service
                      runs, the schema version memory and the nerves record
                      against this toolchain's, and how a heart's declared
@@ -924,6 +932,16 @@ fn organism(args: &[String]) -> ExitCode {
             println!("  - {}", plan_line(i));
         }
     }
+    // the services placed for it on the hosts: taken off first, from here
+    let (current, history) = placements::from_head().unwrap_or_default();
+    let placed: Vec<placements::Placement> = current.into_iter().filter(|p| p.organism == confirm).collect();
+    if !placed.is_empty() {
+        println!();
+        println!("its services placed on the hosts, from this machine");
+        for l in placements::plan_lines(&placed) {
+            println!("  - {l}");
+        }
+    }
     if plan_only {
         return ExitCode::SUCCESS;
     }
@@ -931,6 +949,15 @@ fn organism(args: &[String]) -> ExitCode {
     let _ = std::io::stdout().flush();
     let mut typed = String::new();
     let _ = std::io::stdin().lock().read_line(&mut typed);
+    if !placed.is_empty() {
+        if typed.trim() != confirm {
+            eprintln!("hale habitat organism remove {name}: `{}` is not the organism's name, and nothing was removed (confirm_mismatch)", typed.trim());
+            return ExitCode::from(1);
+        }
+        for l in placements::take_off(&placed, &history) {
+            println!("{l}");
+        }
+    }
     let v = match host_call("Commands::remove_organism", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
         Ok(v) => v,
         Err(code) => return code,
@@ -1000,14 +1027,21 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         return ExitCode::from(1);
     }
     let items: Vec<serde_json::Value> = planned["plan"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    // the services placed there: taken off first, from this machine
+    let (current, history) = placements::from_head().unwrap_or_default();
+    let placed: Vec<placements::Placement> = current.into_iter().filter(|p| p.host == name).collect();
     println!("the plan to remove the host {name}:");
+    for l in placements::plan_lines(&placed) {
+        println!("  - {l}");
+    }
     for i in &items {
         println!("  - {}", plan_line(i));
     }
     if plan_only {
         return ExitCode::SUCCESS;
     }
-    let confirm = planned["confirm"].as_str().unwrap_or("").to_string();
+    // a service placed there is taken off only on the host's name too
+    let confirm = planned["confirm"].as_str().filter(|c| !c.is_empty()).map(str::to_string).unwrap_or_else(|| if placed.is_empty() { String::new() } else { name.to_string() });
     let mut typed = String::new();
     if !confirm.is_empty() {
         if !std::io::stdin().is_terminal() {
@@ -1017,6 +1051,15 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         print!("\ntype the host's name ({name}) to remove it and all of the above: ");
         let _ = std::io::stdout().flush();
         let _ = std::io::stdin().lock().read_line(&mut typed);
+    }
+    if !placed.is_empty() {
+        if typed.trim() != name {
+            eprintln!("hale habitat host remove {name}: `{}` is not the host's name, and nothing was removed (confirm_mismatch)", typed.trim());
+            return ExitCode::from(1);
+        }
+        for l in placements::take_off(&placed, &history) {
+            println!("{l}");
+        }
     }
     let v = match host_call("Commands::remove_host", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
         Ok(v) => v,
@@ -1037,6 +1080,11 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         for l in readings::remove_over(name, None, port) {
             println!("{l}");
         }
+    }
+    // the habitat's directories left empty there
+    let tidied = placements::tidy_host(name, port, &[], &[]);
+    if !tidied.is_empty() {
+        println!("{tidied}");
     }
     if remote::is_habitat_user(&field("user")) {
         // the habitat's own account there, its home and key with it
@@ -2627,7 +2675,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let reflexes_line = if senses.is_some() {
         let manifest = std::fs::read_to_string(genome.join("hale.toml")).unwrap_or_default();
         // (and the job of the machines' containers, beside its machines')
-        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)?;
+        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)? | readings::ensure_services_job(&dir)?;
         if moved {
             let _ = Command::new("env")
                 .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
@@ -2870,6 +2918,16 @@ fn status() -> ExitCode {
     if face_running().is_some() {
         if let Some(port) = mcp_port() {
             println!("{:<8}mcp://127.0.0.1:{port} (the head's commands over MCP: `hale mcp --app mcp://127.0.0.1:{port}`, the person's ID token in HALE_API_TOKEN)", "mcp");
+        }
+    }
+    // the services placed on its hosts, under their hosts, as its record
+    // holds them (none said when the record is not readable)
+    if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() {
+        if let Ok(text) = host_run("record-rows", &genome, &[]) {
+            let rows: Vec<serde_json::Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            for l in placements::status_lines(&placements::fold(&rows).0) {
+                println!("{l}");
+            }
         }
     }
     let (rows, from) = match recorded_allocations() {

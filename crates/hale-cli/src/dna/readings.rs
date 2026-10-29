@@ -56,9 +56,12 @@ pub(super) const GRAFANA_IMAGE: &str = "grafana/grafana:13.3.0";
 pub(super) const GRAFANA_OFFSET: u16 = 5;
 /// The path the face serves Grafana under.
 pub(super) const GRAFANA_PATH: &str = "/grafana/";
-/// The habitat's dashboards: its machines, and what runs on them.
+/// The habitat's dashboards: its machines, and what runs on them (the
+/// Services dashboard: its containers and the services it placed on its
+/// hosts, one table whatever a host's system; its uid is the Containers
+/// dashboard's it replaced, so a link to that one reaches it).
 const HOSTS_DASHBOARD: &str = include_str!("../../../../dna/habitat/grafana/hosts.json");
-const CONTAINERS_DASHBOARD: &str = include_str!("../../../../dna/habitat/grafana/containers.json");
+const SERVICES_DASHBOARD: &str = include_str!("../../../../dna/habitat/grafana/services.json");
 
 /// Whether `HALE_DNA_NODE_EXPORTER=off` keeps this run from installing or
 /// removing any machine's exporter (the DNA suite's fixtures; the run a
@@ -406,6 +409,28 @@ pub(super) fn ensure_containers_job(allocation: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The store's scrape job of the services the habitat placed on its hosts
+/// (`hale habitat organism place`, a declaration's `readings`): their own
+/// readings, from `senses.d/services/`, one file per placement the head
+/// writes as placements are recorded (`dna/api/habitat_placed.hl`). Added
+/// to the configuration when it has none, beside the containers' job:
+/// whether it was.
+pub(super) fn ensure_services_job(allocation: &Path) -> Result<bool, String> {
+    let dir = allocation.join("senses.d").join("services");
+    if allocation.join("senses.d").is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let conf = allocation.join("senses.yml");
+    let Ok(text) = std::fs::read_to_string(&conf) else { return Ok(false) };
+    if text.contains("job_name: services") || !text.contains("scrape_configs:\n") {
+        return Ok(false);
+    }
+    let job = "  # The services the habitat placed on its hosts, each serving its own readings, labelled `host`, `organism`, `service` and `kind`, from senses.d/services/.\n  - job_name: services\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/services/*.json\"]\n";
+    let text = text.replacen("scrape_configs:\n", &format!("scrape_configs:\n{job}"), 1);
+    std::fs::write(&conf, text).map_err(|e| format!("write {}: {e}", conf.display()))?;
+    Ok(true)
+}
+
 // ---------------------------------------------------------------
 // Grafana
 // ---------------------------------------------------------------
@@ -455,7 +480,10 @@ pub(super) fn write_provisioning(hab_dir: &Path, prometheus_url: &str) -> Result
     let provider = "apiVersion: 1\nproviders:\n  - name: habitat\n    folder: habitat\n    type: file\n    disableDeletion: true\n    allowUiUpdates: false\n    options:\n      path: /etc/grafana/provisioning/dashboards\n";
     std::fs::write(boards.join("habitat.yaml"), provider).map_err(|e| format!("write {}: {e}", boards.display()))?;
     std::fs::write(boards.join("hosts.json"), HOSTS_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
-    std::fs::write(boards.join("containers.json"), CONTAINERS_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
+    std::fs::write(boards.join("services.json"), SERVICES_DASHBOARD).map_err(|e| format!("write {}: {e}", boards.display()))?;
+    // the Containers dashboard it replaced, under the same uid: a second
+    // file of that uid would be refused
+    let _ = std::fs::remove_file(boards.join("containers.json"));
     Ok(())
 }
 
@@ -593,8 +621,10 @@ mod tests {
     fn the_dashboards_are_json() {
         let v: serde_json::Value = serde_json::from_str(HOSTS_DASHBOARD).expect("hosts.json parses");
         assert_eq!(v["uid"], "hale-hosts");
-        let v: serde_json::Value = serde_json::from_str(CONTAINERS_DASHBOARD).expect("containers.json parses");
-        assert_eq!(v["uid"], "hale-containers");
+        let v: serde_json::Value = serde_json::from_str(SERVICES_DASHBOARD).expect("services.json parses");
+        assert_eq!((v["uid"].as_str(), v["title"].as_str()), (Some("hale-containers"), Some("Services")), "the Containers dashboard's uid, so its links still reach it");
+        let hosts: serde_json::Value = serde_json::from_str(HOSTS_DASHBOARD).unwrap();
+        assert!(hosts["links"].as_array().unwrap().iter().any(|l| l["title"] == "Services" && l["url"] == "/grafana/d/hale-containers"));
     }
 
     #[test]
@@ -607,6 +637,64 @@ mod tests {
             assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
         assert_eq!(outcome_of("x\nhale-containers: ours\n"), "ours");
+    }
+
+    #[test]
+    fn the_services_dashboard_reads_both_kinds_in_one_table() {
+        let v: serde_json::Value = serde_json::from_str(SERVICES_DASHBOARD).unwrap();
+        let panels = v["panels"].as_array().unwrap();
+        let exprs = |p: &serde_json::Value| p["targets"].as_array().unwrap().iter().map(|t| t["expr"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let table = panels.iter().find(|p| p["title"] == "Running now").expect("the table");
+        let queries = exprs(table);
+        assert_eq!(queries.len(), 4, "state, up for, memory and CPU");
+        for q in &queries {
+            // both kinds, under the same labels, joined by `or`
+            assert!(q.contains("job=\"containers\"") && q.contains("job=\"services\"") && q.contains(" or "), "{q}");
+            assert!(q.contains("\"kind\", \"container\"") && q.contains("\"name\", \"$1\", \"service\""), "{q}");
+            assert!(q.contains("by (kind, host, organism, part, name, image)"), "{q}");
+            assert_eq!(q.matches('(').count(), q.matches(')').count(), "{q}");
+        }
+        // a placed service that does not answer is `up` 0: down, in the table
+        assert!(queries[0].contains("up{job=\"services\""), "{}", queries[0]);
+        assert!(queries[1].contains("time() - hale_process_start_time_seconds{job=\"services\""));
+        assert!(queries[2].contains("hale_process_resident_memory_bytes{job=\"services\""));
+        assert!(queries[3].contains("rate(hale_process_cpu_seconds_total{job=\"services\""));
+        assert!(table["transformations"][0]["id"] == "merge");
+        for title in ["CPU", "Memory"] {
+            let p = panels.iter().find(|p| p["title"] == title).unwrap();
+            let q = &exprs(p)[0];
+            assert!(q.contains("job=\"containers\"") && q.contains("job=\"services\""), "{title}: {q}");
+        }
+        // the variables: hosts and organisms of both kinds; the scope filters containers alone
+        let vars = v["templating"]["list"].as_array().unwrap();
+        let def = |n: &str| vars.iter().find(|x| x["name"] == n).unwrap()["definition"].as_str().unwrap().to_string();
+        assert!(def("host").contains("containers|services"));
+        assert!(def("organism").contains("job=\"services\"") && def("organism").contains("job=\"containers\""));
+        for p in panels {
+            for q in exprs(p) {
+                assert!(!q.contains("job=\"services\"") || !q.split("job=\"services\"").nth(1).unwrap_or("").split('}').next().unwrap_or("").contains("$scope"), "a placed service is always the habitat's: {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_services_job_is_added_once() {
+        let d = std::env::temp_dir().join(format!("hale-services-job-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("senses.d")).unwrap();
+        std::fs::write(d.join("senses.yml"), "global:\n  scrape_interval: 5s\nscrape_configs:\n  - job_name: spine\n").unwrap();
+        assert!(ensure_containers_job(&d).unwrap());
+        assert!(ensure_services_job(&d).unwrap());
+        assert!(!ensure_services_job(&d).unwrap(), "once");
+        let t = std::fs::read_to_string(d.join("senses.yml")).unwrap();
+        assert_eq!(t.matches("job_name: services").count(), 1);
+        assert!(t.contains("  - job_name: services\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/services/*.json\"]\n"), "{t}");
+        assert!(t.contains("job_name: containers") && t.contains("  - job_name: spine"), "{t}");
+        assert!(d.join("senses.d/services").is_dir(), "the directory the head writes into");
+        // no configuration yet (the store is not made): nothing
+        let e = d.join("none");
+        std::fs::create_dir_all(&e).unwrap();
+        assert!(!ensure_services_job(&e).unwrap());
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

@@ -661,7 +661,13 @@ fn remove_pointer() {
     let _ = std::fs::remove_dir(face_state_dir());
     let _ = std::fs::remove_file(head_url_file());
     let _ = std::fs::remove_file(pointer_path());
-    let _ = std::fs::remove_dir(local_habitat_dir());
+    let dir = PathBuf::from(local_habitat_dir());
+    // and the `habitat` directory holding it, when that leaves it empty
+    if std::fs::remove_dir(&dir).is_ok() {
+        if let Some(parent) = dir.parent().filter(|p| p.file_name().is_some_and(|n| n == "habitat")) {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
 }
 
 /// Whether something accepts a connection at `url`'s host and port.
@@ -827,6 +833,14 @@ pub(super) fn status(p: &serde_json::Value) -> ExitCode {
         }
         Err(e) => println!("{:<8}{e}", "note"),
     }
+    // the services placed on its hosts, under their hosts
+    if let Ok(v) = http_surface_call(head, "Commands::placements", &serde_json::json!({ "limit": 200 })) {
+        if v["ok"] == serde_json::json!(true) {
+            for l in super::placements::status_lines(&super::placements::parse_rows(&v).0) {
+                println!("{l}");
+            }
+        }
+    }
     match http_surface_call(head, "Commands::allocations", &serde_json::json!({ "limit": 200 })) {
         Ok(v) if v["ok"] == serde_json::json!(true) => {
             let rows: Vec<serde_json::Value> = v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
@@ -912,6 +926,36 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     } else {
         Vec::new()
     };
+    // the services the habitat placed on its hosts: taken off from this
+    // machine, over the person's own login, before the habitat there (and
+    // the organisms their commands answer to) is gone
+    let (placed, history) = if forget {
+        http_surface_call(p["head"].as_str().unwrap_or(""), "Commands::placements", &serde_json::json!({ "limit": 200 }))
+            .ok()
+            .filter(|v| v["ok"] == serde_json::json!(true))
+            .map(|v| super::placements::parse_rows(&v))
+            .unwrap_or_default()
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    if confirm && !placed.is_empty() {
+        let name = p["name"].as_str().unwrap_or("");
+        println!("first, from this machine, over your SSH login (the habitat there then plans the rest and asks for its name again):");
+        for l in super::placements::plan_lines(&placed) {
+            println!("  - {l}");
+        }
+        print!("\ntype the habitat's name ({name}) to take them off and go on: ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut typed = String::new();
+        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut typed);
+        if typed.trim() != name {
+            eprintln!("hale habitat down --forget: `{}` is not the habitat's name; nothing was removed", typed.trim());
+            return ExitCode::from(1);
+        }
+        for l in super::placements::take_off(&placed, &history) {
+            println!("{l}");
+        }
+    }
     let comment = key_comment(&expected);
     let mut a: Vec<&str> = vec!["down"];
     a.extend(args.iter().map(String::as_str));
@@ -931,6 +975,9 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         return ExitCode::from(ran.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1));
     }
     if plan {
+        for l in super::placements::plan_lines(&placed) {
+            println!("  - and first, from this machine, over your SSH login: {l}");
+        }
         if !super::readings::node_exporter_off() {
             println!("  - and from this machine, over your SSH login: the habitat's node exporter off {} and off each host below, where it installed one", t.host);
         }
@@ -947,20 +994,41 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         // gone there whole: the pointer goes last
         match remote_state(&t, &m) {
             Ok((_, _, identity)) if identity.is_empty() => {
+                // the hosts whose note this machine acted on
+                let mut done: Vec<String> = Vec::new();
                 for h in &hosts {
                     let (name, user) = (h["name"].as_str().unwrap_or(""), h["user"].as_str().unwrap_or(""));
                     let port = h["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+                    // the habitat's directories left empty there
+                    let tidied = super::placements::tidy_host(name, port, &[], &[]);
+                    if !tidied.is_empty() {
+                        println!("{tidied}");
+                    }
                     if is_habitat_user(user) {
                         match remove_user(name, port, user) {
-                            Ok(()) => println!("the habitat's account {user} is removed from {name}"),
+                            Ok(()) => {
+                                println!("the habitat's account {user} is removed from {name}");
+                                done.push(name.to_string());
+                            }
                             Err(why) => println!("the habitat's account {user} is left on {name} ({why}): remove it there (Linux `sudo userdel -r {user}`, macOS `sudo dscl . -delete /Users/{user}`)"),
                         }
                         continue;
                     }
                     match unauthorize_key(name, user, port, &comment) {
-                        Ok(()) => println!("the habitat's key is out of {user}@{name}:~/.ssh/authorized_keys"),
+                        Ok(()) => {
+                            println!("the habitat's key is out of {user}@{name}:~/.ssh/authorized_keys");
+                            done.push(name.to_string());
+                        }
                         Err(why) => println!("the habitat's key is left on {name} ({why}): remove the line ending `{comment}` from {user}'s ~/.ssh/authorized_keys there"),
                     }
+                }
+                // the notes the forget there kept of those lines: the ones
+                // acted on here are done, and the file (with the habitat's
+                // emptied directory) goes with the last
+                match prune_notes(&t, &m, &done) {
+                    Ok(0) => {}
+                    Ok(n) => println!("{n} note(s) of what is left are kept on {} ({}/forgotten-notes.jsonl)", t.host, habitat_dir(&m)),
+                    Err(why) => println!("the forget's notes on {} are left ({why})", t.host),
                 }
                 if !super::readings::node_exporter_off() {
                     let machines = std::iter::once((t.host.clone(), t.user.clone(), t.port)).chain(hosts.iter().map(|h| {
@@ -986,6 +1054,24 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The notes the forget on the habitat's machine kept (`forgotten-notes.jsonl`
+/// in its directory), less those of the hosts in `done`: written back when
+/// any is left, else removed, and the habitat's directories there with
+/// them when they are left empty. How many are left.
+fn prune_notes(t: &Target, m: &Machine, done: &[String]) -> Result<usize, String> {
+    let hab = habitat_dir(m);
+    let file = format!("{hab}/forgotten-notes.jsonl");
+    let text = t.run(&format!("cat {} 2>/dev/null; true", sq(&file)))?;
+    let left = super::forget::notes_left(&text, done);
+    let script = if left.is_empty() {
+        format!("rm -f {f}; rmdir {d} 2>/dev/null; rmdir {p} 2>/dev/null; true", f = sq(&file), d = sq(&hab), p = sq(&format!("{}/habitat", data_dir(m))))
+    } else {
+        format!("printf '%s' {} > {}", sq(&left), sq(&file))
+    };
+    t.run(&script)?;
+    Ok(left.lines().count())
 }
 
 /// Why the habitat on `host` must not be stopped or removed through a
