@@ -238,6 +238,7 @@ fn api() {
         oidc_ui  does={syscall,block,env,alloc,stdio}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
+        services_render  does={syscall,block,env,alloc}
         ",
     );
 }

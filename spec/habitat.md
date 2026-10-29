@@ -869,13 +869,31 @@ container `hale-cadvisor` wherever docker runs, a Mac's inside docker's
 VM, where its containers are. It runs on the host's network on `:9338`,
 privileged, reading docker's containers only (docker's socket mounted by
 its own path, which a desktop VM's symlink would not resolve), keeping of
-their labels only `com.docker.compose.project` and
-`com.docker.compose.service`, and collecting CPU, memory, network and OOM
+their labels only `com.docker.compose.project`,
+`com.docker.compose.service`, `hale.habitat`, `hale.organism` and
+`hale.role`, and collecting CPU, memory, network and OOM
 events every 15 s. It is installed, found, replaced (labelled
-`lang.hale.cadvisor=<image>`) and removed where and when the node
-exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
+`lang.hale.cadvisor=<image> <the labels it keeps> <habitat>`, so one keeping
+others or made by another habitat is replaced) and removed where and when
+the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
 scrapes it as the job `containers` from `senses.d/containers/*.json`,
 which `up` adds to the habitat's store configuration when it has none.
+
+**Whose a container is.** Every container the habitat runs carries three
+labels: `hale.habitat` (the habitat's name), `hale.organism` (the organism
+it is a part of, by its directory's name; the habitat's own genome is
+`habitat`) and `hale.role` (the part: `memory`, `nerves`, `senses`,
+`body`, `face`, `grafana`, `forge`, `exporter`, and `services` for an
+organism's own compose services). The habitat writes them into the
+compose files it owns (an allocation's, the forge's, the body and face's,
+Grafana's) and onto the exporters it runs. An organism's own compose
+files are never touched: when its services are applied, the habitat asks
+compose which services those files define and adds an override of its
+own labelling each, kept under `<habitat>/labels/<project>.yaml` and, on
+an SSH host, beside the habitat's copy of the render
+(`.hale-labels.yaml`). A habitat's compose files are rewritten whenever
+their text changes, so compose recreates a service whose labels moved and
+keeps its volume.
 
 **What is scraped follows the record.** The store reads
 `senses.d/*.json` beside its allocation (mounted as a directory, so a file
@@ -893,9 +911,13 @@ published on macOS but for that port), served under `/grafana/` of the
 face. Its provisioning (`<habitat>/grafana/provisioning`, written at
 every `up`) is the habitat's senses' store as its one data source (uid
 `habitat-senses`) and the habitat's dashboards. `Containers` shows what
-runs where: each machine's running count, every container with its
-compose project and service, image and uptime, its CPU, memory and
-network, and the restarts and OOM kills in the window. `Hosts` is its home: whether
+runs where: each machine's running count, every container with the
+organism and part it is (its `hale.*` labels), its compose project and
+service, image and uptime, its CPU, memory and network, and the restarts
+and OOM kills in the window. It shows the habitat's containers by default
+(`show`: the habitat's, those carrying `hale.habitat`; or everything on
+the host, which a host's other workloads compete with) and filters by
+organism and host. `Hosts` is its home: whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator

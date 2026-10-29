@@ -351,6 +351,29 @@ fn main() {
         std::str::starts_with(dna::trim_nl(there.stdout), home + "/.hale/habitat/"),
         "the memory was brought up from the host's directory: " + there.stdout,
     );
+    // every container the habitat runs says whose it is: the habitat, the
+    // organism and the part, which the container exporter carries onto its
+    // readings (the Containers dashboard's organism column and its filter)
+    let labelled = dna::run_tool(
+        "docker\nps\n--filter\nlabel=hale.organism=sprout\n--format\nhabitat={{.Label \"hale.habitat\"}} role={{.Label \"hale.role\"}}",
+    );
+    std::test::assert(
+        std::str::contains(labelled.stdout, "role=memory")
+            && std::str::contains(labelled.stdout, "role=nerves")
+            && std::str::contains(labelled.stdout, "role=services")
+            && !std::str::contains(labelled.stdout, "habitat= "),
+        "sprout's memory, nerves and own services are labelled as its, the habitat's: "
+            + labelled.stdout + labelled.stderr,
+    );
+    let own_labels = dna::run_tool(
+        "docker\nps\n--filter\nlabel=com.docker.compose.service=memory-" + own
+            + "\n--format\n{{.Label \"hale.organism\"}} {{.Label \"hale.role\"}}",
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(own_labels.stdout),
+        "habitat memory",
+        "and the habitat's own memory as the habitat's",
+    );
     std::test::assert(
         std::str::contains(text_of(store + "/.hale/dna/memory.env"), "@localhost:"),
         "the head's DSN names the host's address",

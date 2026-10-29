@@ -18,6 +18,30 @@
   "templating": {
     "list": [
       {
+        "name": "scope",
+        "label": "show",
+        "type": "custom",
+        "query": "the habitat's : .+,everything on the host : .*",
+        "options": [
+          {
+            "text": "the habitat's",
+            "value": ".+",
+            "selected": true
+          },
+          {
+            "text": "everything on the host",
+            "value": ".*",
+            "selected": false
+          }
+        ],
+        "current": {
+          "text": "the habitat's",
+          "value": ".+",
+          "selected": true
+        },
+        "description": "The habitat's containers carry hale.habitat; everything else a host runs carries none."
+      },
+      {
         "name": "host",
         "label": "host",
         "type": "query",
@@ -33,6 +57,34 @@
         "refresh": 2,
         "multi": true,
         "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "organism",
+        "label": "organism",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "habitat-senses"
+        },
+        "query": {
+          "query": "label_values(container_last_seen{job=\"containers\", container_label_hale_organism!=\"\"}, container_label_hale_organism)",
+          "refId": "organisms"
+        },
+        "definition": "label_values(container_last_seen{job=\"containers\", container_label_hale_organism!=\"\"}, container_label_hale_organism)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
         "current": {
           "selected": true,
           "text": [
@@ -79,7 +131,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "count by (host) (container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\"})",
+          "expr": "count by (host) (container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"})",
           "legendFormat": "{{host}}",
           "instant": true
         }
@@ -137,7 +189,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "max by (host, container_label_com_docker_compose_project, container_label_com_docker_compose_service, name, image) (time() - container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\"})",
+          "expr": "max by (host, container_label_hale_organism, container_label_hale_role, container_label_com_docker_compose_project, container_label_com_docker_compose_service, name, image) (time() - container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"})",
           "format": "table",
           "instant": true
         }
@@ -151,17 +203,21 @@
             },
             "indexByName": {
               "host": 0,
-              "container_label_com_docker_compose_project": 1,
-              "container_label_com_docker_compose_service": 2,
-              "name": 3,
-              "image": 4,
-              "Value": 5
+              "container_label_hale_organism": 1,
+              "container_label_hale_role": 2,
+              "container_label_com_docker_compose_project": 3,
+              "container_label_com_docker_compose_service": 4,
+              "name": 5,
+              "image": 6,
+              "Value": 7
             },
             "renameByName": {
               "container_label_com_docker_compose_project": "project",
               "container_label_com_docker_compose_service": "service",
               "name": "container",
-              "Value": "up for"
+              "Value": "up for",
+              "container_label_hale_organism": "organism",
+              "container_label_hale_role": "part"
             }
           }
         }
@@ -222,8 +278,8 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (host, name) (rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\"}[$__rate_interval]))",
-          "legendFormat": "{{host}} {{name}}"
+          "expr": "sum by (host, container_label_hale_organism, name) (rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]))",
+          "legendFormat": "{{host}} {{container_label_hale_organism}} {{name}}"
         }
       ],
       "options": {
@@ -275,8 +331,8 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "max by (host, name) (container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\"})",
-          "legendFormat": "{{host}} {{name}}"
+          "expr": "max by (host, container_label_hale_organism, name) (container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"})",
+          "legendFormat": "{{host}} {{container_label_hale_organism}} {{name}}"
         }
       ],
       "options": {
@@ -328,8 +384,8 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (host, name) (rate(container_network_receive_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\"}[$__rate_interval]))",
-          "legendFormat": "{{host}} {{name}} in"
+          "expr": "sum by (host, container_label_hale_organism, name) (rate(container_network_receive_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]))",
+          "legendFormat": "{{host}} {{container_label_hale_organism}} {{name}} in"
         },
         {
           "refId": "B",
@@ -337,8 +393,8 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "-sum by (host, name) (rate(container_network_transmit_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\"}[$__rate_interval]))",
-          "legendFormat": "{{host}} {{name}} out"
+          "expr": "-sum by (host, container_label_hale_organism, name) (rate(container_network_transmit_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]))",
+          "legendFormat": "{{host}} {{container_label_hale_organism}} {{name}} out"
         }
       ],
       "options": {
@@ -390,7 +446,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (host, name) (changes(container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\"}[$__range])) > 0",
+          "expr": "sum by (host, container_label_hale_organism, name) (changes(container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range])) > 0",
           "format": "table",
           "instant": true
         },
@@ -400,7 +456,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (host, name) (increase(container_oom_events_total{job=\"containers\", host=~\"$host\", name!=\"\"}[$__range])) > 0",
+          "expr": "sum by (host, container_label_hale_organism, name) (increase(container_oom_events_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range])) > 0",
           "format": "table",
           "instant": true
         }
@@ -419,7 +475,9 @@
             "renameByName": {
               "name": "container",
               "Value #A": "restarts",
-              "Value #B": "OOM kills"
+              "Value #B": "OOM kills",
+              "container_label_hale_organism": "organism",
+              "container_label_hale_role": "part"
             }
           }
         }
