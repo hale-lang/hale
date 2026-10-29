@@ -1130,6 +1130,7 @@ fn dna_fixture_set_is_complete() {
             "compose_projects_test.hl",
             "concern_identity_test.hl",
             "concern_restart_test.hl",
+            "declared_secrets_test.hl",
             "deployment_test.hl",
             "dogfood_voice_test.hl",
             "edge_projection_test.hl",

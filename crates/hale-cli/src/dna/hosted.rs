@@ -7,13 +7,16 @@
 //! [dna.host.node]
 //! platforms = ["linux", "macos"]
 //! root = true
-//! install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}", "--operator-token-file", "{operator_token_file}"]
-//! uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
-//! inputs = ["id", "api_url", "operator_token_file"]
+//! install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}"]
+//! uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}"]
+//! inputs = ["id", "api_url"]
 //! api_service = "api"                                  # whose published URL is {api_url} (default "api")
-//! operator_token = ["voice-api", "admin-token"]        # run in that service's container: prints the token
 //! service = "voice-node-{id}"                          # what the install leaves running: a systemd unit or launchd label
 //! requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have (or a list: on every platform)
+//!
+//! [dna.secrets.operator-token]                         # a secret the command reads (dna/secrets.rs)
+//! kind = "drawn"
+//! readers = ["api", "host.node"]
 //! ```
 //!
 //! The habitat provisions what any host command needs to run at all, which
@@ -27,11 +30,18 @@
 //! The command runs in the organism's source at the revision the habitat
 //! pins for its sapling, cloned on the host, with the toolchain it declares.
 //! Everything runs over the person's own SSH logins, as `host add` makes the
-//! habitat's account: the operator token is read in the api's container on
-//! the host it runs on, written to a 0600 file on the target, handed to the
-//! command, and removed; it never reaches this machine's disk or the head.
-//! A command that needs root runs under the person's sudo, which asks at
-//! their terminal.
+//! habitat's account. Each secret the seed declares with `host.<command>`
+//! among its readers is read from the habitat's vault (here, or on the
+//! habitat's machine over the person's login through the pointer), held in
+//! this process's memory alone, and written over the login's stdin into the
+//! organism's vault directory on the target
+//! (`~/.local/share/hale/hosted/<organism>.vault`, mode 700, each entry
+//! 600) for the run alone: the command is handed `HALE_VAULT_DIR` and each
+//! `HALE_SECRET_<NAME>` (a family's: its members' entries, one a line)
+//! through `env` (sudo resets the environment), and
+//! the entries are removed however it ends. A value never reaches a command
+//! line, this machine's disk or the head. A command that needs root runs
+//! under the person's sudo, which asks at their terminal.
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -45,7 +55,6 @@ pub(super) struct HostCommand {
     pub uninstall: Vec<String>,
     pub inputs: Vec<String>,
     pub api_service: String,
-    pub operator_token: Vec<String>,
     /// What the install leaves running on the host, outside compose: the
     /// system service's name (a systemd unit on Linux, a launchd label in
     /// the system domain on macOS), `{id}` filled in; "" when it names none.
@@ -60,7 +69,10 @@ pub(super) struct HostCommand {
 const REQUIRES: &[&str] = &["docker", "systemd", "nvidia-gpu", "apple-silicon", "gpu"];
 
 /// The inputs a host command may take, by name.
-const INPUTS: &[&str] = &["id", "api_url", "operator_token_file"];
+const INPUTS: &[&str] = &["id", "api_url"];
+
+/// What a declaration of the operator token before `[dna.secrets]` is told.
+const SUPERSEDED: &str = "superseded by [dna.secrets]: declare the secret and name host.<command> among its readers";
 const PLATFORMS: &[&str] = &["linux", "macos"];
 
 /// The host commands a manifest declares (`[dna.host.<name>]`), checked.
@@ -77,8 +89,11 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
                 Some(v) => v.as_array().ok_or_else(|| format!("[dna.host.{name}] {k} is a list of strings"))?.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(|| format!("[dna.host.{name}] {k} is a list of strings"))).collect(),
             }
         };
+        if t.contains_key("operator_token") {
+            return Err(format!("[dna.host.{name}] operator_token is {SUPERSEDED}"));
+        }
         for k in t.keys() {
-            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "operator_token", "service", "requires", "readings"].contains(&k.as_str()) {
+            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "service", "requires", "readings"].contains(&k.as_str()) {
                 return Err(format!("[dna.host.{name}] has no `{k}`"));
             }
         }
@@ -90,7 +105,6 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
             uninstall: strs("uninstall")?,
             inputs: strs("inputs")?,
             api_service: t.get("api_service").and_then(|v| v.as_str()).unwrap_or("api").to_string(),
-            operator_token: strs("operator_token")?,
             service: match t.get("service") {
                 None => String::new(),
                 Some(v) => v.as_str().ok_or_else(|| format!("[dna.host.{name}] service is a string"))?.to_string(),
@@ -127,11 +141,11 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
         if let Some(p) = c.platforms.iter().find(|p| !PLATFORMS.contains(&p.as_str())) {
             return Err(format!("[dna.host.{name}] platform `{p}`: linux or macos"));
         }
+        if c.inputs.iter().any(|i| i == "operator_token_file") || c.install.iter().chain(&c.uninstall).any(|a| a.contains("{operator_token_file}")) {
+            return Err(format!("[dna.host.{name}] input operator_token_file is {SUPERSEDED}"));
+        }
         if let Some(i) = c.inputs.iter().find(|i| !INPUTS.contains(&i.as_str())) {
             return Err(format!("[dna.host.{name}] input `{i}`: one of {}", INPUTS.join(", ")));
-        }
-        if c.inputs.iter().any(|i| i == "operator_token_file") && c.operator_token.is_empty() {
-            return Err(format!("[dna.host.{name}] takes operator_token_file and names no `operator_token` command to read it with"));
         }
         out.insert(name.clone(), c);
     }
@@ -370,21 +384,212 @@ fn tree_at(home: &str, organism: &str) -> String {
     format!("{home}/.local/share/hale/hosted/{organism}")
 }
 
-/// The command run on the target, in the organism's tree at `dir`: the
-/// token's file (written before, 0600) removed however it ends; `sudo`
-/// with the provisioned `hale` by its path when the command needs root.
-pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sudo: &str, token_file: Option<&str>) -> String {
+/// The organism's vault directory on the target, beside its tree: where the
+/// secrets a host command reads are put for its run (mode 700, each entry
+/// 600), and removed from when it ends.
+fn vault_at(home: &str, organism: &str) -> String {
+    format!("{}.vault", tree_at(home, organism))
+}
+
+/// One secret a host command reads: its vault entry (a family's: its
+/// members' common prefix, `<entry>--`), the variable the command is handed
+/// the entries' names in, and the entries handed (a family's members, in
+/// their labels' order, `members`).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Handed {
+    pub name: String,
+    pub entry: String,
+    pub var: String,
+    pub family: bool,
+    /// declared `optional`: its readers do without it
+    pub optional: bool,
+    pub entries: Vec<String>,
+}
+
+impl Handed {
+    /// The labels of a family's members handed, in order.
+    pub(super) fn labels(&self) -> Vec<&str> {
+        self.entries.iter().filter_map(|e| e.strip_prefix(self.entry.as_str())).collect()
+    }
+}
+
+/// The secrets the seed declares with `host.<command>` among their readers
+/// (a family's members not yet known: `members`).
+pub(super) fn handed(declared: &BTreeMap<String, crate::dna::secrets::Declared>, command: &str, record_id: &str) -> Vec<Handed> {
+    declared
+        .iter()
+        .filter(|(_, d)| d.hosts().contains(&command))
+        .map(|(name, d)| {
+            let entry = crate::dna::secrets::vault_entry(record_id, name);
+            if d.family {
+                Handed { name: name.clone(), entry: format!("{entry}--"), var: crate::dna::secrets::env_var(name), family: true, optional: d.optional, entries: Vec::new() }
+            } else {
+                Handed { name: name.clone(), entry: entry.clone(), var: crate::dna::secrets::env_var(name), family: false, optional: d.optional, entries: vec![entry] }
+            }
+        })
+        .collect()
+}
+
+/// A family's members the vault holds (`held`, as `habitat_vault` read it
+/// for its prefix `prefix`), each a value under a label, in the labels' order.
+pub(super) fn members(held: &BTreeMap<String, Option<String>>, prefix: &str) -> Vec<String> {
+    held.iter().filter(|(e, v)| v.is_some() && e.strip_prefix(prefix).is_some_and(crate::dna::secrets::label_ok)).map(|(e, _)| e.clone()).collect()
+}
+
+/// What a run is handed of `secrets`, given what the habitat's vault holds
+/// (`held`, as `habitat_vault` read their entries): the secrets handed (a
+/// family with every member it holds; an optional family with none, and a
+/// required one an uninstall goes on without, handed EMPTY: its variable
+/// set, so a reader tells "none handed over" from "not declared"), a line
+/// per secret it does without (an optional slot unset, never handed; on an
+/// uninstall, a required one the vault lacks), and the refusal an install
+/// meets for a required secret the vault lacks (a slot no person filled, a
+/// family with no member, a drawn secret never drawn). An uninstall is never
+/// refused for a missing secret.
+pub(super) fn settle(mut secrets: Vec<Handed>, held: &BTreeMap<String, Option<String>>, install: bool, organism: &str) -> (Vec<Handed>, Vec<String>, Option<String>) {
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    let mut unset = Vec::new();
+    for h in secrets.iter_mut() {
+        if h.family {
+            h.entries = members(held, &h.entry);
+        }
+        let present = if h.family { !h.entries.is_empty() } else { matches!(held.get(&h.entry), Some(Some(_))) };
+        if present {
+            kept.push(h.clone());
+            continue;
+        }
+        let remedy = if h.family {
+            format!("`hale habitat organism {organism} dna secret set {} --member <label>`", h.name)
+        } else {
+            format!("`hale habitat organism {organism} dna secret set {}` for a slot, `hale habitat organism {organism} dna upgrade` for a drawn one", h.name)
+        };
+        if h.optional || !install {
+            let why = if h.optional { "optional" } else { "the uninstall goes on without it" };
+            if h.family {
+                skipped.push(format!("{}: a family with no member ({why}), handed empty", h.name));
+                kept.push(h.clone());
+            } else {
+                skipped.push(format!("{}: unset ({why}), not handed", h.name));
+            }
+        } else if h.family {
+            unset.push(format!("{} (a family with no member: {remedy})", h.name));
+        } else {
+            unset.push(format!("{} (unset: {remedy})", h.name));
+        }
+    }
+    let refusal = (!unset.is_empty()).then(|| format!("it reads secrets the habitat's vault does not hold: {}", unset.join(", ")));
+    (kept, skipped, refusal)
+}
+
+/// The script that writes one entry into the vault directory `vault` on the
+/// target, its value on stdin: the directory made 700 and the entry 600
+/// before a byte is written.
+pub(super) fn vault_put_script(vault: &str, entry: &str) -> String {
+    format!("umask 077; mkdir -p {d} && chmod 700 {d} && cat > {f} && chmod 600 {f}", d = sq(vault), f = sq(&format!("{vault}/{entry}")))
+}
+
+/// The command run on the target, in the organism's tree at `dir`: handed
+/// `HALE_VAULT_DIR` (`vault`) and each secret's `HALE_SECRET_<NAME>` through
+/// `env`, which sudo keeps where it resets the inherited environment; the
+/// entries (written before) removed however it ends, and the directory with
+/// them once empty; `sudo` with the provisioned `hale` by its path when the
+/// command needs root.
+pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sudo: &str, vault: &str, secrets: &[Handed]) -> String {
     let mut words: Vec<String> = argv.iter().map(|a| sq(a)).collect();
     if argv.first().map(String::as_str) == Some("hale") {
         words[0] = sq(hale);
     }
     let run = words.join(" ");
+    let (trap, env) = if secrets.is_empty() {
+        (String::new(), String::new())
+    } else {
+        // an entry's name is the vault's (letters, digits, `-`, `_`): safe as
+        // a word; a family's variable holds its members' entries, one a line
+        let files = secrets.iter().flat_map(|h| &h.entries).map(|e| format!("\"$vd\"/{e}")).collect::<Vec<_>>().join(" ");
+        let vars = secrets.iter().map(|h| sq(&format!("{}={}", h.var, h.entries.join("\n")))).collect::<Vec<_>>().join(" ");
+        (format!("vd={}; trap 'rm -f {files}; rmdir \"$vd\" 2>/dev/null' EXIT; ", sq(vault)), format!("env {} {vars} ", sq(&format!("HALE_VAULT_DIR={vault}"))))
+    };
     format!(
-        r#"cd {t} || exit 1; {trap}{s}{run}"#,
+        r#"cd {t} || exit 1; {trap}{s}{env}{run}"#,
         t = sq(dir),
-        trap = token_file.map(|f| format!("tf={}; trap 'rm -f \"$tf\"' EXIT; ", sq(f))).unwrap_or_default(),
         s = if root { format!("{sudo} ") } else { String::new() },
     )
+}
+
+/// The script that says, of each of `entries` in the vault directory
+/// `dir`, whether it holds a value (`missing <entry>`, or `entry <entry>
+/// <bytes>`) and, with `values`, the value itself right after its line. An
+/// entry ending in `--` is a family's prefix: each entry under it is said.
+pub(super) fn vault_script(dir: &str, entries: &[String], values: bool) -> String {
+    let list = entries.iter().map(|e| sq(e)).collect::<Vec<_>>().join(" ");
+    format!(
+        r#"d={d}; say() {{ f="$d/$1"; if [ -s "$f" ]; then echo "entry $1 $(wc -c < "$f" | tr -d ' ')"; {cat}else echo "missing $1"; fi; }}; for n in {list}; do case "$n" in *--) for m in "$d/$n"*; do [ -f "$m" ] && say "${{m##*/}}"; done;; *) say "$n";; esac; done; true"#,
+        d = sq(dir),
+        cat = if values { r#"cat "$f"; "# } else { "" },
+    )
+}
+
+/// What `vault_script` printed: each entry's value (`None` when the vault
+/// holds none; `Some("")` for one present when values were not asked).
+pub(super) fn vault_said(out: &str, values: bool) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut got = BTreeMap::new();
+    let mut rest = out;
+    while !rest.is_empty() {
+        let (line, after) = rest.split_once('\n').unwrap_or((rest, ""));
+        rest = after;
+        if let Some(n) = line.strip_prefix("missing ") {
+            got.insert(n.to_string(), None);
+        } else if let Some(e) = line.strip_prefix("entry ") {
+            let (n, len) = e.rsplit_once(' ').ok_or("the vault said something unreadable")?;
+            let len: usize = len.parse().map_err(|_| "the vault said something unreadable".to_string())?;
+            if values {
+                let value = rest.get(..len).ok_or("the vault's answer ended early")?;
+                rest = &rest[len..];
+                got.insert(n.to_string(), Some(value.to_string()));
+            } else {
+                got.insert(n.to_string(), Some(String::new()));
+            }
+        } else if !line.is_empty() {
+            return Err("the vault said something unreadable".to_string());
+        }
+    }
+    Ok(got)
+}
+
+/// The habitat's vault, asked of `entries`: on its machine over the
+/// person's login when this machine points at a habitat elsewhere, else
+/// this machine's own (`HALE_VAULT_DIR`, else the cache's). A value is read
+/// into memory alone.
+fn habitat_vault(entries: &[String], values: bool) -> Result<BTreeMap<String, Option<String>>, String> {
+    if entries.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    if let Some(p) = super::remote::pointer() {
+        let out = super::remote::vault_on_machine(&p, |dir| vault_script(dir, entries, values))?;
+        return vault_said(&out, values);
+    }
+    let dir = crate::dna::vault_local_dir().ok_or("the vault is served over HTTP (HALE_VAULT_ADDR): a host command is handed a secret from a local vault alone")?;
+    let mut got = BTreeMap::new();
+    // a family's prefix asks for each entry under it
+    let mut asked: Vec<String> = Vec::new();
+    for e in entries {
+        if e.ends_with("--") {
+            let listed = std::fs::read_dir(&dir).map(|r| r.filter_map(|d| d.ok()).filter_map(|d| d.file_name().to_str().map(str::to_string)).filter(|n| n.starts_with(e.as_str())).collect::<Vec<_>>()).unwrap_or_default();
+            asked.extend(listed);
+        } else {
+            asked.push(e.clone());
+        }
+    }
+    for e in &asked {
+        let v = std::fs::read(dir.join(e)).ok().filter(|b| !b.is_empty());
+        let v = match v {
+            None => None,
+            Some(b) => Some(if values { String::from_utf8(b).map_err(|_| format!("the vault's {e} is not text"))? } else { String::new() }),
+        };
+        got.insert(e.clone(), v);
+    }
+    Ok(got)
 }
 
 /// Over the person's login to `host`: `script`, with `stdin` handed to it
@@ -419,26 +624,6 @@ fn over_login(host: &str, port: Option<u16>, script: &str, stdin: Option<&str>, 
         let err = String::from_utf8_lossy(&out.stderr);
         Err(err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("it failed and said nothing").to_string())
     }
-}
-
-/// The operator token, read in the container of `service` of the organism
-/// keyed `key` on `host` (docker by the login's own access, else its sudo).
-fn read_token(host: &str, port: Option<u16>, key: &str, service: &str, argv: &[String]) -> Result<String, String> {
-    let run = argv.iter().map(|a| sq(a)).collect::<Vec<_>>().join(" ");
-    let script = format!(
-        r#"if docker info >/dev/null 2>&1; then d=docker; else d="sudo -n docker"; fi
-c=$($d ps --filter label=com.docker.compose.service={s} --format '{{{{.Names}}}}' | grep -- "-{k}-" | head -n 1)
-[ -n "$c" ] || {{ echo "no running {s} container of the organism {k} on this host" >&2; exit 1; }}
-$d exec "$c" {run}"#,
-        s = sq(service),
-        k = key,
-    );
-    let out = over_login(host, port, &script, None, false)?;
-    let token = out.trim().to_string();
-    if token.is_empty() || token.contains(char::is_whitespace) {
-        return Err(format!("`{}` in {service} printed no single token", argv.join(" ")));
-    }
-    Ok(token)
 }
 
 /// `hale habitat organism place|unplace <organism> <command> --host <h> [--id <id>] [--plan]`.
@@ -561,23 +746,35 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     let dir = tree_at(&f.home, organism);
     let hale = format!("{}/{TOOLCHAINS}/{tag}/bin/hale", f.home);
 
-    // its inputs: the id, the api's URL where its service is published, the operator token
+    // its inputs: the id, the api's URL where its service is published
     let mut values: BTreeMap<&str, String> = BTreeMap::new();
     values.insert("id", id.clone());
     let needs = |i: &str| cmd.inputs.iter().any(|x| x == i);
-    let mut api_host = String::new();
-    if needs("api_url") || needs("operator_token_file") {
-        let services = rows("Commands::allocations", "allocations")?.into_iter().find(|a| a["instance"].as_str().is_some_and(|k| k.starts_with(&key)) && a["role"] == "services").ok_or_else(|| format!("{organism} has no services allocation: its application runs nowhere yet"))?;
-        api_host = services["applied"].as_str().filter(|h| !h.is_empty()).or_else(|| services["host"].as_str()).unwrap_or("").to_string();
+    // the secrets it reads ([dna.secrets.<name>] naming host.<command>)
+    let declared = crate::dna::secrets::declared(&manifest)?;
+    let reads_secrets = declared.values().any(|d| d.hosts().contains(&name));
+    let allocations = if needs("api_url") || reads_secrets { rows("Commands::allocations", "allocations")? } else { Vec::new() };
+    if needs("api_url") {
+        let services = allocations.iter().find(|a| a["instance"].as_str().is_some_and(|k| k.starts_with(&key)) && a["role"] == "services").ok_or_else(|| format!("{organism} has no services allocation: its application runs nowhere yet"))?;
         let links = services["links"].as_array().cloned().unwrap_or_default();
         let url = links.iter().find(|l| l["service"] == cmd.api_service.as_str()).and_then(|l| l["url"].as_str()).filter(|u| !u.is_empty()).map(str::to_string);
-        if needs("api_url") {
-            values.insert("api_url", url.ok_or_else(|| format!("{organism}'s `{}` publishes no address another host reaches", cmd.api_service))?);
-        }
+        values.insert("api_url", url.ok_or_else(|| format!("{organism}'s `{}` publishes no address another host reaches", cmd.api_service))?);
     }
-    let token_file = format!("{dir}/.operator-token-{id}");
-    if needs("operator_token_file") {
-        values.insert("operator_token_file", token_file.clone());
+    let secrets = if reads_secrets {
+        // the organism's record, which its vault entries are named for
+        let record = allocations.iter().filter(|a| a["instance"].as_str().is_some_and(|k| k.starts_with(&key))).find_map(|a| a["organism"].as_str().filter(|o| o.len() >= 12)).ok_or_else(|| format!("the habitat holds no allocation of {organism} naming its record, which its secrets' vault entries are named for"))?;
+        handed(&declared, name, record)
+    } else {
+        Vec::new()
+    };
+    let vault = vault_at(&f.home, organism);
+    // which of them the habitat's vault holds, asked before anything runs:
+    // a required one it lacks refuses an install (`--plan` too), never an
+    // uninstall; an optional one is done without
+    let held = habitat_vault(&secrets.iter().map(|h| h.entry.clone()).collect::<Vec<_>>(), false)?;
+    let (secrets, skipped, refusal) = settle(secrets, &held, install, organism);
+    if let Some(why) = refusal {
+        return Err(format!("`{name}` {why}"));
     }
     let argv = fill(if install { &cmd.install } else { &cmd.uninstall }, &cmd.inputs, &values)?;
     let service = if cmd.service.is_empty() { String::new() } else { fill(&[cmd.service.clone()], &cmd.inputs, &values)?.remove(0) };
@@ -590,8 +787,12 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     }
     println!("{:<8}{tag}, {whose}: {}", "hale", if have_toolchain { format!("in {}/{TOOLCHAINS}/{tag} on {host}", f.home) } else if plan { format!("would install it in {}/{TOOLCHAINS}/{tag} from its release, checked against its sha256", f.home) } else { format!("installing it in {}/{TOOLCHAINS}/{tag} from its release", f.home) });
     println!("{:<8}in {dir} on {host}, with {hale}", "from");
-    if needs("operator_token_file") {
-        println!("{:<8}{organism}'s operator token, read in its `{}` on {api_host}, in a 0600 file on {host} for the run alone", "token", cmd.api_service);
+    if !secrets.is_empty() {
+        let said = secrets.iter().map(|h| if h.family { format!("{} (a family: {})", h.name, h.labels().join(", ")) } else { h.name.clone() }).collect::<Vec<_>>().join(", ");
+        println!("{:<8}{said}, from the habitat's vault into {vault} on {host} (700, each 600) for the run alone, handed as HALE_VAULT_DIR and {}", "secrets", secrets.iter().map(|h| h.var.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    for s in &skipped {
+        println!("{:<8}{s}", "skips");
     }
     if !service.is_empty() {
         println!("{:<8}{service}, {} on {host}", "service", if platform == "macos" { "a launchd service in the system domain" } else { "a systemd unit" });
@@ -608,19 +809,23 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         let said = over_login(host, port, &toolchain_script(&tag, target), None, false)?;
         println!("{:<8}{tag} installed on {host} ({})", "hale", said.lines().last().unwrap_or("").trim());
     }
-    if needs("operator_token_file") {
-        let (api_login, api_port) = if api_host == "local" || api_host.is_empty() {
-            return Err(format!("{organism}'s `{}` runs on the habitat's own machine: reading its token there is not built yet", cmd.api_service));
-        } else {
-            let hp = rows("Commands::hosts", "hosts")?.into_iter().find(|h| h["name"] == api_host.as_str()).and_then(|h| h["port"].as_u64()).and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
-            (api_host.clone(), hp)
-        };
-        super::progress(&format!("reading {organism}'s operator token on {api_login}"));
-        let token = read_token(&api_login, api_port, &key, &cmd.api_service, &cmd.operator_token)?;
-        over_login(host, port, &format!("umask 077; cat > {}", sq(&token_file)), Some(&token), false)?;
+    if secrets.iter().any(|h| !h.entries.is_empty()) {
+        // each value from the habitat's vault, held here in memory alone,
+        // onto the target over the login's stdin
+        super::progress(&format!("handing {organism}'s secrets to {host}"));
+        let entries: Vec<String> = secrets.iter().flat_map(|h| h.entries.iter().cloned()).collect();
+        let values = habitat_vault(&entries, true)?;
+        for e in &entries {
+            let value = values.get(e).cloned().flatten().ok_or_else(|| format!("the habitat's vault no longer holds {e}"))?;
+            if let Err(why) = over_login(host, port, &vault_put_script(&vault, e), Some(&value), false) {
+                // what was written goes again
+                let _ = over_login(host, port, &format!("rm -rf {}", sq(&vault)), None, false);
+                return Err(format!("{e} into {vault} on {host}: {why}"));
+            }
+        }
     }
     super::progress(&format!("running {organism}'s `{name}` on {host}"));
-    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", needs("operator_token_file").then_some(token_file.as_str()));
+    let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &vault, &secrets);
     over_login(host, port, &script, None, tty)?;
     println!("{:<8}{organism}'s `{name}` {} on {host}", "done", if install { "placed" } else { "taken off" });
     if !service.is_empty() {
@@ -661,11 +866,18 @@ needs = ["memory"]
 [dna.host.node]
 platforms = ["linux", "macos"]
 root = true
-install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}", "--operator-token-file", "{operator_token_file}"]
-uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
-inputs = ["id", "api_url", "operator_token_file"]
-operator_token = ["voice-api", "admin-token"]
+install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}"]
+uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}"]
+inputs = ["id", "api_url"]
 service = "voice-node-{id}"
+
+[dna.secrets.operator-token]
+kind = "drawn"
+readers = ["api", "host.node"]
+
+[dna.secrets.upstream-key]
+kind = "slot"
+readers = ["api"]
 "#;
 
     #[test]
@@ -678,7 +890,88 @@ service = "voice-node-{id}"
         let refuse = |extra: &str| host_commands(&VOICE.replace("root = true", extra)).unwrap_err();
         assert!(refuse("root = true\ncolor = \"red\"").contains("has no `color`"));
         assert!(refuse("root = true\nplatforms = [\"windows\"]").contains("platform") || host_commands(&VOICE.replace("[\"linux\", \"macos\"]", "[\"windows\"]")).is_err());
-        assert!(host_commands(&VOICE.replace("operator_token = [\"voice-api\", \"admin-token\"]", "")).unwrap_err().contains("operator_token"));
+    }
+
+    #[test]
+    fn the_operator_token_of_old_is_superseded_by_declared_secrets() {
+        let old = VOICE.replace("service = ", "operator_token = [\"voice-api\", \"admin-token\"]\nservice = ");
+        let why = host_commands(&old).unwrap_err();
+        assert!(why.contains("operator_token is superseded by [dna.secrets]") && why.contains("host.<command> among its readers"), "{why}");
+        let why = host_commands(&VOICE.replace("inputs = [\"id\", \"api_url\"]", "inputs = [\"id\", \"api_url\", \"operator_token_file\"]")).unwrap_err();
+        assert!(why.contains("operator_token_file is superseded by [dna.secrets]"), "{why}");
+        let why = host_commands(&VOICE.replace("\"{id}\", \"--api\"", "\"{id}\", \"--token\", \"{operator_token_file}\", \"--api\"")).unwrap_err();
+        assert!(why.contains("superseded"), "{why}");
+        // api_service and {api_url} stay
+        let c = host_commands(&VOICE.replace("service = ", "api_service = \"web\"\nservice = ")).unwrap();
+        assert_eq!(c["node"].api_service, "web");
+    }
+
+    #[test]
+    fn a_host_command_is_handed_the_secrets_it_reads_and_no_other() {
+        let declared = crate::dna::secrets::declared(VOICE).unwrap();
+        let id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let h = handed(&declared, "node", id);
+        let entry = format!("secret-dna_{}-operator-token", &id[..56]);
+        assert_eq!(h, vec![Handed { name: "operator-token".into(), entry: entry.clone(), var: crate::dna::secrets::env_var("operator-token"), family: false, optional: false, entries: vec![entry] }]);
+        assert!(handed(&declared, "other", id).is_empty());
+        // a family: every member the vault holds, in its labels' order
+        let fam = crate::dna::secrets::declared(&VOICE.replace("[dna.secrets.upstream-key]\nkind = \"slot\"\nreaders = [\"api\"]", "[dna.secrets.model-token]\nkind = \"slot\"\nfamily = true\nreaders = [\"host.node\"]")).unwrap();
+        let mut h = handed(&fam, "node", id);
+        let prefix = format!("secret-dna_{}-model-token--", &id[..56]);
+        assert!(h[0].family && h[0].entry == prefix && h[0].entries.is_empty(), "{h:?}");
+        let mut held = BTreeMap::new();
+        held.insert(format!("{prefix}work"), Some(String::new()));
+        held.insert(format!("{prefix}home"), Some(String::new()));
+        held.insert(format!("{prefix}gone"), None);
+        held.insert(format!("{prefix}x.tmp"), Some(String::new()));
+        h[0].entries = members(&held, &prefix);
+        assert_eq!(h[0].labels(), ["home", "work"]);
+        let s = run_script("/d", &["x".into()], "/h", false, "sudo", "/v", &h);
+        assert!(s.contains(&format!("'{}={prefix}home\n{prefix}work'", crate::dna::secrets::env_var("model-token"))), "{s}");
+        assert!(s.contains(&format!("\"$vd\"/{prefix}home \"$vd\"/{prefix}work")), "{s}");
+        assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success(), "{s}");
+    }
+
+    /// What a run is handed when the vault lacks a secret: an install is
+    /// refused for a required one alone; an optional slot is not handed, an
+    /// optional family is handed empty (set); an uninstall is never refused.
+    #[test]
+    fn an_optional_secret_is_done_without_and_an_uninstall_is_never_refused() {
+        let toml = format!(
+            "{VOICE}\n[dna.secrets.extra]\nkind = \"slot\"\noptional = true\nreaders = [\"host.node\"]\n\n[dna.secrets.tokens]\nkind = \"slot\"\nfamily = true\noptional = true\nreaders = [\"host.node\"]\n\n[dna.secrets.keys]\nkind = \"slot\"\nfamily = true\nreaders = [\"host.node\"]\n"
+        );
+        let declared = crate::dna::secrets::declared(&toml).unwrap();
+        let id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let all = handed(&declared, "node", id);
+        let entry = |n: &str| crate::dna::secrets::vault_entry(id, n);
+        let names = |v: &[Handed]| v.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
+        // the vault holds the drawn token and one member of the required family
+        let mut held = BTreeMap::new();
+        held.insert(entry("operator-token"), Some(String::new()));
+        held.insert(entry("extra"), None);
+        held.insert(format!("{}--a", entry("keys")), Some(String::new()));
+        let (kept, skipped, refusal) = settle(all.clone(), &held, true, "voice");
+        assert_eq!(refusal, None);
+        assert_eq!(names(&kept), ["keys", "operator-token", "tokens"]);
+        let tokens = kept.iter().find(|h| h.name == "tokens").unwrap();
+        assert!(tokens.entries.is_empty(), "an optional family with no member is handed empty");
+        assert_eq!(skipped, ["extra: unset (optional), not handed", "tokens: a family with no member (optional), handed empty"]);
+        // its variable is set, and empty; the optional slot's is not set at all
+        let s = run_script("/d", &["x".into()], "/h", true, "sudo", "/v", &kept);
+        assert!(s.contains(&format!("'{}='", crate::dna::secrets::env_var("tokens"))), "{s}");
+        assert!(!s.contains(&crate::dna::secrets::env_var("extra")), "{s}");
+        assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success(), "{s}");
+        // a required secret the vault lacks refuses an install, naming its remedy
+        let (_, _, refusal) = settle(all.clone(), &BTreeMap::new(), true, "voice");
+        let why = refusal.unwrap();
+        assert!(why.contains("operator-token (unset: ") && why.contains("keys (a family with no member: `hale habitat organism voice dna secret set keys --member <label>`)"), "{why}");
+        assert!(!why.contains("extra") && !why.contains("tokens"), "an optional one never refuses: {why}");
+        // and never an uninstall: what exists is handed, the rest said
+        let (kept, skipped, refusal) = settle(all, &BTreeMap::new(), false, "voice");
+        assert_eq!(refusal, None);
+        assert_eq!(names(&kept), ["keys", "tokens"]);
+        assert!(skipped.contains(&"operator-token: unset (the uninstall goes on without it), not handed".to_string()), "{skipped:?}");
+        assert!(skipped.contains(&"keys: a family with no member (the uninstall goes on without it), handed empty".to_string()), "{skipped:?}");
     }
 
     #[test]
@@ -687,9 +980,8 @@ service = "voice-node-{id}"
         let mut v = BTreeMap::new();
         v.insert("id", "gpu-1".to_string());
         v.insert("api_url", "http://10.0.0.5:8080".to_string());
-        v.insert("operator_token_file", "/home/x/t".to_string());
         let argv = fill(&c.install, &c.inputs, &v).unwrap();
-        assert_eq!(argv.join(" "), "hale run node install --id gpu-1 --api http://10.0.0.5:8080 --operator-token-file /home/x/t");
+        assert_eq!(argv.join(" "), "hale run node install --id gpu-1 --api http://10.0.0.5:8080");
         assert!(fill(&["{api_url}".to_string()], &["id".to_string()], &v).unwrap_err().contains("does not declare"));
         v.remove("api_url");
         assert!(fill(&c.install, &c.inputs, &v).unwrap_err().contains("no value"));
@@ -746,14 +1038,33 @@ service = "voice-node-{id}"
     }
 
     #[test]
-    fn the_run_uses_the_hosts_hale_under_sudo_and_removes_the_token() {
-        let s = run_script("/home/x/.local/share/hale/hosted/voice", &["hale".into(), "run".into(), "node".into(), "install".into()], "/usr/local/bin/hale", true, "sudo", Some("/home/x/t"));
-        assert!(s.starts_with("cd '/home/x/.local/share/hale/hosted/voice' || exit 1; tf='/home/x/t'; trap 'rm -f \"$tf\"' EXIT; "), "{s}");
-        assert!(s.contains("sudo '/usr/local/bin/hale' 'run' 'node' 'install'"), "{s}");
+    fn the_run_uses_the_hosts_hale_under_sudo_and_hands_the_secrets_through_env() {
+        let vault = vault_at("/home/x", "voice");
+        assert_eq!(vault, "/home/x/.local/share/hale/hosted/voice.vault");
+        let secrets = vec![Handed { name: "operator-token".into(), entry: "secret-dna_ab-operator-token".into(), var: crate::dna::secrets::env_var("operator-token"), family: false, optional: false, entries: vec!["secret-dna_ab-operator-token".into()] }];
+        let argv: Vec<String> = vec!["hale".into(), "run".into(), "node".into(), "install".into()];
+        let s = run_script("/home/x/.local/share/hale/hosted/voice", &argv, "/usr/local/bin/hale", true, "sudo", &vault, &secrets);
+        assert!(s.starts_with("cd '/home/x/.local/share/hale/hosted/voice' || exit 1; vd='/home/x/.local/share/hale/hosted/voice.vault'; trap 'rm -f \"$vd\"/secret-dna_ab-operator-token; rmdir \"$vd\" 2>/dev/null' EXIT; "), "{s}");
+        // sudo resets the environment: `env` after it hands them over
+        let token = crate::dna::secrets::env_var("operator-token");
+        assert!(s.contains(&format!("sudo env 'HALE_VAULT_DIR=/home/x/.local/share/hale/hosted/voice.vault' '{token}=secret-dna_ab-operator-token' '/usr/local/bin/hale' 'run' 'node' 'install'")), "{s}");
+        // as the login, the same through env; with nothing to hand, neither env nor trap
+        let user = run_script("/d", &argv, "/h", false, "sudo", &vault, &secrets);
+        assert!(user.contains("; env 'HALE_VAULT_DIR=") && !user.contains("sudo"), "{user}");
+        let bare = run_script("/d", &argv, "/h", true, "sudo", &vault, &[]);
+        assert_eq!(bare, "cd '/d' || exit 1; sudo '/h' 'run' 'node' 'install'");
+        // the value goes on stdin, never into the script
+        let put = vault_put_script(&vault, "secret-dna_ab-operator-token");
+        assert_eq!(put, "umask 077; mkdir -p '/home/x/.local/share/hale/hosted/voice.vault' && chmod 700 '/home/x/.local/share/hale/hosted/voice.vault' && cat > '/home/x/.local/share/hale/hosted/voice.vault/secret-dna_ab-operator-token' && chmod 600 '/home/x/.local/share/hale/hosted/voice.vault/secret-dna_ab-operator-token'");
+        let asked = vault_script("/v", &["a".to_string(), "b".to_string()], true);
         assert_eq!(service_state("noise\nstate running\n"), "running");
         assert_eq!(service_state(""), "unknown");
         for script in [
             s,
+            user,
+            put,
+            asked,
+            vault_script("/v", &["a".to_string()], false),
             source_script("voice", "https://github.com/hale-lang/voice", "v1.2.0"),
             service_script("voice-node-gpu-1"),
             facts_script(),
@@ -763,5 +1074,32 @@ service = "voice-node-{id}"
         ] {
             assert!(Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
+    }
+
+    #[test]
+    fn the_habitats_vault_says_what_it_holds_and_each_value_whole() {
+        let dir = std::env::temp_dir().join(format!("hale-hosted-vault-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), "two\nlines").unwrap();
+        std::fs::write(dir.join("e"), "").unwrap();
+        std::fs::write(dir.join("f--one"), "1").unwrap();
+        std::fs::write(dir.join("f--two"), "22").unwrap();
+        let entries = vec!["a".to_string(), "b".to_string(), "e".to_string(), "f--".to_string(), "g--".to_string()];
+        let run = |values: bool| {
+            let out = Command::new("sh").args(["-c", &vault_script(&dir.display().to_string(), &entries, values)]).output().unwrap();
+            vault_said(&String::from_utf8(out.stdout).unwrap(), values).unwrap()
+        };
+        let got = run(true);
+        assert_eq!(got["a"].as_deref(), Some("two\nlines"));
+        // a family's prefix says each member; one with none says nothing
+        assert_eq!((got["f--one"].as_deref(), got["f--two"].as_deref()), (Some("1"), Some("22")));
+        assert_eq!(members(&got, "f--"), ["f--one", "f--two"]);
+        assert!(members(&got, "g--").is_empty());
+        assert_eq!((got["b"].as_deref(), got["e"].as_deref()), (None, None));
+        let held = run(false);
+        assert_eq!((held["a"].as_deref(), held["b"].as_deref()), (Some(""), None));
+        assert!(vault_said("entry a 10\nshort", true).unwrap_err().contains("ended early"));
+        assert!(vault_said("noise\n", false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

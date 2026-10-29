@@ -557,6 +557,7 @@ fn main() {
             host::word(a, 1),
             host::flag(a, "--body"),
             host::flag(a, "--as"),
+            host::flag(a, "--member"),
             memory,
         );
     } else if verb == "profile" {

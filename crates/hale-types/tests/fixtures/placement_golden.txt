@@ -11513,6 +11513,8 @@ dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/declared_secrets_test.hl
+
 == dna/tests/deployment_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
