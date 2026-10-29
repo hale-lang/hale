@@ -262,8 +262,8 @@ fn host() {
     // side and reaches nothing imported.
     pinned(
         "host",
-        571,
-        578,
+        577,
+        586,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -271,6 +271,7 @@ fn host() {
         Host::build_genome  does={syscall,block,env,alloc,stdio}
         Host::build_seed  does={syscall,block,env,alloc,stdio}
         Host::cut_artifact  does={syscall,block,alloc}
+        Host::hand_compose_secrets  does={syscall,block,env,alloc}
         Host::nerves_read_now  does={syscall,block,time,entropy,env,alloc}
         Host::no_application  does={syscall,block,alloc}
         Host::say_nerves_read  does={syscall,env,alloc,stdio}
@@ -329,6 +330,7 @@ fn host() {
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
         database_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        declared_secret_line  does={syscall,block,env,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
@@ -338,6 +340,7 @@ fn host() {
         exchange_key  does={syscall,alloc}
         exchange_migrate  does={syscall,block,time,entropy,env,alloc}
         exit_code  does={syscall,block,alloc}
+        family_labels_of  does={syscall,block,env,alloc}
         fence_compose_down  does={syscall,block,alloc}
         fence_stop  does={syscall,block,alloc}
         fill_check  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}

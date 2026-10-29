@@ -3275,7 +3275,10 @@ main locus Host {
                 if len(app) > 0 { app } else { project_dir_name(self.root) },
             ),
         };
-        let handed = self.hand_compose_nerves(app);
+        let handed_nerves = self.hand_compose_nerves(app);
+        let handed_secrets = self.hand_compose_secrets();
+        let handed = handed_nerves
+            + (if len(handed_secrets) > 0 { "; " + handed_secrets } else { "" });
         if !self.body_assert("the repository's compose services") {
             self.stop_org();
             self.quit(3);
@@ -3355,6 +3358,35 @@ main locus Host {
         self.compose.hand(NATS_APP_SECRET_ENV, entry);
         return "the nerves handed to them as " + dna::nerves_app_user(app) + " at " + url
             + ", its password the vault's entry, mounted";
+    }
+    // What compose is handed of the secrets the seed declares for its
+    // programs ([dna.secrets.<name>] naming a program among its readers):
+    // each put in the organism's reader vault beside its allocations in the
+    // local habitat (dna::reader_vault_dir, mode 700, each entry 600), and
+    // compose handed HALE_VAULT_DIR and each HALE_SECRET_<NAME>, which the
+    // compose file passes to its services and mounts. What it said of them
+    // ("" when its programs read none).
+    fn hand_compose_secrets() -> String {
+        let declared = dna::declared_secrets(self.root);
+        if !declared.ok { return "no declared secret handed to them (" + declared.why + ")"; }
+        let secrets = dna::program_secrets(
+            declared.lines,
+            dna::schema_for(record_identity(self.root)),
+        );
+        if len(secrets) == 0 { return ""; }
+        let key = dna::allocation_key(self.root);
+        if len(key) == 0 {
+            return "no declared secret handed to them (the record has no identity)";
+        }
+        let dir = dna::reader_vault_dir(key);
+        let staged = dna::stage_reader_vault(dir, secrets);
+        if len(staged) > 0 { return "no declared secret handed to them (" + staged + ")"; }
+        // a family's variable holds its members' entries, one a line, which
+        // no `NAME=value` line can: compose is run under a shell that
+        // exports them all
+        self.compose.hand_secrets(dna::reader_wrap(secrets, dir));
+        return "the declared secrets its programs read handed to them in " + dir
+            + " (HALE_VAULT_DIR)";
     }
     // The supervision over: the organization's exit code, `exited`, is
     // this node's, once what the body started is gone and its lease given up.

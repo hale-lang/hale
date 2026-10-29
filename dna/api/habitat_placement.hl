@@ -167,6 +167,16 @@ fn services_render(body: String) -> dna::Render {
         files: std::json::find_string_field(body, "render_files"),
         mounted: std::json::find_string_field(body, "render_mounted"),
     };
+    // the secrets its programs read ([dna.secrets.<name>] in its manifest),
+    // named for the organism it is; a declaration the toolchain refuses
+    // hands none
+    let organism = std::json::find_string_field(body, "organism");
+    let declared = dna::declared_secrets(r.dir);
+    let secrets = if declared.ok && len(organism) >= 12 {
+        dna::program_secrets(declared.lines, dna::schema_for(organism))
+    } else {
+        ""
+    };
     // each of its services labelled as the habitat's, for the organism it is
     return dna::Render {
         project: r.project,
@@ -174,6 +184,8 @@ fn services_render(body: String) -> dna::Render {
         files: r.files,
         mounted: r.mounted,
         labels: dna::render_labels(r, dna::organism_label(r.dir)),
+        secrets: secrets,
+        vault: if len(secrets) > 0 { dna::reader_vault_dir(organism[0..12]) } else { "" },
     };
 }
 

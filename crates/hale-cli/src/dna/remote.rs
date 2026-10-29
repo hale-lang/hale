@@ -1213,6 +1213,22 @@ fn keep_after_failure(code: Option<i32>, before: Option<&str>, after: Option<&st
     }
 }
 
+/// The habitat's vault on its machine, asked over the person's own login
+/// after the pointer's record is checked there: `script` (made for the
+/// vault's directory there, `hosted::vault_script`) run by the login's
+/// shell, and what it printed. A value it prints is held in this process's
+/// memory alone, never written here.
+pub(super) fn vault_on_machine(p: &serde_json::Value, script: impl Fn(&str) -> String) -> Result<String, String> {
+    let t = Target::of(p);
+    let m = probe(&t)?;
+    let expected = p["identity"].as_str().unwrap_or("").to_string();
+    let found = remote_state(&t, &m).map(|(_, _, id)| id)?;
+    if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
+        return Err(why);
+    }
+    t.run(&script(&format!("{}/vault", data_dir(&m))))
+}
+
 /// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
 /// the organism's own verbs (`review`, `task create`, `work run`, …) run in
 /// its directory on the habitat's machine, at this terminal when there is

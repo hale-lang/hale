@@ -385,10 +385,71 @@ fn ssh_compose(h: Host, render: Render, then: String) -> String {
     if len(render.labels) > 0 {
         files = files + " $([ -f " + SSH_LABELS + " ] && echo -f " + SSH_LABELS + ")";
     }
-    return "cd '" + remote + "' && " + host_facts(h)
+    return "cd '" + remote + "' && " + host_facts(h) + ssh_reader_env(render)
         + "COMPOSE_IGNORE_ORPHANS=1 docker compose -p '" + render.project
         + "'"
         + files + " " + then;
+}
+
+// The reader vault of a render on an `ssh` host, under its user's home:
+// beside the render the habitat ships (`.hale/habitat/<project>/.vault`),
+// never in the organism's checkout.
+fn ssh_reader_vault(render: Render) -> String {
+    return ".hale/habitat/" + render.project + "/.vault";
+}
+
+// What compose on an `ssh` host is handed of the render's secrets
+// (`reader_words`): the reader vault by its full path there, and each
+// secret's entry, as shell words ("" for none).
+fn ssh_reader_env(render: Render) -> String {
+    return reader_words(render.secrets, "\"$HOME/" + ssh_reader_vault(render) + "\"");
+}
+
+// The render's secrets put in its reader vault on `h`, each entry over the
+// habitat's SSH on its stdin, from the local vault's file, never read into
+// this program or put on a command line; an entry no secret names, or the
+// vault lacks, removed there. "" once done, else why not.
+fn ssh_stage_reader_vault(root: String, h: Host, render: Render) -> String {
+    if len(render.secrets) == 0 { return ""; }
+    if std::env::var_exists("HALE_VAULT_ADDR") {
+        return "the vault is served over HTTP (HALE_VAULT_ADDR): a declared secret reaches its programs from a local vault alone";
+    }
+    let d = ssh_reader_vault(render);
+    let entries = reader_entries(render.secrets, " ");
+    // made (700) when it is not, and what no secret names removed; the
+    // directory is never replaced, since a running service mounts it
+    let made = ssh_run(
+        root,
+        h,
+        "umask 077; d='" + d
+            + "'; mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; for f in \"$d\"/* \"$d\"/.[!.]*; do [ -e \"$f\" ] || continue; case ' "
+            + std::str::trim(entries) + " ' in *\" ${f##*/} \"*) ;; *) rm -f \"$f\";; esac; done",
+        "",
+    );
+    if made.code != 0 { return "the reader vault on " + h.name + ": " + trim_nl(made.stderr); }
+    let mut rest = std::str::trim(entries) + " ";
+    while len(std::str::trim(rest)) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let e = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(e) == 0 { continue; }
+        let src = std::secret::vault_local_dir() + "/" + e;
+        let held = run_tool("test\n-s\n" + src).code == 0;
+        let put = if held {
+            ssh_run(
+                root,
+                h,
+                "umask 077; cat > '" + d + "/" + e + "' && chmod 600 '" + d + "/" + e + "'",
+                src,
+            )
+        } else {
+            ssh_run(root, h, "rm -f '" + d + "/" + e + "'", "")
+        };
+        if put.code != 0 {
+            return "the secret " + e + " on " + h.name + ": " + trim_nl(put.stderr);
+        }
+    }
+    return "";
 }
 
 // The `ssh` provider: the hosts the habitat's record holds as `ssh` rows
@@ -494,6 +555,8 @@ locus SshProvider {
                 };
             }
         }
+        let staged = ssh_stage_reader_vault(self.root, h, render);
+        if len(staged) > 0 { return RenderApplied { why: staged }; }
         let up = ssh_run(self.root, h, ssh_compose(h, render, compose_up_args(render, " ")), "");
         if up.code != 0 {
             return RenderApplied {
@@ -523,6 +586,10 @@ locus SshProvider {
             return RenderApplied {
                 why: "docker compose down on " + host + " failed: " + trim_nl(down.stderr),
             };
+        }
+        // its secrets go with it from that host
+        if len(render.secrets) > 0 && len(render.services) == 0 {
+            let gone = ssh_run(self.root, h, "rm -rf '" + ssh_reader_vault(render) + "'", "");
         }
         return RenderApplied { ok: true };
     }

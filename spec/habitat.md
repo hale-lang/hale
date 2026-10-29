@@ -992,13 +992,16 @@ machine needs to serve models, directly on the host, outside compose.
 [dna.host.node]
 platforms = ["linux", "macos"]   # where it runs; empty: anywhere
 root = true                      # run under the person's sudo
-install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}", "--operator-token-file", "{operator_token_file}"]
-uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
-inputs = ["id", "api_url", "operator_token_file"]
+install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}"]
+uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}"]
+inputs = ["id", "api_url"]
 api_service = "api"                           # whose published address is {api_url} (default "api")
-operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
 service = "voice-node-{id}"                   # what the install leaves running
 requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have
+
+[dna.secrets.operator-token]                  # a secret the command reads (spec/dna.md, Declared secrets)
+kind = "drawn"
+readers = ["api", "host.node"]
 ```
 
 `hale habitat organism place <organism> <command> --host <h> [--id <id>]
@@ -1040,13 +1043,31 @@ grafted organism that came from a sapling the habitat pins, and a
   refuses the declaration.
 - **Its inputs**, each named in `inputs` and filled where its argv says
   `{input}` (an input it does not declare, or one with no value, is
-  refused): `id` (`--id`, by default the host's first label), `api_url` (the
-  published address of `api_service` in the organism's `services`
-  allocation, as the head links it), `operator_token_file` (a 0600 file on
-  the host holding what `operator_token` prints in that service's
-  container, read over the person's login to the host the service runs on;
-  written for the run and removed however it ends; never on this machine's
-  disk, in the head, or in a command line).
+  refused): `id` (`--id`, by default the host's first label) and `api_url`
+  (the published address of `api_service` in the organism's `services`
+  allocation, as the head links it). The `operator_token` key and the
+  `operator_token_file` input are refused: they are superseded by
+  `[dna.secrets]`, where the seed declares the secret and names
+  `host.<command>` among its readers.
+- **Its secrets.** Each secret the seed declares with `host.<command>`
+  among its `readers` (spec/dna.md § Declared secrets) is read from the
+  habitat's vault — this machine's, or, through a pointer, the vault on
+  the habitat's machine, over the person's login after the pointer's
+  record is checked there — into this process's memory alone, and written
+  over the person's login to the target, on the login's stdin, into the
+  organism's vault directory there, `~/.local/share/hale/hosted/<organism>.vault`
+  (mode 700, each entry 600, named as in the habitat's vault). The command
+  runs with `HALE_VAULT_DIR` naming that directory and, per secret,
+  `HALE_SECRET_<NAME>` naming its entry (a family's: each member's entry,
+  one a line, in their labels' order), passed through `env` on its command
+  line so that sudo, which resets the environment, keeps them. The entries
+  are for the run alone: removed however it ends, and the directory once
+  empty, so a command that needs one later keeps its own copy. A value is
+  never on a command line, on this machine's disk, or in the head. A
+  secret the vault does not hold — a slot no person filled, a family with
+  no member, a drawn secret never drawn — refuses the verb, `--plan`
+  included, naming how it is filled; `--plan` lists the secrets it hands
+  over by name (a family with its members' labels), never a value.
 - **Who runs it.** Everything goes over the person's own SSH logins, as
   `host add` makes the habitat's account; `root = true` runs it under the
   person's sudo, so only at a terminal. `--plan` prints what would run,
@@ -1064,8 +1085,8 @@ grafted organism that came from a sapling the habitat pins, and a
 
 Not yet: the habitat records no row for a placed command (the
 infrastructure screen does not show it, and a host's removal does not run
-its `uninstall`), and the token of an api on the habitat's own machine is
-not read.
+its `uninstall`), and a vault served over HTTP (`HALE_VAULT_ADDR`) hands a
+host command no secret.
 
 ## Pairing: an agent beside a person
 
@@ -1313,6 +1334,16 @@ compose file. On this machine neither is set.
 |---|---|
 | `HALE_DNA_HOST_NAME` | the host's name, as it was added (`hale habitat host add <name>`) and as the LAN's DNS resolves it |
 | `HALE_DNA_HOST_LISTEN` | the host's listen address: the first IPv4 address its name resolves to on the habitat's machine, through the toolchain's own resolver (`hale habitat resolve <name>`), which the LAN reaches it at; an apply on a host whose name resolves to none is refused, saying so |
+
+An organism's own services, applied here or on an `ssh` host, are also
+handed the secrets the seed declares for its programs (spec/dna.md §
+Declared secrets), when its programs read any: `HALE_VAULT_DIR`, the
+organism's reader vault where the services run
+(`<habitat>/allocations/<id>/vault` here, `~/.hale/habitat/<project>/.vault`
+on a host, written before compose runs and removed from a host with the
+services), and `HALE_SECRET_<NAME>` per secret, naming its entry there (a
+family's: each member's entry, one a line). The compose file passes them
+to its services and mounts the directory; the habitat never edits it.
 
 The manifest is read once, by graft; every reader after it reads the
 roles the habitat allocated, as `allocation.json` keeps them.
