@@ -604,6 +604,7 @@ main locus Desk {
 ### Hub Protocol and Queue Semantics
 
 - **Configuration**: A hub param must keep its default constructor literal (overriding `Desk { hub: ... }` is rejected). Published events must fit within the 65,536-byte bus frame limit (including header).
+- **Imported Main Loci**: A seed whose `main locus` holds a hub can be imported (an application's tests import the application); the imported hub never runs. Constructing that imported main locus (`lib::Desk { }`) is a compile error, as an `api::serve` there is: only the entry program's main locus binds streams.
 - **Queue Shedding (`on_full`)**: Stream bindings require `on_full: drop_old` or `on_full: drop_new` (`refuse` is not valid for streams because slow subscribers shed events rather than blocking publishers). Every event offered to a subscription increments `seq`, so any gap in received `seq` numbers indicates the exact number of shed frames.
 - **WebSocket Frame Protocol**: Clients authenticate during the HTTP upgrade (`Authorization: Bearer <token>` or `?access_token=<token>`) and send a subscribe frame:
 
