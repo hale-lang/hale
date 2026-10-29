@@ -292,7 +292,7 @@ A habitat fits on a laptop. Measured on a running habitat (`docker stats`), with
 
 Before Grafana ran on demand and was trimmed, it alone held about 500 MiB, half the habitat.
 
-Each organism you graft adds its own allocations: a memory (Postgres, about 80 MiB), nerves (NATS, under 10 MiB) and senses (Prometheus, about 45 MiB), so about 135 MiB, plus whatever its own services hold.
+An organism grafted with the habitat's defaults adds no server of its own for its record or its nerves: its record is a schema on the habitat's Postgres and its organization an account on the habitat's NATS. It adds only its own services (voice's coordinator holds about 200 MiB). An organism grafted with `--own memory` or `--own nerves`, or one that needs senses of its own, adds that server: a Postgres about 80 MiB, a NATS under 10 MiB, a Prometheus about 45 MiB.
 
 **On a Mac**, the containers run inside Docker Desktop's VM, so the VM's memory is the habitat's budget. 3 GB is enough for the habitat, a few organisms and the VM's own needs (Docker Desktop → Settings → Resources → Memory). A model served by a node outside Docker (voice's `node` placed on the Mac itself, for example) uses the Mac's unified memory directly, not the VM's, so leave room for it outside the VM: on a 16 GB MacBook Air, a 3 GB VM leaves the rest for macOS and the model.
 
