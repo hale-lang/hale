@@ -27,11 +27,12 @@ Your tools are the head's rows the person may call (`tools/list`); each is `Comm
 
 | kind | rows |
 |---|---|
-| reads (write nothing) | `brief`, `hosts`, `allocations`, `policy`, `nurseries`, `saplings`, `index`, `lookup`, `lookup_knowledge`, `preview_batch`, `plan_remove_host`, `plan_remove_organism` (the Board's: what removing a host or an organism would stop and delete) |
+| reads (write nothing) | `brief`, `hosts`, `allocations`, `placements`, `policy`, `nurseries`, `saplings`, `index`, `lookup`, `lookup_knowledge`, `preview_batch`, `plan_remove_host`, `plan_remove_organism` (the Board's: what removing a host or an organism would stop and delete) |
 | acts (a row now, on the person's ask) | `add_host`, `probe_host`, `remove_host`, `add_nursery` (the Board's), `take_task`, `complete_task` (a handed Task the person takes and reports done as text), `create_task`, `reassign_task` (the Board's), `file_friction` |
 | proposals (a Review the Board ratifies) | `propose`, `propose_organization`, `open_position`, `fill`, `apply_batch`; the Knowledge rows `propose_knowledge`, `revise_knowledge`, `retire_knowledge`, `link_knowledge`, `unlink_knowledge`, `bind_knowledge`, `unbind_knowledge`, which the Knowledge policy sends to Review or admits |
 | the Board's decisions (the person's alone) | `verdict`, `ratify_sapling`, `retire_person`; and `remove_host` on a host with allocations and `remove_organism`, whose `confirm` is the name the person typed after reading the plan (with that plan's `digest`), never one you fill in |
 | a leg's (not a pairing agent's) | `claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance` |
+| the CLI's (a host command it ran over the person's own SSH login) | `record_placed`, `record_unplaced`: written by `hale habitat organism place` and `unplace` once the command ran there, never by you |
 
 ## Connecting
 

@@ -23,6 +23,31 @@
 // `::remove_host`) plans and executes a host's alone; `hale habitat down
 // --forget` plans each host's beside the rest of the habitat.
 
+// The start of every vault slot the organization of the record `id` holds
+// on the nerves: each role's account (`nats-<org>-<role>`) and each
+// application's (`nats-<org>-app-<name>`, one for every name an
+// application was attached by), "" for no record.
+fn nerves_vault_prefix(id: String) -> String {
+    if len(id) == 0 { return ""; }
+    return "nats-" + identifier_part(schema_for(id), 60) + "-";
+}
+
+// The slots of the local vault that start with `prefix`, a line each ("" for
+// none, or a vault served over HTTP, provisioned out of band).
+@bounded_by(prefix)
+fn vault_slots_prefixed(prefix: String) -> String {
+    if len(prefix) == 0 || len(std::env::var("HALE_VAULT_ADDR")) > 0 { return ""; }
+    let mut out = "";
+    let mut listed = run_tool("ls\n-A\n" + std::secret::vault_local_dir()).stdout;
+    while len(listed) > 0 {
+        let nl = std::str::index_of(listed, "\n");
+        let f = if nl < 0 { listed } else { listed[0..nl] };
+        listed = if nl < 0 { "" } else { listed[(nl + 1)..len(listed)] };
+        if std::str::starts_with(f, prefix) { out = out + f + "\n"; }
+    }
+    return out;
+}
+
 // One item of a plan, as a JSON object.
 fn teardown_item(
     group: String,
@@ -625,7 +650,9 @@ fn teardown_execute(root: String, item: String, by: String) -> String {
         );
         if std::str::starts_with(script, "!") { return script[1..len(script)]; }
     } else if action == "remote-dir-rm" {
-        script = "rm -rf -- '.hale/habitat/" + project + "'";
+        // and the habitat's directory there, when that leaves it empty
+        script = "rm -rf -- '.hale/habitat/" + project
+            + "' && { rmdir .hale/habitat .hale 2>/dev/null; true; }";
     } else if action == "remote-subdir-rm" {
         if !teardown_quotable(service) { return "`" + service + "` is no directory's name"; }
         script = "rm -rf -- '.hale/habitat/" + project + "/" + service + "'";
@@ -1246,6 +1273,10 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
     } else {
         let dir = std::secret::vault_local_dir();
         let mut kept = "";
+        // its accounts on the nerves, the applications' among them: drawn as
+        // an application is attached, under the name it was attached by, so
+        // no row names them all (`nerves_vault_prefix`)
+        let nerves = nerves_vault_prefix(std::json::find_string_field(body, "child"));
         let mut listed = run_tool("ls\n-A\n" + dir).stdout;
         while len(listed) > 0 {
             let nl = std::str::index_of(listed, "\n");
@@ -1255,6 +1286,7 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                 && (
                     std::str::contains(f, key) || std::str::contains(slots, "\n" + f + "\n")
                         || (f == "oidc-service-" + name && grafted_organism(root, name).key == key)
+                        || (len(nerves) > 0 && std::str::starts_with(f, nerves))
                 );
             if len(f) > 0 && ours && !std::str::contains(kept, "\n" + f) { kept = kept + "\n" + f; }
         }
