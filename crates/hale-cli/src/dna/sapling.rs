@@ -329,7 +329,7 @@ pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String
 /// ls-files`, one per line) are under, each once, in order: a file, or a
 /// directory with the files under it. Its `compose.yaml` and `hale.toml` are
 /// not among them.
-fn mounted_entries(tracked: &str) -> Vec<&str> {
+pub(super) fn mounted_entries(tracked: &str) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     for f in tracked.lines() {
         let top = f.split('/').next().unwrap_or("");
@@ -379,7 +379,7 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
 /// An apply that outlived the head's deadline, followed through the
 /// allocation's state as its provider observes it: a line when it is up or
 /// degraded, a heartbeat while it is building, refused after half an hour.
-fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, String> {
+pub(super) fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, String> {
     let begun = std::time::Instant::now();
     let mut said = begun;
     loop {
@@ -404,7 +404,7 @@ fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, String> {
 }
 
 /// What `Commands::apply_allocations` answered, a line per allocation.
-fn applied_lines(v: &serde_json::Value) -> Vec<String> {
+pub(super) fn applied_lines(v: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     let list: serde_json::Value = v["applied"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
     for a in list.as_array().into_iter().flatten() {
