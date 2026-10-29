@@ -1787,6 +1787,34 @@ fn genome_dir() -> PathBuf {
     PathBuf::from(local_habitat_dir()).join("genome")
 }
 
+/// How long `up` waits for a face that is still building the head's
+/// programs before it answers.
+const FACE_BUILD_WAIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// The seed a face's log says it is building now (`hale: building …: <seed> @ …`
+/// as its last such line, with nothing after it but more of the same), or
+/// `None` when its last line is anything else.
+fn building(tail: &str) -> Option<String> {
+    let last = tail.lines().map(str::trim).filter(|l| !l.is_empty()).last()?;
+    let rest = last.strip_prefix("hale: building ")?;
+    let seed = rest.split_once(": ").map(|(_, s)| s).unwrap_or(rest);
+    Some(seed.split(" @ ").next().unwrap_or(seed).trim().to_string())
+}
+
+/// The last `n` lines `service` of the habitat's compose project wrote
+/// (its output and its errors), "" when docker answers none.
+fn service_log_tail(service: &str, n: usize) -> String {
+    let project = local_habitat_project();
+    let Docker::Answered(ids) = docker(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={project}"), "--filter", &format!("label=com.docker.compose.service={service}")]) else {
+        return String::new();
+    };
+    let Some(id) = ids.lines().map(str::trim).find(|l| !l.is_empty()) else { return String::new() };
+    match Command::new("docker").args(["logs", "--tail", &n.to_string(), id]).output() {
+        Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim_end().to_string(),
+        Err(_) => String::new(),
+    }
+}
+
 /// The state of `service` in the habitat's compose project when running.
 fn service_status(service: &str) -> Option<String> {
     let project = local_habitat_project();
@@ -2805,7 +2833,13 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
 
     progress("waiting for the habitat's body and face probes");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    // three minutes to answer once the face has what it runs; a face still
+    // building the head's programs (a first start, or one after the
+    // toolchain changed) says so in its log, and is waited for up to
+    // FACE_BUILD_WAIT
+    let begun = std::time::Instant::now();
+    let mut deadline = begun + std::time::Duration::from_secs(180);
+    let mut said_building = String::new();
     let mut body_ok = false;
     let mut face_ok = false;
     while std::time::Instant::now() < deadline {
@@ -2820,13 +2854,20 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         if body_ok && face_ok {
             break;
         }
+        if let Some(seed) = building(&service_log_tail("face", 5)) {
+            if seed != said_building {
+                progress(&format!("the face is building the head's {seed}"));
+                said_building = seed;
+            }
+            deadline = deadline.max((std::time::Instant::now() + std::time::Duration::from_secs(180)).min(begun + FACE_BUILD_WAIT));
+        }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     if !body_ok {
-        return Err("the habitat's body service did not stay up".to_string());
+        return Err(format!("the habitat's body service did not stay up; its last lines:\n{}", service_log_tail("body", 30)));
     }
     if !face_ok {
-        return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within 180s"));
+        return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within {}s; the face's last lines:\n{}", begun.elapsed().as_secs(), service_log_tail("face", 30)));
     }
     let mut lines = vec![format!("{:<8}up (compose service face, {face_url}/)", "face"), format!("{:<8}up (compose service body)", "body")];
     let link = sign_in_link(&face_url);
@@ -3957,6 +3998,16 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::building;
+
+    #[test]
+    fn a_face_still_building_says_which_seed() {
+        let log = "hale: building the head: dna/api @ /h/.cache/hale/iris/ab12\nhale: building the head: dna/reflexes @ /h/.cache/hale/iris/ab12\n";
+        assert_eq!(building(log).as_deref(), Some("dna/reflexes"));
+        assert_eq!(building("hale: building the head: dna/api @ /x\nhead: serving on 127.0.0.1:9313\n"), None);
+        assert_eq!(building(""), None);
+    }
+
     use super::*;
 
     /// A host's listen address is its name's first IPv4 address, through
