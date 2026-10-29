@@ -1427,7 +1427,7 @@ pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
         };
         let path = dir.join(format!("placed.{role}"));
         std::fs::write(&path, format!("{h}\n")).map_err(|e| format!("write {}: {e}", path.display()))?;
-        placed.push(format!("{role} on {}", h["host"].as_str().unwrap_or("")));
+        placed.push(format!("{role} on {}", shown_host(h["host"].as_str().unwrap_or(""))));
     }
     let parts: serde_json::Map<String, serde_json::Value> = ORGANISM_PARTS.iter().chain(APPLICATION_PARTS.iter()).map(|r| (r.to_string(), serde_json::json!(if part_choice(r) == Part::Reuse { "reuse" } else { "own" }))).collect();
     write_row(&dir.join("parts.json"), &serde_json::Value::Object(parts))?;
@@ -2443,9 +2443,15 @@ fn habitat_listen_host() -> String {
 /// (`HALE_DNA_HABITAT_ADDRESS`, which `up --host` hands its containers).
 /// The habitat's own machine as its readings name it: the address it is
 /// recorded at, or `local` on the loopback (as the head's `host_label`).
-fn host_label_here() -> String {
+pub(super) fn host_label_here() -> String {
     let at = habitat_address();
     if at == "127.0.0.1" || at == "localhost" { "local".to_string() } else { at }
+}
+
+/// A host as a person knows it: the habitat's own machine (`local` in its
+/// rows) by the name it is reached at, as the head's `host_label`.
+pub(super) fn shown_host(host: &str) -> String {
+    if host == "local" { host_label_here() } else { host.to_string() }
 }
 
 fn habitat_address() -> String {

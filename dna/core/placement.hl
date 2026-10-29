@@ -145,6 +145,9 @@ fn placed_render(key: String, role: String, p: AppliedOn) -> Render {
 
 // `role` of `key` brought up where it is placed, by that host's provider.
 fn placed_apply(key: String, role: String) -> RenderApplied {
+    // a record the habitat's memory keeps has no server of its own to bring
+    // up: the habitat's is its, and up with it
+    if role == "memory" && memory_reused(key) { return RenderApplied { ok: true }; }
     let p = placed_on(key, role);
     let r = placed_render(key, role, p);
     if p.host == "local" { return ComposeProvider { }.apply("local", r); }

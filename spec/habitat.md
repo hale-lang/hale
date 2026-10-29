@@ -1071,7 +1071,10 @@ server of its own, and its heart's `database`, when the habitat provides
 one, is a database of that server too. Removing the organism drops its
 schema, its roles and that database there (`record-drop`, run inside the
 habitat's memory by its superuser), and keeps the server; forgetting the
-habitat removes them with its memory. A reused `nerves` or `senses` is a
+habitat removes them with its memory. Such an organism's memory is never brought up as a
+server of its own: `apply`, and a host's re-apply of its allocations,
+pass over it (`placed_apply`), since the habitat's memory is its and is
+up with the habitat. A reused `nerves` or `senses` is a
 server of its own on the habitat's machine: the nerves' configuration
 carries one organization per NATS server (its users and their subjects are
 the server's), so sharing the habitat's needs an account per organism,

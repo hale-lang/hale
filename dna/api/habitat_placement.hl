@@ -307,7 +307,9 @@ fn apply_one(
     let recorded = j.append(j.revision(), "habitat.applied", entity, row.result());
     out.begin_object();
     out.string_field("allocation", entity);
-    out.string_field("host", target.host);
+    // the host as a person knows it: the habitat's own machine by the name
+    // it is reached at, not the `local` its rows branch on
+    out.string_field("host", dna::host_label(target.host));
     out.string_field("provider", provider);
     out.bool_field("ok", applied.ok);
     out.string_field("why", applied.why);

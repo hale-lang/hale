@@ -1310,11 +1310,17 @@ fn allocation_dir(root: String) -> String {
 // memory, as its graft chose (`parts.json` beside its allocations: memory
 // = reuse): a schema and roles of its own on that server, never a server
 // of its own.
+// Whether the habitat's memory keeps the record of the organism whose
+// allocations are `key`'s: its memory reused by its graft, and the organism
+// not the habitat's genome itself (whose own parts read `reuse` too: its
+// memory is the one reused).
 fn memory_reused(key: String) -> Bool {
     if len(key) == 0 { return false; }
     let parts = std::io::fs::read_file(local_habitat_dir() + "/allocations/" + key + "/parts.json")
     or "";
-    return std::json::find_string_field(parts, "memory") == "reuse";
+    if std::json::find_string_field(parts, "memory") != "reuse" { return false; }
+    let genome = allocation_key(local_habitat_dir() + "/genome");
+    return len(genome) > 0 && genome != key;
 }
 
 // The root whose memory server holds the record at `root`: its own, or the
@@ -1322,11 +1328,8 @@ fn memory_reused(key: String) -> Bool {
 // (`memory_reused`). Its record's identity stays its own: only the server
 // (its compose service, its owner's password) is the habitat's.
 fn memory_root(root: String) -> String {
-    let key = allocation_key(root);
-    if !memory_reused(key) { return root; }
-    let genome = local_habitat_dir() + "/genome";
-    if allocation_key(genome) == key || len(allocation_key(genome)) == 0 { return root; }
-    return genome;
+    if !memory_reused(allocation_key(root)) { return root; }
+    return local_habitat_dir() + "/genome";
 }
 
 fn allocation_service(root: String, role: String) -> String {
