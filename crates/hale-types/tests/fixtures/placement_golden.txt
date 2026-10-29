@@ -11844,6 +11844,8 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/graph_ingest_refusals_test.hl
 row	App@main1	App	main	default
 
+== dna/tests/graph_ingest_runs_shape_test.hl
+
 == dna/tests/graph_ingest_test.hl
 row	App@main1	App	main	default
 
