@@ -13,10 +13,19 @@
 //! api_service = "api"                                  # whose published URL is {api_url} (default "api")
 //! operator_token = ["voice-api", "admin-token"]        # run in that service's container: prints the token
 //! service = "voice-node-{id}"                          # what the install leaves running: a systemd unit or launchd label
+//! requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have (or a list: on every platform)
 //! ```
 //!
+//! The habitat provisions what any host command needs to run at all, which
+//! is the same for every organism: the hale toolchain at the organism's pin
+//! (its manifest's `[dna] toolchain`, else the habitat's own), installed from the release into a
+//! directory of the habitat's on the host, one per version, and what that
+//! toolchain builds with (git, curl, tar, clang, OpenSSL's and zlib's
+//! headers), with the host's package manager. What only the organism knows
+//! (a GPU's drivers, its runtimes) is its command's own.
+//!
 //! The command runs in the organism's source at the revision the habitat
-//! pins for its sapling, cloned on the host, with the host's own `hale`.
+//! pins for its sapling, cloned on the host, with the toolchain it declares.
 //! Everything runs over the person's own SSH logins, as `host add` makes the
 //! habitat's account: the operator token is read in the api's container on
 //! the host it runs on, written to a 0600 file on the target, handed to the
@@ -41,7 +50,14 @@ pub(super) struct HostCommand {
     /// system service's name (a systemd unit on Linux, a launchd label in
     /// the system domain on macOS), `{id}` filled in; "" when it names none.
     pub service: String,
+    /// What the host must have before the command runs (`REQUIRES`), by
+    /// platform; a list declares the same on every platform.
+    pub requires: BTreeMap<String, Vec<String>>,
 }
+
+/// What a host command may require of a host, each checked from what the
+/// host says of itself before anything is installed or run.
+const REQUIRES: &[&str] = &["docker", "systemd", "nvidia-gpu", "apple-silicon", "gpu"];
 
 /// The inputs a host command may take, by name.
 const INPUTS: &[&str] = &["id", "api_url", "operator_token_file"];
@@ -62,7 +78,7 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
             }
         };
         for k in t.keys() {
-            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "operator_token", "service"].contains(&k.as_str()) {
+            if !["platforms", "root", "install", "uninstall", "inputs", "api_service", "operator_token", "service", "requires"].contains(&k.as_str()) {
                 return Err(format!("[dna.host.{name}] has no `{k}`"));
             }
         }
@@ -78,7 +94,29 @@ pub(super) fn host_commands(manifest: &str) -> Result<BTreeMap<String, HostComma
                 None => String::new(),
                 Some(v) => v.as_str().ok_or_else(|| format!("[dna.host.{name}] service is a string"))?.to_string(),
             },
+            requires: match t.get("requires") {
+                None => BTreeMap::new(),
+                Some(toml::Value::Array(_)) => {
+                    let all = strs("requires")?;
+                    PLATFORMS.iter().map(|p| (p.to_string(), all.clone())).collect()
+                }
+                Some(toml::Value::Table(by)) => {
+                    let mut out = BTreeMap::new();
+                    for (platform, v) in by {
+                        if !PLATFORMS.contains(&platform.as_str()) {
+                            return Err(format!("[dna.host.{name}] requires.{platform}: a platform is linux or macos"));
+                        }
+                        let list = v.as_array().ok_or_else(|| format!("[dna.host.{name}] requires.{platform} is a list of strings"))?.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(|| format!("[dna.host.{name}] requires.{platform} is a list of strings"))).collect::<Result<Vec<_>, _>>()?;
+                        out.insert(platform.clone(), list);
+                    }
+                    out
+                }
+                Some(_) => return Err(format!("[dna.host.{name}] requires is a list, or a table of lists by platform")),
+            },
         };
+        if let Some(q) = c.requires.values().flatten().find(|q| !REQUIRES.contains(&q.as_str())) {
+            return Err(format!("[dna.host.{name}] requires `{q}`: one of {}", REQUIRES.join(", ")));
+        }
         if c.service.contains(|ch: char| !(ch.is_ascii_alphanumeric() || "-_.@{}".contains(ch))) {
             return Err(format!("[dna.host.{name}] service `{}`: letters, digits, `-`, `_`, `.`, `@` and `{{id}}`", c.service));
         }
@@ -130,16 +168,174 @@ fn tree(organism: &str) -> String {
     format!("$HOME/.local/share/hale/hosted/{organism}")
 }
 
-/// The organism's source at `revision` of `repo` in its tree on the
-/// target (cloned once, fetched after), and what the host is: its
-/// manifest, `uname -s`, and the `hale` on its PATH with its version.
-pub(super) fn prepare_script(organism: &str, repo: &str, revision: &str) -> String {
+/// What the host is, read before anything is touched: one `<what> <value>`
+/// a line. A login's non-interactive shell has a short PATH, so Homebrew's
+/// and `/usr/local`'s are added.
+pub(super) fn facts_script() -> String {
+    format!(
+        r#"PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
+echo "home $HOME"; echo "os $(uname -s)"; echo "arch $(uname -m)"
+for c in git curl tar; do command -v $c >/dev/null 2>&1 && echo "have $c"; done
+case "$(uname -s)" in
+Darwin)
+  xcode-select -p >/dev/null 2>&1 && echo "have clang" && echo "have zlib"
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && {{ echo "pkg brew $b"; break; }}; done
+  for o in /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3; do [ -f "$o/include/openssl/ssl.h" ] && {{ echo "have openssl"; break; }}; done
+  [ "$(uname -m)" = arm64 ] && echo "fact apple-silicon" ;;
+*)
+  command -v clang >/dev/null 2>&1 && echo "have clang"
+  [ -f /usr/include/openssl/ssl.h ] && echo "have openssl"
+  [ -f /usr/include/zlib.h ] && echo "have zlib"
+  for m in apt-get dnf; do command -v $m >/dev/null 2>&1 && {{ echo "pkg $m $(command -v $m)"; break; }}; done
+  [ -d /run/systemd/system ] && echo "fact systemd"
+  command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU ' && echo "fact nvidia-gpu" ;;
+esac
+docker info >/dev/null 2>&1 && echo "fact docker"
+for t in "$HOME"/{TOOLCHAINS}/*/bin/hale; do [ -x "$t" ] && echo "toolchain $(basename "$(dirname "$(dirname "$t")")")"; done
+true"#
+    )
+}
+
+/// Where the habitat keeps the toolchains it installs on a host, under the
+/// login's home: one directory per release, `<version>/bin/hale`.
+const TOOLCHAINS: &str = ".local/share/hale/toolchains";
+
+/// What the host said of itself (`facts_script`).
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Facts {
+    pub home: String,
+    pub os: String,
+    pub arch: String,
+    /// git, curl, tar, clang, openssl, zlib: what is there of what a toolchain builds with
+    pub have: Vec<String>,
+    /// the package manager and its path: apt-get, dnf or brew
+    pub pkg: Option<(String, String)>,
+    /// what `requires` is checked against
+    pub facts: Vec<String>,
+    /// the toolchains already installed, by version
+    pub toolchains: Vec<String>,
+}
+
+pub(super) fn facts(out: &str) -> Facts {
+    let mut f = Facts::default();
+    for l in out.lines() {
+        let (k, v) = l.split_once(' ').unwrap_or((l, ""));
+        let v = v.trim().to_string();
+        match k {
+            "home" => f.home = v,
+            "os" => f.os = v,
+            "arch" => f.arch = v,
+            "have" if !f.have.contains(&v) => f.have.push(v),
+            "pkg" => f.pkg = v.split_once(' ').map(|(m, p)| (m.to_string(), p.to_string())),
+            "fact" => f.facts.push(v),
+            "toolchain" => f.toolchains.push(v),
+            _ => {}
+        }
+    }
+    f
+}
+
+/// What a toolchain builds with, in the order it is needed.
+const PREREQUISITES: &[&str] = &["git", "curl", "tar", "clang", "openssl", "zlib"];
+
+/// The package `pkg` installs a prerequisite as; `None` when it does not
+/// (clang on macOS is the Command Line Tools', not Homebrew's).
+fn package_of(pkg: &str, what: &str) -> Option<&'static str> {
+    Some(match (pkg, what) {
+        ("apt-get", "git") | ("dnf", "git") | ("brew", "git") => "git",
+        ("apt-get", "curl") | ("dnf", "curl") | ("brew", "curl") => "curl",
+        ("apt-get", "tar") | ("dnf", "tar") => "tar",
+        ("apt-get", "clang") | ("dnf", "clang") => "clang",
+        ("apt-get", "openssl") => "libssl-dev",
+        ("dnf", "openssl") => "openssl-devel",
+        ("brew", "openssl") => "openssl@3",
+        ("apt-get", "zlib") => "zlib1g-dev",
+        ("dnf", "zlib") => "zlib-devel",
+        _ => return None,
+    })
+}
+
+/// The prerequisites the host lacks, and the packages that install them:
+/// refused, naming what is missing, when the host has no package manager
+/// the habitat knows or a prerequisite has no package there.
+pub(super) fn missing_packages(f: &Facts) -> Result<(Vec<String>, Vec<&'static str>), String> {
+    let missing: Vec<String> = PREREQUISITES.iter().filter(|p| !f.have.iter().any(|h| h == *p)).map(|p| p.to_string()).collect();
+    if missing.is_empty() {
+        return Ok((missing, Vec::new()));
+    }
+    let Some((pkg, _)) = &f.pkg else {
+        return Err(format!("it lacks {} and has no package manager the habitat knows (apt-get, dnf, Homebrew): install them there, then run this again", missing.join(", ")));
+    };
+    let mut packages = Vec::new();
+    for m in &missing {
+        match package_of(pkg, m) {
+            Some(p) => packages.push(p),
+            None if m == "clang" && pkg == "brew" => return Err("it has no Command Line Tools (clang): run `xcode-select --install` there, then run this again".to_string()),
+            None => return Err(format!("it lacks {m}, which {pkg} does not install here: install it, then run this again")),
+        }
+    }
+    Ok((missing, packages))
+}
+
+/// The packages installed with the host's package manager: under the
+/// person's sudo for apt-get and dnf, as the login for Homebrew (which
+/// refuses root).
+pub(super) fn packages_script(pkg: &str, path: &str, packages: &[&str], sudo: &str) -> String {
+    let list = packages.iter().map(|p| sq(p)).collect::<Vec<_>>().join(" ");
+    match pkg {
+        "apt-get" => format!("set -e; {sudo} env DEBIAN_FRONTEND=noninteractive {p} update -q; {sudo} env DEBIAN_FRONTEND=noninteractive {p} install -y -q {list}", p = sq(path)),
+        "dnf" => format!("set -e; {sudo} {p} install -y -q {list}", p = sq(path)),
+        _ => format!("set -e; {p} install -q {list}", p = sq(path)),
+    }
+}
+
+/// Whether the host has what a command requires: the requirements it lacks.
+pub(super) fn unmet(requires: &[String], f: &Facts) -> Vec<String> {
+    let has = |x: &str| f.facts.iter().any(|y| y == x);
+    requires.iter().filter(|q| !(has(q) || (q.as_str() == "gpu" && (has("nvidia-gpu") || has("apple-silicon"))))).cloned().collect()
+}
+
+/// The release target of a host's `uname -s` and `uname -m`, as the
+/// release names its archives; `None` where none is built.
+pub(super) fn release_target(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("Linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("Linux", "aarch64") | ("Linux", "arm64") => Some("aarch64-unknown-linux-gnu"),
+        ("Darwin", "arm64") => Some("aarch64-apple-darwin"),
+        _ => None,
+    }
+}
+
+/// A pin as its release's tag: `0.30.1` and `v0.30.1` are both `v0.30.1`.
+pub(super) fn release_tag(pin: &str) -> String {
+    let p = pin.trim();
+    if p.starts_with('v') { p.to_string() } else { format!("v{p}") }
+}
+
+/// The toolchain `tag` installed from its release under `$HOME/<TOOLCHAINS>/<tag>`:
+/// downloaded, checked against the release's sha256, unpacked beside, and
+/// moved into place whole, so a failed install leaves nothing half there.
+pub(super) fn toolchain_script(tag: &str, target: &str) -> String {
+    format!(
+        r#"set -e; PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
+t={tag}; a="hale-$t-{target}.tar.gz"; u="https://github.com/hale-lang/hale/releases/download/$t/$a"
+dest="$HOME/{TOOLCHAINS}/$t"; w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+curl -fsSL -o "$w/$a" "$u"; curl -fsSL -o "$w/$a.sha256" "$u.sha256"
+if command -v sha256sum >/dev/null 2>&1; then (cd "$w" && sha256sum -c "$a.sha256" >/dev/null); else (cd "$w" && shasum -a 256 -c "$a.sha256" >/dev/null); fi
+mkdir -p "$w/bin" "$(dirname "$dest")"; tar -xzf "$w/$a" -C "$w/bin"; chmod +x "$w/bin/hale"
+rm -rf "$dest.new"; mkdir -p "$dest.new"; mv "$w/bin" "$dest.new/bin"; rm -rf "$dest"; mv "$dest.new" "$dest"
+"$dest/bin/hale" --version | head -n 1"#,
+        tag = sq(tag),
+    )
+}
+
+/// The organism's source at `revision` of `repo` in its tree on the target
+/// (cloned once, fetched after): its manifest.
+pub(super) fn source_script(organism: &str, repo: &str, revision: &str) -> String {
     format!(
         r#"set -e; d="{t}"; mkdir -p "$(dirname "$d")"
 if [ -d "$d/.git" ]; then git -C "$d" fetch -q origin; else git clone -q {r} "$d"; fi
 git -C "$d" -c advice.detachedHead=false checkout -q {v}
-echo "home $HOME"; echo "os $(uname -s)"
-if h=$(command -v hale); then echo "hale $h $("$h" --version | head -n 1)"; else echo "hale none"; fi
 echo "manifest"; cat "$d/hale.toml""#,
         t = tree(organism),
         r = sq(repo),
@@ -147,36 +343,16 @@ echo "manifest"; cat "$d/hale.toml""#,
     )
 }
 
-/// What `prepare_script` said of the host.
-#[derive(Debug, Default, PartialEq)]
-pub(super) struct Prepared {
-    pub home: String,
-    pub os: String,
-    pub hale: Option<String>,
-    pub hale_version: String,
-    pub manifest: String,
+/// The manifest `source_script` printed.
+pub(super) fn source(out: &str) -> String {
+    out.split_once("manifest\n").map(|(_, b)| b).unwrap_or("").to_string()
 }
 
-pub(super) fn prepared(out: &str) -> Prepared {
-    let mut p = Prepared::default();
-    let mut lines = out.lines();
-    for l in lines.by_ref() {
-        if let Some(h) = l.strip_prefix("home ") {
-            p.home = h.trim().to_string();
-        } else if let Some(os) = l.strip_prefix("os ") {
-            p.os = os.trim().to_string();
-        } else if let Some(h) = l.strip_prefix("hale ") {
-            if h.trim() != "none" {
-                let (path, ver) = h.split_once(' ').unwrap_or((h, ""));
-                p.hale = Some(path.to_string());
-                p.hale_version = ver.trim().to_string();
-            }
-        } else if l == "manifest" {
-            break;
-        }
-    }
-    p.manifest = lines.collect::<Vec<_>>().join("\n");
-    p
+/// The toolchain an organism declares it runs on (`[dna] toolchain` in its
+/// manifest, as a codebase's `toolchain` is), or `None`.
+pub(super) fn pinned_toolchain(manifest: &str) -> Option<String> {
+    let t: toml::Table = toml::from_str(manifest).ok()?;
+    t.get("dna")?.get("toolchain")?.as_str().map(str::to_string).filter(|s| !s.trim().is_empty())
 }
 
 /// The platform word `uname -s` answers for.
@@ -195,7 +371,7 @@ fn tree_at(home: &str, organism: &str) -> String {
 
 /// The command run on the target, in the organism's tree at `dir`: the
 /// token's file (written before, 0600) removed however it ends; `sudo`
-/// with the host's `hale` by its path when the command needs root.
+/// with the provisioned `hale` by its path when the command needs root.
 pub(super) fn run_script(dir: &str, argv: &[String], hale: &str, root: bool, sudo: &str, token_file: Option<&str>) -> String {
     let mut words: Vec<String> = argv.iter().map(|a| sq(a)).collect();
     if argv.first().map(String::as_str) == Some("hale") {
@@ -327,20 +503,62 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     let port = target["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
     let id = id.map(str::to_string).unwrap_or_else(|| host.split('.').next().unwrap_or(host).to_string());
 
-    // its source on the target, and what the target is
-    super::progress(&format!("fetching {organism}'s source at {revision} on {host}, over your SSH login"));
-    let p = prepared(&over_login(host, port, &prepare_script(organism, &repo, &revision), None, false)?);
-    let commands = host_commands(&p.manifest)?;
-    let cmd = commands.get(name).ok_or_else(|| format!("{organism} declares no host command `{name}` at {revision} ([dna.host.{name}]{})", if commands.is_empty() { String::new() } else { format!("; it declares {}", commands.keys().cloned().collect::<Vec<_>>().join(", ")) }))?;
-    let platform = platform_of(&p.os);
-    if !cmd.platforms.is_empty() && !cmd.platforms.iter().any(|x| x == platform) {
-        return Err(format!("`{name}` runs on {}; {host} is {}", cmd.platforms.join(" and "), if p.os.is_empty() { "unknown" } else { &p.os }));
-    }
-    if p.home.is_empty() {
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+
+    // what the host is, read before anything is touched
+    super::progress(&format!("reading what {host} is, over your SSH login"));
+    let f = facts(&over_login(host, port, &facts_script(), None, false)?);
+    if f.home.is_empty() {
         return Err(format!("{host} named no home for your login"));
     }
-    let dir = tree_at(&p.home, organism);
-    let hale = p.hale.clone().ok_or_else(|| format!("{host} has no `hale` on its PATH: install the release {organism} pins there, then run this again"))?;
+    let target = release_target(&f.os, &f.arch).ok_or_else(|| format!("{host} is {} {}, for which hale builds no release", f.os, f.arch))?;
+
+    // what any toolchain builds with: installed first, since the source needs git
+    let (missing, packages) = missing_packages(&f).map_err(|w| format!("{host}: {w}"))?;
+    let builds = if packages.is_empty() {
+        format!("{:<8}git, curl, tar, clang, OpenSSL and zlib are on {host}", "builds")
+    } else {
+        let (pkg, path) = f.pkg.clone().unwrap_or_default();
+        let via = if pkg == "brew" { "Homebrew".to_string() } else { format!("{pkg}, through your sudo") };
+        if plan {
+            let line = format!("{:<8}{host} lacks {}: would install {} with {via}", "builds", missing.join(", "), packages.join(" "));
+            if missing.iter().any(|m| m == "git") {
+                println!("{line}");
+                println!("{:<8}the rest of the plan reads {organism}'s source on {host}, which needs git there first", "note");
+                return Ok(());
+            }
+            line
+        } else {
+            if pkg != "brew" && !tty {
+                return Err(format!("{host} lacks {}, and installing them needs your sudo, which asks at a terminal: run it at one", missing.join(", ")));
+            }
+            super::progress(&format!("installing {} on {host} with {via}", packages.join(" ")));
+            over_login(host, port, &packages_script(&pkg, &path, &packages, "sudo"), None, tty && pkg != "brew")?;
+            format!("{:<8}{} installed on {host} with {via}", "builds", packages.join(" "))
+        }
+    };
+
+    // its source on the target: the declaration and the toolchain it pins
+    super::progress(&format!("fetching {organism}'s source at {revision} on {host}"));
+    let manifest = source(&over_login(host, port, &source_script(organism, &repo, &revision), None, false)?);
+    let commands = host_commands(&manifest)?;
+    let cmd = commands.get(name).ok_or_else(|| format!("{organism} declares no host command `{name}` at {revision} ([dna.host.{name}]{})", if commands.is_empty() { String::new() } else { format!("; it declares {}", commands.keys().cloned().collect::<Vec<_>>().join(", ")) }))?;
+    let platform = platform_of(&f.os);
+    if !cmd.platforms.is_empty() && !cmd.platforms.iter().any(|x| x == platform) {
+        return Err(format!("`{name}` runs on {}; {host} is {}", cmd.platforms.join(" and "), if f.os.is_empty() { "unknown" } else { &f.os }));
+    }
+    let requires = cmd.requires.get(platform).cloned().unwrap_or_default();
+    let unmet = unmet(&requires, &f);
+    if !unmet.is_empty() {
+        return Err(format!("`{name}` requires {} on {platform}; {host} lacks {}", requires.join(", "), unmet.join(", ")));
+    }
+    // the toolchain it declares, else the habitat's own (this one's)
+    let pinned = pinned_toolchain(&manifest);
+    let tag = release_tag(pinned.as_deref().unwrap_or(env!("CARGO_PKG_VERSION")));
+    let whose = if pinned.is_some() { format!("{organism}'s pin") } else { format!("{organism} declares none (`[dna] toolchain`): the habitat's own") };
+    let have_toolchain = f.toolchains.iter().any(|t| *t == tag);
+    let dir = tree_at(&f.home, organism);
+    let hale = format!("{}/{TOOLCHAINS}/{tag}/bin/hale", f.home);
 
     // its inputs: the id, the api's URL where its service is published, the operator token
     let mut values: BTreeMap<&str, String> = BTreeMap::new();
@@ -365,7 +583,12 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
 
     println!("{:<8}{organism}'s `{name}` on {host} ({platform}{}), as {organism} {revision} declares it", if install { "place" } else { "unplace" }, if cmd.root { ", as root through your sudo" } else { "" });
     println!("{:<8}{}", "runs", argv.join(" "));
-    println!("{:<8}in {dir} on {host}, with {hale} ({})", "from", p.hale_version);
+    println!("{builds}");
+    if !requires.is_empty() {
+        println!("{:<8}{} on {platform}: {host} has them", "needs", requires.join(", "));
+    }
+    println!("{:<8}{tag}, {whose}: {}", "hale", if have_toolchain { format!("in {}/{TOOLCHAINS}/{tag} on {host}", f.home) } else if plan { format!("would install it in {}/{TOOLCHAINS}/{tag} from its release, checked against its sha256", f.home) } else { format!("installing it in {}/{TOOLCHAINS}/{tag} from its release", f.home) });
+    println!("{:<8}in {dir} on {host}, with {hale}", "from");
     if needs("operator_token_file") {
         println!("{:<8}{organism}'s operator token, read in its `{}` on {api_host}, in a 0600 file on {host} for the run alone", "token", cmd.api_service);
     }
@@ -374,6 +597,14 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
     }
     if plan {
         return Ok(());
+    }
+    if cmd.root && !tty {
+        return Err("it needs root, and sudo asks at a terminal: run it at one".to_string());
+    }
+    if !have_toolchain {
+        super::progress(&format!("installing hale {tag} on {host}"));
+        let said = over_login(host, port, &toolchain_script(&tag, target), None, false)?;
+        println!("{:<8}{tag} installed on {host} ({})", "hale", said.lines().last().unwrap_or("").trim());
     }
     if needs("operator_token_file") {
         let (api_login, api_port) = if api_host == "local" || api_host.is_empty() {
@@ -385,10 +616,6 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         super::progress(&format!("reading {organism}'s operator token on {api_login}"));
         let token = read_token(&api_login, api_port, &key, &cmd.api_service, &cmd.operator_token)?;
         over_login(host, port, &format!("umask 077; cat > {}", sq(&token_file)), Some(&token), false)?;
-    }
-    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    if cmd.root && !tty {
-        return Err("it needs root, and sudo asks at a terminal: run it at one".to_string());
     }
     super::progress(&format!("running {organism}'s `{name}` on {host}"));
     let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", needs("operator_token_file").then_some(token_file.as_str()));
@@ -466,11 +693,53 @@ service = "voice-node-{id}"
     }
 
     #[test]
-    fn the_target_says_what_it_is() {
-        let p = prepared("home /Users/x\nos Darwin\nhale /opt/hale/bin/hale hale 0.30.0\nmanifest\n[dna]\nneeds = []");
-        assert_eq!(p, Prepared { home: "/Users/x".into(), os: "Darwin".into(), hale: Some("/opt/hale/bin/hale".into()), hale_version: "hale 0.30.0".into(), manifest: "[dna]\nneeds = []".into() });
-        assert_eq!(prepared("os Linux\nhale none\nmanifest\n").hale, None);
-        assert_eq!(platform_of("Darwin"), "macos");
+    fn a_host_says_what_it_is_and_what_it_lacks() {
+        let f = facts("home /home/x\nos Linux\narch aarch64\nhave git\nhave curl\nhave tar\nhave clang\nhave zlib\npkg apt-get /usr/bin/apt-get\nfact systemd\nfact nvidia-gpu\nfact docker\ntoolchain v0.30.0\n");
+        assert_eq!((f.home.as_str(), f.os.as_str(), f.arch.as_str()), ("/home/x", "Linux", "aarch64"));
+        assert_eq!(f.pkg, Some(("apt-get".to_string(), "/usr/bin/apt-get".to_string())));
+        assert_eq!(f.toolchains, ["v0.30.0"]);
+        // what spark lacked: OpenSSL's headers
+        assert_eq!(missing_packages(&f).unwrap(), (vec!["openssl".to_string()], vec!["libssl-dev"]));
+        let dnf = Facts { pkg: Some(("dnf".into(), "/usr/bin/dnf".into())), ..facts("have curl\nhave tar\n") };
+        assert_eq!(missing_packages(&dnf).unwrap().1, ["git", "clang", "openssl-devel", "zlib-devel"]);
+        assert!(missing_packages(&facts("have curl\n")).unwrap_err().contains("no package manager"));
+        let mac = facts("os Darwin\narch arm64\nhave git\nhave curl\nhave tar\npkg brew /opt/homebrew/bin/brew\nfact apple-silicon\n");
+        assert!(missing_packages(&mac).unwrap_err().contains("xcode-select --install"));
+        let mac = Facts { have: vec!["git".into(), "curl".into(), "tar".into(), "clang".into(), "zlib".into()], ..mac };
+        assert_eq!(missing_packages(&mac).unwrap().1, ["openssl@3"]);
+        assert!(missing_packages(&Facts { have: PREREQUISITES.iter().map(|p| p.to_string()).collect(), ..Facts::default() }).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn requires_is_checked_against_the_host() {
+        let gpu = facts("fact nvidia-gpu\nfact docker\nfact systemd\n");
+        let mac = facts("fact apple-silicon\n");
+        let req = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(unmet(&req(&["gpu", "docker", "systemd"]), &gpu).is_empty());
+        assert!(unmet(&req(&["gpu"]), &mac).is_empty());
+        assert_eq!(unmet(&req(&["gpu", "docker"]), &mac), ["docker"]);
+        assert_eq!(unmet(&req(&["nvidia-gpu"]), &mac), ["nvidia-gpu"]);
+        let flat = host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"gpu\", \"docker\"]")).unwrap();
+        assert_eq!((flat["node"].requires["linux"].clone(), flat["node"].requires["macos"].clone()), (req(&["gpu", "docker"]), req(&["gpu", "docker"])));
+        // voice's: docker on Linux alone, where its runtimes are containers
+        let by = host_commands(&VOICE.replace("root = true", "root = true\nrequires = { linux = [\"docker\", \"nvidia-gpu\"], macos = [\"apple-silicon\"] }")).unwrap();
+        assert_eq!(by["node"].requires["linux"], req(&["docker", "nvidia-gpu"]));
+        assert_eq!(by["node"].requires["macos"], req(&["apple-silicon"]));
+        assert!(unmet(&by["node"].requires["macos"], &mac).is_empty());
+        assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = { windows = [\"gpu\"] }")).unwrap_err().contains("requires.windows"));
+        assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = { linux = [\"tpu\"] }")).unwrap_err().contains("requires `tpu`"));
+        assert!(host_commands(&VOICE.replace("root = true", "root = true\nrequires = [\"tpu\"]")).unwrap_err().contains("requires `tpu`"));
+    }
+
+    #[test]
+    fn the_toolchain_is_the_organisms_pin_from_its_release() {
+        assert_eq!(pinned_toolchain("[dna]\nneeds = []\ntoolchain = \"v0.30.1\"\n").as_deref(), Some("v0.30.1"));
+        assert_eq!(pinned_toolchain("[dna]\nneeds = []\n"), None);
+        assert_eq!((release_tag("0.30.1"), release_tag("v0.30.1")), ("v0.30.1".to_string(), "v0.30.1".to_string()));
+        assert_eq!(release_target("Linux", "aarch64"), Some("aarch64-unknown-linux-gnu"));
+        assert_eq!(release_target("Darwin", "arm64"), Some("aarch64-apple-darwin"));
+        assert_eq!(release_target("Darwin", "x86_64"), None);
+        assert_eq!(source("Cloning…\nmanifest\n[dna]\nneeds = []\n"), "[dna]\nneeds = []\n");
     }
 
     #[test]
@@ -480,7 +749,15 @@ service = "voice-node-{id}"
         assert!(s.contains("sudo '/usr/local/bin/hale' 'run' 'node' 'install'"), "{s}");
         assert_eq!(service_state("noise\nstate running\n"), "running");
         assert_eq!(service_state(""), "unknown");
-        for script in [s, prepare_script("voice", "https://github.com/hale-lang/voice", "v1.2.0"), service_script("voice-node-gpu-1")] {
+        for script in [
+            s,
+            source_script("voice", "https://github.com/hale-lang/voice", "v1.2.0"),
+            service_script("voice-node-gpu-1"),
+            facts_script(),
+            toolchain_script("v0.30.1", "aarch64-unknown-linux-gnu"),
+            packages_script("apt-get", "/usr/bin/apt-get", &["libssl-dev", "clang"], "sudo"),
+            packages_script("brew", "/opt/homebrew/bin/brew", &["openssl@3"], "sudo"),
+        ] {
             assert!(Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
     }
