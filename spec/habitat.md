@@ -961,7 +961,7 @@ host gateway) when there is none, and the head rewrites it whole from the
 after a host's removal, each host at `<address>:9100`. A grafted
 organism's store has the same job and an empty directory.
 
-**Grafana is behind the face.** `up` runs the compose service `grafana`
+**Grafana is behind the face.** `up` makes the compose service `grafana`
 (`grafana/grafana`, pinned) in the face's network namespace, on the
 loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
 published on macOS but for that port), served under `/grafana/` of the
@@ -1006,6 +1006,39 @@ browser's own `X-Hale-*` and `Authorization` lines never reach Grafana. A
 person is signed up in Grafana at their first visit, as an Editor.
 `HALE_DNA_GRAFANA=off` runs none, and a habitat with no senses' store of
 its own (its allocation publishes none) runs none and says so.
+
+**Grafana runs while it is used.** By default `up` creates the service
+(its image pulled, joined to the face's network; one an earlier `up` made
+is removed first) and does not start it: `up` names the directory of the
+habitat's compose files to the face (`HALE_DNA_GRAFANA_ON_DEMAND`). Every
+signed-in request under `/grafana/` stamps its time
+(`<habitat>/grafana/last-use`). While Grafana does not answer on its port,
+the face answers such a request with a page that reloads itself every 3 s
+(503, `Refresh` and `Retry-After`; a request that is not a page, under
+`/grafana/api/` or `/grafana/public/` or not a `GET`, gets the 503 refusal
+`grafana_starting`), and the face's keeper, once a second, starts it
+(`docker compose start grafana`, which makes nothing) for a use in the
+last 30 s. A start compose refuses, or one Grafana does not answer within
+60 s, is written to `<habitat>/grafana/start.err` and shown on that page,
+which then stops reloading; reloading it tries again, and the file goes
+once Grafana answers. The keeper stops Grafana (`docker compose stop
+grafana`) once the later of its last use and the face's own start is 15
+minutes past, once; an open dashboard, which refreshes itself every 30 s,
+is use. `HALE_DNA_GRAFANA=on` runs it from `up` to `down` instead, and
+the face neither starts nor stops it.
+
+**Grafana's footprint is bounded.** Its container is capped
+(`mem_limit: 384m`), its Go runtime collects under `GOMEMLIMIT=200MiB`,
+it fetches no plugin at its start (`GF_PLUGINS_PREINSTALL_DISABLED`), the
+data sources and apps it ships that the habitat never uses are disabled
+(`GF_PLUGINS_DISABLE_PLUGINS`: each data source with a backend is a
+process of its own), and its own alerting is off (the habitat's reflexes
+are its senses' rules). Running, it holds about 170 MiB with both
+dashboards' queries answered; with Grafana's defaults it held 640 MiB.
+The face and body are not capped: a face whose image does not already
+hold the head's programs builds them, in parallel, and that takes
+several GB. A habitat's whole budget, and what a small machine gives it,
+is the guide's (`docs/src/habitat.md`, Running on a small machine).
 
 ### Reflexes: what an organism watches for
 

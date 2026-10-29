@@ -114,6 +114,191 @@ fn env_or_empty(name: String) -> String {
     return if std::env::var_exists(name) { std::str::trim(std::env::var(name)) } else { "" };
 }
 
+// Grafana on demand. Unless `HALE_DNA_GRAFANA=on` keeps it running, `hale
+// habitat up` creates the `grafana` service without starting it and names
+// the directory of the habitat's compose files on
+// HALE_DNA_GRAFANA_ON_DEMAND. A signed-in request under `/grafana/` stamps
+// the time of its use (`<habitat>/grafana/last-use`); while Grafana does
+// not answer, the face answers a page that reloads itself, and its keeper
+// (`GrafanaKeeper`, ticking in `FaceMain`) starts the service. Grafana
+// unused for GRAFANA_IDLE_S is stopped again. An open dashboard refreshing
+// itself is use.
+const GRAFANA_IDLE_S: Int = 900;
+// A start is made for a use this recent; a page waiting on Grafana stamps
+// one at every reload.
+const GRAFANA_DEMAND_S: Int = 30;
+// How long a started Grafana has to answer before the start is reported as
+// failed (the page stops reloading; reloading it tries again).
+const GRAFANA_START_WAIT_S: Int = 60;
+// How often the starting page reloads itself, in seconds.
+const GRAFANA_RELOAD_S: Int = 3;
+
+// Where the face keeps what it knows of Grafana's use: Grafana's own
+// directory in the habitat.
+fn grafana_dir() -> String {
+    return dna::local_habitat_dir() + "/grafana";
+}
+
+// The use of Grafana now, for the keeper.
+fn grafana_mark_use() {
+    std::io::fs::write_file(grafana_dir() + "/last-use", to_string(std::time::now())) or discard;
+}
+
+// When Grafana was last used (unix seconds), 0 for never.
+fn grafana_last_use() -> Int {
+    let t = std::io::fs::read_file(grafana_dir() + "/last-use") or "";
+    return std::str::parse_int(std::str::trim(t)) or 0;
+}
+
+// Why the last start of Grafana failed, "" when it did not.
+fn grafana_start_error() -> String {
+    return std::str::trim(std::io::fs::read_file(grafana_dir() + "/start.err") or "");
+}
+
+// Whether Grafana answers on its port of the face's loopback.
+fn grafana_answers(port: Int) -> Bool {
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return false; }
+    std::io::tcp::close_fd(fd);
+    return true;
+}
+
+// What the keeper does with an on-demand Grafana at `now`: "start", "stop"
+// or "" (nothing). `used` is its last use (0 for none), `since` the later of
+// that and the face's start, `answers` whether it answers, `retry_at` the
+// time before which no start is made (a start is under way) and `stopped`
+// whether the keeper stopped it since it last started it.
+fn grafana_step(
+    now: Int,
+    used: Int,
+    since: Int,
+    answers: Bool,
+    retry_at: Int,
+    stopped: Bool
+) -> String {
+    if now - since >= GRAFANA_IDLE_S { return if stopped { "" } else { "stop" }; }
+    if answers || used < 1 || now - used >= GRAFANA_DEMAND_S || now < retry_at { return ""; }
+    return "start";
+}
+
+// `docker compose` on the habitat's project, its files in `dir`, running
+// `verb` (newline-separated).
+fn grafana_compose(dir: String, verb: String) -> String {
+    return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + dna::local_habitat_project()
+        + "\n--project-directory\n" + dir + "\n-f\n" + dir + "/compose.yaml\n-f\n" + dir
+        + "/ports.yaml\n" + verb;
+}
+
+// The page a request for Grafana gets while it starts: it reloads itself,
+// until the start answers or fails. A request that is not a page (Grafana's
+// API, its build) is refused with a Retry-After.
+fn grafana_starting(req: std::http::Request, path: String) -> std::http::Response {
+    if req.method != "GET"
+        || std::str::starts_with(path, GRAFANA_PREFIX + "/api/")
+        || std::str::starts_with(path, GRAFANA_PREFIX + "/public/")
+    {
+        return std::http::Response {
+            status: 503,
+            content_type: "application/json",
+            headers: "Retry-After: " + to_string(GRAFANA_RELOAD_S)
+                + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff",
+            body: "{\"api_version\":\"hale.v1\",\"error\":{\"code\":\"grafana_starting\",\"message\":\"the habitat's Grafana is starting\"}}",
+        };
+    }
+    let failed = grafana_start_error();
+    let said = if len(failed) > 0 {
+        "<p>The dashboards did not start:</p><pre>" + esc(failed)
+            + "</pre><p>Reload this page to try again.</p>"
+    } else {
+        "<p>Starting the habitat's dashboards. Grafana runs while it is used and stops after "
+            + to_string(GRAFANA_IDLE_S / 60) + " minutes unused; this page reloads itself.</p>"
+    };
+    return std::http::Response {
+        status: 503,
+        content_type: "text/html; charset=utf-8",
+        headers: (if len(failed) > 0 { "" } else {
+            "Refresh: " + to_string(GRAFANA_RELOAD_S) + "\r\nRetry-After: "
+                + to_string(GRAFANA_RELOAD_S) + "\r\n"
+        })
+            + "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        body: "<!doctype html><html><head><meta charset=\"utf-8\"><title>Dashboards</title></head><body>"
+            + said + "</body></html>",
+    };
+}
+
+// The keeper of an on-demand Grafana: once a second (`tick`), it starts
+// Grafana for a recent use while it does not answer, and stops it after
+// GRAFANA_IDLE_S unused. `dir` is the habitat's compose files' directory ("":
+// Grafana is not on demand, and the keeper does nothing).
+locus GrafanaKeeper {
+    params {
+        dir: String = "";
+        port: Int = 0;
+        booted: Int = 0;
+        used: Int = 0;
+        retry_at: Int = 0;
+        stopped: Bool = false;
+        failed: Bool = false;
+    }
+
+    fn note_failure(why: String) {
+        std::io::fs::write_file(grafana_dir() + "/start.err", why + "\n") or discard;
+        self.failed = true;
+        self.retry_at = 0;
+    }
+
+    fn tick() {
+        if len(self.dir) == 0 || self.port < 1 { return; }
+        let now = std::time::now();
+        let stamp = grafana_last_use();
+        if stamp > self.used { self.used = stamp; }
+        let since = if self.used > self.booted { self.used } else { self.booted };
+        let answers = grafana_answers(self.port);
+        if answers {
+            self.retry_at = 0;
+            if self.failed {
+                std::io::fs::unlink(grafana_dir() + "/start.err") or discard;
+                self.failed = false;
+            }
+        }
+        let act = grafana_step(now, self.used, since, answers, self.retry_at, self.stopped);
+        if act == "stop" {
+            let r = dna::run_tool_timeout(60, grafana_compose(self.dir, "stop\ngrafana"));
+            if r.code != 0 {
+                eprintln("hale dna face: stopping Grafana: " + std::str::trim(r.stderr));
+            }
+            self.stopped = true;
+            return;
+        }
+        if act != "start" { return; }
+        if self.retry_at > 0 {
+            // started, and it never answered: said once, and tried again at
+            // the next use
+            self.note_failure(
+                "Grafana did not answer within " + to_string(GRAFANA_START_WAIT_S)
+                    + " s of its start (docker compose logs grafana)",
+            );
+            return;
+        }
+        if self.failed {
+            std::io::fs::unlink(grafana_dir() + "/start.err") or discard;
+            self.failed = false;
+        }
+        // `start`, never `up`: the service `hale habitat up` made, joined to
+        // this face's network; the face makes and replaces nothing
+        let r = dna::run_tool_timeout(60, grafana_compose(self.dir, "start\ngrafana"));
+        self.stopped = false;
+        if r.code != 0 {
+            self.note_failure(
+                "docker compose start grafana: " + std::str::trim(r.stderr)
+                    + " (`hale habitat up` makes the service again)",
+            );
+            return;
+        }
+        self.retry_at = std::time::now() + GRAFANA_START_WAIT_S;
+    }
+}
+
 // The value of the header `name` (lower case) in an answer's head lines, ""
 // when it has none.
 fn answer_header(head: String, name: String) -> String {
@@ -398,6 +583,12 @@ locus Face {
                 return refusal(403, "forbidden", "the head named no person for this session");
             }
         }
+        // on demand: a person's use is stamped for the keeper, and while
+        // Grafana does not answer the request waits on the starting page
+        if len(env_or_empty("HALE_DNA_GRAFANA_ON_DEMAND")) > 0 {
+            if len(person) > 0 { grafana_mark_use(); }
+            if !grafana_answers(port) { return grafana_starting(req, path); }
+        }
         return self.relay_to(
             req,
             "127.0.0.1",
@@ -470,8 +661,17 @@ main locus FaceMain {
     }
     placement { srv: cooperative(pool = io); }
     run() {
+        // the keeper of an on-demand Grafana, ticking once a second
+        let keeper = GrafanaKeeper {
+            dir: env_or_empty("HALE_DNA_GRAFANA_ON_DEMAND"),
+            port: integer(env_or_empty("HALE_DNA_GRAFANA_PORT"), 65535),
+            booted: std::time::now(),
+        };
+        let mut ticks = 0;
         while !self.draining {
             std::time::sleep(100ms);
+            ticks = ticks + 1;
+            if ticks % 10 == 0 { keeper.tick(); }
         }
     }
 }

@@ -1139,6 +1139,7 @@ fn dna_fixture_set_is_complete() {
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
             "extensions_test.hl",
+            "face_grafana_on_demand_test.hl",
             "faces_named_page_test.hl",
             "faces_named_start_test.hl",
             "faces_named_test.hl",
