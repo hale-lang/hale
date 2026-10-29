@@ -76,6 +76,10 @@ loopback ports. It applies a render with `docker
 compose -p <project> --project-directory <dir> -f <file>… up -d --build --wait
 [<service>…]`, with `COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat
 brings up, the habitat's own and each tenant's, is brought up this way.
+Each allocation service has a memory limit (compose's `mem_limit`): a
+Postgres 512 MiB, a NATS 128 MiB, a senses' store 512 MiB, the forge
+384 MiB, several times what each holds at rest, so a runaway is a restart
+the operator sees rather than a small machine swapping.
 `--build` builds a service whose image comes from the render's own context
 (an organism's application) from the revision being applied, so an image an
 earlier revision built under the same tag is never what runs; docker's
