@@ -320,6 +320,7 @@ params {
   5. Payload decoding (`malformed`)
   6. Exposure queue capacity (`full` when `bound` is reached under `on_full: refuse`)
 - **Per-Receiver Serialization**: Transports read and write connections concurrently, but an exposure dispatches at most one call at a time to each receiver instance in FIFO order. Calls targeting different receiver instances run concurrently. If a receiver is draining, restarting, or replaced, calls to that receiver return `unavailable` while other receivers on the exposure continue serving.
+- **The `http::Rest` fallback is not a receiver**: its requests are never queued or dispatched one at a time. Each connection calls the fallback handler on its own coroutine, as `std::http::Server` does, so long streams through the fallback run concurrently (see the `fallback:` rules below).
 
 ### Listener Placement and Child Server Loci
 
@@ -513,6 +514,7 @@ Rules for `fallback`:
 2. **Independent authentication**: `fallback` bypasses the exposure's `principals`, `anonymous`, `roles`, and `cors` checks; it receives the raw `std::http::Request` and performs its own header inspection.
 3. **Same pool placement**: `fallback` executes directly on the listener's connection coroutines and must be placed on the exact same `async_io` pool as the exposure (`edge` above).
 4. **Field reference only**: When used inside a child server locus, `fallback:` must reference a param field (`self.front`) or `self`, never a method call (`self.make()`).
+5. **Concurrent, like `std::http::Server`**: the fallback is not a receiver, so the one-call-per-receiver rule does not apply. Each connection calls `handle` on a coroutine of its own and calls interleave wherever one parks (a `sleep`, a socket read, an outbound request, an event sent to a slow client): fifty one-second requests, or fifty Server-Sent Event streams, finish in about a second, while the rows keep their per-receiver order. Calls never run in parallel (one pool, one thread), but a value the handler read from its own `params` before a park can be stale after it, so keep per-request state in locals. The bound is the listener's: 256 connections served at once and as many waiting, shared with the rows. The exposure's `bound:` counts only calls queued for rows, so a stream that lasts minutes never takes one of its slots.
 
 ### 4. Model Context Protocol Server (`mcp::Rpc`)
 

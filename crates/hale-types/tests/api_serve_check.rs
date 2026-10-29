@@ -1092,3 +1092,49 @@ fn main() {{ App {{ }}; }}
         "{errs:#?}"
     );
 }
+
+/// An `http::Rest` fallback is served only on the listener's `where
+/// async_io` pool, on its connections' coroutines (spec/api.md § The REST
+/// transport, `fallback`, concurrency): a handler placed anywhere else (the
+/// main pool, a classic pool, a pinned thread, another `async_io` pool) is
+/// refused as a cross-pool alias, so no fallback is ever served one
+/// connection at a time.
+#[test]
+fn a_rest_fallback_off_the_listeners_async_io_pool_is_refused() {
+    let src = |front_row: &str| {
+        format!(
+            "
+type Req {{ n: Int; }}
+type Res {{ n: Int; }}
+locus Orders {{ fn place(r: Req) -> Res {{ return Res {{ n: r.n }}; }} }}
+api Public {{ rpc Orders::place at \"POST /orders\"; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: \"bearer\", name: \"\" }}; }}
+    fn refused() -> String {{ return \"no\"; }}
+}}
+locus Front {{
+    fn handle(req: std::http::Request) -> std::http::Response {{ return std::http::Response {{ status: 200, body: \"\" }}; }}
+}}
+main locus App {{
+    params {{
+        orders: Orders = Orders {{ }};
+        tokens: Tokens = Tokens {{ }};
+        front: Front = Front {{ }};
+        web: api::Exposure = api::serve(Public, http::Rest {{ bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, fallback: self.front }}, as: \"web\", bound: 8, on_full: refuse);
+    }}
+    placement {{ web: cooperative(pool = edge) where async_io; {front_row} }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"
+        )
+    };
+    assert_eq!(errors(&src("front: cooperative(pool = edge) where async_io;")), Vec::<String>::new());
+    for row in ["", "front: cooperative(pool = slow);", "front: pinned;", "front: cooperative(pool = other) where async_io;"] {
+        let errs = errors(&src(row));
+        assert!(
+            errs.iter().any(|e| e.contains("cross-pool alias: `Front` (`self.front`)") && e.contains("`std::api::http::Listener`")),
+            "{row:?}: {errs:#?}"
+        );
+    }
+}

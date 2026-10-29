@@ -1104,6 +1104,25 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
     is refused as a cross-pool alias (spec/types.md §
     "Single-threaded-method invariant (F.31)"). On that pool each
     connection is a coroutine, so a stream parks only its own;
+  - **concurrency:** the fallback is served as `std::http::Server`
+    serves its handler (`spec/stdlib.md` § "Server concurrency"), not as
+    a row is dispatched (§ The runtime boundaries): no queue and no one
+    call at a time. Every connection calls the one handler locus inside
+    its own coroutine, so calls never run in parallel (one worker thread
+    per pool) but interleave wherever one parks — a `sleep`, a socket
+    read, an outbound call, a chunk or event sent to a slow client. Fifty
+    one-second requests, or fifty event streams a second long, take a
+    second. What a handler read of its own `params` before a park may be
+    stale after it, exactly as under the Server; state that must hold
+    across a park is re-read or kept in the request's locals. The bound
+    is the listener's connections' (the TCP substrate's
+    `max_connections`, 256 served at once, as many again waiting for a
+    slot, past that a connection closed unserved), shared with the rows'
+    connections; the exposure's `bound:` and `on_full:` bound only the
+    calls queued for rows, so a fallback stream lasting minutes never
+    takes a slot of the exposure's queue. There is no fallback served one
+    connection at a time: a listener runs only on an `async_io` pool,
+    and the handler must be on that pool;
   - the compiler hands the handler, and the route table, to the listener
     it adds; the transport literal the exposure holds keeps neither. The
     call of the handler is in `api_rest_fallback.hl`, which joins only a
@@ -1581,6 +1600,15 @@ different receiver types, each instance placed where its work belongs),
 or serves the surface through several exposures, each with a receiver
 instance of its own; a window wider than one call per receiver is § Not
 yet.
+
+An `http::Rest` exposure's **`fallback`** is not a receiver and none of
+this applies to it (§ The REST transport, `fallback`): nothing is
+dispatched, queued or held in the pending table for it. The connection
+that read the request calls the handler itself, on the listener's
+`async_io` pool, as `std::http::Server`'s connections call theirs: each
+connection a coroutine of its own, the calls interleaving where they
+park, so fifty one-second fallback requests take a second while fifty
+calls of one receiver's row take fifty.
 
 **Completion** has one owner, the exposure's pending table: a record
 per accepted request keyed by the request id, holding the request (its
