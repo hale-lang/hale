@@ -141,3 +141,27 @@ fn a_stopped_hub_releases_its_address() {
     // nothing listens any more
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
 }
+
+/// GH #1781: a seed whose main locus holds a hub can be imported, as a
+/// program's tests import its seed. The library's stream rows name its
+/// topics as written, and the import renames the topics, so a row the
+/// renaming left bare bound no published topic: the hub stayed as written
+/// (`ws::Hub`, no publisher of `Fills`) and the importer did not compile.
+/// The hub expands as in the seed's own build and never runs: nothing
+/// constructs an imported main locus here.
+#[test]
+fn a_program_that_imports_a_seed_whose_main_holds_a_hub_builds() {
+    let dir = harness::unique_dir("api_hub_imported");
+    std::fs::create_dir_all(dir.join("desk")).expect("the library dir");
+    std::fs::create_dir_all(dir.join("tests")).expect("the importer dir");
+    std::fs::write(dir.join("desk/main.hl"), format!("{HUB}\nfn price_of(n: Int) -> Int {{ return n * 10; }}\n"))
+        .expect("write the library");
+    let entry = dir.join("tests/main.hl");
+    std::fs::write(&entry, "import \"../desk\" as desk;\nfn main() { println(\"price=\", desk::price_of(3)); }\n")
+        .expect("write the importer");
+    let bin = harness::unique_bin("api_hub_imported");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("a program importing a hub's seed builds");
+    let out = std::process::Command::new(&bin).output().expect("run the importer");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "price=30");
+}

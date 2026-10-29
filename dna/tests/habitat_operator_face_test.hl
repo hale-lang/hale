@@ -119,6 +119,17 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
         std::str::contains(targets, "\"host.docker.internal:9100\""),
         "the senses' targets name this machine: " + targets,
     );
+    // and the store reads the services the habitat places on its hosts
+    // from senses.d/services/ (none placed here: the directory is empty)
+    let senses_yml = text_of(dna::local_habitat_dir() + "/allocations/" + key + "/senses.yml");
+    std::test::assert(
+        std::str::contains(senses_yml, "  - job_name: services\n")
+            && std::str::contains(senses_yml, "\"/etc/prometheus/senses.d/services/*.json\"")
+            && std::io::fs::file_exists(
+                dna::local_habitat_dir() + "/allocations/" + key + "/senses.d/services",
+            ),
+        "`up` adds the placed services' scrape job: " + senses_yml,
+    );
     let query = face
         + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22host%22%7D";
     let seen_until = std::time::now() + dna::wait_secs(120);

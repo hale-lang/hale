@@ -133,15 +133,19 @@ hale_draining 0
 hale_failures_total 0
 # TYPE hale_loci_live gauge
 hale_loci_live 4
+# TYPE hale_process_cpu_seconds_total counter
+hale_process_cpu_seconds_total 0.031416
 # TYPE hale_process_resident_memory_bytes gauge
 hale_process_resident_memory_bytes 10670080
+# TYPE hale_process_start_time_seconds gauge
+hale_process_start_time_seconds 1793260800.25
 # TYPE hale_restarts_total counter
 hale_restarts_total 0
 ```
 
 ### `Scrape` Configuration & Guarantees
 
-- **Automatic discovery**: Every live `std::metrics::Registry` in the process is automatically included alongside runtime series (`hale_process_resident_memory_bytes`, `hale_draining`, `hale_loci_live`, `hale_restarts_total`, `hale_failures_total`, per-pool queue depths and parked coroutines, and per-topic bus traffic).
+- **Automatic discovery**: Every live `std::metrics::Registry` in the process is automatically included alongside runtime series (`hale_process_resident_memory_bytes`, `hale_process_cpu_seconds_total` (user and system CPU time), `hale_process_start_time_seconds` (when the process started, unix seconds: `time() - hale_process_start_time_seconds` is its uptime), `hale_draining`, `hale_loci_live`, `hale_restarts_total`, `hale_failures_total`, per-pool queue depths and parked coroutines, and per-topic bus traffic).
 - **Host, port, and path**: `port` is required. `host` defaults to `"127.0.0.1"` and `path` defaults to `"/metrics"`. Both can reference other locus params or environment variables:
 
 ```hale,fragment

@@ -1,0 +1,343 @@
+// dna/api/habitat_placed.hl — the services the habitat placed on its
+// hosts, recorded as the head's commands.
+//
+// `hale habitat organism place <organism> <command> --host <h>` runs an
+// organism's declared host command on a host over the person's own SSH
+// login (crates/hale-cli/src/dna/hosted.rs). Once it has, and the service
+// it declares runs, the CLI records the placement here, as every habitat
+// act is a row: `Commands::record_placed` appends a `habitat.placed` row,
+// and `Commands::record_unplaced` (after `unplace` took it off) a
+// `habitat.unplaced` row, both keyed `<organism>/<command>/<host>/<id>`.
+// `Commands::placements`, a read, answers the placements that hold (each
+// key's latest row, an unplaced one dropped), and every placement the
+// record names with its state (`history`: what the habitat ever installed
+// where, which a host's removal and the habitat's forget clean up).
+//
+// A placement that serves its own readings (its declaration's `readings`
+// port: a Hale program's `std::observe::Scrape`) is registered with the
+// habitat's senses: the file_sd file `senses.d/services/<organism>-
+// <command>-<id>.json` in the habitat's senses allocation, beside the
+// machines' (`host_targets_write`), its targets the host's address at that
+// port, labelled `host`, `organism`, `service` and `kind` (`systemd` on
+// Linux, `launchd` on macOS). It is written whole as placements are
+// recorded and removed with the last placement it names; the store's
+// `services` job reads the directory (`hale habitat up` adds the job).
+import "../core" as dna;
+
+// A placement as the CLI records it: what ran where, the service it left
+// running, the platform it ran on, the port its readings are served on
+// (0 for none) and the toolchain it ran with.
+type PlacementRecord {
+    organism: String = "";
+    command: String = "";
+    host: String = "";
+    id: String = "";
+    service: String = "";
+    platform: String = "";
+    readings: Int = 0;
+    toolchain: String = "";
+}
+
+type PlacementReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // the readings endpoint registered with the habitat's senses, as the
+    // store scrapes it (`http://<address>:<port>/metrics`), "" for none
+    readings: String = "";
+}
+
+type PlacementRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    // the placements that hold: a JSON array of each one's row
+    placements: String = "[]";
+    // every placement the record names, each key's latest row, its
+    // `state` `placed` or `unplaced`
+    history: String = "[]";
+}
+
+fn placement_refused(code: String, why: String) -> PlacementReply {
+    return PlacementReply { code: code, why: why };
+}
+
+// The record's key of a placement.
+fn placement_key(organism: String, command: String, host: String, id: String) -> String {
+    return organism + "/" + command + "/" + host + "/" + id;
+}
+
+// Why `p` names no placement the habitat records, "" when it names one:
+// each name a word of letters, digits, `.`, `_` and `-` (the target file
+// is named by them), the host one the habitat added and has not removed.
+fn placement_refusal(root: String, p: PlacementRecord) -> String {
+    if !placement_word(p.organism) { return "`" + p.organism + "` names no organism"; }
+    if !placement_word(p.command) { return "`" + p.command + "` names no host command"; }
+    if !placement_word(p.id) { return "`" + p.id + "` is no placement's id"; }
+    if len(p.host) == 0 { return "the placement names no host"; }
+    let h = dna::recorded_host(root, p.host);
+    if len(h.provider) == 0 || h.state == "removed" {
+        return "`" + p.host + "` is no host of the habitat";
+    }
+    if p.readings < 0 || p.readings > 65535 {
+        return "readings is a port, 1 to 65535 (0 for none)";
+    }
+    return "";
+}
+
+fn placement_word(s: String) -> Bool {
+    return len(s) > 0 && len(s) <= 128 && !std::str::starts_with(s, ".")
+        && !std::str::starts_with(s, "-") && host_chars(s, "._-");
+}
+
+// What the store scrapes of `p` on the host `h`: `<address>:<port>` (the
+// habitat's own machine over the host gateway, as its store reaches it),
+// "" when it serves no readings.
+fn placement_target(h: dna::Host, p: PlacementRecord) -> String {
+    if p.readings <= 0 { return ""; }
+    let address = if h.provider != "ssh" || len(h.address) == 0 {
+        "host.docker.internal"
+    } else {
+        h.address
+    };
+    return address + ":" + to_string(p.readings);
+}
+
+// The service manager a placed service runs under, by its platform.
+fn placement_kind(platform: String) -> String {
+    return if platform == "macos" { "launchd" } else { "systemd" };
+}
+
+// A placement's row: what `p` says, its `state` and the target its readings
+// are scraped at.
+fn placement_body(p: PlacementRecord, state: String, target: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("organism", p.organism);
+    b.string_field("command", p.command);
+    b.string_field("host", p.host);
+    b.string_field("id", p.id);
+    b.string_field("service", p.service);
+    b.string_field("platform", p.platform);
+    b.int_field("readings", p.readings);
+    b.string_field("toolchain", p.toolchain);
+    b.string_field("target", target);
+    b.string_field("state", state);
+    b.end_object();
+    return b.result();
+}
+
+fn placement_of_row(body: String) -> PlacementRecord {
+    return PlacementRecord {
+        organism: std::json::find_string_field(body, "organism"),
+        command: std::json::find_string_field(body, "command"),
+        host: std::json::find_string_field(body, "host"),
+        id: std::json::find_string_field(body, "id"),
+        service: std::json::find_string_field(body, "service"),
+        platform: std::json::find_string_field(body, "platform"),
+        readings: std::json::find_int_field(body, "readings"),
+        toolchain: std::json::find_string_field(body, "toolchain"),
+    };
+}
+
+// The latest `habitat.placed` or `habitat.unplaced` row of each placement
+// in `j`.
+@bounded_by(j)
+fn placements_latest(j: dna::Journal) -> LatestRows {
+    let latest = LatestRows { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.placed" || e.kind == "habitat.unplaced" {
+            latest.set(LatestRow { entity: e.entity, at: i });
+        }
+        i = i + 1;
+    }
+    return latest;
+}
+
+// The placements of the habitat's record: those that hold, and every one
+// it names with its state.
+@bounded_by(root)
+fn habitat_placements(root: String) -> PlacementRows {
+    let j = habitat_journal(root);
+    let latest = placements_latest(j);
+    let held = std::json::Builder { };
+    held.begin_array();
+    let all = std::json::Builder { };
+    all.begin_array();
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.placed" && e.kind != "habitat.unplaced" { continue; }
+        if !habitat_holds(latest, e.entity, i - 1) { continue; }
+        all.value(e.body);
+        if e.kind == "habitat.placed" { held.value(e.body); }
+    }
+    held.end_array();
+    all.end_array();
+    return PlacementRows {
+        ok: true,
+        revision: j.revision(),
+        placements: held.result(),
+        history: all.result(),
+    };
+}
+
+// `p` recorded as placed, in the name of `by`, and its readings registered
+// with the habitat's senses.
+fn habitat_record_placed(root: String, p: PlacementRecord, by: String) -> PlacementReply {
+    let refused = placement_refusal(root, p);
+    if len(refused) > 0 { return placement_refused("invalid_placement", refused); }
+    let h = dna::recorded_host(root, p.host);
+    let target = placement_target(h, p);
+    let j = habitat_journal_by(root, by);
+    let r = j.append(
+        j.revision(),
+        "habitat.placed",
+        placement_key(p.organism, p.command, p.host, p.id),
+        placement_body(p, "placed", target),
+    );
+    if !r.ok {
+        return placement_refused(
+            "record_refused",
+            "the habitat's record refused the placement's row (" + r.error + ")",
+        );
+    }
+    let wrote = placement_targets_write(root, p.organism, p.command, p.id);
+    return PlacementReply {
+        ok: true,
+        why: wrote,
+        readings: if len(target) > 0 { "http://" + target + "/metrics" } else { "" },
+    };
+}
+
+// `p` (its organism, command, host and id) recorded as taken off, in the
+// name of `by`: its row keeps what the placement said, so the record
+// still knows what it installed where; its readings unregistered.
+fn habitat_record_unplaced(root: String, p: PlacementRecord, by: String) -> PlacementReply {
+    if !placement_word(p.organism) || !placement_word(p.command) || !placement_word(p.id) {
+        return placement_refused(
+            "invalid_placement",
+            "the placement is named by its organism, command, host and id",
+        );
+    }
+    let key = placement_key(p.organism, p.command, p.host, p.id);
+    let j = habitat_journal_by(root, by);
+    let mut had = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.entity == key && (e.kind == "habitat.placed" || e.kind == "habitat.unplaced") {
+            had = if e.kind == "habitat.placed" { e.body } else { "" };
+        }
+    }
+    if len(had) == 0 {
+        return placement_refused(
+            "not_found",
+            "the habitat records no placement of " + p.organism + "'s `" + p.command + "` on "
+                + p.host + " as " + p.id,
+        );
+    }
+    let r = j.append(
+        j.revision(),
+        "habitat.unplaced",
+        key,
+        placement_body(placement_of_row(had), "unplaced", ""),
+    );
+    if !r.ok {
+        return placement_refused(
+            "record_refused",
+            "the habitat's record refused the placement's row (" + r.error + ")",
+        );
+    }
+    let wrote = placement_targets_write(root, p.organism, p.command, p.id);
+    return PlacementReply { ok: true, why: wrote };
+}
+
+// The directory of the habitat senses' targets of its placed services, made
+// when its `senses.d` is there; "" when the habitat has no senses' store of
+// its own to register them with.
+fn placement_targets_dir(root: String) -> String {
+    let dir = dna::allocation_dir(root);
+    if len(dir) == 0 || !std::io::fs::file_exists(dir + "/senses.d") { return ""; }
+    let at = dir + "/senses.d/services";
+    if !std::io::fs::file_exists(at) { std::io::fs::mkdir(at) or discard; }
+    return at;
+}
+
+// The file_sd file of `<organism>-<command>-<id>`, written whole from the
+// placements that hold and serve readings (one target group per host that
+// runs one), renamed over the last; removed when none does. "" once
+// written, else why not (a placement's row is recorded either way).
+@bounded_by(root)
+fn placement_targets_write(root: String, organism: String, command: String, id: String) -> String {
+    let at = placement_targets_dir(root);
+    if len(at) == 0 { return ""; }
+    let name = organism + "-" + command + "-" + id + ".json";
+    let j = habitat_journal(root);
+    let latest = placements_latest(j);
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.placed" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let p = placement_of_row(e.body);
+        if p.organism != organism || p.command != command || p.id != id { continue; }
+        let h = dna::recorded_host(root, p.host);
+        let target = placement_target(h, p);
+        if len(target) == 0 || h.state == "removed" { continue; }
+        n = n + 1;
+        b.begin_object();
+        b.begin_array_field("targets");
+        b.string_value(target);
+        b.end_array();
+        b.begin_object_field("labels");
+        b.string_field("host", p.host);
+        b.string_field("organism", p.organism);
+        b.string_field("service", p.service);
+        b.string_field("kind", placement_kind(p.platform));
+        b.end_object();
+        b.end_object();
+    }
+    b.end_array();
+    if n == 0 {
+        if std::io::fs::file_exists(at + "/" + name) {
+            std::io::fs::unlink(at + "/" + name) or discard;
+        }
+        return "";
+    }
+    let tmp = at + "/." + name + ".tmp";
+    let mut wrote = true;
+    std::io::fs::write_file(tmp, b.result() + "\n") or { wrote = false; };
+    if wrote { std::io::fs::rename(tmp, at + "/" + name) or { wrote = false; }; }
+    return if wrote {
+        ""
+    } else {
+        "the placement is recorded; its readings' target could not be written in " + at
+    };
+}
+
+// Every placement's file written again from the record: what `host_targets_write`
+// does when the habitat's hosts change (a placement on a host removed is no
+// target any more).
+@bounded_by(root)
+fn placement_targets_refresh(root: String) {
+    if len(placement_targets_dir(root)) == 0 { return; }
+    let rows = habitat_placements(root);
+    let mut done = "\n";
+    let mut it = std::json::array_first(rows.history);
+    while !it.done {
+        let p = placement_of_row(it.element);
+        it = std::json::array_next(it);
+        let name = p.organism + "-" + p.command + "-" + p.id;
+        if std::str::contains(done, "\n" + name + "\n") { continue; }
+        done = done + name + "\n";
+        let said = placement_targets_write(root, p.organism, p.command, p.id);
+    }
+}

@@ -4497,7 +4497,13 @@ table, sorted by family (namespace, then name), each family's
   so it reads as `Registry.render()` writes it. A series id carries a
   generation: a handle that outlives its Registry writes nothing.
 - **The runtime's own, under the `hale` namespace:**
-  `hale_process_resident_memory_bytes`, `hale_draining` (0 or 1),
+  `hale_process_resident_memory_bytes` (a gauge: `/proc/self/statm` on
+  Linux, the task's `MACH_TASK_BASIC_INFO` resident size on macOS),
+  `hale_process_cpu_seconds_total` (a counter: the user and system CPU
+  time `getrusage(RUSAGE_SELF)` reports), `hale_process_start_time_seconds`
+  (a gauge: the unix time the process started, taken as the runtime is
+  loaded, so `time() - hale_process_start_time_seconds` is its uptime),
+  `hale_draining` (0 or 1),
   `hale_loci_live`, `hale_restarts_total`, `hale_failures_total` (a
   failure delivered to a handler), per cooperative pool
   `hale_pool_queue_depth{pool}` and `hale_pool_parked_coroutines{pool}`,
