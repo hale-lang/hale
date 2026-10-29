@@ -22969,7 +22969,19 @@ int64_t lotus_obs_live_loci(void) __attribute__((weak));
 int lotus_obs_topic_counts(int64_t i, const char **subject, uint64_t *published,
                                uint64_t *delivered, uint64_t *bytes) __attribute__((weak));
 
+/* The process's resident memory: Linux's /proc/self/statm; on macOS,
+ * which has no /proc, the task's own basic info from mach. */
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 static double lotus_observe_rss_bytes(void) {
+#if defined(__APPLE__)
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS)
+        return 0.0;
+    return (double)info.resident_size;
+#else
     FILE *f = fopen("/proc/self/statm", "r");
     if (!f) return 0.0;
     long size = 0, resident = 0;
@@ -22977,6 +22989,26 @@ static double lotus_observe_rss_bytes(void) {
     fclose(f);
     if (got != 2) return 0.0;
     return (double)resident * (double)sysconf(_SC_PAGESIZE);
+#endif
+}
+
+/* The CPU time the process has used, user and system, in seconds
+ * (getrusage, on Linux and macOS alike): a counter. */
+static double lotus_observe_cpu_seconds(void) {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) return 0.0;
+    return (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec / 1e6
+        + (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec / 1e6;
+}
+
+/* When the process started, in unix seconds: the wall clock as the
+ * runtime is loaded, before `main` (a constructor), so a scrape's
+ * `time() - hale_process_start_time_seconds` is the process's uptime. */
+static double g_observe_start_seconds = 0.0;
+__attribute__((constructor)) static void lotus_observe_start_ctor(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+        g_observe_start_seconds = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
 /* A family's series together (the exposition gives a family one TYPE
@@ -23012,6 +23044,8 @@ int64_t lotus_observe_snapshot(void) {
     pthread_mutex_unlock(&g_observe_lock);
 
     lotus_observe_runtime_row(1, "process_resident_memory_bytes", "", lotus_observe_rss_bytes());
+    lotus_observe_runtime_row(0, "process_cpu_seconds_total", "", lotus_observe_cpu_seconds());
+    lotus_observe_runtime_row(1, "process_start_time_seconds", "", g_observe_start_seconds);
     lotus_observe_runtime_row(1, "draining", "", lotus_process_draining() ? 1.0 : 0.0);
     if (lotus_obs_live_loci)
         lotus_observe_runtime_row(1, "loci_live", "", (double)lotus_obs_live_loci());
@@ -23236,6 +23270,15 @@ static int lotus_accept_err_transient(int err) {
     return 0;
 }
 
+/* How long a blocking accept's wait is, in ms: for ever where shutting
+ * the listening socket down wakes it (Linux), else a tick after which
+ * it looks for the shutdown's mark (macOS). */
+#if defined(__APPLE__)
+#define LOTUS_ACCEPT_WAIT_MS 100
+#else
+#define LOTUS_ACCEPT_WAIT_MS -1
+#endif
+
 int lotus_tcp_accept_one(int listen_fd) {
     /* F.35 Slice 3: on async_io pools, accept(2) is non-blocking +
      * park on EAGAIN. Classic blocking accept on every other path. */
@@ -23275,6 +23318,9 @@ int lotus_tcp_accept_one(int listen_fd) {
                 sd = cpool->shutdown;
                 pthread_mutex_unlock(&cpool->lock);
                 if (sd) return -1;        /* shutdown → stdlib loop exits */
+                /* a listener shut down on purpose (a signal's drain,
+                 * `std::io::tcp::stop`): macOS wakes no accept for it */
+                if (lotus_shut_listen_marked(listen_fd)) return -1;
                 pfd.revents = 0;
                 int pr = poll(&pfd, 1, 100 /* ms tick */);
                 if (pr < 0) {
@@ -23309,8 +23355,8 @@ int lotus_tcp_accept_one(int listen_fd) {
                             { .fd = listen_fd, .events = POLLIN, .revents = 0 },
                             { .fd = q->wake_r, .events = POLLIN, .revents = 0 },
                         };
-                        int pr = poll(pfds, 2, -1);
-                        listen_ready = pr > 0 && pfds[0].revents != 0;
+                        int pr = poll(pfds, 2, LOTUS_ACCEPT_WAIT_MS);
+                        listen_ready = (pr > 0 && pfds[0].revents != 0) || lotus_shut_listen_marked(listen_fd);
                     }
                     atomic_store_explicit(&q->idle, 0, memory_order_seq_cst);
                     uint64_t buf[8];
@@ -23320,6 +23366,22 @@ int lotus_tcp_accept_one(int listen_fd) {
             }
 #endif
         }
+#if defined(__APPLE__)
+        /* macOS: shutdown(2) of a listening socket fails (ENOTCONN) and
+         * wakes no accept blocked on it, as Linux's does, so a drain
+         * that stops the listeners would wait out its grace on a server
+         * placed `pinned` (or on main). A blocking accept waits for a
+         * connection in ticks instead, and ends at the shutdown's mark. */
+        if (!async) {
+            struct pollfd pfd = { .fd = listen_fd, .events = POLLIN, .revents = 0 };
+            while (!lotus_shut_listen_marked(listen_fd)) {
+                pfd.revents = 0;
+                int pr = poll(&pfd, 1, LOTUS_ACCEPT_WAIT_MS);
+                if (pr > 0 || (pr < 0 && errno != EINTR)) break;
+            }
+            if (lotus_shut_listen_marked(listen_fd)) return -1;
+        }
+#endif
         int conn = accept(listen_fd, NULL, NULL);
         if (conn >= 0) {
             lotus_set_cloexec(conn);

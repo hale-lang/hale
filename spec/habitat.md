@@ -73,9 +73,14 @@ checkout; the `Dockerfile`'s `HALE_FROM=artifact` packages a `hale` and
 the habitat directory, the local vault directory and the host's docker
 socket, with the head's HTTP surface and the face published on their
 loopback ports. It applies a render with `docker
-compose -p <project> --project-directory <dir> -f <file>… up -d --wait
+compose -p <project> --project-directory <dir> -f <file>… up -d --build --wait
 [<service>…]`, with `COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat
-brings up, the habitat's own and each tenant's, is brought up this way. It
+brings up, the habitat's own and each tenant's, is brought up this way.
+`--build` builds a service whose image comes from the render's own context
+(an organism's application) from the revision being applied, so an image an
+earlier revision built under the same tag is never what runs; docker's
+cache keeps an unchanged context cheap, and a service that only names an
+image builds nothing. It
 observes a service by its container's state (`running` is up, `running` and
 unhealthy or `restarting` is degraded, anything else or no container is
 down) and the head and the face by whether their address accepts a
@@ -238,7 +243,7 @@ does, and its OS and architecture. A host that does not accept the
 habitat's key yet is `pending-key`, and `hale habitat host probe <name>`
 moves it to `ready` once it does. The provider applies a render by copying
 its files to `~/.hale/habitat/<project>/<render directory>` on the host
-and running `docker compose -p <project> -f <file>… up -d --wait` there;
+and running `docker compose -p <project> -f <file>… up -d --build --wait` there;
 it withdraws one with `docker compose rm -s -f <service>…` (or `down` for
 a render naming no service) and observes a service by `docker ps` there,
 as the compose provider does here. It allocates the roles that run as
@@ -644,7 +649,11 @@ grouped by what each item is:
 - the vault: the slots the habitat and its organisms hold, by name, never a
   value: the ones the habitat minted (memory's and the nerves' accounts,
   the OIDC clients, the record's key, Forgejo's administrator and each
-  organism's token, the habitat's SSH key) are removed, and the ones a
+  organism's token, the habitat's SSH key) are removed, every account the
+  habitat's and each organism's organization holds on the nerves among
+  them (`nats-<org>-<role>`, and `nats-<org>-app-<name>` for every name an
+  application was attached by, of every organism the record says it ever
+  grafted), and the ones a
   person supplied (a forge token, a `--key-vault` slot, the model keys) are
   listed as kept; a vault at `HALE_VAULT_ADDR` is provisioned out of band
   and kept;
@@ -656,7 +665,18 @@ grouped by what each item is:
 - what it runs on each `ssh` host, as the host answers over SSH: each
   allocation placed or applied there (its service stopped and removed, its
   volume deleted), the rest of the habitat's compose projects there, and
-  the directories the renders were copied to (`~/.hale/habitat/<project>`).
+  the directories the renders were copied to (`~/.hale/habitat/<project>`,
+  and `~/.hale/habitat` itself when that leaves it empty);
+- each service placed on a host (§ Host commands), taken off first of all
+  by its own `uninstall` over the person's login, while the head and the
+  organism it answers to are still there, then what placing installed on
+  each host that no placement left there uses (the organism's checkout,
+  the toolchain directory) and the habitat's directories there left
+  empty. One that cannot be taken off is said with its `unplace` and the
+  forget goes on. Through a pointer (`up --host`) the person's machine
+  takes them off over its own login before the forget there runs, asking
+  for the habitat's name for that step first, and the forget there notes
+  any still recorded.
 
 The audit reads the records, so a memory of the habitat's project that is
 stopped (a plain `down` stops them) is started for it and stopped again
@@ -667,7 +687,13 @@ at a terminal: when stdin is not one, `--forget` without `--plan` refuses
 then this machine's projects, volumes, slots and files. The authorized key
 lines are kept as notes beside the habitat's directory
 (`forgotten-notes.jsonl`): the next plan shows each until a forget clears
-it, so a second `--plan` after a forget shows those lines alone. On
+it, so a second `--plan` after a forget shows those lines alone. A note
+lasts only while it is undone: a forget that keeps none removes the file,
+the habitat's directory and the `habitat` directory holding it when they
+are left empty, and a forget through a pointer, once the person's machine
+has taken a host's key line (or the habitat's account) off over its own
+login, drops that host's note on the habitat's machine and removes the
+file with the last. On
 `operator` backends the record is in the operator's Postgres, which the
 habitat adopted: it is noted and kept.
 
@@ -684,6 +710,11 @@ and refuses without it (`confirm_required`) or on a mismatch
 (`confirm_mismatch`), touching nothing; a host that runs nothing of the
 habitat's is removed without one. A host that does not answer over SSH
 is planned as such: what runs there is not known and is left there. The
+services placed on the host (§ Host commands) head the CLI's plan: each
+one's `uninstall`, then what placing installed there; a host with one is
+removed only with its name typed back, and the CLI takes them off (over
+the person's login) before the head removes the host, and removes the
+habitat's directories there left empty after. The
 operator face's hardware screen shows the plan and a field for the name.
 
 **`hale habitat organism remove <name> [--plan]`** removes one organism
@@ -699,7 +730,12 @@ its rows in the habitat's record: its `habitat.grafted` row and each
 which no reader lists it. `Commands::remove_organism` (`{name, confirm,
 digest}`) executes it only with the organism's name typed back and the
 plan's digest, refusing `confirm_required`, `confirm_mismatch` or
-`plan_changed`; the CLI requires a terminal. The habitat itself is no
+`plan_changed`; the CLI requires a terminal. The vault slots it removes
+include every one of its organization's accounts on the nerves
+(`nats-<org>-…`, its applications' among them, which no row names). Its
+services placed on the hosts are planned by the CLI beside the head's
+plan and taken off (each one's `uninstall`, then what placing installed)
+once its name is typed back, before the head removes it. The habitat itself is no
 organism this removes (`not_removable`): `down --forget` is its removal.
 The operator face's organisms screen offers `remove` on each organism, with
 the plan and a field for its name.
@@ -721,10 +757,10 @@ socket), so the habitat's head must be up.
 | Verb | Behaviour |
 |---|---|
 | `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. |
-| `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, built from the embedded `Dockerfile` and `hale.pin` unless `--image <tag>` or `HALE_HABITAT_IMAGE` names an existing local image), waiting on their probes. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, built from the embedded `Dockerfile` and `hale.pin` unless `--image <tag>` or `HALE_HABITAT_IMAGE` names an existing local image), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's surface as the person this account maps to. |
-| `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
+| `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, the services placed on its hosts under their hosts (each with its readings endpoint), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
 | `down [--forget [--plan]]` | Takes the habitat's compose project down (`docker compose down`), stopping its `face`, its `body` and every service of its project and leaving only its volumes; `up` brings them back. `--forget` removes the habitat whole, planned and confirmed by its name typed back at a terminal; `--plan` prints the plan and exits (above). |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
@@ -863,9 +899,58 @@ by its label, the launchd job by its label). An install that cannot run
 why and stops nothing: `up` and `host add` go on. `HALE_DNA_NODE_EXPORTER=off`
 turns all of it off for a run.
 
+**Containers too.** Beside its node exporter every machine runs a
+container exporter: cAdvisor (`ghcr.io/google/cadvisor`, pinned) as the
+container `hale-cadvisor` wherever docker runs, a Mac's inside docker's
+VM, where its containers are. It runs on the host's network on `:9338`,
+privileged, reading docker's containers only (docker's socket mounted by
+its own path, which a desktop VM's symlink would not resolve), keeping of
+their labels only `com.docker.compose.project`,
+`com.docker.compose.service`, `hale.habitat`, `hale.organism` and
+`hale.role`, and collecting CPU, memory, network and OOM
+events every 15 s. It is installed, found, replaced (labelled
+`lang.hale.cadvisor=<image> <the labels it keeps> <habitat>`, so one keeping
+others or made by another habitat is replaced) and removed where and when
+the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
+scrapes it as the job `containers` from `senses.d/containers/*.json`,
+which `up` adds to the habitat's store configuration when it has none.
+
+**Placed services too.** A service an organism's host command left on a
+host (§ Host commands) whose declaration names `readings` is scraped
+where it serves them, never polled: when the head records the placement
+(`Commands::record_placed`) it writes the file_sd file
+`senses.d/services/<organism>-<command>-<id>.json` in the habitat's senses
+allocation, written whole and renamed into place, its targets
+`["<host address>:<readings>"]` (a host's address as its row names it;
+the habitat's own machine `host.docker.internal`), labelled `host` (the
+host as the habitat names it), `organism`, `service` and `kind`
+(`systemd` on Linux, `launchd` on macOS); one target group per host when
+the same organism, command and id are placed on several. `unplace`
+(`Commands::record_unplaced`) writes it again without that host and
+removes it with the last, and a host's removal rewrites them all. The
+store scrapes the directory as the job `services` (every 15 s), which
+`up` adds to its configuration when it has none, as it adds
+`containers`.
+
+**Whose a container is.** Every container the habitat runs carries three
+labels: `hale.habitat` (the habitat's name), `hale.organism` (the organism
+it is a part of, by its directory's name; the habitat's own genome is
+`habitat`) and `hale.role` (the part: `memory`, `nerves`, `senses`,
+`body`, `face`, `grafana`, `forge`, `exporter`, and `services` for an
+organism's own compose services). The habitat writes them into the
+compose files it owns (an allocation's, the forge's, the body and face's,
+Grafana's) and onto the exporters it runs. An organism's own compose
+files are never touched: when its services are applied, the habitat asks
+compose which services those files define and adds an override of its
+own labelling each, kept under `<habitat>/labels/<project>.yaml` and, on
+an SSH host, beside the habitat's copy of the render
+(`.hale-labels.yaml`). A habitat's compose files are rewritten whenever
+their text changes, so compose recreates a service whose labels moved and
+keeps its volume.
+
 **What is scraped follows the record.** The store reads
 `senses.d/*.json` beside its allocation (mounted as a directory, so a file
-renamed into it is seen): `up` writes `hosts.json` with this machine
+renamed into it is seen): `up` writes `hosts.json` (and `containers/targets.json`, at `:9338`) with this machine
 (`host.docker.internal:9100`, the store's container reaching it over the
 host gateway) when there is none, and the head rewrites it whole from the
 `habitat.host` rows whenever one is written (`add_host`, `probe_host`) and
@@ -878,7 +963,26 @@ loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
 published on macOS but for that port), served under `/grafana/` of the
 face. Its provisioning (`<habitat>/grafana/provisioning`, written at
 every `up`) is the habitat's senses' store as its one data source (uid
-`habitat-senses`) and the habitat's dashboards, `Hosts` its home: whether
+`habitat-senses`) and the habitat's dashboards. `Services` (uid
+`hale-containers`, the Containers dashboard it replaced) shows what runs
+where, whatever a host's system: one table and one set of graphs for the
+containers cAdvisor reads (`kind` `container`, with the organism and part
+their `hale.*` labels name, and their image) and the services placed on
+the hosts (`kind` `systemd` or `launchd`, read from their own readings:
+`up`, `hale_process_resident_memory_bytes`,
+`rate(hale_process_cpu_seconds_total)` and `time() -
+hale_process_start_time_seconds`). Each query joins the two with PromQL
+`or`, `label_replace` giving both the same labels (`kind`, `host`,
+`organism`, `part`, a `name` that is the container's name or the service);
+the table's rows are each one's state (a placed service whose readings do
+not answer is `up` 0, and shows as down rather than vanishing), uptime,
+memory and CPU; its graphs CPU and memory of both, the containers'
+network, and the restarts (both) and OOM kills (containers) in the
+window, with each machine's running count. It shows the habitat's
+containers by default (`show`: the habitat's, those carrying
+`hale.habitat`; or everything on the host, which a host's other workloads
+compete with; a placed service is always the habitat's) and filters by
+organism and host, both kinds alike. `Hosts` is its home: whether
 each machine answers, its uptime, CPUs and memory, and over time CPU busy,
 load per core, memory used, disk used, network and disk throughput, for
 Linux and macOS alike, and a Linux machine's CPU frequency. Its data is `<habitat>/grafana/data`. The operator
@@ -941,6 +1045,125 @@ but not yet for its time, `firing` after) and since when. The operator
 face's **alerts** screen lists them, firing first. Nothing acts on a
 reflex yet: its `action` is carried on the alert for the receiver that
 will act on it, and an alert is never recorded.
+
+## Host commands: an organism's own, on a host
+
+An organism may declare commands of its own that the habitat runs on a
+host it manages, in its manifest under `[dna.host.<name>]`. The habitat
+knows nothing of what a command does: voice's `node` installs whatever a
+machine needs to serve models, directly on the host, outside compose.
+
+```toml
+[dna.host.node]
+platforms = ["linux", "macos"]   # where it runs; empty: anywhere
+root = true                      # run under the person's sudo
+install   = ["hale", "run", "node", "install", "--id", "{id}", "--api", "{api_url}", "--operator-token-file", "{operator_token_file}"]
+uninstall = ["hale", "run", "node", "uninstall", "--id", "{id}", "--operator-token-file", "{operator_token_file}"]
+inputs = ["id", "api_url", "operator_token_file"]
+api_service = "api"                           # whose published address is {api_url} (default "api")
+operator_token = ["voice-api", "admin-token"] # run in that service's container, printing the token
+service = "voice-node-{id}"                   # what the install leaves running
+readings = 9464                               # where that service serves its readings
+requires = { linux = ["docker", "gpu"], macos = ["gpu"] }   # what the host must have
+```
+
+`hale habitat organism place <organism> <command> --host <h> [--id <id>]
+[--plan]` runs `install`, and `unplace` runs `uninstall`. Both need a
+grafted organism that came from a sapling the habitat pins, and a
+`ready` host:
+
+- **Its source.** The organism's sapling repository at its pinned
+  revision, cloned (then fetched) on the host under the login's
+  `~/.local/share/hale/hosted/<organism>`, where the command runs. Its
+  declaration is read from that checkout, so the command is the one the
+  pinned revision declares.
+- **What the host is.** Before anything is touched, the verb reads the host
+  over the login: its OS and architecture, its package manager (apt-get,
+  dnf, Homebrew), what of the toolchain's prerequisites it has, the
+  toolchains the habitat installed there, and the facts `requires` is
+  checked against.
+- **What any toolchain builds with**, the same for every organism: git,
+  curl, tar, clang, and OpenSSL's and zlib's headers (Homebrew's
+  `openssl@3` on macOS, where clang and zlib are the Command Line Tools').
+  What the host lacks is installed first, with its package manager: under
+  the person's sudo for apt-get and dnf, so only at a terminal, and as the
+  login for Homebrew. A host with no package manager the habitat knows, or
+  a Mac without the Command Line Tools, is refused, naming what it lacks.
+- **Its toolchain.** The hale release the organism declares (`[dna]
+  toolchain = "<version>"` in its manifest, as a codebase's `toolchain` is),
+  else the habitat's own, installed from that release under the login's
+  `~/.local/share/hale/toolchains/<tag>/`, checked against the release's
+  sha256 and moved into place whole, one directory per version, never the
+  person's own `hale`. A command whose first word is `hale` runs with it by
+  its absolute path.
+- **What it requires**, by platform (`requires = { linux = [...], macos =
+  [...] }`; a list is the same on every platform), from a vocabulary the
+  habitat checks from the host's facts: `docker` (docker answers the login), `systemd` (a Linux
+  host whose system services run under systemd), `nvidia-gpu`
+  (`nvidia-smi` lists a GPU), `apple-silicon` (an arm64 Mac), `gpu` (either
+  of the two). A host that lacks one is refused before anything is
+  installed, naming what it lacks; a requirement outside the vocabulary
+  refuses the declaration.
+- **Its inputs**, each named in `inputs` and filled where its argv says
+  `{input}` (an input it does not declare, or one with no value, is
+  refused): `id` (`--id`, by default the host's first label), `api_url` (the
+  published address of `api_service` in the organism's `services`
+  allocation, as the head links it), `operator_token_file` (a 0600 file on
+  the host holding what `operator_token` prints in that service's
+  container, read over the person's login to the host the service runs on;
+  written for the run and removed however it ends; never on this machine's
+  disk, in the head, or in a command line).
+- **Who runs it.** Everything goes over the person's own SSH logins, as
+  `host add` makes the habitat's account; `root = true` runs it under the
+  person's sudo, so only at a terminal. `--plan` prints what would run,
+  where, and with what (the packages it would install, the toolchain and
+  whether it is there), and touches nothing on the host but the checkout;
+  a host without git stops the plan at installing it, since the
+  declaration is read from the checkout.
+- **What it leaves running.** `service` names the system service the
+  install leaves on the host, outside compose (a systemd unit on Linux, a
+  launchd service in the system domain on macOS), its `{id}` filled as
+  the command's is: letters, digits, `-`, `_`, `.`, `@`. The plan names
+  it, and once the command exits 0 the host's own service manager is
+  asked for it: `running` after `place`, `absent` after `unplace`, and
+  anything else fails the verb, naming what it found.
+- **Its readings.** `readings = <port>` (optional; an integer 1 to
+  65535, anything else refuses the declaration) says the service serves
+  its Prometheus readings at `http://<host>:<port>/metrics`: a Hale
+  program's `std::observe::Scrape`, whose runtime series (memory, CPU
+  time, start time) every such program serves. `--plan` and `place` name
+  the endpoint they register with the habitat's senses, `unplace` the one
+  it unregisters (below, § Readings).
+- **Its record.** Once `place` ran and its service runs, the CLI records
+  the placement through the habitat's head, as every habitat act is a row:
+  `Commands::record_placed` (`{organism, command, host, id, service,
+  platform, readings, toolchain}`, the Board's) appends a `habitat.placed`
+  row keyed `<organism>/<command>/<host>/<id>`, with the scrape target its
+  readings are registered at; after `unplace`, `Commands::record_unplaced`
+  (`{organism, command, host, id}`) appends `habitat.unplaced`, keeping
+  what the placement said. `Commands::placements`, a read, answers the
+  placements that hold (each key's latest row; an unplaced one dropped)
+  as `placements`, and every placement the record names with its `state`
+  (`placed` or `unplaced`) as `history`: what the habitat ever installed
+  where. A refused record (a host the habitat does not hold, a name that
+  is not a word of letters, digits, `.`, `_` and `-`) fails the verb after
+  the command ran, saying so. `hale habitat status` lists the placements
+  under their hosts, one line each: the organism's command and id, its
+  service and kind, the host, and its readings endpoint or `no readings`.
+- **Taken off with the host or the habitat.** `host remove`, `organism
+  remove` and `down --forget` run each placement they remove's own
+  `uninstall` first, as `unplace` does (over the person's login, under
+  their sudo at a terminal), then remove what placing installed on that
+  host: the checkout `~/.local/share/hale/hosted/<organism>` and the
+  toolchain directory, each only when no placement left there uses it
+  (from every placement the record names there, unplaced ones included),
+  and the habitat's directories there left empty (§ Destroying). A
+  placement that cannot be taken off (its host does not answer, sudo has
+  no terminal, its uninstall fails) is said, with the exact `unplace`
+  that takes it off, and the rest goes on: it fails nothing else.
+
+Not yet: the token of an api on the habitat's own machine is not read,
+and the infrastructure screen does not show the placements.
 
 ## Pairing: an agent beside a person
 

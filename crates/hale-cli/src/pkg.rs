@@ -144,9 +144,15 @@ pub struct DnaManifest {
     /// (`dna::habitat::reflexes::declared` reads and checks it).
     #[allow(dead_code)] // declared so it is known (not warned of)
     pub reflex: Option<toml::Table>,
-    /// `[dna.host.<name>]` — a host command of the organism's own, which a
-    /// habitat runs on a host it manages; this toolchain carries it.
-    #[allow(dead_code)] // known, so it is not warned of; read by a habitat that runs host commands
+    /// `[dna] toolchain = "<version>"` — the hale release the organism runs
+    /// on, as a codebase's `toolchain` is: what the habitat installs on a
+    /// host to run its host commands (`dna::habitat::hosted`).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub toolchain: Option<String>,
+    /// `[dna.host.<name>]` — a host command of the organism's own, which the
+    /// habitat runs on a host it manages (`hale habitat organism place`;
+    /// `dna::habitat::hosted::host_commands` reads and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
     pub host: Option<toml::Table>,
     /// Every other key of `[dna]`, which this toolchain does not know.
     #[serde(flatten)]

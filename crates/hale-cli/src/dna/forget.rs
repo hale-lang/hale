@@ -78,6 +78,116 @@ fn notes() -> Vec<Value> {
         .collect()
 }
 
+/// The notes of `text` (`NOTES`, a JSON object a line) that are not of a
+/// host in `done`, a line each: what is left to do once this machine acted
+/// on those hosts ("" when nothing is).
+pub(super) fn notes_left(text: &str, done: &[String]) -> String {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| serde_json::from_str::<Value>(l).map(|n| !done.iter().any(|d| d == s(&n, "host"))).unwrap_or(true))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// The habitat's directory once a forget is done: its notes file when it
+/// keeps no note, and the directory (and the `habitat` one holding it) when
+/// that leaves them empty.
+fn tidy_dir() {
+    if notes().is_empty() {
+        let _ = std::fs::remove_file(notes_path());
+    }
+    let dir = PathBuf::from(local_habitat_dir());
+    if std::fs::remove_dir(&dir).is_ok() {
+        if let Some(parent) = dir.parent().filter(|p| p.file_name().is_some_and(|n| n == "habitat")) {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+}
+
+/// The services the habitat placed on its hosts, as its record holds them:
+/// each taken off by its own uninstall over the person's SSH login, first
+/// of all (the head that answers for them is still up), and then what
+/// placing installed on each host. Through a pointer (`up --host`) the
+/// person's machine takes them off before the forget runs here; one still
+/// recorded is noted.
+fn placement_items() -> Vec<Value> {
+    if manifest_pin(&genome_dir().join("hale.toml")).ok().flatten().is_none() {
+        return Vec::new();
+    }
+    let (current, history) = super::placements::fold(&super::rows_of(&genome_dir()));
+    let through = std::env::var(super::remote::EXPECT_ENV).is_ok_and(|v| !v.trim().is_empty());
+    let mut out = Vec::new();
+    for p in &current {
+        if through {
+            out.push(item(
+                "remote",
+                &p.host,
+                format!("{}: still placed, and left there (the person's machine takes placements off over its own SSH login, before this forget): `{}` takes it off", p.line(), p.unplace_command()),
+                "1 service".into(),
+                "-",
+                "note",
+                String::new(),
+                85,
+            ));
+        } else {
+            out.push(item(
+                "remote",
+                &p.host,
+                format!("{}: taken off by its own uninstall, over your SSH login", p.line()),
+                "1 service".into(),
+                "yes: `hale habitat organism place` places it again",
+                "placement-uninstall",
+                [p.organism.as_str(), p.command.as_str(), p.host.as_str(), p.id.as_str()].join("\n"),
+                5,
+            ));
+        }
+    }
+    if through {
+        return out;
+    }
+    let hosts: std::collections::BTreeSet<&str> = history.iter().map(|p| p.host.as_str()).collect();
+    for h in hosts {
+        let (orgs, tags) = super::placements::leftovers(h, &history, &[]);
+        if orgs.is_empty() && tags.is_empty() {
+            continue;
+        }
+        let named: Vec<String> = orgs.iter().map(|o| format!("~/.local/share/hale/hosted/{o}")).chain(tags.iter().map(|t| format!("~/.local/share/hale/toolchains/{t}"))).collect();
+        out.push(item(
+            "remote",
+            h,
+            format!("what placing installed on {h}, where no placement left uses it: {}, over your SSH login", named.join(", ")),
+            format!("{} checkout(s), {} toolchain(s)", orgs.len(), tags.len()),
+            "yes: placing again installs them",
+            "placement-leftovers",
+            std::iter::once(h.to_string()).chain(orgs.iter().map(|o| format!("o|{o}"))).chain(tags.iter().map(|t| format!("t|{t}"))).collect::<Vec<_>>().join("\n"),
+            6,
+        ));
+    }
+    out
+}
+
+/// A placement's item executed: what it did, or why it was left (never a
+/// failure of the forget: what is left is said, and the rest goes on).
+fn execute_placement(i: &Value) -> Result<Option<String>, String> {
+    let args: Vec<&str> = s(i, "args").lines().collect();
+    let (current, _) = super::placements::fold(&super::rows_of(&genome_dir()));
+    match s(i, "action") {
+        "placement-uninstall" => {
+            let key = args.join("/");
+            let Some(p) = current.iter().find(|p| p.key() == key) else { return Ok(Some("no longer placed".into())) };
+            super::placements::uninstall(p).map(|()| None).map_err(|why| format!("{why}; its service is left on {}: `{}` takes it off while the habitat is there", p.host, p.unplace_command()))
+        }
+        _ => {
+            let host = args.first().copied().unwrap_or("");
+            let used: Vec<&super::placements::Placement> = current.iter().filter(|p| p.host == host).collect();
+            let orgs: Vec<String> = args.iter().filter_map(|l| l.strip_prefix("o|")).filter(|o| !used.iter().any(|p| p.organism == *o)).map(str::to_string).collect();
+            let tags: Vec<String> = args.iter().filter_map(|l| l.strip_prefix("t|")).filter(|t| !used.iter().any(|p| p.toolchain == *t)).map(str::to_string).collect();
+            let said = super::placements::tidy_host(host, super::placements::port_of(host), &orgs, &tags);
+            if said.starts_with("left") { Err(said.trim_start_matches("left").trim().to_string()) } else { Ok(None) }
+        }
+    }
+}
+
 /// The habitat's name: the one it was born with, else the one its notes
 /// keep, else `local`.
 fn habitat_name() -> String {
@@ -421,6 +531,7 @@ fn audit() -> Result<Plan, String> {
             return Err(why);
         }
     };
+    items.extend(placement_items());
     let held = match held() {
         Ok(h) => h,
         Err(why) => {
@@ -820,6 +931,15 @@ fn execute(items: &[Value], name: &str) -> bool {
             k += 1;
             continue;
         }
+        if matches!(s(order[k], "action"), "placement-uninstall" | "placement-leftovers") {
+            match execute_placement(order[k]) {
+                Ok(None) => println!("{:<10}{}", "done", s(order[k], "what")),
+                Ok(Some(why)) => println!("{:<10}{}: {why}", "done", s(order[k], "what")),
+                Err(why) => println!("{:<10}{}: {}", "left", s(order[k], "what"), redact(&why)),
+            }
+            k += 1;
+            continue;
+        }
         if REMOTE_ACTIONS.contains(&s(order[k], "action")) {
             let mut end = k;
             while end < order.len() && REMOTE_ACTIONS.contains(&s(order[end], "action")) {
@@ -936,7 +1056,7 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     }
     print_plan(&plan.items, &name);
     if !super::readings::node_exporter_off() {
-        println!("  - and the habitat's node exporter off this machine, if it installed one (an exporter it found is left)");
+        println!("  - and the habitat's node and container exporters off this machine, where it installed them (an exporter it found is left)");
     }
     if !plan.started.is_empty() {
         println!("(the habitat's memories were stopped, and were started to read the records)");
@@ -975,9 +1095,10 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     }
     println!();
     if execute(&plan.items, &name) {
-        if let Some(l) = super::readings::remove_here().filter(|l| !l.is_empty()) {
+        for l in super::readings::remove_here() {
             println!("{l}");
         }
+        tidy_dir();
         println!("the habitat `{name}` is forgotten");
         ExitCode::SUCCESS
     } else {
@@ -988,7 +1109,23 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::redact;
+    use super::{notes_left, redact};
+
+    #[test]
+    fn a_note_acted_on_is_done_and_the_rest_are_kept() {
+        let text = "{\"name\":\"home\",\"host\":\"gpu-1\",\"line\":\"ssh-ed25519 AAAA habitat-x\",\"what\":\"a\"}\n{\"name\":\"home\",\"host\":\"mac-1\",\"line\":\"l\",\"what\":\"b\"}\n";
+        // every host acted on: nothing is left, and the file goes
+        assert_eq!(notes_left(text, &["gpu-1".to_string(), "mac-1".to_string()]), "");
+        // one left undone: its note alone is kept, whole
+        let left = notes_left(text, &["gpu-1".to_string()]);
+        assert_eq!(left.lines().count(), 1);
+        assert!(left.contains("\"host\":\"mac-1\"") && left.ends_with('\n'), "{left}");
+        // none acted on: all of them; no file: nothing
+        assert_eq!(notes_left(text, &[]), text);
+        assert_eq!(notes_left("", &["gpu-1".to_string()]), "");
+        // a line that is not a note is never dropped
+        assert_eq!(notes_left("not json\n", &["gpu-1".to_string()]), "not json\n");
+    }
 
     #[test]
     fn a_failure_reason_keeps_names_and_hides_secrets() {

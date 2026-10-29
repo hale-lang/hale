@@ -119,6 +119,17 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
         std::str::contains(targets, "\"host.docker.internal:9100\""),
         "the senses' targets name this machine: " + targets,
     );
+    // and the store reads the services the habitat places on its hosts
+    // from senses.d/services/ (none placed here: the directory is empty)
+    let senses_yml = text_of(dna::local_habitat_dir() + "/allocations/" + key + "/senses.yml");
+    std::test::assert(
+        std::str::contains(senses_yml, "  - job_name: services\n")
+            && std::str::contains(senses_yml, "\"/etc/prometheus/senses.d/services/*.json\"")
+            && std::io::fs::file_exists(
+                dna::local_habitat_dir() + "/allocations/" + key + "/senses.d/services",
+            ),
+        "`up` adds the placed services' scrape job: " + senses_yml,
+    );
     let query = face
         + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22host%22%7D";
     let seen_until = std::time::now() + dna::wait_secs(120);
@@ -177,6 +188,28 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
         std::str::contains(up, "node    local: node_exporter ")
             || std::str::contains(up, "node    local: an exporter already answers on :9100"),
         "up installs this machine's node exporter, or finds one: " + up,
+    );
+    // and its containers: the container exporter installed, its job scraped
+    std::test::assert(
+        std::str::contains(up, "containers local: cAdvisor ")
+            || std::str::contains(
+                up,
+                "containers local: a container exporter already answers on :9338",
+            ),
+        "up installs this machine's container exporter, or finds one: " + up,
+    );
+    let cquery = face
+        + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22containers%22%7D";
+    let c_until = std::time::now() + dna::wait_secs(120);
+    let mut cseen = fetch(cookie, cquery);
+    while !std::str::contains(cseen.stdout, "\"1\"]") && std::time::now() <= c_until {
+        std::time::sleep(2s);
+        cseen = fetch(cookie, cquery);
+    }
+    std::test::assert(
+        std::str::contains(cseen.stdout, "\"job\":\"containers\"")
+            && std::str::contains(cseen.stdout, "\"1\"]"),
+        "the habitat's senses read this machine's containers: " + cseen.stdout,
     );
     return std::str::contains(up, "a container of the habitat's (hale-node-exporter)");
 }
@@ -495,7 +528,7 @@ fn main() {
     );
     // the machine's exporter is the machine's: this fixture installed it, and takes it off
     if ours_exporter {
-        let gone = dna::run_tool("docker\nrm\n-f\nhale-node-exporter");
+        let gone = dna::run_tool("docker\nrm\n-f\nhale-node-exporter\nhale-cadvisor");
         std::test::assert_eq_int(gone.code, 0, "the fixture's exporter is removed: " + gone.stderr);
     }
     dna::scratch_done(scratch);

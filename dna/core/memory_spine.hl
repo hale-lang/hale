@@ -1379,9 +1379,53 @@ fn allocation_port(service: String, base: Int) -> Int {
     return base + start;
 }
 
-// The allocations' compose file for the organism keyed `k`: its services,
-// named for the organism and the role, and their volumes.
-fn allocation_compose_text(k: String) -> String {
+// The labels on every container the habitat runs (spec/habitat.md, What
+// runs where): the habitat by its name, the organism the container is a
+// part of (the habitat's own genome is `habitat`), and the part it is. The
+// container exporter carries them onto every reading, so the Containers
+// dashboard tells the habitat's containers, organism by organism, from
+// whatever else a host runs.
+const LABEL_HABITAT: String = "hale.habitat";
+const LABEL_ORGANISM: String = "hale.organism";
+const LABEL_ROLE: String = "hale.role";
+
+// The habitat's name, as it was born (its `name` file); `local` when it
+// has none.
+fn habitat_name_here() -> String {
+    let n = trim_nl(std::io::fs::read_file(local_habitat_dir() + "/name") or "");
+    return if len(n) > 0 { n } else { "local" };
+}
+
+// What the labels call the organism at `root`: its directory's name, and
+// the habitat's own genome `habitat`.
+fn organism_label(root: String) -> String {
+    let key = allocation_key(root);
+    if len(key) > 0 && key == allocation_key(local_habitat_dir() + "/genome") { return "habitat"; }
+    let mut r = root;
+    while len(r) > 1 && r[(len(r) - 1)..len(r)] == "/" { r = r[0..(len(r) - 1)]; }
+    let mut at = len(r);
+    while at > 0 && r[(at - 1)..at] != "/" { at = at - 1; }
+    return r[at..len(r)];
+}
+
+// A label's value as a YAML double-quoted scalar.
+fn label_value(v: String) -> String {
+    return "\"" + std::str::replace(std::str::replace(v, "\\", "\\\\"), "\"", "\\\"") + "\"";
+}
+
+// A compose service's `labels:` block, at a service's indent, for a part
+// `role` of the organism called `organism`.
+fn compose_labels(organism: String, role: String) -> String {
+    return "    labels:\n"
+        + "      " + LABEL_HABITAT + ": " + label_value(habitat_name_here()) + "\n"
+        + "      " + LABEL_ORGANISM + ": " + label_value(organism) + "\n"
+        + "      " + LABEL_ROLE + ": " + label_value(role) + "\n";
+}
+
+// The allocations' compose file for the organism keyed `k`, called
+// `organism`: its services, named for the organism and the role, labelled,
+// and their volumes.
+fn allocation_compose_text(k: String, organism: String) -> String {
     return "# The local habitat's allocations for the organism " + k + " (GH #1653): its memory,\n"
         + "# its nerves and its senses' store, services of the habitat's compose project,\n"
         + "# named for the organism and the role. Written by the habitat; never in a checkout.\n"
@@ -1390,6 +1434,7 @@ fn allocation_compose_text(k: String) -> String {
         + "services:\n"
         + "  memory-" + k + ":\n"
         + "    image: pgvector/pgvector:pg16\n"
+        + compose_labels(organism, "memory")
         + "    network_mode: bridge\n"
         + "    environment:\n"
         + "      POSTGRES_USER: dna\n"
@@ -1400,6 +1445,7 @@ fn allocation_compose_text(k: String) -> String {
         + "      - memory-" + k + ":/var/lib/postgresql/data\n"
         + "  nerves-" + k + ":\n"
         + "    image: nats:2\n"
+        + compose_labels(organism, "nerves")
         + "    network_mode: bridge\n"
         + "    command: [\"-c\", \"/etc/nats/nats.conf\"]\n"
         + "    volumes:\n"
@@ -1408,6 +1454,7 @@ fn allocation_compose_text(k: String) -> String {
         + "      - nerves-" + k + ":/data\n"
         + "  senses-" + k + ":\n"
         + "    image: " + SENSES_IMAGE + "\n"
+        + compose_labels(organism, "senses")
         + "    network_mode: bridge\n"
         + "    command: [\"--config.file=/etc/prometheus/senses.yml\", \"--storage.tsdb.path=/prometheus\", \"--storage.tsdb.retention.time="
         + SENSES_RETENTION + "\"]\n"
@@ -1456,9 +1503,12 @@ fn allocation_compose(root: String) -> String {
     let dir = allocation_dir(root);
     let made = run_tool("mkdir\n-p\n-m\n700\n" + dir);
     if made.code != 0 { return ""; }
+    // the habitat's own text, so written again whenever it changed: compose
+    // recreates a service whose definition moved, and keeps its volume
     let compose = dir + "/compose.yaml";
-    if !std::io::fs::file_exists(compose) {
-        std::io::fs::write_file(compose, allocation_compose_text(k)) or discard;
+    let text = allocation_compose_text(k, organism_label(root));
+    if (std::io::fs::read_file(compose) or "") != text {
+        std::io::fs::write_file(compose, text) or discard;
     }
     if !std::io::fs::file_exists(dir + "/senses.yml") {
         std::io::fs::write_file(dir + "/senses.yml", allocation_senses_text()) or discard;

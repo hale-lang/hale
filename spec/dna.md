@@ -5689,7 +5689,9 @@ The live half is memory's, projected from the record by the spine
   organization reads its nerves, as the organism's own compose project,
   `<record schema>-<application>` (`dna_<id>-todo`): two organisms on one
   machine, or a person's own `docker compose up` of the same file, never share
-  a container. `up -d --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`) waits
+  a container. `up -d --build --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`; `--build`
+  builds a service whose image comes from the checkout's own context from
+  the checkout as it is now) waits
   for every service to be running, and healthy where it declares a
   healthcheck; the body says `the repository's compose services are up
   (compose project <p>)`, or that they did not all come up and why, and the
@@ -6606,6 +6608,20 @@ waits); the head relays both from the face. Two Board rows act on them:
 state `trusted`) and `Commands::ratify_sapling` (`{name}`: the sapling
 pinned at the revision its proposal filed), each answering `{ok, code,
 why}`, each row written in the name of the person the caller maps to.
+The services an organism's host command placed on a host
+(`spec/habitat.md`, Host commands) are three rows: `Commands::record_placed`
+(`{organism, command, host, id, service, platform, readings, toolchain}`,
+the Board's, answering `{ok, code, why, readings}`: a `habitat.placed` row
+keyed `<organism>/<command>/<host>/<id>`, and `readings` the endpoint it
+registered with the habitat's senses, `""` for none),
+`Commands::record_unplaced` (`{organism, command, host, id}`, the Board's:
+a `habitat.unplaced` row keeping what the placement said), each refusing
+`invalid_placement`, `not_found` or `record_refused`, and
+`Commands::placements`, a read the head relays from the face, answering
+`{ok, why, revision, placements, history}`: the placements that hold (each
+key's latest row) and every one the record names with its `state`. `hale
+habitat organism place` and `unplace` write the first two once the command
+ran.
 `Commands::brief` is the habitat's brief for an agent pairing with a
 person (`spec/habitat.md`, Pairing), a read. The head serves the surface
 over `mcp::Rpc` too, under the commands port's bearer and roles, on a port
@@ -6774,7 +6790,7 @@ otherwise.
 | `HALE_DNA_OIDC_KEY_X=<x>` | unset | The x coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_KEY_Y=<y>` | unset | The y coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
-| `HALE_DNA_NODE_EXPORTER=off` | on | No machine's node exporter is installed or removed by this run: not by `hale habitat up` on the habitat's machine, `host add` on a host, `host remove`, or a forget. The DNA suite sets it for every fixture (`habitat_operator_face_test` opts in on Linux); the run `up --host` makes inside the habitat's image always has it, since the person's machine installs the habitat machine's exporter over SSH instead. |
+| `HALE_DNA_NODE_EXPORTER=off` | on | No machine's node exporter or container exporter is installed or removed by this run: not by `hale habitat up` on the habitat's machine, `host add` on a host, `host remove`, or a forget. The DNA suite sets it for every fixture (`habitat_operator_face_test` opts in on Linux); the run `up --host` makes inside the habitat's image always has it, since the person's machine installs the habitat machine's exporter over SSH instead. |
 | `HALE_DNA_OIDC_DIAL=<url>` | unset | Where the habitat's sign-in provider answers on its own machine (`http://<listen>:<port>`), as its face published it in `<habitat>/identity.env`: an organism's face launch probes it there before it signs in through the provider. Not set by hand. |
 | `HALE_DNA_OIDC_SERVICES_FILE=<path>` | unset | A file of more service clients' ids the stub issuer accepts, read at each request (`dna/oidc`). Not set by hand: the habitat's face hands its provider `<habitat>/identity.services`, which a graft appends each organism's heart's service client to. |
 | `HALE_DNA_FACE=<name>` | set by the host | The name of the named face (`dna::Face` param of the organism's main) an application is started as. |

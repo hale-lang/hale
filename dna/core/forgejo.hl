@@ -49,6 +49,7 @@ fn forgejo_compose_text(port: Int) -> String {
         + "services:\n"
         + "  forge:\n"
         + "    image: " + FORGEJO_IMAGE + "\n"
+        + compose_labels("habitat", "forge")
         + "    network_mode: bridge\n"
         + "    environment:\n"
         + "      FORGEJO__security__INSTALL_LOCK: \"true\"\n"
@@ -74,8 +75,9 @@ fn forgejo_compose() -> String {
     let dir = forgejo_dir();
     if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 { return ""; }
     let compose = dir + "/compose.yaml";
-    if !std::io::fs::file_exists(compose) {
-        std::io::fs::write_file(compose, forgejo_compose_text(forgejo_port())) or discard;
+    let text = forgejo_compose_text(forgejo_port());
+    if (std::io::fs::read_file(compose) or "") != text {
+        std::io::fs::write_file(compose, text) or discard;
     }
     return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + local_habitat_project()
         + "\n--project-directory\n" + dir + "\n-f\n" + compose;

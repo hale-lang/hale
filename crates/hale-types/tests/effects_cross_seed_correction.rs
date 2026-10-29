@@ -207,16 +207,16 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        677,
-        679,
+        712,
+        714,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_29  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_29  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_29  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
@@ -238,6 +238,9 @@ fn api() {
         oidc_ui  does={syscall,block,env,alloc,stdio}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
+        placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        placement_targets_dir  does={syscall,env,alloc}
+        services_render  does={syscall,block,env,alloc}
         ",
     );
 }
@@ -261,8 +264,8 @@ fn host() {
     // side and reaches nothing imported.
     pinned(
         "host",
-        575,
-        582,
+        573,
+        580,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -372,7 +375,6 @@ fn host() {
         genome_uncandidate  does={syscall,block,alloc}
         habitat_address  does={syscall,block,alloc}
         habitat_apply_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        habitat_forget_plan_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_teardown_run_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_key  does={syscall,env,alloc}
@@ -386,8 +388,6 @@ fn host() {
         memory_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
-        nats_account_path  does={syscall,block,env,alloc}
-        nats_accounts_dir  does={syscall,block,env,alloc}
         nats_conf_path  does={syscall,block,env,alloc}
         nats_secrets_path  does={syscall,block,env,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
@@ -416,13 +416,11 @@ fn host() {
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         senses_up_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        server_conf_rewrite  does={syscall,block,env,alloc}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         work_verb  does={syscall,block,alloc}
-        write_nerves_conf  does={syscall,block,env,alloc}
         ",
     );
 }

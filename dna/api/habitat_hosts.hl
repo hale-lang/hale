@@ -121,23 +121,36 @@ fn host_write(root: String, h: dna::Host, by: String) -> String {
 }
 
 // The node exporters' port on every machine (`hale habitat up` and `host
-// add` install one there, or find one).
+// add` install one there, or find one), and the container exporters'.
 const NODE_EXPORTER_PORT: Int = 9100;
+const CADVISOR_PORT: Int = 9338;
 
 // What the habitat's senses' store scrapes of its machines: its own (the
 // store's container reaches it over the host gateway) and each host it
-// added and has not removed, at the node exporter's port, each labelled
-// `host`. The whole file is written beside and renamed over the last
-// (the store reads `senses.d/*.json` as it changes); a habitat with no
-// allocation of its own yet has nowhere to write it.
+// added and has not removed, each labelled `host`: their node exporters
+// (`senses.d/hosts.json`) and their container exporters
+// (`senses.d/containers/targets.json`). Each file is written whole beside
+// and renamed over the last (the store reads them as they change); a
+// habitat with no allocation of its own yet has nowhere to write them.
 fn host_targets_write(root: String) {
     let dir = dna::allocation_dir(root);
     if len(dir) == 0 || !std::io::fs::file_exists(dir + "/senses.d") { return; }
+    host_targets_file(root, dir + "/senses.d", "hosts.json", NODE_EXPORTER_PORT);
+    if !std::io::fs::file_exists(dir + "/senses.d/containers") {
+        std::io::fs::mkdir(dir + "/senses.d/containers") or discard;
+    }
+    host_targets_file(root, dir + "/senses.d/containers", "targets.json", CADVISOR_PORT);
+    // and the services placed on them (habitat_placed.hl)
+    placement_targets_refresh(root);
+}
+
+// The machines at `port`, as one file_sd file `name` in `at`.
+fn host_targets_file(root: String, at: String, name: String, port: Int) {
     let b = std::json::Builder { };
     b.begin_array();
     b.begin_object();
     b.begin_array_field("targets");
-    b.string_value("host.docker.internal:" + to_string(NODE_EXPORTER_PORT));
+    b.string_value("host.docker.internal:" + to_string(port));
     b.end_array();
     b.begin_object_field("labels");
     b.string_field("host", dna::host_label("local"));
@@ -154,7 +167,7 @@ fn host_targets_write(root: String) {
         if h.state == "removed" || h.provider != "ssh" || len(h.address) == 0 { continue; }
         b.begin_object();
         b.begin_array_field("targets");
-        b.string_value(h.address + ":" + to_string(NODE_EXPORTER_PORT));
+        b.string_value(h.address + ":" + to_string(port));
         b.end_array();
         b.begin_object_field("labels");
         b.string_field("host", h.name);
@@ -162,10 +175,10 @@ fn host_targets_write(root: String) {
         b.end_object();
     }
     b.end_array();
-    let tmp = dir + "/senses.d/.hosts.json.tmp";
+    let tmp = at + "/." + name + ".tmp";
     let mut wrote = true;
     std::io::fs::write_file(tmp, b.result() + "\n") or { wrote = false; };
-    if wrote { std::io::fs::rename(tmp, dir + "/senses.d/hosts.json") or discard; }
+    if wrote { std::io::fs::rename(tmp, at + "/" + name) or discard; }
 }
 
 // The allocations placed on the host `name`, space-separated

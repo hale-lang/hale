@@ -280,6 +280,44 @@ type Render {
     // file, a build context, a bind mount's source), shipped with them to a
     // host elsewhere and never passed to compose
     mounted: String = "";
+    // an override labelling each service as the habitat's (`render_labels`),
+    // compose's last file wherever the render is applied; "" for none
+    labels: String = "";
+}
+
+// An organism's own compose services labelled as the habitat's
+// (`compose_labels`, role `services`): an override naming each service the
+// render's compose files define, "" when compose reads none. The organism's
+// files are never touched: the override is the habitat's own file.
+fn render_labels(render: Render, organism: String) -> String {
+    let listed = run_tool(
+        "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--services",
+    );
+    if listed.code != 0 { return ""; }
+    let mut out = "";
+    let mut rest = listed.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let svc = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(svc) > 0 { out = out + "  " + svc + ":\n" + compose_labels(organism, "services"); }
+    }
+    return if len(out) > 0 { "services:\n" + out } else { "" };
+}
+
+// Where a render's labelling override is kept on this machine: the
+// habitat's, by project.
+fn render_labels_path(render: Render) -> String {
+    return local_habitat_dir() + "/labels/" + render.project + ".yaml";
+}
+
+// The render's labelling override written where compose reads it here.
+fn write_render_labels(render: Render) {
+    if len(render.labels) == 0 { return; }
+    let path = render_labels_path(render);
+    if (std::io::fs::read_file(path) or "") == render.labels { return; }
+    let made = run_tool("mkdir\n-p\n-m\n700\n" + local_habitat_dir() + "/labels");
+    if made.code == 0 { std::io::fs::write_file(path, render.labels) or discard; }
 }
 
 type RenderApplied {
@@ -462,6 +500,9 @@ fn compose_args(render: Render, sep: String) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(f) > 0 { out = out + sep + "-f" + sep + render.dir + "/" + f; }
     }
+    if len(render.labels) > 0 && std::io::fs::file_exists(render_labels_path(render)) {
+        out = out + sep + "-f" + sep + render_labels_path(render);
+    }
     return out;
 }
 
@@ -475,8 +516,13 @@ fn compose_services(render: Render, sep: String) -> String {
 }
 
 // `up` for `render`: every service it names, or all of them.
+// `--build`: a service built from the render's own context (an organism's
+// application) is built again from the revision being applied, never left
+// on an image an earlier revision built under the same tag; docker's
+// cache keeps an unchanged context's build cheap, and a service that
+// only names an image builds nothing.
 fn compose_up_args(render: Render, sep: String) -> String {
-    return "up" + sep + "-d" + sep + "--wait" + compose_services(render, sep);
+    return "up" + sep + "-d" + sep + "--build" + sep + "--wait" + compose_services(render, sep);
 }
 
 // What `render` brought up taken down: the services it names, removed
@@ -567,6 +613,7 @@ locus ComposeProvider {
         if len(render.project) == 0 || len(render.dir) == 0 {
             return RenderApplied { why: "nothing to apply: the render names no project" };
         }
+        write_render_labels(render);
         let up = run_tool(
             "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n") + "\n"
                 + compose_up_args(render, "\n"),
