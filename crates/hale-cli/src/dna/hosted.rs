@@ -400,6 +400,8 @@ pub(super) struct Handed {
     pub entry: String,
     pub var: String,
     pub family: bool,
+    /// declared `optional`: its readers do without it
+    pub optional: bool,
     pub entries: Vec<String>,
 }
 
@@ -419,9 +421,9 @@ pub(super) fn handed(declared: &BTreeMap<String, crate::dna::secrets::Declared>,
         .map(|(name, d)| {
             let entry = crate::dna::secrets::vault_entry(record_id, name);
             if d.family {
-                Handed { name: name.clone(), entry: format!("{entry}--"), var: crate::dna::secrets::env_var(name), family: true, entries: Vec::new() }
+                Handed { name: name.clone(), entry: format!("{entry}--"), var: crate::dna::secrets::env_var(name), family: true, optional: d.optional, entries: Vec::new() }
             } else {
-                Handed { name: name.clone(), entry: entry.clone(), var: crate::dna::secrets::env_var(name), family: false, entries: vec![entry] }
+                Handed { name: name.clone(), entry: entry.clone(), var: crate::dna::secrets::env_var(name), family: false, optional: d.optional, entries: vec![entry] }
             }
         })
         .collect()
@@ -431,6 +433,52 @@ pub(super) fn handed(declared: &BTreeMap<String, crate::dna::secrets::Declared>,
 /// for its prefix `prefix`), each a value under a label, in the labels' order.
 pub(super) fn members(held: &BTreeMap<String, Option<String>>, prefix: &str) -> Vec<String> {
     held.iter().filter(|(e, v)| v.is_some() && e.strip_prefix(prefix).is_some_and(crate::dna::secrets::label_ok)).map(|(e, _)| e.clone()).collect()
+}
+
+/// What a run is handed of `secrets`, given what the habitat's vault holds
+/// (`held`, as `habitat_vault` read their entries): the secrets handed (a
+/// family with every member it holds; an optional family with none, and a
+/// required one an uninstall goes on without, handed EMPTY: its variable
+/// set, so a reader tells "none handed over" from "not declared"), a line
+/// per secret it does without (an optional slot unset, never handed; on an
+/// uninstall, a required one the vault lacks), and the refusal an install
+/// meets for a required secret the vault lacks (a slot no person filled, a
+/// family with no member, a drawn secret never drawn). An uninstall is never
+/// refused for a missing secret.
+pub(super) fn settle(mut secrets: Vec<Handed>, held: &BTreeMap<String, Option<String>>, install: bool, organism: &str) -> (Vec<Handed>, Vec<String>, Option<String>) {
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    let mut unset = Vec::new();
+    for h in secrets.iter_mut() {
+        if h.family {
+            h.entries = members(held, &h.entry);
+        }
+        let present = if h.family { !h.entries.is_empty() } else { matches!(held.get(&h.entry), Some(Some(_))) };
+        if present {
+            kept.push(h.clone());
+            continue;
+        }
+        let remedy = if h.family {
+            format!("`hale habitat organism {organism} dna secret set {} --member <label>`", h.name)
+        } else {
+            format!("`hale habitat organism {organism} dna secret set {}` for a slot, `hale habitat organism {organism} dna upgrade` for a drawn one", h.name)
+        };
+        if h.optional || !install {
+            let why = if h.optional { "optional" } else { "the uninstall goes on without it" };
+            if h.family {
+                skipped.push(format!("{}: a family with no member ({why}), handed empty", h.name));
+                kept.push(h.clone());
+            } else {
+                skipped.push(format!("{}: unset ({why}), not handed", h.name));
+            }
+        } else if h.family {
+            unset.push(format!("{} (a family with no member: {remedy})", h.name));
+        } else {
+            unset.push(format!("{} (unset: {remedy})", h.name));
+        }
+    }
+    let refusal = (!unset.is_empty()).then(|| format!("it reads secrets the habitat's vault does not hold: {}", unset.join(", ")));
+    (kept, skipped, refusal)
 }
 
 /// The script that writes one entry into the vault directory `vault` on the
@@ -711,7 +759,7 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         let url = links.iter().find(|l| l["service"] == cmd.api_service.as_str()).and_then(|l| l["url"].as_str()).filter(|u| !u.is_empty()).map(str::to_string);
         values.insert("api_url", url.ok_or_else(|| format!("{organism}'s `{}` publishes no address another host reaches", cmd.api_service))?);
     }
-    let mut secrets = if reads_secrets {
+    let secrets = if reads_secrets {
         // the organism's record, which its vault entries are named for
         let record = allocations.iter().filter(|a| a["instance"].as_str().is_some_and(|k| k.starts_with(&key))).find_map(|a| a["organism"].as_str().filter(|o| o.len() >= 12)).ok_or_else(|| format!("the habitat holds no allocation of {organism} naming its record, which its secrets' vault entries are named for"))?;
         handed(&declared, name, record)
@@ -719,24 +767,13 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         Vec::new()
     };
     let vault = vault_at(&f.home, organism);
-    // which of them the habitat's vault holds, asked before anything runs: a
-    // slot no person filled (or a drawn one never drawn) refuses the run
+    // which of them the habitat's vault holds, asked before anything runs:
+    // a required one it lacks refuses an install (`--plan` too), never an
+    // uninstall; an optional one is done without
     let held = habitat_vault(&secrets.iter().map(|h| h.entry.clone()).collect::<Vec<_>>(), false)?;
-    // a family is handed every member the vault holds, and needs one
-    for h in secrets.iter_mut().filter(|h| h.family) {
-        h.entries = members(&held, &h.entry);
-    }
-    let unset: Vec<String> = secrets
-        .iter()
-        .filter(|h| if h.family { h.entries.is_empty() } else { !matches!(held.get(&h.entry), Some(Some(_))) })
-        .map(|h| match declared.get(&h.name).map(|d| d.kind) {
-            _ if h.family => format!("{} (a family with no member: `hale habitat organism {organism} dna secret set {} --member <label>`)", h.name, h.name),
-            Some(crate::dna::secrets::Kind::Slot) => format!("{} (a slot: `hale habitat organism {organism} dna secret set {}`)", h.name, h.name),
-            _ => format!("{} (drawn: `hale habitat organism {organism} dna upgrade` draws it)", h.name),
-        })
-        .collect();
-    if !unset.is_empty() {
-        return Err(format!("`{name}` reads secrets the habitat's vault does not hold: {}", unset.join(", ")));
+    let (secrets, skipped, refusal) = settle(secrets, &held, install, organism);
+    if let Some(why) = refusal {
+        return Err(format!("`{name}` {why}"));
     }
     let argv = fill(if install { &cmd.install } else { &cmd.uninstall }, &cmd.inputs, &values)?;
     let service = if cmd.service.is_empty() { String::new() } else { fill(&[cmd.service.clone()], &cmd.inputs, &values)?.remove(0) };
@@ -753,6 +790,9 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         let said = secrets.iter().map(|h| if h.family { format!("{} (a family: {})", h.name, h.labels().join(", ")) } else { h.name.clone() }).collect::<Vec<_>>().join(", ");
         println!("{:<8}{said}, from the habitat's vault into {vault} on {host} (700, each 600) for the run alone, handed as HALE_VAULT_DIR and {}", "secrets", secrets.iter().map(|h| h.var.as_str()).collect::<Vec<_>>().join(", "));
     }
+    for s in &skipped {
+        println!("{:<8}{s}", "skips");
+    }
     if !service.is_empty() {
         println!("{:<8}{service}, {} on {host}", "service", if platform == "macos" { "a launchd service in the system domain" } else { "a systemd unit" });
     }
@@ -767,7 +807,7 @@ fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: b
         let said = over_login(host, port, &toolchain_script(&tag, target), None, false)?;
         println!("{:<8}{tag} installed on {host} ({})", "hale", said.lines().last().unwrap_or("").trim());
     }
-    if !secrets.is_empty() {
+    if secrets.iter().any(|h| !h.entries.is_empty()) {
         // each value from the habitat's vault, held here in memory alone,
         // onto the target over the login's stdin
         super::progress(&format!("handing {organism}'s secrets to {host}"));
@@ -869,7 +909,7 @@ readers = ["api"]
         let id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
         let h = handed(&declared, "node", id);
         let entry = format!("secret-dna_{}-operator-token", &id[..56]);
-        assert_eq!(h, vec![Handed { name: "operator-token".into(), entry: entry.clone(), var: crate::dna::secrets::env_var("operator-token"), family: false, entries: vec![entry] }]);
+        assert_eq!(h, vec![Handed { name: "operator-token".into(), entry: entry.clone(), var: crate::dna::secrets::env_var("operator-token"), family: false, optional: false, entries: vec![entry] }]);
         assert!(handed(&declared, "other", id).is_empty());
         // a family: every member the vault holds, in its labels' order
         let fam = crate::dna::secrets::declared(&VOICE.replace("[dna.secrets.upstream-key]\nkind = \"slot\"\nreaders = [\"api\"]", "[dna.secrets.model-token]\nkind = \"slot\"\nfamily = true\nreaders = [\"host.node\"]")).unwrap();
@@ -887,6 +927,48 @@ readers = ["api"]
         assert!(s.contains(&format!("'{}={prefix}home\n{prefix}work'", crate::dna::secrets::env_var("model-token"))), "{s}");
         assert!(s.contains(&format!("\"$vd\"/{prefix}home \"$vd\"/{prefix}work")), "{s}");
         assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success(), "{s}");
+    }
+
+    /// What a run is handed when the vault lacks a secret: an install is
+    /// refused for a required one alone; an optional slot is not handed, an
+    /// optional family is handed empty (set); an uninstall is never refused.
+    #[test]
+    fn an_optional_secret_is_done_without_and_an_uninstall_is_never_refused() {
+        let toml = format!(
+            "{VOICE}\n[dna.secrets.extra]\nkind = \"slot\"\noptional = true\nreaders = [\"host.node\"]\n\n[dna.secrets.tokens]\nkind = \"slot\"\nfamily = true\noptional = true\nreaders = [\"host.node\"]\n\n[dna.secrets.keys]\nkind = \"slot\"\nfamily = true\nreaders = [\"host.node\"]\n"
+        );
+        let declared = crate::dna::secrets::declared(&toml).unwrap();
+        let id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let all = handed(&declared, "node", id);
+        let entry = |n: &str| crate::dna::secrets::vault_entry(id, n);
+        let names = |v: &[Handed]| v.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
+        // the vault holds the drawn token and one member of the required family
+        let mut held = BTreeMap::new();
+        held.insert(entry("operator-token"), Some(String::new()));
+        held.insert(entry("extra"), None);
+        held.insert(format!("{}--a", entry("keys")), Some(String::new()));
+        let (kept, skipped, refusal) = settle(all.clone(), &held, true, "voice");
+        assert_eq!(refusal, None);
+        assert_eq!(names(&kept), ["keys", "operator-token", "tokens"]);
+        let tokens = kept.iter().find(|h| h.name == "tokens").unwrap();
+        assert!(tokens.entries.is_empty(), "an optional family with no member is handed empty");
+        assert_eq!(skipped, ["extra: unset (optional), not handed", "tokens: a family with no member (optional), handed empty"]);
+        // its variable is set, and empty; the optional slot's is not set at all
+        let s = run_script("/d", &["x".into()], "/h", true, "sudo", "/v", &kept);
+        assert!(s.contains(&format!("'{}='", crate::dna::secrets::env_var("tokens"))), "{s}");
+        assert!(!s.contains(&crate::dna::secrets::env_var("extra")), "{s}");
+        assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success(), "{s}");
+        // a required secret the vault lacks refuses an install, naming its remedy
+        let (_, _, refusal) = settle(all.clone(), &BTreeMap::new(), true, "voice");
+        let why = refusal.unwrap();
+        assert!(why.contains("operator-token (unset: ") && why.contains("keys (a family with no member: `hale habitat organism voice dna secret set keys --member <label>`)"), "{why}");
+        assert!(!why.contains("extra") && !why.contains("tokens"), "an optional one never refuses: {why}");
+        // and never an uninstall: what exists is handed, the rest said
+        let (kept, skipped, refusal) = settle(all, &BTreeMap::new(), false, "voice");
+        assert_eq!(refusal, None);
+        assert_eq!(names(&kept), ["keys", "tokens"]);
+        assert!(skipped.contains(&"operator-token: unset (the uninstall goes on without it), not handed".to_string()), "{skipped:?}");
+        assert!(skipped.contains(&"keys: a family with no member (the uninstall goes on without it), handed empty".to_string()), "{skipped:?}");
     }
 
     #[test]
@@ -956,7 +1038,7 @@ readers = ["api"]
     fn the_run_uses_the_hosts_hale_under_sudo_and_hands_the_secrets_through_env() {
         let vault = vault_at("/home/x", "voice");
         assert_eq!(vault, "/home/x/.local/share/hale/hosted/voice.vault");
-        let secrets = vec![Handed { name: "operator-token".into(), entry: "secret-dna_ab-operator-token".into(), var: crate::dna::secrets::env_var("operator-token"), family: false, entries: vec!["secret-dna_ab-operator-token".into()] }];
+        let secrets = vec![Handed { name: "operator-token".into(), entry: "secret-dna_ab-operator-token".into(), var: crate::dna::secrets::env_var("operator-token"), family: false, optional: false, entries: vec!["secret-dna_ab-operator-token".into()] }];
         let argv: Vec<String> = vec!["hale".into(), "run".into(), "node".into(), "install".into()];
         let s = run_script("/home/x/.local/share/hale/hosted/voice", &argv, "/usr/local/bin/hale", true, "sudo", &vault, &secrets);
         assert!(s.starts_with("cd '/home/x/.local/share/hale/hosted/voice' || exit 1; vd='/home/x/.local/share/hale/hosted/voice.vault'; trap 'rm -f \"$vd\"/secret-dna_ab-operator-token; rmdir \"$vd\" 2>/dev/null' EXIT; "), "{s}");

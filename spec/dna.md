@@ -6046,7 +6046,9 @@ readers = ["worker"]
   command it declares (`[dna.host.<command>]`, spec/habitat.md § Host
   commands); a `host.` reader with no such command is refused. `family =
   true` (a bool; `false` by default) makes a slot a family, and is refused
-  on a drawn secret. The toolchain is the declaration's one reader (`hale
+  on a drawn secret. `optional = true` (a bool; `false` by default) makes
+  a slot one its readers do without: refused on a drawn secret, which
+  always exists. The toolchain is the declaration's one reader (`hale
   dna declared-secrets [dir]` prints it for the DNA's own code, a secret a
   line); a declaration it refuses provisions none of them, and `hale dna
   secrets` and the graft's or upgrade's report say why.
@@ -6060,6 +6062,12 @@ readers = ["worker"]
   dna secret set <name>` fills it, and listed MISSING until then. A
   family is no entry until a person fills a member; how many it has is
   the deployment's, not the seed's.
+- **Optional.** An optional slot no person filled is listed `unset
+  (optional)` by `hale dna secrets`, never MISSING; the board does not
+  name it and `run`/`dev` never refuse on it. It is not handed: its
+  readers see no `HALE_SECRET_<NAME>` at all. An optional family with no
+  member is handed EMPTY: its variable is set, to nothing, so a reader
+  tells "none handed over" from "not declared".
 - **A family's members.** `hale dna secret set <name> --member <label>` fills
   one, `rotate <name> --member <label>` sets it again, `remove <name> --member
   <label>` takes it out of the vault (the record gets `secret.removed

@@ -103,10 +103,16 @@ person  = "read"                  # hale dna secret show dashboard reveals it
 kind    = "slot"
 family  = true                    # several values, each filled under a label
 readers = ["worker"]
+
+[dna.secrets.extra-key]
+kind     = "slot"
+optional = true                   # its readers do without it
+readers  = ["api"]
 ```
 
 - **Names and keys**: a name is lowercase letters, digits and `-` (a letter first, at most 32 characters, no `-` last or doubled). `kind` is `drawn` or `slot`; `person` is `read`, `write` (a person sets it and never reads it back; a slot's default) or `none` (a drawn secret's default). A drawn secret a person would write, a slot no person may touch, an unknown key, and a `host.<command>` reader with no `[dna.host.<command>]` are all refused. `hale dna declared-secrets` prints the declaration as the toolchain reads it.
 - **Its vault entry** is `secret-<org>-<name>`. A drawn one is drawn when missing, by `hale habitat graft` and `hale dna upgrade`, and **never rotated by them** (unlike the NATS passwords): `hale dna secret rotate <name>` draws it anew. `hale dna secret set` on a drawn secret is refused. A slot is listed MISSING by `hale dna secrets` until `hale dna secret set <name>` fills it.
+- **Optional**: `optional = true` on a slot (refused on a drawn secret, which always exists) means its readers do without it. Unset, `hale dna secrets` lists it `unset (optional)` rather than MISSING, nothing refuses on it, and it is not handed: no `HALE_SECRET_<NAME>` at all. An optional family with no member is handed empty: its variable set, to nothing, so a reader tells "none handed over" from "not declared".
 - **Show**: `hale dna secret show <name>` prints the value of a secret declared `person = "read"`, and refuses any other, saying why. Through a pointer, run it (and `set`) as `hale habitat organism <organism> dna secret show <name>`: it runs on the habitat's machine, where the vault is.
 - **Families**: `family = true` on a slot holds as many values as the deployment needs (several model tokens on one host, say), each a member a person fills under a label: `hale dna secret set model-token --member work`, `rotate … --member work`, `remove … --member work`, and `show … --member work` for a family a person reads. A label is 1 to 63 characters, a lowercase letter or a digit and then lowercase letters, digits and `-` (`^[a-z0-9][a-z0-9-]{0,62}$`). Each member is the entry `secret-<org>-<name>--<label>`. A family named without `--member` is refused, and so is `--member` on a secret that is no family. `--as` keeps its meaning on these verbs too: who acts, as the record's row names it. `hale dna secrets` lists the family once with its members, and as MISSING while it has none.
 - **Handed to programs**: where the organism's services run (the habitat's apply, on this machine or an SSH host, and `hale dna dev`/`run` for a repository), the habitat copies each secret a program reads into a vault directory of the organism's own there (mode 700, each entry 600; `<habitat>/allocations/<id>/vault` here, `~/.hale/habitat/<project>/.vault` on a host, never in a checkout) and hands compose `HALE_VAULT_DIR` (that directory) and `HALE_SECRET_<NAME>` (the entry's name; a family's, each member's entry, one a line). The compose file passes them to the services that read them and mounts the directory read-only at the same path:
@@ -122,7 +128,7 @@ services:
 ```
 
   A program reads it as `std::secret::Credential { vault: std::env::var("HALE_SECRET_OPERATOR_TOKEN") }`. Compose's environment is the project's, so the grant to the declared readers is the compose file's to keep; a secret no program reads is never handed.
-- **Handed to host commands**: `hale habitat organism place|unplace` hands a command each secret naming it among its readers, for the run alone ([The Habitat](../habitat.md)).
+- **Handed to host commands**: `hale habitat organism place|unplace` hands a command each secret naming it among its readers, for the run alone ([The Habitat](../habitat.md)). `place` refuses while a required one is unset; `unplace` never does, and goes on without what is missing.
 - **When no program reads any**: the reader vault is reconciled to the empty set, every entry staged before removed; on an SSH host it goes with the project's withdrawal.
 - **Superseded**: a host command's `operator_token` and `{operator_token_file}` input are refused; declare the token as a drawn secret with `host.<command>` among its readers.
 

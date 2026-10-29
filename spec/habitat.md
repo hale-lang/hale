@@ -1064,10 +1064,16 @@ grafted organism that came from a sapling the habitat pins, and a
   are for the run alone: removed however it ends, and the directory once
   empty, so a command that needs one later keeps its own copy. A value is
   never on a command line, on this machine's disk, or in the head. A
-  secret the vault does not hold — a slot no person filled, a family with
-  no member, a drawn secret never drawn — refuses the verb, `--plan`
-  included, naming how it is filled; `--plan` lists the secrets it hands
-  over by name (a family with its members' labels), never a value.
+  required secret the vault does not hold — a slot no person filled, a
+  family with no member, a drawn secret never drawn — refuses `place`,
+  `--plan` included, naming how it is filled. An optional one (`optional =
+  true`) never refuses: an unset optional slot is not handed (no
+  `HALE_SECRET_<NAME>` at all), an optional family with no member is
+  handed empty (its variable set, to nothing). `unplace` is never refused
+  for a missing secret: it hands what the vault holds and goes on without
+  the rest, a required family with none handed empty. `--plan` lists the
+  secrets it hands over by name (a family with its members' labels) and
+  each it skips, and why, never a value.
 - **Who runs it.** Everything goes over the person's own SSH logins, as
   `host add` makes the habitat's account; `root = true` runs it under the
   person's sudo, so only at a terminal. `--plan` prints what would run,

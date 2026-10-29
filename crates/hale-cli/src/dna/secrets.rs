@@ -12,6 +12,7 @@
 //! kind    = "slot"
 //! family  = true                     # several, each filled under a label: `secret set model-token --member work`
 //! readers = ["worker"]
+//! optional = true                    # a reader goes on without it: unset, it is not handed (a family: handed empty)
 //! ```
 //!
 //! Each is the vault entry `secret-<org>-<name>` (`<org>` the record's
@@ -51,6 +52,8 @@ pub(crate) struct Declared {
     pub person: Person,
     /// a slot of several values, each filled under its own label
     pub family: bool,
+    /// a slot its readers can do without: unset, it refuses nothing
+    pub optional: bool,
 }
 
 impl Declared {
@@ -96,8 +99,8 @@ pub(crate) fn declared(manifest: &str) -> Result<BTreeMap<String, Declared>, Str
             return Err(format!("[dna.secrets.{name}]: a secret's name is lowercase letters, digits and `-`, a letter first, at most 32 characters, with no `-` last or doubled"));
         }
         let t = t.as_table().ok_or_else(|| format!("[dna.secrets.{name}] is a table"))?;
-        if let Some(k) = t.keys().find(|k| !["kind", "readers", "person", "family"].contains(&k.as_str())) {
-            return Err(format!("[dna.secrets.{name}] has no `{k}` (kind, readers, person, family)"));
+        if let Some(k) = t.keys().find(|k| !["kind", "readers", "person", "family", "optional"].contains(&k.as_str())) {
+            return Err(format!("[dna.secrets.{name}] has no `{k}` (kind, readers, person, family, optional)"));
         }
         let word = |k: &str| -> Result<Option<&str>, String> { t.get(k).map(|v| v.as_str().ok_or_else(|| format!("[dna.secrets.{name}] {k} is a string"))).transpose() };
         let kind = match word("kind")? {
@@ -121,6 +124,13 @@ pub(crate) fn declared(manifest: &str) -> Result<BTreeMap<String, Declared>, Str
             None => false,
             Some(v) => v.as_bool().ok_or_else(|| format!("[dna.secrets.{name}] family is true or false"))?,
         };
+        let optional = match t.get("optional") {
+            None => false,
+            Some(v) => v.as_bool().ok_or_else(|| format!("[dna.secrets.{name}] optional is true or false"))?,
+        };
+        if optional && kind == Kind::Drawn {
+            return Err(format!("[dna.secrets.{name}] is drawn, and a drawn secret always exists: optional is a slot's"));
+        }
         if family && kind == Kind::Drawn {
             return Err(format!("[dna.secrets.{name}] is drawn, and a family is a slot's: its members are a person's, each filled under a label"));
         }
@@ -143,7 +153,7 @@ pub(crate) fn declared(manifest: &str) -> Result<BTreeMap<String, Declared>, Str
                 None => {}
             }
         }
-        out.insert(name.clone(), Declared { kind, readers, person, family });
+        out.insert(name.clone(), Declared { kind, readers, person, family, optional });
     }
     Ok(out)
 }
@@ -183,7 +193,8 @@ pub(crate) fn env_var(name: &str) -> String {
 
 /// The declaration as `hale dna declared-secrets` prints it for the DNA's
 /// code, a secret a line: `<name>\t<drawn|slot>\t<read|write|none>\t<the
-/// programs>\t<the host commands>\t<family or nothing>`, each list
+/// programs>\t<the host commands>\t<family or nothing>\t<optional or
+/// nothing>`, each list
 /// space-separated.
 pub(crate) fn lines(declared: &BTreeMap<String, Declared>) -> String {
     let mut out = String::new();
@@ -194,7 +205,7 @@ pub(crate) fn lines(declared: &BTreeMap<String, Declared>) -> String {
             Person::Write => "write",
             Person::None => "none",
         };
-        out.push_str(&format!("{name}\t{kind}\t{person}\t{}\t{}\t{}\n", d.programs().join(" "), d.hosts().join(" "), if d.family { "family" } else { "" }));
+        out.push_str(&format!("{name}\t{kind}\t{person}\t{}\t{}\t{}\t{}\n", d.programs().join(" "), d.hosts().join(" "), if d.family { "family" } else { "" }, if d.optional { "optional" } else { "" }));
     }
     out
 }
@@ -246,6 +257,7 @@ person = "read"
 [dna.secrets.model-token]
 kind = "slot"
 family = true
+optional = true
 readers = ["worker", "host.node"]
 "#;
 
@@ -259,7 +271,8 @@ readers = ["worker", "host.node"]
         assert_eq!(d["dashboard"].person, Person::Read);
         assert!(declared("[dna]\nneeds = []\n").unwrap().is_empty());
         assert!(d["model-token"].family && !d["upstream-key"].family);
-        assert_eq!(lines(&d), "dashboard\tdrawn\tread\tweb\t\t\nmodel-token\tslot\twrite\tworker\tnode\tfamily\noperator-token\tdrawn\tnone\tapi\tnode\t\nupstream-key\tslot\twrite\tapi\t\t\n");
+        assert!(d["model-token"].optional && !d["upstream-key"].optional && !d["operator-token"].optional);
+        assert_eq!(lines(&d), "dashboard\tdrawn\tread\tweb\t\t\t\nmodel-token\tslot\twrite\tworker\tnode\tfamily\toptional\noperator-token\tdrawn\tnone\tapi\tnode\t\t\nupstream-key\tslot\twrite\tapi\t\t\t\n");
         // a slot may be read back, and a drawn secret has no readers yet
         assert!(declared("[dna.secrets.k]\nkind = \"slot\"\nperson = \"read\"\n").is_ok());
         assert!(declared("[dna.secrets.k]\nkind = \"drawn\"\n").unwrap()["k"].readers.is_empty());
@@ -286,6 +299,10 @@ readers = ["worker", "host.node"]
         assert!(refuse("[dna.secrets.k]\nkind = \"drawn\"\nfamily = true\n").contains("a family is a slot's"));
         assert!(refuse("[dna.secrets.k]\nkind = \"slot\"\nfamily = \"yes\"\n").contains("family is true or false"));
         assert!(declared("[dna.secrets.k]\nkind = \"drawn\"\nfamily = false\n").is_ok());
+        // optional is a slot's (a drawn secret always exists), and true or false
+        assert!(refuse("[dna.secrets.k]\nkind = \"drawn\"\noptional = true\n").contains("always exists"));
+        assert!(refuse("[dna.secrets.k]\nkind = \"slot\"\noptional = 1\n").contains("optional is true or false"));
+        assert!(declared("[dna.secrets.k]\nkind = \"slot\"\noptional = true\n").unwrap()["k"].optional);
         // a name a member's entry could be mistaken for
         assert!(refuse("[dna.secrets.a--b]\nkind = \"slot\"\n").contains("doubled"));
         assert!(refuse("[dna.secrets.a-]\nkind = \"slot\"\n").contains("doubled"));
