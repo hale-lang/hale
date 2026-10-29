@@ -916,7 +916,7 @@ events every 15 s. It is installed, found, replaced (labelled
 `lang.hale.cadvisor=<image> <the labels it keeps> <habitat>`, so one keeping
 others or made by another habitat is replaced) and removed where and when
 the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
-scrapes it as the job `containers` from `senses.d/containers/*.json`,
+scrapes it as the job `containers` from `senses.d/containers/*.json` (every 15 s, waiting up to 14 s for cAdvisor's answer, which renders every container's series and outlasts the store's default 5 s on a busy machine; `up` gives a job an earlier toolchain wrote the same timeout),
 which `up` adds to the habitat's store configuration when it has none.
 
 **Placed services too.** A service an organism's host command left on a

@@ -439,10 +439,20 @@ pub(super) fn seed_targets(allocation: &Path, label: &str) -> Result<(), String>
 pub(super) fn ensure_containers_job(allocation: &Path) -> Result<bool, String> {
     let conf = allocation.join("senses.yml");
     let Ok(text) = std::fs::read_to_string(&conf) else { return Ok(false) };
+    // cAdvisor renders every container's series on each scrape, which on
+    // a busy machine takes longer than the store's default 5 s: the job
+    // waits up to 14 s (inside its 15 s interval), and a job an earlier
+    // toolchain wrote is given that timeout too
+    const EARLIER: &str = "  - job_name: containers\n    scrape_interval: 15s\n    file_sd_configs:\n";
+    const NOW: &str = "  - job_name: containers\n    scrape_interval: 15s\n    scrape_timeout: 14s\n    file_sd_configs:\n";
+    if text.contains(EARLIER) {
+        std::fs::write(&conf, text.replacen(EARLIER, NOW, 1)).map_err(|e| format!("write {}: {e}", conf.display()))?;
+        return Ok(true);
+    }
     if text.contains("job_name: containers") || !text.contains("scrape_configs:\n") {
         return Ok(false);
     }
-    let job = "  # The machines' containers (cAdvisor), labelled `host`, from senses.d/containers/.\n  - job_name: containers\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/containers/*.json\"]\n";
+    let job = format!("  # The machines' containers (cAdvisor), labelled `host`, from senses.d/containers/.\n{NOW}      - files: [\"/etc/prometheus/senses.d/containers/*.json\"]\n");
     let text = text.replacen("scrape_configs:\n", &format!("scrape_configs:\n{job}"), 1);
     std::fs::write(&conf, text).map_err(|e| format!("write {}: {e}", conf.display()))?;
     Ok(true)
@@ -788,6 +798,12 @@ mod tests {
         assert!(!ensure_containers_job(&d).unwrap());
         let t = std::fs::read_to_string(d.join("senses.yml")).unwrap();
         assert!(t.contains("scrape_configs:\n  # The machines' containers") && t.contains("  - job_name: spine"), "{t}");
+        assert!(t.contains("    scrape_timeout: 14s\n"), "cAdvisor's scrape waits past the store's default: {t}");
+        // a job an earlier toolchain wrote is given the timeout, once
+        std::fs::write(d.join("senses.yml"), "scrape_configs:\n  - job_name: containers\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"x\"]\n").unwrap();
+        assert!(ensure_containers_job(&d).unwrap());
+        assert!(!ensure_containers_job(&d).unwrap());
+        assert!(std::fs::read_to_string(d.join("senses.yml")).unwrap().contains("scrape_interval: 15s\n    scrape_timeout: 14s\n"));
         std::fs::remove_dir_all(&d).ok();
     }
 }
