@@ -1505,6 +1505,23 @@ fn allocation_senses_text() -> String {
         + "  - job_name: host\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/*.json\"]\n";
 }
 
+// The habitat genome's own services (its body, face and Grafana), which
+// `hale habitat up` writes into the same compose file after a marker line,
+// before the volumes: the allocations' text rewritten keeps them where they
+// are, so applying an allocation never drops the services the habitat runs.
+const HABITAT_BLOCK_MARK: String = "# habitat-body-and-face\n";
+
+fn with_habitat_block(text: String, existing: String) -> String {
+    let at = std::str::index_of(existing, HABITAT_BLOCK_MARK);
+    if at < 0 { return text; }
+    let rest = existing[at..len(existing)];
+    let vol = std::str::index_of(rest, "\nvolumes:\n");
+    let block = if vol < 0 { rest } else { rest[0..(vol + 1)] };
+    let tv = std::str::index_of(text, "\nvolumes:\n");
+    if tv < 0 { return text + block; }
+    return text[0..(tv + 1)] + block + text[(tv + 1)..len(text)];
+}
+
 // `docker compose` on the organism's allocations in the local habitat,
 // newline-separated, its files written the first time: the arguments go
 // after it. "" when the organism has no identity yet. The other
@@ -1519,8 +1536,9 @@ fn allocation_compose(root: String) -> String {
     // the habitat's own text, so written again whenever it changed: compose
     // recreates a service whose definition moved, and keeps its volume
     let compose = dir + "/compose.yaml";
-    let text = allocation_compose_text(k, organism_label(root));
-    if (std::io::fs::read_file(compose) or "") != text {
+    let existing = std::io::fs::read_file(compose) or "";
+    let text = with_habitat_block(allocation_compose_text(k, organism_label(root)), existing);
+    if existing != text {
         std::io::fs::write_file(compose, text) or discard;
     }
     if !std::io::fs::file_exists(dir + "/senses.yml") {
