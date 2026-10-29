@@ -1153,6 +1153,7 @@ fn dna_fixture_set_is_complete() {
             "graph_holes_edges_test.hl",
             "graph_holes_test.hl",
             "graph_ingest_refusals_test.hl",
+            "graph_ingest_runs_shape_test.hl",
             "graph_ingest_test.hl",
             "graph_model_test.hl",
             "graph_route_test.hl",
