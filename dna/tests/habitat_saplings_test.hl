@@ -281,6 +281,69 @@ fn main() {
         "the grafted organism stays at its revision",
     );
 
+    // ---- `organism upgrade` moves it to the ratified revision, keeping its
+    // record: planned first (nothing moves), a v2 whose tree is not the
+    // pinned one refused, then moved, and at the pin a second is refused
+    let record = dna::allocation_key(store);
+    let planned = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout\n--plan");
+    std::test::assert(
+        planned.code == 0
+            && std::str::contains(
+                planned.stdout,
+                "upgrade sprout: v1 (" + pinned + ") -> v2 (" + newer + ")",
+            )
+            && std::str::contains(planned.stdout, "record  habitat.organism.upgraded " + record)
+            && std::str::contains(planned.stdout, "place   none"),
+        "the plan names each step: " + planned.stdout + planned.stderr,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "the plan moves nothing",
+    );
+    let v2 = dna::trim_nl(git(src, "rev-parse\nv2").stdout);
+    git(src, "tag\n-f\nv2\n" + v1);
+    let mismatch = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout");
+    std::test::assert(
+        mismatch.code != 0
+            && std::str::contains(
+                mismatch.stderr,
+                "not the " + newer + " the habitat pins: refused, nothing moved",
+            ),
+        "a v2 that is not the pinned tree is refused: " + mismatch.stdout + mismatch.stderr,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "and nothing moves",
+    );
+    git(src, "tag\n-f\nv2\n" + v2);
+    let upgraded = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout");
+    std::test::assert(
+        upgraded.code == 0
+            && std::str::contains(upgraded.stdout, "fetched sprout at v2")
+            && std::str::contains(upgraded.stdout, "record  habitat.organism.upgraded " + record),
+        "the organism is upgraded: " + upgraded.stdout + upgraded.stderr,
+    );
+    std::test::assert(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout) == v2
+            && std::io::fs::file_exists(store + "/CHANGELOG.md")
+            && dna::allocation_key(store) == record,
+        "its tree is at v2 and its manifest pins the same record",
+    );
+    let urows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(urows, "habitat.organism.upgraded")
+            && std::str::contains(urows, "\\\"from\\\":\\\"v1\\\"")
+            && std::str::contains(urows, "\\\"to\\\":\\\"v2\\\""),
+        "the upgrade is a row of the habitat's record: " + urows,
+    );
+    let again = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout");
+    std::test::assert(
+        again.code != 0 && std::str::contains(again.stderr, "already at v2 (" + newer + ")"),
+        "at the pin, nothing to upgrade: " + again.stdout + again.stderr,
+    );
+
     // ---- a graft that stops after the child is born, and goes on after a
     // newer revision was ratified, is the revision it checked: `bud` needs
     // a database whose heart migration fails until `ready` is there

@@ -16,7 +16,7 @@ This brief is for an agent working beside a person on a Hale habitat. The habita
 ## Rules
 
 1. **Read before you act.** Ask `Commands__brief` first, and the read that covers what you will touch (`Commands__hosts`, `Commands__allocations`, `Commands__saplings`) right before you touch it. A brief is a snapshot; the record is the truth.
-2. **Propose, do not do, what the Board ratifies.** A Review's verdict and a sapling's newer revision are the person's decisions. Say what you would decide and why, and let them call it.
+2. **Propose, do not do, what the Board ratifies.** A Review's verdict and a sapling's newer revision are the person's decisions. Say what you would decide and why, and let them call it. A ratified revision moves no organism by itself: the person moves one with `hale habitat organism upgrade <organism>` (`--plan` first), which is no row of the head's.
 3. **Never handle a secret value.** A secret lives in the vault and is named by its slot. Ask the person to put a value there (`hale dna secret set`); never ask them to paste one to you, and never write one into a call.
 4. **A refusal is an answer.** `unauthorized` names the role a row requires. Report it; do not look for another route.
 5. **Every call is a row in the person's name.** Do nothing they did not ask for.
