@@ -1,0 +1,28 @@
+// dna/tests/habitat_compose_block_test.hl — the habitat genome's own
+// services (body, face, Grafana), which `hale habitat up` writes into its
+// allocations' compose file after a marker line, survive the allocations'
+// text being written again (it is rewritten whenever it changes): an apply
+// once dropped them, and the face could no longer start Grafana.
+
+import "../core" as dna;
+
+fn main() {
+    let alloc = "services:\n  memory-k:\n    image: pg\nvolumes:\n  memory-k: {}\n";
+    let existing = "services:\n  memory-k:\n    image: old\n# habitat-body-and-face\n  body:\n    image: h\n  face:\n    image: h\nvolumes:\n  memory-k: {}\n";
+    let kept = dna::with_habitat_block(alloc, existing);
+    std::test::assert_eq_str(
+        kept,
+        "services:\n  memory-k:\n    image: pg\n# habitat-body-and-face\n  body:\n    image: h\n  face:\n    image: h\nvolumes:\n  memory-k: {}\n",
+        "the allocations' new text, the habitat's block where it was, the volumes after",
+    );
+    std::test::assert_eq_str(
+        dna::with_habitat_block(alloc, alloc),
+        alloc,
+        "no block: the allocations' text alone",
+    );
+    std::test::assert_eq_str(
+        dna::with_habitat_block(alloc, kept),
+        kept,
+        "written again: unchanged",
+    );
+}
