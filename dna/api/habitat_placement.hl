@@ -185,7 +185,9 @@ fn services_render(body: String) -> dna::Render {
         mounted: r.mounted,
         labels: dna::render_labels(r, dna::organism_label(r.dir)),
         secrets: secrets,
-        vault: if len(secrets) > 0 { dna::reader_vault_dir(organism[0..12]) } else { "" },
+        // the organism's reader vault, whatever its programs read now: an
+        // empty set is reconciled there too
+        vault: if len(organism) >= 12 { dna::reader_vault_dir(organism[0..12]) } else { "" },
     };
 }
 

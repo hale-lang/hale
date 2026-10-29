@@ -617,7 +617,7 @@ locus ComposeProvider {
         write_render_labels(render);
         // the secrets its programs read, in its reader vault, and compose
         // handed where they are
-        if len(render.secrets) > 0 && len(render.vault) == 0 {
+        if len(reader_entries(render.secrets, "\n")) > 0 && len(render.vault) == 0 {
             return RenderApplied {
                 why: "the render's programs read secrets, and it names no reader vault",
             };

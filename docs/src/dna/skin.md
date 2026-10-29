@@ -123,6 +123,7 @@ services:
 
   A program reads it as `std::secret::Credential { vault: std::env::var("HALE_SECRET_OPERATOR_TOKEN") }`. Compose's environment is the project's, so the grant to the declared readers is the compose file's to keep; a secret no program reads is never handed.
 - **Handed to host commands**: `hale habitat organism place|unplace` hands a command each secret naming it among its readers, for the run alone ([The Habitat](../habitat.md)).
+- **When no program reads any**: the reader vault is reconciled to the empty set, every entry staged before removed; on an SSH host it goes with the project's withdrawal.
 - **Superseded**: a host command's `operator_token` and `{operator_token_file}` input are refused; declare the token as a drawn secret with `host.<command>` among its readers.
 
 Automated workflow rotation (`secret-rotate@1`) is present in the workflow catalog but rejected at admission because workflows are not permitted to write to `vault`:

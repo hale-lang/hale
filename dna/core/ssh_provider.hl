@@ -410,19 +410,20 @@ fn ssh_reader_env(render: Render) -> String {
 // this program or put on a command line; an entry no secret names, or the
 // vault lacks, removed there. "" once done, else why not.
 fn ssh_stage_reader_vault(root: String, h: Host, render: Render) -> String {
-    if len(render.secrets) == 0 { return ""; }
-    if std::env::var_exists("HALE_VAULT_ADDR") {
+    let entries = reader_entries(render.secrets, " ");
+    if len(entries) > 0 && std::env::var_exists("HALE_VAULT_ADDR") {
         return "the vault is served over HTTP (HALE_VAULT_ADDR): a declared secret reaches its programs from a local vault alone";
     }
     let d = ssh_reader_vault(render);
-    let entries = reader_entries(render.secrets, " ");
-    // made (700) when it is not, and what no secret names removed; the
+    // made (700) when it is not, and what no secret names removed (with
+    // none, every entry staged before; no directory is made for none); the
     // directory is never replaced, since a running service mounts it
     let made = ssh_run(
         root,
         h,
-        "umask 077; d='" + d
-            + "'; mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; for f in \"$d\"/* \"$d\"/.[!.]*; do [ -e \"$f\" ] || continue; case ' "
+        "umask 077; d='" + d + "'; "
+            + (if len(entries) == 0 { "[ -d \"$d\" ] || exit 0; " } else { "" })
+            + "mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; for f in \"$d\"/* \"$d\"/.[!.]*; do [ -e \"$f\" ] || continue; case ' "
             + std::str::trim(entries) + " ' in *\" ${f##*/} \"*) ;; *) rm -f \"$f\";; esac; done",
         "",
     );
@@ -587,8 +588,10 @@ locus SshProvider {
                 why: "docker compose down on " + host + " failed: " + trim_nl(down.stderr),
             };
         }
-        // its secrets go with it from that host
-        if len(render.secrets) > 0 && len(render.services) == 0 {
+        // its secrets go with it from that host, whatever it reads now (a
+        // project withdrawn whole: a withdrawal of some services leaves the
+        // others theirs)
+        if len(render.services) == 0 {
             let gone = ssh_run(self.root, h, "rm -rf '" + ssh_reader_vault(render) + "'", "");
         }
         return RenderApplied { ok: true };

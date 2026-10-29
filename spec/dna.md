@@ -6092,11 +6092,14 @@ readers = ["worker"]
   that runs them: here `<habitat>/allocations/<id>/vault/`, on an SSH
   host `~/.hale/habitat/<project>/.vault/` beside the render the habitat
   ships, never in a checkout; mode 700, each entry 600, holding those
-  entries and no other. Each is copied file to file from the vault
+  entries and no other. The organism keeps the directory's address
+  whatever its programs read: when none reads any (the last reader gone,
+  a declaration refused), the set is empty and every entry staged before
+  is removed, and no directory is made for nothing. Each is copied file to file from the vault
   (over the habitat's SSH on its stdin, for a host), never read into a
   program or put on a command line; the directory is rewritten in place,
   never replaced, since a running service mounts it, and on a host it
-  goes with the services' withdrawal. Compose is handed `HALE_VAULT_DIR`
+  goes with the project's withdrawal, whatever it held. Compose is handed `HALE_VAULT_DIR`
   (that directory) and, per secret, `HALE_SECRET_<NAME>` (the name
   upper-cased, `-` as `_`) naming its entry — a family's, each member's
   entry, one a line, in their labels' order. The application's compose
