@@ -2694,7 +2694,11 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         _ => None,
     };
     let grafana_note = (grafana.is_none() && senses.is_none() && !readings::grafana_off()).then(|| format!("{:<8}none: the habitat has no senses' store of its own to chart ({} publishes none)", "grafana", dir.join("ports.yaml").display()));
-    let grafana_env = grafana.as_ref().map(|(port, header)| format!("      HALE_DNA_GRAFANA_PORT: \"{port}\"\n      HALE_DNA_GRAFANA_HEADER: \"{header}\"\n")).unwrap_or_default();
+    // on demand (unless HALE_DNA_GRAFANA=on), the face starts and stops it
+    // with the compose files of this directory
+    let on_demand = readings::grafana_runs() == readings::GrafanaRuns::OnDemand;
+    let compose_dir = dir.display().to_string();
+    let grafana_env = grafana.as_ref().map(|(port, header)| readings::grafana_face_env(*port, header, on_demand.then_some(compose_dir.as_str()))).unwrap_or_default();
     // what the senses' store scrapes of the machines: this one, until the
     // head writes the hosts it adds beside it
     readings::seed_targets(&dir, &host_label_here())?;
@@ -2811,10 +2815,12 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         // their backends are the habitat's allocations, brought up by
         // their provider: `depends_on` orders the stop, never this start
         .args(["up", "-d", "--no-deps", "body", "face"])
-        .args(grafana.as_ref().map(|_| "grafana"));
-    // a Grafana an earlier `up` started, when this one runs none (the
-    // project holds the organisms' allocations too: never --remove-orphans)
-    if grafana.is_none() {
+        .args(grafana.as_ref().filter(|_| !on_demand).map(|_| "grafana"));
+    // a Grafana an earlier `up` started, when this one runs none or runs it
+    // on demand (made again below, joined to this face's network: a
+    // container joined to a face this `up` replaced would never start). The
+    // project holds the organisms' allocations too: never --remove-orphans.
+    if grafana.is_none() || on_demand {
         if let Docker::Answered(ids) = docker(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={}", local_habitat_project()), "--filter", "label=com.docker.compose.service=grafana"]) {
             let ids: Vec<&str> = ids.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
             if !ids.is_empty() {
@@ -2830,6 +2836,28 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let ran = cmd.output().map_err(|e| format!("docker compose: {e}"))?;
     if !ran.status.success() {
         return Err(format!("docker compose up -d body face: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+    }
+    // an on-demand Grafana is created (its image pulled) and not started:
+    // the face starts it at its first use (`compose start`, which makes
+    // nothing). Without --no-deps, so compose joins it to the face's
+    // network: with it, compose (2.6) leaves `service:face` unresolved, and
+    // the container never starts. The face it depends on is up already.
+    if grafana.is_some() && on_demand {
+        let ran = Command::new("env")
+            .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+            .arg(local_habitat_project())
+            .arg("--project-directory")
+            .arg(&dir)
+            .arg("-f")
+            .arg(&compose_path)
+            .arg("-f")
+            .arg(&ports_path)
+            .args(["up", "--no-start", "grafana"])
+            .output()
+            .map_err(|e| format!("docker compose: {e}"))?;
+        if !ran.status.success() {
+            return Err(format!("docker compose up --no-start grafana: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+        }
     }
 
     progress("waiting for the habitat's body and face probes");
@@ -2875,7 +2903,8 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         lines.push(format!("{:<8}{link}", "sign in"));
     }
     if grafana.is_some() {
-        lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in)", "grafana", readings::GRAFANA_PATH));
+        let when = if on_demand { format!("; started at its first use, stopped after {} minutes unused", readings::GRAFANA_IDLE_MINUTES) } else { String::new() };
+        lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in{when})", "grafana", readings::GRAFANA_PATH));
     }
     lines.extend(grafana_note);
     lines.extend(reflexes_line);

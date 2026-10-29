@@ -71,10 +71,49 @@ pub(super) fn node_exporter_off() -> bool {
     std::env::var("HALE_DNA_NODE_EXPORTER").is_ok_and(|v| v.trim() == "off")
 }
 
+/// When the habitat's Grafana runs, as `HALE_DNA_GRAFANA` asks: `off`
+/// never, `on` from `up` to `down`, and otherwise on demand: `up` creates
+/// its service without starting it, and the face starts it at its first
+/// use and stops it once it has gone unused for a while
+/// (`dna/face/standard`, `GrafanaKeeper`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GrafanaRuns {
+    Never,
+    Always,
+    OnDemand,
+}
+
+/// How long an on-demand Grafana goes unused before the face stops it (the
+/// face's `GRAFANA_IDLE_S`).
+pub(super) const GRAFANA_IDLE_MINUTES: u64 = 15;
+
+pub(super) fn grafana_runs() -> GrafanaRuns {
+    grafana_runs_for(std::env::var("HALE_DNA_GRAFANA").ok().as_deref())
+}
+
+fn grafana_runs_for(asked: Option<&str>) -> GrafanaRuns {
+    match asked.map(str::trim) {
+        Some("off") => GrafanaRuns::Never,
+        Some("on") => GrafanaRuns::Always,
+        _ => GrafanaRuns::OnDemand,
+    }
+}
+
 /// Whether `HALE_DNA_GRAFANA=off` leaves Grafana out of the habitat.
 pub(super) fn grafana_off() -> bool {
-    std::env::var("HALE_DNA_GRAFANA").is_ok_and(|v| v.trim() == "off")
+    grafana_runs() == GrafanaRuns::Never
 }
+
+/// Grafana's guardrails: a soft limit its Go runtime collects under, and a
+/// hard one its container is killed at. Measured on 13.3.0 with the
+/// habitat's provisioning and its plugins trimmed (below): about 170 MiB
+/// with both dashboards' queries run; 640 MiB with Grafana's defaults.
+pub(super) const GRAFANA_GOMEMLIMIT: &str = "200MiB";
+pub(super) const GRAFANA_MEM_LIMIT: &str = "384m";
+/// The plugins Grafana ships that the habitat never uses: each data
+/// source with a backend is a process of its own (15 to 30 MiB apiece),
+/// and the apps load at every start. Its one data source is Prometheus.
+const GRAFANA_UNUSED_PLUGINS: &str = "cloudwatch,elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,loki,mssql,mysql,opentsdb,stackdriver,tempo,zipkin,grafana-advisor-app,grafana-exploretraces-app,grafana-lokiexplore-app,grafana-metricsdrilldown-app,grafana-pyroscope-app";
 
 /// The container labels cAdvisor carries onto every reading: compose's
 /// project and service, and the habitat's own (`dna::compose_labels`:
@@ -531,12 +570,31 @@ pub(super) fn grafana_service(hab_dir: &str, port: u16, face_url: &str, header: 
         ("GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES", "false".to_string()),
         ("GF_NEWS_NEWS_FEED_ENABLED", "false".to_string()),
         ("GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH", "/etc/grafana/provisioning/dashboards/hosts.json".to_string()),
+        // its footprint: no plugin fetched at its start, none it never
+        // uses loaded, no alerting of its own (the habitat's reflexes are
+        // its senses' rules, read by the operator face), and the Go
+        // runtime collecting under its soft limit
+        ("GF_PLUGINS_PREINSTALL_DISABLED", "true".to_string()),
+        ("GF_PLUGINS_DISABLE_PLUGINS", GRAFANA_UNUSED_PLUGINS.to_string()),
+        ("GF_UNIFIED_ALERTING_ENABLED", "false".to_string()),
+        ("GOMEMLIMIT", GRAFANA_GOMEMLIMIT.to_string()),
     ] {
         s.push_str(&format!("      {k}: \"{v}\"\n"));
     }
     s.push_str(&format!(
-        "    volumes:\n      - \"{hab_dir}/grafana/provisioning:/etc/grafana/provisioning:ro\"\n      - \"{hab_dir}/grafana/data:/var/lib/grafana\"\n    restart: on-failure\n"
+        "    volumes:\n      - \"{hab_dir}/grafana/provisioning:/etc/grafana/provisioning:ro\"\n      - \"{hab_dir}/grafana/data:/var/lib/grafana\"\n    mem_limit: {GRAFANA_MEM_LIMIT}\n    restart: on-failure\n"
     ));
+    s
+}
+
+/// What the face is told of Grafana: its port and header, and, when it runs
+/// on demand, the directory of the habitat's compose files (`dir`), with
+/// which the face starts and stops it.
+pub(super) fn grafana_face_env(port: u16, header: &str, on_demand: Option<&str>) -> String {
+    let mut s = format!("      HALE_DNA_GRAFANA_PORT: \"{port}\"\n      HALE_DNA_GRAFANA_HEADER: \"{header}\"\n");
+    if let Some(dir) = on_demand {
+        s.push_str(&format!("      HALE_DNA_GRAFANA_ON_DEMAND: \"{dir}\"\n"));
+    }
     s
 }
 
@@ -605,6 +663,30 @@ mod tests {
         assert!(!s.contains("ports:"));
         assert!(s.contains("GF_AUTH_BASIC_ENABLED: \"false\""));
         assert!(!s.contains("GF_SECURITY_ADMIN_PASSWORD: \"admin\""));
+    }
+
+    #[test]
+    fn grafana_is_capped_and_trimmed() {
+        let s = grafana_service("/h", 8805, "http://127.0.0.1:8800/", "X-Hale-Grafana-00", "");
+        assert!(s.contains("      GOMEMLIMIT: \"200MiB\"\n"), "{s}");
+        assert!(s.contains("    mem_limit: 384m\n"), "{s}");
+        assert!(s.contains("GF_PLUGINS_PREINSTALL_DISABLED: \"true\""));
+        assert!(s.contains("GF_UNIFIED_ALERTING_ENABLED: \"false\""));
+        let disabled = s.lines().find_map(|l| l.trim().strip_prefix("GF_PLUGINS_DISABLE_PLUGINS: ")).expect("plugins disabled");
+        assert!(!disabled.split(',').any(|p| p.trim_matches('"') == "prometheus"), "its data source stays: {disabled}");
+    }
+
+    #[test]
+    fn grafana_runs_on_demand_unless_asked() {
+        assert_eq!(grafana_runs_for(None), GrafanaRuns::OnDemand);
+        assert_eq!(grafana_runs_for(Some("")), GrafanaRuns::OnDemand);
+        assert_eq!(grafana_runs_for(Some("on")), GrafanaRuns::Always);
+        assert_eq!(grafana_runs_for(Some(" off\n")), GrafanaRuns::Never);
+        let on_demand = grafana_face_env(8805, "X-Hale-Grafana-00", Some("/h/allocations/abc"));
+        assert!(on_demand.contains("HALE_DNA_GRAFANA_PORT: \"8805\"") && on_demand.contains("HALE_DNA_GRAFANA_HEADER: \"X-Hale-Grafana-00\""));
+        assert!(on_demand.contains("      HALE_DNA_GRAFANA_ON_DEMAND: \"/h/allocations/abc\"\n"), "{on_demand}");
+        let always = grafana_face_env(8805, "X-Hale-Grafana-00", None);
+        assert!(!always.contains("ON_DEMAND"), "a Grafana that is always on is never stopped by the face: {always}");
     }
 
     #[test]
