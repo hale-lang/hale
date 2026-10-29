@@ -5671,7 +5671,9 @@ The live half is memory's, projected from the record by the spine
   organization reads its nerves, as the organism's own compose project,
   `<record schema>-<application>` (`dna_<id>-todo`): two organisms on one
   machine, or a person's own `docker compose up` of the same file, never share
-  a container. `up -d --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`) waits
+  a container. `up -d --build --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`; `--build`
+  builds a service whose image comes from the checkout's own context from
+  the checkout as it is now) waits
   for every service to be running, and healthy where it declares a
   healthcheck; the body says `the repository's compose services are up
   (compose project <p>)`, or that they did not all come up and why, and the
@@ -6588,6 +6590,20 @@ waits); the head relays both from the face. Two Board rows act on them:
 state `trusted`) and `Commands::ratify_sapling` (`{name}`: the sapling
 pinned at the revision its proposal filed), each answering `{ok, code,
 why}`, each row written in the name of the person the caller maps to.
+The services an organism's host command placed on a host
+(`spec/habitat.md`, Host commands) are three rows: `Commands::record_placed`
+(`{organism, command, host, id, service, platform, readings, toolchain}`,
+the Board's, answering `{ok, code, why, readings}`: a `habitat.placed` row
+keyed `<organism>/<command>/<host>/<id>`, and `readings` the endpoint it
+registered with the habitat's senses, `""` for none),
+`Commands::record_unplaced` (`{organism, command, host, id}`, the Board's:
+a `habitat.unplaced` row keeping what the placement said), each refusing
+`invalid_placement`, `not_found` or `record_refused`, and
+`Commands::placements`, a read the head relays from the face, answering
+`{ok, why, revision, placements, history}`: the placements that hold (each
+key's latest row) and every one the record names with its `state`. `hale
+habitat organism place` and `unplace` write the first two once the command
+ran.
 `Commands::brief` is the habitat's brief for an agent pairing with a
 person (`spec/habitat.md`, Pairing), a read. The head serves the surface
 over `mcp::Rpc` too, under the commands port's bearer and roles, on a port

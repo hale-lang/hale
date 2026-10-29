@@ -51,7 +51,7 @@
   },
   "links": [
     {
-      "title": "Containers",
+      "title": "Services",
       "type": "link",
       "url": "/grafana/d/hale-containers"
     }

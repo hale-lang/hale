@@ -140,6 +140,8 @@ fn host_targets_write(root: String) {
         std::io::fs::mkdir(dir + "/senses.d/containers") or discard;
     }
     host_targets_file(root, dir + "/senses.d/containers", "targets.json", CADVISOR_PORT);
+    // and the services placed on them (habitat_placed.hl)
+    placement_targets_refresh(root);
 }
 
 // The machines at `port`, as one file_sd file `name` in `at`.

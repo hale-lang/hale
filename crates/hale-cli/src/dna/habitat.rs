@@ -36,6 +36,9 @@ mod reflexes;
 #[path = "hosted.rs"]
 mod hosted;
 
+#[path = "placements.rs"]
+mod placements;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -301,7 +304,10 @@ host remove <name>   remove it, planned first: the plan lists each allocation
                      placed or applied there and what stops or is deleted
                      on that host, the record's rows about it, and the line
                      its authorized_keys took, which this CLI then removes
-                     over your own SSH login. When the plan stops or deletes anything there,
+                     over your own SSH login. The services placed there
+                     (organism place) are taken off first, each by its
+                     own uninstall over your SSH login, with what placing
+                     installed there. When the plan stops or deletes anything there,
                      nothing is touched until the host's name is typed back
                      at a terminal; --plan prints the plan and exits.
                      The host verbs are the Board's commands of the
@@ -338,7 +344,9 @@ brief                the Board's hat as a prompt, with the habitat's live
                      endpoint `status` prints). It reads the record
                      alone, never the vault: no secret value is in it.
 status               the habitat, its genome and body, its face and, while
-                     the face runs, its head's MCP endpoint, and each
+                     the face runs, its head's MCP endpoint, the services
+                     placed on its hosts (organism place) under their
+                     hosts with their readings endpoints, and each
                      allocation: its organism, whether each role's service
                      runs, the schema version memory and the nerves record
                      against this toolchain's, and how a heart's declared
@@ -924,6 +932,16 @@ fn organism(args: &[String]) -> ExitCode {
             println!("  - {}", plan_line(i));
         }
     }
+    // the services placed for it on the hosts: taken off first, from here
+    let (current, history) = placements::from_head().unwrap_or_default();
+    let placed: Vec<placements::Placement> = current.into_iter().filter(|p| p.organism == confirm).collect();
+    if !placed.is_empty() {
+        println!();
+        println!("its services placed on the hosts, from this machine");
+        for l in placements::plan_lines(&placed) {
+            println!("  - {l}");
+        }
+    }
     if plan_only {
         return ExitCode::SUCCESS;
     }
@@ -931,6 +949,15 @@ fn organism(args: &[String]) -> ExitCode {
     let _ = std::io::stdout().flush();
     let mut typed = String::new();
     let _ = std::io::stdin().lock().read_line(&mut typed);
+    if !placed.is_empty() {
+        if typed.trim() != confirm {
+            eprintln!("hale habitat organism remove {name}: `{}` is not the organism's name, and nothing was removed (confirm_mismatch)", typed.trim());
+            return ExitCode::from(1);
+        }
+        for l in placements::take_off(&placed, &history) {
+            println!("{l}");
+        }
+    }
     let v = match host_call("Commands::remove_organism", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
         Ok(v) => v,
         Err(code) => return code,
@@ -1000,14 +1027,21 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         return ExitCode::from(1);
     }
     let items: Vec<serde_json::Value> = planned["plan"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    // the services placed there: taken off first, from this machine
+    let (current, history) = placements::from_head().unwrap_or_default();
+    let placed: Vec<placements::Placement> = current.into_iter().filter(|p| p.host == name).collect();
     println!("the plan to remove the host {name}:");
+    for l in placements::plan_lines(&placed) {
+        println!("  - {l}");
+    }
     for i in &items {
         println!("  - {}", plan_line(i));
     }
     if plan_only {
         return ExitCode::SUCCESS;
     }
-    let confirm = planned["confirm"].as_str().unwrap_or("").to_string();
+    // a service placed there is taken off only on the host's name too
+    let confirm = planned["confirm"].as_str().filter(|c| !c.is_empty()).map(str::to_string).unwrap_or_else(|| if placed.is_empty() { String::new() } else { name.to_string() });
     let mut typed = String::new();
     if !confirm.is_empty() {
         if !std::io::stdin().is_terminal() {
@@ -1017,6 +1051,15 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         print!("\ntype the host's name ({name}) to remove it and all of the above: ");
         let _ = std::io::stdout().flush();
         let _ = std::io::stdin().lock().read_line(&mut typed);
+    }
+    if !placed.is_empty() {
+        if typed.trim() != name {
+            eprintln!("hale habitat host remove {name}: `{}` is not the host's name, and nothing was removed (confirm_mismatch)", typed.trim());
+            return ExitCode::from(1);
+        }
+        for l in placements::take_off(&placed, &history) {
+            println!("{l}");
+        }
     }
     let v = match host_call("Commands::remove_host", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
         Ok(v) => v,
@@ -1037,6 +1080,11 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         for l in readings::remove_over(name, None, port) {
             println!("{l}");
         }
+    }
+    // the habitat's directories left empty there
+    let tidied = placements::tidy_host(name, port, &[], &[]);
+    if !tidied.is_empty() {
+        println!("{tidied}");
     }
     if remote::is_habitat_user(&field("user")) {
         // the habitat's own account there, its home and key with it
@@ -1737,6 +1785,34 @@ pub(super) fn run_heart_migrations(root: &Path) -> Result<Vec<String>, String> {
 
 fn genome_dir() -> PathBuf {
     PathBuf::from(local_habitat_dir()).join("genome")
+}
+
+/// How long `up` waits for a face that is still building the head's
+/// programs before it answers.
+const FACE_BUILD_WAIT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// The seed a face's log says it is building now (`hale: building …: <seed> @ …`
+/// as its last such line, with nothing after it but more of the same), or
+/// `None` when its last line is anything else.
+fn building(tail: &str) -> Option<String> {
+    let last = tail.lines().map(str::trim).filter(|l| !l.is_empty()).last()?;
+    let rest = last.strip_prefix("hale: building ")?;
+    let seed = rest.split_once(": ").map(|(_, s)| s).unwrap_or(rest);
+    Some(seed.split(" @ ").next().unwrap_or(seed).trim().to_string())
+}
+
+/// The last `n` lines `service` of the habitat's compose project wrote
+/// (its output and its errors), "" when docker answers none.
+fn service_log_tail(service: &str, n: usize) -> String {
+    let project = local_habitat_project();
+    let Docker::Answered(ids) = docker(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={project}"), "--filter", &format!("label=com.docker.compose.service={service}")]) else {
+        return String::new();
+    };
+    let Some(id) = ids.lines().map(str::trim).find(|l| !l.is_empty()) else { return String::new() };
+    match Command::new("docker").args(["logs", "--tail", &n.to_string(), id]).output() {
+        Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim_end().to_string(),
+        Err(_) => String::new(),
+    }
 }
 
 /// The state of `service` in the habitat's compose project when running.
@@ -2627,7 +2703,7 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let reflexes_line = if senses.is_some() {
         let manifest = std::fs::read_to_string(genome.join("hale.toml")).unwrap_or_default();
         // (and the job of the machines' containers, beside its machines')
-        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)?;
+        let moved = reflexes::write_habitat_rules(&dir, &key, &manifest)? | readings::ensure_containers_job(&dir)? | readings::ensure_services_job(&dir)?;
         if moved {
             let _ = Command::new("env")
                 .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
@@ -2757,7 +2833,13 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     }
 
     progress("waiting for the habitat's body and face probes");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    // three minutes to answer once the face has what it runs; a face still
+    // building the head's programs (a first start, or one after the
+    // toolchain changed) says so in its log, and is waited for up to
+    // FACE_BUILD_WAIT
+    let begun = std::time::Instant::now();
+    let mut deadline = begun + std::time::Duration::from_secs(180);
+    let mut said_building = String::new();
     let mut body_ok = false;
     let mut face_ok = false;
     while std::time::Instant::now() < deadline {
@@ -2772,13 +2854,20 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         if body_ok && face_ok {
             break;
         }
+        if let Some(seed) = building(&service_log_tail("face", 5)) {
+            if seed != said_building {
+                progress(&format!("the face is building the head's {seed}"));
+                said_building = seed;
+            }
+            deadline = deadline.max((std::time::Instant::now() + std::time::Duration::from_secs(180)).min(begun + FACE_BUILD_WAIT));
+        }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     if !body_ok {
-        return Err("the habitat's body service did not stay up".to_string());
+        return Err(format!("the habitat's body service did not stay up; its last lines:\n{}", service_log_tail("body", 30)));
     }
     if !face_ok {
-        return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within 180s"));
+        return Err(format!("the habitat's face and head did not answer on {face_url} and {head_url} within {}s; the face's last lines:\n{}", begun.elapsed().as_secs(), service_log_tail("face", 30)));
     }
     let mut lines = vec![format!("{:<8}up (compose service face, {face_url}/)", "face"), format!("{:<8}up (compose service body)", "body")];
     let link = sign_in_link(&face_url);
@@ -2870,6 +2959,16 @@ fn status() -> ExitCode {
     if face_running().is_some() {
         if let Some(port) = mcp_port() {
             println!("{:<8}mcp://127.0.0.1:{port} (the head's commands over MCP: `hale mcp --app mcp://127.0.0.1:{port}`, the person's ID token in HALE_API_TOKEN)", "mcp");
+        }
+    }
+    // the services placed on its hosts, under their hosts, as its record
+    // holds them (none said when the record is not readable)
+    if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() {
+        if let Ok(text) = host_run("record-rows", &genome, &[]) {
+            let rows: Vec<serde_json::Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            for l in placements::status_lines(&placements::fold(&rows).0) {
+                println!("{l}");
+            }
         }
     }
     let (rows, from) = match recorded_allocations() {
@@ -3899,6 +3998,16 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::building;
+
+    #[test]
+    fn a_face_still_building_says_which_seed() {
+        let log = "hale: building the head: dna/api @ /h/.cache/hale/iris/ab12\nhale: building the head: dna/reflexes @ /h/.cache/hale/iris/ab12\n";
+        assert_eq!(building(log).as_deref(), Some("dna/reflexes"));
+        assert_eq!(building("hale: building the head: dna/api @ /x\nhead: serving on 127.0.0.1:9313\n"), None);
+        assert_eq!(building(""), None);
+    }
+
     use super::*;
 
     /// A host's listen address is its name's first IPv4 address, through
