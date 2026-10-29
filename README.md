@@ -25,7 +25,7 @@
   <a href="https://hale-lang.org/packages">Packages</a> ·
   <a href="https://hale-lang.org/features">Features</a> ·
   <a href="https://hale-lang.org/glossary">Glossary</a> ·
-  <a href="https://discord.gg/qRasZt5gAq">Discord</a>
+  <a href="https://discord.gg/FhFaSzGerP">Discord</a>
 </p>
 
 Hale is a compiled, general-purpose language. Every piece of state has one
