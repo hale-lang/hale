@@ -499,7 +499,7 @@ fn main() {
     let org = dna::schema_for(dna::record_scope(scratch + "/keeper"));
     let owner = nats::NatsClient {
         url: url,
-        user: "owner",
+        user: dna::nerves_user(org, "owner"),
         credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
         name: "someone",
         timeout: 2s,

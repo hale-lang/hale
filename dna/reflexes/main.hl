@@ -118,6 +118,14 @@ fn id_segment(s: String) -> String {
     return out;
 }
 
+// The NATS user of `role` in the organization `org` (`dna_<identity>`):
+// the role and the record's key, as the core names it (`dna::nerves_user`;
+// this program imports none of the core).
+fn nerves_user(org: String, role: String) -> String {
+    let key = if std::str::starts_with(org, "dna_") && len(org) >= 16 { org[4..16] } else { org };
+    return role + "-" + key;
+}
+
 fn env_or(name: String, fallback: String) -> String {
     return if std::env::var_exists(name) { std::env::var(name) } else { fallback };
 }
@@ -270,7 +278,7 @@ fn main() {
         tick_ms: std::str::parse_int(env_or("HALE_DNA_REFLEX_TICK_MS", "5000")) or 5000,
         nerves: nats::NatsConn {
             url: reach_url(url),
-            user: "reflexes",
+            user: nerves_user(org, "reflexes"),
             credential: std::secret::Credential { vault: vault },
             name: "reflexes",
             subject_prefix: org + ".",

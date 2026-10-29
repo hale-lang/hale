@@ -1319,7 +1319,18 @@ sync.
   node) and hands it to the organization (`HALE_DNA_OWNER`); an owner's
   name in a subject or a durable keeps
   its letters, digits, `-` and `_`, anything else `_`.
-- **Credentials, one per family**, each a user on the server: `owner`
+- **An account per organization.** The organization's users are an
+  account of their own, `ORG_<KEY>` (its record's first 12 hex digits),
+  with JetStream: an account is its own subject space, so `*` in a
+  permission stands for the organization's token however many
+  organizations one server holds, and nothing of one account reaches
+  another. Every user is named by its role and the record's key
+  (`dna::nerves_user`: `owner-<key>`, `spine-<key>`, `head-<key>`,
+  `reflexes-<key>`, `exchange-<key>`, `app-<name>-<key>`), so a server's
+  users are distinct across its accounts; the heart's broker users
+  (`heart-<key>`, `heart-<key>-node`) are keyed already.
+- **Credentials, one per family**, each a user of the organization's
+  account: `owner`
   creates the stream and is held by no process that runs the organism;
   `spine` publishes and reads `<org>.dna.>` and an owner's
   `<org>.<owner>.dna.>` (the host and the organization), reads
@@ -1353,8 +1364,8 @@ sync.
   row recorded before that field resolves by the project's directory
   name: a record is data already written, not an API kept compatible.
   An application publishes under its project's name. Its user is
-  `app-<name>`, its password the vault's `nats-<org>-app-<name>` and
-  the nerves allocation's `$NATS_APP_<NAME>_PASSWORD`, and it may
+  `app-<name>-<key>`, its password the vault's `nats-<org>-app-<name>` and
+  its account's secrets' `$NATS_<KEY>_APP_<NAME>_PASSWORD`, and it may
   publish on
   `<org>.app.<name>.>` and nowhere else; no other application's
   subjects, nor the reflexes'. It is provisioned when
@@ -1364,8 +1375,8 @@ sync.
   it missing. `hale dna application remove [project] [--as <who>]`
   writes `application.detached {name, by}` to the record, the
   membership's source, and revokes the account: its user leaves the
-  nerves allocation's `nats.conf`, its password the include and its
-  entry the vault, and the `nerves-<id>` allocation is restarted when
+  organization's account, its password the account's secrets and its
+  entry the vault, and the nerves server holding it is restarted when
   it is up, so a connection it holds is
   closed and none opens again. An application named `reflexes` holds
   no account: those subjects are the reflexes' alone.
@@ -1377,17 +1388,24 @@ sync.
   No URL carries a password: userinfo in a server's URL is dropped. A
   role whose entry the vault lacks is refused (`nerves migrate`, the
   host, the reflexes); nothing connects with a default.
-  - **The server's files** live beside the nerves allocation in the
-    local habitat (`allocations/<id>/`, mode 700; GH #1653), never in a
-    checkout. `nats.conf` holds no secret: it `include`s
-    `./nats.secrets.conf` and names each user's password as its
-    variable (`$NATS_<ROLE>_PASSWORD`, and the attached application's
-    `$NATS_APP_<NAME>_PASSWORD`). `nats.secrets.conf`, written by the
-    bootstrap from the same draw as the vault's entries, is the one file
-    that holds a password: mode 600, mounted with `nats.conf` into the
-    `nerves-<id>` service.
+  - **The server's files** live beside the allocation of the organism
+    whose server it is (`allocations/<id>/`, mode 700; GH #1653), never
+    in a checkout: the organism's own, or the habitat's for an
+    organization the habitat's nerves hold (`dna::nerves_root`). Each
+    organization it holds is two files of its `nerves.d/`: its account
+    (`<key>.account.conf`, no secret: each user's password is a variable,
+    `$NATS_<KEY>_<ROLE>_PASSWORD`, and the attached application's
+    `$NATS_<KEY>_APP_<NAME>_PASSWORD`) and its secrets
+    (`<key>.secrets.conf`, written by the bootstrap from the same draw as
+    the vault's entries, the one file that holds a password, mode 600),
+    which the account `include`s: NATS parses an included file in its
+    own scope, so an account reads only the variables it brings.
+    `nats.conf` is the server's: JetStream, and inside `accounts` an
+    `include` of every account, rewritten whenever one comes or goes; it and `nerves.d/` are mounted
+    into the `nerves-<id>` service, and a server that is up restarts to
+    read an account that came or changed.
   - **Rotation.** A graft and `upgrade` draw every role's password anew;
-    a `nerves-<id>` allocation that is up is restarted to read them, and
+    the nerves server holding the account, when it is up, is restarted to read them, and
     a restart that fails is said. A server of the operator's
     (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the secrets file
     again after each rotation.

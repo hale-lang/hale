@@ -1054,11 +1054,17 @@ server of its own, and its heart's `database`, when the habitat provides
 one, is a database of that server too. Removing the organism drops its
 schema, its roles and that database there (`record-drop`, run inside the
 habitat's memory by its superuser), and keeps the server; forgetting the
-habitat removes them with its memory. A reused `nerves` or `senses` is a
-server of its own on the habitat's machine: the nerves' configuration
-carries one organization per NATS server (its users and their subjects are
-the server's), so sharing the habitat's needs an account per organism,
-which is not built. The application plane is the organism's own
+habitat removes them with its memory. A reused `nerves` is an account of
+the organism's own on the habitat's NATS (`ORG_<KEY>`, its users keyed by
+its record, JetStream its own; spec/dna.md, The nerves), on no server of
+its own: its account and secrets are files of the habitat server's
+`nerves.d/`, which the server's configuration includes, and the server
+restarts to read them. Removing the organism drops its account there, its
+users with it, and its stream's data off the server's volume
+(`nerves-drop`), and keeps the server; forgetting the habitat removes
+them with its nerves. Neither a reused memory nor a reused nerves is ever
+brought up as a server of the organism's own (`placed_apply`). A reused
+`senses` is a server of its own on the habitat's machine. The application plane is the organism's own
 software: its compose services, placed on the `--host` machine, and the
 heart roles it needs (`database`, `broker`), which are the application's
 own when its manifest says it brings them (`[dna] brings = ["database",

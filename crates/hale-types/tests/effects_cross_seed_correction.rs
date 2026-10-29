@@ -261,8 +261,8 @@ fn host() {
     // side and reaches nothing imported.
     pinned(
         "host",
-        571,
-        578,
+        575,
+        582,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -386,6 +386,8 @@ fn host() {
         memory_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
+        nats_account_path  does={syscall,block,env,alloc}
+        nats_accounts_dir  does={syscall,block,env,alloc}
         nats_conf_path  does={syscall,block,env,alloc}
         nats_secrets_path  does={syscall,block,env,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
@@ -414,11 +416,13 @@ fn host() {
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         senses_up_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        server_conf_rewrite  does={syscall,block,env,alloc}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         work_verb  does={syscall,block,alloc}
+        write_nerves_conf  does={syscall,block,env,alloc}
         ",
     );
 }

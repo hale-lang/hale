@@ -86,7 +86,7 @@ fn place_cache(key: String, role: String, p: AppliedOn) -> String {
 fn placed_files(role: String) -> String {
     let r = placed_role(role);
     if r == "memory" { return "postgres.secrets"; }
-    if r == "nerves" { return "nats.conf\nnats.secrets.conf"; }
+    if r == "nerves" { return "nats.conf\nnerves.d"; }
     if r == "senses" { return "senses.yml"; }
     return "";
 }
@@ -145,6 +145,13 @@ fn placed_render(key: String, role: String, p: AppliedOn) -> Render {
 
 // `role` of `key` brought up where it is placed, by that host's provider.
 fn placed_apply(key: String, role: String) -> RenderApplied {
+    // a part the habitat's own server holds for the organism (its record a
+    // schema of the habitat's memory, its organization an account of the
+    // habitat's nerves) has no server of its own to bring up: the
+    // habitat's is its, and up with it
+    if (role == "memory" || role == "nerves") && part_held_by_habitat(key, role) {
+        return RenderApplied { ok: true };
+    }
     let p = placed_on(key, role);
     let r = placed_render(key, role, p);
     if p.host == "local" { return ComposeProvider { }.apply("local", r); }

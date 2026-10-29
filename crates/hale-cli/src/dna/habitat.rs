@@ -1167,8 +1167,9 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
     if !row["roles"].is_object() {
         row["roles"] = serde_json::json!({});
     }
-    // a record the habitat's memory keeps names the habitat's server
-    let service = (role == "memory" && memory_root(root) != root).then(|| allocation_service_of(&genome_dir(), "memory")).flatten();
+    // a record the habitat's memory keeps, and an organization the
+    // habitat's nerves hold, name the habitat's server
+    let service = ((role == "memory" || role == "nerves") && part_root(root, role) != root).then(|| allocation_service_of(&genome_dir(), role)).flatten();
     next_rows_as(&mut row, &id, role, version, slots, &local_habitat_project(), operator, service.as_deref());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     write_row(&path, &row)?;
@@ -1315,8 +1316,14 @@ pub(super) fn parse_part(flag: &str, value: &str, into: &mut BTreeMap<String, Pa
 /// habitat's genome when its graft made it a tenant of the habitat's memory
 /// (`parts.json`: memory = reuse), as `dna::memory_root` resolves it.
 pub(crate) fn memory_root(root: &Path) -> PathBuf {
+    part_root(root, "memory")
+}
+
+/// The root whose server holds `part` of the organism at `root` (memory,
+/// or nerves: an account of the habitat's server), as `dna::part_root`.
+fn part_root(root: &Path, part: &str) -> PathBuf {
     let Some(dir) = allocation_dir(root) else { return root.to_path_buf() };
-    let reused = std::fs::read_to_string(dir.join("parts.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).is_some_and(|v| v["memory"] == "reuse");
+    let reused = std::fs::read_to_string(dir.join("parts.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).is_some_and(|v| v[part] == "reuse");
     let genome = genome_dir();
     let mine = manifest_pin(&root.join("hale.toml")).ok().flatten();
     let habitat = manifest_pin(&genome.join("hale.toml")).ok().flatten();
@@ -1370,6 +1377,7 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
         }
         out.push(match part_choice(role) {
             Part::Reuse if role == "memory" => plan_row(role, "reuse", &format!("a schema of its own on the habitat's Postgres ({here})"), "--own memory=<host>: a server of its own"),
+            Part::Reuse if role == "nerves" => plan_row(role, "reuse", &format!("an account of its own on the habitat's NATS ({here})"), "--own nerves=<host>: a server of its own"),
             Part::Reuse => plan_row(role, "reuse", &format!("a server of its own on the habitat's machine ({here}); sharing the habitat's is not built"), &format!("--own {role}=<host>: elsewhere")),
             Part::Own(h) => plan_row(role, "own", &format!("a server of its own on {}", h.unwrap_or_else(|| host.clone())), ""),
         });
@@ -2868,7 +2876,10 @@ fn status() -> ExitCode {
             let own = format!("memory-{key}");
             let memory_service = row["roles"]["memory"]["service"].as_str().filter(|s| s.starts_with("memory-")).unwrap_or(&own).to_string();
             let tenant = memory_service != own;
-            let service = if role == "database" || role == "memory" { memory_service.clone() } else { format!("{role}-{key}") };
+            let own_nerves = format!("nerves-{key}");
+            let nerves_service = row["roles"]["nerves"]["service"].as_str().filter(|s| s.starts_with("nerves-")).unwrap_or(&own_nerves).to_string();
+            let nerves_tenant = nerves_service != own_nerves;
+            let service = if role == "database" || role == "memory" { memory_service.clone() } else if role == "nerves" { nerves_service.clone() } else { format!("{role}-{key}") };
             let on_operator = row["roles"][role]["service"].as_str() == Some("operator");
             let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
@@ -2881,7 +2892,15 @@ fn status() -> ExitCode {
                 (Some(had), None) => format!(", schema {had}"),
                 (None, _) => String::new(),
             };
-            let whose = if tenant && (role == "memory" || role == "database") { if role == "memory" { ", the habitat's: a schema of its own there" } else { ", the habitat's: a database of its own there" } } else { "" };
+            let whose = if tenant && role == "memory" {
+                ", the habitat's: a schema of its own there"
+            } else if tenant && role == "database" {
+                ", the habitat's: a database of its own there"
+            } else if nerves_tenant && role == "nerves" {
+                ", the habitat's: an account of its own there"
+            } else {
+                ""
+            };
             println!("  {role:<7} {service} {state}{whose}{version}{migration}");
         }
     }
@@ -3902,7 +3921,7 @@ mod tests {
         let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, Some("http://rack-a.lan:8803"), &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
         let text = lines.join("\n");
         assert!(text.contains(&plan_row("memory", "own", "a server of its own on box-1", "")), "{text}");
-        assert!(text.contains(&plan_row("nerves", "reuse", "a server of its own on the habitat's machine (rack-a.lan); sharing the habitat's is not built", "--own nerves=<host>: elsewhere")), "{text}");
+        assert!(text.contains(&plan_row("nerves", "reuse", "an account of its own on the habitat's NATS (rack-a.lan)", "--own nerves=<host>: a server of its own")), "{text}");
         let defaults = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, None, &|r: &str| default_part(r, &brings)).join("\n");
         assert!(defaults.contains(&plan_row("memory", "reuse", "a schema of its own on the habitat's Postgres (rack-a.lan)", "--own memory=<host>: a server of its own")), "{defaults}");
         assert!(defaults.contains(&plan_row("identity", "own", "its own sign-in stub", "")[..]), "no published identity: {defaults}");

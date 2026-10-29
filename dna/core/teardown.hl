@@ -809,6 +809,37 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         }
         return "";
     }
+    if action == "nerves-drop" {
+        // a tenant's account on the habitat's nerves: its files out of the
+        // server's nerves.d, the server configured without it and restarted,
+        // and its JetStream data off the server's volume (the nats image has
+        // no shell to remove it from inside)
+        let hkey = first;
+        let id = teardown_arg(args, 1);
+        let ckey = teardown_arg(args, 2);
+        if !teardown_word(hkey) || !teardown_word(id) || !teardown_word(ckey) {
+            return "`" + args + "` names no account on the habitat's nerves";
+        }
+        let server = local_habitat_dir() + "/allocations/" + hkey;
+        std::io::fs::unlink(server + "/nerves.d/" + ckey + ".account.conf") or discard;
+        std::io::fs::unlink(server + "/nerves.d/" + ckey + ".secrets.conf") or discard;
+        let moved = nerves_server_conf_write(server);
+        let restarted = run_tool(allocation_compose_key(hkey) + "\nrestart\nnerves-" + hkey);
+        if restarted.code != 0 {
+            return "the habitat's nerves did not restart without the account: "
+                + trim_nl(restarted.stderr);
+        }
+        let account = nerves_account(schema_for(id));
+        let wiped = run_tool(
+            "docker\nrun\n--rm\n-v\n" + local_habitat_project() + "_nerves-" + hkey
+                + ":/data\nbusybox:1.36\nrm\n-rf\n/data/jetstream/" + account,
+        );
+        if wiped.code != 0 {
+            return "the account's data was not removed from the habitat's nerves: "
+                + trim_nl(wiped.stderr);
+        }
+        return "";
+    }
     if action == "dir-rm" {
         let habitat = local_habitat_dir() + "/";
         if !std::str::starts_with(first, habitat) || std::str::contains(first, "/../")
@@ -1054,6 +1085,25 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                     + "): its schema, its roles and any heart database of it dropped there; the server is the habitat's, kept",
                 "1 schema", "no: the record and every row of it are deleted", "record-drop", "",
                 std::str::replace(row_service, "memory-", "") + "\n"
+                    + std::json::find_string_field(abody, "organism") + "\n" + key,
+                50,
+            );
+            items = teardown_more(items, item);
+            continue;
+        }
+        // an organization the habitat's nerves hold: its account, its users
+        // and its stream's data dropped there; the server is the habitat's
+        if role == "nerves"
+            && nerves_reused(key)
+            && len(row_service) > 0
+            && row_service != service
+        {
+            item = teardown_item(
+                "allocations", subject,
+                "its organization, an account on the habitat's nerves (" + row_service
+                    + "): its users and its stream's data dropped there; the server is the habitat's, kept",
+                "1 account", "no: what the organization was told is deleted", "nerves-drop", "",
+                std::str::replace(row_service, "nerves-", "") + "\n"
                     + std::json::find_string_field(abody, "organism") + "\n" + key,
                 50,
             );

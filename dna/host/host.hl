@@ -1273,7 +1273,7 @@ main locus Host {
         nerves: nats::NatsConn = nats::NatsConn {
             url: dna::reach_url(dna::nerves_spine_url()),
             // GH #989: the spine's account, sealed: presented on CONNECT alone
-            user: "spine",
+            user: dna::nerves_role_user("spine"),
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node",
             subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()),
@@ -2004,7 +2004,7 @@ main locus Host {
         if !self.nerves_on || exit_code(self.org) != -2 { return false; }
         let c = nats::NatsClient {
             url: dna::reach_url(dna::nerves_spine_url()),
-            user: "spine",
+            user: dna::nerves_role_user("spine"),
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node-probe",
             timeout: 2s,
@@ -2024,7 +2024,7 @@ main locus Host {
         };
         let c = nats::NatsClient {
             url: dna::reach_url(dna::nerves_spine_url()),
-            user: "spine",
+            user: dna::nerves_role_user("spine"),
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node-probe",
             timeout: 2s,
@@ -3334,14 +3334,14 @@ main locus Host {
         let org = dna::nerves_org();
         let vault = dna::nerves_app_vault(org, app);
         self.compose.hand(dna::NATS_APP_URL_ENV, url);
-        self.compose.hand(dna::NATS_APP_USER_ENV, dna::nerves_app_user(app));
+        self.compose.hand(dna::NATS_APP_USER_ENV, dna::nerves_app_user(org, app));
         self.compose.hand(dna::NATS_APP_VAULT_ENV, vault);
         self.compose.hand(dna::NATS_ORG_ENV, org);
         // a local vault's entry is a file compose can mount; a vault
         // served over HTTP (HALE_VAULT_ADDR) has none to hand
         let entry = std::secret::vault_local_dir() + "/" + vault;
         if std::env::var_exists("HALE_VAULT_ADDR") || !std::io::fs::file_exists(entry) {
-            return "the nerves handed to them as " + dna::nerves_app_user(app) + " at " + url
+            return "the nerves handed to them as " + dna::nerves_app_user(org, app) + " at " + url
                 + ", with no credential file ("
                 + (
                     if std::env::var_exists("HALE_VAULT_ADDR") {
@@ -3353,7 +3353,7 @@ main locus Host {
                 + ")";
         }
         self.compose.hand(NATS_APP_SECRET_ENV, entry);
-        return "the nerves handed to them as " + dna::nerves_app_user(app) + " at " + url
+        return "the nerves handed to them as " + dna::nerves_app_user(org, app) + " at " + url
             + ", its password the vault's entry, mounted";
     }
     // The supervision over: the organization's exit code, `exited`, is
