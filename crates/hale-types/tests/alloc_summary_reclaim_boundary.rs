@@ -617,7 +617,7 @@ const PINNED: &[&str] = &[
     "dna/api: 1 go, 0 appear, 1 move their reason; dump 465 tags, 1086 reclaim, 1 verdicts",
     "dna/core: 0 go, 0 appear; dump 368 tags, 936 reclaim, 0 verdicts",
     "dna/host: 2 go, 0 appear; dump 519 tags, 1136 reclaim, 2 verdicts",
-    "dna/host/verb: 0 go, 0 appear; dump 519 tags, 1002 reclaim, 1070 verdicts",
+    "dna/host/verb: 0 go, 0 appear; dump 519 tags, 1002 reclaim, 1071 verdicts",
     "dna/oidc: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "dna/operations: 0 go, 0 appear; dump 428 tags, 1027 reclaim, 0 verdicts",
     "dna/organism: 0 go, 0 appear; dump 379 tags, 954 reclaim, 0 verdicts",
