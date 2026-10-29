@@ -109,8 +109,13 @@ pub(super) fn readings_port(manifest: &str, name: &str) -> Option<u16> {
     doc.get("dna")?.get("host")?.get(name)?.get("readings")?.as_integer().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0)
 }
 
-/// The address the habitat reaches `host` at, as its row names it.
+/// The address the habitat reaches `host` at, as its row names it: the
+/// habitat's own machine (`local`) over the host gateway, as its senses'
+/// store reaches it from its container (`placement_target`).
 fn address_of(host: &str) -> String {
+    if host == super::hosted::LOCAL {
+        return "host.docker.internal".to_string();
+    }
     super::sapling::head_call("Commands::hosts", json!({ "limit": 500 }))
         .ok()
         .and_then(|v| v["hosts"].as_str().and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()))
@@ -124,12 +129,12 @@ fn address_of(host: &str) -> String {
 pub(super) fn plan_line(host: &str, manifest: &str, name: &str, install: bool) -> String {
     match readings_port(manifest, name) {
         Some(port) => format!(
-            "{:<8}{}, {} the habitat's senses (their `services` job)",
+            "{:<9}{}, {} the habitat's senses (their `services` job)",
             "readings",
             endpoint(&format!("{}:{port}", address_of(host))),
             if install { "registered with" } else { "unregistered from" }
         ),
-        None => format!("{:<8}none: `{name}` declares no readings port ([dna.host.{name}] readings)", "readings"),
+        None => format!("{:<9}none: `{name}` declares no readings port ([dna.host.{name}] readings)", "readings"),
     }
 }
 
@@ -151,7 +156,7 @@ pub(super) fn record(organism: &str, command: &str, host: &str, id: &str, servic
     .map_err(|why| format!("it ran on {host}, and the habitat did not record it: {why}"))?;
     if !install && v["code"] == "not_found" {
         // placed before the habitat recorded placements: nothing to unrecord
-        println!("{:<8}the habitat's record held no placement of it", "recorded");
+        println!("{:<9}the habitat's record held no placement of it", "recorded");
         return Ok(());
     }
     if v["ok"] != json!(true) {
@@ -159,14 +164,14 @@ pub(super) fn record(organism: &str, command: &str, host: &str, id: &str, servic
     }
     if install {
         match v["readings"].as_str().filter(|r| !r.is_empty()) {
-            Some(r) => println!("{:<8}{r}, registered with the habitat's senses", "readings"),
-            None => println!("{:<8}none registered", "readings"),
+            Some(r) => println!("{:<9}{r}, registered with the habitat's senses", "readings"),
+            None => println!("{:<9}none registered", "readings"),
         }
     }
     if let Some(why) = v["why"].as_str().filter(|w| !w.is_empty()) {
         println!("{:<8}{why}", "note");
     }
-    println!("{:<8}{} in the habitat's record", "recorded", if install { "habitat.placed" } else { "habitat.unplaced" });
+    println!("{:<9}{} in the habitat's record", "recorded", if install { "habitat.placed" } else { "habitat.unplaced" });
     Ok(())
 }
 
@@ -272,11 +277,13 @@ printf 'hale-node: removed %s left%s\n' "$n" "$left""#,
 }
 
 /// What placing installed on `host` and nothing still uses, removed over
-/// the person's own login, and the habitat's directories left empty there:
-/// what was said of it ("" for nothing to say).
+/// the person's own login (the habitat's own machine, `local`, as `place`
+/// reaches it), and the habitat's directories left empty there: what was
+/// said of it ("" for nothing to say).
 pub(super) fn tidy_host(host: &str, port: Option<u16>, organisms: &[String], toolchains: &[String]) -> String {
     let what = organisms.iter().map(|o| format!("~/{HOSTED}/{o}")).chain(toolchains.iter().map(|t| format!("~/{TOOLCHAINS}/{t}"))).collect::<Vec<_>>();
-    match super::remote::login_script(host, None, port, |sudo| leftovers_script(organisms, toolchains, sudo)) {
+    let at = if host == super::hosted::LOCAL { super::hosted::Target::local() } else { super::hosted::Target::Ssh { host: host.to_string(), user: None, port } };
+    match at.outcome(|sudo| leftovers_script(organisms, toolchains, sudo)) {
         Ok(o) => {
             let left = o.split_once(" left").map(|(_, l)| l.trim().to_string()).unwrap_or_default();
             if !left.is_empty() {
@@ -308,19 +315,26 @@ pub(super) fn uninstall(p: &Placement) -> Result<(), String> {
 pub(super) fn plan_lines(placed: &[Placement]) -> Vec<String> {
     let mut out = Vec::new();
     for p in placed {
-        out.push(format!("{}'s `{}` {} taken off {} by its uninstall, over your SSH login ({}, {})", p.organism, p.command, p.id, p.host, if p.service.is_empty() { "no service named".to_string() } else { p.service.clone() }, p.readings()));
+        out.push(format!("{}'s `{}` {} taken off {} by its uninstall, {} ({}, {})", p.organism, p.command, p.id, p.host, how(&p.host), if p.service.is_empty() { "no service named".to_string() } else { p.service.clone() }, p.readings()));
     }
     let hosts: BTreeSet<&str> = placed.iter().map(|p| p.host.as_str()).collect();
     for h in hosts {
         let orgs: BTreeSet<&str> = placed.iter().filter(|p| p.host == h).map(|p| p.organism.as_str()).collect();
         let tags: BTreeSet<&str> = placed.iter().filter(|p| p.host == h && !p.toolchain.is_empty()).map(|p| p.toolchain.as_str()).collect();
         out.push(format!(
-            "then on {h}, over your SSH login, what placing installed there that no placement left uses: {}{}",
+            "then on {h}, {}, what placing installed there that no placement left uses: {}{}",
+            how(h),
             orgs.iter().map(|o| format!("~/{HOSTED}/{o}")).collect::<Vec<_>>().join(", "),
             if tags.is_empty() { String::new() } else { format!(", the toolchain {}", tags.iter().map(|t| format!("~/{TOOLCHAINS}/{t}")).collect::<Vec<_>>().join(", ")) }
         ));
     }
     out
+}
+
+/// How the CLI reaches `host` to take a placement off: the habitat's own
+/// machine (`local`) as `place` reaches it, any other over the SSH login.
+pub(super) fn how(host: &str) -> &'static str {
+    if host == super::hosted::LOCAL { super::hosted::Target::local().how() } else { "over your SSH login" }
 }
 
 /// The hosts' SSH ports, as the habitat's head names them.
@@ -401,6 +415,14 @@ mod tests {
         assert!(super::super::hosted::host_commands(&decl("")).is_ok());
         assert!(super::super::hosted::host_commands(&decl("readings = 70000")).unwrap_err().contains("readings"));
         assert!(super::super::hosted::host_commands(&decl("readings = \"9464\"")).unwrap_err().contains("readings"));
+    }
+
+    /// The habitat's own machine is reached from the senses' store over
+    /// the host gateway, as the head registers it.
+    #[test]
+    fn readings_on_the_habitats_own_machine_go_through_the_host_gateway() {
+        let m = "[dna]\nneeds = []\n\n[dna.host.node]\nreadings = 9464\n";
+        assert_eq!(plan_line("local", m, "node", true), "readings http://host.docker.internal:9464/metrics, registered with the habitat's senses (their `services` job)");
     }
 
     #[test]
