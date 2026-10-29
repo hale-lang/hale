@@ -418,6 +418,19 @@ fn main() {
                     + dna::local_habitat_project(),
             ).stdout,
     );
+    // applied, its record stays the habitat memory's: no server of its own
+    // is brought up for it
+    let applied = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    let skey = dna::allocation_key(store);
+    let own_memory = dna::run_tool(
+        "docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project="
+            + dna::local_habitat_project()
+            + "\n--filter\nlabel=com.docker.compose.service=memory-" + skey,
+    );
+    std::test::assert(
+        applied.code == 0 && len(dna::trim_nl(own_memory.stdout)) == 0,
+        "apply brings up no memory of sprout's own: " + applied.stdout + applied.stderr,
+    );
     let tplan = in_dir(scratch, toolchain() + "\nhabitat\norganism\nremove\nsprout\n--plan");
     std::test::assert(
         tplan.code == 0
