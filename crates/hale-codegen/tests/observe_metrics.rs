@@ -2,7 +2,7 @@
 //!
 //! - A scrape serves every live `std::metrics::Registry`'s
 //!   series, as `Registry.render()` writes them, and the runtime's own
-//!   (`hale_*`): resident memory, the drain, live loci, restarts and
+//!   (`hale_*`): resident memory, CPU time, start time, the drain, live loci, restarts and
 //!   failures, each pool's queue and parked coroutines, each program
 //!   topic's traffic. Its path is the one served; a counter moves
 //!   between two scrapes.
@@ -147,6 +147,14 @@ fn a_scrape_serves_the_registries_and_the_runtime() {
 
     // the runtime's own
     assert!(sample(&first, "hale_process_resident_memory_bytes") > 0.0, "{first}");
+    // its CPU time, user and system (a counter), and when it started, in
+    // unix seconds (a gauge): within the last hour, and not after now
+    assert!(first.contains("# TYPE hale_process_cpu_seconds_total counter\n"), "{first}");
+    assert!(sample(&first, "hale_process_cpu_seconds_total") >= 0.0, "{first}");
+    assert!(first.contains("# TYPE hale_process_start_time_seconds gauge\n"), "{first}");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let started = sample(&first, "hale_process_start_time_seconds");
+    assert!(started <= now && started > now - 3600.0, "started {started}, now {now}:\n{first}");
     assert_eq!(sample(&first, "hale_draining"), 0.0);
     assert!(sample(&first, "hale_loci_live") >= 2.0, "{first}");
     assert_eq!(sample(&first, "hale_restarts_total"), 0.0);

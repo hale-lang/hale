@@ -47,6 +47,39 @@ fn forget_slot(list: String, slot: String, taken: String) -> String {
     return list + slot + "\n";
 }
 
+// Each slot of the newline-delimited `slots` added to `list` (`forget_slot`).
+@bounded_by(slots)
+fn forget_slots(list: String, slots: String, taken: String) -> String {
+    let mut out = list;
+    let mut rest = slots;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let slot = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        out = forget_slot(out, slot, taken);
+    }
+    return out;
+}
+
+// The nerves' slots of every organism the record `j` says the habitat
+// grafted, removed or not, a line each.
+@bounded_by(j)
+fn forget_grafted_nerves_slots(j: dna::RecordJournal) -> String {
+    let mut out = "";
+    let mut seen = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.grafted" { continue; }
+        let prefix = dna::nerves_vault_prefix(std::json::find_string_field(e.body, "child"));
+        if len(prefix) == 0 || std::str::contains(seen, "\n" + prefix + "\n") { continue; }
+        seen = seen + prefix + "\n";
+        out = out + dna::vault_slots_prefixed(prefix);
+    }
+    return out;
+}
+
 // The slots the vault holds of the organism at `root` (its drawn ones; the
 // ones a person supplies are `kept`), a line each.
 type ForgetSlots {
@@ -420,6 +453,13 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 }
             }
             mine = forget_slot(mine, dna::forgejo_vault(child), taken);
+            mine = forget_slots(
+                mine,
+                dna::vault_slots_prefixed(
+                    dna::nerves_vault_prefix(std::json::find_string_field(body, "child")),
+                ),
+                taken,
+            );
             taken = taken + mine;
             kept_slots = kept_slots + s.kept;
             organism_slots = dna::teardown_more(
@@ -446,6 +486,11 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
         }
         mine = forget_slot(mine, dna::FORGEJO_ADMIN_VAULT, taken);
         mine = forget_slot(mine, dna::habitat_key_slot(root), taken);
+        // the nerves' accounts of the habitat's own organization, and of
+        // every organism it ever grafted (one removed before kept its
+        // applications' accounts: `organism remove` did not know them)
+        mine = forget_slots(mine, dna::vault_slots_prefixed(dna::nerves_vault_prefix(id)), taken);
+        mine = forget_slots(mine, forget_grafted_nerves_slots(j), taken + mine);
         taken = taken + mine;
         items = dna::teardown_more(
             items,
