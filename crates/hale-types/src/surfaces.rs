@@ -1906,7 +1906,7 @@ pub fn serve_laws(
                 }
                 TopDecl::Locus(l) => {
                     serve_laws_of(bundle, entry, l, rows, &surface_names, &loci, effects, typed_bodies, placement, &mut first_named, &mut diags);
-                    hub_laws_of(l, &published, &mut first_named, &mut diags);
+                    hub_laws_of(bundle, entry, l, &published, &mut first_named, &mut diags);
                 }
                 _ => {}
             }
@@ -1918,8 +1918,38 @@ pub fn serve_laws(
 /// The laws of a hub binding (spec/api.md § Streams): a hub names its
 /// exposure once among the program's, built by a literal with a `bind:`; a
 /// stream row states its queue, and its policy is one a watcher queue has.
-fn hub_laws_of(l: &LocusDecl, published: &BTreeSet<String>, first_named: &mut BTreeMap<String, Span>, diags: &mut Vec<Diag>) {
+///
+/// A hub in a `main locus` the program imports is expanded as in its own
+/// seed's build and never runs, as that main's serve sites never run; one
+/// the program constructs is refused, as a serve site there is: only the
+/// entry's `bindings { }` bind, so its streams would carry nothing.
+fn hub_laws_of(
+    bundle: &Bundle<'_>,
+    entry: &crate::entry::EntryRow,
+    l: &LocusDecl,
+    published: &BTreeSet<String>,
+    first_named: &mut BTreeMap<String, Span>,
+    diags: &mut Vec<Diag>,
+) {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let binds_a_hub = l.members.iter().any(|m| matches!(m, LocusMember::Bindings(bb) if !bb.hubs.is_empty()));
+    if binds_a_hub && l.is_main && imported_main_is_built(bundle, entry, l) {
+        for m in &l.members {
+            let LocusMember::Bindings(bb) = m else { continue };
+            for hb in bb.hubs.iter().filter(|hb| seen.insert(hb.instance.name.as_str())) {
+                diags.push(Diag::ty(
+                    hb.span,
+                    format!(
+                        "hub `self.{}` in `{}`, a main locus the program imports: only the entry program's main \
+                         locus binds streams; hold the hub in the entry's main locus and bind the streams there \
+                         (spec/api.md § Streams)",
+                        hb.instance.name, l.name.name
+                    ),
+                ));
+            }
+        }
+        return;
+    }
     for m in &l.members {
         let LocusMember::Bindings(bb) = m else { continue };
         for hb in &bb.hubs {

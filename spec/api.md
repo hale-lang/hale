@@ -2057,6 +2057,19 @@ Roles). A row states `bound:` and `on_full:`; `refuse` is not a
 policy of a stream, since a subscriber that cannot keep up loses events,
 never the subscription. A hub has at most sixteen stream rows.
 
+A hub in a `main locus` the program imports is built as in its own
+seed's build: the import renames its stream rows' topics with the
+library's own, so a program that imports such a seed for its other
+declarations (as an application's tests import the application) checks
+and builds, and the hub never runs, since only the entry program's main
+locus is constructed. A program that also writes that main locus's name
+(`lib::Head { }` as a part of its own main locus, or as its `fn main`)
+would start a hub whose streams carry nothing, since only the entry's
+`bindings { }` bind, so it is refused, as a serve site there is (§
+Serving): "hub `self.hub` in `lib::Head`, a main locus the program
+imports: only the entry program's main locus binds streams; hold the hub
+in the entry's main locus and bind the streams there".
+
 The hub's address is bound in the program's birth, before any user code
 runs, and a program that cannot bind it does not boot (a diagnostic and
 exit status 2, as for a socket transport). A hub is a main-locus param
