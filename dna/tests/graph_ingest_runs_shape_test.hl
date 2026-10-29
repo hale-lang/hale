@@ -1,0 +1,16 @@
+// dna/tests/graph_ingest_runs_shape_test.hl — in a `Deployment | Runs` row,
+// only a code span shaped like a process's name names a process: a flag or
+// a command the row mentions in passing (`--profile node`) is prose, and
+// does not refuse the repository's ingest (a graft stopped on one).
+
+import "../operations" as ops;
+
+fn main() {
+    std::test::assert(ops::ingest_process_shaped("api"), "a compose service's name");
+    std::test::assert(ops::ingest_process_shaped("node"), "another");
+    std::test::assert(ops::ingest_process_shaped("model_server-2.x"), "letters, digits, `-`, `_` and `.`");
+    std::test::assert(!ops::ingest_process_shaped("--profile node"), "a flag and its value");
+    std::test::assert(!ops::ingest_process_shaped("--build"), "a flag");
+    std::test::assert(!ops::ingest_process_shaped("docker compose up"), "a command");
+    std::test::assert(!ops::ingest_process_shaped(""), "nothing");
+}
