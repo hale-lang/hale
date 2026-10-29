@@ -747,7 +747,12 @@ pub fn description(
         let hubs: Vec<&Hub> = rows
             .hubs
             .iter()
-            .filter(|h| h.transport.address.is_some() && h.transport.address == t.address)
+            .filter(|h| {
+                // a hub the exposure's `http::Rest` mounts (GH #1780), or one
+                // on its own listener at the same address
+                h.mounted_on.as_deref() == Some(exposure)
+                    || (h.mounted_on.is_none() && h.transport.address.is_some() && h.transport.address == t.address)
+            })
             .collect();
         let required: BTreeSet<&str> = rows
             .rows_of(surface)

@@ -622,6 +622,33 @@ main locus Desk {
 - **Multiplexing RPC over `ws::Hub`**: You can also pass a `ws::Hub` as the transport in `api::serve(Public, self.hub, as: "desk", ...)`. Clients can then send `{"type": "call", "id": "c1", "call": "Orders::place", "payload": {...}}` frames and receive `{"type": "reply", "id": "c1", "ok": true, "value": ...}` frames interleaved with stream events on the same WebSocket connection.
 - **UDP Streams (`udp::Hub`)**: Carries streams only. Subscribers send a UDP datagram with a client-chosen `id` and bearer token; lost datagrams appear as gaps in `seq`.
 
+### Mounting a Hub on an `http::Rest` Listener (`hubs:`)
+
+A `ws::Hub` does not need a port of its own. Leave out its `bind:` and list it in the `hubs:` of an `http::Rest` exposure in the same `main locus`, at a path. The REST surface, the hub, and any `fallback:` then share one address and one origin:
+
+```hale,fragment
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        hub_roles: Grants = Grants { operator: "dave" };
+        hub: ws::Hub = ws::Hub { principals: self.bearer, roles: self.hub_roles, as: "fills" };
+        web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.hub_roles, hubs: [("/admin/v1/hub", self.hub)] }, as: "web", bound: 64, on_full: refuse);
+    }
+    bindings {
+        Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+    }
+    placement {
+        web: cooperative(pool = edge) where async_io;
+    }
+}
+```
+
+- **Routing**: only a WebSocket upgrade (`Upgrade: websocket`) at the mounted path goes to the hub. Any other request at that path, and every other path, is routed by the REST table as usual (a row, the `fallback`, or `404`).
+- **The hub keeps its own gate**: the hub's `principals`, `roles`, and each stream's `requires:`, `bound:` and `on_full:` judge the connection exactly as on a listener of its own. The credential is still `Authorization: Bearer` or `?access_token=` on the upgrade. The REST exposure's bearer and roles judge only its rows.
+- **No second listener**: the hub opens no socket. Its connections run on the REST listener's `async_io` pool. At most 256 are open at once, and an upgrade beyond that gets `503`. A handed-over connection waits for its subscriber for as long as the subscriber is quiet; the 5-second read limit of a REST request does not apply to it. `self.hub.stop()` closes them with `closed` as before.
+- **Description**: the REST exposure's `GET /.description` lists the hub's streams beside its members, filtered by the caller's roles, and `hale check --api --exposure web` shows the same. The document does not state the mount path yet.
+- **Rules**: the hub is a `ws::Hub` param of the `main locus` with at least one stream bound to it, mounted once and with no `bind:`. The path is letters, digits, `-._~` and `/`, with no trailing `/` and no `{param}`. It is not `/.description`, and no row of the surface may serve it by any method. A `udp::Hub` cannot be mounted, and an `http::Rest` held below the `main locus` cannot mount hubs.
+
 ---
 
 ## Authentication, Authorization & Refusals

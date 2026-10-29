@@ -1146,6 +1146,12 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
   web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, fallback: self.data_plane }, as: "web", bound: 64, on_full: refuse);
   // placement { web: cooperative(pool = edge) where async_io; data_plane: cooperative(pool = edge) where async_io; }
   ```
+- **`hubs`** (GH #1780). `hubs: [("/path", self.hub), …]` mounts `ws::Hub`s
+  of the main locus on this listener: a WebSocket upgrade at a mounted path
+  is the hub's connection, judged by the hub's sources and stream rows, and
+  the exposure's description lists the hub's streams (§ Streams, a hub
+  mounted on an `http::Rest`). The compiler hands the table to the listener;
+  the transport literal the exposure holds keeps none of it.
 - **The description** is `GET /.description`, as over `http::Rpc`;
   `hale api export --surface NAME` writes the OpenAPI form with each
   routed row at its method and path (path parameters as `in: path`,
@@ -2061,7 +2067,8 @@ Streams are topic bindings, and the exposure's fields live on the
 binding row: `requires`, `bound`, `on_full`. A **hub** is a transport
 instance built by a literal in the main locus's `params`: `ws::Hub`
 (WebSocket) or `udp::Hub` (datagrams, § Over datagrams), with `bind:`
-the address it listens on, `principals:` and `roles:` its two sources and
+the address it listens on (or, for a `ws::Hub`, none, when an
+`http::Rest` mounts it: below), `principals:` and `roles:` its two sources and
 `as:` its name. The literal is the param's default and the only hub:
 the compiler numbers it and gives it its rows there, so a construction
 that supplies the param is refused ("param `hub` is a hub that streams
@@ -2116,6 +2123,69 @@ endpoint is one socket of its own.
 Each stream is a thread of its own for the publish fanout to write
 through (an adapter binding's), so a hub with many streams costs that many
 threads.
+
+**A hub mounted on an `http::Rest`** (GH #1780). A `ws::Hub` may instead
+take its connections on the listener of an `http::Rest` exposure of the same
+main locus, at a path: the transport's `hubs:` lists the mounts, and the
+hub writes no `bind:`.
+
+```hale,fragment
+params {
+    hub: ws::Hub = ws::Hub { principals: self.bearer, roles: self.hub_roles, as: "fills" };
+    web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, hubs: [("/admin/v1/hub", self.hub)] }, as: "web", bound: 64, on_full: refuse);
+}
+bindings {
+    Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+}
+```
+
+- **One address.** The hub opens no listener: the compiler adds none for
+  it, and places nothing on `__api_ws`. Every connection is the Rest
+  listener's. Once it has read a request's head, a request that asks for
+  a WebSocket upgrade (`Upgrade: websocket`, its case aside) at a mounted
+  path (the query-stripped path, with a trailing `/` tolerated) is handed
+  to the hub. That happens before its body is read or its path is matched
+  against the routes. Everything else is routed as § The REST transport
+  says: a row, the `fallback`, or `404`, including a request at a mounted
+  path that is not an upgrade. The Rest exposure's
+  gate (its bearer, `anonymous`, role source, `requires`, `cors`, queue)
+  never judges a handed-over connection.
+- **The hub's own gate.** A handed-over connection is a connection of the
+  hub as on its own listener: the upgrade, the credential (`Authorization:
+  Bearer`, or `?access_token=`), the hub's sources, its stream rows'
+  `requires`, `bound` and `on_full`, revocation, expiry, `stop()` and the
+  `ws` frames are this section's, unchanged. What the Rest connection had
+  read past the head (frames a client sent with the upgrade) is the hub
+  connection's.
+- **Where it runs, and its bound.** The hub's connections run on the Rest
+  listener's `where async_io` pool, each a coroutine of its own, held by
+  the listener. The 5 s receive timeout of a Rest request is cleared when
+  the connection is handed over, so a quiet subscriber is not cut off. The
+  5 s send timeout stays, as on the hub's own listener. At most 256
+  mounted connections of one listener are open at once. An upgrade past
+  that is answered `503` and closed. These connections are bounded apart
+  from the Rest listener's own `max_connections`, which counts each
+  connection only until it is handed over.
+- **The description.** The Rest exposure's description (`GET
+  /.description` on its listener, and `hale check --api --exposure NAME`)
+  lists the mounted hubs' stream rows in `"streams"`, with the schemas they
+  reach, filtered as its members are, by the exposure's role source. The
+  hub's `requires` still decides every subscription, under the hub's own
+  role source. A mounted hub has no `GET /.description` of its own, since
+  that path is the exposure's. Its exposure (`hub@<digest>/<name>`) is
+  described statically as before, its listener's address the Rest's
+  `bind:` when that is written as a string.
+- **The laws.** `hubs:` is a list of `("/path", self.<hub>)` pairs, written
+  in the main locus (an `http::Rest` held below it is refused: a hub is the
+  main locus's). A path starts with `/` and holds only letters, digits,
+  `-`, `.`, `_`, `~` and `/`, with no empty segment and no trailing `/`.
+  It is not `/.description`, and it is not a path a row of the surface
+  serves by any method (a row's path stays the surface's). Two hubs never
+  share a path. Each mount names a `ws::Hub` param of the main locus that
+  at least one stream is bound to, mounted once in the program and writing
+  no `bind:`. A `udp::Hub` has no connection to take over and is refused.
+  A hub neither bound nor mounted is refused, as before, for stating no
+  address.
 
 - **Admission.** A subscription is authorized against the row's
   `requires` before it is admitted, from the `Context` the hub's
@@ -3583,6 +3653,12 @@ values).
 - **A receiver binding naming a `@form` collection's element** (a
   surface over many instances of one type, keyed by the request), or
   only a single instance.
+- **A mounted hub's path in the description**: the description of an
+  `http::Rest` exposure lists the streams of the hubs it mounts (§ Streams,
+  a hub mounted on an `http::Rest`) but not the path each is mounted at, so
+  a client learns the path out of band; stating it is a change to
+  `spec/api-description.schema.json` and the contract fixtures, left for a
+  follow-up.
 - **A hub that also serves a surface** (rpcs and streams on one
   connection): the rpcs are carried (§ Rpcs on a hub), but the hub's
   live description lists its streams only; the full document of a surface

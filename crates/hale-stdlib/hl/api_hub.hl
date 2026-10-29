@@ -220,6 +220,10 @@ locus __StdApiWsPeer {
         sub_topic: [String; 16] = [""; 16];
         inbuf: Bytes = std::bytes::from_string("");
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        // what was read of the connection before it was handed over: the
+        // upgrade's head and any frame after it, for a hub an `http::Rest`
+        // mounts (its listener read the request); "" for the hub's own
+        pre: String = "";
     }
     bus {
         subscribe __ApiHubOutT as on_out where key == self.route;
@@ -340,8 +344,8 @@ locus __StdApiWsPeer {
     }
     // ---- the request ----
     fn serve() {
-        let mut head = "";
-        let mut ended = false;
+        let mut head = self.pre;
+        let mut ended = std::str::index_of(head, "\r\n\r\n") >= 0;
         while !ended && self.open {
             let chunk = self.stream.recv(4096) or "";
             if len(chunk) == 0 {
@@ -881,9 +885,21 @@ locus __StdApiWsPeer {
 /// owns the descriptor and closes it. A peer subscribes to the bus, so it is
 /// a flow child and not a local of `serve`: a locus born in a method body
 /// and gone at its end has its deliveries queued for the main thread.
+///
+/// A hub an `http::Rest` mounts (`hubs:`, GH #1780) has no listener: the
+/// Rest listener holds one of these on its own pool, and a connection that
+/// asks for a WebSocket upgrade at a mounted path is handed to it
+/// (`mount`), the hub named by its number, with what the Rest connection
+/// read of it. At most `max_connections` of them are open at once; past
+/// that the upgrade is answered `503` and the connection closed.
 locus __StdApiWsConns {
     params {
         tid: Int = 0;
+        // the connections handed over (`mount`), counted from 1: a mounted
+        // hub's connections are numbered here, its listener's own count
+        mounted: Int = 0;
+        active: Int = 0;
+        max_connections: Int = 256;
     }
     fn serve(c: __StdIoTcpAccepted) {
         __StdApiWsPeer {
@@ -893,8 +909,77 @@ locus __StdApiWsConns {
             fd: c.fd,
         };
     }
-    accept(p: __StdApiWsPeer) { }
-    release(p: __StdApiWsPeer) { }
+    /// A connection an `http::Rest` read an upgrade on, for hub `tid`: its
+    /// descriptor is this locus's peer's now.
+    fn mount(tid: Int, fd: Int, pre: String) {
+        if self.active >= self.max_connections {
+            let body = "the hub serves " + to_string(self.max_connections) + " connections at once";
+            let s = std::io::tcp::Stream { conn_fd: fd, owns_fd: false };
+            s.send(
+                "HTTP/1.1 503 " + __status_phrase(503)
+                    + "\r\nContent-Type: text/plain\r\nContent-Length: "
+                    + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body,
+            ) or discard;
+            std::io::tcp::__close_fd(fd);
+            return;
+        }
+        self.mounted = (self.mounted % 16777215) + 1;
+        __StdApiWsPeer {
+            conn: self.mounted,
+            tid: tid,
+            route: tid * 4294967296 + self.mounted,
+            fd: fd,
+            pre: pre,
+        };
+    }
+    accept(p: __StdApiWsPeer) {
+        self.active = self.active + 1;
+    }
+    release(p: __StdApiWsPeer) {
+        self.active = self.active - 1;
+    }
+}
+
+/// Whether a request is a WebSocket upgrade at a path an `http::Rest`
+/// mounts a hub at (`hubs`, `<path> <hub>` per mount joined by `,`; a
+/// trailing `/` on the request tolerated), and if so, hand its connection
+/// (`fd`, and `pre`, what was read of it) to the hub's connections `m`:
+/// true when it was handed over and is no longer the caller's.
+fn __api_rest_mount_serve(
+    m: __StdApiRestMounts,
+    hubs: String,
+    fd: Int,
+    pre: String,
+    req: std::http::Request
+) -> Bool {
+    if std::str::lower(std::str::trim(std::http::header(req, "Upgrade"))) != "websocket" {
+        return false;
+    }
+    let mut path = __http_path_only(req.path);
+    if len(path) > 1 && std::str::ends_with(path, "/") { path = path[0..(len(path) - 1)]; }
+    let mut rest = hubs;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let mut one = rest;
+        if comma >= 0 {
+            one = rest[0..comma];
+            rest = rest[(comma + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        let sp = std::str::index_of(one, " ");
+        if sp > 0 && one[0..sp] == path {
+            let tid = std::str::parse_int(one[(sp + 1)..len(one)]) or 0;
+            if tid > 0 {
+                // a hub's connection waits on its subscriber for as long as
+                // the subscriber is quiet: the Rest read's clock is off
+                let _ = std::io::tcp::__set_recv_timeout_ns(fd, 0);
+                m.h.mount(tid, fd, pre);
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// The hub's listening socket, on its own pool (`std::api::ws::Listener`;

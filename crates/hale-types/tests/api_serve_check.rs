@@ -1138,3 +1138,132 @@ fn main() {{ App {{ }}; }}
         );
     }
 }
+
+/// GH #1780: a `ws::Hub` mounted on an `http::Rest` (`hubs: [("/path",
+/// self.hub)]`) takes its connections on that listener, so it binds none of
+/// its own; the mount is a plain path no row serves, of a `ws::Hub` of the
+/// main locus that streams are bound to, mounted once, from the main locus.
+fn mounted(hub: &str, hubs: &str, extra: &str) -> String {
+    format!(
+        "
+role operator;
+type Fill {{ qty: Int; }}
+topic Fills {{ payload: Fill; subject: \"desk.fills\"; }}
+topic Ticks {{ payload: Fill; subject: \"desk.ticks\"; }}
+type Health {{ status: String; }}
+api Desk {{ rpc Probe::live at \"GET /healthz\"; rpc Probe::item at \"GET /items/{{id}}\"; }}
+type Key {{ id: Int; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: \"bearer\", name: \"\" }}; }}
+    fn refused() -> String {{ return \"no\"; }}
+}}
+locus Probe {{
+    fn live() -> Health {{ return Health {{ status: \"live\" }}; }}
+    fn item(k: Key) -> Health {{ return Health {{ status: \"item\" }}; }}
+}}
+locus Maker {{
+    bus {{ publish Fills; publish Ticks; }}
+    fn make() {{ Fills <- Fill {{ qty: 1 }}; Ticks <- Fill {{ qty: 2 }}; }}
+}}
+main locus App {{
+    params {{
+        tokens: Tokens = Tokens {{ }};
+        hub: ws::Hub = {hub};
+        other: ws::Hub = ws::Hub {{ principals: self.tokens, as: \"other\" }};
+        dgram: udp::Hub = udp::Hub {{ bind: \"127.0.0.1:0\", principals: self.tokens, as: \"dgram\" }};
+        maker: Maker = Maker {{ }};
+        probe: Probe = Probe {{ }};
+        web: api::Exposure = api::serve(Desk, http::Rest {{ bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: {hubs} }}, as: \"web\", bound: 8, on_full: refuse);
+        {extra}
+    }}
+    bindings {{
+        Fills: self.hub requires: [operator], bound: 8, on_full: drop_old;
+        Ticks: self.dgram requires: [operator], bound: 8, on_full: drop_old;
+    }}
+    placement {{ web: cooperative(pool = edge) where async_io; }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"
+    )
+}
+
+const MOUNTED_HUB: &str = "ws::Hub { principals: self.tokens, as: \"fills\" }";
+
+#[test]
+fn a_hub_mounted_on_a_rest_listener_binds_none_of_its_own() {
+    // `other` is mounted too, so it needs no bind; it carries no stream
+    let errs = errors(&mounted(MOUNTED_HUB, "[(\"/hub\", self.hub), (\"/admin/v1/other\", self.other)]", ""));
+    assert_eq!(
+        errs,
+        vec!["exposure `web` mounts `self.other`, to which no stream is bound: a hub carries the topics bound to it (`Topic: self.other requires: […], bound: N, on_full: drop_old;`), so a hub with none serves nothing".to_string()],
+    );
+    // `other`, mounted nowhere and bound to no stream, is a hub nothing reads
+    assert_eq!(errors(&mounted(MOUNTED_HUB, "[(\"/hub\", self.hub)]", "")), Vec::<String>::new());
+    // a mounted hub that also binds is refused at its `bind:`
+    let errs = errors(&mounted(
+        "ws::Hub { bind: \"127.0.0.1:0\", principals: self.tokens, as: \"fills\" }",
+        "[(\"/hub\", self.hub)]",
+        "",
+    ));
+    assert!(errs.iter().any(|e| e.contains("hub `self.hub` is mounted on an `http::Rest` (`hubs:`)") && e.contains("drop its `bind:`")), "{errs:#?}");
+    // a hub neither bound nor mounted states neither
+    let errs = errors(&mounted(MOUNTED_HUB, "[]", ""));
+    assert!(errs.iter().any(|e| e.contains("hub `self.hub`: a hub states the address it listens on") && e.contains("or is mounted")), "{errs:#?}");
+}
+
+#[test]
+fn a_mount_is_a_plain_path_no_row_serves_of_a_ws_hub_once() {
+    let one = |hubs: &str| errors(&mounted(MOUNTED_HUB, hubs, ""));
+    for (hubs, want) in [
+        ("[(\"/healthz\", self.hub)]", "a path a row of `Desk` serves (`/healthz`)"),
+        ("[(\"/items/7\", self.hub)]", "a path a row of `Desk` serves (`/items/{id}`)"),
+        ("[(\"/hub/\", self.hub)]", "a mount's path starts with `/`"),
+        ("[(\"hub\", self.hub)]", "a mount's path starts with `/`"),
+        ("[(\"/hub?x=1\", self.hub)]", "a mount's path starts with `/`"),
+        ("[(\"/.description\", self.hub)]", "is not `/.description`"),
+        ("[(\"/a\", self.hub), (\"/b\", self.hub)]", "hub `self.hub` is mounted twice"),
+        ("[(\"/a\", self.hub), (\"/a\", self.other)]", "mounts two hubs at `/a`"),
+        ("[(\"/t\", self.tokens)]", "mounts `self.tokens`, which is not a hub"),
+        ("[(\"/d\", self.dgram)]", "mounts `self.dgram`, a `udp::Hub`"),
+        ("[self.hub]", "`hubs:` is a list of `(\"/path\", self.<hub>)` pairs"),
+        ("[(\"/a\", \"/b\")]", "`hubs:` is a list of `(\"/path\", self.<hub>)` pairs"),
+    ] {
+        let errs = one(hubs);
+        assert!(errs.iter().any(|e| e.contains(want)), "{hubs}: want {want:?} in {errs:#?}");
+    }
+}
+
+#[test]
+fn a_rest_below_the_main_locus_mounts_no_hub() {
+    let src = "
+type Fill { qty: Int; }
+topic Fills { payload: Fill; subject: \"desk.fills\"; }
+type Health { status: String; }
+api Desk { rpc Probe::live at \"GET /healthz\"; }
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: \"bearer\", name: \"\" }; }
+    fn refused() -> String { return \"no\"; }
+}
+locus Probe { fn live() -> Health { return Health { status: \"live\" }; } }
+locus Server {
+    params {
+        tokens: Tokens = Tokens { };
+        probe: Probe = Probe { };
+        hub: Int = 0;
+        web: api::Exposure = api::serve(Desk, http::Rest { bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, hubs: [(\"/hub\", self.hub)] }, as: \"web\", bound: 8, on_full: refuse);
+    }
+}
+main locus App {
+    params { server: Server = Server { }; }
+    placement { server: cooperative(pool = edge) where async_io; }
+    run() { }
+}
+fn main() { App { }; }
+";
+    let errs = errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("exposure `web` held by `Server` mounts hubs: a hub is the main locus's")),
+        "{errs:#?}"
+    );
+}

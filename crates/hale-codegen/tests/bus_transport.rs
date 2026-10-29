@@ -19,6 +19,8 @@ mod api_grpc_proto;
 mod api_hub;
 #[path = "api_hub_desk.rs"]
 mod api_hub_desk;
+#[path = "api_hub_rest.rs"]
+mod api_hub_rest;
 #[path = "api_hub_streams.rs"]
 mod api_hub_streams;
 #[path = "api_hub_substrate.rs"]
