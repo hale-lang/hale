@@ -5671,7 +5671,9 @@ The live half is memory's, projected from the record by the spine
   organization reads its nerves, as the organism's own compose project,
   `<record schema>-<application>` (`dna_<id>-todo`): two organisms on one
   machine, or a person's own `docker compose up` of the same file, never share
-  a container. `up -d --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`) waits
+  a container. `up -d --build --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`; `--build`
+  builds a service whose image comes from the checkout's own context from
+  the checkout as it is now) waits
   for every service to be running, and healthy where it declares a
   healthcheck; the body says `the repository's compose services are up
   (compose project <p>)`, or that they did not all come up and why, and the

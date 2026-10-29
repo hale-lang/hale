@@ -73,9 +73,14 @@ checkout; the `Dockerfile`'s `HALE_FROM=artifact` packages a `hale` and
 the habitat directory, the local vault directory and the host's docker
 socket, with the head's HTTP surface and the face published on their
 loopback ports. It applies a render with `docker
-compose -p <project> --project-directory <dir> -f <file>… up -d --wait
+compose -p <project> --project-directory <dir> -f <file>… up -d --build --wait
 [<service>…]`, with `COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat
-brings up, the habitat's own and each tenant's, is brought up this way. It
+brings up, the habitat's own and each tenant's, is brought up this way.
+`--build` builds a service whose image comes from the render's own context
+(an organism's application) from the revision being applied, so an image an
+earlier revision built under the same tag is never what runs; docker's
+cache keeps an unchanged context cheap, and a service that only names an
+image builds nothing. It
 observes a service by its container's state (`running` is up, `running` and
 unhealthy or `restarting` is degraded, anything else or no container is
 down) and the head and the face by whether their address accepts a
@@ -238,7 +243,7 @@ does, and its OS and architecture. A host that does not accept the
 habitat's key yet is `pending-key`, and `hale habitat host probe <name>`
 moves it to `ready` once it does. The provider applies a render by copying
 its files to `~/.hale/habitat/<project>/<render directory>` on the host
-and running `docker compose -p <project> -f <file>… up -d --wait` there;
+and running `docker compose -p <project> -f <file>… up -d --build --wait` there;
 it withdraws one with `docker compose rm -s -f <service>…` (or `down` for
 a render naming no service) and observes a service by `docker ps` there,
 as the compose provider does here. It allocates the roles that run as
