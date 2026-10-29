@@ -2565,6 +2565,29 @@ fn habitat_address() -> String {
     std::env::var(remote::ADDRESS_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
+/// `ghcr.io/hale-lang/hale:<this version>` pulled and tagged `tag`, when it
+/// runs exactly this toolchain (`hale --version` alike: a build of another
+/// commit under the same version is not this one): the published image's
+/// name, or `None` (none published, unreachable, or another build), when
+/// compose builds the image instead.
+fn pull_published(tag: &str) -> Option<String> {
+    let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+    let ours = Command::new(std::env::current_exe().ok()?).arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    progress(&format!("pulling {published}, this release's image"));
+    if !matches!(docker(&["pull", "-q", &published]), Docker::Answered(_)) {
+        return None;
+    }
+    let theirs = match docker(&["run", "--rm", "--entrypoint", "hale", &published, "--version"]) {
+        Docker::Answered(v) => v.trim().to_string(),
+        _ => return None,
+    };
+    if theirs != ours {
+        progress(&format!("{published} is another build of this version; building the image instead"));
+        return None;
+    }
+    matches!(docker(&["tag", &published, tag]), Docker::Answered(_)).then_some(published)
+}
+
 /// The socket address the habitat's listener on `port` is probed at.
 fn listen_socket(port: u16) -> std::net::SocketAddr {
     let ip: std::net::IpAddr = habitat_listen_host().parse().unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
@@ -2593,7 +2616,16 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let env_image = std::env::var("HALE_HABITAT_IMAGE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let override_image = asked_image.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).or(env_image);
     let image = override_image.clone().unwrap_or_else(|| default_habitat_image_tag(pin));
-    let build_spec = if override_image.is_some() {
+    // the published image of this release, when this machine has no image
+    // of this toolchain yet: pulled, checked to run this very toolchain,
+    // and tagged as the one compose would otherwise build (a build compiles
+    // the compiler and the head's programs, several GB at its peak, more
+    // than a small machine's docker gives)
+    let mut pulled = None;
+    if override_image.is_none() && matches!(docker(&["image", "inspect", "-f", "{{.Id}}", &image]), Docker::Failed(_)) {
+        pulled = pull_published(&image);
+    }
+    let build_spec = if override_image.is_some() || pulled.is_some() {
         String::new()
     } else {
         format!("    build:\n      context: \"{HALE_GIT}#{pin}\"\n")

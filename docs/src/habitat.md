@@ -298,7 +298,7 @@ An organism grafted with the habitat's defaults adds no server of its own for it
 
 Two things need more than that, once:
 
-- **Building the habitat's image.** The first `hale habitat up` builds the toolchain image from source (once per toolchain commit): it compiles the compiler and then the head's seven programs in parallel, the largest of which alone peaks near 4.5 GB. Raise the VM for that build (8 GB or more) and lower it afterwards, or build the image on a larger machine and start the habitat from it with `--image <tag>` (or `HALE_HABITAT_IMAGE`).
+- **Building the habitat's image.** A released `hale` pulls its own image (`ghcr.io/hale-lang/hale:<version>`), checks that it runs the same toolchain, and uses it, so nothing is built. A `hale` built from source has no published image and builds it once per toolchain commit: it compiles the compiler and then the head's seven programs in parallel, the largest of which alone peaks near 4.5 GB. For that build, raise the VM (8 GB or more) and lower it afterwards, or build the image on a larger machine and start the habitat from it with `--image <tag>` (or `HALE_HABITAT_IMAGE`).
 - **A face that has to build the head.** The image already holds the head's programs, so the face starts without compiling. A face whose image does not hold them (an image of another toolchain commit) builds them on its first start, which takes the same several GB. That is why the face and body have no memory cap: a cap below the build's peak would kill the build.
 
 ---
