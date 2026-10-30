@@ -47,6 +47,7 @@ use serde_json::Value;
 pub(crate) mod habitat;
 mod head;
 mod pack;
+mod secrets;
 
 /// Where a toolchain before GH #1590 kept the record. Nothing reads it: a
 /// clone that still holds one is refused by `init` and `upgrade`, and its
@@ -1075,6 +1076,9 @@ pub fn run(raw_args: &[String]) -> ExitCode {
         Some("record-body") => host_exec("record-body", Path::new("."), &args[1..]),
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
+        // the secrets the seed declares ([dna.secrets.<name>]), a line each:
+        // what the DNA's own code reads the declaration through
+        Some("declared-secrets") => secrets::declared_cmd(&args[1..]),
         // GH #989: every secret the organism requires, and whether the vault holds it
         Some("secrets") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -1383,7 +1387,14 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a credential from stdin (never argv, never the record) into its slot of the vault");
     eprintln!("                                    (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("                                    piped, the whole of stdin less one trailing newline; at a terminal, one typed line; none is refused");
+    eprintln!("                                    a secret the seed declares ([dna.secrets.<name>], a slot) by its own name; a family's member");
+    eprintln!("                                    with `--member <label>` (also `secret remove <name> --member <label>`); a drawn one is never set,");
+    eprintln!("                                    and `secret rotate <name>` draws it anew");
+    eprintln!("       hale dna secret show <name> [--member <label>]");
+    eprintln!("                                    the value of a secret the seed declares with person = \"read\" (any other is refused)");
     eprintln!("       hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)");
+    eprintln!("       hale dna declared-secrets [dir]");
+    eprintln!("                                    the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family");
     eprintln!("       hale dna application remove [project] [--as <who>]");
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");

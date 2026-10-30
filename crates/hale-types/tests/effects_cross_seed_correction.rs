@@ -264,8 +264,8 @@ fn host() {
     // side and reaches nothing imported.
     pinned(
         "host",
-        577,
-        584,
+        579,
+        588,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -273,6 +273,7 @@ fn host() {
         Host::build_genome  does={syscall,block,env,alloc,stdio}
         Host::build_seed  does={syscall,block,env,alloc,stdio}
         Host::cut_artifact  does={syscall,block,alloc}
+        Host::hand_compose_secrets  does={syscall,block,env,alloc}
         Host::nerves_read_now  does={syscall,block,time,entropy,env,alloc}
         Host::no_application  does={syscall,block,alloc}
         Host::say_nerves_read  does={syscall,env,alloc,stdio}
@@ -331,6 +332,7 @@ fn host() {
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
         database_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        declared_secret_line  does={syscall,block,env,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
@@ -340,6 +342,7 @@ fn host() {
         exchange_key  does={syscall,alloc}
         exchange_migrate  does={syscall,block,time,entropy,env,alloc}
         exit_code  does={syscall,block,alloc}
+        family_labels_of  does={syscall,block,env,alloc}
         fence_compose_down  does={syscall,block,alloc}
         fence_stop  does={syscall,block,alloc}
         fill_check  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -388,8 +391,6 @@ fn host() {
         memory_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
-        nats_account_path  does={syscall,block,env,alloc}
-        nats_accounts_dir  does={syscall,block,env,alloc}
         nats_conf_path  does={syscall,block,env,alloc}
         nats_secrets_path  does={syscall,block,env,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
@@ -418,13 +419,11 @@ fn host() {
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         senses_up_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        server_conf_rewrite  does={syscall,block,env,alloc}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         work_verb  does={syscall,block,alloc}
-        write_nerves_conf  does={syscall,block,env,alloc}
         ",
     );
 }

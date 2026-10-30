@@ -1840,19 +1840,49 @@ fn secret_verb(
     name: String,
     body_flag: String,
     who_flag: String,
+    member_flag: String,
     memory: dna::Memory
 ) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    if sub != "set" && sub != "rotate" {
+    if sub != "set" && sub != "rotate" && sub != "show" && sub != "remove" {
         return fail(
-            "secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`",
+            "secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin), `hale dna secret rotate <NAME> [--body …]`, or, for a secret the seed declares, `hale dna secret set|rotate|show|remove <name> [--member <label>]`",
         );
     }
     if std::str::contains(name, "=") {
         return fail(
             "secret " + sub
                 + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin",
+        );
+    }
+    // a secret the seed declares ([dna.secrets.<name>]), by its own name;
+    // `--member` names a family's member
+    let declared = declared_secret_line(root, name);
+    if len(declared) > 0 {
+        return declared_secret_verb(
+            root,
+            sub,
+            name,
+            declared,
+            body_flag,
+            who_flag,
+            member_flag,
+            memory,
+        );
+    }
+    if len(member_flag) > 0 {
+        return fail(
+            "secret " + sub + ": `--member " + member_flag
+                + "` names a member of a secret family the seed declares, and it declares no secret `"
+                + name + "`",
+        );
+    }
+    if sub == "show" || sub == "remove" {
+        return fail(
+            "secret " + sub + ": the seed declares no secret `" + name
+                + "` ([dna.secrets." + name
+                + "] in hale.toml); only a declared secret is shown (when its person is \"read\") or removed (a family's member), and no other credential ever is",
         );
     }
     if !secret_name_ok(name) {
@@ -1922,6 +1952,185 @@ fn secret_verb(
         "secret " + sub + ": " + name + " is in its slot of the vault, " + infra.last
             + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name
             + "; the value is nowhere in the record). A part reads it from the vault where it uses it\n",
+    );
+}
+
+// Why `hale dna secret show` refuses the declared secret `name` whose
+// person is `person`, "" when it shows it (person = "read").
+fn secret_show_refusal(name: String, person: String) -> String {
+    if person == "read" { return ""; }
+    return "secret show: `" + name + "` is declared person = \"" + person + "\": "
+        + (
+            if person == "write" {
+                "a person sets it and never reads it back"
+            } else {
+                "no person touches it; only its readers are handed it"
+            }
+        )
+        + " (person = \"read\" in [dna.secrets." + name + "] allows it)";
+}
+
+// Why `hale dna secret <sub> <name> [--member <label>]` is refused for the
+// declared secret `name` (its kind, its person, whether it is a family),
+// "" when it is not: a family's member is named by `--member` and nothing else
+// is; `remove` takes a family's member alone; `show` shows what a person
+// may read; a drawn secret is never set.
+fn declared_secret_refusal(
+    sub: String,
+    name: String,
+    kind: String,
+    person: String,
+    family: Bool,
+    label: String
+) -> String {
+    if sub != "set" && sub != "rotate" && sub != "show" && sub != "remove" {
+        return "secret: `" + sub + "`: set, rotate, show or remove";
+    }
+    if family && len(label) == 0 {
+        return "secret " + sub + ": `" + name
+            + "` is a family: name the member, `hale dna secret " + sub + " " + name
+            + " --member <label>`";
+    }
+    if !family && len(label) > 0 {
+        return "secret " + sub + ": `--member " + label + "` names a family's member, and `" + name
+            + "` is no family (family = true in [dna.secrets." + name + "])";
+    }
+    if family && !dna::family_label_ok(label) {
+        return "secret " + sub + ": `" + label + "` is no label: " + dna::FAMILY_LABEL_RULE;
+    }
+    if sub == "remove" && !family {
+        return "secret remove: `" + name
+            + "` is no family: remove takes a family's member (`--member <label>`); a declared secret leaves the vault when its declaration does and the organism is removed";
+    }
+    if sub == "show" { return secret_show_refusal(name, person); }
+    if sub == "set" && kind == "drawn" {
+        return "secret set: `" + name
+            + "` is drawn: the habitat draws it and a person never sets it (`hale dna secret rotate "
+            + name + "` draws it anew)";
+    }
+    return "";
+}
+
+// `hale dna secret set|rotate|show|remove <name> [--member <label>]` for a
+// secret the seed declares (`line`, its declaration; `label`, a family's
+// member): a slot is set from stdin into the organism's vault, here (never
+// a body's: the organism's vault is the one its readers are handed from); a
+// drawn one is never set, and rotate draws it anew; show prints the value
+// of one whose person is `read`; remove takes a family's member out of the
+// vault. The record gets `secret.rotated <name>` for a set or a rotate
+// (`<name>--<label>` for a member), `secret.removed` for a remove, and
+// nothing for a show. `--as` is who acts, as on every verb.
+fn declared_secret_verb(
+    root: String,
+    sub: String,
+    name: String,
+    line: String,
+    body_flag: String,
+    who_flag: String,
+    label: String,
+    memory: dna::Memory
+) -> Answer {
+    let kind = dna::declared_field(line, 1);
+    let person = dna::declared_field(line, 2);
+    let family = dna::declared_family(line);
+    let refused = declared_secret_refusal(sub, name, kind, person, family, label);
+    if len(refused) > 0 { return fail(refused); }
+    let org = dna::schema_for(record_identity(root));
+    let vault = if family {
+        dna::family_member_vault(org, name, label)
+    } else {
+        dna::declared_secret_vault(org, name)
+    };
+    let shown = if family { name + " --member " + label } else { name };
+    if len(body_flag) > 0 {
+        return fail(
+            "secret " + sub + ": `" + name
+                + "` is the organism's own, in its vault here, which its readers are handed from: it is never put on a body (no --body)",
+        );
+    }
+    if std::env::var_exists("HALE_VAULT_ADDR") {
+        return fail(
+            "secret " + sub + ": the vault is served over HTTP (HALE_VAULT_ADDR), where " + vault
+                + " is kept out of band",
+        );
+    }
+    if sub == "show" {
+        if !secret_present(vault) {
+            return fail(
+                "secret show: `" + shown + "` is not in the vault (" + vault + "); "
+                    + (
+                        if kind == "drawn" {
+                            "`hale dna upgrade` draws it"
+                        } else {
+                            "`hale dna secret set " + shown + "` fills it"
+                        }
+                    ),
+            );
+        }
+        let value = std::io::fs::read_file(std::secret::vault_local_dir() + "/" + vault) or "";
+        return answer(value + "\n");
+    }
+    if (sub == "rotate" || sub == "remove") && kind == "slot" && !secret_present(vault) {
+        return fail(
+            "secret " + sub + ": " + shown + " was never set (`hale dna secret set " + shown
+                + "` first)",
+        );
+    }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let entity = if family { name + "--" + label } else { name };
+    if sub == "remove" {
+        std::io::fs::unlink(std::secret::vault_local_dir() + "/" + vault) or discard;
+        if secret_present(vault) { return fail("secret remove: the vault still holds " + vault); }
+        let row = append_as(
+            root,
+            "secret.removed",
+            entity,
+            "{\"where\": \"local\", \"by\": " + quote(who) + "}",
+            who,
+            memory,
+        );
+        let s = sync_record(root, memory);
+        return answer(
+            "secret remove: " + shown + " is gone from the vault (" + vault + "; secret.removed "
+                + entity
+                + "). Its readers are handed the members left when their services are next applied or started, or when they are next placed\n",
+        );
+    }
+    if kind == "drawn" {
+        let put = vault_put(vault, draw_secret());
+        if len(put) > 0 { return fail("secret rotate: " + put + "; nothing was recorded"); }
+    } else {
+        let value = secret_value(shown, "");
+        if len(value) == 0 {
+            return fail(
+                "secret " + sub + ": no value on stdin for " + shown + "; nothing was stored",
+            );
+        }
+        let scratch_dir = root + "/.hale/dna";
+        let infra = ReferenceInfrastructure {
+            root: root,
+            target: "",
+            local: LocalTransport { scratch: scratch_dir },
+            ssh: SshTransport { scratch: scratch_dir },
+        };
+        if !infra.put_credential(vault, value) {
+            return fail("secret " + sub + ": " + infra.last + "; nothing was recorded");
+        }
+    }
+    let row = append_as(
+        root,
+        "secret.rotated",
+        entity,
+        "{\"where\": \"local\", \"by\": " + quote(who) + "}",
+        who,
+        memory,
+    );
+    let s = sync_record(root, memory);
+    return answer(
+        "secret " + sub + ": " + shown + " is "
+            + (if kind == "drawn" { "drawn anew into " } else { "in " }) + vault
+            + " (secret.rotated " + entity
+            + "; the value is nowhere in the record). Its programs are handed it when their services are next applied or started, its host commands when they are next placed\n",
     );
 }
 
