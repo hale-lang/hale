@@ -846,7 +846,7 @@ socket), so the habitat's head must be up.
 | `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
-| `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's with `--all`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
+| `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's and the habitat's own genome's with `--all`; the genome's alone as `models habitat`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -1278,7 +1278,10 @@ grafted organism that came from a sapling the habitat pins, and a
   runs with `HALE_VAULT_DIR` naming that directory and, per secret,
   `HALE_SECRET_<NAME>` naming its entry (a family's: each member's entry,
   one a line, in their labels' order), passed through `env` on its command
-  line so that sudo, which resets the environment, keeps them. The entries
+  line so that sudo, which resets the environment, keeps them. Every run,
+  whatever it reads, is handed the habitat's name the same way,
+  `HALE_DNA_HABITAT_NAME` (the habitat the pointer names, when the
+  command is run through one). The entries
   are for the run alone: removed however it ends, and the directory once
   empty, so a command that needs one later keeps its own copy. A value is
   never on a command line, on this machine's disk, or in the head. A
@@ -1516,7 +1519,10 @@ there in the name `hale habitat`; grafting the provider itself does this
 for every organism the habitat holds (`spec/dna.md`, The habitat's
 models). Nothing of it fails the graft: what stopped it is said. A graft
 of an organism that provides models while the habitat holds another
-provider is refused, naming it. `<dir>` is a new application's directory or, with `--attach`,
+provider is refused, naming it. A graft of an organism called `habitat`
+(its directory's name, or a sapling's) is refused before anything is
+made: the habitat's own genome is a tenant of its models under that
+label, and a provider names what it keeps for each by its label. `<dir>` is a new application's directory or, with `--attach`,
 an application or repository already there. A graft that stopped part way
 goes on where it stopped; a record born of anything but this habitat is
 refused.
@@ -1622,6 +1628,21 @@ on a host, written before compose runs and removed from a host with the
 services), and `HALE_SECRET_<NAME>` per secret, naming its entry there (a
 family's: each member's entry, one a line). The compose file passes them
 to its services and mounts the directory; the habitat never edits it.
+
+An organism's own services are also handed the habitat's name,
+`HALE_DNA_HABITAT_NAME` (its `name` file, as `hale habitat up --name`
+set it; `local` when it was born with none), wherever they are applied
+and whatever their programs read: in the environment compose runs under
+here, and on the command line before compose on an `ssh` host,
+shell-quoted like the secrets. A repository body (`hale dna dev`, `run`)
+hands its compose services the same when the habitat grafted the
+organism (its parts' choices are kept beside its allocations,
+`parts.json`), and nothing of a habitat otherwise. Like the secrets, it
+reaches a service only as the compose file passes it
+(`environment: { HALE_DNA_HABITAT_NAME: "${HALE_DNA_HABITAT_NAME}" }`); a
+provider names what it keeps for the habitat it serves by it, as voice
+names a tenant's project `<habitat>-<label>` (`spec/dna.md`, The
+habitat's models).
 
 The manifest is read once, by graft; every reader after it reads the
 roles the habitat allocated, as `allocation.json` keeps them.

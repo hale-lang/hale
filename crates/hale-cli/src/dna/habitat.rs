@@ -3747,6 +3747,10 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     // application's workspace (its manifest, its pin and its needs are the
     // workspace's), a repository's own directory, or the new application
     let root = if attach { super::organism_root(dir)? } else { dir.to_path_buf() };
+    // its name is its directory's, and `habitat` is the habitat's own
+    if let Some(name) = root.file_name() {
+        models::refuse_reserved_name(&name.to_string_lossy())?;
+    }
     let manifest = std::fs::read_to_string(root.join("hale.toml")).ok();
     // a genome that pins a record already is this habitat's child whose
     // graft stopped before its end, or ended: the graft goes on where it

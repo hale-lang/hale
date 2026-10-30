@@ -3293,8 +3293,10 @@ main locus Host {
         };
         let handed_nerves = self.hand_compose_nerves(app);
         let handed_secrets = self.hand_compose_secrets();
+        let handed_habitat = self.hand_compose_habitat();
         let handed = handed_nerves
-            + (if len(handed_secrets) > 0 { "; " + handed_secrets } else { "" });
+            + (if len(handed_secrets) > 0 { "; " + handed_secrets } else { "" })
+            + (if len(handed_habitat) > 0 { "; " + handed_habitat } else { "" });
         if !self.body_assert("the repository's compose services") {
             self.stop_org();
             self.quit(3);
@@ -3375,6 +3377,17 @@ main locus Host {
         self.compose.hand(NATS_APP_SECRET_ENV, entry);
         return "the nerves handed to them as " + dna::nerves_app_user(org, app) + " at " + url
             + ", its password the vault's entry, mounted";
+    }
+    // What compose is handed of the habitat: its name
+    // (HALE_DNA_HABITAT_NAME) when the organism is one the habitat grafted
+    // (dna::grafted_habitat_name), which the compose file passes to the
+    // services that read it. What it said of it ("" when it is no
+    // habitat's).
+    fn hand_compose_habitat() -> String {
+        let name = dna::grafted_habitat_name(dna::allocation_key(self.root));
+        if len(name) == 0 { return ""; }
+        self.compose.hand(dna::HABITAT_NAME_ENV, name);
+        return "the habitat's name handed to them (" + dna::HABITAT_NAME_ENV + "=" + name + ")";
     }
     // What compose is handed of the secrets the seed declares for its
     // programs ([dna.secrets.<name>] naming a program among its readers):
