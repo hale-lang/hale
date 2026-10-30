@@ -564,6 +564,9 @@ locus RepositoryCompose {
         project: String = "";
         // `NAME=value` lines compose is handed, beside what it inherits
         env: String = "";
+        // the shell that exports the declared secrets its programs read
+        // (`dna::reader_wrap`, argv lines before compose's), "" for none
+        wrap: String = "";
         // brought up by this body, and brought down when it stops
         active: Bool = false;
         checked: Int = 0; // when the services were last looked at
@@ -576,7 +579,8 @@ locus RepositoryCompose {
     // `docker compose` on this project and file, newline-separated, run
     // under `env` without the organism's credentials and with `self.env`
     fn base() -> String {
-        return "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n" + self.env
+        return self.wrap + "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n"
+            + self.env
             + "docker\ncompose\n-p\n" + self.project + "\n-f\n" + self.file
             + (if len(self.override) > 0 { "\n-f\n" + self.override } else { "" })
             + "\n--project-directory\n" + self.root;
@@ -605,6 +609,9 @@ locus RepositoryCompose {
     fn argv(args: String) -> String { return self.base() + "\n" + args; }
     // Hand compose a variable (no newline in it: none of these carries one).
     fn hand(name: String, value: String) { self.env = self.env + name + "=" + value + "\n"; }
+    // Hand compose the declared secrets its programs read: the shell that
+    // exports them (`dna::reader_wrap`), which compose runs under.
+    fn hand_secrets(wrap: String) { self.wrap = wrap; }
     // Up, waited for: "" when every service is running (and healthy where it
     // declares a healthcheck), else why not.
     fn up(wait: Int) -> String {

@@ -1599,7 +1599,8 @@ record's.
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
 | `body.provisioned` | record | a machine made able to run it |
 | `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is in the vault where the body runs |
-| `secret.rotated` | record | a credential set or rotated — the name and the place, never the value |
+| `secret.rotated` | record | a credential set or rotated — the name and the place, never the value (a family's member: `<name>--<label>`) |
+| `secret.removed` | record | a family's member taken out of the vault (`<name>--<label>`), never its value |
 | `schedule.requested` / `schedule.answered` | ledger | a schedule asked of the organization (`hale dna schedule declare`), relayed by the host; its answer under the request's id: `declared`, `why` |
 | `schedule.declared` / `schedule.refused` | ledger | a schedule a ratified practice or a request declares (`every_ms`, `cron`, `definition`, `args`, `convener`, `from`); or one that would not be declared (`why`, and `hole` for a convener nobody holds), or an occurrence whose admission was refused (`occurrence`, `why`) |
 | `schedule.skipped` / `schedule.missed` | ledger | an occurrence not admitted while the last execution is open (`occurrence`, `task`); occurrences whose period passed with no tick (`first`, `last`, `count`, `why`) |
@@ -3817,7 +3818,9 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   newline (`\n`, or one `\r\n` pair) taken off; at a terminal, one line typed after a prompt; an
   empty value is refused by the secret's name and nothing is stored.
   `secret rotate <NAME>` is the same for a name already set. The record
-  gets `secret.rotated <NAME> {where, by}` and nothing else. At start
+  gets `secret.rotated <NAME> {where, by}` and nothing else. A secret the
+  seed declares is named by its own name (**Declared secrets**), where
+  `secret show` and a family's `--member <label>` also apply. At start
   the host checks the credentials its catalog names
   (`HostedCredential { key }` in `dna/org/models.hl`): when none is in
   its slot of the vault (`model-<key>`, the one source a model key has;
@@ -5969,6 +5972,8 @@ secret, by its vault name, and never creates one.
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
 | `forge-token` | slot | the forge's token: with none, nothing is done at the forge, never as `gh`'s own login |
 | `model-<NAME>`, per credential `dna/org/models.hl` or `dna/org/work.hl` names | slot | a model's key (**Models**); `hale dna secrets` lists a `work.hl` key as the legs' model key |
+| `secret-<org>-<name>`, per `[dna.secrets.<name>]` in `hale.toml` | as declared: drawn or a slot | a secret the seed declares (**Declared secrets**) |
+| `secret-<org>-<name>--<label>`, per member a person fills | slot (a family) | a member of a family the seed declares (**Declared secrets**) |
 
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
   from urandom (32 hex characters) into the vault when the vault lacks
@@ -6012,6 +6017,113 @@ secret, by its vault name, and never creates one.
   never a value. The board says so for each missing one (a model key
   is reported by the body, since the vault that matters is the one on
   the machine that calls the model).
+
+### Declared secrets
+
+A seed declares the secrets its own programs and host commands read in
+its manifest, one table each:
+
+```toml
+[dna.secrets.operator-token]
+kind    = "drawn"                 # drawn: the habitat draws it; slot: a person fills it
+readers = ["api", "host.node"]    # its programs, by directory, and its host commands, host.<command>
+person  = "none"                  # read | write | none
+
+[dna.secrets.model-token]
+kind    = "slot"
+family  = true                    # several values, each a member a person fills under a label
+readers = ["worker"]
+```
+
+- **The declaration.** A name is lowercase letters, digits and `-`, a
+  letter first, at most 32 characters, with no `-` last or doubled. Its
+  keys are `kind` (`drawn` or `slot`, required), `readers`, `person` and
+  `family`, and any other is refused. `person` is `read` (`hale dna
+  secret show` reveals it; a slot's person also sets it), `write` (a
+  person sets it and never reads it back; a slot's default) or `none` (no
+  person touches it; a drawn secret's default). A drawn secret whose
+  person is `write` is refused (a person never sets it), as is a slot
+  whose person is `none` (no one could fill it). A reader is a program of
+  the seed, by its directory's name, or `host.<command>` for a host
+  command it declares (`[dna.host.<command>]`, spec/habitat.md § Host
+  commands); a `host.` reader with no such command is refused. `family =
+  true` (a bool; `false` by default) makes a slot a family, and is refused
+  on a drawn secret. `optional = true` (a bool; `false` by default) makes
+  a slot one its readers do without: refused on a drawn secret, which
+  always exists. The toolchain is the declaration's one reader (`hale
+  dna declared-secrets [dir]` prints it for the DNA's own code, a secret a
+  line); a declaration it refuses provisions none of them, and `hale dna
+  secrets` and the graft's or upgrade's report say why.
+- **Its entry.** Each is the vault entry `secret-<org>-<name>`, `<org>`
+  the record's schema (`dna_<identity>`), as the nerves' entries are
+  named; a family's member is `secret-<org>-<name>--<label>`, the double
+  dash keeping a member from any other secret's entry. A drawn secret is
+  drawn (32 hex characters) when the vault lacks it, by a graft and every
+  `hale dna upgrade`, and never drawn again by them: it changes only by
+  `hale dna secret rotate <name>`. A slot is an empty entry until `hale
+  dna secret set <name>` fills it, and listed MISSING until then. A
+  family is no entry until a person fills a member; how many it has is
+  the deployment's, not the seed's.
+- **Optional.** An optional slot no person filled is listed `unset
+  (optional)` by `hale dna secrets`, never MISSING; the board does not
+  name it and `run`/`dev` never refuse on it. It is not handed: its
+  readers see no `HALE_SECRET_<NAME>` at all. An optional family with no
+  member is handed EMPTY: its variable is set, to nothing, so a reader
+  tells "none handed over" from "not declared".
+- **A family's members.** `hale dna secret set <name> --member <label>` fills
+  one, `rotate <name> --member <label>` sets it again, `remove <name> --member
+  <label>` takes it out of the vault (the record gets `secret.removed
+  <name>--<label>`), and `show <name> --member <label>` reveals one of a
+  family whose person is `read`. A label is 1 to 63 characters, a
+  lowercase letter or a digit, then lowercase letters, digits and `-`
+  (`^[a-z0-9][a-z0-9-]{0,62}$`); any other is refused, naming the rule.
+  A family named without `--member` is refused, naming it; `--member` on a secret
+  that is no family is refused; `remove` takes a family's member alone.
+  `--as` keeps its meaning on these verbs: who acts. `hale
+  dna secrets` lists a family once, with its members' labels, and as
+  MISSING while it has none, naming `hale dna secret set <name> --member
+  <label>`.
+- **Set, rotate, show.** `hale dna secret set <name>` fills a declared
+  slot from stdin (as any slot, **Secrets** above), in the organism's
+  vault here (`--body` is refused: the organism's vault is the one its
+  readers are handed from); on a drawn secret it is refused, and `secret
+  rotate <name>` draws that one anew. `hale dna secret show <name>`
+  prints the value of a declared secret whose person is `read`, and
+  refuses any other, naming its person; it is the one verb that reveals a
+  value, and the record gets nothing. Each runs where the organism's
+  vault is: through a pointer, `hale habitat organism <name> dna secret
+  …` runs it on the habitat's machine, a value piped in or printed
+  passing through the person's SSH login.
+- **Handed to its programs.** Where the organism's services run — the
+  habitat's apply of its `services` allocation, by compose on this
+  machine or over SSH on a host, and a repository body's compose
+  services (`hale dna dev`, `run`) — each secret a program of the seed
+  reads is put in a reader vault of the organism's own on the machine
+  that runs them: here `<habitat>/allocations/<id>/vault/`, on an SSH
+  host `~/.hale/habitat/<project>/.vault/` beside the render the habitat
+  ships, never in a checkout; mode 700, each entry 600, holding those
+  entries and no other. The organism keeps the directory's address
+  whatever its programs read: when none reads any (the last reader gone,
+  a declaration refused), the set is empty and every entry staged before
+  is removed, and no directory is made for nothing. Each is copied file to file from the vault
+  (over the habitat's SSH on its stdin, for a host), never read into a
+  program or put on a command line; the directory is rewritten in place,
+  never replaced, since a running service mounts it, and on a host it
+  goes with the project's withdrawal, whatever it held. Compose is handed `HALE_VAULT_DIR`
+  (that directory) and, per secret, `HALE_SECRET_<NAME>` (the name
+  upper-cased, `-` as `_`) naming its entry — a family's, each member's
+  entry, one a line, in their labels' order. The application's compose
+  file passes them to the services that read them and mounts the
+  directory, read-only, at the same path; a program then reads one as
+  `std::secret::Credential { vault: <the entry> }`. Compose's environment
+  is the project's, so every service of the project could be passed
+  every secret its programs read: the grant to the declared readers is
+  the compose file's to keep (a secret no program reads is never handed).
+- **Handed to its host commands** by `hale habitat organism place` and
+  `unplace` (spec/habitat.md § Host commands), for the run alone.
+- **Superseded.** A host command's `operator_token` and its
+  `{operator_token_file}` input are refused: the token is a drawn secret
+  the seed declares, `host.<command>` among its readers.
 
 ## The fleet
 

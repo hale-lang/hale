@@ -283,6 +283,12 @@ type Render {
     // an override labelling each service as the habitat's (`render_labels`),
     // compose's last file wherever the render is applied; "" for none
     labels: String = "";
+    // the declared secrets its programs read, a line each:
+    // `<HALE_SECRET_<NAME>>\t<its entries>` (`program_secrets`); "" for none
+    secrets: String = "";
+    // where they are put for it on this machine (`reader_vault_dir`); on an
+    // `ssh` host, beside the render the habitat ships (`ssh_reader_vault`)
+    vault: String = "";
 }
 
 // An organism's own compose services labelled as the habitat's
@@ -614,15 +620,25 @@ locus ComposeProvider {
             return RenderApplied { why: "nothing to apply: the render names no project" };
         }
         write_render_labels(render);
+        // the secrets its programs read, in its reader vault, and compose
+        // handed where they are
+        if len(reader_entries(render.secrets, "\n")) > 0 && len(render.vault) == 0 {
+            return RenderApplied {
+                why: "the render's programs read secrets, and it names no reader vault",
+            };
+        }
+        let staged = stage_reader_vault(render.vault, render.secrets);
+        if len(staged) > 0 { return RenderApplied { why: staged }; }
+        let wrap = reader_wrap(render.secrets, render.vault);
         let up = run_tool(
-            "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n") + "\n"
-                + compose_up_args(render, "\n"),
+            wrap + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n")
+                + "\n" + compose_up_args(render, "\n"),
         );
         if up.code != 0 {
             return RenderApplied { why: "docker compose up failed: " + trim_nl(up.stderr) };
         }
         let config = run_tool(
-            "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--format\njson",
+            wrap + "docker\ncompose\n" + compose_args(render, "\n") + "\nconfig\n--format\njson",
         );
         return RenderApplied {
             ok: true,
@@ -640,8 +656,9 @@ locus ComposeProvider {
             return RenderApplied { why: "nothing to withdraw: the render names no project" };
         }
         let down = run_tool(
-            "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n") + "\n"
-                + compose_down_args(render, "\n"),
+            reader_wrap(render.secrets, render.vault)
+                + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n"
+                + compose_args(render, "\n") + "\n" + compose_down_args(render, "\n"),
         );
         if down.code != 0 {
             return RenderApplied { why: "docker compose down failed: " + trim_nl(down.stderr) };

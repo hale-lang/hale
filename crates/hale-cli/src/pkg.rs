@@ -154,6 +154,11 @@ pub struct DnaManifest {
     /// `dna::habitat::hosted::host_commands` reads and checks it).
     #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
     pub host: Option<toml::Table>,
+    /// `[dna.secrets.<name>]` — a secret the seed declares, which the
+    /// habitat keeps in the organism's vault and hands to its readers
+    /// (`dna::secrets::declared` reads and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub secrets: Option<toml::Table>,
     /// Every other key of `[dna]`, which this toolchain does not know.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
