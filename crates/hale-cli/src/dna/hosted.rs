@@ -680,7 +680,7 @@ impl Target {
                 if let Some(u) = user {
                     c.args(["-l", u]);
                 }
-                c.arg(host).arg(script);
+                c.arg(host).arg(super::remote::posix(script));
                 c
             }
             Target::Here => {
