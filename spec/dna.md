@@ -6182,11 +6182,16 @@ readers = ["api"]
 
 - **The declaration.** `[dna.provides.<capability>]` names `models` or is
   refused; its keys are `service` (a compose service's name), `path` and
-  `models_path` (`/` first, no space, query, fragment or `..`) and `key`,
-  and any other is refused. `key` must name a secret the seed declares
+  `models_path` (`/` first, no space, query, fragment or `..`), `key`,
+  `extension` (the name of the object on each models-list entry that holds
+  the provider's own fields: lowercase letters, digits, `_` and `-`;
+  voice's is `voice`) and `grant` (one line, what a person does when a
+  tenant is served nothing yet, `{organism}` standing for the tenant), and
+  any other is refused. `key` must name a secret the seed declares
   that is drawn and a family; a missing one, a slot or a drawn single is
   refused. The toolchain is its one reader: `hale dna declared-provides
-  [dir]` prints `models\t<service>\t<path>\t<models_path>\t<key>`, and a
+  [dir]` prints `models\t<service>\t<path>\t<models_path>\t<key>\t<extension>\t<grant>`
+  (the last two empty when undeclared), and a
   graft refuses a declaration it refuses, saying why. A habitat holds one
   models provider: grafting a second while one is grafted is refused,
   naming the first.
@@ -6203,21 +6208,30 @@ readers = ["api"]
   the habitat's machine, where `T`'s DNA runs; and `T`'s model map is
   seeded in the name `hale habitat`: `model.rule default` at `standard`
   permitting every size, every `think.<size>` the first served model, every
-  `tools.<size>` and `do.<size>` the first served model whose
-  `capabilities.tools` is true (with tool calls; none when none is), each
+  `tools.<size>` and `do.<size>` the first served model that returns tool
+  calls (with tool calls; none when none is), each
   with `endpoint` `<its link><path>` and `key_vault` `model-HABITAT_<KEY>`.
   A row in any other name than `hale habitat` (a person's, the graft's
   hosted seeding) is never written over, and one the habitat wrote that
   says the same is not written again. The link is the provider's service's
   as `Commands::allocations` resolves it (spec/habitat.md § Placing and
   applying); one with no URL (loopback only on its host) seeds nothing, and
-  the act says why. A provider that serves nothing yet, or does not answer,
-  seeds nothing: `the habitat's models (<provider>) serve none yet: hale
-  habitat models <T> maps them once one is served`.
-- **The models list.** The OpenAI shape: `{"data": [{"id": "<model>",
+  the act says why. A provider that serves `T` nothing yet, or does not
+  answer, seeds nothing: `the habitat's models (<provider>) serve none for
+  <T> yet: <grant>, then \`hale habitat models <T>\``, with the provider's
+  `grant` sentence (`{organism}` replaced by `T`'s name), or, when it
+  declares none or did not answer, `the habitat's models (<provider>) serve
+  none for <T> yet[ (why)]: \`hale habitat models <T>\` maps them once one
+  is served`.
+- **The models list.** The OpenAI shape, the models the asking key may be
+  served by: `{"data": [{"id": "<model>", "available": true|false,
   "capabilities": {"tools": true|false}}, …]}`, in the order the provider
-  prefers them; an entry with no `id` is skipped, and one whose
-  `capabilities.tools` is not said returns no tool calls.
+  prefers them, with `available` and `capabilities` in the entry's
+  `<extension>` object instead when the provider declares one (voice lists
+  its whole catalog, each entry's `voice.available` saying whether that
+  key may spend a seat on it). An entry with no `id` is skipped, one whose
+  `available` is false is not served, one that does not say is, and one
+  whose `capabilities.tools` is not said returns no tool calls.
 - **When.** A graft does it for the organism it grafts, once its own
   services are placed (a sapling's, at the end of its graft), and grafting
   the provider does it for every organism the habitat holds. `hale habitat

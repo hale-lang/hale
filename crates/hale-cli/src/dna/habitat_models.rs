@@ -157,7 +157,7 @@ fn provider_url(p: &Provider) -> Result<String, String> {
 
 /// What the provider serves, asked at `url` with the key `key` as a bearer
 /// token (handed to curl on its stdin, never its arguments).
-fn served_at(url: &str, key: &str) -> Result<Vec<provides::Served>, String> {
+fn served_at(url: &str, key: &str, extension: Option<&str>) -> Result<Vec<provides::Served>, String> {
     use std::io::Write;
     let mut child = Command::new("curl")
         .args(["-s", "-m", "15", "-w", "\n%{http_code}", "-H", "@-", url])
@@ -173,7 +173,7 @@ fn served_at(url: &str, key: &str) -> Result<Vec<provides::Served>, String> {
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let (body, code) = text.rsplit_once('\n').unwrap_or((&text, "0"));
     match code.trim() {
-        "200" => provides::served(body),
+        "200" => provides::served(body, extension),
         "000" | "0" | "" => Err(format!("{url} did not answer")),
         c => Err(format!("{url} answered {c}")),
     }
@@ -234,14 +234,14 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
         vault_put(&vault, &slot, &key)?;
         out.push(format!("{tag}copied into {}'s slot {slot}", t.name));
     }
-    let served = match served_at(&models_url, &key) {
+    let served = match served_at(&models_url, &key, p.decl.extension.as_deref()) {
         Ok(s) if !s.is_empty() => s,
         Ok(_) => {
-            out.push(format!("{tag}the habitat's models ({}) serve none yet: hale habitat models {} maps them once one is served", p.org.name, t.name));
+            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, p.decl.grant.as_deref(), None)));
             return Ok(out);
         }
         Err(why) => {
-            out.push(format!("{tag}the habitat's models ({}) serve none yet ({why}): hale habitat models {} maps them once one is served", p.org.name, t.name));
+            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, None, Some(&why))));
             return Ok(out);
         }
     };

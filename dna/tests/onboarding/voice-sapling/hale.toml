@@ -13,6 +13,8 @@ service     = "voice"
 path        = "/v1/chat/completions"
 models_path = "/v1/models"
 key         = "tenant-key"
+extension   = "voice"
+grant       = "grant tenant-{organism} accounts in voice's admin UI (Projects)"
 
 [dna.secrets.tenant-key]
 kind    = "drawn"

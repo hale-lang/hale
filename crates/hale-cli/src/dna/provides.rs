@@ -39,6 +39,13 @@ pub(crate) struct Models {
     pub models_path: String,
     /// the drawn family its tenants' keys are members of
     pub key: String,
+    /// the object on each models-list entry holding the provider's own
+    /// fields (`available`, `capabilities.tools`), when it keeps them
+    /// there rather than beside `id` (voice: `voice`)
+    pub extension: Option<String>,
+    /// what a person does when the provider serves a tenant nothing yet,
+    /// in the provider's words, `{organism}` standing for the tenant
+    pub grant: Option<String>,
 }
 
 pub(crate) const DEFAULT_PATH: &str = "/v1/chat/completions";
@@ -68,8 +75,8 @@ pub(crate) fn declared(manifest: &str) -> Result<Option<Models>, String> {
             return Err(format!("[dna.provides.{cap}]: a seed provides {} alone", CAPABILITIES.join(", ")));
         }
         let t = t.as_table().ok_or_else(|| format!("[dna.provides.{cap}] is a table"))?;
-        if let Some(k) = t.keys().find(|k| !["service", "path", "models_path", "key"].contains(&k.as_str())) {
-            return Err(format!("[dna.provides.{cap}] has no `{k}` (service, path, models_path, key)"));
+        if let Some(k) = t.keys().find(|k| !["service", "path", "models_path", "key", "extension", "grant"].contains(&k.as_str())) {
+            return Err(format!("[dna.provides.{cap}] has no `{k}` (service, path, models_path, key, extension, grant)"));
         }
         let word = |k: &str| -> Result<Option<String>, String> { t.get(k).map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("[dna.provides.{cap}] {k} is a string"))).transpose() };
         let service = word("service")?.ok_or_else(|| format!("[dna.provides.{cap}] names its service: the compose service that serves it"))?;
@@ -93,16 +100,29 @@ pub(crate) fn declared(manifest: &str) -> Result<Option<Models>, String> {
             Some(_) => return Err(format!("[dna.provides.{cap}] key `{key}`: a drawn family (`kind = \"drawn\"`, `family = true` in [dna.secrets.{key}]), whose members the habitat draws, one per tenant")),
             None => return Err(format!("[dna.provides.{cap}] key `{key}`: the seed declares no secret `{key}` ([dna.secrets.{key}], a drawn family)")),
         }
-        out = Some(Models { service, path, models_path, key });
+        let extension = word("extension")?;
+        if let Some(e) = &extension {
+            if e.is_empty() || e.len() > 32 || !e.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+                return Err(format!("[dna.provides.{cap}] extension `{e}`: the name of an object on each models-list entry (lowercase letters, digits, `_`, `-`)"));
+            }
+        }
+        let grant = word("grant")?;
+        if let Some(g) = &grant {
+            if g.trim().is_empty() || g.len() > 240 || g.contains('\n') || g.contains('\t') {
+                return Err(format!("[dna.provides.{cap}] grant: one line of at most 240 characters, what a person does when a tenant is served nothing yet (`{{organism}}` stands for the tenant)"));
+            }
+        }
+        out = Some(Models { service, path, models_path, key, extension, grant });
     }
     Ok(out)
 }
 
 /// The declaration as `hale dna declared-provides` prints it for the DNA's
-/// code, a capability a line: `models\t<service>\t<path>\t<models_path>\t<key>`.
+/// code, a capability a line: `models\t<service>\t<path>\t<models_path>\t<key>\t<extension>\t<grant>`
+/// (the last two empty when not declared).
 pub(crate) fn lines(m: &Option<Models>) -> String {
     match m {
-        Some(m) => format!("models\t{}\t{}\t{}\t{}\n", m.service, m.path, m.models_path, m.key),
+        Some(m) => format!("models\t{}\t{}\t{}\t{}\t{}\t{}\n", m.service, m.path, m.models_path, m.key, m.extension.as_deref().unwrap_or(""), m.grant.as_deref().unwrap_or("")),
         None => String::new(),
     }
 }
@@ -144,19 +164,42 @@ pub(crate) struct Served {
     pub tools: bool,
 }
 
-/// The models an OpenAI-shaped models list serves, in its order:
-/// `{"data": [{"id": "...", "capabilities": {"tools": true}}, …]}`. A
-/// model whose `capabilities.tools` is not said returns no tool calls.
-pub(crate) fn served(body: &str) -> Result<Vec<Served>, String> {
+/// The models an OpenAI-shaped models list serves the key that asked, in
+/// its order: `{"data": [{"id": "...", "available": true, "capabilities":
+/// {"tools": true}}, …]}`, or with the provider's own fields in the object
+/// `extension` names on each entry (`{"id": "...", "voice": {"available":
+/// …, "capabilities": …}}`). An entry that says it is not available is
+/// one the key cannot be served by and is left out; one that does not say
+/// is served. A model whose `capabilities.tools` is not said returns no
+/// tool calls.
+pub(crate) fn served(body: &str, extension: Option<&str>) -> Result<Vec<Served>, String> {
     let v: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("its models list is not JSON: {e}"))?;
     let data = v["data"].as_array().ok_or("its models list has no `data` array")?;
     Ok(data
         .iter()
         .filter_map(|m| {
             let id = m["id"].as_str().filter(|s| !s.is_empty())?;
-            Some(Served { id: id.to_string(), tools: m["capabilities"]["tools"].as_bool().unwrap_or(false) })
+            let own = match extension {
+                Some(e) => &m[e],
+                None => m,
+            };
+            if own["available"].as_bool() == Some(false) {
+                return None;
+            }
+            Some(Served { id: id.to_string(), tools: own["capabilities"]["tools"].as_bool().unwrap_or(false) })
         })
         .collect())
+}
+
+/// What the habitat says when the provider `provider` serves the tenant
+/// `organism` nothing yet: the provider's own `grant` sentence when it
+/// declares one, and how to map them after.
+pub(crate) fn serve_none(provider: &str, organism: &str, grant: Option<&str>, why: Option<&str>) -> String {
+    let why = why.map(|w| format!(" ({w})")).unwrap_or_default();
+    match grant {
+        Some(g) => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: {}, then `hale habitat models {organism}`", g.replace("{organism}", organism)),
+        None => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: `hale habitat models {organism}` maps them once one is served"),
+    }
 }
 
 /// Who the habitat's own model rows are written by: a row in any other
@@ -226,8 +269,15 @@ readers = ["api"]
     #[test]
     fn a_models_provider_is_read_with_its_defaults() {
         let m = declared(VOICE).unwrap().unwrap();
-        assert_eq!(m, Models { service: "api".into(), path: "/v1/chat/completions".into(), models_path: "/v1/models".into(), key: "tenant-key".into() });
-        assert_eq!(lines(&Some(m)), "models\tapi\t/v1/chat/completions\t/v1/models\ttenant-key\n");
+        assert_eq!(m, Models { service: "api".into(), path: "/v1/chat/completions".into(), models_path: "/v1/models".into(), key: "tenant-key".into(), extension: None, grant: None });
+        assert_eq!(lines(&Some(m)), "models\tapi\t/v1/chat/completions\t/v1/models\ttenant-key\t\t\n");
+        // the provider's own fields, and its words for a tenant served nothing
+        let own = VOICE.replace("key = \"tenant-key\"\n\n", "key = \"tenant-key\"\nextension = \"voice\"\ngrant = \"grant tenant-{organism} accounts in voice's admin UI (Projects)\"\n\n");
+        let m = declared(&own).unwrap().unwrap();
+        assert_eq!((m.extension.as_deref(), m.grant.as_deref()), (Some("voice"), Some("grant tenant-{organism} accounts in voice's admin UI (Projects)")));
+        assert!(lines(&Some(m)).ends_with("\ttenant-key\tvoice\tgrant tenant-{organism} accounts in voice's admin UI (Projects)\n"));
+        assert!(declared(&VOICE.replace("key = \"tenant-key\"\n\n", "key = \"tenant-key\"\nextension = \"Voice X\"\n\n")).unwrap_err().contains("extension `Voice X`"));
+        assert!(declared(&VOICE.replace("key = \"tenant-key\"\n\n", "key = \"tenant-key\"\ngrant = \"a\\nb\"\n\n")).unwrap_err().contains("grant: one line"));
         assert_eq!(declared("[dna]\nneeds = []\n").unwrap(), None);
         assert_eq!(lines(&None), "");
         let paths = VOICE.replace("key = \"tenant-key\"\n\n", "key = \"tenant-key\"\npath = \"/openai/v1/chat\"\nmodels_path = \"/openai/v1/models\"\n\n");
@@ -268,11 +318,37 @@ readers = ["api"]
 
     #[test]
     fn a_models_list_is_read_in_its_order_and_tools_unsaid_is_none() {
-        let s = served(r#"{"object": "list", "data": [{"id": "qwen3-0.6b", "object": "model", "capabilities": {"tools": false}}, {"id": "small"}, {"id": "coder", "capabilities": {"tools": true}}, {"object": "model"}]}"#).unwrap();
+        let s = served(r#"{"object": "list", "data": [{"id": "qwen3-0.6b", "object": "model", "capabilities": {"tools": false}}, {"id": "small"}, {"id": "coder", "capabilities": {"tools": true}}, {"object": "model"}]}"#, None).unwrap();
         assert_eq!(s, vec![Served { id: "qwen3-0.6b".into(), tools: false }, Served { id: "small".into(), tools: false }, Served { id: "coder".into(), tools: true }]);
-        assert_eq!(served(r#"{"data": []}"#).unwrap(), vec![]);
-        assert!(served("not json").unwrap_err().contains("not JSON"));
-        assert!(served(r#"{"models": []}"#).unwrap_err().contains("no `data` array"));
+        assert_eq!(served(r#"{"data": []}"#, None).unwrap(), vec![]);
+        assert!(served("not json", None).unwrap_err().contains("not JSON"));
+        assert!(served(r#"{"models": []}"#, None).unwrap_err().contains("no `data` array"));
+        // a model that says it is not available to this key is not served
+        assert_eq!(served(r#"{"data": [{"id": "a", "available": false}, {"id": "b"}]}"#, None).unwrap(), vec![Served { id: "b".into(), tools: false }]);
+    }
+
+    #[test]
+    fn a_providers_own_fields_are_read_from_its_extension() {
+        // voice's shape: its fields under `voice`, the whole catalog listed
+        let body = r#"{"data": [
+            {"id": "big", "voice": {"available": false, "capabilities": {"tools": true}}},
+            {"id": "qwen3-0.6b", "voice": {"available": true, "capabilities": {"tools": false}}},
+            {"id": "coder", "voice": {"available": true, "capabilities": {"tools": true}}},
+            {"id": "top", "available": false, "capabilities": {"tools": true}}
+        ]}"#;
+        let s = served(body, Some("voice")).unwrap();
+        assert_eq!(s, vec![Served { id: "qwen3-0.6b".into(), tools: false }, Served { id: "coder".into(), tools: true }, Served { id: "top".into(), tools: false }]);
+        // none available to the key: served nothing
+        assert_eq!(served(r#"{"data": [{"id": "a", "voice": {"available": false}}]}"#, Some("voice")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_tenant_served_nothing_is_told_what_to_do_in_the_providers_words() {
+        assert_eq!(
+            serve_none("voice", "todo", Some("grant tenant-{organism} accounts in voice's admin UI (Projects)"), None),
+            "the habitat's models (voice) serve none for todo yet: grant tenant-todo accounts in voice's admin UI (Projects), then `hale habitat models todo`"
+        );
+        assert_eq!(serve_none("voice", "todo", None, Some("http://x answered 502")), "the habitat's models (voice) serve none for todo yet (http://x answered 502): `hale habitat models todo` maps them once one is served");
     }
 
     fn latest(rows: &[(&str, &str, serde_json::Value)]) -> BTreeMap<(String, String), serde_json::Value> {

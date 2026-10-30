@@ -10,7 +10,8 @@
 # (HALE_VAULT_DIR); the members are listed by their prefix
 # (HALE_SECRET_TENANT_KEY_FAMILY) at each request, so a tenant keyed while
 # voice runs is admitted without a restart. `GET /v1/models` lists what it
-# serves, each model's `capabilities.tools` said.
+# serves, each model's `voice.available` and `voice.capabilities.tools`
+# said, as voice does (its manifest's `extension = "voice"`).
 import json, os, socket, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -85,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/models":
             if tenant_of(self.headers) is None:
                 return self.unauthorized()
-            return self.reply(200, "application/json", json.dumps({"object": "list", "data": [{"id": "local", "object": "model", "owned_by": "voice", "capabilities": {"tools": False}}]}).encode())
+            return self.reply(200, "application/json", json.dumps({"object": "list", "data": [{"id": "local", "object": "model", "owned_by": "voice", "voice": {"available": True, "capabilities": {"tools": False}}}]}).encode())
         self.reply(404, "text/plain", b"not found")
 
     def do_POST(self):
