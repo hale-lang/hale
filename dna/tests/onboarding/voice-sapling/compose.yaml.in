@@ -15,7 +15,14 @@ services:
     working_dir: /srv
     volumes:
       - "./voice.py:/srv/voice.py:ro"
+      # the reader vault the habitat stages its tenants' keys in, mounted
+      # read-only at the path it is handed by, as voice's own is
+      - "${HALE_VAULT_DIR}:${HALE_VAULT_DIR}:ro"
     environment:
+      # where the tenants' keys are, and their entries' common prefix: a
+      # member drawn while voice runs is listed from it
+      HALE_VAULT_DIR: "${HALE_VAULT_DIR}"
+      HALE_SECRET_TENANT_KEY_FAMILY: "${HALE_SECRET_TENANT_KEY_FAMILY}"
       VOICE_PORT: "@VOICE_PORT@"
       VOICE_SEAT: "http://127.0.0.1:@MODEL_PORT@/v1/chat/completions"
       # the host's facts, as the habitat hands a project placed on a host

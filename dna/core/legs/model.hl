@@ -278,6 +278,10 @@ locus ModelPerformer {
         kinds: String = "agent service software"; // the work kinds the model leg takes
         effect: String = ""; // the effect class declared for this leg: effect_free for a backend that answers, uncertain for one that works in place
         router: dna::ModelRouter = dna::ModelRouter { };
+        // asks only where the model map names an endpoint for the Work (the
+        // habitat's models): a catalog with no backend of its own, whose
+        // unmapped Work is given back unperformed, never failed
+        mapped_only: Bool = false;
         // a rate-limited call: up to `retries` more tries, the first after
         // `backoff_ms`, each wait double the last, each recorded
         backoff_ms: Int = 1000;
@@ -709,6 +713,12 @@ locus ModelPerformer {
         // a model the mapping named and then refused (a `tools` or `do` Work
         // on a model that returns no tool calls) is never called
         let choice = std::json::find_field_raw(brief.hat, "model");
+        // a catalog with no backend of its own asks only the map's endpoint
+        if self.mapped_only && len(std::json::find_string_field(choice, "endpoint")) == 0 {
+            return Performance {
+                refused: "no model performs this Work: the catalog has no backend of its own and the model map names no endpoint for it (`hale habitat models <organism>` maps the habitat's; `hale dna models map` lists the map)",
+            };
+        }
         let named = std::json::find_string_field(choice, "model");
         if len(named) > 0 && std::str::trim(std::json::find_field_raw(choice, "ok")) == "false" {
             return Performance {

@@ -132,6 +132,32 @@ A graft plans each body part first. The organism plane (its record in memory, it
 
 ---
 
+### The Habitat's Models
+
+The default model backend of every organism the habitat grafts is the habitat's own: an organism that declares in its `hale.toml` that it provides `models` (voice does), with no person minting a key. No hosted placeholder is written at graft: an organism grafted with no model key in the vault gets no hosted backend at all (a harness on `PATH`, else the desk), and `hale dna secrets` lists no model key for it.
+
+```toml
+[dna.provides.models]
+service     = "api"                  # the compose service that serves it
+path        = "/v1/chat/completions" # the default
+models_path = "/v1/models"           # the default
+key         = "tenant-key"           # a drawn family: a member per tenant
+
+[dna.secrets.tenant-key]
+kind    = "drawn"
+family  = true
+readers = ["api"]
+```
+
+Once the provider's services are applied (a sapling grafted with `--host`), for every organism the habitat holds, the provider among them:
+
+- a member of `tenant-key` labelled by the organism's name is drawn into the vault and staged in the provider's reader vault where its services run, in place, so its running api reads it (compose hands it `HALE_VAULT_DIR`, `HALE_SECRET_TENANT_KEY` and `HALE_SECRET_TENANT_KEY_FAMILY`, the members' common prefix);
+- the value is copied into the organism's own slot, `model-HABITAT_<KEY>`;
+- the provider is asked what it serves (`GET <its link>/v1/models`, the organism's key as a bearer token; each model says whether the key may use it, `available`, and whether it returns tool calls, `capabilities.tools`: voice keeps both under each entry's `voice` object and says so with `extension = "voice"`);
+- the organism's model map is seeded in the name `hale habitat`: `think.*` to the first model served, `tools.*` and `do.*` to the first that returns tool calls (none when none does), each at the provider's `/v1/chat/completions` with the key's slot. A category a person mapped is never written over.
+
+The graft does this, and grafting the provider does it for every organism already there. When the provider serves the organism nothing yet, the graft says so in the provider's words (its `grant`): voice's `the habitat's models (voice) serve none for <organism> yet: grant tenant-<organism> accounts in voice's admin UI (Projects), then \`hale habitat models <organism>\``, since voice gives a new tenant no accounts until its operator does; that command (`hale habitat models <organism>|--all [--plan]`) does it again once a model is placed. `hale dna secret rotate tenant-key --member <organism>` in the provider draws an organism's key anew (the habitat updates its copy), and removing an organism removes its key. A habitat holds one models provider: grafting a second is refused, naming the first.
+
 ### Pairing an Agent with a Person (MCP)
 
 The habitat's head serves its command surface over MCP as well as over its socket and its HTTP commands port, with the same bearer and the same roles. `hale habitat status` prints the endpoint as `mcp://127.0.0.1:<port>`. An agent's host connects with the person's ID token, the bearer their face session holds:
@@ -263,16 +289,16 @@ VOICE_ENROLLMENT_TOKEN=vn-... docker compose -p <project> up -d node
 
 *(To serve a live local LLM, replace `"engine": "static"` with an `"openai-compatible"` seat pointed at a local Ollama or vLLM endpoint.)*
 
-### 6. Point an Organism's Model Map at `voice`
+### 6. Point Every Organism's Model Map at `voice`
 
-Store the `vk-...` API key in a vault slot (`hale dna secret set <SLOT>` inside `voice`'s directory), then map the `think.standard` model category to `voice` and probe it:
+voice provides the habitat's models ([The Habitat's Models](#the-habitats-models)): its graft keyed every organism the habitat holds and mapped each one's model map at it, or said that it serves none yet. Once the seat above serves `echo-1`, map them again and probe one:
 
 ```sh
-hale habitat model-map voice think.standard echo-1 \
-  --endpoint $api/v1/chat/completions \
-  --key-vault <slot>
+hale habitat models --all
 hale habitat model-probe voice think.standard
 ```
+
+A map you point elsewhere by hand is kept: `hale habitat model-map <organism> think.standard <model> --endpoint <url> --key-vault <slot>`, the key in a vault slot (`hale dna secret set <SLOT>` in the organism's directory).
 
 ### 7. Send a Streaming Completion Request
 
@@ -293,7 +319,7 @@ curl -N $api/v1/chat/completions \
 - **Forgetting a habitat:** `hale habitat down --forget` removes the habitat whole, plan first, like terraform. It prints everything it would remove, grouped: the habitat's record and memory (row count, organisms, newest row), each grafted organism (record, genome repository, Forgejo repository, allocations by host), the compose projects and volumes, the vault slots (by name, never a value), the Forgejo instance and its accounts, the hosts, and what it runs on each host over SSH, each line with its size or count and whether it is recoverable. Nothing is touched until you type the habitat's name back at a terminal; there is no `--yes`, and without a terminal it refuses. `--plan` prints the plan and exits. A forget that fails part way says what was done and what was not, and running it again plans from what remains. The habitat cannot remove the line each host's `~/.ssh/authorized_keys` took, so the CLI does, over your own SSH login, by the key's `habitat-<id>` comment; a host your login does not reach keeps it, the CLI names the line, and the next plan shows the note until a forget clears it. A host that does not answer is planned as `unreachable: left on <host>`: the habitat's side goes and what is left there is named. The services placed on the hosts are taken off first (each one's `uninstall`, then what placing installed there); through a pointer your machine does that over your login before the forget on the habitat's machine runs, and asks for the habitat's name for that step. The notes a forget keeps (`forgotten-notes.jsonl`) last only while something in them is undone: once your machine has taken a host's key line off, its note goes, and the file and the emptied habitat directory go with the last. The vault's nerves accounts go too, an application's among them under every name it was attached by. Slots a person supplied (a GitHub token, a `--key-vault` slot) are kept. If anything changes between the plan and your confirmation, the act refuses with `plan_changed` and you plan again.
 - **Removing an organism:** `hale habitat organism remove <name>` plans and confirms the same way (its record and memory, genome repository, Forgejo repository and account, allocations by host, compose services, vault slots), typed back by the organism's name; the organisms screen of the operator face offers the same.
 - **Resuming interrupted grafts:** `hale habitat graft` verifies pinned file digests before grafting and resumes cleanly from its last completed step if interrupted.
-- **Model map and graft log rows:** `model-map` and `model-probe` are the head's `Commands::set_model_map` and `Commands::probe_model`; a key is named only by its vault slot. The face follows a graft's log through `Commands::graft_log`, which reads only the log of a graft the habitat itself started.
+- **Model map and graft log rows:** `model-map` and `model-probe` are the head's `Commands::set_model_map` and `Commands::probe_model`; a key is named only by its vault slot. `models` is the habitat's own act (no head row): through a pointer it runs on the habitat's machine. The face follows a graft's log through `Commands::graft_log`, which reads only the log of a graft the habitat itself started.
 - **No model:** every face screen works with the models catalog empty. Without a model, asks and leg work become handed Tasks that a person takes and reports done as text from the face; nothing waits on a model or times out into a leg ([Workflows: with no model](./dna/workflow.md#with-no-model)).
 - **SSH host key verification:** `hale habitat host probe` rejects any host whose SSH host key has changed since `host add`; a host in `pending-key` state is waiting for the habitat's public key line in `~/.ssh/authorized_keys`.
 - **Agent operator brief:** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items). It reads the record alone, never the vault.

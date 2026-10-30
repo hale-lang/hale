@@ -4,8 +4,8 @@ The **skin** is the organism's credential, identity, and failure-containment bou
 
 ```sh
 hale dna secrets                        # check status of all drawn and user-supplied secrets
-hale dna secret set OPENAI_API_KEY      # populate a secret slot from stdin
-hale dna secret rotate OPENAI_API_KEY   # rotate an existing secret slot from stdin
+hale dna secret set FORGE_TOKEN         # populate a secret slot from stdin
+hale dna secret rotate FORGE_TOKEN      # rotate an existing secret slot from stdin
 ```
 
 ## The Vault
@@ -32,8 +32,8 @@ the organism's secrets (the local vault, …):
   present  nats-dna_35bf…-app-refproj  the nerves: the application `refproj`'s account
   present  oidc-client-dna-local  the skin: the head's OIDC client secret (the local stub's)
   MISSING  forge-token  the forge's token — a person supplies it: `hale dna secret set FORGE_TOKEN`
-  MISSING  model-OPENAI_API_KEY  the model's key OPENAI_API_KEY — a person supplies it: `hale dna secret set OPENAI_API_KEY`
-2 missing
+  present  model-HABITAT_35BF…  the model map's key for think.deep, think.standard, think.quick (the habitat's models)
+1 missing
 ```
 
 Every vault entry matches one of the following naming patterns (where `<identity>` is `[dna] record`, `<org>` is `dna_<identity>`, and `<id>` is the first 12 hex digits of `<identity>`):
@@ -47,9 +47,12 @@ Every vault entry matches one of the following naming patterns (where `<identity
 | `oidc-client-<client>` (`dna-local` by default) | Drawn (loopback issuer) or Slot (remote issuer) | OIDC client secret for `hale dna head` |
 | `oidc-service-<service>` (per `dna.oidc.service`) | Drawn | Machine-to-machine service client secret |
 | `forge-token` | Slot | GitHub / forge API token (`FORGE_TOKEN`) |
-| `model-<NAME>` (per `dna/org/models.hl` or `dna/org/work.hl`) | Slot | Hosted LLM provider API key |
+| `model-<NAME>` (per `dna/org/models.hl` or `dna/org/work.hl`) | Slot | Hosted LLM provider API key (written only when its key was in the vault at graft: no placeholder) |
+| a category's `key_vault` (per latest `model.category` row naming one) | Slot | The key the model map asks that endpoint with |
+| `model-HABITAT_<ID>` (`<id>` upper-cased) | Filled by the habitat | The organism's key at the habitat's models ([The Habitat's Models](../habitat.md#the-habitats-models)) |
 | `secret-<org>-<name>` (per `[dna.secrets.<name>]` in `hale.toml`) | Drawn or Slot, as declared | A secret the seed declares for its own programs and host commands ([Declared Secrets](#declared-secrets)) |
 | `secret-<org>-<name>--<label>` (per member a person fills) | Slot (a family) | A member of a secret family the seed declares |
+| `secret-<org>-<name>--<organism>` (per tenant of a models provider) | Drawn (a family) | A tenant's key at the habitat's models: a member of the provider's `key` family |
 
 - **Drawn secrets**: Generated automatically by `hale habitat graft` and `hale dna upgrade` (32 random hex characters from `/dev/urandom`) whenever missing. NATS passwords are rotated on every `graft` and `upgrade`, updating `<habitat>/allocations/<id>/nats.secrets.conf` and `postgres.secrets` (mode `0600`). `hale dna run` and `hale dna dev` refuse to start if any drawn secret is missing:
 
@@ -69,13 +72,13 @@ hale dna secret set <NAME> [--body <user@host>]
 hale dna secret rotate <NAME> [--body <user@host>]
 ```
 
-- **Valid `<NAME>` identifiers**: `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, any credential key declared via `HostedCredential { key: "…" }` in `dna/org/models.hl` or `dna/org/work.hl`, or the name of a slot the seed declares in `[dna.secrets]` ([Declared Secrets](#declared-secrets)). Unrecognized names are rejected.
+- **Valid `<NAME>` identifiers**: `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, any credential key declared via `HostedCredential { key: "…" }` in `dna/org/models.hl` or `dna/org/work.hl`, the model key of a `model-<NAME>` slot a model category asks its endpoint with (`HABITAT_<ID>`, the habitat's models' key, among them), or the name of a slot the seed declares in `[dna.secrets]` ([Declared Secrets](#declared-secrets)). Unrecognized names are rejected.
 - **Stdin-only input**: The secret value is read from a single line on stdin. Passing `NAME=value` on the command line is rejected to prevent secrets from leaking into shell history or `ps` output.
 
 ```text
-$ hale dna secret set OPENAI_API_KEY
-value for OPENAI_API_KEY (this machine), on one line:
-secret set: OPENAI_API_KEY is in its slot of the vault, …/model-OPENAI_API_KEY (secret.rotated OPENAI_API_KEY; the value is nowhere in the record). A part reads it from the vault where it uses it
+$ hale dna secret set FORGE_TOKEN
+value for FORGE_TOKEN (this machine), on one line:
+secret set: FORGE_TOKEN is in its slot of the vault, …/forge-token (secret.rotated FORGE_TOKEN; the value is nowhere in the record). A part reads it from the vault where it uses it
 ```
 
 - **Remote host bodies (`--body`)**: When `--body <user@host>` is passed (or `dna.body` is configured in Git config via `hale dna body provision`), the secret is piped over SSH stdin directly into the remote host's vault.
@@ -115,7 +118,8 @@ readers  = ["api"]
 - **Optional**: `optional = true` on a slot (refused on a drawn secret, which always exists) means its readers do without it. Unset, `hale dna secrets` lists it `unset (optional)` rather than MISSING, nothing refuses on it, and it is not handed: no `HALE_SECRET_<NAME>` at all. An optional family with no member is handed empty: its variable set, to nothing, so a reader tells "none handed over" from "not declared".
 - **Show**: `hale dna secret show <name>` prints the value of a secret declared `person = "read"`, and refuses any other, saying why. Through a pointer, run it (and `set`) as `hale habitat organism <organism> dna secret show <name>`: it runs on the habitat's machine, where the vault is.
 - **Families**: `family = true` on a slot holds as many values as the deployment needs (several model tokens on one host, say), each a member a person fills under a label: `hale dna secret set model-token --member work`, `rotate … --member work`, `remove … --member work`, and `show … --member work` for a family a person reads. A label is 1 to 63 characters, a lowercase letter or a digit and then lowercase letters, digits and `-` (`^[a-z0-9][a-z0-9-]{0,62}$`). Each member is the entry `secret-<org>-<name>--<label>`. A family named without `--member` is refused, and so is `--member` on a secret that is no family. `--as` keeps its meaning on these verbs too: who acts, as the record's row names it. `hale dna secrets` lists the family once with its members, and as MISSING while it has none.
-- **Handed to programs**: where the organism's services run (the habitat's apply, on this machine or an SSH host, and `hale dna dev`/`run` for a repository), the habitat copies each secret a program reads into a vault directory of the organism's own there (mode 700, each entry 600; `<habitat>/allocations/<id>/vault` here, `~/.hale/habitat/<project>/.vault` on a host, never in a checkout) and hands compose `HALE_VAULT_DIR` (that directory) and `HALE_SECRET_<NAME>` (the entry's name; a family's, each member's entry, one a line). The compose file passes them to the services that read them and mounts the directory read-only at the same path:
+- **Drawn families**: `family = true` on a drawn secret is refused unless the seed provides a capability keyed by it (`[dna.provides.models] key = "<name>"`, [The Habitat's Models](../habitat.md#the-habitats-models)). Its members are the habitat's, one per tenant organism, labelled by the organism's name: drawn when the habitat keys a tenant, removed with it. `hale dna secrets` lists it `no tenant` until the first, never MISSING; `rotate <name> --member <organism>` draws one anew (the habitat updates the tenant's copy and the reader vault), and `set` and `remove` are refused.
+- **Handed to programs**: where the organism's services run (the habitat's apply, on this machine or an SSH host, and `hale dna dev`/`run` for a repository), the habitat copies each secret a program reads into a vault directory of the organism's own there (mode 700, each entry 600; `<habitat>/allocations/<id>/vault` here, `~/.hale/habitat/<project>/.vault` on a host, never in a checkout) and hands compose `HALE_VAULT_DIR` (that directory) and `HALE_SECRET_<NAME>` (the entry's name; a family's, each member's entry, one a line), and for a family `HALE_SECRET_<NAME>_FAMILY`, its members' common prefix: list `HALE_VAULT_DIR` by it to see members drawn while the service runs (the habitat rewrites the directory in place when it draws or removes one of a drawn family's). The compose file passes them to the services that read them and mounts the directory read-only at the same path:
 
 ```yaml
 services:

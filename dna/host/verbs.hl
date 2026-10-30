@@ -1888,19 +1888,18 @@ fn secret_verb(
     if !secret_name_ok(name) {
         return fail("secret " + sub + ": `" + name + "` is not a secret's name (A-Z, 0-9, _)");
     }
-    // GH #989: a slot the organism requires, and no other name
+    // GH #989: a slot the organism requires, and no other name: the model
+    // map's endpoint keys among them (a category's `model-<NAME>` slot)
+    let model_keys = catalog_credentials(root) + " " + legs_credentials(root) + " "
+        + mapped_key_names(root);
     if name != "FORGE_TOKEN"
         && name != OIDC_CLIENT_SLOT
-        && !std::str::contains(
-            " " + catalog_credentials(root) + " " + legs_credentials(root) + " ",
-            " " + name + " ",
-        )
+        && !std::str::contains(" " + model_keys + " ", " " + name + " ")
     {
         return fail(
             "secret " + sub + ": `" + name
-                + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl or dna/org/work.hl names: "
-                + std::str::trim(catalog_credentials(root) + " " + legs_credentials(root))
-                + "); `hale dna secrets` lists them",
+                + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl, dna/org/work.hl or the model map names: "
+                + std::str::trim(model_keys) + "); `hale dna secrets` lists them",
         );
     }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
@@ -2002,6 +2001,11 @@ fn declared_secret_refusal(
         return "secret remove: `" + name
             + "` is no family: remove takes a family's member (`--member <label>`); a declared secret leaves the vault when its declaration does and the organism is removed";
     }
+    if sub == "remove" && kind == "drawn" {
+        return "secret remove: `" + name
+            + "` is a drawn family, a member per tenant the habitat keys: a member goes with its tenant (`hale habitat organism remove "
+            + label + "`)";
+    }
     if sub == "show" { return secret_show_refusal(name, person); }
     if sub == "set" && kind == "drawn" {
         return "secret set: `" + name
@@ -2069,6 +2073,12 @@ fn declared_secret_verb(
         }
         let value = std::io::fs::read_file(std::secret::vault_local_dir() + "/" + vault) or "";
         return answer(value + "\n");
+    }
+    if sub == "rotate" && kind == "drawn" && family && !secret_present(vault) {
+        return fail(
+            "secret rotate: `" + shown + "` is no member (" + vault
+                + "): the habitat draws a member for each tenant organism it keys, labelled by its name (`hale habitat models <organism>`)",
+        );
     }
     if (sub == "rotate" || sub == "remove") && kind == "slot" && !secret_present(vault) {
         return fail(

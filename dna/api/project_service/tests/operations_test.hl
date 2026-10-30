@@ -35,6 +35,18 @@ fn git(repo: String, argv: String) -> String {
     return dna::trim_nl(r.stdout);
 }
 
+// A hosted backend a person adds to a generated catalog: its key named,
+// and in no slot of the vault until `hale dna secret set` fills it.
+const HOSTED_BY_HAND: String = "\n// A hosted backend added by hand; its key is set with `hale dna secret set`.\nfn hosted() -> dna::OpenAiChat {\n    return dna::OpenAiChat {\n        name: \"deep\",\n        model: \"gpt-4o\",\n        endpoint: \"https://api.openai.com/v1/chat/completions\",\n        credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" },\n        input_micros_per_1k: 2500,\n        output_micros_per_1k: 10000,\n    };\n}\n";
+
+// `HOSTED_BY_HAND` appended to the catalog of the project at `root`.
+fn add_hosted_backend(root: String) {
+    let models = root + "/dna/org/models.hl";
+    let catalog = std::io::fs::read_file(models) or "";
+    std::test::assert(len(catalog) > 0, "the project has a catalog: " + models);
+    std::io::fs::write_file(models, catalog + HOSTED_BY_HAND) or discard;
+}
+
 // A Record (one row) in a fresh repository at `dir`, with or without a seed.
 fn make_record(dir: String, seed: Bool) -> String {
     std::io::fs::mkdir(dir) or discard;
@@ -700,7 +712,22 @@ locus OperationCases {
                 && std::json::array_first(std::json::find_field_raw(none, "rows")).done == false,
             "without a head_before every row is new",
         );
-        // credentials from the catalog the generated project carries
+        // credentials from the project's catalog: a graft with no model key
+        // in the vault writes no hosted backend, so it names none
+        std::test::assert_eq_str(
+            head::catalog_credentials(self.project),
+            "",
+            "a keyless graft's catalog names no credential",
+        );
+        std::test::assert(
+            std::str::contains(
+                head::credentials_json(self.cfg, self.project),
+                "\"needed\": []",
+            ),
+            "nothing is needed: " + head::credentials_json(self.cfg, self.project),
+        );
+        // a hosted backend added by hand names its key
+        add_hosted_backend(self.project);
         let needed = head::catalog_credentials(self.project);
         std::test::assert(
             len(needed) > 0 && !std::str::contains(needed, "\""),

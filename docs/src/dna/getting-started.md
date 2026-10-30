@@ -16,7 +16,7 @@ Before creating an organism, verify that your machine has:
 - **`hale` on `PATH`**: The Hale compiler and DNA CLI.
 - **`git`**: Candidate branches and base commits live in your Git repository. `hale habitat graft` initializes a repository automatically if none exists.
 - **`docker compose` on `PATH`**: Runs the organism's private backing services—PostgreSQL (`memory`), NATS JetStream (`nerves`), and Prometheus (`senses`)—inside your machine's local habitat.
-- **An LLM backend (optional but recommended)**: Either a hosted API key stored in the vault (`hale dna secret set <NAME>`), a local `ollama` server on `PATH` (`127.0.0.1:11434`), or a coding CLI harness (`claude` or `codex`) on `PATH`. Without a model, the organism still runs, but the Leader cannot plan tasks or decide delegated reviews, so every review waits for human Board approval.
+- **An LLM backend (optional but recommended)**: By default, the habitat's own models: graft [voice](https://github.com/hale-lang/voice) into the habitat and every organism's model map is pointed at it, each with a key the habitat draws, so nobody mints one ([The Habitat](../habitat.md#the-habitats-models)). Otherwise, a hosted API key already in the vault when you graft (Anthropic or OpenAI), a local `ollama` server on `PATH` (`127.0.0.1:11434`), or a coding CLI harness (`claude` or `codex`) on `PATH`. Without a model, the organism still runs, but the Leader cannot plan tasks or decide delegated reviews, so every review waits for human Board approval.
 - **A Git remote (optional)**: Required only when sharing a record across teammates or deploying to remote fleet nodes.
 
 ## Provisioning an Organism
@@ -38,8 +38,9 @@ created …/demo/dna/org/charter.hl
 created …/demo/dna/org/law.hl
 created …/demo/dna/org/models.hl
 models  found   no model key in the vault (`hale dna secret set <NAME>`), no ollama on PATH, claude on PATH
-models  frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY, not in the vault: hosted backends are not permitted until it is) · desk = llama3 (ollama at 127.0.0.1:11434, not found)
+models  no hosted backend (no model key in the vault) · desk = llama3 (ollama at 127.0.0.1:11434, not found)
 models  editor, agent, leader: quick = harness (claude), deep = harness (claude) · private = desk · budget 25.00 USD a day (`hale dna models` probes them)
+models  the habitat's models fill the model map: a models provider it grafted (voice) is every tenant's model backend (`hale habitat models <organism>`)
 created …/demo/dna/org/work.hl
 created …/demo/dna/org/workflows.hl
 created …/demo/dna/org/own_workflows.hl
@@ -61,7 +62,6 @@ memory  its allocation's superuser password in the vault, and its file beside th
 nerves  every role's password drawn into the vault, and the nerves allocation's secrets written (mode 600)
 secret  oidc-client-dna-local drawn into the vault
 secret  forge-token: a slot in the vault for a person to fill (`hale dna secret set`)
-secret  model-OPENAI_API_KEY: a slot in the vault for a person to fill (`hale dna secret set`)
 nerves  the organization's stream created
 
 next steps:
@@ -72,7 +72,7 @@ next steps:
 
 Key details from the `graft` output:
 
-- **Model probing (`models`)**: `graft` inspects your machine's vault and `PATH` to generate `dna/org/models.hl`. In the output above, `claude` was found on `PATH` and no API key was present in the vault, so `quick` and `deep` tiers default to the `claude` harness while hosted models remain disabled until `OPENAI_API_KEY` is set.
+- **Model probing (`models`)**: `graft` inspects your machine's vault and `PATH` to generate `dna/org/models.hl`. In the output above, `claude` was found on `PATH` and no API key was present in the vault, so `quick` and `deep` tiers default to the `claude` harness and no hosted backend is written at all: there is no placeholder key to fill. When the habitat holds a models provider (voice), the graft also points the organism's model map at it (`models  demo's model map points at the habitat's models …`), and a Work the map resolves is asked there with the organism's own key.
 - **Local identity (`seated`)**: Local Git config (`dna.unix.member`) maps your OS UID to your username, and `dna.trust = local` grants that local user authority over every organizational position.
 - **Remote body profile**: Grafting a new application refuses an existing target directory. Pass `--profile remote-body --remote <url> [--body <user@host>]` to configure a shared remote record and remote host body instead (see [The Heart and the Body](./heart.md)).
 
@@ -173,16 +173,17 @@ the organism's secrets (the local vault, …):
   present  nats-dna_db39b9dd436962c99cfa90fe5366f10a48f71dc0-app-demo  the nerves: the application `demo`'s account
   present  oidc-client-dna-local  the skin: the head's OIDC client secret (the local stub's)
   MISSING  forge-token  the forge's token — a person supplies it: `hale dna secret set FORGE_TOKEN`
-  MISSING  model-OPENAI_API_KEY  the model's key OPENAI_API_KEY — a person supplies it: `hale dna secret set OPENAI_API_KEY`
-2 missing
+1 missing
 ```
 
-To populate a user-supplied slot (`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or any model key declared in `dna/org/models.hl`), run `hale dna secret set <NAME>` and enter the secret on stdin:
+No model key is listed: the habitat's models need none from you. Once the habitat has keyed the organism, its slot shows up as `present  model-HABITAT_<KEY>  the model map's key for think.quick, … (the habitat's models)`.
+
+To populate a user-supplied slot (`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a model key a hosted backend in `dna/org/models.hl` names), run `hale dna secret set <NAME>` and enter the secret on stdin:
 
 ```text
-$ hale dna secret set OPENAI_API_KEY
-value for OPENAI_API_KEY (this machine), on one line:
-secret set: OPENAI_API_KEY is in its slot of the vault, …/model-OPENAI_API_KEY (secret.rotated OPENAI_API_KEY; the value is nowhere in the record). A part reads it from the vault where it uses it
+$ hale dna secret set FORGE_TOKEN
+value for FORGE_TOKEN (this machine), on one line:
+secret set: FORGE_TOKEN is in its slot of the vault, …/forge-token (secret.rotated FORGE_TOKEN; the value is nowhere in the record). A part reads it from the vault where it uses it
 ```
 
 > [!IMPORTANT]

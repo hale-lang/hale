@@ -15,6 +15,10 @@
 //! optional = true                    # a reader goes on without it: unset, it is not handed (a family: handed empty)
 //! ```
 //!
+//! A drawn family (`kind = "drawn"`, `family = true`) is a provider's alone:
+//! the secret a `[dna.provides.<capability>]` names as its `key`, whose
+//! members the habitat draws, one per tenant organism (`provides.rs`).
+//!
 //! Each is the vault entry `secret-<org>-<name>` (`<org>` the record's
 //! schema, `dna_<record id>`, as the nerves' entries are named); a family's
 //! member is `secret-<org>-<name>--<label>`, and how many members it has is
@@ -94,6 +98,14 @@ pub(crate) fn declared(manifest: &str) -> Result<BTreeMap<String, Declared>, Str
     let secrets = secrets.as_table().ok_or("[dna.secrets] is a table of secrets, one `[dna.secrets.<name>]` each")?;
     // the host commands it declares, by name (`[dna.host.<command>]`)
     let hosts: Vec<String> = dna.and_then(|d| d.get("host")).and_then(|h| h.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
+    // the secrets a capability it provides keys its tenants by
+    // (`[dna.provides.<capability>] key = "<name>"`): a drawn family is one
+    // of those alone (`provides::declared` checks the rest of the table)
+    let provided_keys: Vec<String> = dna
+        .and_then(|d| d.get("provides"))
+        .and_then(|p| p.as_table())
+        .map(|t| t.values().filter_map(|c| c.get("key").and_then(|k| k.as_str()).map(str::to_string)).collect())
+        .unwrap_or_default();
     for (name, t) in secrets {
         if !name_ok(name) {
             return Err(format!("[dna.secrets.{name}]: a secret's name is lowercase letters, digits and `-`, a letter first, at most 32 characters, with no `-` last or doubled"));
@@ -131,8 +143,8 @@ pub(crate) fn declared(manifest: &str) -> Result<BTreeMap<String, Declared>, Str
         if optional && kind == Kind::Drawn {
             return Err(format!("[dna.secrets.{name}] is drawn, and a drawn secret always exists: optional is a slot's"));
         }
-        if family && kind == Kind::Drawn {
-            return Err(format!("[dna.secrets.{name}] is drawn, and a family is a slot's: its members are a person's, each filled under a label"));
+        if family && kind == Kind::Drawn && !provided_keys.iter().any(|k| k == name) {
+            return Err(format!("[dna.secrets.{name}] is a drawn family, which only a capability the seed provides keys its tenants by: name it as the `key` of a `[dna.provides.<capability>]`, or make it a slot, whose members a person fills under a label"));
         }
         if kind == Kind::Slot && person == Person::None {
             return Err(format!("[dna.secrets.{name}] is a slot, which a person fills (person = \"write\" or \"read\")"));
@@ -179,14 +191,16 @@ pub(crate) fn vault_entry(record_id: &str, name: &str) -> String {
 /// `--` nor ends in `-`). The DNA's code names members
 /// (`dna::family_member_vault`), and a host command's are read by their
 /// common prefix (`hosted::members`): this pins the spelling they share.
-#[cfg(test)]
 pub(crate) fn member_entry(record_id: &str, name: &str, label: &str) -> String {
     format!("{}--{label}", vault_entry(record_id, name))
 }
 
 /// The variable a reader is handed the entry's name in (a family's: its
 /// members' entries, one a line, in their labels' order):
-/// `HALE_SECRET_<NAME>`, upper-cased, `-` as `_`.
+/// `HALE_SECRET_<NAME>`, upper-cased, `-` as `_`. A family's readers in
+/// compose are handed `<that>_FAMILY` beside it, its members' common
+/// prefix (`secret-<org>-<name>--`), so a reader lists members drawn
+/// while it runs.
 pub(crate) fn env_var(name: &str) -> String {
     format!("HALE_SECRET_{}", name.to_ascii_uppercase().replace('-', "_"))
 }
@@ -295,8 +309,9 @@ readers = ["worker", "host.node"]
         assert!(refuse("[dna.secrets.k]\nkind = \"drawn\"\nreaders = \"api\"\n").contains("list of strings"));
         assert!(refuse("[dna.secrets.k]\nkind = 1\n").contains("kind is a string"));
         assert!(refuse("[dna]\nsecrets = 1\n").contains("table of secrets"));
-        // a family is a slot's, and true or false
-        assert!(refuse("[dna.secrets.k]\nkind = \"drawn\"\nfamily = true\n").contains("a family is a slot's"));
+        // a drawn family is a provider's key alone; a family is true or false
+        assert!(refuse("[dna.secrets.k]\nkind = \"drawn\"\nfamily = true\n").contains("only a capability the seed provides"));
+        assert!(refuse("[dna.provides.models]\nkey = \"other\"\n[dna.secrets.k]\nkind = \"drawn\"\nfamily = true\n").contains("only a capability the seed provides"));
         assert!(refuse("[dna.secrets.k]\nkind = \"slot\"\nfamily = \"yes\"\n").contains("family is true or false"));
         assert!(declared("[dna.secrets.k]\nkind = \"drawn\"\nfamily = false\n").is_ok());
         // optional is a slot's (a drawn secret always exists), and true or false
@@ -306,6 +321,17 @@ readers = ["worker", "host.node"]
         // a name a member's entry could be mistaken for
         assert!(refuse("[dna.secrets.a--b]\nkind = \"slot\"\n").contains("doubled"));
         assert!(refuse("[dna.secrets.a-]\nkind = \"slot\"\n").contains("doubled"));
+    }
+
+    #[test]
+    fn a_drawn_family_is_allowed_as_a_provided_capabilitys_key() {
+        let d = declared("[dna.provides.models]\nservice = \"api\"\nkey = \"tenant-key\"\n\n[dna.secrets.tenant-key]\nkind = \"drawn\"\nfamily = true\nreaders = [\"api\"]\n").unwrap();
+        let k = &d["tenant-key"];
+        assert!(k.family && k.kind == Kind::Drawn && k.person == Person::None);
+        assert_eq!(lines(&d), "tenant-key\tdrawn\tnone\tapi\t\tfamily\t\n");
+        // still never optional, and never a person's to set
+        assert!(declared("[dna.provides.models]\nkey = \"k\"\n[dna.secrets.k]\nkind = \"drawn\"\nfamily = true\noptional = true\n").unwrap_err().contains("always exists"));
+        assert!(declared("[dna.provides.models]\nkey = \"k\"\n[dna.secrets.k]\nkind = \"drawn\"\nfamily = true\nperson = \"write\"\n").unwrap_err().contains("never sets it"));
     }
 
     #[test]

@@ -117,6 +117,22 @@ fn stop_host(app: &Path, host: &mut std::process::Child) {
     let _ = host.wait();
 }
 
+/// A hosted backend a person adds to the generated catalog: its key is
+/// named, and in no slot of the vault until `hale dna secret set` fills it.
+const HOSTED_BY_HAND: &str = r#"
+// A hosted backend added by hand; its key is set with `hale dna secret set`.
+fn hosted() -> dna::OpenAiChat {
+    return dna::OpenAiChat {
+        name: "deep",
+        model: "gpt-4o",
+        endpoint: "https://api.openai.com/v1/chat/completions",
+        credential: dna::HostedCredential { key: "OPENAI_API_KEY", scheme: "bearer" },
+        input_micros_per_1k: 2500,
+        output_micros_per_1k: 10000,
+    };
+}
+"#;
+
 #[test]
 fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record() {
     let _t = trace::test("dna_body_provision");
@@ -134,6 +150,14 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, out) = hale_env(&["habitat", "graft", "prov", "--no-pack"], &d, &home, None);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("prov");
+    // a graft with no model key in the vault writes no hosted backend (the
+    // habitat's models are the organism's), so the hosted backend whose
+    // credential this test follows is added by hand, as the catalog says to
+    let models = app.join("dna/org/models.hl");
+    let mut catalog = std::fs::read_to_string(&models).unwrap();
+    assert!(!catalog.contains("HostedCredential { key: \""), "a keyless graft names no credential:\n{catalog}");
+    catalog.push_str(HOSTED_BY_HAND);
+    std::fs::write(&models, catalog).unwrap();
     git(&["config", "user.name", "riley"], &app);
     git(&["config", "user.email", "riley@l"], &app);
     git(&["add", "-A"], &app);
@@ -206,9 +230,9 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("x\n"));
     assert!(!ok && out.contains("was never set"), "{out}");
     // ---- the host: a missing credential surfaces at once ----
-    // (the bootstrap left the key's slot of the vault empty)
+    // (the key was added after the bootstrap, so the vault has nothing for it)
     let slot = home.join(format!("vault/model-{cred}"));
-    assert_eq!(std::fs::read_to_string(&slot).expect("the bootstrap named the slot"), "", "the bootstrap named the slot, empty");
+    assert!(!slot.exists(), "no slot of the vault holds {cred} yet");
     let log = d.join("host.log");
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());

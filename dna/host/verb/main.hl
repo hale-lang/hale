@@ -280,6 +280,12 @@ fn main() {
     } else if verb == "application-remove" {
         // GH #989: the attached application detached, its account revoked
         ans = host::application_remove_verb(root, host::flag(a, "--as"));
+    } else if verb == "reader-vault-restage" {
+        // the habitat's models provider's reader vault, restaged in place
+        // where its services run when a tenant's key is drawn or removed
+        // (`hale habitat models`, run with the habitat's genome)
+        let why = dna::restage_services_vault(root, host::word(a, 0));
+        ans = if len(why) == 0 { host::answer("restaged\n") } else { host::fail(why) };
     } else if verb == "secrets" {
         // GH #989: what the organism requires, and what the vault holds
         ans = host::secrets_status_verb(root);

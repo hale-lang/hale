@@ -422,7 +422,13 @@ fn ssh_stage_reader_vault(root: String, h: Host, render: Render) -> String {
         root,
         h,
         "umask 077; d='" + d + "'; "
-            + (if len(entries) == 0 { "[ -d \"$d\" ] || exit 0; " } else { "" })
+            + (
+                if len(entries) == 0 && len(render.secrets) == 0 {
+                    "[ -d \"$d\" ] || exit 0; "
+                } else {
+                    ""
+                }
+            )
             + "mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; for f in \"$d\"/* \"$d\"/.[!.]*; do [ -e \"$f\" ] || continue; case ' "
             + std::str::trim(entries) + " ' in *\" ${f##*/} \"*) ;; *) rm -f \"$f\";; esac; done",
         "",

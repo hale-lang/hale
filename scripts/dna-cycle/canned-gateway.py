@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # A canned OpenAI-compatible chat endpoint for the cycle's legs: POST /v1/chat/completions answers
-# from a script, turn by turn, over real HTTP. No model, no tokens.
+# from a script, turn by turn, over real HTTP. No model, no tokens. GET /v1/models lists the one
+# model it serves, as a models provider's list says it (`capabilities.tools`: it returns tool calls).
 #
 #   canned-gateway.py <port> <log>
 #
@@ -49,6 +50,16 @@ def answer(req):
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def do_GET(self):
+        if not self.path.endswith("/models"):
+            self.send_error(404); return
+        out = json.dumps({"object": "list", "data": [{"id": "canned", "object": "model", "owned_by": "canned", "capabilities": {"tools": True}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
 
     def do_POST(self):
         if not self.path.endswith("/chat/completions"):
