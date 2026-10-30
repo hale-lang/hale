@@ -1,4 +1,9 @@
-// The operator face, screen 1: sign in, then the habitat's name and state.
+// The operator face, screen 1: sign in, then the habitat's name and state,
+// and the web UIs across its organisms (Commands::uis): each organism's face
+// and each UI its manifest declares ([dna.ui.<name>]), with its link and how
+// to sign in. A UI whose service is published only on its host's loopback
+// is named, not linked; one signed in with a declared secret says which
+// command reads it, never its value.
 // Screen 2 (hardware.js) is in the same page: the hash picks the screen.
 //
 // No build step: this module and the generated client of the head's rows
@@ -8,7 +13,7 @@
 // gate: a visitor with no session is sent to the provider before this page
 // is ever served. A read the head refuses for want of a session is shown as
 // the crossing, and the link starts the same sign-in again.
-import { commandsIndex } from "./head-client.js";
+import { commandsIndex, commandsUis } from "./head-client.js";
 import { refresh as refreshHardware } from "./hardware.js";
 import { refresh as refreshInfrastructure } from "./infrastructure.js";
 import { refresh as refreshOrganisms } from "./organisms.js";
@@ -31,7 +36,7 @@ function parse(list) {
 function crossing(why) {
   show("crossing", true);
   show("habitat", false);
-  show("organisms", false);
+  show("uis", false);
   $("crossing-why").textContent = why;
   setState($("state"), "down");
 }
@@ -52,27 +57,92 @@ function render(r) {
   $("habitat-pulse").textContent = "none recorded";
   $("habitat-record").textContent = "revision " + r.revision;
   $("habitat-count").textContent = String(organisms.length);
-  const rows = $("organism-rows");
+}
+
+// A word as a shell takes it: quoted when it is not plain.
+function shellWord(w) {
+  return /^[A-Za-z0-9._\/-]+$/.test(w) ? w : "'" + w.replace(/'/g, "'\\''") + "'";
+}
+
+function td(text) {
+  const c = document.createElement("td");
+  c.textContent = text;
+  return c;
+}
+
+// Where the UI is: a link, its host when only that host's loopback serves
+// it, else why it has no address.
+function linkCell(u) {
+  const c = document.createElement("td");
+  if (u.url) {
+    const a = document.createElement("a");
+    a.href = u.url;
+    a.textContent = u.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    c.append(a);
+  } else if (u.loopback_host) {
+    c.textContent = "loopback only on " + u.loopback_host;
+    c.className = "dim";
+  } else {
+    c.textContent = u.note || "no address";
+    c.className = "dim";
+  }
+  return c;
+}
+
+// How to sign in: an organism's face through the habitat's sign-in; a UI
+// that declares a login with the command that reads its secret, run on the
+// person's machine through the pointer.
+function signInCell(u) {
+  const c = document.createElement("td");
+  if (u.kind === "face") {
+    c.textContent = "the habitat's sign-in";
+    c.className = "dim";
+  } else if (u.login) {
+    const code = document.createElement("code");
+    code.textContent = "hale habitat organism " + shellWord(u.organism) + " dna secret show " + u.login;
+    c.append("sign in with ", code);
+  }
+  return c;
+}
+
+function renderUis(uis) {
+  const rows = $("ui-rows");
   rows.replaceChildren();
-  for (const o of organisms) {
+  for (const u of uis) {
     const tr = document.createElement("tr");
-    const n = document.createElement("td");
-    n.textContent = o.name;
-    const s = document.createElement("td");
-    s.textContent = o.state;
-    if (o.state === "up") s.dataset.state = "up";
-    const f = document.createElement("td");
-    f.textContent = o.face;
-    tr.append(n, s, f);
+    tr.append(td(u.label), td(u.organism), linkCell(u), signInCell(u));
     rows.append(tr);
   }
-  show("organisms", organisms.length > 0);
+  show("uis", true);
+  show("uis-empty", uis.length === 0);
+}
+
+async function readUis() {
+  const el = $("uis-outcome");
+  try {
+    const out = await commandsUis({ endpoint }, { limit: 500 });
+    if (out.kind === "result" && out.value.ok) {
+      el.hidden = true;
+      return renderUis(parse(out.value.uis));
+    }
+    el.textContent = out.kind === "result" ? "the head did not list the UIs: " + out.value.why
+      : out.refusal ? out.refusal.kind + ": " + out.refusal.reason : "the head did not answer";
+    el.hidden = false;
+  } catch (e) {
+    el.textContent = "the head did not answer";
+    el.hidden = false;
+  }
 }
 
 async function read() {
   try {
     const out = await commandsIndex({ endpoint }, { limit: 200 });
-    if (out.kind === "result") return render(out.value);
+    if (out.kind === "result") {
+      render(out.value);
+      return readUis();
+    }
     if (out.kind === "refusal") {
       const r = out.refusal;
       if (r.kind === "unauthenticated" || r.kind === "unauthorized") {
@@ -84,7 +154,7 @@ async function read() {
   } catch (e) {
     setState($("state"), "down");
     show("habitat", false);
-    show("organisms", false);
+    show("uis", false);
   }
 }
 

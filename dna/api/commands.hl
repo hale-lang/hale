@@ -1102,6 +1102,12 @@ locus CommandAdmission {
         if self.personless(ctx) { return AlertRows { why: "forbidden" }; }
         return habitat_alerts(self.root);
     }
+    // The web UIs across its organisms (habitat_rows.hl): each organism's
+    // face and the UIs its manifest declares, with their addresses (a read).
+    fn uis(a: HabitatAsk, ctx: std::api::Context) -> UiRows {
+        if self.personless(ctx) { return UiRows { why: "forbidden" }; }
+        return habitat_uis(self.root, a.limit);
+    }
     // The habitat's placement (habitat_placement.hl): the Board's.
     fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
         if self.personless(ctx) { return PlaceReply { code: "forbidden" }; }
@@ -1305,6 +1311,9 @@ locus Commands {
     fn alerts(a: HabitatAsk, ctx: std::api::Context) -> AlertRows {
         return self.admission.alerts(a, ctx);
     }
+    fn uis(a: HabitatAsk, ctx: std::api::Context) -> UiRows {
+        return self.admission.uis(a, ctx);
+    }
     fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
         return self.admission.place_allocation(a, ctx);
     }
@@ -1467,6 +1476,10 @@ api HeadCommands {
     rpc Commands::policy;
     // What its reflexes say now: its senses' store's alerts. A read.
     rpc Commands::alerts;
+    // The web UIs across its organisms, for the operator face's home
+    // screen: each organism's face and the UIs its manifest declares
+    // ([dna.ui.<name>]). A read.
+    rpc Commands::uis;
     // The habitat's placement (habitat_placement.hl): an allocation placed
     // on a host ("change a host"), and the allocations applied where they
     // are placed, with the pulse after. The Board's.

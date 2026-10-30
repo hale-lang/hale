@@ -39,6 +39,9 @@ mod hosted;
 #[path = "placements.rs"]
 mod placements;
 
+#[path = "upgrade.rs"]
+mod upgrade;
+
 static HEAD_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static IN_HEAD_ENDPOINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const HABITAT_DOCKERFILE: &str = include_str!("../../../../Dockerfile");
@@ -327,6 +330,26 @@ organism remove <name>
                      The head's Commands::plan_remove_organism and
                      ::remove_organism. The habitat itself is removed by
                      `down --forget`.
+organism upgrade <name>
+                     move an organism grafted from a sapling to the
+                     revision the habitat pins for it now (the one its
+                     Board ratified), keeping its record, data and
+                     allocations: the revision fetched into the habitat's
+                     sapling store and its digest checked (a mismatch
+                     moves nothing), its tree checked out there with what
+                     its graft wrote carried, vendor/dna re-materialized,
+                     its heart migrations run, its services re-applied
+                     (their images built from the new tree), a
+                     habitat.organism.upgraded row recorded, and each
+                     host command placed for it (organism place) re-run
+                     at the new revision over your SSH logins: at a
+                     terminal, or listed as the `place` lines left to
+                     run. Refused when it is at the pinned revision
+                     already (a newer one only proposed is named, with
+                     its ratify). --plan prints each step and moves
+                     nothing. Through a pointer, all but the placements
+                     run on the habitat's machine (--no-placements), the
+                     placements from here.
 organism <name> dna <verb> [args…]
                      `hale dna <verb>` in the grafted organism's own
                      directory (`review`, `task create`, `work run`,
@@ -456,6 +479,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             Some(p) => remote::graft_sapling(&p, &args[1..]),
             None => ExitCode::from(2),
         },
+        Some("organism") if args.get(1).map(String::as_str) == Some("upgrade") => upgrade::cmd(&args[2..]),
         Some("organism") if args.get(2).map(String::as_str) == Some("dna") => match remote::pointer() {
             Some(p) => remote::organism_dna(&p, &args[1..]),
             None => organism_dna(&args[1..]),
@@ -897,7 +921,7 @@ fn organism(args: &[String]) -> ExitCode {
         Some("unplace") => return hosted::place(&args[1..], false),
         _ => {}
     }
-    let usage = "usage: hale habitat organism remove <name> [--plan] | place|unplace <name> <command> --host <host> [--id <id>] [--plan]";
+    let usage = "usage: hale habitat organism remove <name> [--plan] | upgrade <name> [--plan] | place|unplace <name> <command> --host <host> [--id <id>] [--plan]";
     let (name, plan_only) = match (args.first().map(String::as_str), args.get(1), args.get(2).map(String::as_str), args.len()) {
         (Some("remove"), Some(n), None, 2) if !n.starts_with('-') => (n.clone(), false),
         (Some("remove"), Some(n), Some("--plan"), 3) if !n.starts_with('-') => (n.clone(), true),
@@ -1720,10 +1744,17 @@ pub(super) struct HeartMigration {
 /// other than `command`, or is for a role the genome does not declare.
 pub(super) fn heart_migrations(root: &Path) -> Result<Vec<HeartMigration>, String> {
     let Ok(text) = std::fs::read_to_string(root.join("hale.toml")) else { return Ok(Vec::new()) };
+    heart_migrations_of(&text, root)
+}
+
+/// The heart migrations the manifest `text` declares for the organism at
+/// `root` (an upgrade reads them at the revision it moves to before the
+/// tree moves).
+pub(super) fn heart_migrations_of(text: &str, root: &Path) -> Result<Vec<HeartMigration>, String> {
     let table: toml::Table = text.parse().map_err(|e| format!("hale.toml does not parse: {e}"))?;
     let Some(m) = table.get("dna").and_then(|d| d.get("migrations")) else { return Ok(Vec::new()) };
     let m = m.as_table().ok_or("[dna.migrations] is not a table of heart roles")?;
-    let needs = needs_at(root);
+    let needs = needs_of(Some(text)).unwrap_or_else(|_| ROLES.iter().map(|r| r.to_string()).collect());
     let mut out = Vec::new();
     for (role, spec) in m {
         if !PROVISIONED_HEART_ROLES.contains(&role.as_str()) || !needs.iter().any(|r| r == role) {
@@ -3710,6 +3741,11 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     }
     let needs = needs_of(manifest.as_deref())?;
     let _ = GRAFT_BRINGS.set(brings_of(manifest.as_deref())?);
+    // the web UIs it declares, listed on the habitat's home screen: one
+    // the toolchain refuses is never grafted
+    if let Some(m) = manifest.as_deref() {
+        super::uis::declared(m).map_err(|why| format!("{}: the web UIs it declares are refused: {why}", root.join("hale.toml").display()))?;
+    }
     // the plan, part by part, before anything is made: `--plan` prints it
     // and stops; at a terminal the person confirms it (a graft the head
     // started, with no terminal, takes it as planned); a graft that goes on
