@@ -195,7 +195,7 @@ main locus App {
                 && len(spine) > 0
                 && len(app_url) > 0
                 && len(app_vault) > 0
-                && app_user == "app-voice"
+                && app_user == dna::nerves_app_user(org, "voice")
                 && len(org) > 0
                 && !std::str::contains(app_url, "@"),
             "the nerves' stream is in place, its URLs without a password: " + nerves.stdout
