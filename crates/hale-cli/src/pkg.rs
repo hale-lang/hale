@@ -159,6 +159,12 @@ pub struct DnaManifest {
     /// (`dna::secrets::declared` reads and checks it).
     #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
     pub secrets: Option<toml::Table>,
+    /// `[dna.provides.<capability>]` — what the seed serves the habitat's
+    /// other organisms (`models`: an OpenAI-compatible endpoint, each tenant
+    /// keyed by a member of a drawn family; `dna::provides::declared` reads
+    /// and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub provides: Option<toml::Table>,
     /// `[dna.ui.<name>]` — a web UI the seed serves, which the habitat's
     /// home screen lists (`dna::uis::declared` reads and checks it).
     #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest

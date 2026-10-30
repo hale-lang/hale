@@ -3,11 +3,47 @@
 # one seat relays to a local model. A request is answered by the seat (the
 # model behind it answers whole); asked with `stream: true`, the answer goes
 # back as server-sent events, a word a chunk, then `[DONE]`.
+#
+# It serves the habitat's models (`[dna.provides.models]`): a request carries
+# a tenant's key as a bearer token, a member of the `tenant-key` family the
+# habitat draws, one per organism, and stages in voice's reader vault
+# (HALE_VAULT_DIR); the members are listed by their prefix
+# (HALE_SECRET_TENANT_KEY_FAMILY) at each request, so a tenant keyed while
+# voice runs is admitted without a restart. `GET /v1/models` lists what it
+# serves, each model's `voice.available` and `voice.capabilities.tools`
+# said, as voice does (its manifest's `extension = "voice"`).
 import json, os, socket, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ["VOICE_PORT"])
 SEAT = os.environ["VOICE_SEAT"]
+VAULT = os.environ.get("HALE_VAULT_DIR", "")
+FAMILY = os.environ.get("HALE_SECRET_TENANT_KEY_FAMILY", "")
+
+
+def tenant_of(headers):
+    """The tenant a request's bearer token keys (its member's label), or None.
+    With no family handed, every request is admitted (no habitat keys it)."""
+    if not FAMILY:
+        return ""
+    auth = headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[len("Bearer "):].strip()
+    try:
+        names = os.listdir(VAULT)
+    except OSError:
+        return None
+    for name in sorted(names):
+        if not name.startswith(FAMILY):
+            continue
+        try:
+            with open(os.path.join(VAULT, name)) as f:
+                if token and f.read() == token:
+                    return name[len(FAMILY):]
+        except OSError:
+            pass
+    return None
 
 
 def ask_seat(req):
@@ -41,16 +77,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def unauthorized(self):
+        return self.reply(401, "application/json", json.dumps({"error": {"message": "a tenant's key, as a bearer token"}}).encode())
+
     def do_GET(self):
         if self.path == "/healthz":
             return self.reply(200, "text/plain", b"ok")
         if self.path == "/v1/models":
-            return self.reply(200, "application/json", json.dumps({"object": "list", "data": [{"id": "local", "object": "model"}]}).encode())
+            if tenant_of(self.headers) is None:
+                return self.unauthorized()
+            return self.reply(200, "application/json", json.dumps({"object": "list", "data": [{"id": "local", "object": "model", "owned_by": "voice", "voice": {"available": True, "capabilities": {"tools": False}}}]}).encode())
         self.reply(404, "text/plain", b"not found")
 
     def do_POST(self):
         if self.path != "/v1/chat/completions":
             return self.reply(404, "text/plain", b"not found")
+        if tenant_of(self.headers) is None:
+            return self.unauthorized()
         req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0") or 0)) or b"{}")
         try:
             text = ask_seat(req)

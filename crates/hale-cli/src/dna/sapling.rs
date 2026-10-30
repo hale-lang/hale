@@ -303,6 +303,9 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
     // its own services, on the host its graft names
     super::progress(&format!("placing `{name}`'s services and applying them on their host (a first build of its images there takes minutes)"));
     out.extend(place_services(&crate::dna::organism_root(&store)?)?);
+    // its model map pointed at the habitat's models, once its services are
+    // applied (every organism's, when it provides them)
+    out.extend(super::models::after_graft(&crate::dna::organism_root(&store)?));
     Ok(out)
 }
 

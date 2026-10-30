@@ -39,6 +39,8 @@ mod hosted;
 #[path = "placements.rs"]
 mod placements;
 
+#[path = "habitat_models.rs"]
+mod models;
 #[path = "upgrade.rs"]
 mod upgrade;
 
@@ -95,6 +97,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat [--head <url>] place <key>/<role> <host>
        hale habitat [--head <url>] model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
        hale habitat [--head <url>] model-probe <organism> <mode>.<size>
+       hale habitat [--head <url>] models <organism>|--all [--plan]
        hale habitat [--head <url>] apply [<host>] [--fresh]
        hale habitat [--head <url>] nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
@@ -243,6 +246,17 @@ model-map <organism> <category> <model>
 model-probe <organism> <category>
                      ask the model that category names, where the map says
                      it is asked, once (Commands::probe_model).
+models <organism>|--all
+                     point a grafted organism's model map (every one's with
+                     --all) at the habitat's models: the organism it grafted
+                     whose hale.toml declares [dna.provides.models] (voice).
+                     A member of its key family is drawn for the organism
+                     and copied into its slot model-HABITAT_<key>, the
+                     provider is asked what it serves, and each category
+                     no person wrote is mapped there in the name `hale
+                     habitat`. A graft does it already; this is for an
+                     organism grafted before the provider, or a model
+                     placed since. --plan says what it would do.
 place <alloc> <host> place an allocation (`<key>/<role>`: memory, nerves,
                      senses, services) on a host (the head's
                      Commands::place_allocation); nothing applies yet.
@@ -429,6 +443,13 @@ is not.
 "#
 }
 
+/// After `hale dna secret rotate <family> --member <label>` in `root`:
+/// when `root` is the habitat's models provider and `family` its key, the
+/// tenant's copy updated and the provider's reader vault restaged.
+pub(super) fn models_after_rotate(root: &Path, family: &str, label: &str) -> Vec<String> {
+    models::after_rotate(root, family, label)
+}
+
 pub(crate) fn run(args: &[String]) -> ExitCode {
     let mut cleaned = Vec::with_capacity(args.len());
     let mut i = 0;
@@ -510,6 +531,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("place") => sapling::place_cmd(&args[1..]),
         Some("model-map") => sapling::model_map_cmd(&args[1..], false),
         Some("model-probe") => sapling::model_map_cmd(&args[1..], true),
+        Some("models") => models::cmd(&args[1..]),
         Some("apply") => sapling::apply_cmd(&args[1..]),
         Some("forge") => sapling::forge_cmd(&args[1..]),
         Some("status") if args.len() == 1 => match remote::pointer() {
@@ -3657,6 +3679,12 @@ fn graft(args: &[String]) -> ExitCode {
             for l in lines {
                 println!("{l}");
             }
+            // its model map pointed at the habitat's models (every
+            // organism's, when it provides them)
+            let root = if attach { super::organism_root(&dir).unwrap_or_else(|_| dir.clone()) } else { project(&dir).map(|(r, _)| r).unwrap_or_else(|_| dir.clone()) };
+            for l in models::after_graft(&root) {
+                println!("{l}");
+            }
         }
         Err(e) => {
             eprintln!("hale habitat graft: {e}");
@@ -3749,6 +3777,10 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     }
     let needs = needs_of(manifest.as_deref())?;
     let _ = GRAFT_BRINGS.set(brings_of(manifest.as_deref())?);
+    // a habitat holds one models provider
+    if let Some(text) = manifest.as_deref() {
+        models::refuse_second_provider(text, pinned.as_deref())?;
+    }
     // the web UIs it declares, listed on the habitat's home screen: one
     // the toolchain refuses is never grafted
     if let Some(m) = manifest.as_deref() {

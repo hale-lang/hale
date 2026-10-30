@@ -127,6 +127,18 @@ fn operation_entry(name: String, available: Bool, reason: String) -> String {
         + (if available { "true" } else { "false" }) + ", \"reason_code\": \"" + reason + "\"";
 }
 
+// A hosted backend a person adds to a generated catalog: its key named,
+// and in no slot of the vault until `hale dna secret set` fills it.
+const HOSTED_BY_HAND: String = "\n// A hosted backend added by hand; its key is set with `hale dna secret set`.\nfn hosted() -> dna::OpenAiChat {\n    return dna::OpenAiChat {\n        name: \"deep\",\n        model: \"gpt-4o\",\n        endpoint: \"https://api.openai.com/v1/chat/completions\",\n        credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" },\n        input_micros_per_1k: 2500,\n        output_micros_per_1k: 10000,\n    };\n}\n";
+
+// `HOSTED_BY_HAND` appended to the catalog of the project at `root`.
+fn add_hosted_backend(root: String) {
+    let models = root + "/dna/org/models.hl";
+    let catalog = std::io::fs::read_file(models) or "";
+    std::test::assert(len(catalog) > 0, "the project has a catalog: " + models);
+    std::io::fs::write_file(models, catalog + HOSTED_BY_HAND) or discard;
+}
+
 // A project grafted from the test's habitat under `parent`, its genome
 // committed.
 fn project(parent: String, name: String) -> String {
@@ -140,6 +152,9 @@ fn project(parent: String, name: String) -> String {
         "hale habitat graft " + name + ": " + made.stdout + made.stderr,
     );
     let app = parent + "/" + name;
+    // a keyless graft writes no hosted backend: the one whose credential
+    // the S3 cases follow is added by hand, before the genome is committed
+    add_hosted_backend(app);
     git(app, "config\nuser.name\nhead-s3");
     git(app, "config\nuser.email\nhead-s3@example.invalid");
     git(app, "config\ncommit.gpgsign\nfalse");
