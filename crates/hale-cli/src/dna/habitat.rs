@@ -36,6 +36,9 @@ mod reflexes;
 #[path = "hosted.rs"]
 mod hosted;
 
+#[path = "reserved.rs"]
+mod reserved;
+
 #[path = "placements.rs"]
 mod placements;
 

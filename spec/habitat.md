@@ -1295,6 +1295,29 @@ grafted organism that came from a sapling the habitat pins, and a
   the rest, a required family with none handed empty. `--plan` lists the
   secrets it hands over by name (a family with its members' labels) and
   each it skips, and why, never a value.
+- **The habitat's share of the host.** Every run is also handed
+  `HALE_DNA_HOST_RESERVED_BYTES`, the same way: the bytes of the host's
+  memory the habitat's own containers there may hold, the sum of their
+  compose `mem_limit`s as the habitat wrote them (`512m`, `1g`, `128M` or
+  a bare number of bytes, as compose reads them; a service that declares
+  none counts 0), `0` when the habitat runs nothing there that declares
+  one. On the habitat's own machine (`local`, or the host the pointer
+  names) that is every service of the habitat's own allocation (its
+  memory, its nerves, its senses' store, `body`, `face`, and Grafana,
+  counted whether or not it runs, since it starts on demand) and its
+  forge; `body` and `face` declare no limit (§ Readings), so they add
+  nothing. On any host it adds each organism's memory, nerves and senses'
+  store applied there (`allocations/<key>/placed.<role>`, else the
+  habitat's machine), unless the habitat's own server holds that part
+  for it, and an organism's own services applied there, from the compose
+  file at its root. The files are read where they are, under the
+  habitat's directory on its machine: here, or over the person's login
+  through a pointer, after the pointer's record is checked there, as the
+  vault is. The plan names the figure (`reserve`). A command that sizes
+  itself by the host's memory subtracts it: a provider's node offers the
+  models what is left, so a node placed on a host the habitat also runs
+  on does not promise the models memory the habitat's containers may
+  take.
 - **Who runs it.** Everything goes over the person's own SSH logins, as
   `host add` makes the habitat's account (on the habitat's own machine,
   here or over the pointer's login, as above); `root = true` runs it under the

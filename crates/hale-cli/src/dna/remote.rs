@@ -1315,6 +1315,20 @@ fn keep_after_failure(code: Option<i32>, before: Option<&str>, after: Option<&st
 /// shell, and what it printed. A value it prints is held in this process's
 /// memory alone, never written here.
 pub(super) fn vault_on_machine(p: &serde_json::Value, script: impl Fn(&str) -> String) -> Result<String, String> {
+    on_checked_machine(p, |m| script(&format!("{}/vault", data_dir(m))))
+}
+
+/// The habitat's directory on its machine, read over the person's own
+/// login after the pointer's record is checked there: `script` (made for
+/// that directory, `reserved::files_script`) run by the login's shell, and
+/// what it printed.
+pub(super) fn habitat_on_machine(p: &serde_json::Value, script: impl Fn(&str) -> String) -> Result<String, String> {
+    on_checked_machine(p, |m| script(&habitat_dir(m)))
+}
+
+/// `script` (made for what the machine is) run on the habitat's machine
+/// over the pointer's login, once its record is the one the pointer names.
+fn on_checked_machine(p: &serde_json::Value, script: impl Fn(&Machine) -> String) -> Result<String, String> {
     let t = Target::of(p);
     let m = probe(&t)?;
     let expected = p["identity"].as_str().unwrap_or("").to_string();
@@ -1322,7 +1336,7 @@ pub(super) fn vault_on_machine(p: &serde_json::Value, script: impl Fn(&str) -> S
     if let Some(why) = pointer_refusal(&t.host, &expected, &found) {
         return Err(why);
     }
-    t.run(&script(&format!("{}/vault", data_dir(&m))))
+    t.run(&script(&m))
 }
 
 /// `hale habitat organism <name> dna <verb> [args…]` through a pointer:
