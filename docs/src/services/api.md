@@ -320,6 +320,7 @@ params {
   5. Payload decoding (`malformed`)
   6. Exposure queue capacity (`full` when `bound` is reached under `on_full: refuse`)
 - **Per-Receiver Serialization**: Transports read and write connections concurrently, but an exposure dispatches at most one call at a time to each receiver instance in FIFO order. Calls targeting different receiver instances run concurrently. If a receiver is draining, restarting, or replaced, calls to that receiver return `unavailable` while other receivers on the exposure continue serving.
+- **The `http::Rest` fallback is not a receiver**: its requests are never queued or dispatched one at a time. Each connection calls the fallback handler on its own coroutine, as `std::http::Server` does, so long streams through the fallback run concurrently (see the `fallback:` rules below).
 
 ### Listener Placement and Child Server Loci
 
@@ -513,6 +514,7 @@ Rules for `fallback`:
 2. **Independent authentication**: `fallback` bypasses the exposure's `principals`, `anonymous`, `roles`, and `cors` checks; it receives the raw `std::http::Request` and performs its own header inspection.
 3. **Same pool placement**: `fallback` executes directly on the listener's connection coroutines and must be placed on the exact same `async_io` pool as the exposure (`edge` above).
 4. **Field reference only**: When used inside a child server locus, `fallback:` must reference a param field (`self.front`) or `self`, never a method call (`self.make()`).
+5. **Concurrent, like `std::http::Server`**: the fallback is not a receiver, so the one-call-per-receiver rule does not apply. Each connection calls `handle` on a coroutine of its own and calls interleave wherever one parks (a `sleep`, a socket read, an outbound request, an event sent to a slow client): fifty one-second requests, or fifty Server-Sent Event streams, finish in about a second, while the rows keep their per-receiver order. Calls never run in parallel (one pool, one thread), but a value the handler read from its own `params` before a park can be stale after it, so keep per-request state in locals. The bound is the listener's: 256 connections served at once and as many waiting, shared with the rows. The exposure's `bound:` counts only calls queued for rows, so a stream that lasts minutes never takes one of its slots.
 
 ### 4. Model Context Protocol Server (`mcp::Rpc`)
 
@@ -619,6 +621,33 @@ main locus Desk {
 - **Inspection & Shutdown**: Call `self.hub.subscribers()`, `self.hub.connections()`, and `self.hub.events()` to inspect hub metrics. Calling `self.hub.stop()` flushes queued events and sends `{"type": "closed", "reason": "shutting_down"}`.
 - **Multiplexing RPC over `ws::Hub`**: You can also pass a `ws::Hub` as the transport in `api::serve(Public, self.hub, as: "desk", ...)`. Clients can then send `{"type": "call", "id": "c1", "call": "Orders::place", "payload": {...}}` frames and receive `{"type": "reply", "id": "c1", "ok": true, "value": ...}` frames interleaved with stream events on the same WebSocket connection.
 - **UDP Streams (`udp::Hub`)**: Carries streams only. Subscribers send a UDP datagram with a client-chosen `id` and bearer token; lost datagrams appear as gaps in `seq`.
+
+### Mounting a Hub on an `http::Rest` Listener (`hubs:`)
+
+A `ws::Hub` does not need a port of its own. Leave out its `bind:` and list it in the `hubs:` of an `http::Rest` exposure in the same `main locus`, at a path. The REST surface, the hub, and any `fallback:` then share one address and one origin:
+
+```hale,fragment
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        hub_roles: Grants = Grants { operator: "dave" };
+        hub: ws::Hub = ws::Hub { principals: self.bearer, roles: self.hub_roles, as: "fills" };
+        web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.hub_roles, hubs: [("/admin/v1/hub", self.hub)] }, as: "web", bound: 64, on_full: refuse);
+    }
+    bindings {
+        Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+    }
+    placement {
+        web: cooperative(pool = edge) where async_io;
+    }
+}
+```
+
+- **Routing**: only a WebSocket upgrade (`Upgrade: websocket`) at the mounted path goes to the hub. Any other request at that path, and every other path, is routed by the REST table as usual (a row, the `fallback`, or `404`).
+- **The hub keeps its own gate**: the hub's `principals`, `roles`, and each stream's `requires:`, `bound:` and `on_full:` judge the connection exactly as on a listener of its own. The credential is still `Authorization: Bearer` or `?access_token=` on the upgrade. The REST exposure's bearer and roles judge only its rows.
+- **No second listener**: the hub opens no socket. Its connections run on the REST listener's `async_io` pool. At most 256 are open at once, and an upgrade beyond that gets `503`. A handed-over connection waits for its subscriber for as long as the subscriber is quiet; the 5-second read limit of a REST request does not apply to it. `self.hub.stop()` closes them with `closed` as before.
+- **Description**: the REST exposure's `GET /.description` lists the hub's streams beside its members, filtered by the caller's roles, and `hale check --api --exposure web` shows the same. The document does not state the mount path yet.
+- **Rules**: the hub is a `ws::Hub` param of the `main locus` with at least one stream bound to it, mounted once and with no `bind:`. The path is letters, digits, `-._~` and `/`, with no trailing `/` and no `{param}`. It is not `/.description`, and no row of the surface may serve it by any method. A `udp::Hub` cannot be mounted, and an `http::Rest` held below the `main locus` cannot mount hubs.
 
 ---
 

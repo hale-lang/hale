@@ -9,7 +9,9 @@
 // wildcard ports are linked at the habitat's declared address. What a services
 // allocation publishes is its last successful apply's: an apply or a
 // withdrawal that failed leaves it, one that took and publishes nothing
-// replaces it.
+// replaces it. A declared UI (`[dna.ui.<name>]`, the home screen's
+// `Commands::uis`) is linked at its service's link with its path after it
+// (`ui_at`), and a service on its host's loopback names the host instead.
 import ".." as api;
 import "../../core" as dna;
 
@@ -57,6 +59,43 @@ fn main() {
         api::allocation_links_at(published, "local", true, "127.0.0.1", true, ""),
         "[{\"service\": \"api\", \"url\": \"http://127.0.0.1:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"http://127.0.0.1:9090\", \"note\": \"\"}]",
         "a local habitat's local host links its loopback",
+    );
+
+    // a declared UI at its service's link, its path after it
+    let links = api::allocation_links_at(
+        published,
+        "rack-b.lan",
+        false,
+        "rack-b.lan",
+        false,
+        "rack-a.lan",
+    );
+    let admin = api::ui_at(links, "api", "/admin");
+    std::test::assert_eq_str(
+        admin.url,
+        "http://rack-b.lan:8080/admin",
+        "a UI is linked under its service",
+    );
+    std::test::assert_eq_str(admin.loopback_host, "", "and names no loopback host");
+    std::test::assert_eq_str(
+        api::ui_at(links, "api", "/").url,
+        "http://rack-b.lan:8080/",
+        "at its root",
+    );
+    // its service on the host's loopback: the host, not a link
+    let inner = api::ui_at(links, "admin", "/");
+    std::test::assert_eq_str(inner.url, "", "a loopback service is not linked");
+    std::test::assert_eq_str(inner.loopback_host, "rack-b.lan", "its host is named");
+    // a service it does not publish, and services not applied
+    std::test::assert_eq_str(
+        api::ui_at(links, "web", "/").note,
+        "its service `web` publishes no port",
+        "an unpublished service says so",
+    );
+    std::test::assert_eq_str(
+        api::ui_at("[]", "api", "/").note,
+        "its services publish nothing (not applied)",
+        "nothing applied says so",
     );
 
     // the last successful apply is the one read; a failure never replaces it

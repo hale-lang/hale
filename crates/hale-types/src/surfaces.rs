@@ -316,6 +316,9 @@ pub struct Hub {
     pub transport: Transport,
     pub streams: Vec<Stream>,
     pub span: Span,
+    /// The exposure whose `http::Rest` mounts it (`hubs:`, GH #1780), whose
+    /// description lists its streams.
+    pub mounted_on: Option<String>,
 }
 
 /// One stream row of a hub: a topic binding to it.
@@ -1182,8 +1185,24 @@ pub fn surface_rows(
                                 roles: None,
                                 name: None,
                             });
+                            // a hub an `http::Rest` mounts (`hubs:`, GH #1780) is
+                            // reached at that listener's address
+                            let mut transport = transport;
+                            let mount = crate::rpc_expand::locus_mounts(l).into_iter().find(|(m, _, _)| m.field == hb.instance.name);
+                            if transport.address.is_none() {
+                                transport.address = mount.as_ref().and_then(|(_, a, _)| match a {
+                                    Some(Expr::Literal(hale_syntax::ast::Literal::String(a), _)) => Some(a.clone()),
+                                    _ => None,
+                                });
+                            }
                             let codec = transport.codec.clone();
-                            hubs.push(Hub { instance, transport, streams: vec![Stream { codec, ..stream }], span: hb.span });
+                            hubs.push(Hub {
+                                instance,
+                                transport,
+                                streams: vec![Stream { codec, ..stream }],
+                                span: hb.span,
+                                mounted_on: mount.and_then(|(_, _, n)| n),
+                            });
                         }
                     }
                 }
@@ -1976,11 +1995,26 @@ fn hub_laws_of(
                         _ => None,
                     })
                 };
-                if !inits.iter().any(|i| i.name.name == "bind") {
-                    diags.push(Diag::ty(
+                // a hub an `http::Rest` mounts (`hubs:`) listens on that
+                // listener, and binds none of its own
+                let mounted = crate::rpc_expand::locus_mounts(l).iter().any(|(m, _, _)| m.field == instance);
+                let binds = inits.iter().find(|i| i.name.name == "bind");
+                match (mounted, binds) {
+                    (false, None) => diags.push(Diag::ty(
                         hb.span,
-                        format!("hub `self.{instance}`: a hub states the address it listens on, `bind: \"host:port\"`"),
-                    ));
+                        format!(
+                            "hub `self.{instance}`: a hub states the address it listens on, `bind: \"host:port\"`, or is \
+                             mounted on an `http::Rest` of the main locus (`hubs: [(\"/path\", self.{instance})]`)"
+                        ),
+                    )),
+                    (true, Some(b)) => diags.push(Diag::ty(
+                        b.span,
+                        format!(
+                            "hub `self.{instance}` is mounted on an `http::Rest` (`hubs:`), whose listener takes its \
+                             connections, so it opens none of its own: drop its `bind:`"
+                        ),
+                    )),
+                    _ => {}
                 }
                 match text("as").or_else(|| text("name")) {
                     None => diags.push(Diag::ty(
@@ -2033,6 +2067,151 @@ fn hub_laws_of(
                     ),
                 ));
             }
+        }
+    }
+}
+
+/// The laws of an `http::Rest`'s `hubs:` (spec/api.md § Streams, a hub
+/// mounted on an `http::Rest`, GH #1780): a list of `("/path", self.hub)`
+/// pairs, in the main locus (a hub is the main locus's), each path a plain
+/// one no row of the surface serves, each hub a `ws::Hub` of the main
+/// locus that streams are bound to, mounted once.
+fn mount_laws(
+    l: &LocusDecl,
+    hubs: &Expr,
+    rows: &SurfaceRows,
+    surface: &str,
+    name: &str,
+    mounted: &mut BTreeMap<String, Span>,
+    diags: &mut Vec<Diag>,
+) {
+    if !l.is_main {
+        diags.push(Diag::ty(
+            hubs.span(),
+            format!(
+                "exposure `{name}` held by `{}` mounts hubs: a hub is the main locus's, its stream bindings and its \
+                 connections placed there, so an `http::Rest` that mounts one is served from the main locus \
+                 (spec/api.md § Streams)",
+                l.name.name
+            ),
+        ));
+        return;
+    }
+    let mounts = match crate::rpc_expand::mounts_of(hubs) {
+        Ok(m) => m,
+        Err(at) => {
+            diags.push(Diag::ty(
+                at,
+                format!(
+                    "exposure `{name}`: `hubs:` is a list of `(\"/path\", self.<hub>)` pairs, each a path written \
+                     as a string and a `ws::Hub` param of `{}` (spec/api.md § Streams)",
+                    l.name.name
+                ),
+            ));
+            return;
+        }
+    };
+    // the paths a row serves, by any method: `METHOD /a/{p}` (a row with no
+    // route is served at `POST /call/<member>`)
+    let routes: Vec<String> = rows
+        .rows_of(surface)
+        .map(|r| match &r.route {
+            Some(rt) => rt.text.split_once(' ').map_or(rt.text.clone(), |(_, p)| p.trim().to_string()),
+            None => format!("/call/{}", r.member),
+        })
+        .collect();
+    let serves = |path: &str| -> Option<&String> {
+        let want: Vec<&str> = path.trim_matches('/').split('/').collect();
+        routes.iter().find(|rt| {
+            let have: Vec<&str> = rt.trim_matches('/').split('/').collect();
+            have.len() == want.len() && have.iter().zip(&want).all(|(h, w)| h == w || h.starts_with('{'))
+        })
+    };
+    let mut paths: BTreeSet<&str> = BTreeSet::new();
+    for m in &mounts {
+        let plain = m.path.starts_with('/')
+            && (m.path == "/" || !m.path.ends_with('/'))
+            && !m.path.contains("//")
+            && m.path.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '.' | '_' | '~'));
+        if !plain || m.path == "/.description" {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "exposure `{name}` mounts `self.{}` at `{}`: a mount's path starts with `/` and is letters, digits, \
+                     `-`, `.`, `_`, `~` and `/` (no query, no `{{param}}`, no trailing `/`), and is not \
+                     `/.description`, the exposure's own",
+                    m.field, m.path
+                ),
+            ));
+        } else if let Some(rt) = serves(&m.path) {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "exposure `{name}` mounts `self.{}` at `{}`, a path a row of `{surface}` serves (`{rt}`): a path a \
+                     row serves stays the surface's by every method; mount the hub at a path of its own",
+                    m.field, m.path
+                ),
+            ));
+        }
+        if !paths.insert(m.path.as_str()) {
+            diags.push(Diag::ty(m.span, format!("exposure `{name}` mounts two hubs at `{}`: a path takes one hub", m.path)));
+        }
+        let literal = l.members.iter().find_map(|mb| match mb {
+            LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == m.field),
+            _ => None,
+        });
+        let kind = match literal.map(|p| (&p.ty, &p.init)) {
+            Some((_, ParamInit::Value(Expr::Struct { path, .. }))) => Some(path),
+            Some((Some(TypeExpr::Named { path, .. }), _)) => Some(path),
+            _ => None,
+        };
+        match kind {
+            Some(path) if crate::hub_expand::is_ws_hub(path) => {}
+            Some(path) if crate::hub_expand::is_udp_hub(path) => {
+                diags.push(Diag::ty(
+                    m.span,
+                    format!(
+                        "exposure `{name}` mounts `self.{}`, a `udp::Hub`: a datagram hub has no connection to take \
+                         over at an HTTP upgrade; mount a `ws::Hub`",
+                        m.field
+                    ),
+                ));
+                continue;
+            }
+            _ => {
+                diags.push(Diag::ty(
+                    m.span,
+                    format!(
+                        "exposure `{name}` mounts `self.{}`, which is not a hub: a mount names a param of `{}` built by \
+                         a `ws::Hub {{ … }}` literal",
+                        m.field, l.name.name
+                    ),
+                ));
+                continue;
+            }
+        }
+        let bound = l
+            .members
+            .iter()
+            .any(|mb| matches!(mb, LocusMember::Bindings(bb) if bb.hubs.iter().any(|hb| hb.instance.name == m.field)));
+        if !bound {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "exposure `{name}` mounts `self.{}`, to which no stream is bound: a hub carries the topics bound \
+                     to it (`Topic: self.{} requires: […], bound: N, on_full: drop_old;`), so a hub with none \
+                     serves nothing",
+                    m.field, m.field
+                ),
+            ));
+        }
+        if let Some(first) = mounted.get(&m.field) {
+            diags.push(
+                Diag::ty(m.span, format!("hub `self.{}` is mounted twice: a hub's connections are taken on one listener", m.field))
+                    .with_related(*first, "its first mount"),
+            );
+        } else {
+            mounted.insert(m.field.clone(), m.span);
         }
     }
 }
@@ -2194,6 +2373,8 @@ fn serve_laws_of(
         .filter(|p| matches!(&p.init, ParamInit::Value(Expr::Struct { .. })))
         .map(|p| p.name.name.as_str())
         .collect();
+    // the hubs this locus's `http::Rest` exposures mount, each once
+    let mut mounted: BTreeMap<String, Span> = BTreeMap::new();
     for (param, site) in sites {
         let pname = param.name.name.as_str();
         let surface = match site.surface {
@@ -2297,6 +2478,10 @@ fn serve_laws_of(
                      and not yet answered, and `on_full: refuse`, the one policy for a request"
                 ),
             ));
+        }
+        // GH #1780: the hubs an `http::Rest` mounts on its listener
+        if let Some(hubs) = crate::rpc_expand::rest_hubs_of(l, site.transport) {
+            mount_laws(l, &hubs, rows, &surface, &name, &mut mounted, diags);
         }
         // The listener (GH #1565). A socket transport's listener is a param
         // of the main locus: for an exposure the main locus holds, its row

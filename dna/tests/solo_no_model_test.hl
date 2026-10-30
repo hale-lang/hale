@@ -260,7 +260,7 @@ fn main() {
     // ---- every read a face screen makes answers, with no model
     std::test::assert(
         org.reads_answer(
-            "Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings",
+            "Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::uis",
         ),
         "every read a face screen makes answers: " + org.failed,
     );

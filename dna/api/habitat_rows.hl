@@ -10,7 +10,8 @@
 // (each `habitat.policy` row: the provider a role is allocated by). The
 // latest row for an entity is the one that holds. Each list is a JSON array;
 // they write nothing. The operator face's hardware and infrastructure
-// screens read them.
+// screens read them. `uis` (below) is the home screen's: the web UIs of
+// every organism, its face and what its manifest declares.
 import "../core" as dna;
 
 // What a reader asks: at most `limit` entries.
@@ -465,6 +466,175 @@ fn allocation_links_at(
     }
     out.end_array();
     return out.result();
+}
+
+// ---- the web UIs across the habitat's organisms ---------------------------
+//
+// `Commands::uis`, a read like `Commands::index`: what the habitat's home
+// screen lists. Each organism the habitat grafted gives its face (`face`,
+// at the address its graft row holds, signed in through the habitat), then
+// each UI its manifest declares (`[dna.ui.<name>]`, read from the
+// organism's directory now, so an upgrade's declaration is the one listed),
+// linked at the address its services allocation publishes for the UI's
+// service (as `Commands::allocations`' `links` give it) with the UI's path
+// after it. A service published only on its host's loopback is not linked:
+// the entry names the host (`loopback_host`). `login` names the declared
+// secret a person reads to sign in (`hale dna secret show <login>`), never
+// its value.
+
+type UiRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    // a JSON array of `{organism, kind, name, label, url, loopback_host,
+    // login, note}`: `kind` `face` or `declared`
+    uis: String = "[]";
+}
+
+// Where a declared UI is, from its organism's services' links.
+type UiAt {
+    url: String = "";
+    loopback_host: String = "";
+    note: String = "";
+}
+
+// The UI served by `service` at `path`, against `links` (a JSON array of
+// `{service, url, note}`, `allocation_links_at`'s): its URL when the
+// service is linked, the host when it is published on that host's loopback
+// alone, else a note saying why it has no address.
+fn ui_at(links: String, service: String, path: String) -> UiAt {
+    let mut it = std::json::array_first(links);
+    while !it.done {
+        if std::json::find_string_field(it.element, "service") == service {
+            let url = std::json::find_string_field(it.element, "url");
+            if len(url) > 0 { return UiAt { url: url + path }; }
+            let note = std::json::find_string_field(it.element, "note");
+            if std::str::starts_with(note, "loopback only on ") {
+                return UiAt { loopback_host: note[17..len(note)], note: note };
+            }
+            return UiAt { note: if len(note) > 0 { note } else { "not published" } };
+        }
+        it = std::json::array_next(it);
+    }
+    return UiAt {
+        note: if std::json::array_first(links).done {
+            "its services publish nothing (not applied)"
+        } else {
+            "its service `" + service + "` publishes no port"
+        },
+    };
+}
+
+// The directory of the organism keyed `key`, as its allocation's cache
+// names it ("" when none).
+fn organism_root_of(key: String) -> String {
+    let cache = std::io::fs::read_file(
+        dna::local_habitat_dir() + "/allocations/" + key + "/allocation.json",
+    )
+    or "";
+    return std::json::find_string_field(cache, "root");
+}
+
+// The links of what the organism keyed `key` publishes: its services
+// allocation's, as `habitat_allocations` gives them ("[]" when it has none).
+fn organism_links(
+    root: String,
+    j: dna::Journal,
+    allocated: LatestRows,
+    applies: LatestRows,
+    key: String
+) -> String {
+    let held = allocated.get(key + "/services") or LatestRow { };
+    if held.at < 0 { return "[]"; }
+    let body = j.read(held.at).body;
+    let ran = applied_at(allocation_of_row(key + "/services", body));
+    let last = applies.get(key + "/services") or LatestRow { };
+    let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
+    return allocation_links(
+        root,
+        if std::str::starts_with(std::json::find_field_raw(applied_body, "published"), "[") {
+            applied_body
+        } else {
+            body
+        },
+        ran.host,
+    );
+}
+
+fn ui_entry(
+    out: std::json::Builder,
+    organism: String,
+    kind: String,
+    name: String,
+    label: String,
+    at: UiAt,
+    login: String
+) {
+    out.begin_object();
+    out.string_field("organism", organism);
+    out.string_field("kind", kind);
+    out.string_field("name", name);
+    out.string_field("label", label);
+    out.string_field("url", at.url);
+    out.string_field("loopback_host", at.loopback_host);
+    out.string_field("login", login);
+    out.string_field("note", at.note);
+    out.end_object();
+}
+
+fn habitat_uis(root: String, limit: Int) -> UiRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let grafted = habitat_latest(j, "habitat.grafted");
+    let allocated = habitat_latest(j, "habitat.allocated");
+    let applies = habitat_latest_applied(j);
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.grafted" || !habitat_holds(grafted, e.entity, i - 1) { continue; }
+        let named = std::json::find_string_field(e.body, "name");
+        let organism = if len(named) > 0 { named } else { e.entity };
+        let key = e.entity;
+        // its face, as its graft row holds its address
+        ui_entry(
+            out, organism, "face", "face", organism + " face",
+            UiAt { url: std::json::find_string_field(e.body, "face") }, "",
+        );
+        n = n + 1;
+        let dir = organism_root_of(key);
+        if len(dir) == 0 { continue; }
+        let declared = dna::declared_uis(dir);
+        if !declared.ok {
+            ui_entry(
+                out, organism, "declared", "", "its declared UIs",
+                UiAt { note: "refused: " + declared.why }, "",
+            );
+            n = n + 1;
+            continue;
+        }
+        if len(declared.lines) == 0 { continue; }
+        let links = organism_links(root, j, allocated, applies, key);
+        let mut rest = declared.lines;
+        while len(rest) > 0 && n < cap {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let name = dna::declared_field(line, 0);
+            if len(name) == 0 { continue; }
+            ui_entry(
+                out, organism, "declared", name, dna::declared_field(line, 1),
+                ui_at(links, dna::declared_field(line, 2), dna::declared_field(line, 3)),
+                dna::declared_field(line, 4),
+            );
+            n = n + 1;
+        }
+    }
+    out.end_array();
+    return UiRows { ok: true, revision: j.revision(), uis: out.result() };
 }
 
 // ---- the habitat's nurseries and saplings (phase 4) --------------------------

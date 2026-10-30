@@ -115,6 +115,14 @@ A graft plans each body part first. The organism plane (its record in memory, it
 1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (`hale`, the one the toolchain carries, or one a trusted nursery offers, such as `voice`; `./<name>` denotes a local directory). A repository can be its own nursery: a `nursery.toml` at its root whose `[[sapling]]` says `repo = "."` (and no revision or digest) offers the repository itself, pinned at the commit the habitat reads. That is how `hale-lang/voice` is offered; the toolchain bundles no application. The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row. The `hale` sapling (the organism that works on the Hale toolchain) is a tree the toolchain itself carries, with no remote. `hale habitat graft hale` makes it the organism's own repository in the habitat and checks its digest the same way. Like every graft, it mirrors that repository to the habitat's Forgejo; nothing of an organism's own goes to GitHub unless its Board allocates GitHub later.
 2. **A genome's codebases attach at its graft:** a `[[dna.codebase]]` list in the sapling's `hale.toml` (each with `name`, `repo`, `branch`, `build`, `test`, `toolchain`) becomes `codebase.attached` rows of the grafted organism's record, once each; nothing is cloned until a leg works one. The toolchain nursery's `hale` sapling is **the hale organism**: its genome is its own small repository, and its codebases are `hale-lang/hale` and `hale-lang/voice`.
 3. **Updating sapling pins (`refresh` and `ratify`):** Running `hale habitat nursery refresh` (also run during `hale habitat up`) inspects all trusted nurseries. Newly discovered saplings are pinned automatically; if an already-pinned sapling offers a newer revision, the habitat files it for the Board without moving existing organisms. Run `hale habitat nursery ratify <sapling>` to pin the newer revision for future grafts.
+4. **Moving a grafted organism to the ratified revision (`organism upgrade`):** an organism already grafted stays where it was grafted until you move it, keeping its record, its data and its allocations:
+
+   ```sh
+   hale habitat organism upgrade voice --plan   # from -> to, the migrations, the services rebuilt, the placements re-run
+   hale habitat organism upgrade voice
+   ```
+
+   The upgrade fetches the pinned revision into `<habitat>/saplings/<name>` and checks its digest exactly as a graft does (a mismatch moves nothing), checks the organism's tree out there with what its graft wrote carried (the record's pin in its `hale.toml`, the tables and `.gitignore` lines the graft added), re-materializes `vendor/dna`, runs the heart's declared migrations, re-applies its services allocation (its images built from the new tree), and records a `habitat.organism.upgraded` row. Anything else changed in that checkout is carried only when it applies cleanly at the new revision; otherwise the upgrade refuses before anything moves. Last, each host command placed for it (`organism place`) runs its `install` again at the new revision, over your SSH logins: at a terminal (sudo asks there), or printed as the `hale habitat organism place …` lines left to run. An organism already at the pinned revision is refused, naming a newer revision that waits for `ratify`. Through a pointer, everything but the placements runs on the habitat's machine.
 
 ---
 
@@ -147,7 +155,7 @@ face    http://127.0.0.1:<port>/ (up, ...)
 
 ### 2. Sign In to the Operator Face
 
-Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
+Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (its name, and the web UIs of every organism with their links: [Web UIs on the Home Screen](#web-uis-on-the-home-screen)), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
 
 ### 3. Graft the `voice` Sapling (Local or LAN Host)
 
@@ -192,6 +200,20 @@ A moved memory starts empty, because nothing migrates. A memory that holds its o
 `voice`'s image downloads the released Hale toolchain itself when it is built (its `Dockerfile`), so the first `apply` needs the network and takes a few minutes; nothing is staged by hand.
 
 The operator face's **organisms** screen lists each of `voice`'s allocations with what its services publish: a link where the port is reachable from your machine (`api` opens `voice`'s console, its admin UI served at the api's `/`), and `loopback only on <host>` for a port bound to that host's loopback.
+
+#### Web UIs on the Home Screen
+
+The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
+
+```toml
+[dna.ui.console]
+label   = "voice console"     # what the home screen calls it
+service = "api"               # the compose service that serves it
+path    = "/"                 # where under that service's address (default "/")
+login   = "operator-token"    # optional: a declared secret (person = "read") you sign in with
+```
+
+The link is the address the organism's services publish for that service, as the organisms screen links it, with `path` after it; a service published only on its host's loopback is shown as `loopback only on <host>`. A UI with a `login` says which command prints the secret from your machine, `hale habitat organism <organism> dna secret show <login>` (the secret must be declared under `[dna.secrets.<login>]` with `person = "read"`, [The Skin](./dna/skin.md#declared-secrets)); the value itself is never shown. The declaration is read from the organism's directory each time the screen asks, so an upgrade's is the one listed. `hale habitat graft` refuses a manifest whose UIs are refused (an unknown key, no `label` or `service`, a `path` not starting with `/`, a `login` naming no readable declared secret), and `hale dna declared-uis` prints the declaration as the toolchain reads it.
 
 `voice`'s Compose definition publishes its api (port `8080`) and its NATS (port `4222`) on the listen address of the host it is placed on (`HALE_DNA_HOST_LISTEN`), so a browser or a node on another machine reaches them at the host's name; on this machine they stay on `127.0.0.1`. Every plane of the api takes a bearer, so nothing rests on loopback: a project key on `/v1`, a node's enrollment token on `/node/v1`, and the **operator token** on `/admin/v1`. Name the api's address once (`localhost:8080` when `voice` runs on this machine, `rack-a.lan:8080` when it is placed there) and check that it answers:
 

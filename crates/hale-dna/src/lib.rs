@@ -66,6 +66,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "correlation",
     "decision",
     "declared_secrets",
+    "declared_uis",
     "editing",
     "evidence",
     "exchange",

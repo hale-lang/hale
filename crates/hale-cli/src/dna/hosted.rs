@@ -675,7 +675,7 @@ fn rows(member: &str, field: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(v[field].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default())
 }
 
-fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: bool, install: bool) -> Result<(), String> {
+pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&str>, plan: bool, install: bool) -> Result<(), String> {
     // the organism, its sapling's source, and the target host, as the head knows them
     let index = super::sapling::head_call("Commands::index", serde_json::json!({ "limit": 500 }))?;
     let organisms: Vec<serde_json::Value> = index["organisms"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();

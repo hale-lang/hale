@@ -399,12 +399,13 @@ domain	pool:__api_unix	async_io
 domain	pool:__api_http	async_io
 domain	pinned:__StdApiHubStream@binding1
 hole	App@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.shop	Shop	pool:work	entry	off owner
 row	App@literal1.staff	__StdApiStaticRoles	main	default
 row	App@literal1.tokens	Tokens	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
-shared	App@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	App@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #e931d4fb
@@ -470,7 +471,9 @@ domain	pool:__api_unix	async_io
 domain	pool:__api_http	async_io
 domain	pinned:__StdApiHubStream@binding1
 hole	Desk@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	Desk@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 hole	Desk@literal1.__rpc_h_3.conns.handler.fallback	reuse `self.held`
+hole	Desk@literal1.__rpc_h_3.conns.handler.mounts	reuse `self.held_mounts`
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.counter	Counter	pool:desk	entry	off owner
@@ -478,8 +481,8 @@ row	Desk@literal1.http_roles	Grants	main	default
 row	Desk@literal1.hub_roles	Grants	main	default
 row	Desk@literal1.unix_roles	Grants	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
-shared	Desk@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
-shared	Desk@literal1.__rpc_h_3	__StdApiHttpListener #f468a184
+shared	Desk@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
+shared	Desk@literal1.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	Desk@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #e931d4fb
@@ -498,11 +501,12 @@ shared	dynamic	sites in the seed #09510ed0
 root	Desk	the entry
 domain	pool:__api_http	async_io
 hole	Desk@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	Desk@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.library	Library	main	default
 row	Desk@literal1.roles	Nobody	main	default
-shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
+shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
@@ -690,7 +694,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#dd570c71
+== crates/hale-stdlib/hl/api_rpc.hl#b2cfa865
 
 == crates/hale-stdlib/hl/crypto.hl#c68ea340
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -743,6 +747,7 @@ row	~.__transport.principals	__StdApiNoPrincipals	main	inherited
 root	App	the entry
 domain	pool:io	async_io
 hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 -- App@literal1.__rpc_h_1	__StdApiHttpListener
 row	~	__StdApiHttpListener	pool:io	entry	off owner
@@ -750,9 +755,13 @@ row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdApiHttpConns	pool:io	inherited
 row	~.conns.handler.fallback	__StdApiRestFallback	pool:io	inherited
+row	~.conns.handler.mounts	__StdApiRestMounts	pool:io	inherited
 row	~.fallback	__StdApiRestNoFallback	pool:io	inherited
 row	~.held	__StdApiRestFallback	pool:io	inherited
 row	~.held.h	__StdApiRestNoFallback	pool:io	inherited
+row	~.held_mounts	__StdApiRestMounts	pool:io	inherited
+row	~.held_mounts.h	__StdApiRestNoMount	pool:io	inherited
+row	~.mounts	__StdApiRestNoMount	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- App@literal1.notes	NoteServer
 row	~	NoteServer	pool:io	entry	off owner
@@ -771,10 +780,11 @@ dynamic	__StdIoTcpStream	on pool:io|unknown (no instance)
 root	App	the entry
 domain	pool:__api_http	async_io
 hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.bearer	Tokens	main	default
 row	App@literal1.orders	Orders	main	default
-shared	App@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
+shared	App@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
 
 == crates/hale-cli/tests/check_arg_parsing.rs#a354ed05
@@ -1439,11 +1449,12 @@ domain	pool:__api_http	async_io
 domain	pool:__api_grpc	async_io
 domain	pool:__api_unix	async_io
 hole	Shop@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	Shop@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	Shop@literal1	Shop	main	default
 row	Shop@literal1.bearer	Tokens	main	default
 row	Shop@literal1.orders	Orders	main	default
 shared	Shop@literal1.__rpc_g_2	__StdIoH2Listener #b0c4764c
-shared	Shop@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
+shared	Shop@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	Shop@literal1.__rpc_u_3	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	__StdApiHttpConns	on pool:__api_http
@@ -1467,11 +1478,12 @@ row	App@literal1	App	main	default
 root	Desk	the entry
 domain	pool:__api_http	async_io
 hole	Desk@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	Desk@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echoer	Echoer	main	default
 row	Desk@literal1.roles	Nobody	main	default
-shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
+shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
 
 == crates/hale-codegen/tests/api_hub.rs#067b6ae6
@@ -1502,21 +1514,59 @@ row	__StdApiHubStream@binding2	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #3636d9ce
 
+== crates/hale-codegen/tests/api_hub_rest.rs#e703233b
+root	App	the entry
+domain	pool:edge	async_io
+domain	pinned:__StdApiHubStream@binding1
+hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
+row	App@literal1	App	main	default
+row	App@literal1.bearer	Tokens	main	default
+row	App@literal1.hub_roles	Grants	main	default
+row	App@literal1.maker	Maker	main	default
+row	App@literal1.probe	Probe	main	default
+row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
+-- App@literal1.__rpc_h_1	__StdApiHttpListener
+row	~	__StdApiHttpListener	pool:edge	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:edge	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:edge	inherited
+row	~.conns.handler	__StdApiHttpConns	pool:edge	inherited
+row	~.conns.handler.fallback	__StdApiRestFallback	pool:edge	inherited
+row	~.conns.handler.mounts	__StdApiRestMounts	pool:edge	inherited
+row	~.fallback	__StdApiRestNoFallback	pool:edge	inherited
+row	~.held	__StdApiRestFallback	pool:edge	inherited
+row	~.held.h	__StdApiRestNoFallback	pool:edge	inherited
+row	~.held_mounts	__StdApiRestMounts	pool:edge	inherited
+row	~.held_mounts.h	__StdApiWsConns	pool:edge	inherited
+row	~.mounts	__StdApiWsConns	pool:edge	inherited
+row	~.relay	__StdIoTcpRelay	pool:edge	inherited
+-- dynamic	sites in the seed
+dynamic	__StdApiHttpConns	on pool:edge
+dynamic	__StdApiHttpPeer	on pool:edge
+dynamic	__StdApiWsPeer	on pool:edge|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on pool:edge
+dynamic	__StdIoTcpConnFlow	on pool:edge
+dynamic	__StdIoTcpConnInline	on pool:edge
+dynamic	__StdIoTcpConnections	on pool:edge|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:edge|unknown (no instance)
+
 == crates/hale-codegen/tests/api_mcp.rs#f4ae4224
 root	D	the entry
 domain	pool:__api_http	async_io
 hole	D@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	D@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	D@literal1	D	main	default
 row	D@literal1.a	A	main	default
 row	D@literal1.ab	A__b	main	default
 row	D@literal1.t	Tok	main	default
-shared	D@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
+shared	D@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
 
 == crates/hale-codegen/tests/api_rest.rs#24802f4b
 root	Svc	the entry
 domain	pool:__api_http	async_io
 hole	Svc@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	Svc@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	Svc@literal1	Svc	main	default
 row	Svc@literal1.bearer	Tokens	main	default
 row	Svc@literal1.chat	Chat	main	default
@@ -1524,8 +1574,31 @@ row	Svc@literal1.grants	Grants	main	default
 row	Svc@literal1.items	Items	main	default
 row	Svc@literal1.ops	Ops	main	default
 row	Svc@literal1.probe	Probe	main	default
-shared	Svc@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
+shared	Svc@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
 shared	dynamic	sites in the seed #042a0a8b
+
+== crates/hale-codegen/tests/api_rest_conc.rs#b15f4f35
+root	Svc	the entry
+domain	pool:work	async_io
+domain	pool:edge	async_io
+hole	Svc@literal1.__rpc_h_1.held.h	reuse `self.fallback`
+hole	Svc@literal1.__rpc_h_1.held.h	unresolved declaration `std::http::Handler`
+hole	Svc@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	Svc@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
+row	Svc@literal1	Svc	main	default
+row	Svc@literal1.front	Front	pool:edge	entry	off owner
+row	Svc@literal1.probe	Probe	pool:work	entry	off owner
+row	Svc@literal1.tokens	Tokens	main	default
+shared	Svc@literal1.__rpc_h_1	__StdApiHttpListener #e62e7499
+-- dynamic	sites in the seed
+dynamic	__StdApiHttpConns	on pool:edge
+dynamic	__StdApiHttpPeer	on pool:edge
+dynamic	__StdBytesBytesBuilder	on pool:edge
+dynamic	__StdHttpSseWriter	on pool:edge
+dynamic	__StdIoTcpConnFlow	on pool:edge
+dynamic	__StdIoTcpConnInline	on pool:edge
+dynamic	__StdIoTcpConnections	on pool:edge|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:edge|unknown (no instance)
 
 == crates/hale-codegen/tests/api_runtime.rs#9ea7cf1a
 root	App	the entry
@@ -8183,9 +8256,10 @@ domain	pool:work	async_io
 domain	pool:__api_unix	async_io
 domain	pool:__api_http	async_io
 hole	App@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.echo	Echo	pool:work	entry	off owner
-shared	App@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
 dynamic	__StdApiHttpConns	on pool:__api_http
@@ -8677,6 +8751,7 @@ hole	App@literal1.__rpc_h_1.fallback	unresolved declaration `std::http::Handler`
 hole	App@literal1.__rpc_h_1.held.h	reuse `self.fallback`
 hole	App@literal1.__rpc_h_1.held.h	unresolved declaration `std::http::Handler`
 hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.driver	Driver	pool:client	entry	off owner
 -- App@literal1.__rpc_h_1	__StdApiHttpListener
@@ -8685,9 +8760,13 @@ row	~.conns	__StdIoTcpConnections	pool:edge	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:edge	inherited
 row	~.conns.handler	__StdApiHttpConns	pool:edge	inherited
 row	~.conns.handler.fallback	__StdApiRestFallback	pool:edge	inherited
+row	~.conns.handler.mounts	__StdApiRestMounts	pool:edge	inherited
 row	~.fallback	<hole>	pool:edge	inherited
 row	~.held	__StdApiRestFallback	pool:edge	inherited
 row	~.held.h	<hole>	pool:edge	inherited
+row	~.held_mounts	__StdApiRestMounts	pool:edge	inherited
+row	~.held_mounts.h	__StdApiRestNoMount	pool:edge	inherited
+row	~.mounts	__StdApiRestNoMount	pool:edge	inherited
 row	~.relay	__StdIoTcpRelay	pool:edge	inherited
 -- App@literal1.holder	Holder
 row	~	Holder	pool:edge	entry	off owner
@@ -8703,6 +8782,7 @@ domain	pool:client	async_io
 hole	App@literal1.__rpc_h_1.held.h	reuse `self.fallback`
 hole	App@literal1.__rpc_h_1.held.h	unresolved declaration `std::http::Handler`
 hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.driver	Driver	pool:client	entry	off owner
 -- App@literal1.__rpc_h_1	__StdApiHttpListener
@@ -8711,9 +8791,13 @@ row	~.conns	__StdIoTcpConnections	pool:edge	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:edge	inherited
 row	~.conns.handler	__StdApiHttpConns	pool:edge	inherited
 row	~.conns.handler.fallback	__StdApiRestFallback	pool:edge	inherited
+row	~.conns.handler.mounts	__StdApiRestMounts	pool:edge	inherited
 row	~.fallback	OwnHolder	pool:edge	inherited
 row	~.held	__StdApiRestFallback	pool:edge	inherited
 row	~.held.h	<hole>	pool:edge	inherited
+row	~.held_mounts	__StdApiRestMounts	pool:edge	inherited
+row	~.held_mounts.h	__StdApiRestNoMount	pool:edge	inherited
+row	~.mounts	__StdApiRestNoMount	pool:edge	inherited
 row	~.relay	__StdIoTcpRelay	pool:edge	inherited
 -- App@literal1.own	OwnHolder
 row	~	OwnHolder	pool:edge	entry	off owner
@@ -8730,24 +8814,17 @@ domain	pool:client	async_io
 hole	App@literal1.__rpc_h_1.held.h	reuse `self.fallback`
 hole	App@literal1.__rpc_h_1.held.h	unresolved declaration `std::http::Handler`
 hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 hole	App@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.driver	Driver	pool:client	entry	off owner
 row	App@literal1.front	Front	pool:edge	entry	off owner
 row	App@literal1.items	Items	pool:work	entry	off owner
 row	App@literal1.probe	Probe	pool:work	entry	off owner
 row	App@literal1.tokens	Tokens	main	default
--- App@literal1.__rpc_h_1	__StdApiHttpListener
-row	~	__StdApiHttpListener	pool:edge	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:edge	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:edge	inherited
-row	~.conns.handler	__StdApiHttpConns	pool:edge	inherited
-row	~.conns.handler.fallback	__StdApiRestFallback	pool:edge	inherited
-row	~.fallback	Front	pool:edge	inherited
-row	~.held	__StdApiRestFallback	pool:edge	inherited
-row	~.held.h	<hole>	pool:edge	inherited
-row	~.relay	__StdIoTcpRelay	pool:edge	inherited
-shared	App@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	App@literal1.__rpc_h_1	__StdApiHttpListener #e62e7499
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 -- dynamic	sites in the seed
 dynamic	__StdApiHttpConns	on pool:__api_http|pool:edge
 dynamic	__StdApiHttpPeer	on pool:__api_http|pool:edge
@@ -15038,7 +15115,9 @@ hole	Head@literal1.commands.knowledge.provider	reuse `knowledge_commands`
 hole	Head@literal1.commands.knowledge.provider	unresolved declaration `KnowledgeCommandProvider`
 hole	Head@literal1.bearer.auth	unenumerable initializer
 hole	Head@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	Head@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 hole	Head@literal1.__rpc_h_3.conns.handler.fallback	reuse `self.held`
+hole	Head@literal1.__rpc_h_3.conns.handler.mounts	reuse `self.held_mounts`
 hole	Head@literal2.srv.handler.web	reuse `web`
 hole	Head@literal2.srv.handler.definitions	reuse `definitions`
 hole	Head@literal2.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
@@ -15054,7 +15133,9 @@ hole	Head@literal2.commands.admission.provider	unresolved declaration `CommandPr
 hole	Head@literal2.commands.knowledge.provider	reuse `knowledge_commands`
 hole	Head@literal2.commands.knowledge.provider	unresolved declaration `KnowledgeCommandProvider`
 hole	Head@literal2.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	Head@literal2.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 hole	Head@literal2.__rpc_h_3.conns.handler.fallback	reuse `self.held`
+hole	Head@literal2.__rpc_h_3.conns.handler.mounts	reuse `self.held_mounts`
 row	Head@literal1	Head	main	default
 row	Head@literal2	Head	main	default
 row	Head@literal2.bearer	LaunchBearer	main	default
@@ -15062,8 +15143,8 @@ row	Http@main1	Http	main	default
 row	WebAssets@main2	WebAssets	main	default
 row	__lib_dna__operations___definitions__ProjectWorkflowCatalog@main3	__lib_dna__operations___definitions__ProjectWorkflowCatalog	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
-shared	Head@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
-shared	Head@literal1.__rpc_h_3	__StdApiHttpListener #f468a184
+shared	Head@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
+shared	Head@literal1.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	Head@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- Head@literal1.bearer	OidcBearer
 row	~	OidcBearer	main	default
@@ -15097,8 +15178,8 @@ row	~.handler.roles.rows	__lib_dna__core___journal__EventRows	pool:io	inherited
 row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
-shared	Head@literal2.__rpc_h_2	__StdApiHttpListener #f468a184
-shared	Head@literal2.__rpc_h_3	__StdApiHttpListener #f468a184
+shared	Head@literal2.__rpc_h_2	__StdApiHttpListener #80abdd5b
+shared	Head@literal2.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	Head@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Head@literal2.commands	Commands #b8d39e38
 shared	Head@literal2.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
@@ -15308,7 +15389,9 @@ hole	PracticeReviewHead@literal1.commands.knowledge.provider	reuse `knowledge_co
 hole	PracticeReviewHead@literal1.commands.knowledge.provider	unresolved declaration `__lib_dna__api___knowledge_commands__KnowledgeCommandProvider`
 hole	PracticeReviewHead@literal1.bearer.auth	unenumerable initializer
 hole	PracticeReviewHead@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	PracticeReviewHead@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 hole	PracticeReviewHead@literal1.__rpc_h_3.conns.handler.fallback	reuse `self.held`
+hole	PracticeReviewHead@literal1.__rpc_h_3.conns.handler.mounts	reuse `self.held_mounts`
 hole	PracticeReviewHead@literal2.srv.handler.web	reuse `web`
 hole	PracticeReviewHead@literal2.srv.handler.definitions	reuse `definitions`
 hole	PracticeReviewHead@literal2.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
@@ -15323,15 +15406,17 @@ hole	PracticeReviewHead@literal2.commands.admission.provider	unresolved declarat
 hole	PracticeReviewHead@literal2.commands.knowledge.provider	reuse `knowledge_commands`
 hole	PracticeReviewHead@literal2.commands.knowledge.provider	unresolved declaration `__lib_dna__api___knowledge_commands__KnowledgeCommandProvider`
 hole	PracticeReviewHead@literal2.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	PracticeReviewHead@literal2.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 hole	PracticeReviewHead@literal2.__rpc_h_3.conns.handler.fallback	reuse `self.held`
+hole	PracticeReviewHead@literal2.__rpc_h_3.conns.handler.mounts	reuse `self.held_mounts`
 row	PracticeReviewHead@literal1	PracticeReviewHead	main	default
 row	PracticeReviewHead@literal2	PracticeReviewHead	main	default
 row	PracticeReviewHead@literal2.bearer	__lib_dna__api___bearer__LaunchBearer	main	default
 row	__lib_dna__api___http__Http@main1	__lib_dna__api___http__Http	main	default
 dynamic	__StdSecretCredential	on pool:io	in dna/ui
 dynamic	__StdBytesBytesBuilder	on main	in iris/process_identity
-shared	PracticeReviewHead@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
-shared	PracticeReviewHead@literal1.__rpc_h_3	__StdApiHttpListener #f468a184
+shared	PracticeReviewHead@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
+shared	PracticeReviewHead@literal1.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	PracticeReviewHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- PracticeReviewHead@literal1.bearer	__lib_dna__api___bearer__OidcBearer
 row	~	__lib_dna__api___bearer__OidcBearer	main	default
@@ -15384,8 +15469,8 @@ row	~.handler.roles.rows	__lib_dna__core___journal__EventRows	pool:io	inherited
 row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
-shared	PracticeReviewHead@literal2.__rpc_h_2	__StdApiHttpListener #f468a184
-shared	PracticeReviewHead@literal2.__rpc_h_3	__StdApiHttpListener #f468a184
+shared	PracticeReviewHead@literal2.__rpc_h_2	__StdApiHttpListener #80abdd5b
+shared	PracticeReviewHead@literal2.__rpc_h_3	__StdApiHttpListener #80abdd5b
 shared	PracticeReviewHead@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	PracticeReviewHead@literal2.commands	__lib_dna__api___commands__Commands #6008b315
 shared	PracticeReviewHead@literal2.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
@@ -15945,6 +16030,7 @@ hole	FixtureHead@literal1.srv.handler.definitions	unresolved declaration `__lib_
 hole	FixtureHead@literal1.commands.admission.provider	reuse `provider`
 hole	FixtureHead@literal1.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 hole	FixtureHead@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	FixtureHead@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 hole	FixtureProvider@main4.original.catalog	reuse `original`
 hole	FixtureProvider@main4.updated.catalog	reuse `updated`
 row	FixtureHead@literal1	FixtureHead	main	default
@@ -15952,7 +16038,7 @@ row	FixtureHead@literal1.bearer	__lib_dna__api___bearer__LaunchBearer	main	defau
 row	__lib_dna__api___commands__NoCommands@main5	__lib_dna__api___commands__NoCommands	main	default
 row	__lib_dna__api___web__WebAssets@main1	__lib_dna__api___web__WebAssets	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
-shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
@@ -16022,13 +16108,14 @@ hole	FixtureHead@literal1.srv.handler.definitions	unresolved declaration `__lib_
 hole	FixtureHead@literal1.commands.admission.provider	reuse `provider`
 hole	FixtureHead@literal1.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 hole	FixtureHead@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	FixtureHead@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 row	FixtureHead@literal1	FixtureHead	main	default
 row	FixtureHead@literal1.bearer	__lib_dna__api___bearer__LaunchBearer	main	default
 row	ScriptedCommands@main2	ScriptedCommands	main	default
 row	__lib_dna__api___web__WebAssets@main1	__lib_dna__api___web__WebAssets	main	default
 row	__lib_dna__operations___definitions__NoWorkflowCatalog@main3	__lib_dna__operations___definitions__NoWorkflowCatalog	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
-shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
@@ -16837,15 +16924,17 @@ domain	pool:__api_ws	async_io
 domain	pool:__api_http	async_io
 domain	pinned:__StdApiHubStream@binding1
 hole	App@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_1.conns.handler.mounts	reuse `self.held_mounts`
 hole	App@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	App@literal1.__rpc_h_2.conns.handler.mounts	reuse `self.held_mounts`
 row	App@literal1	App	main	default
 row	App@literal1.list	Todos	pool:work	entry	off owner
 row	App@literal1.roles	Grants	main	default
 row	App@literal1.tokens	Tokens	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
 dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.sense	in the stdlib
-shared	App@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
-shared	App@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	App@literal1.__rpc_h_1	__StdApiHttpListener #80abdd5b
+shared	App@literal1.__rpc_h_2	__StdApiHttpListener #80abdd5b
 shared	App@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 -- App@literal1.sense	Sense
 row	~	Sense	pinned:~	entry	off owner
@@ -18100,16 +18189,35 @@ row	~.leaf	Leaf	pinned:~	inherited
 row	~	Writer	pool:io	entry	off owner
 row	~.t	Table	pool:io	inherited
 
-== shared __StdApiHttpListener #f468a184
+== shared __StdApiHttpListener #80abdd5b
 row	~	__StdApiHttpListener	pool:__api_http	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:__api_http	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:__api_http	inherited
 row	~.conns.handler	__StdApiHttpConns	pool:__api_http	inherited
 row	~.conns.handler.fallback	__StdApiRestFallback	pool:__api_http	inherited
+row	~.conns.handler.mounts	__StdApiRestMounts	pool:__api_http	inherited
 row	~.fallback	__StdApiRestNoFallback	pool:__api_http	inherited
 row	~.held	__StdApiRestFallback	pool:__api_http	inherited
 row	~.held.h	__StdApiRestNoFallback	pool:__api_http	inherited
+row	~.held_mounts	__StdApiRestMounts	pool:__api_http	inherited
+row	~.held_mounts.h	__StdApiRestNoMount	pool:__api_http	inherited
+row	~.mounts	__StdApiRestNoMount	pool:__api_http	inherited
 row	~.relay	__StdIoTcpRelay	pool:__api_http	inherited
+
+== shared __StdApiHttpListener #e62e7499
+row	~	__StdApiHttpListener	pool:edge	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:edge	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:edge	inherited
+row	~.conns.handler	__StdApiHttpConns	pool:edge	inherited
+row	~.conns.handler.fallback	__StdApiRestFallback	pool:edge	inherited
+row	~.conns.handler.mounts	__StdApiRestMounts	pool:edge	inherited
+row	~.fallback	Front	pool:edge	inherited
+row	~.held	__StdApiRestFallback	pool:edge	inherited
+row	~.held.h	<hole>	pool:edge	inherited
+row	~.held_mounts	__StdApiRestMounts	pool:edge	inherited
+row	~.held_mounts.h	__StdApiRestNoMount	pool:edge	inherited
+row	~.mounts	__StdApiRestNoMount	pool:edge	inherited
+row	~.relay	__StdIoTcpRelay	pool:edge	inherited
 
 == shared __StdApiUnixListener #e8cfe0e1
 row	~	__StdApiUnixListener	pool:__api_unix	entry	off owner

@@ -1287,9 +1287,10 @@ pub fn expand(
     if mentions_grpc(programs) {
         inject_grpc(programs);
     }
+    let mut hub_rows: Vec<crate::hub_expand::HubExpansion> = Vec::new();
     if hubs {
         inject_hub(programs);
-        crate::hub_expand::expand(programs);
+        hub_rows = crate::hub_expand::expand(programs);
     }
     // ---- the immutable phase: rows, digests, sites ----
     struct Plan {
@@ -1312,6 +1313,10 @@ pub fn expand(
         /// an `http::Rest` exposure's `fallback:`, the handler its listener's
         /// connections give a request no row's path matches.
         fallback: Option<Expr>,
+        /// an `http::Rest` exposure's `hubs:` (GH #1780): each mounted hub's
+        /// path and number, and its streams, which the exposure describes.
+        mounts: Vec<(String, i64)>,
+        mounted_streams: Vec<crate::hub_expand::DescribedStream>,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let confer;
@@ -1537,6 +1542,25 @@ pub fn expand(
                     } else {
                         String::new()
                     };
+                    // the hubs it mounts: each a hub of this main locus the
+                    // hub expansion built (the laws refuse any other)
+                    let mut mounts: Vec<(String, i64)> = Vec::new();
+                    let mut mounted_streams = Vec::new();
+                    if !routes.is_empty() && l.is_main {
+                        if let Some(Ok(ms)) = source_of("hubs").map(|e| mounts_of(&e)) {
+                            for m in ms {
+                                let Some(h) = hub_rows.iter().find(|h| h.mounted && h.locus == l.name.name && h.param == m.field)
+                                else {
+                                    continue;
+                                };
+                                if mounts.iter().any(|(p, id)| *p == m.path || *id == h.id) {
+                                    continue;
+                                }
+                                mounts.push((m.path.clone(), h.id));
+                                mounted_streams.extend(h.streams.iter().cloned());
+                            }
+                        }
+                    }
                     plans.push(Plan {
                         site: Site {
                             program: pi,
@@ -1560,6 +1584,8 @@ pub fn expand(
                         files,
                         fallback: if routes.is_empty() { None } else { source_of("fallback") },
                         routes,
+                        mounts,
+                        mounted_streams,
                     });
                 }
             }
@@ -1604,7 +1630,16 @@ pub fn expand(
         let id = i as i64 + 1;
         let site = &plan.site;
         let pb = PbCodec { surface: &site.surface, ..pb };
-        generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec, plan.grpc.then_some(&pb), &schemas));
+        generated.push_str(&surface_src(
+            id,
+            &plan.rows,
+            &plan.mounted_streams,
+            &plan.slots,
+            &confer,
+            &codec,
+            plan.grpc.then_some(&pb),
+            &schemas,
+        ));
         for (slot, ty) in plan.slots.iter().enumerate() {
             let members: Vec<(usize, &Row)> = plan
                 .rows
@@ -1719,7 +1754,7 @@ pub fn expand(
             match (&unix_path, &http_bind) {
                 (Some(_), _) => parse_unix_listener(id, bind, span),
                 (None, Some(_)) if grpc => parse_grpc_listener(id, bind, span),
-                (None, Some(_)) => parse_http_listener(id, bind, mcp, &plan.routes, fallback, span),
+                (None, Some(_)) => parse_http_listener(id, bind, mcp, &plan.routes, fallback, &plan.mounts, span),
                 (None, None) => None,
             }
         };
@@ -1956,6 +1991,8 @@ fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str, routes: &str) -
                     // runs where the handler does; the transport stays
                     // with the exposure (parse_http_listener)
                     && !(rest && i.name.name == "fallback")
+                    // its `hubs:` too: the listener takes the upgrades
+                    && !(rest && i.name.name == "hubs")
                     && i.name.name != "surface"
                     && i.name.name != "files"
                     && !((kind == "http" || kind == "grpc") && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
@@ -2087,11 +2124,22 @@ fn parse_http_listener(
     mcp: bool,
     routes: &str,
     fallback: Option<Expr>,
+    mounts: &[(String, i64)],
     span: Span,
 ) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
     let field = format!("__rpc_h_{id}");
+    // the hubs it mounts (GH #1780): a WebSocket upgrade at a mount's path
+    // is handed to the hubs' connections, which the listener holds
+    let mounted = if mounts.is_empty() {
+        String::new()
+    } else {
+        // `<path> <hub>` per mount, joined by `,` (a mount's path is
+        // letters, digits, `-._~` and `/`: the laws refuse any other)
+        let table = mounts.iter().map(|(p, n)| format!("{p} {n}")).collect::<Vec<_>>().join(",");
+        format!(", hubs: {}, mounts: __StdApiWsConns {{ }}, serve_mount: __api_rest_mount_serve", q(&table))
+    };
     let src = format!(
-        "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
+        "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id}{mounted} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
     );
     let prog = parse_source_at(&src, API_SYNTH_BASE + 0x0700_0000 + id as u32 * 0x100).ok()?;
     let mut param = None;
@@ -2124,6 +2172,7 @@ fn parse_http_listener(
             let serve = Expr::Ident(Ident::new("__api_rest_fallback_serve", span));
             inits.push(StructInit { name: Ident::new("serve_fallback", span), value: serve, span });
         }
+
     }
     Some((param, entry?))
 }
@@ -2332,9 +2381,11 @@ topic __ApiHttpOutT { payload: __StdApiHttpOut; subject: \"__api.http.out\"; key
 ";
 
 /// The rows adapter of exposure `id`.
+#[allow(clippy::too_many_arguments)]
 fn surface_src(
     id: i64,
     rows: &[Row],
+    streams: &[crate::hub_expand::DescribedStream],
     slots: &[String],
     confer: &BTreeMap<String, Vec<String>>,
     codec: &Codec<'_>,
@@ -2402,7 +2453,7 @@ fn surface_src(
         }
     }
     s.push_str("        return role;\n    }\n");
-    s.push_str(&description_src(rows, schemas, &digests));
+    s.push_str(&description_src(rows, streams, schemas, &digests));
     s.push_str("}\n");
     s
 }
@@ -2510,10 +2561,17 @@ fn type_json(t: &crate::surfaces::TypeSchema) -> String {
 }
 
 /// The static parts of a description (the rows adapter's `member_doc`,
-/// `refs`, `schema_*` and `roles`): each member as a JSON object, the
-/// schemas it reaches by name, the schemas of the surface in name order and
-/// the roles its rows require. The runtime filters these by caller.
-fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, digests: &[String]) -> String {
+/// `refs`, `stream_*`, `schema_*` and `roles`): each member as a JSON
+/// object, the schemas it reaches by name, the streams of the hubs an
+/// `http::Rest` mounts (GH #1780) the same way, the schemas of the surface
+/// and of those streams in name order and the roles they require. The
+/// runtime filters these by caller.
+fn description_src(
+    rows: &[Row],
+    streams: &[crate::hub_expand::DescribedStream],
+    schemas: &crate::surfaces::Schemas<'_>,
+    digests: &[String],
+) -> String {
     let mut all: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
     let mut docs: Vec<String> = Vec::new();
     let mut refs: Vec<String> = Vec::new();
@@ -2538,8 +2596,37 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, digests
         refs.push(mine.keys().cloned().collect::<Vec<_>>().join(","));
         all.extend(mine);
     }
-    let roles: BTreeSet<&str> = rows.iter().flat_map(|r| r.requires.iter().map(String::as_str)).collect();
+    let mut stream_refs: Vec<String> = Vec::new();
+    for st in streams {
+        let mut mine: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
+        let _ = schemas.type_ref(&st.payload, &mut mine);
+        stream_refs.push(mine.keys().cloned().collect::<Vec<_>>().join(","));
+        all.extend(mine);
+    }
+    let roles: BTreeSet<&str> = rows
+        .iter()
+        .flat_map(|r| r.requires.iter().map(String::as_str))
+        .chain(streams.iter().flat_map(|st| st.requires.iter().map(String::as_str)))
+        .collect();
     let mut s = String::new();
+    s.push_str(&format!("    fn stream_count() -> Int {{ return {}; }}\n", streams.len()));
+    s.push_str("    fn stream_doc(i: Int) -> String {\n");
+    for (i, st) in streams.iter().enumerate() {
+        s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(&st.doc)));
+    }
+    s.push_str("        return \"\";\n    }\n    fn stream_requires(i: Int) -> String {\n");
+    for (i, st) in streams.iter().enumerate() {
+        if !st.requires.is_empty() {
+            s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(&st.requires.join(","))));
+        }
+    }
+    s.push_str("        return \"\";\n    }\n    fn stream_refs(i: Int) -> String {\n");
+    for (i, r) in stream_refs.iter().enumerate() {
+        if !r.is_empty() {
+            s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(r)));
+        }
+    }
+    s.push_str("        return \"\";\n    }\n");
     s.push_str("    fn member_doc(i: Int) -> String {\n");
     for (i, d) in docs.iter().enumerate() {
         s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(d)));
@@ -3143,6 +3230,78 @@ pub(crate) fn rest_fallback_of(l: &LocusDecl, transport: Option<&Expr>) -> Optio
         }
         _ => None,
     }
+}
+
+/// An `http::Rest` transport's `hubs:` (GH #1780), written at the serve
+/// site or in the param that holds the transport, as written.
+pub(crate) fn rest_hubs_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    let lit: &Expr = match transport? {
+        e @ Expr::Struct { .. } => e,
+        e => {
+            let f = crate::surfaces::self_field(e)?;
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })?
+        }
+    };
+    match lit {
+        Expr::Struct { path, inits, .. } if is_http_rest(path) => {
+            inits.iter().find(|i| i.name.name == "hubs").map(|i| fresh(&i.value))
+        }
+        _ => None,
+    }
+}
+
+/// One hub an `http::Rest` mounts: the path its WebSocket upgrade is
+/// taken at, and the main locus's param that is the hub.
+#[derive(Debug, Clone)]
+pub(crate) struct Mount {
+    pub path: String,
+    pub field: String,
+    pub span: Span,
+}
+
+/// `hubs: [("/path", self.hub), …]` as mounts, or the span of the first
+/// entry that is not a string literal and a `self.<param>` (the whole value
+/// when it is not an array literal).
+pub(crate) fn mounts_of(e: &Expr) -> Result<Vec<Mount>, Span> {
+    let Expr::Array(items, _) = e else { return Err(e.span()) };
+    let mut out = Vec::new();
+    for it in items {
+        let Expr::Tuple(parts, sp) = it else { return Err(it.span()) };
+        match parts.as_slice() {
+            [Expr::Literal(Literal::String(path), _), hub] => match crate::surfaces::self_field(hub) {
+                Some(f) => out.push(Mount { path: path.clone(), field: f.to_string(), span: *sp }),
+                None => return Err(hub.span()),
+            },
+            _ => return Err(*sp),
+        }
+    }
+    Ok(out)
+}
+
+/// The mounts a main locus's `http::Rest` exposures declare, each with
+/// the serve site's address as written (`bind:`) and its exposure's name
+/// (`as:`), in the order written.
+pub(crate) fn locus_mounts(l: &LocusDecl) -> Vec<(Mount, Option<Expr>, Option<String>)> {
+    let mut out = Vec::new();
+    for (_, site) in crate::surfaces::locus_serve_sites(l) {
+        let Some(hubs) = rest_hubs_of(l, site.transport) else { continue };
+        let Ok(ms) = mounts_of(&hubs) else { continue };
+        let addr = http_bind_of(l, site.transport);
+        let name = match site.option("as") {
+            Some(Expr::Literal(Literal::String(n), _)) => Some(n.clone()),
+            _ => None,
+        };
+        for m in ms {
+            out.push((m, addr.clone(), name.clone()));
+        }
+    }
+    out
 }
 
 // ---- the literals that build a serving locus (a construction site) ----
