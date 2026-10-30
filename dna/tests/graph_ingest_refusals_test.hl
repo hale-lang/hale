@@ -165,6 +165,28 @@ locus App {
             "a job's own name names its gate and guards nothing: " + tr,
         );
 
+        // ---- hosted: a host command the manifest declares is a process the
+        // repository runs, so a Runs row naming it is no refusal (a graft
+        // once stopped on a node a habitat places, absent from compose)
+        let hosted = repository(
+            scratch + "/hosted",
+            "README.md\n# hosted\n\nAn api in compose and a node placed on a host.\n<<eof>>compose.yaml\nservices:\n  api:\n    image: api\n<<eof>>hale.toml\n[package]\nname = \"hosted\"\n\n[dna.host.node]\ninstall = [\"hale\", \"run\", \"node\", \"install\"]\n<<eof>>docs/internals.md\n# Internals\n\n| Deployment | Runs |\n|---|---|\n| a host and compose | `api`, and `node` on each host |\n<<eof>>",
+        );
+        let h = init(hosted);
+        std::test::assert_eq_int(
+            h.code,
+            0,
+            "a Runs row naming a host command is read: " + h.stdout + h.stderr,
+        );
+        let hr = rows(hosted);
+        std::test::assert(
+            std::str::contains(hr, "graph.node process:api\n")
+                && std::str::contains(hr, "graph.node process:node\n")
+                && std::str::contains(hr, "graph.node deployment:host\n"),
+            "compose's service and the host command are processes, the host command run by the host's placement: "
+                + hr,
+        );
+
         // ---- refused: an axiom with no name leaves no seed (the record is born), and init runs again on it
         let refused = repository(
             scratch + "/refused",

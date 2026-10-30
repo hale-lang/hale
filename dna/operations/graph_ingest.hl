@@ -560,6 +560,41 @@ locus GraphIngest {
         self.note_runs(runs);
         self.edge(runs);
     }
+    // The processes the repository runs on a host rather than in its
+    // compose file: each `[dna.host.<command>]` its manifest declares (a
+    // node a habitat places, `hale habitat organism place`), run by the
+    // habitat's host placement. One compose already runs is not added again.
+    fn host_step() {
+        if !self.tracked("hale.toml") { return; }
+        let text = self.read("hale.toml");
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut names = "";
+        while from >= 0 && from < len(text) {
+            let t = std::str::trim(it.line_at(text, from));
+            from = it.next_idx(text, from);
+            if !std::str::starts_with(t, "[dna.host.") || !std::str::ends_with(t, "]") { continue; }
+            let name = t[10..(len(t) - 1)];
+            if !ingest_process_shaped(name) { continue; }
+            if std::str::contains(self.processes, "\n" + name + "\n") { continue; }
+            if std::str::contains("\n" + names, "\n" + name + "\n") { continue; }
+            names = names + name + "\n";
+        }
+        if len(names) == 0 { return; }
+        let runs = GraphEdge { kind: "runs" };
+        self.add(runs, "deployment", self.node("deployment", "host", "placed", "hale.toml"));
+        let mut rest = names;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let p = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let n = self.node("process", p, "", "hale.toml");
+            self.processes = self.processes + p + "\n";
+            self.add(runs, "process", "process:" + p);
+        }
+        self.note_runs(runs);
+        self.edge(runs);
+    }
     // Which deployment runs which process, for the equipment of an operator.
     fn note_runs(e: GraphEdge) {
         let mut deployment = "";
@@ -1648,6 +1683,7 @@ locus GraphIngest {
         if len(listed) > 0 { return IngestAnswer { error: listed }; }
         self.purpose_step();
         self.compose_step();
+        self.host_step();
         self.seeds_step();
         self.contracts_step();
         self.descriptions_step();

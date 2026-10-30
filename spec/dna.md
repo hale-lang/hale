@@ -5186,8 +5186,11 @@ The live half is memory's, projected from the record by the spine
   first paragraph, and none without a `README.md`, so an empty tree is
   an empty graph; **processes** — the compose file's services
   (`compose.yaml`, `compose.yml`, `docker-compose.*`), then the
-  `compose` **deployment** that runs them (built) — processes first,
-  since a perspective lists in the record's order; **seeds** —
+  `compose` **deployment** that runs them (built), and each host
+  command the root's `hale.toml` declares (`[dna.host.<command>]`, a
+  process a habitat places on a host) not already a service, with the
+  `host` deployment that runs them (placed) — processes first, since a
+  perspective lists in the record's order; **seeds** —
   each directory holding `hale.toml`, `package.json`, `Cargo.toml`,
   `go.mod` or `pyproject.toml`, the outermost only (a workspace's
   members are its own), never the root; a process unfolds into the seed
