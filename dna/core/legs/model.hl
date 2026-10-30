@@ -434,6 +434,9 @@ locus ModelPerformer {
         };
         let mut req = first;
         req.tools = tools_for_model(std::json::find_field_raw(hat, "hands"));
+        // every turn of the loop is one conversation: the provider keeps its
+        // prompt's prefix warm in one place across turns (`prompt_cache_key`)
+        req.conversation = brief.attempt_id;
         let mut messages = "";
         let mut rows = "";
         let mut turn = 0;

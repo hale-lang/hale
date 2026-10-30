@@ -39,6 +39,10 @@ type ModelRequest {
     metadata: String = "";
     // sent as `Idempotency-Key`: a retry of one call is the same call; "" = none
     idempotency_key: String = "";
+    // the conversation this call is a turn of, stable across its turns, sent
+    // as the chat API's `prompt_cache_key` so a provider keeps its prefix
+    // warm in one place (a leg's tool loop: its attempt); "" = a one-shot call
+    conversation: String = "";
     // the tools the model may call, a JSON array in the chat API's shape
     // (`tools_for_model`); "" = none: the caller runs every call (hands)
     tools: String = "";
@@ -413,6 +417,7 @@ fn openai_chat_body_with(
     }
     if max_tokens > 0 { b = b + ", \"max_tokens\": " + to_string(max_tokens); }
     if metadata && len(req.metadata) > 0 { b = b + ", \"metadata\": " + req.metadata; }
+    if len(req.conversation) > 0 { b = b + ", \"prompt_cache_key\": " + jq(req.conversation); }
     return b + "}";
 }
 

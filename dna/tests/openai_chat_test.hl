@@ -253,6 +253,25 @@ main locus App {
 // The fake endpoint's port is one `dna::free_port` bound, never a number
 // the fixture invents: the adapters are handed the endpoint built from it.
 fn main() {
+    // a turn of a conversation names it as the chat API's
+    // `prompt_cache_key`, so a provider keeps its prefix warm in one place;
+    // a one-shot call names none
+    let keyed = dna::openai_chat_body_with(
+        "m",
+        dna::ModelRequest { prompt: "p", conversation: "w4/a0" },
+            -1,
+        0,
+        false,
+    );
+    std::test::assert(
+        std::str::contains(keyed, "\"prompt_cache_key\": \"w4/a0\""),
+        "a conversation's turn names it: " + keyed,
+    );
+    let once = dna::openai_chat_body_with("m", dna::ModelRequest { prompt: "p" }, -1, 0, false);
+    std::test::assert(
+        !std::str::contains(once, "prompt_cache_key"),
+        "a one-shot call names none: " + once,
+    );
     // the model key is the vault's (GH #989): `hale test` gives this file a
     // vault of its own, and its slot for the key is written here
     std::io::fs::write_file(
