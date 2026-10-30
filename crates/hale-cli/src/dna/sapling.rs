@@ -184,6 +184,8 @@ pub(super) fn names_a_sapling(arg: &Path) -> bool {
 /// store keeps the revision it was checked at. (Where it is placed is D4's:
 /// a graft takes a placement there.)
 pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[String]) -> Result<Vec<String>, String> {
+    // the organism is called by the sapling's name, and `habitat` is the habitat's own
+    super::models::refuse_reserved_name(name)?;
     let current = pinned(name).ok_or_else(|| format!("the habitat pins no sapling `{name}` (`hale habitat nursery list`)"))?;
     let store = PathBuf::from(local_habitat_dir()).join("saplings").join(name);
     // what the graft checked when it began, kept beside the store: a graft

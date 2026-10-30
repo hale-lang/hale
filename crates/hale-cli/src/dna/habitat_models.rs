@@ -3,10 +3,12 @@
 //! model backend, with no person minting a key.
 //!
 //! For each tenant (every organism the habitat grafted, the provider
-//! itself among them) once the provider's services are applied:
+//! itself among them, and the habitat's own genome) once the provider's
+//! services are applied:
 //!
 //! - a member of the provider's `key` family is drawn in its vault,
-//!   labelled by the tenant's name, and the provider's reader vault is
+//!   labelled by the tenant's name (the genome's `habitat`, a name no
+//!   graft takes), and the provider's reader vault is
 //!   restaged in place where its services run (`reader-vault-restage`), so
 //!   its running api reads the new member;
 //! - the member's value is copied into the tenant's slot
@@ -31,7 +33,7 @@ use super::{genome_dir, host_run, local_habitat_dir, rows_of};
 use crate::dna::provides;
 use crate::dna::secrets;
 
-/// An organism the habitat grafted, live.
+/// An organism the habitat grafted, live, or the habitat's own genome.
 #[derive(Debug, Clone)]
 struct Organism {
     /// its allocations' key: the record's first 12 characters
@@ -40,6 +42,49 @@ struct Organism {
     /// its record's identity
     record: String,
     root: PathBuf,
+    /// the habitat's own genome, a tenant like any grafted organism
+    genome: bool,
+}
+
+/// The label of the habitat's own genome's key at its models, and so a
+/// name no grafted organism takes: a provider names what it keeps for a
+/// tenant by its label (voice: the project `<habitat>-<label>`), so two
+/// tenants never share one.
+pub(super) const HABITAT_LABEL: &str = "habitat";
+
+/// The label a tenant's key at the habitat's models is drawn under: the
+/// genome's `habitat`, a grafted organism's its name (`provides::tenant_label`).
+fn label_for(name: &str, genome: bool) -> Result<String, String> {
+    if genome {
+        Ok(HABITAT_LABEL.to_string())
+    } else {
+        provides::tenant_label(name)
+    }
+}
+
+/// A graft of an organism called `name`, refused when the name is the one
+/// the habitat's own genome's key is labelled by.
+pub(super) fn refuse_reserved_name(name: &str) -> Result<(), String> {
+    if name == HABITAT_LABEL {
+        return Err(format!("an organism is never called `{HABITAT_LABEL}`: the habitat's own key at its models is labelled so, and a provider names what it keeps for each tenant by its label; graft it from a directory of another name"));
+    }
+    Ok(())
+}
+
+/// The habitat's own genome as a tenant of its models: its record's key,
+/// labelled `habitat`; none before the habitat is born.
+fn genome_tenant() -> Option<Organism> {
+    let root = genome_dir();
+    let record = super::manifest_pin(&root.join("hale.toml")).ok().flatten().filter(|r| r.len() >= 12)?;
+    Some(Organism { key: record[..12].to_string(), name: HABITAT_LABEL.to_string(), record, root, genome: true })
+}
+
+/// Every tenant of the habitat's models: the organisms it grafted, in the
+/// order it grafted them, then its own genome.
+fn tenants() -> Vec<Organism> {
+    let mut out = grafted();
+    out.extend(genome_tenant());
+    out
 }
 
 /// The habitat's models provider: the organism, and what it declares.
@@ -71,7 +116,7 @@ fn grafted() -> Vec<Organism> {
             }
             let cache = PathBuf::from(local_habitat_dir()).join("allocations").join(&key).join("allocation.json");
             let root = std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["root"].as_str().map(PathBuf::from))?;
-            Some(Organism { name: body["name"].as_str().unwrap_or("").to_string(), record: body["child"].as_str().unwrap_or("").to_string(), key, root })
+            Some(Organism { name: body["name"].as_str().unwrap_or("").to_string(), record: body["child"].as_str().unwrap_or("").to_string(), key, root, genome: false })
         })
         .collect()
 }
@@ -201,7 +246,7 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let tag = format!("{:<8}", "models");
     let url = provider_url(p).map_err(|why| format!("{why}: `hale habitat models {}` maps them once it is", t.name))?;
-    let label = provides::tenant_label(&t.name)?;
+    let label = label_for(&t.name, t.genome)?;
     let vault = crate::dna::vault_local_dir().ok_or("the vault is served over HTTP (HALE_VAULT_ADDR): the habitat draws its models' keys into a local vault alone")?;
     let member = secrets::member_entry(&p.org.record, &p.decl.key, &label);
     let slot = tenant_slot(&t.key);
@@ -237,11 +282,11 @@ fn wire(t: &Organism, p: &Provider, plan: bool) -> Result<Vec<String>, String> {
     let served = match served_at(&models_url, &key, p.decl.extension.as_deref()) {
         Ok(s) if !s.is_empty() => s,
         Ok(_) => {
-            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, p.decl.grant.as_deref(), None)));
+            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, &super::habitat_label(), p.decl.grant.as_deref(), None)));
             return Ok(out);
         }
         Err(why) => {
-            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, None, Some(&why))));
+            out.push(format!("{tag}{}", provides::serve_none(&p.org.name, &t.name, &super::habitat_label(), None, Some(&why))));
             return Ok(out);
         }
     };
@@ -275,8 +320,8 @@ fn wire_lines(t: &Organism, p: &Provider, plan: bool) -> Vec<String> {
 }
 
 /// After a graft of the organism at `root`: its map pointed at the
-/// habitat's models, or, when it is the provider, every organism's. A
-/// line each; nothing fails the graft.
+/// habitat's models, or, when it is the provider, every organism's and
+/// the habitat's own. A line each; nothing fails the graft.
 pub(super) fn after_graft(root: &Path) -> Vec<String> {
     let Some(record) = super::manifest_pin(&root.join("hale.toml")).ok().flatten() else { return Vec::new() };
     let orgs = grafted();
@@ -285,8 +330,9 @@ pub(super) fn after_graft(root: &Path) -> Vec<String> {
         return vec![format!("{:<8}the habitat has no models provider: graft one (voice), and its models are every organism's (`hale habitat models {}`)", "models", t.name)];
     };
     if p.org.record == t.record {
-        // the provider itself: every organism it holds, the provider among them
-        return orgs.iter().flat_map(|o| wire_lines(o, &p, false)).collect();
+        // the provider itself: every organism it holds, the provider among
+        // them, and the habitat's own genome
+        return tenants().iter().flat_map(|o| wire_lines(o, &p, false)).collect();
     }
     wire_lines(t, &p, false)
 }
@@ -295,8 +341,8 @@ pub(super) fn after_graft(root: &Path) -> Vec<String> {
 /// provider's directory `root`: the tenant `label`'s copy updated and the
 /// provider's reader vault restaged. A line each.
 pub(super) fn after_rotate(root: &Path, family: &str, label: &str) -> Vec<String> {
-    let orgs = grafted();
-    let Some(p) = provider_among(&orgs) else { return Vec::new() };
+    let orgs = tenants();
+    let Some(p) = provider_among(&grafted()) else { return Vec::new() };
     let same = |a: &Path, b: &Path| a.canonicalize().ok() == b.canonicalize().ok();
     if !same(&p.org.root, root) || p.decl.key != family {
         return Vec::new();
@@ -306,7 +352,7 @@ pub(super) fn after_rotate(root: &Path, family: &str, label: &str) -> Vec<String
         Ok(_) => out.push(format!("{:<8}{}'s reader vault restaged where its services run", "models", p.org.name)),
         Err(e) => out.push(format!("{:<8}{}'s reader vault was not restaged ({e}): its api reads the member once its services are next applied", "note", p.org.name)),
     }
-    let Some(t) = orgs.iter().find(|o| o.name == label) else {
+    let Some(t) = orgs.iter().find(|o| label_for(&o.name, o.genome).as_deref() == Ok(label)) else {
         out.push(format!("{:<8}no organism `{label}` is grafted: no tenant's copy to update", "note"));
         return out;
     };
@@ -339,8 +385,8 @@ pub(super) fn cmd(args: &[String]) -> ExitCode {
         a.extend(args.iter().map(String::as_str));
         return super::remote::run_there(&p, "models", &a);
     }
-    let orgs = grafted();
-    let Some(p) = provider_among(&orgs) else {
+    let orgs = tenants();
+    let Some(p) = provider_among(&grafted()) else {
         eprintln!("hale habitat models: the habitat has no models provider: graft an organism whose hale.toml declares [dna.provides.models] (voice)");
         return ExitCode::from(1);
     };
@@ -383,6 +429,23 @@ mod tests {
         // `hale dna secret set|rotate <NAME>` takes it: A-Z, 0-9, _
         let name = tenant_slot("0a1b2c3d4e5f")[6..].to_string();
         assert!(name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'), "{name}");
+    }
+
+    #[test]
+    fn the_habitats_own_key_is_labelled_habitat_and_no_organism_is_called_so() {
+        // the genome's label is `habitat`, whatever its directory is called
+        assert_eq!(label_for("genome", true).unwrap(), HABITAT_LABEL);
+        assert_eq!(label_for("", true).unwrap(), "habitat");
+        // a grafted organism's is its name, as before
+        assert_eq!(label_for("voice", false).unwrap(), "voice");
+        assert_eq!(label_for("todo-2", false).unwrap(), "todo-2");
+        assert!(label_for("Todo", false).is_err());
+        // so no graft takes the name: its key would be the habitat's
+        let why = refuse_reserved_name("habitat").unwrap_err();
+        assert!(why.contains("never called `habitat`") && why.contains("another name"), "{why}");
+        for ok in ["voice", "habitats", "my-habitat", "todo"] {
+            assert!(refuse_reserved_name(ok).is_ok(), "{ok}");
+        }
     }
 
     #[test]

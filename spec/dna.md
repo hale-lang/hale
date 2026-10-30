@@ -6177,6 +6177,9 @@ readers = ["worker"]
   is the project's, so every service of the project could be passed
   every secret its programs read: the grant to the declared readers is
   the compose file's to keep (a secret no program reads is never handed).
+  Beside them, an organism the habitat grafted has its compose handed
+  the habitat's name, `HALE_DNA_HABITAT_NAME`, whatever its programs
+  read, which reaches a service only as its compose file passes it.
 - **Handed to its host commands** by `hale habitat organism place` and
   `unplace` (spec/habitat.md § Host commands), for the run alone.
 - **Superseded.** A host command's `operator_token` and its
@@ -6209,7 +6212,9 @@ readers = ["api"]
   `extension` (the name of the object on each models-list entry that holds
   the provider's own fields: lowercase letters, digits, `_` and `-`;
   voice's is `voice`) and `grant` (one line, what a person does when a
-  tenant is served nothing yet, `{organism}` standing for the tenant), and
+  tenant is served nothing yet, `{organism}` standing for the tenant and
+  `{habitat}` for the habitat's name, the one its services are handed as
+  `HALE_DNA_HABITAT_NAME`), and
   any other is refused. `key` must name a secret the seed declares
   that is drawn and a family; a missing one, a slot or a drawn single is
   refused. The toolchain is its one reader: `hale dna declared-provides
@@ -6219,10 +6224,17 @@ readers = ["api"]
   models provider: grafting a second while one is grafted is refused,
   naming the first.
 - **Tenants.** Every organism the habitat grafted is a tenant, the
-  provider among them (voice's own DNA asks voice). Once the provider's
+  provider among them (voice's own DNA asks voice), and so is the
+  habitat's own genome, the habitat's infrastructure, whose key is its
+  record's. Once the provider's
   services allocation is applied, for each tenant `T`: a member of the
   provider's `key` family is drawn in the vault, labelled by `T`'s name
   (refused, saying why, when the name is no label: **Declared secrets**),
+  the genome's labelled `habitat` whatever its directory is called. A
+  provider names what it keeps for a tenant by its label (voice's
+  project is `<HALE_DNA_HABITAT_NAME>-<label>`), so labels are unique: a
+  graft of an organism called `habitat` is refused (spec/habitat.md,
+  Graft and `[dna] needs`),
   and the provider's reader vault is restaged in place where its services
   run; the value is copied into `T`'s slot `model-HABITAT_<KEY>` (`<KEY>`
   `T`'s key upper-cased: the habitat's organisms share one vault, so the
@@ -6242,7 +6254,8 @@ readers = ["api"]
   the act says why. A provider that serves `T` nothing yet, or does not
   answer, seeds nothing: `the habitat's models (<provider>) serve none for
   <T> yet: <grant>, then \`hale habitat models <T>\``, with the provider's
-  `grant` sentence (`{organism}` replaced by `T`'s name), or, when it
+  `grant` sentence (`{organism}` replaced by `T`'s name, `{habitat}` by
+  the habitat's), or, when it
   declares none or did not answer, `the habitat's models (<provider>) serve
   none for <T> yet[ (why)]: \`hale habitat models <T>\` maps them once one
   is served`.
@@ -6257,9 +6270,12 @@ readers = ["api"]
   whose `capabilities.tools` is not said returns no tool calls.
 - **When.** A graft does it for the organism it grafts, once its own
   services are placed (a sapling's, at the end of its graft), and grafting
-  the provider does it for every organism the habitat holds. `hale habitat
+  the provider does it for every organism the habitat holds and the
+  habitat's genome. `hale habitat
   models <organism>|--all [--plan]` does it again: for an organism grafted
-  before the provider, or a model placed since (spec/habitat.md § Verbs).
+  before the provider, or a model placed since (spec/habitat.md § Verbs);
+  `--all` includes the genome, and `hale habitat models habitat` names it
+  alone.
   None of it fails a graft: what stopped it is said.
 - **Rotated and removed.** `hale dna secret rotate <key> --member <T>` in
   the provider draws `T`'s member anew; the habitat copies it into `T`'s
@@ -7056,6 +7072,7 @@ otherwise.
 | `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
 | `HALE_DNA_HOST_NAME=<name>` | unset | The name of the `ssh` host a compose project is applied on, handed to that project's environment by the habitat (`spec/habitat.md`, The handover); a project maps it in its compose file. Unset on this machine. |
 | `HALE_DNA_HOST_LISTEN=<addr>` | unset | That host's listen address (the first IPv4 address its name resolves to on the habitat's machine), handed beside `HALE_DNA_HOST_NAME`, through the toolchain's own resolver (`hale habitat resolve`); an apply on a host whose name resolves to none is refused. Unset on this machine. |
+| `HALE_DNA_HABITAT_NAME=<name>` | unset | The habitat's name (its `name` file, `hale habitat up --name`; `local` when it was born with none), handed by the habitat to the environment of every organism of its own: the compose project of its services, wherever they are applied, a repository body's compose services when the habitat grafted it, and each run of a host command (`spec/habitat.md`, The handover; Host commands). A project maps it in its compose file; a provider names what it keeps for the habitat it serves by it (voice's projects, `<name>-<label>`). Unset for a repository body outside a habitat. |
 | `HALE_DNA_HABITAT_LISTEN=<addr>` | `127.0.0.1` | The address a habitat declares its face, head and OIDC stub on: what the `face` service binds (`HALE_DNA_LISTEN_HOST`) and where `up` probes them. Not set by hand: `hale habitat up --host <name>` sets it on every container it runs on that machine to the address `<name>` resolves to on the admin machine. |
 | `HALE_DNA_HABITAT_EXPECT=<record>` | unset | The record a `hale habitat down` run on a habitat's machine through a pointer must find there: when it is set and the habitat's genome pins another record, or none, nothing is stopped or removed. Not set by hand: `hale habitat down` on the admin machine sets it to the pointer's identity, after checking the same over SSH. |
 | `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |

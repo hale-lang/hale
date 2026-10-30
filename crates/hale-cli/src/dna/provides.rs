@@ -44,7 +44,8 @@ pub(crate) struct Models {
     /// there rather than beside `id` (voice: `voice`)
     pub extension: Option<String>,
     /// what a person does when the provider serves a tenant nothing yet,
-    /// in the provider's words, `{organism}` standing for the tenant
+    /// in the provider's words, `{organism}` standing for the tenant and
+    /// `{habitat}` for the habitat's name
     pub grant: Option<String>,
 }
 
@@ -109,7 +110,7 @@ pub(crate) fn declared(manifest: &str) -> Result<Option<Models>, String> {
         let grant = word("grant")?;
         if let Some(g) = &grant {
             if g.trim().is_empty() || g.len() > 240 || g.contains('\n') || g.contains('\t') {
-                return Err(format!("[dna.provides.{cap}] grant: one line of at most 240 characters, what a person does when a tenant is served nothing yet (`{{organism}}` stands for the tenant)"));
+                return Err(format!("[dna.provides.{cap}] grant: one line of at most 240 characters, what a person does when a tenant is served nothing yet (`{{organism}}` stands for the tenant, `{{habitat}}` for the habitat's name)"));
             }
         }
         out = Some(Models { service, path, models_path, key, extension, grant });
@@ -191,13 +192,15 @@ pub(crate) fn served(body: &str, extension: Option<&str>) -> Result<Vec<Served>,
         .collect())
 }
 
-/// What the habitat says when the provider `provider` serves the tenant
-/// `organism` nothing yet: the provider's own `grant` sentence when it
-/// declares one, and how to map them after.
-pub(crate) fn serve_none(provider: &str, organism: &str, grant: Option<&str>, why: Option<&str>) -> String {
+/// What the habitat called `habitat` says when the provider `provider`
+/// serves the tenant `organism` nothing yet: the provider's own `grant`
+/// sentence when it declares one (`{organism}` the tenant, `{habitat}` the
+/// habitat's name, as its services are handed it), and how to map them
+/// after.
+pub(crate) fn serve_none(provider: &str, organism: &str, habitat: &str, grant: Option<&str>, why: Option<&str>) -> String {
     let why = why.map(|w| format!(" ({w})")).unwrap_or_default();
     match grant {
-        Some(g) => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: {}, then `hale habitat models {organism}`", g.replace("{organism}", organism)),
+        Some(g) => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: {}, then `hale habitat models {organism}`", g.replace("{organism}", organism).replace("{habitat}", habitat)),
         None => format!("the habitat's models ({provider}) serve none for {organism} yet{why}: `hale habitat models {organism}` maps them once one is served"),
     }
 }
@@ -345,10 +348,19 @@ readers = ["api"]
     #[test]
     fn a_tenant_served_nothing_is_told_what_to_do_in_the_providers_words() {
         assert_eq!(
-            serve_none("voice", "todo", Some("grant tenant-{organism} accounts in voice's admin UI (Projects)"), None),
+            serve_none("voice", "todo", "home", Some("grant tenant-{organism} accounts in voice's admin UI (Projects)"), None),
             "the habitat's models (voice) serve none for todo yet: grant tenant-todo accounts in voice's admin UI (Projects), then `hale habitat models todo`"
         );
-        assert_eq!(serve_none("voice", "todo", None, Some("http://x answered 502")), "the habitat's models (voice) serve none for todo yet (http://x answered 502): `hale habitat models todo` maps them once one is served");
+        // the habitat's name, as its services are handed it, beside the tenant's
+        assert_eq!(
+            serve_none("voice", "habitat", "home", Some("grant {habitat}-{organism}'s project accounts in voice's admin UI (Projects)"), None),
+            "the habitat's models (voice) serve none for habitat yet: grant home-habitat's project accounts in voice's admin UI (Projects), then `hale habitat models habitat`"
+        );
+        assert_eq!(
+            serve_none("voice", "todo", "home", Some("grant {habitat}-habitat's project accounts, then {habitat}-{organism}'s"), None),
+            "the habitat's models (voice) serve none for todo yet: grant home-habitat's project accounts, then home-todo's, then `hale habitat models todo`"
+        );
+        assert_eq!(serve_none("voice", "todo", "home", None, Some("http://x answered 502")), "the habitat's models (voice) serve none for todo yet (http://x answered 502): `hale habitat models todo` maps them once one is served");
     }
 
     fn latest(rows: &[(&str, &str, serde_json::Value)]) -> BTreeMap<(String, String), serde_json::Value> {
