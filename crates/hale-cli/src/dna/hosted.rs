@@ -1198,11 +1198,12 @@ readers = ["api"]
         assert_eq!(why, "`other.lan` is no host of the habitat (`hale habitat host add other.lan`, or `--host local` for the habitat's own machine)");
         assert!(Target::of("new.lan", None, hosts).unwrap_err().contains("is probing, not ready"));
         assert_eq!((Target::Here.how(), Target::of(LOCAL, Some(&pointer), unread).unwrap().how()), ("on this machine", "over your SSH login"));
-        // the transport: ssh with the login's user and port, or sh here
+        // the transport: ssh with the login's user and port (the script
+        // run by sh, whatever the login shell), or sh here
         let ssh = Target::Ssh { host: "habitat-box.lan".into(), user: Some("op".into()), port: Some(2222) }.command("true", false);
         let args: Vec<_> = ssh.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(ssh.get_program(), "ssh");
-        assert!(args.ends_with(&["-p".into(), "2222".into(), "-l".into(), "op".into(), "habitat-box.lan".into(), "true".into()]), "{args:?}");
+        assert!(args.ends_with(&["-p".into(), "2222".into(), "-l".into(), "op".into(), "habitat-box.lan".into(), "exec /bin/sh -c 'true'".into()]), "{args:?}");
         let here = Target::Here.command("true", false);
         assert_eq!((here.get_program().to_string_lossy().into_owned(), here.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()), ("sh".to_string(), vec!["-c".to_string(), "true".to_string()]));
     }
