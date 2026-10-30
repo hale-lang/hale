@@ -1,0 +1,1 @@
+- A graft whose services' first build outlasts the habitat's head's deadline follows the apply to its end: the head, busy with that apply, could let a read of the allocations time out too, and the graft stopped there (`the project's API did not answer within the head's deadline`); such a read is asked again, within the graft's half hour.

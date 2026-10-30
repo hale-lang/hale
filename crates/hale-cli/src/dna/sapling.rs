@@ -358,6 +358,8 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let id = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the organism pins no record")?;
     let key = &id[..12];
     let host = h["host"].as_str().unwrap_or("");
+    // the host as said to a person: the habitat's own machine by its name
+    let shown = super::shown_host(host);
     // its own compose project on the host, named for it: its services are
     // its own, never the habitat's
     let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
@@ -369,13 +371,13 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let mounted = mounted_entries(&tracked);
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
-    let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
+    let mut out = vec![format!("{:<8}its services ({key}/services) on {shown}", "placed")];
     match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false })) {
         Ok(v) => out.extend(applied_lines(&v)),
         // a first build of its images on the host outlives the head's
         // deadline; the apply goes on in the head's keeping, so the graft
         // follows the allocation until its provider observes it
-        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), host)?),
+        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), &shown)?),
         Err(e) => return Err(e),
     }
     Ok(out)
@@ -388,7 +390,14 @@ pub(super) fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, 
     let begun = std::time::Instant::now();
     let mut said = begun;
     loop {
-        let v = head_call("Commands::allocations", serde_json::json!({ "limit": 1000 }))?;
+        // the head's API is busy with the very apply this follows (its
+        // images building on the host): a read that outlives the head's
+        // deadline is asked again, within the half hour
+        let v = match head_call("Commands::allocations", serde_json::json!({ "limit": 1000 })) {
+            Ok(v) => v,
+            Err(e) if busy_head(&e) => serde_json::Value::Null,
+            Err(e) => return Err(e),
+        };
         let rows: Vec<serde_json::Value> = v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
         if let Some(r) = rows.iter().find(|r| r["allocation"] == allocation) {
             let state = r["state"].as_str().unwrap_or("");
@@ -406,6 +415,12 @@ pub(super) fn follow_apply(allocation: &str, host: &str) -> Result<Vec<String>, 
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
+}
+
+/// Whether `why` (a head call's failure) is the head too busy to answer in
+/// time, which a follower asks again, rather than a refusal.
+fn busy_head(why: &str) -> bool {
+    why.contains("deadline") || why.contains("did not answer")
 }
 
 /// What `Commands::apply_allocations` answered, a line per allocation.
@@ -765,6 +780,15 @@ fn refreshed() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a follower waits out a head busy with the apply it follows; a refusal
+    // still stops it
+    #[test]
+    fn a_busy_head_is_asked_again_and_a_refusal_is_not() {
+        assert!(busy_head("the habitat's head refused Commands::allocations: the project's API did not answer within the head's deadline"));
+        assert!(busy_head("the habitat's head did not answer: connection reset"));
+        assert!(!busy_head("the habitat's head refused Commands::allocations: unauthenticated"));
+    }
 
 
     /// A services render ships each root entry once: a directory whole
