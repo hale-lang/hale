@@ -247,7 +247,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 26] = [
+const CALL_LINES_ONLY: [(&str, usize); 27] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -288,6 +288,9 @@ const CALL_LINES_ONLY: [(&str, usize); 26] = [
     // generators are the program's own; the escapers' stdlib bodies
     // only the renames name)
     ("tests/hale/json_escape_runs_test.hl", 52),
+    // the escaped-NUL and lone-surrogate readers' test (#1813): the
+    // readers' stdlib bodies only the renames name
+    ("tests/hale/json_lone_escapes_test.hl", 4),
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
