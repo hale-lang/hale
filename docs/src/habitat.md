@@ -147,7 +147,7 @@ face    http://127.0.0.1:<port>/ (up, ...)
 
 ### 2. Sign In to the Operator Face
 
-Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
+Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (its name, and the web UIs of every organism with their links: [Web UIs on the Home Screen](#web-uis-on-the-home-screen)), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
 
 ### 3. Graft the `voice` Sapling (Local or LAN Host)
 
@@ -192,6 +192,20 @@ A moved memory starts empty, because nothing migrates. A memory that holds its o
 `voice`'s image downloads the released Hale toolchain itself when it is built (its `Dockerfile`), so the first `apply` needs the network and takes a few minutes; nothing is staged by hand.
 
 The operator face's **organisms** screen lists each of `voice`'s allocations with what its services publish: a link where the port is reachable from your machine (`api` opens `voice`'s console, its admin UI served at the api's `/`), and `loopback only on <host>` for a port bound to that host's loopback.
+
+#### Web UIs on the Home Screen
+
+The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
+
+```toml
+[dna.ui.console]
+label   = "voice console"     # what the home screen calls it
+service = "api"               # the compose service that serves it
+path    = "/"                 # where under that service's address (default "/")
+login   = "operator-token"    # optional: a declared secret (person = "read") you sign in with
+```
+
+The link is the address the organism's services publish for that service, as the organisms screen links it, with `path` after it; a service published only on its host's loopback is shown as `loopback only on <host>`. A UI with a `login` says which command prints the secret from your machine, `hale habitat organism <organism> dna secret show <login>` (the secret must be declared under `[dna.secrets.<login>]` with `person = "read"`, [The Skin](./dna/skin.md#declared-secrets)); the value itself is never shown. The declaration is read from the organism's directory each time the screen asks, so an upgrade's is the one listed. `hale habitat graft` refuses a manifest whose UIs are refused (an unknown key, no `label` or `service`, a `path` not starting with `/`, a `login` naming no readable declared secret), and `hale dna declared-uis` prints the declaration as the toolchain reads it.
 
 `voice`'s Compose definition publishes its api (port `8080`) and its NATS (port `4222`) on the listen address of the host it is placed on (`HALE_DNA_HOST_LISTEN`), so a browser or a node on another machine reaches them at the host's name; on this machine they stay on `127.0.0.1`. Every plane of the api takes a bearer, so nothing rests on loopback: a project key on `/v1`, a node's enrollment token on `/node/v1`, and the **operator token** on `/admin/v1`. Name the api's address once (`localhost:8080` when `voice` runs on this machine, `rack-a.lan:8080` when it is placed there) and check that it answers:
 

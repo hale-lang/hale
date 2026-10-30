@@ -802,8 +802,10 @@ project's: the operator face. A signed-in visitor lands on it: the render sets t
 `face` service's `HALE_DNA_FACE_HOME` to `/app/`, so `/` redirects there,
 the organization shell answers at `/organization` (linked from the
 operator face's navigation), and `/app` redirects to `/app/`. Its first screen shows the sign-in edge and
-the habitat's name, state, record revision and organisms, read by the
-page from the head's `Commands::index` row through the generated ES-module
+the habitat's name, state, record revision and how many organisms it
+grafted, read by the
+page from the head's `Commands::index` row, then the web UIs across its
+organisms (`Commands::uis`, The home screen's UIs below), through the generated ES-module
 client committed beside it (`head-client.js`, from `dna/face/operator`). It
 has no build step. A visitor with no session is redirected by the head's
 gate before the page is served; a read refused for want of one is shown as
@@ -859,6 +861,36 @@ person who does not hold the Board is refused as the row says).
   organism offers `remove`: its plan (`Commands::plan_remove_organism`)
   with a field for its name, which `Commands::remove_organism` checks with
   the plan's digest (a crossing, so brass).
+
+### The home screen's UIs
+
+The first screen lists the web UIs across the habitat's organisms, not
+the organisms themselves (their state and pulse are the organisms
+screen's): one row each, with its label, its organism, its link
+and how to sign in, from `Commands::uis` (`spec/dna.md`, The habitat's
+face). Each organism's face is one, `<organism> face`, at the address its
+graft row holds, signed in through the habitat's sign-in. Each UI the
+organism's manifest declares (`[dna.ui.<name>]`: `label`, `service`,
+`path`, `login`; `spec/dna.md` § Declared web UIs) is another, read from
+the organism's directory as the screen asks, so an upgrade's declaration
+is the one listed:
+
+- **Its link** is the address the organism's `services` allocation
+  publishes for the UI's `service`, as the organisms screen links it,
+  with the UI's `path` after it. A service published on its host's
+  loopback alone is shown as `loopback only on <host>`, not linked; one
+  with no published address says why (`its services publish nothing (not
+  applied)`, `its service <name> publishes no port`).
+- **Its sign-in**, when it declares `login` (a declared secret whose
+  person is `read`), is the command that reads that secret from the
+  person's machine: `hale habitat organism <organism> dna secret show
+  <login>`. The value is never shown.
+
+`hale habitat graft` refuses a manifest whose UIs the toolchain refuses
+(an unknown key, no `label` or `service`, a bad name, a `path` that does
+not start with `/`, a `login` that names no declared secret or one whose
+person is not `read`), saying why; a declaration an upgrade made refused
+is listed as one row with the refusal.
 
 ## Readings: the machines' exporters and Grafana
 
@@ -1257,8 +1289,8 @@ Every face screen works with the models catalog empty: no `model.category`
 row, no seat, no key. With no model:
 
 - **No verb requires one.** The operator face's screens read
-  `Commands::index`, `::hosts`, `::allocations`, `::policy`, `::nurseries` and
-  `::saplings`, none of which asks a model.
+  `Commands::index`, `::uis`, `::hosts`, `::allocations`, `::policy`,
+  `::nurseries` and `::saplings`, none of which asks a model.
 - **A person does the organism's work.** With no model (none mapped, none
   the catalog reaches; a canned or recorded one counts), an ask is a
   person's job, handed unassigned with no plan asked, and a Work a leg or
@@ -1291,8 +1323,9 @@ a warning naming it (`this toolchain does not know [dna] <key> and
 ignores it`), never refused, so an organism may declare what a newer
 habitat reads before the toolchain beside it knows it. The keys it knows
 are read and checked as each section says (`needs`, `brings`,
-`migrations`, `codebase`, `fleet`, `record`, `reflex`, and `host`, which
-this toolchain carries for a habitat that runs host commands).
+`migrations`, `codebase`, `fleet`, `record`, `reflex`, `secrets`, `ui`
+(the web UIs the home screen lists, The face), and `host`, which this
+toolchain carries for a habitat that runs host commands).
 
 **A graft plans each body part before it makes anything.** The organism
 plane (`memory`, `nerves`, `senses`) reuses the habitat's unless
