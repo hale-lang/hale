@@ -608,7 +608,7 @@ fn over_login(host: &str, port: Option<u16>, script: &str, stdin: Option<&str>, 
     if let Some(p) = port {
         c.args(["-p", &p.to_string()]);
     }
-    c.arg(host).arg(script);
+    c.arg(host).arg(super::remote::posix(script));
     if terminal {
         let st = c.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().map_err(|e| format!("ssh: {e}"))?;
         return if st.success() { Ok(String::new()) } else { Err(format!("it failed on {host} (exit {})", st.code().unwrap_or(-1))) };

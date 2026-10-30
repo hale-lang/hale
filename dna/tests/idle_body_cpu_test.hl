@@ -188,6 +188,27 @@ main locus App {
         }
         let log = std::io::fs::read_file(a + "/body.log") or "";
         std::test::assert(up, "the organization started: " + log);
+        // a body with memory first applies every row of the record into it,
+        // which is start-up, not idling: the window opens once the graph
+        // holds the record (on a loaded runner the catch-up of this
+        // record's rows outlasted the first seconds and was measured)
+        if log_has(a + "/body.log", "memory: the graph, the ledger") {
+            let mut caught = false;
+            let mut waited = 0;
+            while !caught && waited < 2400 {
+                if log_has(a + "/body.log", "memory: the graph holds the record") {
+                    caught = true;
+                } else {
+                    std::time::sleep(250ms);
+                }
+                waited = waited + 1;
+            }
+            std::test::assert(
+                caught,
+                "the body's memory caught up with the record: "
+                    + (std::io::fs::read_file(a + "/body.log") or ""),
+            );
+        }
         // past the first ticks, which read what the body found
         std::time::sleep(3s);
         let hz = std::str::parse_int(dna::trim_nl(dna::run_tool("getconf\nCLK_TCK").stdout)) or 100;
