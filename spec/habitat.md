@@ -73,9 +73,14 @@ checkout; the `Dockerfile`'s `HALE_FROM=artifact` packages a `hale` and
 the habitat directory, the local vault directory and the host's docker
 socket, with the head's HTTP surface and the face published on their
 loopback ports. It applies a render with `docker
-compose -p <project> --project-directory <dir> -f <file>… up -d --wait
+compose -p <project> --project-directory <dir> -f <file>… up -d --build --wait
 [<service>…]`, with `COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat
-brings up, the habitat's own and each tenant's, is brought up this way. It
+brings up, the habitat's own and each tenant's, is brought up this way.
+`--build` builds a service whose image comes from the render's own context
+(an organism's application) from the revision being applied, so an image an
+earlier revision built under the same tag is never what runs; docker's
+cache keeps an unchanged context cheap, and a service that only names an
+image builds nothing. It
 observes a service by its container's state (`running` is up, `running` and
 unhealthy or `restarting` is degraded, anything else or no container is
 down) and the head and the face by whether their address accepts a
@@ -238,7 +243,7 @@ does, and its OS and architecture. A host that does not accept the
 habitat's key yet is `pending-key`, and `hale habitat host probe <name>`
 moves it to `ready` once it does. The provider applies a render by copying
 its files to `~/.hale/habitat/<project>/<render directory>` on the host
-and running `docker compose -p <project> -f <file>… up -d --wait` there;
+and running `docker compose -p <project> -f <file>… up -d --build --wait` there;
 it withdraws one with `docker compose rm -s -f <service>…` (or `down` for
 a render naming no service) and observes a service by `docker ps` there,
 as the compose provider does here. It allocates the roles that run as
@@ -471,7 +476,8 @@ row. **An upgrade is a proposal, never a pull**: a revision or digest
 other than the pinned one is filed as a `habitat.sapling.proposed <name>`
 row, once, and nothing moves; `Commands::ratify_sapling` (`hale habitat
 nursery ratify <name>`, the Board's) pins the filed revision, and an
-organism already grafted stays at the revision it was grafted at.
+organism already grafted stays at the revision it was grafted at until
+`hale habitat organism upgrade` moves it (below).
 
 `hale habitat graft <sapling>` takes a sapling by name, with no checkout:
 a bare name, with no path of that name, that the record pins (`./<name>`
@@ -507,6 +513,63 @@ command that finishes it. The graft's
 `nursery`. A graft that stopped part way goes on at the revision it was
 checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
+
+**`hale habitat organism upgrade <organism> [--plan]`** moves an organism
+grafted from a sapling to the revision the habitat pins for it now, the
+one its Board ratified, keeping its record, its data and its allocations
+(a removal and a new graft would drop them):
+
+- **Where it stands.** The revision its `habitat.grafted` row names, or the
+  latest `habitat.organism.upgraded` row's `to`. It is refused when that is
+  the pinned tree already (the digests agree), saying so; a newer revision
+  filed and not ratified is named there, with the `nursery ratify` that pins
+  it. An organism grafted from a directory, or whose sapling the habitat
+  pins no longer, is refused by name.
+- **The revision fetched and checked**, as a graft fetches and checks it:
+  into the sapling's store, `<habitat>/saplings/<name>`, which is the
+  organism's own directory; its digest computed from the revision's tree
+  and checked against the pin. A mismatch refuses and nothing moves. A tree
+  the toolchain carries is made a repository beside the store, checked as it
+  is made, and fetched from there.
+- **What it needs** at the new revision (`[dna] needs`) is what its graft
+  allocated: a revision that needs a role more is refused, since an upgrade
+  allocates nothing new.
+- **The tree moved.** The store's checkout is detached at the revision's
+  commit. What its graft wrote into the tracked tree is carried: its
+  manifest's `[dna] record` pin and the tables the graft added (`[claims]`
+  and `[environments.*]`, unless the new revision declares its own
+  environments), the lines it added to `.gitignore`, and `hale.lock`, which
+  the toolchain re-pins. Any other change to a tracked file is carried only
+  when it applies cleanly at the new revision; one that does not, a manifest
+  changed beyond its graft's tables, or a file held untracked (its
+  organization, `vendor/dna`, its state) that the new revision tracks with
+  other bytes refuses the upgrade before anything moves. A move that fails
+  part way is put back. The store's kept graft (`<name>.grafted.json`) names
+  the new revision, so a graft that goes on there goes on at it.
+- **What it runs, re-applied**: `vendor/dna` re-materialized when the graft
+  wrote one, the heart's declared migrations run (§ Opt-in heart
+  migrations), and its services allocation, when its graft placed one,
+  recorded again with what its render ships at the new revision and applied
+  through its provider (`Commands::apply_allocations`), which builds its
+  images from the new tree. A step that fails leaves the tree moved and the
+  upgrade unrecorded, and the upgrade run again finishes it.
+- **The row**: `habitat.organism.upgraded <key>`, `{organism, child,
+  sapling, from, from_digest, to, digest, commit}`, written into the
+  habitat's record as the graft's row is.
+- **Its host commands**: each placement of the organism that holds
+  (`organism place`, § Host commands: an organism's own, on a host) runs its `install` again at the new
+  revision, as `place` runs it, over the person's SSH logins. At a terminal
+  each one runs (sudo asks there for a command with `root = true`); off a
+  terminal only one known not to need root does, and the rest are printed
+  as the `hale habitat organism place …` lines left to run.
+
+`--plan` prints each step (from and to, the tree, the migrations, the
+services re-applied, the row, the placements re-run and which need a
+terminal) and moves nothing; it fetches the revision into the store's
+objects to read it. Through a pointer (§ A habitat on another machine)
+everything but the placements runs on the habitat's machine, in its
+toolchain image (`--no-placements`), and the placements from this one,
+where the person's SSH logins are.
 
 The toolchain's nursery offers one sapling, **the hale organism** (`hale`,
 a tree the toolchain carries): the organism that makes the toolchain. An
@@ -766,6 +829,7 @@ socket), so the habitat's head must be up.
 | `host add <name> [--user <user>] [--port <n>]` | Adds a machine of the LAN as an `ssh` host (above): prints the host key first seen there and its fingerprint, what it offers, and the habitat's public key with the line its `~/.ssh/authorized_keys` takes. A host already added is refused (`host_exists`), and one where no SSH server answers is not added (`unreachable`). |
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
 | `organism remove <name> [--plan]` | Removes an organism the habitat grafted, planned first and confirmed by its name typed back at a terminal (above). |
+| `organism upgrade <name> [--plan]` | Moves an organism grafted from a sapling to the revision the habitat pins now, keeping its record, data and allocations: the revision fetched and its digest checked, its tree moved with its graft's changes carried, its migrations run, its services re-applied, a `habitat.organism.upgraded` row recorded and its placed host commands re-run (§ Nurseries and saplings). |
 | `host remove <name> [--plan]` | Removes the host, a `habitat.host` row in state `removed`, planned first: with allocations on it, the plan (each allocation and what stops or is deleted on that host) is executed only once the host's name is typed back at a terminal; `--plan` prints the plan and exits (above). `local` is not removed. |
 | `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
@@ -797,8 +861,10 @@ project's: the operator face. A signed-in visitor lands on it: the render sets t
 `face` service's `HALE_DNA_FACE_HOME` to `/app/`, so `/` redirects there,
 the organization shell answers at `/organization` (linked from the
 operator face's navigation), and `/app` redirects to `/app/`. Its first screen shows the sign-in edge and
-the habitat's name, state, record revision and organisms, read by the
-page from the head's `Commands::index` row through the generated ES-module
+the habitat's name, state, record revision and how many organisms it
+grafted, read by the
+page from the head's `Commands::index` row, then the web UIs across its
+organisms (`Commands::uis`, The home screen's UIs below), through the generated ES-module
 client committed beside it (`head-client.js`, from `dna/face/operator`). It
 has no build step. A visitor with no session is redirected by the head's
 gate before the page is served; a read refused for want of one is shown as
@@ -854,6 +920,36 @@ person who does not hold the Board is refused as the row says).
   organism offers `remove`: its plan (`Commands::plan_remove_organism`)
   with a field for its name, which `Commands::remove_organism` checks with
   the plan's digest (a crossing, so brass).
+
+### The home screen's UIs
+
+The first screen lists the web UIs across the habitat's organisms, not
+the organisms themselves (their state and pulse are the organisms
+screen's): one row each, with its label, its organism, its link
+and how to sign in, from `Commands::uis` (`spec/dna.md`, The habitat's
+face). Each organism's face is one, `<organism> face`, at the address its
+graft row holds, signed in through the habitat's sign-in. Each UI the
+organism's manifest declares (`[dna.ui.<name>]`: `label`, `service`,
+`path`, `login`; `spec/dna.md` § Declared web UIs) is another, read from
+the organism's directory as the screen asks, so an upgrade's declaration
+is the one listed:
+
+- **Its link** is the address the organism's `services` allocation
+  publishes for the UI's `service`, as the organisms screen links it,
+  with the UI's `path` after it. A service published on its host's
+  loopback alone is shown as `loopback only on <host>`, not linked; one
+  with no published address says why (`its services publish nothing (not
+  applied)`, `its service <name> publishes no port`).
+- **Its sign-in**, when it declares `login` (a declared secret whose
+  person is `read`), is the command that reads that secret from the
+  person's machine: `hale habitat organism <organism> dna secret show
+  <login>`. The value is never shown.
+
+`hale habitat graft` refuses a manifest whose UIs the toolchain refuses
+(an unknown key, no `label` or `service`, a bad name, a `path` that does
+not start with `/`, a `login` that names no declared secret or one whose
+person is not `read`), saying why; a declaration an upgrade made refused
+is listed as one row with the refusal.
 
 ## Readings: the machines' exporters and Grafana
 
@@ -1272,8 +1368,8 @@ Every face screen works with the models catalog empty: no `model.category`
 row, no seat, no key. With no model:
 
 - **No verb requires one.** The operator face's screens read
-  `Commands::index`, `::hosts`, `::allocations`, `::policy`, `::nurseries` and
-  `::saplings`, none of which asks a model.
+  `Commands::index`, `::uis`, `::hosts`, `::allocations`, `::policy`,
+  `::nurseries` and `::saplings`, none of which asks a model.
 - **A person does the organism's work.** With no model (none mapped, none
   the catalog reaches; a canned or recorded one counts), an ask is a
   person's job, handed unassigned with no plan asked, and a Work a leg or
@@ -1306,8 +1402,9 @@ a warning naming it (`this toolchain does not know [dna] <key> and
 ignores it`), never refused, so an organism may declare what a newer
 habitat reads before the toolchain beside it knows it. The keys it knows
 are read and checked as each section says (`needs`, `brings`,
-`migrations`, `codebase`, `fleet`, `record`, `reflex`, and `host`, which
-this toolchain carries for a habitat that runs host commands).
+`migrations`, `codebase`, `fleet`, `record`, `reflex`, `secrets`, `ui`
+(the web UIs the home screen lists, The face), and `host`, which this
+toolchain carries for a habitat that runs host commands).
 
 **A graft plans each body part before it makes anything.** The organism
 plane (`memory`, `nerves`, `senses`) reuses the habitat's unless
@@ -1398,6 +1495,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.nursery <source>` | when the Board trusts a nursery | `source`, `kind` (`dir` or `git`), `state` (`trusted`) |
 | `habitat.sapling <name>` | when a nursery's sapling is first read, and at its ratification | `name`, `purpose`, `repo`, `revision`, `digest`, `packs`, `set`, `nursery` |
 | `habitat.sapling.proposed <name>` | when a nursery offers another revision of a pinned sapling, once | the sapling's fields at the new revision, and `from` (the pinned revision) |
+| `habitat.organism.upgraded <key>` | when `organism upgrade` has moved a grafted organism to its sapling's pinned revision | `organism`, `child`, `sapling`, `from`, `from_digest`, `to`, `digest` (the tree's), `commit` |
 
 An allocation names its provider and its host: `compose` on `local`, or,
 on `operator` backends, `operator` and no host. The latest row for an
@@ -1418,8 +1516,8 @@ command = ["./migrate", "up"]
 
 The `command` is the argv of the heart's own tool, run in the organism's
 directory with the role's handover and the rest of the attach handover in
-its environment, at every graft, `hale habitat migrate` and `hale dna
-upgrade`. The tool is idempotent and keeps its own ledger; the habitat
+its environment, at every graft, `hale habitat migrate`, `hale dna
+upgrade` and `hale habitat organism upgrade` (at the revision it moved to). The tool is idempotent and keeps its own ledger; the habitat
 keeps no version of the heart's schema. The role's allocation is brought
 up and waited for first. A failing run fails the act that ran it, naming
 the command, and the next act runs it again. A malformed declaration, a

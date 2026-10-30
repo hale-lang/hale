@@ -5674,7 +5674,9 @@ The live half is memory's, projected from the record by the spine
   organization reads its nerves, as the organism's own compose project,
   `<record schema>-<application>` (`dna_<id>-todo`): two organisms on one
   machine, or a person's own `docker compose up` of the same file, never share
-  a container. `up -d --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`) waits
+  a container. `up -d --build --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`; `--build`
+  builds a service whose image comes from the checkout's own context from
+  the checkout as it is now) waits
   for every service to be running, and healthy where it declares a
   healthcheck; the body says `the repository's compose services are up
   (compose project <p>)`, or that they did not all come up and why, and the
@@ -6122,6 +6124,47 @@ readers = ["worker"]
 - **Superseded.** A host command's `operator_token` and its
   `{operator_token_file}` input are refused: the token is a drawn secret
   the seed declares, `host.<command>` among its readers.
+
+### Declared web UIs
+
+A seed declares the web UIs it serves in its manifest, one table each,
+which the habitat's home screen lists (spec/habitat.md § The face):
+
+```toml
+[dna.ui.admin]
+label   = "voice admin"         # what the home screen calls it (required)
+service = "api"                 # the compose service that serves it (required)
+path    = "/"                   # where under that service's address ("/" by default)
+login   = "operator-token"      # a declared secret a person reads to sign in (optional)
+```
+
+- **The declaration.** A name is lowercase letters, digits and `-`, a
+  letter first, at most 32 characters, with no `-` last. Its keys are
+  `label` (one line of at most 80 characters, required), `service` (a
+  compose service's name, required), `path` (`/` first, no space) and
+  `login`, and any other is refused. `login` names a secret the seed
+  declares (`[dna.secrets.<login>]`, Declared secrets above) whose
+  person is `read`, and no family: a login naming no declared secret, one
+  a person may not read, or a family is refused. The toolchain is the
+  declaration's one reader (`hale dna declared-uis [dir]` prints it for
+  the DNA's own code, a UI a line: name, label, service, path, login), and
+  `hale habitat graft` refuses a manifest whose UIs it refuses, saying
+  why; nothing is grafted.
+- **Where it is.** A UI is at the address the organism's `services`
+  allocation publishes for its `service` (the `links` of
+  `Commands::allocations`, each published port resolved against the host
+  the allocation was last applied on), with `path` after it. A service
+  published on its host's loopback alone is not linked: it is named as
+  `loopback only on <host>`. A service its services do not publish (not
+  applied, or no port) has no address, and says so.
+- **How to sign in.** With `login`, `hale dna secret show <login>`, run
+  through the pointer (`hale habitat organism <organism> dna secret show
+  <login>`) from the person's machine. The value is never listed.
+- **Read when listed.** The head reads the declaration from the
+  organism's directory each time it lists the UIs, so an upgrade's
+  declaration is the one listed; nothing about it is recorded. One the
+  toolchain refuses after the graft (an upgrade's) is listed as refused,
+  with why.
 
 ## The fleet
 
@@ -6714,6 +6757,17 @@ a `habitat.unplaced` row keeping what the placement said), each refusing
 key's latest row) and every one the record names with its `state`. `hale
 habitat organism place` and `unplace` write the first two once the command
 ran.
+`Commands::uis`, a read the head relays from the face, lists the web UIs
+across the habitat's organisms for the operator face's home screen,
+answering `{ok, why, revision, uis}`: `uis` a JSON array of `{organism,
+kind, name, label, url, loopback_host, login, note}`, per organism the
+habitat grafted its face (`kind` `face`, `label` `<organism> face`, `url`
+its graft row's address) and then each UI its manifest declares (`kind`
+`declared`, Declared web UIs above): `url` its address and path when its
+service is linked, else `loopback_host` the host whose loopback alone
+serves it, or a `note` saying why it has none; `login` the declared
+secret a person reads to sign in, `""` for none. A declaration the
+toolchain refuses is one entry, its `note` `refused: <why>`.
 `Commands::brief` is the habitat's brief for an agent pairing with a
 person (`spec/habitat.md`, Pairing), a read. The head serves the surface
 over `mcp::Rpc` too, under the commands port's bearer and roles, on a port

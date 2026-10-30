@@ -618,7 +618,10 @@ locus RepositoryCompose {
         // from here on something may be up: it goes down with the body
         self.active = true;
         let r = dna::run_tool(
-            self.argv("up\n-d\n--wait\n--wait-timeout\n" + to_string(wait) + "\n--remove-orphans"),
+            self.argv(
+                "up\n-d\n--build\n--wait\n--wait-timeout\n" + to_string(wait)
+                    + "\n--remove-orphans",
+            ),
         );
         self.checked = std::time::now();
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr + "\n" + r.stdout)); }

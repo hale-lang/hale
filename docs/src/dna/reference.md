@@ -214,6 +214,8 @@ hale dna secret show <name> [--member <label>]
 hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)
 hale dna declared-secrets [dir]
                              the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family
+hale dna declared-uis [dir]
+                             the web UIs <dir>/hale.toml declares, a line each: name, label, service, path, login
 ```
 
 ### Worker Legs and Voice (Models)
