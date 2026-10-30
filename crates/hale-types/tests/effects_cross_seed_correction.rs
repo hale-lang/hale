@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        712,
-        714,
+        724,
+        726,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -236,6 +236,7 @@ fn api() {
         launch_token  does={syscall,block,alloc,stdio}
         observe_row  does={syscall,block,env,alloc}
         oidc_ui  does={syscall,block,env,alloc,stdio}
+        organism_root_of  does={syscall,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
