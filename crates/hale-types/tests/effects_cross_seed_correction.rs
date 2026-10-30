@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        725,
-        727,
+        724,
+        726,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -239,7 +239,6 @@ fn api() {
         organism_root_of  does={syscall,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
-        placement_host  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_targets_dir  does={syscall,env,alloc}
         services_render  does={syscall,block,env,alloc}
@@ -266,8 +265,8 @@ fn host() {
     // side and reaches nothing imported.
     pinned(
         "host",
-        583,
-        592,
+        581,
+        590,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -359,7 +358,7 @@ fn host() {
         forgejo_healthy  does={syscall,block,time,env,alloc}
         forget_allocation_items  does={syscall,block,env,alloc}
         forget_newest_row  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        forget_organism_slots  does={syscall,block,env,alloc}
+        forget_organism_slots  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         forget_volume  does={env,alloc}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
@@ -389,12 +388,13 @@ fn host() {
         input_digests  does={syscall,block,alloc}
         kill_faces  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
+        mapped_key_names  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        mapped_key_slots  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         memory_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        missing_drawn  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
-        nats_account_path  does={syscall,block,env,alloc}
-        nats_accounts_dir  does={syscall,block,env,alloc}
         nats_conf_path  does={syscall,block,env,alloc}
         nats_secrets_path  does={syscall,block,env,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
@@ -407,7 +407,7 @@ fn host() {
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         oidc_issuer  does={syscall,block,alloc}
         organism_here  does={syscall,block,time,env,alloc}
-        organism_secrets  does={syscall,block,env,alloc}
+        organism_secrets  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         own_nerves  does={syscall,block,env,alloc}
         owner_of_person_here  does={syscall,env,alloc}
         owners_here  does={syscall,env,alloc}
@@ -417,19 +417,21 @@ fn host() {
         profile_name  does={syscall,block,time,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}
+        provision_secrets  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         record_genesis_verb  does={syscall,block,env,alloc,secret_use}
         record_identity  does={syscall,alloc}
         record_identity_verb  does={syscall,alloc}
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        secrets_board  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        secrets_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        secrets_status_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         senses_up_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        server_conf_rewrite  does={syscall,block,env,alloc}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         work_verb  does={syscall,block,alloc}
-        write_nerves_conf  does={syscall,block,env,alloc}
         ",
     );
 }

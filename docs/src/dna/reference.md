@@ -29,6 +29,7 @@ usage: hale habitat [--head <url>] up [--no-body] [--image <tag>] [--profile loc
        hale habitat [--head <url>] place <key>/<role> <host>
        hale habitat [--head <url>] model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
        hale habitat [--head <url>] model-probe <organism> <mode>.<size>
+       hale habitat [--head <url>] models <organism>|--all [--plan]
        hale habitat [--head <url>] apply [<host>] [--fresh]
        hale habitat [--head <url>] nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat [--head <url>] forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
@@ -214,6 +215,8 @@ hale dna secret show <name> [--member <label>]
 hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)
 hale dna declared-secrets [dir]
                              the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family
+hale dna declared-provides [dir]
+                             what <dir>/hale.toml provides the habitat's organisms, a line each: capability, service, path, models_path, key
 hale dna declared-uis [dir]
                              the web UIs <dir>/hale.toml declares, a line each: name, label, service, path, login
 ```

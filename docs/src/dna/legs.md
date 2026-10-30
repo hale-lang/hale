@@ -105,13 +105,13 @@ fn performers() -> legs::PerformerCatalog {
 | --- | --- | --- | --- |
 | `legs::Person` | Every kind | `text` | Prints the rendered brief; the human operator runs `submit` when finished |
 | Deterministic (`legs::FixedAnswer`, `legs::CodebaseWork`, or custom) | Kinds explicitly listed by the performer (takes precedence) | `agent` | Executes deterministic Hale code (`legs::NoDeterministic { }` by default) |
-| `legs::ModelPerformer` | `agent`, `service`, `software` | `prompt` / `agent` | Routes the task to an LLM backend (`legs::NoModel { }` when no backend is configured) |
+| `legs::ModelPerformer` | `agent`, `service`, `software` | `prompt` / `agent` | Routes the task to an LLM backend: the agent router, or, generated with no backend configured, the same router with `mapped_only: true`, which asks only where the model map names an endpoint (the habitat's models) and gives any other Work back unperformed (`legs::NoModel { }` takes nothing) |
 
 ### Performer Selection Rules
 
 During `hale dna work run`, the leg selects a performer in priority order:
 1. The **deterministic** performer, if it accepts the attempt's kind (`legs::FixedAnswer { kinds: "agent", effect: "effect_free", result: "…" }` is the minimal implementation; `legs::CodebaseWork` handles attached foreign repositories).
-2. The **person** performer, if the work kind is `human` or if the model performer does not accept the kind (for example, when `model` is `legs::NoModel { }`, preventing unconfigured agents from burning attempts).
+2. The **person** performer, if the work kind is `human` or if the model performer does not accept the kind (for example, when `model` is `legs::NoModel { }`). A `mapped_only` model performer takes the kind but gives a Work the map names no endpoint for back unperformed (`refused`, the lease released, no attempt spent), so unconfigured agents burn nothing.
 3. The **model** performer otherwise.
 
 Passing `--performer person|deterministic|model` forces a specific slot, though a performer will never claim a kind it does not accept.
@@ -227,7 +227,7 @@ When completing a `Patch` Work, the leg commits its changes in the scratch clone
 
 ## Voice: Model Catalog, Routing, and Tapes
 
-The organization routes LLM calls through a unified `ModelBackend` interface configured in `dna/org/models.hl`. `hale habitat graft` generates this file based on the tools and keys available on the machine, and you can edit it as part of your genome:
+The organization routes LLM calls through a unified `ModelBackend` interface configured in `dna/org/models.hl`. `hale habitat graft` generates this file based on the tools and keys available on the machine, and you can edit it as part of your genome. A hosted pair (`frontier()`, `fast()`) is written only for a model key already in the vault, Anthropic's or OpenAI's, as below; with none, no hosted backend is written at all (a harness on `PATH`, else the desk, fills every tier), and the default backend is **the habitat's models**: when the habitat holds an organism that provides `models` (voice), the graft points the organism's model map at it, with a key the habitat draws for it ([The Habitat's Models](../habitat.md#the-habitats-models)). A Work the map resolves to an endpoint is asked there, whatever the catalog holds:
 
 ```hale,fragment
 fn frontier() -> dna::OpenAiChat {
@@ -280,7 +280,10 @@ catalog dna/org/models.hl
 backend     slot      model                         answer
 frontier    deep      gpt-4o                        not permitted (no credential present)
 fast        quick     gpt-4o-mini                   not permitted (no credential present)
+desk        private   llama3                        not permitted (no credential present)
 ```
+
+(A catalog generated with `OPENAI_API_KEY` in the vault whose slot has since been emptied; with no key at graft there is no `frontier` or `fast` to probe. The habitat's models are not in the catalog: `hale habitat model-probe <organism> <category>` asks the endpoint the map names.)
 
 Permitted backends print `ok`, latency, cost, and the first line of the response; failing backends print `refused: <reason>`.
 

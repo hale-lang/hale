@@ -355,8 +355,13 @@ category names, where the map says, once, and answers what it said, never
 a key. A leg's Work on a mapped category is asked the same way: the model
 router (`ModelRouter`, `dna/core/models.hl`) sends a request that names an
 endpoint there, with that endpoint's key slot or none, whichever backend
-the organism's catalog would have chosen, and a key slot the vault lacks is
-refused there, never answered by another backend. A sapling's graft is the head's Board command
+the organism's catalog would have chosen (a catalog with no backend of its
+own among them, as a graft with no model key writes it), and a key slot
+the vault lacks is refused there, never answered by another backend. The
+habitat's models fill a tenant's map without a person: an organism the
+habitat grafted that declares `[dna.provides.models]` (voice) is every
+organism's model backend, each keyed by a member of its drawn family
+(`spec/dna.md`, The habitat's models; `hale habitat models`). A sapling's graft is the head's Board command
 `Commands::graft` (`{sapling, host, library}`): it starts the act, which
 takes minutes, and answers at once with its log (`<habitat>/grafts/<name>.log`,
 its exit status beside it in `<log>.exit`); the end of the graft is its
@@ -794,7 +799,10 @@ digest}`) executes it only with the organism's name typed back and the
 plan's digest, refusing `confirm_required`, `confirm_mismatch` or
 `plan_changed`; the CLI requires a terminal. The vault slots it removes
 include every one of its organization's accounts on the nerves
-(`nats-<org>-…`, its applications' among them, which no row names). Its
+(`nats-<org>-…`, its applications' among them, which no row names), its
+slot `model-HABITAT_<KEY>`, and its key at the habitat's models provider
+(its member of the provider's family, an item of its own whose execution
+also restages the provider's reader vault where its services run). Its
 services placed on the hosts are planned by the CLI beside the head's
 plan and taken off (each one's `uninstall`, then what placing installed)
 once its name is typed back, before the head removes it. The habitat itself is no
@@ -838,6 +846,7 @@ socket), so the habitat's head must be up.
 | `graft <sapling> [--host <name>] [--own <part>[=<host>]]… [--reuse <part>]… [--plan] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, its application placed on the host `--host` names and each body part filled as planned (below). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
+| `models <organism>\|--all [--plan]` | Points a grafted organism's model map (every one's with `--all`) at the habitat's models, as a graft does (`spec/dna.md`, The habitat's models): its key drawn in the provider's family and copied into its slot, the provider's reader vault restaged, the provider asked what it serves, and each category no person wrote mapped there in the name `hale habitat`. For an organism grafted before the provider, or a model placed since. `--plan` says what it would draw, copy and map, and does nothing. Refused when the habitat holds no models provider. Through a pointer it runs on the habitat's machine. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -1498,7 +1507,16 @@ A graft allocates each role the organism's genome needs, records the
 allocations in the habitat's record, writes a `habitat.grafted <child>`
 row (`child`, `parent`, `needs`, `backends`) and proposes the `standard`
 pack to the child's Board (`--no-pack` leaves it for `hale dna pack apply
-standard`). `<dir>` is a new application's directory or, with `--attach`,
+standard`). Last, once a sapling's own services are placed and applied, it
+points the organism's model map at the habitat's models when the habitat
+holds a models provider whose services are applied: a key drawn for it in
+the provider's family and copied into its slot `model-HABITAT_<KEY>`, the
+provider asked what it serves, and each category no person wrote mapped
+there in the name `hale habitat`; grafting the provider itself does this
+for every organism the habitat holds (`spec/dna.md`, The habitat's
+models). Nothing of it fails the graft: what stopped it is said. A graft
+of an organism that provides models while the habitat holds another
+provider is refused, naming it. `<dir>` is a new application's directory or, with `--attach`,
 an application or repository already there. A graft that stopped part way
 goes on where it stopped; a record born of anything but this habitat is
 refused.

@@ -85,7 +85,9 @@ fn probe_catalog() -> String {
 
 #[test]
 fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_routers_from_it() {
-    // 1. nothing found: the catalog names OpenAI with a placeholder key
+    // 1. nothing found: no hosted backend at all (no placeholder key for a
+    //    person to fill), every position on the desk, and the leg asks only
+    //    where the habitat's map names an endpoint
     let d = workdir("bare");
     habitat::habitat();
     let (ok, out) = hale_env(&["habitat", "graft", "bare", "--no-pack"], &d, &[("PATH", &bare_path())], NO_KEYS);
@@ -94,12 +96,22 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).expect("init writes the catalog");
     assert!(out.contains("created ") && out.contains("dna/org/models.hl"), "{out}");
     assert!(out.contains("models  found   no model key in the vault (`hale dna secret set <NAME>`), no ollama on PATH"), "{out}");
-    assert!(out.contains("frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY, not in the vault: hosted backends are not permitted until it is) · desk = llama3 (ollama at 127.0.0.1:11434, not found)"), "{out}");
-    assert!(out.contains("leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day"), "{out}");
+    assert!(out.contains("no hosted backend (no model key in the vault) · desk = llama3 (ollama at 127.0.0.1:11434, not found)"), "{out}");
+    assert!(out.contains("leader, editor, agent: deep = desk, quick = desk, private = desk · budget 25.00 USD a day"), "{out}");
+    assert!(out.contains("the habitat's models fill the model map"), "{out}");
+    assert!(out.contains("skipped models map (no hosted model key in the vault: the habitat's models map it"), "{out}");
+    for absent in ["fn frontier()", "fn fast()", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "gpt-4o"] {
+        assert!(!catalog.contains(absent), "no hosted placeholder ({absent:?}) in:\n{catalog}");
+    }
+    let work = std::fs::read_to_string(app.join("dna/org/work.hl")).unwrap();
+    // the generated file is formatted, so the literal is split across lines
+    assert!(work.contains("fn model() -> legs::ModelPerformer {\n    return legs::ModelPerformer {\n        router: agent_models(),\n        effect: \"effect_free\",\n        mapped_only: true,\n    };"), "{work}");
+    assert!(!work.contains("legs::NoModel"), "{work}");
+    let (ok, secrets_out) = hale_env(&["dna", "secrets"], &app, &[("PATH", &bare_path())], NO_KEYS);
+    assert!(ok && !secrets_out.contains("model-OPENAI_API_KEY") && !secrets_out.contains("model-ANTHROPIC_API_KEY"), "no model key is required: {secrets_out}");
     for needle in [
-        "fn frontier() -> dna::OpenAiChat",
-        "model: \"gpt-4o\",\n        endpoint: \"https://api.openai.com/v1/chat/completions\",\n        credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" },",
-        "fn fast() -> dna::OpenAiChat",
+        "No hosted backend: no model key was in the vault",
+        "fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: desk(), deep: desk(), private: desk() };",
         "fn desk() -> dna::LocalModel",
         "fn leader_models() -> dna::ModelRouter",
         "fn editor_models() -> dna::ModelRouter",
@@ -191,10 +203,10 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     habitat::lend(&keyed);
     let (ok, out) = hale_env(&["habitat", "graft", "keyed", "--no-pack"], &d2, &[("PATH", &path), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["ANTHROPIC_API_KEY"]);
     assert!(ok, "{out}");
-    let catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
+    let keyed_catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
     assert!(out.contains("models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk"), "{out}");
-    assert!(catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{catalog}");
-    assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{catalog}");
+    assert!(keyed_catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{keyed_catalog}");
+    assert!(keyed_catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{keyed_catalog}");
     // the organization checks and builds with the harness wired
     let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);
     assert!(ok, "matrix: {out}");
@@ -217,7 +229,9 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
 
     // the probe runs the harness (an answer-only call in a directory of
     // its own; the stand-in needs no confinement, so the org chart's
-    // leave is given in the probe's copy of the catalog)
+    // leave is given in the probe's copy of the catalog) — the keyless
+    // project's own catalog, which has no hosted backend to probe
+    assert!(!catalog.contains("fn frontier()"), "{catalog}");
     let probed = catalog.replace("confinement: dna::Bubblewrap { } };", "confinement: dna::NoConfinement { }, allow_unconfined: true };");
     std::fs::write(app.join("dna/org/models.hl"), probed).unwrap();
     let mut c = vault::hale();
@@ -230,7 +244,7 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
     let harness_line = stdout.lines().find(|l| l.starts_with("harness ")).unwrap_or_else(|| panic!("a harness line:\n{stdout}"));
     assert!(harness_line.starts_with("harness     quick     claude                        ok  ") && harness_line.contains("  2000 micro-dollars  \"ready\""), "{stdout}");
-    assert!(stdout.lines().any(|l| l.starts_with("frontier    deep      gpt-4o ") && l.contains("not permitted")), "{stdout}");
+    assert!(!stdout.lines().any(|l| l.starts_with("frontier ")), "no hosted backend to probe with no key:\n{stdout}");
 }
 
 /// The review's second round, finding 3: a non-interactive codex is

@@ -142,6 +142,56 @@ fn model_mapped(j: Journal) -> Bool {
     return false;
 }
 
+// The vault slots the map's endpoints are asked with: each category's
+// latest row that names a model and a `key_vault`, a line per slot,
+// `<slot>\t<its categories, space-separated>`, in the order a slot is
+// first named. A slot here is one the organism requires (`hale dna
+// secrets` lists it as a model key; the habitat fills `model-HABITAT_<key>`
+// with its models' key for the organism).
+@bounded_by(j)
+fn model_key_slots(j: Journal) -> String {
+    let mut latest = "\n";
+    let mut slots = "";
+    let mut i = j.revision() - 1;
+    while i >= 0 {
+        let e = j.read(i);
+        i = i - 1;
+        if e.kind != "model.category" || std::str::contains(latest, "\n" + e.entity + "\n") {
+            continue;
+        }
+        latest = latest + e.entity + "\n";
+        let slot = std::json::find_string_field(e.body, "key_vault");
+        if len(slot) == 0 || len(std::json::find_string_field(e.body, "model")) == 0 { continue; }
+        slots = slots + slot + "\t" + e.entity + "\n";
+    }
+    // one line per slot, its categories gathered
+    let mut out = "";
+    let mut rest = slots;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let t = std::str::index_of(line, "\t");
+        let slot = line[0..t];
+        if std::str::starts_with(out, slot + "\t") || std::str::contains(out, "\n" + slot + "\t") {
+            continue;
+        }
+        let mut cats = "";
+        let mut more = slots;
+        while len(more) > 0 {
+            let n2 = std::str::index_of(more, "\n");
+            let l2 = more[0..n2];
+            more = more[(n2 + 1)..len(more)];
+            if std::str::starts_with(l2, slot + "\t") {
+                cats = (if len(cats) > 0 { cats + " " } else { "" })
+                    + l2[(len(slot) + 1)..len(l2)];
+            }
+        }
+        out = out + slot + "\t" + cats + "\n";
+    }
+    return out;
+}
+
 // The model for a Work: the size its most specific rule says (a task's
 // override only inside the permitted sizes of the rule beneath it), the mode
 // its hands make, and the model the category names. A `tools` or `do` Work

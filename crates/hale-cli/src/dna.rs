@@ -47,6 +47,7 @@ use serde_json::Value;
 pub(crate) mod habitat;
 mod head;
 mod pack;
+mod provides;
 mod secrets;
 mod uis;
 
@@ -460,6 +461,22 @@ fn nerves_roles(dir: &Path, args: &[String]) -> Result<NervesPlan, String> {
     }
     let line = out.trim();
     Ok(NervesPlan::NoServer(line.strip_prefix("none: ").unwrap_or(line).to_string()))
+}
+
+/// `secret rotate <name> --member <label>` (`args` after `secret`) where
+/// the manifest here provides models keyed by the family `name`: the
+/// family and the label.
+fn provider_member_rotated(args: &[String]) -> Option<(String, String)> {
+    let (sub, name) = (args.first()?, args.get(1)?);
+    if sub != "rotate" {
+        return None;
+    }
+    let at = args.iter().position(|a| a == "--member")?;
+    let label = args.get(at + 1)?;
+    let root = project(Path::new(".")).ok()?.0;
+    let text = fs::read_to_string(root.join("hale.toml")).ok()?;
+    let m = provides::declared(&text).ok().flatten()?;
+    (m.key == *name).then(|| (name.clone(), label.clone()))
 }
 
 fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
@@ -1076,10 +1093,32 @@ pub fn run(raw_args: &[String]) -> ExitCode {
         // GH #1590: a kept receipt's body, likewise
         Some("record-body") => host_exec("record-body", Path::new("."), &args[1..]),
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
+        // a member of the habitat's models provider's key family rotated:
+        // its tenant's copy follows, and the provider's reader vault
+        Some("secret") if provider_member_rotated(&args[1..]).is_some() => {
+            let Some((family, label)) = provider_member_rotated(&args[1..]) else { return ExitCode::from(2) };
+            match host_run("secret", Path::new("."), &args[1..]) {
+                Ok(said) => {
+                    print!("{said}");
+                    let root = project(Path::new(".")).map(|(r, _)| r).unwrap_or_else(|_| PathBuf::from("."));
+                    for l in habitat::models_after_rotate(&root, &family, &label) {
+                        println!("{l}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("hale dna: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
         // the secrets the seed declares ([dna.secrets.<name>]), a line each:
         // what the DNA's own code reads the declaration through
         Some("declared-secrets") => secrets::declared_cmd(&args[1..]),
+        // what the seed provides the habitat's other organisms
+        // ([dna.provides.<capability>]), a line each
+        Some("declared-provides") => provides::declared_cmd(&args[1..]),
         // the web UIs the seed declares ([dna.ui.<name>]), a line each: what
         // the habitat's head reads to list them on its home screen
         Some("declared-uis") => uis::declared_cmd(&args[1..]),
@@ -1399,6 +1438,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)");
     eprintln!("       hale dna declared-secrets [dir]");
     eprintln!("                                    the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family");
+    eprintln!("       hale dna declared-provides [dir]");
+    eprintln!("                                    what <dir>/hale.toml provides the habitat's organisms, a line each: capability, service, path, models_path, key");
     eprintln!("       hale dna declared-uis [dir]");
     eprintln!("                                    the web UIs <dir>/hale.toml declares, a line each: name, label, service, path, login");
     eprintln!("       hale dna application remove [project] [--as <who>]");
@@ -2430,23 +2471,27 @@ struct Hosted {
 }
 
 impl Discovery {
-    /// The provider the hosted backends speak to: Anthropic's native
-    /// Messages API when its key is present (the strongest models),
-    /// else OpenAI's chat shape (its key, or a placeholder until one is
-    /// set).
-    fn hosted(&self) -> (Hosted, Hosted, &'static str) {
+    /// The provider the hosted backends speak to, for a key actually in
+    /// the vault: Anthropic's native Messages API when its key is present
+    /// (the strongest models), else OpenAI's chat shape when its key is.
+    /// With neither, no hosted backend is written: the positions take a
+    /// harness on PATH or the desk, and the habitat's models (a provider it
+    /// has grafted, `hale habitat models`) fill the organism's model map.
+    fn hosted(&self) -> Option<(Hosted, Hosted, &'static str)> {
         if self.anthropic {
-            (
+            Some((
                 Hosted { adapter: "dna::AnthropicMessages", model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/messages", key: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
                 Hosted { adapter: "dna::AnthropicMessages", model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/messages", key: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
                 "ANTHROPIC_API_KEY",
-            )
-        } else {
-            (
+            ))
+        } else if self.openai {
+            Some((
                 Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
                 Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 150, output_micros_per_1k: 600 },
                 "OPENAI_API_KEY",
-            )
+            ))
+        } else {
+            None
         }
     }
     /// The harness the catalog writes, when one is on PATH: `claude`
@@ -2479,25 +2524,26 @@ impl Discovery {
     }
     /// What `init` prints: what each position was given.
     fn report(&self) -> Vec<String> {
-        let (frontier, fast, key) = self.hosted();
         let desk = self.ollama.clone().unwrap_or_else(|| "llama3".to_string());
-        let out = vec![
-            format!("found   {}", self.summary()),
-            format!(
-                "frontier = {} · fast = {} ({}{}) · desk = {} (ollama at 127.0.0.1:11434{})",
-                frontier.model,
-                fast.model,
-                key,
-                if self.anthropic || self.openai { "" } else { ", not in the vault: hosted backends are not permitted until it is" },
-                desk,
-                if self.ollama.is_some() { "" } else { ", not found" }
-            ),
-            match (self.harness(), self.anthropic || self.openai) {
-                (Some(h), true) => format!("editor, agent: quick = harness ({h}), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
-                (Some(h), false) => format!("editor, agent, leader: quick = harness ({h}), deep = harness ({h}) · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
-                (None, _) => "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
-            },
-        ];
+        let desk_line = format!("desk = {desk} (ollama at 127.0.0.1:11434{})", if self.ollama.is_some() { "" } else { ", not found" });
+        let mut out = vec![format!("found   {}", self.summary())];
+        match self.hosted() {
+            Some((frontier, fast, key)) => {
+                out.push(format!("frontier = {} · fast = {} ({key}) · {desk_line}", frontier.model, fast.model));
+                out.push(match self.harness() {
+                    Some(h) => format!("editor, agent: quick = harness ({h}), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
+                    None => "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+                });
+            }
+            None => {
+                out.push(format!("no hosted backend (no model key in the vault) · {desk_line}"));
+                out.push(match self.harness() {
+                    Some(h) => format!("editor, agent, leader: quick = harness ({h}), deep = harness ({h}) · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
+                    None => "leader, editor, agent: deep = desk, quick = desk, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+                });
+                out.push("the habitat's models fill the model map: a models provider it grafted (voice) is every tenant's model backend (`hale habitat models <organism>`)".to_string());
+            }
+        }
         out
     }
 }
@@ -2507,8 +2553,10 @@ impl Discovery {
 /// needs none of the three replaced; a program that performs a work
 /// kind deterministically is added here and wins for that kind; the
 /// model performer is the catalog's router behind the model leg when
-/// init found a backend, and `NoModel` — the work is a person's — when
-/// it found none, so a fresh project with no key burns no attempts.
+/// init found a backend; when it found none, the same router asks only
+/// where the model map names an endpoint (`mapped_only`: the habitat's
+/// models, once it maps them), and a Work the map names no endpoint for is
+/// given back unperformed, so a fresh project with no key burns no attempts.
 fn work_hl(found: &Discovery) -> String {
     let configured = found.openai || found.anthropic || found.ollama.is_some();
     let harness = found.harness().is_some();
@@ -2530,14 +2578,15 @@ fn model() -> legs::ModelPerformer {{
         )
     } else {
         String::from(
-            "// No backend was configured when this file was generated, so the
-// model takes nothing and agent work is a person's. With a backend in
-// dna/org/models.hl, put the catalog behind the leg (`effect_free` for
-// hosted backends that answer, `uncertain` for a harness with tools):
-//
-// fn model() -> legs::ModelPerformer { return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" }; }
-fn model() -> legs::NoModel {
-    return legs::NoModel { };
+            "// No backend was configured when this file was generated: the
+// model leg asks only where the model map names an endpoint (the
+// habitat's models, which `hale habitat graft` and `hale habitat models`
+// map), with that endpoint's key, and gives a Work it names none for back
+// unperformed, so agent work with no model mapped stays a person's. With
+// a backend in dna/org/models.hl, drop `mapped_only` (`effect_free` for
+// hosted backends that answer, `uncertain` for a harness with tools).
+fn model() -> legs::ModelPerformer {
+    return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\", mapped_only: true };
 }",
         )
     };
@@ -2592,9 +2641,9 @@ fn hands() -> legs::Hands {
 /// composed from them, one budget policy, and the probe `hale dna
 /// models` runs.
 fn models_hl(found: &Discovery) -> String {
-    let (frontier, fast, _) = found.hosted();
+    let hosted_pair = found.hosted();
     let desk_model = found.ollama.clone().unwrap_or_else(|| "llama3".to_string());
-    let keyed = found.anthropic || found.openai;
+    let keyed = hosted_pair.is_some();
     let has_harness = found.harness().is_some();
     // GH #583 M3: an installed harness edits in an export of the worktree
     // with its own tools; the editor imports the diff under the grant.
@@ -2652,6 +2701,35 @@ fn harness() -> dna::HarnessModel {
             h.adapter, h.model, h.endpoint, h.key, h.scheme, h.input_micros_per_1k, h.output_micros_per_1k
         )
     };
+    let hosted_section = match &hosted_pair {
+        Some((frontier, fast, _)) => format!(
+            "// The strongest model: the Leader's decisions, the editor's assessments.
+fn frontier() -> {adapter} {{
+    return {frontier};
+}}
+
+// A fast, cheap model: classification, drafts, retries.
+fn fast() -> {adapter} {{
+    return {fast};
+}}
+
+",
+            adapter = frontier.adapter,
+            frontier = hosted("deep", frontier),
+            fast = hosted("quick", fast),
+        ),
+        // no key in the vault: no hosted backend is written (no placeholder
+        // a person would have to fill), and the habitat's models fill the map
+        None => "// No hosted backend: no model key was in the vault when this was
+// generated. The habitat's models (a provider it grafted, voice) are
+// this organism's model backend through its map; a hosted provider is
+// one more function here, `dna::AnthropicMessages { … }` or
+// `dna::OpenAiChat { … }` with its hosted credential naming a key, which
+// `hale dna secret set <KEY>` then fills.
+
+"
+        .to_string(),
+    };
     format!(
         r#"// dna/org/models.hl — the model catalog (project-owned; generated by
 // `hale habitat graft` from what this machine had: {summary}).
@@ -2674,19 +2752,11 @@ import "vendor/dna" as dna;
 // bearer token). Either presents its key from a sealed locus that
 // never returns it; without the key it is not a permitted backend and
 // the router refuses before the wire. Prices are micro-dollars per
-// 1k tokens, for the evidence and the budget.
+// 1k tokens, for the evidence and the budget. Whatever the catalog
+// holds, a Work whose model the habitat's map names an endpoint for is
+// asked there, with that endpoint's key (`hale dna models map`).
 
-// The strongest model: the Leader's decisions, the editor's assessments.
-fn frontier() -> {adapter} {{
-    return {frontier};
-}}
-
-// A fast, cheap model: classification, drafts, retries.
-fn fast() -> {adapter} {{
-    return {fast};
-}}
-
-// A model on this machine: customer-classed data never leaves it. No
+{hosted_section}// A model on this machine: customer-classed data never leaves it. No
 // key, no `external_model` effect.
 fn desk() -> dna::LocalModel {{
     return dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "{desk}" }};
@@ -2726,19 +2796,18 @@ fn org_budget() -> dna::BudgetPolicy {{
 // ---- the probe (`hale dna models`) ---------------------------------
 
 fn probe_catalog() -> String {{
-    return dna::probe("frontier", frontier()) + dna::probe("fast", fast()) + dna::probe("desk", desk()){probe_harness};
+    return {probe_hosted}dna::probe("desk", desk()){probe_harness};
 }}
 "#,
         summary = found.summary(),
-        adapter = frontier.adapter,
-        frontier = hosted("deep", &frontier),
-        fast = hosted("quick", &fast),
+        hosted_section = hosted_section,
         desk = desk_model,
         harness_section = harness_section,
-        leader_quick = if keyed || !has_harness { "fast()" } else { "harness()" },
-        leader_deep = if keyed || !has_harness { "frontier()" } else { "harness()" },
-        editor_quick = if has_harness { "harness()" } else { "fast()" },
-        editor_deep = if keyed || !has_harness { "frontier()" } else { "harness()" },
+        leader_quick = if keyed { "fast()" } else if has_harness { "harness()" } else { "desk()" },
+        leader_deep = if keyed { "frontier()" } else if has_harness { "harness()" } else { "desk()" },
+        editor_quick = if has_harness { "harness()" } else if keyed { "fast()" } else { "desk()" },
+        editor_deep = if keyed { "frontier()" } else if has_harness { "harness()" } else { "desk()" },
+        probe_hosted = if keyed { "dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + " } else { "" },
         probe_harness = if has_harness { " + dna::probe(\"harness\", harness())" } else { "" },
     )
 }
@@ -3911,10 +3980,9 @@ fn library_propose(root: &Path, upgrading: bool) -> Result<(usize, usize, usize,
 /// can reach would only be refused later. The rows are in `init`'s name
 /// and change like any other (`hale dna models rule|category`).
 fn seed_model_map(root: &Path, found: &Discovery) -> Result<Vec<String>, String> {
-    if !found.anthropic && !found.openai {
-        return Ok(vec!["skipped models map (no hosted model key in the vault: `hale dna models rule|category` set it by hand)".to_string()]);
-    }
-    let (frontier, fast, _) = found.hosted();
+    let Some((frontier, fast, _)) = found.hosted() else {
+        return Ok(vec!["skipped models map (no hosted model key in the vault: the habitat's models map it once a provider is grafted, `hale habitat models`; `hale dna models rule|category` set it by hand)".to_string()]);
+    };
     let by = "hale habitat graft";
     let mut text = String::new();
     let row = |kind: &str, entity: &str, body: serde_json::Value| serde_json::json!({"kind": kind, "entity": entity, "body": body.to_string()}).to_string() + "\n";
@@ -4134,5 +4202,52 @@ mod pin_tests {
         assert_eq!(manifest_pin_in("[deps]\n").unwrap(), None);
         assert!(manifest_pin_in("[dna]\nrecord = 7\n").is_err());
         assert!(pinned_manifest("dna = 3\n", ID).is_err());
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    fn found(openai: bool, anthropic: bool, harness: bool) -> Discovery {
+        Discovery { openai, anthropic, ollama: None, harnesses: if harness { vec!["claude".to_string()] } else { Vec::new() } }
+    }
+
+    /// No key in the vault: no hosted backend at all (no placeholder a
+    /// person must fill), every tier the desk, and the leg asks only where
+    /// the model map names an endpoint (the habitat's models).
+    #[test]
+    fn no_key_writes_no_hosted_placeholder() {
+        let none = found(false, false, false);
+        assert!(none.hosted().is_none());
+        let catalog = models_hl(&none);
+        for absent in ["fn frontier()", "fn fast()", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "gpt-4o", "HostedCredential {"] {
+            assert!(!catalog.contains(absent), "{absent:?} in:\n{catalog}");
+        }
+        assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: desk(), deep: desk(), private: desk() };"), "{catalog}");
+        assert!(catalog.contains("fn agent_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: desk(), deep: desk(), private: desk() };"), "{catalog}");
+        assert!(catalog.contains("    return dna::probe(\"desk\", desk());"), "{catalog}");
+        let work = work_hl(&none);
+        assert!(work.contains("return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\", mapped_only: true };"), "{work}");
+        assert!(!work.contains("legs::NoModel"), "{work}");
+        let report = none.report().join("\n");
+        assert!(report.contains("no hosted backend (no model key in the vault)") && report.contains("the habitat's models fill the model map") && !report.contains("gpt-4o"), "{report}");
+        // a harness and no key: the harness on every model-backed tier
+        let h = models_hl(&found(false, false, true));
+        assert!(h.contains("return dna::ModelRouter { quick: harness(), deep: harness(), private: desk() };") && !h.contains("fn frontier()"), "{h}");
+        assert!(h.contains("dna::probe(\"desk\", desk()) + dna::probe(\"harness\", harness())"), "{h}");
+        assert!(work_hl(&found(false, false, true)).contains("effect: \"uncertain\" };"));
+    }
+
+    /// A key actually in the vault writes its hosted pair, as before.
+    #[test]
+    fn a_key_in_the_vault_writes_its_hosted_pair() {
+        let openai = models_hl(&found(true, false, false));
+        assert!(openai.contains("fn frontier() -> dna::OpenAiChat") && openai.contains("key: \"OPENAI_API_KEY\"") && openai.contains("quick: fast(), deep: frontier(), private: desk()"), "{openai}");
+        assert!(openai.contains("dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + dna::probe(\"desk\", desk())"), "{openai}");
+        let anthropic = models_hl(&found(true, true, true));
+        assert!(anthropic.contains("fn frontier() -> dna::AnthropicMessages") && !anthropic.contains("key: \"OPENAI_API_KEY\""), "{anthropic}");
+        assert!(anthropic.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{anthropic}");
+        assert!(!work_hl(&found(true, false, false)).contains("mapped_only"));
     }
 }
