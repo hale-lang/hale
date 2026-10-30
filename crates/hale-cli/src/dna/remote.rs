@@ -104,13 +104,23 @@ impl Target {
     }
     /// `script` run by the login shell there: its stdout, or why not.
     fn run(&self, script: &str) -> Result<String, String> {
-        let out = self.ssh(false).arg(script).stdin(Stdio::null()).output().map_err(|e| format!("ssh: {e}"))?;
+        let out = self.ssh(false).arg(posix(script)).stdin(Stdio::null()).output().map_err(|e| format!("ssh: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
             Err(format!("ssh {}: {}", self.host, String::from_utf8_lossy(&out.stderr).trim()))
         }
     }
+}
+
+/// What a habitat hands ssh as the remote command: `script` run by `sh`,
+/// whatever the person's login shell is. ssh hands its command to that
+/// shell, and a script written for `sh` is not always one zsh or fish
+/// reads alike (zsh refuses a glob that matches nothing, where `sh` passes
+/// it on), so each script is the argument of an `sh -c` the login shell
+/// only has to start.
+pub(super) fn posix(script: &str) -> String {
+    format!("exec /bin/sh -c {}", sq(script))
 }
 
 /// A script of the habitat's (`readings`) run on `host` over the person's
@@ -124,7 +134,7 @@ pub(super) fn login_script(host: &str, user: Option<&str>, port: Option<u16>, sc
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let mut child = t
         .ssh(tty)
-        .arg(script(super::readings::sudo_word(tty)))
+        .arg(posix(&script(super::readings::sudo_word(tty))))
         .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(if tty { Stdio::inherit() } else { Stdio::piped() })
@@ -235,7 +245,7 @@ pub(super) fn provision_user(host: &str, port: Option<u16>, user: &str, line: &s
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let ran = t
         .ssh(tty)
-        .arg(provision_script(user, line, tty))
+        .arg(posix(&provision_script(user, line, tty)))
         .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
         .status()
         .map_err(|e| format!("ssh: {e}"))?;
@@ -294,7 +304,7 @@ pub(super) fn remove_user(host: &str, port: Option<u16>, user: &str) -> Result<(
     let sudo = if tty { "sudo" } else { "sudo -n" };
     let ran = t
         .ssh(tty)
-        .arg(remove_user_script(user, sudo))
+        .arg(posix(&remove_user_script(user, sudo)))
         .stdin(if tty { Stdio::inherit() } else { Stdio::null() })
         .status()
         .map_err(|e| format!("ssh: {e}"))?;
@@ -491,7 +501,7 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
         super::progress(&format!("sending the image {tag} to {}", t.host));
         let mut save = Command::new("docker").args(["save", tag]).stdout(Stdio::piped()).spawn().map_err(|e| format!("docker save: {e}"))?;
         let stdout = save.stdout.take().ok_or("docker save: no output")?;
-        let loaded = t.ssh(false).arg("docker load -q").stdin(stdout).stdout(Stdio::null()).status().map_err(|e| format!("ssh: {e}"))?;
+        let loaded = t.ssh(false).arg(posix("docker load -q")).stdin(stdout).stdout(Stdio::null()).status().map_err(|e| format!("ssh: {e}"))?;
         let saved = save.wait().map_err(|e| format!("docker save: {e}"))?;
         if !saved.success() || !loaded.success() {
             return Err(format!("the image {tag} could not be sent to {}", t.host));
@@ -540,7 +550,7 @@ fn build_there(t: &Target, tag: &str, machine: &str, mismatch: &str) -> Result<S
     let context = format!("{HALE_GIT}#{pin}");
     let built = t
         .ssh(false)
-        .arg(format!("docker build -t {} {}", sq(tag), sq(&context)))
+        .arg(posix(&format!("docker build -t {} {}", sq(tag), sq(&context))))
         .stdin(Stdio::null())
         .stdout(std::process::Stdio::from(std::io::stderr()))
         .status()
@@ -752,7 +762,7 @@ fn up_lines(host: &str, user: Option<&str>, port: Option<u16>, name: &str, image
     let mut args: Vec<&str> = vec!["up", "--name", name];
     args.extend(rest.iter().map(String::as_str));
     super::progress(&format!("bringing the habitat up on {host}"));
-    let ran = t.ssh(false).arg(in_image(&m, &p, &args, false)).stdin(Stdio::null()).status().map_err(|e| format!("ssh: {e}"))?;
+    let ran = t.ssh(false).arg(posix(&in_image(&m, &p, &args, false))).stdin(Stdio::null()).status().map_err(|e| format!("ssh: {e}"))?;
     if !ran.success() {
         return Err(format!("`hale habitat up` on {host} failed (exit {}); nothing here points at it", ran.code().unwrap_or(-1)));
     }
@@ -960,7 +970,7 @@ pub(super) fn down(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let mut a: Vec<&str> = vec!["down"];
     a.extend(args.iter().map(String::as_str));
     let mut cmd = t.ssh(confirm);
-    cmd.arg(in_image(&m, p, &a, confirm));
+    cmd.arg(posix(&in_image(&m, p, &a, confirm)));
     if !confirm {
         cmd.stdin(Stdio::null());
     }
@@ -1168,7 +1178,7 @@ pub(super) fn graft(p: &serde_json::Value, args: &[String]) -> ExitCode {
             }
         };
         let Some(out) = tar.stdout.take() else { return ExitCode::from(1) };
-        let unpacked = t.ssh(false).arg(format!("tar -C {} -xf -", sq(&gate))).stdin(out).status();
+        let unpacked = t.ssh(false).arg(posix(&format!("tar -C {} -xf -", sq(&gate)))).stdin(out).status();
         let packed = tar.wait();
         if !unpacked.is_ok_and(|s| s.success()) || !packed.is_ok_and(|s| s.success()) {
             // nothing grafted from it yet: the fresh directory goes whole
@@ -1183,7 +1193,7 @@ pub(super) fn graft(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let before = graft_state(&t, &there);
     let mut a: Vec<&str> = vec!["graft", there.as_str()];
     a.extend(args[1..].iter().map(String::as_str));
-    let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
+    let ran = t.ssh(false).arg(posix(&in_image(&m, p, &a, false))).stdin(Stdio::null()).status();
     if ran.as_ref().is_ok_and(|s| s.success()) {
         return ExitCode::SUCCESS;
     }
@@ -1262,7 +1272,7 @@ pub(super) fn graft_resume(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let flags = resume_flags(&args[1..]);
     let mut a: Vec<&str> = vec!["graft", path.as_str()];
     a.extend(flags.iter().map(String::as_str));
-    let ran = t.ssh(false).arg(in_image(&m, p, &a, false)).stdin(Stdio::null()).status();
+    let ran = t.ssh(false).arg(posix(&in_image(&m, p, &a, false))).stdin(Stdio::null()).status();
     if ran.as_ref().is_ok_and(|s| s.success()) {
         return ExitCode::SUCCESS;
     }
@@ -1330,7 +1340,7 @@ pub(super) fn organism_dna(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let mut a: Vec<&str> = vec!["organism"];
     a.extend(args.iter().map(String::as_str));
     let mut cmd = t.ssh(tty);
-    cmd.arg(in_image_io(&m, p, &a, organism_io(tty)));
+    cmd.arg(posix(&in_image_io(&m, p, &a, organism_io(tty))));
     match cmd.status() {
         Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => {
@@ -1349,7 +1359,7 @@ pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> Exi
         Err(code) => return code,
     };
     let mut cmd = t.ssh(false);
-    cmd.arg(in_image(&m, p, args, false)).stdin(Stdio::null());
+    cmd.arg(posix(&in_image(&m, p, args, false))).stdin(Stdio::null());
     match cmd.status() {
         Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => {
@@ -1375,7 +1385,7 @@ pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode 
     a.extend(args.iter().map(String::as_str));
     a.push("--no-head");
     let mut cmd = t.ssh(tty);
-    cmd.arg(in_image(&m, p, &a, tty));
+    cmd.arg(posix(&in_image(&m, p, &a, tty)));
     if !tty {
         cmd.stdin(Stdio::null());
     }
@@ -1415,6 +1425,26 @@ pub(super) fn refuse_local_up(p: &serde_json::Value) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a script for `sh` reaches `sh` whatever the login shell: zsh, which
+    // refuses a glob that matches nothing, runs the vault's family scan
+    // through it (a placement once failed on a habitat's machine whose
+    // login shell was zsh)
+    #[test]
+    fn a_remote_script_runs_under_sh_whatever_the_login_shell() {
+        let d = std::env::temp_dir().join(format!("hale-posix-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let script = format!("for m in {}/nothing--*; do [ -f \"$m\" ] && echo \"$m\"; done; echo 'it'\\''s done'", d.display());
+        for shell in ["/bin/sh", "/bin/zsh", "/usr/bin/zsh", "/bin/bash"] {
+            if !std::path::Path::new(shell).exists() {
+                continue;
+            }
+            let out = Command::new(shell).arg("-c").arg(posix(&script)).output().unwrap();
+            assert!(out.status.success(), "{shell}: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "it's done\n", "{shell}");
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn an_image_of_another_platform_is_never_used_or_sent() {
