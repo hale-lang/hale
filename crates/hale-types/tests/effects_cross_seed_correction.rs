@@ -266,8 +266,8 @@ fn host() {
     // side and reaches nothing imported.
     pinned(
         "host",
-        585,
-        594,
+        586,
+        595,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -275,6 +275,7 @@ fn host() {
         Host::build_genome  does={syscall,block,env,alloc,stdio}
         Host::build_seed  does={syscall,block,env,alloc,stdio}
         Host::cut_artifact  does={syscall,block,alloc}
+        Host::hand_compose_habitat  does={syscall,env,alloc}
         Host::hand_compose_secrets  does={syscall,block,env,alloc}
         Host::nerves_read_now  does={syscall,block,time,entropy,env,alloc}
         Host::no_application  does={syscall,block,alloc}

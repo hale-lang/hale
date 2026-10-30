@@ -289,6 +289,9 @@ type Render {
     // where they are put for it on this machine (`reader_vault_dir`); on an
     // `ssh` host, beside the render the habitat ships (`ssh_reader_vault`)
     vault: String = "";
+    // the habitat's name, handed its services as `HALE_DNA_HABITAT_NAME`
+    // when it is an organism's own the habitat applies; "" for none
+    habitat: String = "";
 }
 
 // An organism's own compose services labelled as the habitat's
@@ -621,7 +624,7 @@ locus ComposeProvider {
         }
         write_render_labels(render);
         // the secrets its programs read, in its reader vault, and compose
-        // handed where they are
+        // handed where they are, and the habitat's name
         if len(reader_entries(render.secrets, "\n")) > 0 && len(render.vault) == 0 {
             return RenderApplied {
                 why: "the render's programs read secrets, and it names no reader vault",
@@ -629,7 +632,7 @@ locus ComposeProvider {
         }
         let staged = stage_reader_vault(render.vault, render.secrets);
         if len(staged) > 0 { return RenderApplied { why: staged }; }
-        let wrap = reader_wrap(render.secrets, render.vault);
+        let wrap = services_wrap(render.habitat, render.secrets, render.vault);
         let up = run_tool(
             wrap + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n")
                 + "\n" + compose_up_args(render, "\n"),
@@ -656,7 +659,7 @@ locus ComposeProvider {
             return RenderApplied { why: "nothing to withdraw: the render names no project" };
         }
         let down = run_tool(
-            reader_wrap(render.secrets, render.vault)
+            services_wrap(render.habitat, render.secrets, render.vault)
                 + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n"
                 + compose_args(render, "\n") + "\n" + compose_down_args(render, "\n"),
         );

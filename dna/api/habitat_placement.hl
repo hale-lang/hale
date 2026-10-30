@@ -159,7 +159,8 @@ fn placement_export(j: dna::Journal, latest: LatestRows) -> String {
 }
 
 // The render of an organism's own services (`role` `services`): its compose
-// file, in the project its placement names.
+// file, in the project its placement names, handed the habitat's name and
+// the secrets its programs read.
 fn services_render(body: String) -> dna::Render {
     let r = dna::Render {
         project: std::json::find_string_field(body, "project"),
@@ -188,6 +189,8 @@ fn services_render(body: String) -> dna::Render {
         // the organism's reader vault, whatever its programs read now: an
         // empty set is reconciled there too
         vault: if len(organism) >= 12 { dna::reader_vault_dir(organism[0..12]) } else { "" },
+        // the habitat's name: an organism's own services are the habitat's
+        habitat: dna::habitat_name_here(),
     };
 }
 
