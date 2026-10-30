@@ -25,11 +25,11 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 // bearer being the visitor's own Cookie header, which the face received and
 // presents on the visitor's behalf. The members relayed
 // (`HEAD_SURFACE_CALLS`) are the surface's reads, the record's index and the
-// habitat's hosts, allocations, placements, policy, alerts, nurseries and saplings, and the Board's acts the
+// habitat's hosts, allocations, placements, policy, alerts, UIs, nurseries and saplings, and the Board's acts the
 // operator face makes (hosts, placement, graft): the API child
 // decides each by the visitor's own credential, as for any proxied command.
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
-const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::placements Commands::policy Commands::alerts Commands::nurseries Commands::saplings Commands::brief Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log Commands::set_model_map Commands::probe_model Commands::add_nursery Commands::ratify_sapling Commands::allocate_forge";
+const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::placements Commands::policy Commands::alerts Commands::uis Commands::nurseries Commands::saplings Commands::brief Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log Commands::set_model_map Commands::probe_model Commands::add_nursery Commands::ratify_sapling Commands::allocate_forge";
 
 // The members of the surface that act or read a graft's log (the Board's):
 // not the reads. In a trusted-local session each carries the launch token as a

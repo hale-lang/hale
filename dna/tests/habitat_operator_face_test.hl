@@ -6,7 +6,9 @@
 // `up`. The page reads the habitat's state through the generated client of
 // the head's rows (`Commands::index`, over `/api/hale/v1/head/surface`);
 // this fixture makes the same call the client makes and reads the habitat
-// and its organisms from the answer. The head is a fixture's trusted-local
+// and its organisms from the answer, and the web UIs its home screen lists
+// (`Commands::uis`: each organism's face, and a UI a sapling declares in
+// `[dna.ui.<name>]`). The head is a fixture's trusted-local
 // one; the sign-in itself, under the stub issuer, is
 // dna/api/project_service/tests/operator_face_test.hl.
 // The habitat is this test file's own (`hale test` gives each file one), and
@@ -226,6 +228,14 @@ fn index_call(face: String) -> String {
     ).stdout;
 }
 
+// The home screen's read of the web UIs, as the client calls it.
+fn uis_call(face: String) -> String {
+    return dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:ea742e1b3ee3224e\n--data\n{\"limit\": 200}\n"
+            + face + "/api/hale/v1/head/surface/call/Commands::uis",
+    ).stdout;
+}
+
 fn git(dir: String, args: String) -> dna::RunResult {
     return dna::run_tool("git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args);
 }
@@ -387,13 +397,34 @@ fn main() {
         std::str::contains(after, "alpha") && std::str::contains(after, "grafted"),
         "the read names the organism and its state: " + after,
     );
+    // ---- the home screen lists its face among the habitat's web UIs
+    let page_now = get(face + "/app/").stdout;
+    std::test::assert(
+        std::str::contains(page_now, "id=\"ui-rows\"")
+            && std::str::contains(get(face + "/app/operator.js").stdout, "commandsUis"),
+        "the home screen lists the UIs: " + page_now,
+    );
+    let listed = uis_call(face);
+    std::test::assert(
+        std::str::contains(listed, "alpha face")
+            && (
+                std::str::contains(listed, "\"ok\":true")
+                    || std::str::contains(listed, "\"ok\": true")
+            ),
+        "Commands::uis lists the organism's face: " + listed,
+    );
 
     // ---- a sapling of a local git repository, grafted through the row
     // (`Commands::graft`) and followed through its log (`Commands::graft_log`)
     let src = scratch + "/sprout-src";
     std::io::fs::mkdir(src) or discard;
     git(src, "init\n-q\n-b\nmain");
-    std::io::fs::write_file(src + "/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n")
+    // it declares a web UI, served by a service it has none of here: listed,
+    // and said to have no address
+    std::io::fs::write_file(
+        src + "/hale.toml",
+        "[dna]\nneeds = [\"memory\", \"nerves\"]\n\n[dna.ui.console]\nlabel = \"sprout console\"\nservice = \"web\"\npath = \"/console\"\n",
+    )
     or discard;
     git(src, "add\n-A");
     git(src, "commit\n-q\n-m\nsprout v1");
@@ -511,6 +542,13 @@ fn main() {
     std::test::assert(
         std::str::contains(sprouted, "sprout"),
         "the index names the new organism: " + sprouted,
+    );
+    let sprout_uis = uis_call(face);
+    std::test::assert(
+        std::str::contains(sprout_uis, "sprout face")
+            && std::str::contains(sprout_uis, "sprout console")
+            && std::str::contains(sprout_uis, "its services publish nothing"),
+        "Commands::uis lists the UI the sapling declares, with no address yet: " + sprout_uis,
     );
     let escaped = row_call(
         face, "graft_log", "fnv1a64:7a8e4a9a24e7a43e", "{\"graft\": \"../up\", \"from\": 0}", token,

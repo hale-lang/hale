@@ -3747,6 +3747,11 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     }
     let needs = needs_of(manifest.as_deref())?;
     let _ = GRAFT_BRINGS.set(brings_of(manifest.as_deref())?);
+    // the web UIs it declares, listed on the habitat's home screen: one
+    // the toolchain refuses is never grafted
+    if let Some(m) = manifest.as_deref() {
+        super::uis::declared(m).map_err(|why| format!("{}: the web UIs it declares are refused: {why}", root.join("hale.toml").display()))?;
+    }
     // the plan, part by part, before anything is made: `--plan` prints it
     // and stops; at a terminal the person confirms it (a graft the head
     // started, with no terminal, takes it as planned); a graft that goes on
