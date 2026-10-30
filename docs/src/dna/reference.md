@@ -206,7 +206,14 @@ See [The skin](./skin.md).
 hale dna secret set <NAME> [--body <user@host>]
                              a credential from stdin (never argv, never the record) into its slot of the vault
                              (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only
+                             a secret the seed declares ([dna.secrets.<name>], a slot) by its own name; a family's member
+                             with `--member <label>` (also `secret remove <name> --member <label>`); a drawn one is never set,
+                             and `secret rotate <name>` draws it anew
+hale dna secret show <name> [--member <label>]
+                             the value of a secret the seed declares with person = "read" (any other is refused)
 hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)
+hale dna declared-secrets [dir]
+                             the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family
 ```
 
 ### Worker Legs and Voice (Models)
@@ -472,7 +479,8 @@ Every event row contains a `kind`, `entity`, `body`, and `author`. In Postgres m
 | `concern.requested` / `concern.raised` / `concern.refused` | `ledger` | Upward structural concern raised from a locus path (`hale dna concern raise`). |
 | `concern.proposed` | `record` | Knowledge proposal automatically opened after 3 concerns (`concern_threshold`). |
 | `appendage.proposed` / `appendage.candidate` | `record` | New organizational position proposed after 3 pressure signals (`appendage_threshold`), and its generated `dna/org` mutation candidate. |
-| `secret.rotated` | `record` | Audit record noting that a named secret slot was set or rotated (never contains the secret value). |
+| `secret.rotated` | `record` | Audit record noting that a named secret slot was set or rotated (never contains the secret value); a family's member is `<name>--<label>`. |
+| `secret.removed` | `record` | A member of a declared secret family taken out of the vault (`<name>--<label>`), never its value. |
 | `violation.recorded` | `record` | Runtime closure fault absorbed by a supervisor (`adapter_undeliverable`, `lease_unsettled`, `pulse_stopped`). |
 | `schedule.requested` / `schedule.answered` | `ledger` | Schedule declaration request and organization response. |
 | `schedule.declared` / `schedule.refused` | `ledger` | Active schedule specification, or declaration/occurrence refusal. |
