@@ -73,10 +73,10 @@ jobs:
           bash scripts/ci-scope.sh "$base" HEAD | grep '^dna=' | tee -a "$GITHUB_OUTPUT"
 
   macos:
-    name: build + run (macos-14, Apple Silicon, ${{ matrix.part }}/4)
+    name: build + run (macos-15, Apple Silicon, ${{ matrix.part }}/4)
     needs: scope
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       # The DNA fixture suite is the whole job (25 of its 30 minutes on one
