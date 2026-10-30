@@ -3,7 +3,8 @@
 //
 // `hale habitat organism place <organism> <command> --host <h>` runs an
 // organism's declared host command on a host over the person's own SSH
-// login (crates/hale-cli/src/dna/hosted.rs). Once it has, and the service
+// login, or on the habitat's own machine (`--host local`)
+// (crates/hale-cli/src/dna/hosted.rs). Once it has, and the service
 // it declares runs, the CLI records the placement here, as every habitat
 // act is a row: `Commands::record_placed` appends a `habitat.placed` row,
 // and `Commands::record_unplaced` (after `unplace` took it off) a
@@ -75,7 +76,7 @@ fn placement_refusal(root: String, p: PlacementRecord) -> String {
     if !placement_word(p.command) { return "`" + p.command + "` names no host command"; }
     if !placement_word(p.id) { return "`" + p.id + "` is no placement's id"; }
     if len(p.host) == 0 { return "the placement names no host"; }
-    let h = dna::recorded_host(root, p.host);
+    let h = placement_host(root, p.host);
     if len(h.provider) == 0 || h.state == "removed" {
         return "`" + p.host + "` is no host of the habitat";
     }
@@ -83,6 +84,14 @@ fn placement_refusal(root: String, p: PlacementRecord) -> String {
         return "readings is a port, 1 to 65535 (0 for none)";
     }
     return "";
+}
+
+// The host a placement names: the habitat's own machine (`local`, which
+// no `habitat.host` row records; `--host local`), else the habitat's
+// latest row of it.
+fn placement_host(root: String, name: String) -> dna::Host {
+    if name == "local" { return dna::Host { name: "local", provider: "compose", state: "ready" }; }
+    return dna::recorded_host(root, name);
 }
 
 fn placement_word(s: String) -> Bool {
@@ -190,7 +199,7 @@ fn habitat_placements(root: String) -> PlacementRows {
 fn habitat_record_placed(root: String, p: PlacementRecord, by: String) -> PlacementReply {
     let refused = placement_refusal(root, p);
     if len(refused) > 0 { return placement_refused("invalid_placement", refused); }
-    let h = dna::recorded_host(root, p.host);
+    let h = placement_host(root, p.host);
     let target = placement_target(h, p);
     let j = habitat_journal_by(root, by);
     let r = j.append(
@@ -289,7 +298,7 @@ fn placement_targets_write(root: String, organism: String, command: String, id: 
         if e.kind != "habitat.placed" || !habitat_holds(latest, e.entity, i - 1) { continue; }
         let p = placement_of_row(e.body);
         if p.organism != organism || p.command != command || p.id != id { continue; }
-        let h = dna::recorded_host(root, p.host);
+        let h = placement_host(root, p.host);
         let target = placement_target(h, p);
         if len(target) == 0 || h.state == "removed" { continue; }
         n = n + 1;

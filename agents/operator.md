@@ -32,7 +32,7 @@ Your tools are the head's rows the person may call (`tools/list`); each is `Comm
 | proposals (a Review the Board ratifies) | `propose`, `propose_organization`, `open_position`, `fill`, `apply_batch`; the Knowledge rows `propose_knowledge`, `revise_knowledge`, `retire_knowledge`, `link_knowledge`, `unlink_knowledge`, `bind_knowledge`, `unbind_knowledge`, which the Knowledge policy sends to Review or admits |
 | the Board's decisions (the person's alone) | `verdict`, `ratify_sapling`, `retire_person`; and `remove_host` on a host with allocations and `remove_organism`, whose `confirm` is the name the person typed after reading the plan (with that plan's `digest`), never one you fill in |
 | a leg's (not a pairing agent's) | `claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance` |
-| the CLI's (a host command it ran over the person's own SSH login) | `record_placed`, `record_unplaced`: written by `hale habitat organism place` and `unplace` once the command ran there, never by you |
+| the CLI's (a host command it ran over the person's own SSH login, or on the habitat's own machine) | `record_placed`, `record_unplaced`: written by `hale habitat organism place` and `unplace` once the command ran there, never by you |
 
 ## Connecting
 

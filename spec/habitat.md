@@ -1164,7 +1164,20 @@ readers = ["api", "host.node"]
 `hale habitat organism place <organism> <command> --host <h> [--id <id>]
 [--plan]` runs `install`, and `unplace` runs `uninstall`. Both need a
 grafted organism that came from a sapling the habitat pins, and a
-`ready` host:
+`ready` host or `local`:
+
+- **The habitat's own machine.** `--host local` names the machine the
+  habitat runs on, the host its rows already call `local` (no `host add`
+  makes it, and no SSH to oneself is needed). On a habitat on this
+  machine every script below runs here, with `sh -c`, as the person (sudo
+  asks at this terminal), without this process's `HALE_*` and `LOTUS_*`
+  variables, as a login there starts without them. Through a pointer (a
+  habitat on another machine, `up --host`) it is that machine, reached
+  over the person's login the pointer names (its host, user and SSH
+  port). The scripts, the plan, the inputs and the record are the same as
+  for any host; the plan says which way it is reached. Any other name is
+  a host the habitat added: one it does not hold is refused, naming `hale
+  habitat host add <h>` and `--host local`.
 
 - **Its source.** The organism's sapling repository at its pinned
   revision, cloned (then fetched) on the host under the login's
@@ -1200,9 +1213,11 @@ grafted organism that came from a sapling the habitat pins, and a
   refuses the declaration.
 - **Its inputs**, each named in `inputs` and filled where its argv says
   `{input}` (an input it does not declare, or one with no value, is
-  refused): `id` (`--id`, by default the host's first label) and `api_url`
-  (the published address of `api_service` in the organism's `services`
-  allocation, as the head links it). The `operator_token` key and the
+  refused): `id` (`--id`, by default the host's first label; `local` on
+  the habitat's own machine) and `api_url` (the published address of
+  `api_service` in the organism's `services` allocation, as the head
+  links it, which on the habitat's own machine may be the loopback: the
+  node runs on the same machine). The `operator_token` key and the
   `operator_token_file` input are refused: they are superseded by
   `[dna.secrets]`, where the seed declares the secret and names
   `host.<command>` among its readers.
@@ -1232,7 +1247,8 @@ grafted organism that came from a sapling the habitat pins, and a
   secrets it hands over by name (a family with its members' labels) and
   each it skips, and why, never a value.
 - **Who runs it.** Everything goes over the person's own SSH logins, as
-  `host add` makes the habitat's account; `root = true` runs it under the
+  `host add` makes the habitat's account (on the habitat's own machine,
+  here or over the pointer's login, as above); `root = true` runs it under the
   person's sudo, so only at a terminal. `--plan` prints what would run,
   where, and with what (the packages it would install, the toolchain and
   whether it is there), and touches nothing on the host but the checkout;
@@ -1263,15 +1279,19 @@ grafted organism that came from a sapling the habitat pins, and a
   placements that hold (each key's latest row; an unplaced one dropped)
   as `placements`, and every placement the record names with its `state`
   (`placed` or `unplaced`) as `history`: what the habitat ever installed
-  where. A refused record (a host the habitat does not hold, a name that
+  where. `local` is recorded as the host of a placement on the habitat's
+  own machine, and the head holds it without a `habitat.host` row, its
+  readings scraped at `host.docker.internal`. A refused record (a host the
+  habitat does not hold, a name that
   is not a word of letters, digits, `.`, `_` and `-`) fails the verb after
   the command ran, saying so. `hale habitat status` lists the placements
   under their hosts, one line each: the organism's command and id, its
   service and kind, the host, and its readings endpoint or `no readings`.
 - **Taken off with the host or the habitat.** `host remove`, `organism
   remove` and `down --forget` run each placement they remove's own
-  `uninstall` first, as `unplace` does (over the person's login, under
-  their sudo at a terminal), then remove what placing installed on that
+  `uninstall` first, as `unplace` does (over the person's login, or on the
+  habitat's own machine as `place` reaches it, under their sudo at a
+  terminal), then remove what placing installed on that
   host: the checkout `~/.local/share/hale/hosted/<organism>` and the
   toolchain directory, each only when no placement left there uses it
   (from every placement the record names there, unplaced ones included),

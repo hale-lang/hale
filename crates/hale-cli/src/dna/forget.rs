@@ -105,7 +105,8 @@ fn tidy_dir() {
 }
 
 /// The services the habitat placed on its hosts, as its record holds them:
-/// each taken off by its own uninstall over the person's SSH login, first
+/// each taken off by its own uninstall over the person's SSH login (on the
+/// habitat's own machine, `local`, here), first
 /// of all (the head that answers for them is still up), and then what
 /// placing installed on each host. Through a pointer (`up --host`) the
 /// person's machine takes them off before the forget runs here; one still
@@ -133,7 +134,7 @@ fn placement_items() -> Vec<Value> {
             out.push(item(
                 "remote",
                 &p.host,
-                format!("{}: taken off by its own uninstall, over your SSH login", p.line()),
+                format!("{}: taken off by its own uninstall, {}", p.line(), super::placements::how(&p.host)),
                 "1 service".into(),
                 "yes: `hale habitat organism place` places it again",
                 "placement-uninstall",
@@ -155,7 +156,7 @@ fn placement_items() -> Vec<Value> {
         out.push(item(
             "remote",
             h,
-            format!("what placing installed on {h}, where no placement left uses it: {}, over your SSH login", named.join(", ")),
+            format!("what placing installed on {h}, where no placement left uses it: {}, {}", named.join(", "), super::placements::how(h)),
             format!("{} checkout(s), {} toolchain(s)", orgs.len(), tags.len()),
             "yes: placing again installs them",
             "placement-leftovers",
