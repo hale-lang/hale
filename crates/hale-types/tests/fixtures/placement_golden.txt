@@ -8553,6 +8553,10 @@ row	Api@main1	Api	main	default
 row	Rng@main1	Rng	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
 
+== tests/hale/json_lone_escapes_test.hl
+shared	__StdJsonBuilder@main1	__StdJsonBuilder #6efd4260
+shared	dynamic	sites in the stdlib #c3a51769
+
 == tests/hale/json_unicode_escapes_test.hl
 shared	__StdJsonBuilder@main1	__StdJsonBuilder #6efd4260
 shared	dynamic	sites in the stdlib #c3a51769
