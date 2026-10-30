@@ -207,8 +207,8 @@ fn api() {
     // only the renames-aware walk sees.
     pinned(
         "api",
-        724,
-        726,
+        725,
+        727,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -239,6 +239,7 @@ fn api() {
         organism_root_of  does={syscall,env,alloc}
         organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
+        placement_host  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_targets_dir  does={syscall,env,alloc}
         services_render  does={syscall,block,env,alloc}

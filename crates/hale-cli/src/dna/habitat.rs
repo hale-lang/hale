@@ -943,7 +943,7 @@ fn organism(args: &[String]) -> ExitCode {
         Some("unplace") => return hosted::place(&args[1..], false),
         _ => {}
     }
-    let usage = "usage: hale habitat organism remove <name> [--plan] | upgrade <name> [--plan] | place|unplace <name> <command> --host <host> [--id <id>] [--plan]";
+    let usage = "usage: hale habitat organism remove <name> [--plan] | upgrade <name> [--plan] | place|unplace <name> <command> --host <host>|local [--id <id>] [--plan]";
     let (name, plan_only) = match (args.first().map(String::as_str), args.get(1), args.get(2).map(String::as_str), args.len()) {
         (Some("remove"), Some(n), None, 2) if !n.starts_with('-') => (n.clone(), false),
         (Some("remove"), Some(n), Some("--plan"), 3) if !n.starts_with('-') => (n.clone(), true),

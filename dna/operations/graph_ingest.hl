@@ -1412,6 +1412,9 @@ locus GraphIngest {
             let nl = std::str::index_of(code, "\n");
             let name = code[0..nl];
             code = code[(nl + 1)..len(code)];
+            // only a span shaped like a process's name names one: a flag
+            // or a command in the cell's prose (`--profile node`) is prose
+            if !ingest_process_shaped(name) { continue; }
             if !std::str::contains(self.processes, "\n" + name + "\n") {
                 self.refuse(
                     path + ": `" + name
@@ -1833,4 +1836,21 @@ fn asset_type(rel: String) -> String {
         return "text/plain; charset=utf-8";
     }
     return "application/octet-stream";
+}
+
+// Whether a code span in a `Deployment | Runs` cell is shaped like a
+// process's name (a compose service, a seed): letters, digits, `-`, `_`
+// and `.`, not beginning with `-`. A flag or a command a row mentions in
+// passing (`--profile node`, `docker compose up`) is not.
+fn ingest_process_shaped(name: String) -> Bool {
+    if len(name) == 0 || name[0..1] == "-" { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let c = name[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || c == "-" || c == "_" || c == ".";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
 }

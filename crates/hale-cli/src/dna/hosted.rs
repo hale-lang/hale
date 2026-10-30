@@ -30,11 +30,13 @@
 //! The command runs in the organism's source at the revision the habitat
 //! pins for its sapling, cloned on the host, with the toolchain it declares.
 //! Everything runs over the person's own SSH logins, as `host add` makes the
-//! habitat's account. Each secret the seed declares with `host.<command>`
-//! among its readers is read from the habitat's vault (here, or on the
-//! habitat's machine over the person's login through the pointer), held in
-//! this process's memory alone, and written over the login's stdin into the
-//! organism's vault directory on the target
+//! habitat's account; `--host local`, the habitat's own machine, runs each
+//! script here with `sh` when the habitat runs on this machine, else over
+//! the login the pointer names (`Target`). Each secret the seed declares
+//! with `host.<command>` among its readers is read from the habitat's vault
+//! (here, or on the habitat's machine over the person's login through the
+//! pointer), held in this process's memory alone, and written over the
+//! login's stdin into the organism's vault directory on the target
 //! (`~/.local/share/hale/hosted/<organism>.vault`, mode 700, each entry
 //! 600) for the run alone: the command is handed `HALE_VAULT_DIR` and each
 //! `HALE_SECRET_<NAME>` (a family's: its members' entries, one a line)
@@ -592,37 +594,133 @@ fn habitat_vault(entries: &[String], values: bool) -> Result<BTreeMap<String, Op
     Ok(got)
 }
 
-/// Over the person's login to `host`: `script`, with `stdin` handed to it
-/// when given (never at a terminal), else at a terminal when this is one
-/// (sudo asks there). Its output, or why it failed.
-fn over_login(host: &str, port: Option<u16>, script: &str, stdin: Option<&str>, terminal: bool) -> Result<String, String> {
-    use std::io::Write;
-    let mut c = Command::new("ssh");
-    if let Some(cfg) = std::env::var("HALE_HABITAT_SSH_CONFIG").ok().filter(|v| !v.is_empty()) {
-        c.args(["-F", &cfg]);
+/// The name the habitat's rows give its own machine (an allocation's host,
+/// a placement's): `--host local` places there.
+pub(super) const LOCAL: &str = "local";
+
+/// Where a host command's scripts run: over the person's own SSH login to
+/// a host, or here, with `sh`, when the host is the habitat's own machine
+/// and the habitat runs on this one. The scripts are the same either way.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Target {
+    Ssh { host: String, user: Option<String>, port: Option<u16> },
+    Here,
+}
+
+impl Target {
+    /// What `--host <host>` names: `local`, the habitat's own machine
+    /// (`local_with`); else a host the habitat added (`hosts`, read only
+    /// then), `ready`, over the login to it.
+    pub(super) fn of(host: &str, pointer: Option<&serde_json::Value>, hosts: impl FnOnce() -> Result<Vec<serde_json::Value>, String>) -> Result<Target, String> {
+        if host == LOCAL {
+            return Ok(Target::local_with(pointer));
+        }
+        let row = hosts()?.into_iter().find(|h| h["name"] == host).ok_or_else(|| format!("`{host}` is no host of the habitat (`hale habitat host add {host}`, or `--host {LOCAL}` for the habitat's own machine)"))?;
+        if row["state"] != "ready" {
+            return Err(format!("`{host}` is {}, not ready (`hale habitat host probe {host}`)", row["state"].as_str().unwrap_or("unknown")));
+        }
+        let port = row["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+        Ok(Target::Ssh { host: host.to_string(), user: None, port })
     }
-    c.args(["-o", "BatchMode=yes"]);
-    if terminal {
-        c.arg("-tt");
+
+    /// The habitat's own machine: this one, unless this machine points at
+    /// a habitat on another (`pointer`), reached over the pointer's login.
+    pub(super) fn local_with(pointer: Option<&serde_json::Value>) -> Target {
+        match pointer {
+            None => Target::Here,
+            Some(p) => Target::Ssh {
+                host: p["host"].as_str().unwrap_or("").to_string(),
+                user: p["user"].as_str().filter(|u| !u.is_empty()).map(str::to_string),
+                port: p["ssh_port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0),
+            },
+        }
     }
-    if let Some(p) = port {
-        c.args(["-p", &p.to_string()]);
+
+    /// The habitat's own machine, as this machine finds it.
+    pub(super) fn local() -> Target {
+        Target::local_with(super::remote::pointer().as_ref())
     }
-    c.arg(host).arg(script);
-    if terminal {
-        let st = c.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().map_err(|e| format!("ssh: {e}"))?;
-        return if st.success() { Ok(String::new()) } else { Err(format!("it failed on {host} (exit {})", st.code().unwrap_or(-1))) };
+
+    /// How a line says the scripts get there.
+    pub(super) fn how(&self) -> &'static str {
+        match self {
+            Target::Ssh { .. } => "over your SSH login",
+            Target::Here => "on this machine",
+        }
     }
-    let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("ssh: {e}"))?;
-    if let (Some(text), Some(mut w)) = (stdin, child.stdin.take()) {
-        w.write_all(text.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
+
+    /// A script of the habitat's whose last line is its outcome (`readings`:
+    /// `hale-node: …`), made with the `sudo` that suits the run: the outcome,
+    /// or why it failed.
+    pub(super) fn outcome(&self, script: impl Fn(&str) -> String) -> Result<String, String> {
+        match self {
+            Target::Ssh { host, user, port } => super::remote::login_script(host, user.as_deref(), *port, script),
+            Target::Here => super::readings::run_here(&script(super::readings::sudo_word(std::io::IsTerminal::is_terminal(&std::io::stdin())))),
+        }
     }
-    let out = child.wait_with_output().map_err(|e| format!("ssh: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        Err(err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("it failed and said nothing").to_string())
+
+    /// The command that runs `script` there: `ssh` (`-tt` at a terminal),
+    /// or `sh -c` here, without this process's `HALE_*` and `LOTUS_*`
+    /// variables (a login there starts without them, and the habitat's vault
+    /// directory is no command's).
+    fn command(&self, script: &str, terminal: bool) -> Command {
+        match self {
+            Target::Ssh { host, user, port } => {
+                let mut c = Command::new("ssh");
+                if let Some(cfg) = std::env::var("HALE_HABITAT_SSH_CONFIG").ok().filter(|v| !v.is_empty()) {
+                    c.args(["-F", &cfg]);
+                }
+                c.args(["-o", "BatchMode=yes"]);
+                if terminal {
+                    c.arg("-tt");
+                }
+                if let Some(p) = port {
+                    c.args(["-p", &p.to_string()]);
+                }
+                if let Some(u) = user {
+                    c.args(["-l", u]);
+                }
+                c.arg(host).arg(super::remote::posix(script));
+                c
+            }
+            Target::Here => {
+                let mut c = Command::new("sh");
+                c.args(["-c", script]);
+                for (k, _) in std::env::vars_os() {
+                    if k.to_str().is_some_and(|k| k.starts_with("HALE_") || k.starts_with("LOTUS_")) {
+                        c.env_remove(k);
+                    }
+                }
+                c
+            }
+        }
+    }
+
+    /// `script` run there, with `stdin` handed to it when given (never at a
+    /// terminal), else at a terminal when this is one (sudo asks there). Its
+    /// output, or why it failed.
+    fn run(&self, script: &str, stdin: Option<&str>, terminal: bool) -> Result<String, String> {
+        use std::io::Write;
+        let (prog, at) = match self {
+            Target::Ssh { host, .. } => ("ssh", format!("on {host}")),
+            Target::Here => ("sh", "here".to_string()),
+        };
+        let mut c = self.command(script, terminal);
+        if terminal {
+            let st = c.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status().map_err(|e| format!("{prog}: {e}"))?;
+            return if st.success() { Ok(String::new()) } else { Err(format!("it failed {at} (exit {})", st.code().unwrap_or(-1))) };
+        }
+        let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("{prog}: {e}"))?;
+        if let (Some(text), Some(mut w)) = (stdin, child.stdin.take()) {
+            w.write_all(text.as_bytes()).map_err(|e| format!("{prog}: {e}"))?;
+        }
+        let out = child.wait_with_output().map_err(|e| format!("{prog}: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr);
+            Err(err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("it failed and said nothing").to_string())
+        }
     }
 }
 
@@ -630,7 +728,7 @@ fn over_login(host: &str, port: Option<u16>, script: &str, stdin: Option<&str>, 
 pub(super) fn place(args: &[String], install: bool) -> std::process::ExitCode {
     use std::process::ExitCode;
     let verb = if install { "place" } else { "unplace" };
-    let usage = format!("usage: hale habitat organism {verb} <organism> <command> --host <host> [--id <id>] [--plan]");
+    let usage = format!("usage: hale habitat organism {verb} <organism> <command> --host <host>|local [--id <id>] [--plan]");
     let (Some(organism), Some(name)) = (args.first().filter(|a| !a.starts_with('-')), args.get(1).filter(|a| !a.starts_with('-'))) else {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -682,22 +780,20 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     let key = organisms.iter().find(|o| o["name"] == organism).and_then(|o| o["key"].as_str()).map(|k| k[..12.min(k.len())].to_string()).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))?;
     let sapling = rows("Commands::saplings", "saplings")?.into_iter().find(|s| s["name"] == organism).ok_or_else(|| format!("`{organism}` was not grafted from a sapling the habitat pins: a host command runs the organism's source at its sapling's pinned revision"))?;
     let (repo, revision) = (sapling["repo"].as_str().unwrap_or("").to_string(), sapling["revision"].as_str().unwrap_or("").to_string());
-    let target = rows("Commands::hosts", "hosts")?.into_iter().find(|h| h["name"] == host).ok_or_else(|| format!("`{host}` is no host of the habitat (`hale habitat host add {host}`)"))?;
-    if target["state"] != "ready" {
-        return Err(format!("`{host}` is {}, not ready (`hale habitat host probe {host}`)", target["state"].as_str().unwrap_or("unknown")));
-    }
-    let port = target["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
+    // where its scripts run: the habitat's own machine (`local`) here or
+    // over the pointer's login, any other host over the login to it
+    let at = Target::of(host, super::remote::pointer().as_ref(), || rows("Commands::hosts", "hosts"))?;
     let id = id.map(str::to_string).unwrap_or_else(|| host.split('.').next().unwrap_or(host).to_string());
 
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
 
     // what the host is, read before anything is touched
-    super::progress(&format!("reading what {host} is, over your SSH login"));
-    let f = facts(&over_login(host, port, &facts_script(), None, false)?);
+    super::progress(&format!("reading what {host} is, {}", at.how()));
+    let f = facts(&at.run(&facts_script(), None, false)?);
     if f.home.is_empty() {
         return Err(format!("{host} named no home for your login"));
     }
-    let target = release_target(&f.os, &f.arch).ok_or_else(|| format!("{host} is {} {}, for which hale builds no release", f.os, f.arch))?;
+    let release = release_target(&f.os, &f.arch).ok_or_else(|| format!("{host} is {} {}, for which hale builds no release", f.os, f.arch))?;
 
     // what any toolchain builds with: installed first, since the source needs git
     let (missing, packages) = missing_packages(&f).map_err(|w| format!("{host}: {w}"))?;
@@ -719,14 +815,14 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
                 return Err(format!("{host} lacks {}, and installing them needs your sudo, which asks at a terminal: run it at one", missing.join(", ")));
             }
             super::progress(&format!("installing {} on {host} with {via}", packages.join(" ")));
-            over_login(host, port, &packages_script(&pkg, &path, &packages, "sudo"), None, tty && pkg != "brew")?;
+            at.run(&packages_script(&pkg, &path, &packages, "sudo"), None, tty && pkg != "brew")?;
             format!("{:<8}{} installed on {host} with {via}", "builds", packages.join(" "))
         }
     };
 
     // its source on the target: the declaration and the toolchain it pins
     super::progress(&format!("fetching {organism}'s source at {revision} on {host}"));
-    let manifest = source(&over_login(host, port, &source_script(organism, &repo, &revision), None, false)?);
+    let manifest = source(&at.run(&source_script(organism, &repo, &revision), None, false)?);
     let commands = host_commands(&manifest)?;
     let cmd = commands.get(name).ok_or_else(|| format!("{organism} declares no host command `{name}` at {revision} ([dna.host.{name}]{})", if commands.is_empty() { String::new() } else { format!("; it declares {}", commands.keys().cloned().collect::<Vec<_>>().join(", ")) }))?;
     let platform = platform_of(&f.os);
@@ -780,6 +876,12 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     let service = if cmd.service.is_empty() { String::new() } else { fill(&[cmd.service.clone()], &cmd.inputs, &values)?.remove(0) };
 
     println!("{:<8}{organism}'s `{name}` on {host} ({platform}{}), as {organism} {revision} declares it", if install { "place" } else { "unplace" }, if cmd.root { ", as root through your sudo" } else { "" });
+    if host == LOCAL {
+        println!("{:<8}{LOCAL} is the habitat's own machine, reached {}", "host", match &at {
+            Target::Ssh { host: h, .. } => format!("over your SSH login to {h}"),
+            Target::Here => at.how().to_string(),
+        });
+    }
     println!("{:<8}{}", "runs", argv.join(" "));
     println!("{builds}");
     if !requires.is_empty() {
@@ -806,7 +908,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     }
     if !have_toolchain {
         super::progress(&format!("installing hale {tag} on {host}"));
-        let said = over_login(host, port, &toolchain_script(&tag, target), None, false)?;
+        let said = at.run(&toolchain_script(&tag, release), None, false)?;
         println!("{:<8}{tag} installed on {host} ({})", "hale", said.lines().last().unwrap_or("").trim());
     }
     if secrets.iter().any(|h| !h.entries.is_empty()) {
@@ -817,20 +919,20 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
         let values = habitat_vault(&entries, true)?;
         for e in &entries {
             let value = values.get(e).cloned().flatten().ok_or_else(|| format!("the habitat's vault no longer holds {e}"))?;
-            if let Err(why) = over_login(host, port, &vault_put_script(&vault, e), Some(&value), false) {
+            if let Err(why) = at.run(&vault_put_script(&vault, e), Some(&value), false) {
                 // what was written goes again
-                let _ = over_login(host, port, &format!("rm -rf {}", sq(&vault)), None, false);
+                let _ = at.run(&format!("rm -rf {}", sq(&vault)), None, false);
                 return Err(format!("{e} into {vault} on {host}: {why}"));
             }
         }
     }
     super::progress(&format!("running {organism}'s `{name}` on {host}"));
     let script = run_script(&dir, &argv, &hale, cmd.root, "sudo", &vault, &secrets);
-    over_login(host, port, &script, None, tty)?;
+    at.run(&script, None, tty)?;
     println!("{:<8}{organism}'s `{name}` {} on {host}", "done", if install { "placed" } else { "taken off" });
     if !service.is_empty() {
         // what the command says it leaves running, as the host's own service manager sees it
-        let state = service_state(&over_login(host, port, &service_script(&service), None, false)?);
+        let state = service_state(&at.run(&service_script(&service), None, false)?);
         let want = if install { "running" } else { "absent" };
         if state != want {
             return Err(format!("{organism}'s `{name}` finished, but its service {service} on {host} is {state}, not {want}"));
@@ -1074,6 +1176,56 @@ readers = ["api"]
         ] {
             assert!(Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success(), "{script}");
         }
+    }
+
+    /// `--host local` is the habitat's own machine: here when the habitat
+    /// runs on this machine, over the pointer's login when it runs on
+    /// another; any other name a host the habitat added, over the login to it.
+    #[test]
+    fn the_host_names_where_the_scripts_run() {
+        let unread = || -> Result<Vec<serde_json::Value>, String> { panic!("the habitat's own machine is no host row") };
+        assert_eq!(Target::of(LOCAL, None, unread).unwrap(), Target::Here);
+        let pointer = serde_json::json!({ "name": "home", "host": "habitat-box.lan", "user": "op", "ssh_port": 2222, "head": "http://habitat-box.lan:8801" });
+        assert_eq!(Target::of(LOCAL, Some(&pointer), unread).unwrap(), Target::Ssh { host: "habitat-box.lan".into(), user: Some("op".into()), port: Some(2222) });
+        let bare = serde_json::json!({ "host": "habitat-box.lan", "user": "", "ssh_port": 0 });
+        assert_eq!(Target::local_with(Some(&bare)), Target::Ssh { host: "habitat-box.lan".into(), user: None, port: None });
+        // a host the habitat added, pointer or not
+        let hosts = || Ok(vec![serde_json::json!({ "name": "gpu-1.lan", "state": "ready", "port": 2200 }), serde_json::json!({ "name": "new.lan", "state": "probing", "port": 0 })]);
+        for p in [None, Some(&pointer)] {
+            assert_eq!(Target::of("gpu-1.lan", p, hosts).unwrap(), Target::Ssh { host: "gpu-1.lan".into(), user: None, port: Some(2200) });
+        }
+        let why = Target::of("other.lan", None, hosts).unwrap_err();
+        assert_eq!(why, "`other.lan` is no host of the habitat (`hale habitat host add other.lan`, or `--host local` for the habitat's own machine)");
+        assert!(Target::of("new.lan", None, hosts).unwrap_err().contains("is probing, not ready"));
+        assert_eq!((Target::Here.how(), Target::of(LOCAL, Some(&pointer), unread).unwrap().how()), ("on this machine", "over your SSH login"));
+        // the transport: ssh with the login's user and port (the script
+        // run by sh, whatever the login shell), or sh here
+        let ssh = Target::Ssh { host: "habitat-box.lan".into(), user: Some("op".into()), port: Some(2222) }.command("true", false);
+        let args: Vec<_> = ssh.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(ssh.get_program(), "ssh");
+        assert!(args.ends_with(&["-p".into(), "2222".into(), "-l".into(), "op".into(), "habitat-box.lan".into(), "exec /bin/sh -c 'true'".into()]), "{args:?}");
+        let here = Target::Here.command("true", false);
+        assert_eq!((here.get_program().to_string_lossy().into_owned(), here.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()), ("sh".to_string(), vec!["-c".to_string(), "true".to_string()]));
+    }
+
+    /// A script run here is the same script, its output read back, its
+    /// stdin handed over, its failure its last words.
+    #[test]
+    fn a_script_runs_here_as_it_runs_over_a_login() {
+        assert_eq!(Target::Here.run("echo placed; echo here", None, false).unwrap(), "placed\nhere\n");
+        assert_eq!(Target::Here.run("cat", Some("two\nlines"), false).unwrap(), "two\nlines");
+        assert_eq!(Target::Here.run("echo noise; echo first >&2; echo why >&2; exit 3", None, false).unwrap_err(), "why");
+        // a secret onto the habitat's own machine, as onto a host: 700 and 600
+        let home = std::env::temp_dir().join(format!("hale-hosted-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let vault = vault_at(&home.display().to_string(), "voice");
+        Target::Here.run(&vault_put_script(&vault, "secret-dna_ab-operator-token"), Some("s3cret"), false).unwrap();
+        let entry = std::path::Path::new(&vault).join("secret-dna_ab-operator-token");
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), "s3cret");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&vault).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&entry).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
