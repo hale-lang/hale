@@ -1328,7 +1328,12 @@ sync.
   (`dna::nerves_user`: `owner-<key>`, `spine-<key>`, `head-<key>`,
   `reflexes-<key>`, `exchange-<key>`, `app-<name>-<key>`), so a server's
   users are distinct across its accounts; the heart's broker users
-  (`heart-<key>`, `heart-<key>-node`) are keyed already.
+  (`heart-<key>`, `heart-<key>-node`) are keyed already. An
+  organization's program names its role alone (`user: "spine"`, as `hale
+  habitat graft` writes it): DNA's NATS connection (`nats::NatsConn`)
+  connects a role's bare name as that role's user of the organization's
+  account (`HALE_DNA_NATS_ORG`), so a program generated before the
+  accounts connects unchanged.
 - **Credentials, one per family**, each a user of the organization's
   account: `owner`
   creates the stream and is held by no process that runs the organism;
