@@ -807,6 +807,20 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         }
         return "";
     }
+    if action == "provider-member-rm" {
+        // a tenant's key at the habitat's models provider: the member out of
+        // the vault, and the provider's reader vault restaged without it
+        let member = first;
+        let pkey = teardown_arg(args, 1);
+        if !teardown_word(member) || std::str::starts_with(member, ".") || !teardown_word(pkey) {
+            return "`" + args + "` names no provider's member";
+        }
+        if len(std::env::var("HALE_VAULT_ADDR")) > 0 {
+            return "the vault is at HALE_VAULT_ADDR, provisioned out of band";
+        }
+        std::io::fs::unlink(std::secret::vault_local_dir() + "/" + member) or discard;
+        return restage_services_vault(root, pkey);
+    }
     if action == "record-drop" {
         // a tenant's record on the habitat's memory, dropped inside that
         // server's container by its superuser (as the password's adoption
@@ -1285,6 +1299,7 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
             let ours = !std::str::contains(keep, "\n" + f + "\n")
                 && (
                     std::str::contains(f, key) || std::str::contains(slots, "\n" + f + "\n")
+                        || f == habitat_model_slot(key)
                         || (f == "oidc-service-" + name && grafted_organism(root, name).key == key)
                         || (len(nerves) > 0 && std::str::starts_with(f, nerves))
                 );
@@ -1301,6 +1316,25 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                     "vault-rm", "", kept[1..len(kept)], 60,
                 ),
             );
+        }
+        // its key at the habitat's models provider (another organism's
+        // drawn family, a member labelled by its name), and that provider's
+        // reader vault restaged without it where its services run
+        let provider = models_provider(root);
+        if len(provider.key) > 0 && provider.key != key && len(provider.family) > 0 {
+            let member = provider_member_vault(provider, name);
+            if std::io::fs::file_exists(dir + "/" + member) {
+                items = teardown_more(
+                    items,
+                    teardown_item(
+                        "vault", subject,
+                        "its key at the habitat's models (" + provider.name + "): " + member
+                            + ", and " + provider.name + "'s services' copy of it",
+                        "1 slot", "no: its value is deleted", "provider-member-rm", "",
+                        member + "\n" + provider.key, 60,
+                    ),
+                );
+            }
         }
         if len(keep) > 1 {
             items = teardown_more(

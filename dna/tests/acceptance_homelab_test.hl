@@ -27,8 +27,14 @@
 //   nursery (`repo = "."`, as hale-lang/voice is), which the Board trusts;
 // - Ollama on the host is the cycle's canned OpenAI-compatible gateway
 //   (scripts/dna-cycle/canned-gateway.py) on this machine's loopback.
-// The organism's model map is pointed at voice's endpoint on the host
-// (`set_model_map`) and its model call goes through voice (`probe_model`).
+// voice provides the habitat's models (`[dna.provides.models]` in the
+// sapling's hale.toml): its graft draws a key for every organism the habitat
+// holds (voice and the hale organism) in voice's drawn family, copies it into
+// each organism's own slot, and seeds each one's model map at voice's
+// published endpoint in the name `hale habitat`; voice answers only a
+// tenant's key. The seeded map's model call goes through voice
+// (`probe_model`), and a map a person points there (`set_model_map`, with
+// the key's slot) does too.
 // The index and the face answer the habitat's name, and list both
 // organisms. What it does not prove is said where it stops (`SKIPPED`):
 // voice's own programs, store and broker; the Mac's launchd node.
@@ -477,6 +483,52 @@ fn main() {
             && std::str::contains(facts, "VOICE_HOST_LISTEN=127.0.0.1\n"),
         "the habitat hands the project its host's name and listen address: " + facts,
     );
+    // ---- the habitat's models: voice provides them, and its graft keyed
+    // every organism the habitat holds and pointed its map at voice
+    let provider = dna::models_provider(genome);
+    std::test::assert(
+        provider.name == "voice" && provider.key == key && provider.family == "tenant-key",
+        "voice is the habitat's models provider: " + provider.name + " " + provider.family,
+    );
+    let vault = std::secret::vault_local_dir();
+    let voice_member = text_of(vault + "/" + dna::provider_member_vault(provider, "voice"));
+    let voice_slot = dna::habitat_model_slot(key);
+    std::test::assert(
+        len(voice_member) == 32 && text_of(vault + "/" + voice_slot) == voice_member,
+        "voice's own key is drawn in its family and copied into its slot " + voice_slot + ": "
+            + text_of(glog),
+    );
+    std::test::assert(
+        len(text_of(vault + "/" + dna::provider_member_vault(provider, "hale"))) == 32,
+        "and the hale organism, grafted before it, is keyed too: " + text_of(glog),
+    );
+    std::test::assert(
+        std::str::contains(
+            text_of(glog),
+            "voice's model map points at the habitat's models (voice, http://127.0.0.1:"
+                + to_string(voice_port) + "/v1/chat/completions): think = local; tools, do = none",
+        ),
+        "the graft says each map it seeded, and that no served model returns tool calls: "
+            + text_of(glog),
+    );
+    let voice_map = in_dir(scratch, toolchain() + "\nhabitat\norganism\nvoice\ndna\nmodels\nmap");
+    std::test::assert(
+        std::str::contains(voice_map.stdout, "  think.standard = local  by hale habitat\n")
+            && !std::str::contains(voice_map.stdout, "tools.standard"),
+        "voice's map: every think category is voice's first model, in the habitat's name: "
+            + voice_map.stdout + voice_map.stderr,
+    );
+    let voice_secrets = in_dir(scratch, toolchain() + "\nhabitat\norganism\nvoice\ndna\nsecrets");
+    std::test::assert(
+        std::str::contains(
+            voice_secrets.stdout,
+            "present  " + voice_slot + "  the model map's key for ",
+        )
+            && std::str::contains(voice_secrets.stdout, "drawn family `tenant-key`")
+            && !std::str::contains(voice_secrets.stdout, "MISSING  model-"),
+        "the slot is one voice requires, held, and its drawn family is never missing: "
+            + voice_secrets.stdout,
+    );
     let memory = element(
         read(sock, "Commands::allocations", "allocations"),
         "allocation",
@@ -491,9 +543,23 @@ fn main() {
     );
 
     // ---- reachable at the host's name: a streamed request through voice,
-    // answered by the host's model as server-sent events
+    // with a tenant's key (a request without one is refused), answered by
+    // the host's model as server-sent events
+    let auth = scratch + "/voice-auth.txt";
+    std::io::fs::write_file(auth, "Authorization: Bearer " + voice_member + "\n") or discard;
+    let keyless = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n-m\n30\nhttp://localhost:"
+            + to_string(voice_port)
+            + "/v1/models",
+    );
+    std::test::assert_eq_str(
+        keyless.stdout,
+        "401",
+        "voice answers no request without a tenant's key",
+    );
     let streamed = dna::run_tool(
-        "curl\n-s\n-N\n-m\n60\n-H\ncontent-type: application/json\n-d\n{\"model\": \"local\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}], \"stream\": true}\nhttp://localhost:"
+        "curl\n-s\n-N\n-m\n60\n-H\n@" + auth
+            + "\n-H\ncontent-type: application/json\n-d\n{\"model\": \"local\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}], \"stream\": true}\nhttp://localhost:"
             + to_string(voice_port) + "/v1/chat/completions",
     );
     std::test::assert(
@@ -510,14 +576,32 @@ fn main() {
         "the request reached the host's model through voice's seat",
     );
 
-    // ---- the organism's model map points at voice on the host, and its
-    // model call goes through voice to the host's model
+    // ---- the map the graft seeded: its model call goes through voice, with
+    // the organism's own key, to the host's model
+    let seeded_calls = occurrences(text_of(scratch + "/model.log"), "\"model\": \"local\"");
+    let seeded = call(
+        sock,
+        "Commands::probe_model",
+        "{\"organism\": \"voice\", \"category\": \"think.standard\"}",
+    );
+    std::test::assert(
+        std::json::find_bool_field(seeded, "ok")
+            && std::json::find_string_field(seeded, "endpoint")
+            == "http://127.0.0.1:" + to_string(voice_port) + "/v1/chat/completions"
+            && std::str::contains(std::json::find_string_field(seeded, "answer"), "assessment:")
+            && occurrences(text_of(scratch + "/model.log"), "\"model\": \"local\"")
+            == seeded_calls + 1,
+        "the seeded map's model call goes through voice to the host's model: " + seeded,
+    );
+
+    // ---- a map a person points at voice on the host, with the key's slot:
+    // its model call goes through voice to the host's model too
     let voice_url = "http://localhost:" + to_string(voice_port) + "/v1/chat/completions";
     let mapped = call(
         sock,
         "Commands::set_model_map",
         "{\"organism\": \"voice\", \"category\": \"think.standard\", \"model\": \"local\", \"endpoint\": \""
-            + voice_url + "\"}",
+            + voice_url + "\", \"key_vault\": \"" + voice_slot + "\"}",
     );
     std::test::assert(
         std::json::find_bool_field(mapped, "ok")

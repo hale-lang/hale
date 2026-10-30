@@ -1,5 +1,20 @@
 # voice, as a sapling stands in for it (see README.md): the roles its graft
-# allocates. The real voice needs a database and a broker too.
+# allocates, and the habitat's models it provides. The real voice needs a
+# database and a broker too.
 
 [dna]
 needs = ["memory", "nerves"]
+
+# voice serves the habitat's models: every organism the habitat grafts
+# (voice among them) is keyed by a member of `tenant-key`, which the
+# habitat draws for it, and its model map is pointed at voice's endpoint
+[dna.provides.models]
+service     = "voice"
+path        = "/v1/chat/completions"
+models_path = "/v1/models"
+key         = "tenant-key"
+
+[dna.secrets.tenant-key]
+kind    = "drawn"
+family  = true
+readers = ["voice"]

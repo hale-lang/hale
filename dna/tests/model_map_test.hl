@@ -245,6 +245,60 @@ fn check() {
         "coder-xl",
         "the habitat swaps a model with one row",
     );
+
+    // the slots the map's endpoints are asked with, each with its
+    // categories: what the organism requires (`hale dna secrets`)
+    std::test::assert_eq_str(dna::model_key_slots(j), "", "no category names an endpoint's key");
+    row(
+        j,
+        "model.category",
+        "think.standard",
+        "{\"model\": \"qwen3-0.6b\", \"tool_calls\": false, \"endpoint\": \"http://h:1/v1/chat/completions\", \"key_vault\": \"model-HABITAT_0A1B2C3D4E5F\", \"by\": \"hale habitat\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "think.quick",
+        "{\"model\": \"qwen3-0.6b\", \"tool_calls\": false, \"endpoint\": \"http://h:1/v1/chat/completions\", \"key_vault\": \"model-HABITAT_0A1B2C3D4E5F\", \"by\": \"hale habitat\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "think.deep",
+        "{\"model\": \"big\", \"endpoint\": \"http://g:1/v1/chat/completions\", \"key_vault\": \"model-GATEWAY\", \"by\": \"riley\"}",
+    );
+    row(j, "model.category", "think.deep", "{\"model\": \"big\", \"by\": \"riley\"}");
+    std::test::assert_eq_str(
+        dna::model_key_slots(j),
+        "model-HABITAT_0A1B2C3D4E5F\tthink.quick think.standard\n",
+        "each slot a category's latest row names, once, with its categories",
+    );
+
+    // a catalog with no backend of its own asks only where the map names an
+    // endpoint: a Work it names none for is given back unperformed
+    let mapped_only = legs::ModelPerformer {
+        router: dna::ModelRouter {
+            quick: dna::FakeModel { name: "q", answer: "should not be asked" },
+            deep: dna::FakeModel { name: "d", answer: "should not be asked" },
+        },
+        effect: "effect_free",
+        mapped_only: true,
+    };
+    let unmapped = mapped_only.perform(
+        legs::Brief {
+            attempt_id: "t9/a0",
+            performer_kind: "agent",
+            hat: dna::hat_json(
+                hat_for(dna::MemJournal { }, "agent", "MonthlyReport", "judgment", "t9"),
+            ),
+            rendered: "report",
+        },
+        legs::Hands { },
+    );
+    std::test::assert(
+        std::str::contains(unmapped.refused, "names no endpoint") && len(unmapped.disposition) == 0,
+        "an unmapped Work is given back, never asked of the catalog: " + unmapped.refused,
+    );
 }
 main locus App { run() { check(); } }
 fn main() { App { }; }

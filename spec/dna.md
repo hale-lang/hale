@@ -2674,8 +2674,10 @@ memory is named to it.
   them before it ends; `--drain` (a marker beside the leg) ends a
   running loop once its children have. Nothing is held between tasks;
   a child ended mid-task leaves a lease that expires. A project
-  initialised with no backend configured gets `NoModel`: its agent
-  Works are a person's. The catalog and the tape (`models.hl`,
+  initialised with no backend configured gets the agent router with
+  `mapped_only: true` (**Models**, Discovery): a Work the model map names
+  an endpoint for is asked there, and any other is given back unperformed,
+  a person's. `NoModel` takes nothing: its agent Works are a person's. The catalog and the tape (`models.hl`,
   `tape.hl`) stay in the core while the editor and leader call them
   in process. A performer is handed the brief and
   the hands as interfaces — git in scratch, the forge (it decides, a
@@ -3809,10 +3811,13 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   refused), never the record — and fills that name's slot of the vault
   (**The organism's secrets**; mode 600, the newest value) on the body
   over ssh's stdin, or on this machine. A name is a slot the organism
-  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential
+  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, a credential
   `dna/org/models.hl` or `dna/org/work.hl` names (`HostedCredential
   { key }`; the body's own credential check reads `models.hl` alone, so
-  a legs key never stands in for the organization's) — and any other is refused. No process's environment
+  a legs key never stands in for the organization's), or the model key of
+  a slot a category's latest `model.category` row asks its endpoint with
+  (its `key_vault` `model-<NAME>`: the habitat's models' key,
+  `model-HABITAT_<KEY>`, among them) — and any other is refused. No process's environment
   carries the value: the part that sends it reads it from the vault.
   Off a terminal the value is the whole of stdin with one trailing
   newline (`\n`, or one `\r\n` pair) taken off; at a terminal, one line typed after a prompt; an
@@ -4097,19 +4102,27 @@ The organization's models are a catalog in source (GH #583 M1):
   is one more function; a provider switch is one file; `hale check`
   validates it and the law keeps the concrete types at every
   boundary.
-- **Discovery.** The graft looks at the environment
-  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and `PATH` (`ollama`, whose
-  first listed model becomes the desk model; `claude`, else `codex`,
-  becomes `harness()`), write the catalog for what is there
-  (`AnthropicMessages` with `claude-opus-5` / `claude-haiku-4-5` when
-  its key is present, else `OpenAiChat` with `gpt-4o` /
-  `gpt-4o-mini`, a placeholder key when none is set; with a harness
-  the editor's and the agent's `quick` tier is the harness, and with
-  no key every model-backed slot is), and print what each position
-  was given. Nothing found is fine: a hosted backend without its key
-  is not permitted, and every Review waits for the Board. `upgrade`
-  writes a catalog for an organization that predates it and says what
-  to point at it; it never edits the organization's main.
+- **Discovery.** The graft looks at the vault (`model-ANTHROPIC_API_KEY`,
+  `model-OPENAI_API_KEY`) and `PATH` (`ollama`, whose first listed model
+  becomes the desk model; `claude`, else `codex`, becomes `harness()`),
+  writes the catalog for what is there, and prints what each position was
+  given. A hosted pair is written only for a key actually in the vault:
+  `AnthropicMessages` with `claude-opus-5` / `claude-haiku-4-5` when its
+  key is there, else `OpenAiChat` with `gpt-4o` / `gpt-4o-mini` when its
+  key is. With neither, no hosted backend is written (no placeholder, so
+  `hale dna secrets` lists no model key): with a harness every
+  model-backed slot is the harness, else the desk, and the habitat's
+  models (**The habitat's models**) are the organism's backend through its
+  map. With a harness and a key, the editor's and the agent's `quick` tier
+  is the harness. The legs' performer (`dna/org/work.hl`) is the agent
+  router behind the model leg when a backend or a harness was found;
+  with none it is the same router with `mapped_only: true`, which asks
+  only where the map names an endpoint for the Work and gives any other
+  Work back unperformed (`refused`, never a failed outcome), so agent work
+  with nothing mapped stays a person's. Nothing found is fine: every Review
+  waits for the Board. `upgrade` writes a catalog for an organization that
+  predates it and says what to point at it; it never edits the
+  organization's main.
 - **The budget has one owner.** The catalog declares `org_budget()`,
   a `BudgetPolicy` (`window`: `day`, `week` or `none`;
   `allowance_micros`, 0 = unmetered) as data. The substrate owns the
@@ -4193,7 +4206,11 @@ The organization's models are a catalog in source (GH #583 M1):
   every category `<mode>.<size>` filled by the hosted pair the catalog
   writes, `quick` by the fast model and `standard` and `deep` by the
   frontier one, each with tool calls and the catalog's prices, in the
-  name `hale habitat graft`; with no hosted key it seeds none. `hale dna
+  name `hale habitat graft`; with no hosted key it seeds none, and the
+  habitat's models map it in the name `hale habitat` (**The habitat's
+  models**). A request that names an endpoint is sent there with that
+  endpoint's key slot whatever the catalog holds, a catalog with no backend
+  of its own among them. `hale dna
   task create --size <size>` appends `model.rule task:<intent id>`, an
   override that holds only inside the sizes the rule beneath it
   permits.
@@ -5972,8 +5989,11 @@ secret, by its vault name, and never creates one.
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
 | `forge-token` | slot | the forge's token: with none, nothing is done at the forge, never as `gh`'s own login |
 | `model-<NAME>`, per credential `dna/org/models.hl` or `dna/org/work.hl` names | slot | a model's key (**Models**); `hale dna secrets` lists a `work.hl` key as the legs' model key |
+| a category's `key_vault`, per latest `model.category` row naming one | slot | the key the model map asks that endpoint with (**Models**); `hale dna secrets` lists it as the model map's key for its categories |
+| `model-HABITAT_<KEY>` (`<KEY>` the organism's key, upper-cased) | filled by the habitat | the organism's key at the habitat's models, copied from its member of the provider's family (**The habitat's models**), and the slot its seeded map names |
 | `secret-<org>-<name>`, per `[dna.secrets.<name>]` in `hale.toml` | as declared: drawn or a slot | a secret the seed declares (**Declared secrets**) |
 | `secret-<org>-<name>--<label>`, per member a person fills | slot (a family) | a member of a family the seed declares (**Declared secrets**) |
+| `secret-<org>-<name>--<organism>`, per tenant of a models provider | drawn (a family) | a tenant's key at the habitat's models, the provider's `key` family (**The habitat's models**) |
 
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
   from urandom (32 hex characters) into the vault when the vault lacks
@@ -6047,8 +6067,10 @@ readers = ["worker"]
   the seed, by its directory's name, or `host.<command>` for a host
   command it declares (`[dna.host.<command>]`, spec/habitat.md § Host
   commands); a `host.` reader with no such command is refused. `family =
-  true` (a bool; `false` by default) makes a slot a family, and is refused
-  on a drawn secret. `optional = true` (a bool; `false` by default) makes
+  true` (a bool; `false` by default) makes a slot a family; on a drawn
+  secret it is refused unless a capability the seed provides names the
+  secret as its `key` (**The habitat's models**): a drawn family's members
+  are the habitat's, one per tenant. `optional = true` (a bool; `false` by default) makes
   a slot one its readers do without: refused on a drawn secret, which
   always exists. The toolchain is the declaration's one reader (`hale
   dna declared-secrets [dir]` prints it for the DNA's own code, a secret a
@@ -6082,7 +6104,13 @@ readers = ["worker"]
   `--as` keeps its meaning on these verbs: who acts. `hale
   dna secrets` lists a family once, with its members' labels, and as
   MISSING while it has none, naming `hale dna secret set <name> --member
-  <label>`.
+  <label>`. A drawn family (a provider's key) is never MISSING: it is
+  listed `no tenant` while the habitat has keyed none, and `present` with
+  its members' labels after. `rotate <name> --member <label>` draws that
+  tenant's member anew (one the vault lacks is refused: the habitat draws a
+  member for each tenant it keys), after which the habitat copies it to the
+  tenant and restages the provider's reader vault; `set` and `remove` are
+  refused (a member goes with its tenant, `hale habitat organism remove`).
 - **Set, rotate, show.** `hale dna secret set <name>` fills a declared
   slot from stdin (as any slot, **Secrets** above), in the organism's
   vault here (`--body` is refused: the organism's vault is the one its
@@ -6115,7 +6143,14 @@ readers = ["worker"]
   entry, one a line, in their labels' order. The application's compose
   file passes them to the services that read them and mounts the
   directory, read-only, at the same path; a program then reads one as
-  `std::secret::Credential { vault: <the entry> }`. Compose's environment
+  `std::secret::Credential { vault: <the entry> }`. For every family
+  compose is handed `HALE_SECRET_<NAME>_FAMILY` beside it, its members'
+  common prefix (`secret-<org>-<name>--`), so a reader lists the members
+  in `HALE_VAULT_DIR` by it and sees one drawn or removed while it runs:
+  the habitat restages the reader vault in place when it draws or removes
+  a member of a drawn family, without applying the services again. A
+  family with no member yet has its directory all the same (compose
+  mounts it before the first is drawn). Compose's environment
   is the project's, so every service of the project could be passed
   every secret its programs read: the grant to the declared readers is
   the compose file's to keep (a secret no program reads is never handed).
@@ -6124,6 +6159,77 @@ readers = ["worker"]
 - **Superseded.** A host command's `operator_token` and its
   `{operator_token_file}` input are refused: the token is a drawn secret
   the seed declares, `host.<command>` among its readers.
+
+### The habitat's models
+
+A seed may provide the habitat's other organisms a capability, declared in
+its manifest. `models` is the one there is: an OpenAI-compatible endpoint
+that every organism the habitat grafts is pointed at, each asking with a
+key of its own that the habitat draws, so no person mints one (voice's).
+
+```toml
+[dna.provides.models]
+service     = "api"                  # the compose service that serves it (required)
+path        = "/v1/chat/completions" # where a chat is asked (this default)
+models_path = "/v1/models"           # where what it serves is listed (this default)
+key         = "tenant-key"           # a drawn family it declares (required)
+
+[dna.secrets.tenant-key]
+kind    = "drawn"
+family  = true
+readers = ["api"]
+```
+
+- **The declaration.** `[dna.provides.<capability>]` names `models` or is
+  refused; its keys are `service` (a compose service's name), `path` and
+  `models_path` (`/` first, no space, query, fragment or `..`) and `key`,
+  and any other is refused. `key` must name a secret the seed declares
+  that is drawn and a family; a missing one, a slot or a drawn single is
+  refused. The toolchain is its one reader: `hale dna declared-provides
+  [dir]` prints `models\t<service>\t<path>\t<models_path>\t<key>`, and a
+  graft refuses a declaration it refuses, saying why. A habitat holds one
+  models provider: grafting a second while one is grafted is refused,
+  naming the first.
+- **Tenants.** Every organism the habitat grafted is a tenant, the
+  provider among them (voice's own DNA asks voice). Once the provider's
+  services allocation is applied, for each tenant `T`: a member of the
+  provider's `key` family is drawn in the vault, labelled by `T`'s name
+  (refused, saying why, when the name is no label: **Declared secrets**),
+  and the provider's reader vault is restaged in place where its services
+  run; the value is copied into `T`'s slot `model-HABITAT_<KEY>` (`<KEY>`
+  `T`'s key upper-cased: the habitat's organisms share one vault, so the
+  slot is named for the organism); the provider is asked what it serves,
+  `GET <its link><models_path>` with `Authorization: Bearer <T's key>`, from
+  the habitat's machine, where `T`'s DNA runs; and `T`'s model map is
+  seeded in the name `hale habitat`: `model.rule default` at `standard`
+  permitting every size, every `think.<size>` the first served model, every
+  `tools.<size>` and `do.<size>` the first served model whose
+  `capabilities.tools` is true (with tool calls; none when none is), each
+  with `endpoint` `<its link><path>` and `key_vault` `model-HABITAT_<KEY>`.
+  A row in any other name than `hale habitat` (a person's, the graft's
+  hosted seeding) is never written over, and one the habitat wrote that
+  says the same is not written again. The link is the provider's service's
+  as `Commands::allocations` resolves it (spec/habitat.md § Placing and
+  applying); one with no URL (loopback only on its host) seeds nothing, and
+  the act says why. A provider that serves nothing yet, or does not answer,
+  seeds nothing: `the habitat's models (<provider>) serve none yet: hale
+  habitat models <T> maps them once one is served`.
+- **The models list.** The OpenAI shape: `{"data": [{"id": "<model>",
+  "capabilities": {"tools": true|false}}, …]}`, in the order the provider
+  prefers them; an entry with no `id` is skipped, and one whose
+  `capabilities.tools` is not said returns no tool calls.
+- **When.** A graft does it for the organism it grafts, once its own
+  services are placed (a sapling's, at the end of its graft), and grafting
+  the provider does it for every organism the habitat holds. `hale habitat
+  models <organism>|--all [--plan]` does it again: for an organism grafted
+  before the provider, or a model placed since (spec/habitat.md § Verbs).
+  None of it fails a graft: what stopped it is said.
+- **Rotated and removed.** `hale dna secret rotate <key> --member <T>` in
+  the provider draws `T`'s member anew; the habitat copies it into `T`'s
+  slot and restages the provider's reader vault. `hale habitat organism
+  remove <T>` removes `T`'s member from the vault and restages the
+  provider's reader vault (an item of its plan's `vault` group), and its
+  slot `model-HABITAT_<KEY>` with its other slots.
 
 ## The fleet
 
