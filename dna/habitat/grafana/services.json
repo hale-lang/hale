@@ -132,7 +132,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "count by (host) ((max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"} * 0 + 1, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(up{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))) == 1)",
+          "expr": "count by (host) ((max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(label_replace(container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"} * 0 + 1, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or max by (kind, host, organism, part, name, image) (label_replace(up{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))) == 1)",
           "legendFormat": "{{host}}",
           "instant": true
         }
@@ -190,7 +190,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"} * 0 + 1, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(up{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(label_replace(container_last_seen{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"} * 0 + 1, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or max by (kind, host, organism, part, name, image) (label_replace(up{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
           "format": "table",
           "instant": true
         },
@@ -200,7 +200,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(time() - container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(time() - hale_process_start_time_seconds{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(label_replace(time() - container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or max by (kind, host, organism, part, name, image) (label_replace(time() - hale_process_start_time_seconds{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
           "format": "table",
           "instant": true
         },
@@ -210,7 +210,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, part, name, image) (label_replace(hale_process_resident_memory_bytes{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "expr": "max by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(label_replace(container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or max by (kind, host, organism, part, name, image) (label_replace(hale_process_resident_memory_bytes{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
           "format": "table",
           "instant": true
         },
@@ -220,7 +220,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or sum by (kind, host, organism, part, name, image) (label_replace(rate(hale_process_cpu_seconds_total{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__rate_interval]), \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "expr": "sum by (kind, host, organism, part, name, image) (label_replace(label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (kind, host, organism, part, name, image) (label_replace(rate(hale_process_cpu_seconds_total{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__rate_interval]), \"name\", \"$1\", \"service\", \"(.*)\"))",
           "format": "table",
           "instant": true
         }
@@ -249,7 +249,7 @@
               "Value #D": 9
             },
             "renameByName": {
-              "name": "container or service",
+              "name": "service",
               "Value #A": "state",
               "Value #B": "up for",
               "Value #C": "memory",
@@ -376,7 +376,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or sum by (kind, host, organism, name) (label_replace(rate(hale_process_cpu_seconds_total{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__rate_interval]), \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "expr": "sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (kind, host, organism, name) (label_replace(rate(hale_process_cpu_seconds_total{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__rate_interval]), \"name\", \"$1\", \"service\", \"(.*)\"))",
           "legendFormat": "{{host}} {{organism}} {{name}}"
         }
       ],
@@ -429,7 +429,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "max by (kind, host, organism, name) (label_replace(label_replace(label_replace(container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or max by (kind, host, organism, name) (label_replace(hale_process_resident_memory_bytes{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
+          "expr": "max by (kind, host, organism, name) (label_replace(label_replace(label_replace(label_replace(container_memory_working_set_bytes{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}, \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or max by (kind, host, organism, name) (label_replace(hale_process_resident_memory_bytes{job=\"services\", host=~\"$host\", organism=~\"$organism\"}, \"name\", \"$1\", \"service\", \"(.*)\"))",
           "legendFormat": "{{host}} {{organism}} {{name}}"
         }
       ],
@@ -482,7 +482,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (host, organism, name) (label_replace(label_replace(label_replace(rate(container_network_receive_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"))",
+          "expr": "sum by (host, organism, name) (label_replace(label_replace(label_replace(label_replace(rate(container_network_receive_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\"))",
           "legendFormat": "{{host}} {{organism}} {{name}} in"
         },
         {
@@ -491,7 +491,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "-sum by (host, organism, name) (label_replace(label_replace(label_replace(rate(container_network_transmit_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"))",
+          "expr": "-sum by (host, organism, name) (label_replace(label_replace(label_replace(label_replace(rate(container_network_transmit_bytes_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__rate_interval]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\"))",
           "legendFormat": "{{host}} {{organism}} {{name}} out"
         }
       ],
@@ -544,7 +544,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "(sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(changes(container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) or sum by (kind, host, organism, name) (label_replace(changes(hale_process_start_time_seconds{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__range]), \"name\", \"$1\", \"service\", \"(.*)\"))) > 0",
+          "expr": "(sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(label_replace(changes(container_start_time_seconds{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (kind, host, organism, name) (label_replace(changes(hale_process_start_time_seconds{job=\"services\", host=~\"$host\", organism=~\"$organism\"}[$__range]), \"name\", \"$1\", \"service\", \"(.*)\"))) > 0",
           "format": "table",
           "instant": true
         },
@@ -554,7 +554,7 @@
             "type": "prometheus",
             "uid": "habitat-senses"
           },
-          "expr": "sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(increase(container_oom_events_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\")) > 0",
+          "expr": "sum by (kind, host, organism, name) (label_replace(label_replace(label_replace(label_replace(increase(container_oom_events_total{job=\"containers\", host=~\"$host\", name!=\"\", container_label_hale_habitat=~\"$scope\", container_label_hale_organism=~\"$organism\"}[$__range]), \"kind\", \"container\", \"\", \"\"), \"organism\", \"$1\", \"container_label_hale_organism\", \"(.*)\"), \"part\", \"$1\", \"container_label_hale_role\", \"(.*)\"), \"name\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) > 0",
           "format": "table",
           "instant": true
         }
@@ -571,7 +571,7 @@
               "Time": true
             },
             "renameByName": {
-              "name": "container or service",
+              "name": "service",
               "Value #A": "restarts",
               "Value #B": "OOM kills"
             }
