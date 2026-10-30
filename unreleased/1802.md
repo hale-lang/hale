@@ -1,0 +1,1 @@
+- The habitat's Services dashboard names each container by its compose service (`api`, `brain`, `node`), not its whole container name; a container compose did not start keeps its name. The column is `service`.
