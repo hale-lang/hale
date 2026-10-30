@@ -1,0 +1,1 @@
+- A leg's tool loop names its conversation to the model, the attempt as the chat API's `prompt_cache_key` on every turn, so a provider that pins a conversation to one cache slot (voice) keeps its prompt's prefix warm across turns instead of reading it whole each time; a one-shot call names none.
