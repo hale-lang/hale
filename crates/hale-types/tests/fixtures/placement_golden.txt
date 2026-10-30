@@ -17052,7 +17052,7 @@ shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in operations #bbf7cafe
 shared	dynamic	sites in the stdlib #c3a51769
 
-== crates/hale-types/tests/fixtures/placement/adapter.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/adapter.hl
 root	App	the entry
 domain	pinned:App@literal1.p
 domain	pinned:Fwd@binding1
@@ -17060,7 +17060,7 @@ row	App@literal1	App	main	default
 row	App@literal1.p	Worker	pinned:App@literal1.p	entry	off owner
 row	Fwd@binding1	Fwd	pinned:Fwd@binding1	binding
 
-== crates/hale-types/tests/fixtures/placement/adapter_two_sites.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/adapter_two_sites.hl
 root	App	the entry
 domain	pinned:App@literal1.p
 domain	pinned:App@literal2.p
@@ -17071,13 +17071,13 @@ row	App@literal1.p	Worker	pinned:App@literal1.p	entry	off owner
 row	App@literal2.p	Worker	pinned:App@literal2.p	entry	off owner
 row	Fwd@binding1	Fwd	pinned:Fwd@binding1	binding
 
-== crates/hale-types/tests/fixtures/placement/aliased.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/aliased.hl
 root	App	the entry
 domain	pinned:App@literal1.h
 row	App@literal1	App	main	default
 shared	App@literal1.h	Holder #e64fd159
 
-== crates/hale-types/tests/fixtures/placement/alternatives_two_constructions.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/alternatives_two_constructions.hl
 root	App	the entry
 domain	pinned:App@literal1.v[0]
 domain	pinned:App@literal1.v[1]
@@ -17094,7 +17094,7 @@ shared	App@literal2.v[0]	Wide #5de524c3
 shared	App@literal2.v[1]	Wide #5de524c3
 shared	App@literal2.v[2]	Wide #5de524c3
 
-== crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
 root	App	the entry
 domain	pinned:App@literal1.v[0]
 domain	pinned:App@literal1.v[1]
@@ -17104,7 +17104,7 @@ shared	App@literal1.v[0]	Wide #5de524c3
 shared	App@literal1.v[1]	Wide #5de524c3
 shared	App@literal1.v[2]	Wide #5de524c3
 
-== crates/hale-types/tests/fixtures/placement/budget_adapter_bounds.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/budget_adapter_bounds.hl
 root	App	the entry
 template	App@literal1	at most 3
 domain	pinned:App@literal1.p
@@ -17116,14 +17116,14 @@ row	App@literal1.p	Worker	pinned:App@literal1.p	entry	off owner
 row	App@literal2.p	Worker	pinned:App@literal2.p	entry	off owner
 row	Fwd@binding1	Fwd	pinned:Fwd@binding1	binding
 
-== crates/hale-types/tests/fixtures/placement/budget_called_loop.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/budget_called_loop.hl
 root	App	the entry
 template	App@literal1	unbounded (built in `boot`, which is called in a loop)
 domain	pinned:App@literal1.w
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 
-== crates/hale-types/tests/fixtures/placement/budget_pools.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/budget_pools.hl
 root	App	the entry
 domain	pool:io	cpus 0,1
 domain	pool:ws	cpus 2,3
@@ -17134,14 +17134,14 @@ row	App@literal1.c	Worker	pool:io	entry	off owner
 row	App@literal1.d	Worker	pool:ws	entry	off owner
 row	App@literal1.m	Worker	main	entry
 
-== crates/hale-types/tests/fixtures/placement/claims_only.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/claims_only.hl
 root	App	the entry
 row	App@entry	App	main	default
 -- App@entry.a	A
 row	~	A	main	default
 row	~.k	K	main	inherited
 
-== crates/hale-types/tests/fixtures/placement/dynamic.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/dynamic.hl
 root	App	the entry
 template	App@literal1	unbounded (built in `build`, which is called in a loop)
 row	App@literal1	App	main	default
@@ -17150,26 +17150,26 @@ row	App@literal1.h	Hub	main	default
 dynamic	Child	on main
 dynamic	Job	on main
 
-== crates/hale-types/tests/fixtures/placement/fn_passed_as_value.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/fn_passed_as_value.hl
 dynamic	Builder	on unknown (`quote` passed as a value)	in the seed
 
-== crates/hale-types/tests/fixtures/placement/generic_aliases.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/generic_aliases.hl
 dynamic	Cell_Int	on main	in the seed
 shared	Supervisor_Scalar@main1	Supervisor_Scalar #b5a04dba
 shared	Supervisor_String@main2	Supervisor_String #31a47877
 
-== crates/hale-types/tests/fixtures/placement/generic_constructions.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/generic_constructions.hl
 dynamic	Cell_Int	on main	in the seed
 shared	Supervisor_Int@main1	Supervisor_Int #0cce2c26
 shared	Supervisor_String@main2	Supervisor_String #31a47877
 
-== crates/hale-types/tests/fixtures/placement/generic_parameter.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/generic_parameter.hl
 row	Host_Int@main1	Host_Int	main	default
 -- dynamic	sites in the seed
 dynamic	Box	on main|unresolved arguments
 dynamic	Box_Int	on main
 
-== crates/hale-types/tests/fixtures/placement/generic_root.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/generic_root.hl
 root	Supervisor	the entry
 row	Supervisor_Int@literal1	Supervisor_Int	main	default
 row	Supervisor_String@literal2	Supervisor_String	main	default
@@ -17177,7 +17177,7 @@ row	Supervisor_Int@literal1.child	Cell_Int	main	default
 row	Supervisor_String@literal2.child	Cell_String	main	default
 dynamic	Cell_Int	on main	in the seed
 
-== crates/hale-types/tests/fixtures/placement/held_override.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/held_override.hl
 root	App	the entry
 domain	pinned:App@literal1.h
 hole	App@literal1.h.roles	reuse `r`
@@ -17192,7 +17192,7 @@ row	~	Roles	main	default
 row	~.k	B	main	inherited
 row	~.k.child	Child	main	inherited
 
-== crates/hale-types/tests/fixtures/placement/held_subtree.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/held_subtree.hl
 root	App	the entry
 domain	pinned:App@literal1.h
 hole	App@literal1.h.roles	reuse `r`
@@ -17203,7 +17203,7 @@ row	~.roles	Roles	pinned:~	inherited	built by Roles@main1
 row	~.roles.k	K	pinned:~	inherited	built by Roles@main1.k
 shared	Roles@main1	Roles #d44c6e0e
 
-== crates/hale-types/tests/fixtures/placement/held_unlinked.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/held_unlinked.hl
 root	App	the entry
 domain	pinned:App@literal1.h
 hole	App@literal1.h.roles	reuse `r`
@@ -17213,7 +17213,7 @@ row	~	Holder	pinned:~	entry	off owner
 row	~.roles	Roles	pinned:~	inherited
 shared	Roles@main1	Roles #d44c6e0e
 
-== crates/hale-types/tests/fixtures/placement/library_alone.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/library_alone.hl
 root	Lib	the entry
 domain	pinned:Lib@entry.w
 row	Lib@entry	Lib	main	default
@@ -17222,16 +17222,16 @@ row	Lib@entry.idle	K	main	default
 row	~	Worker	pinned:~	entry	off owner
 row	~.k	K	pinned:~	inherited
 
-== crates/hale-types/tests/fixtures/placement/local_shadows_fn.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/local_shadows_fn.hl
 dynamic	Builder	on main	in the seed
 
-== crates/hale-types/tests/fixtures/placement/module_qualified.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/module_qualified.hl
 root	App	the entry
 domain	pinned:App@literal1.k
 row	App@literal1	App	main	default
 row	App@literal1.k	K	pinned:App@literal1.k	entry	off owner
 
-== crates/hale-types/tests/fixtures/placement/nested_inheritance.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/nested_inheritance.hl
 root	App	the entry
 domain	pool:io
 domain	pinned:App@literal1.q
@@ -17247,7 +17247,7 @@ shared	App@literal1.r[0]	M #9add580c
 shared	App@literal1.r[1]	M #9add580c
 shared	App@literal1.r[2]	M #9add580c
 
-== crates/hale-types/tests/fixtures/placement/overrides.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/overrides.hl
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
@@ -17256,21 +17256,21 @@ row	App@literal1.j	Churner	main	default
 row	~	Gateway	pool:io	entry	off owner
 row	~.router	RouterV2	pool:io	inherited
 
-== crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/pinned_stdlib.hl
 root	App	the entry
 domain	pinned:App@literal1.s
 row	App@literal1	App	main	default
 row	App@literal1.s	__StdLogStdoutSink	pinned:App@literal1.s	entry	off owner
 dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.s	in the stdlib
 
-== crates/hale-types/tests/fixtures/placement/qualified.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/qualified.hl
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
 row	App@literal1.own	Reader	main	default
 shared	App@literal1.l	__StdIoUdpReader #d7d66dfc
 
-== crates/hale-types/tests/fixtures/placement/reuse.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/reuse.hl
 root	App	the entry
 hole	App@literal1.h.roles	reuse `r`
 row	App@literal1	App	main	default
@@ -17279,7 +17279,7 @@ row	Roles@main1	Roles	main	default
 row	~	Holder	main	default
 row	~.roles	Roles	main	inherited	built by Roles@main1
 
-== crates/hale-types/tests/fixtures/placement/root_in_defaults.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/root_in_defaults.hl
 root	App	the entry
 domain	pinned:App@literal1.w
 row	App@literal1	App	main	default
@@ -17296,7 +17296,7 @@ row	~.inner	Holder	main	inherited
 row	~.inner.app	App	main	inherited
 row	~.inner.app.w	Worker	main	inherited
 
-== crates/hale-types/tests/fixtures/placement/static_field_default.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/static_field_default.hl
 root	App	the entry
 domain	pinned:App@literal1.w
 domain	pool:io
@@ -17307,7 +17307,7 @@ row	App@literal1.s	Shared	pinned:App@literal1.s	entry	off owner
 row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 shared	dynamic	sites in the seed #8900d651
 
-== crates/hale-types/tests/fixtures/placement/static_field_explicit.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/static_field_explicit.hl
 root	App	the entry
 domain	pinned:App@literal1.w
 domain	pool:io
@@ -17318,7 +17318,7 @@ row	App@literal1.s	Shared	pinned:App@literal1.s	entry	off owner
 row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
 shared	dynamic	sites in the seed #8900d651
 
-== crates/hale-types/tests/fixtures/placement/two_constructions.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/two_constructions.hl
 root	App	the entry
 domain	pinned:App@literal1.gw
 domain	pinned:App@literal2.gw
@@ -17344,7 +17344,7 @@ row	~.router	RouterV2	main	inherited	guarded
 row	~	Gateway	main	default	guarded
 row	~.router	RouterV1	main	inherited	guarded
 
-== crates/hale-types/tests/fixtures/placement/two_instances.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/two_instances.hl
 root	App	the entry
 domain	pinned:App@literal1.a
 domain	pool:io
@@ -17355,7 +17355,7 @@ row	~	W	pool:io	entry	off owner
 row	~.k	K	pool:io	inherited
 shared	App@literal1.c	W #8b929c4d
 
-== crates/hale-types/tests/fixtures/placement/verbs.hl
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/verbs.hl
 root	App	the entry
 template	Sender@main2	unbounded (built in a loop)
 row	App@entry	App	main	default
@@ -17365,7 +17365,7 @@ row	Sender@main2	Sender	main	default
 row	~	Listener	main	default
 row	~.leaf	Leaf	main	inherited
 
-== crates/hale-types/tests/fixtures/placement/generic_imported
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/generic_imported
 -- __lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_Int@main1	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_Int
 row	~	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_Int	main	default
 row	~.child	__lib_tests__fixtures__placement__generic_imported__lib___lib__Cell_Int	main	inherited
@@ -17373,17 +17373,17 @@ row	~.child	__lib_tests__fixtures__placement__generic_imported__lib___lib__Cell_
 row	~	__lib_tests__fixtures__placement__generic_imported__lib___lib__Supervisor_String	main	default
 row	~.child	__lib_tests__fixtures__placement__generic_imported__lib___lib__Cell_String	main	inherited
 
-== crates/hale-types/tests/fixtures/placement/imported/no_own_main
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/imported/no_own_main
 row	__lib_tests__fixtures__placement__imported__lib___lib__Worker@main1	__lib_tests__fixtures__placement__imported__lib___lib__Worker	main	default
 
-== crates/hale-types/tests/fixtures/placement/imported/own_main
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/imported/own_main
 root	Mine	the entry
 domain	pinned:Mine@literal1.l
 row	Mine@literal1	Mine	main	default
 row	Mine@literal1.l	Local	pinned:Mine@literal1.l	entry	off owner
 row	Mine@literal1.w	__lib_tests__fixtures__placement__imported__lib___lib__Worker	main	default
 
-== crates/hale-types/tests/fixtures/placement/two_universes
+== /Users/riley/.claude/jobs/10263205/tmp/placelocal/crates/hale-types/tests/fixtures/placement/two_universes
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
