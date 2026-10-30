@@ -429,7 +429,34 @@ fn main() {
         "the plan drops its schema there and names no server of its own: " + tplan.stdout
             + tplan.stderr,
     );
+    // and its organization an account on the habitat's nerves: no server of
+    // its own, its account and secrets in the habitat server's nerves.d
+    let skey = dna::allocation_key(store);
+    let server_dir = dna::local_habitat_dir() + "/allocations/" + hkey;
+    let own_nerves = dna::run_tool(
+        "docker\nps\n-q\n--filter\nlabel=com.docker.compose.project=" + dna::local_habitat_project()
+            + "\n--filter\nlabel=com.docker.compose.service=nerves-" + skey,
+    );
+    std::test::assert(
+        len(dna::trim_nl(own_nerves.stdout)) == 0
+            && std::io::fs::file_exists(server_dir + "/nerves.d/" + skey + ".account.conf")
+            && std::io::fs::file_exists(server_dir + "/nerves.d/" + skey + ".secrets.conf")
+            && std::str::contains(
+                std::io::fs::read_file(server_dir + "/nats.conf") or "",
+                "include ./nerves.d/" + skey + ".account.conf",
+            ),
+        "sprout's organization is an account on the habitat's nerves, with no server of its own: "
+            + (std::io::fs::read_file(server_dir + "/nats.conf") or "(no nats.conf)"),
+    );
     let removed = at_terminal(scratch, "sprout", toolchain() + " habitat organism remove sprout");
+    std::test::assert(
+        !std::io::fs::file_exists(server_dir + "/nerves.d/" + skey + ".account.conf")
+            && !std::str::contains(
+                std::io::fs::read_file(server_dir + "/nats.conf") or "",
+                "/" + skey + ".account.conf",
+            ),
+        "and its account leaves the habitat's nerves: " + removed.stdout,
+    );
     let left = dna::run_tool(in_memory);
     // what is on the habitat's memory after it: the record's roles, and who
     // is connected (a schema with its roles is one migrated again; one

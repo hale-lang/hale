@@ -1310,23 +1310,48 @@ fn allocation_dir(root: String) -> String {
 // memory, as its graft chose (`parts.json` beside its allocations: memory
 // = reuse): a schema and roles of its own on that server, never a server
 // of its own.
-fn memory_reused(key: String) -> Bool {
-    if len(key) == 0 { return false; }
-    let parts = std::io::fs::read_file(local_habitat_dir() + "/allocations/" + key + "/parts.json")
-    or "";
-    return std::json::find_string_field(parts, "memory") == "reuse";
-}
+fn memory_reused(key: String) -> Bool { return part_held_by_habitat(key, "memory"); }
 
 // The root whose memory server holds the record at `root`: its own, or the
 // habitat's genome for an organism whose record the habitat's memory keeps
 // (`memory_reused`). Its record's identity stays its own: only the server
 // (its compose service, its owner's password) is the habitat's.
 fn memory_root(root: String) -> String {
-    let key = allocation_key(root);
-    if !memory_reused(key) { return root; }
-    let genome = local_habitat_dir() + "/genome";
-    if allocation_key(genome) == key || len(allocation_key(genome)) == 0 { return root; }
-    return genome;
+    return part_root(root, "memory");
+}
+
+// Whether the organism keyed `key` holds its nerves as an account on the
+// habitat's own server, as its graft chose (`parts.json`: nerves = reuse).
+fn nerves_reused(key: String) -> Bool { return part_held_by_habitat(key, "nerves"); }
+
+// The root whose nerves server holds the organization at `root`: its own,
+// or the habitat's genome for an organism whose account the habitat's
+// server keeps (`nerves_reused`). Its account, users and stream stay its
+// own: only the server is the habitat's.
+fn nerves_root(root: String) -> String { return part_root(root, "nerves"); }
+
+// Whether the organism keyed `key` reuses the habitat's `part`.
+fn part_reused(key: String, part: String) -> Bool {
+    if len(key) == 0 { return false; }
+    let parts = std::io::fs::read_file(local_habitat_dir() + "/allocations/" + key + "/parts.json")
+    or "";
+    return std::json::find_string_field(parts, part) == "reuse";
+}
+
+// Whether the habitat's server holds `part` of the organism whose
+// allocations are `key`'s: reused by a graft, and the organism not the
+// habitat's genome itself (whose own parts read `reuse` too: its servers
+// are the ones reused).
+fn part_held_by_habitat(key: String, part: String) -> Bool {
+    if !part_reused(key, part) { return false; }
+    let genome = allocation_key(local_habitat_dir() + "/genome");
+    return len(genome) > 0 && genome != key;
+}
+
+// The root whose server holds `part` of the organism at `root`.
+fn part_root(root: String, part: String) -> String {
+    if !part_held_by_habitat(allocation_key(root), part) { return root; }
+    return local_habitat_dir() + "/genome";
 }
 
 fn allocation_service(root: String, role: String) -> String {
@@ -1388,6 +1413,16 @@ fn label_value(v: String) -> String {
     return "\"" + std::str::replace(std::str::replace(v, "\\", "\\\\"), "\"", "\\\"") + "\"";
 }
 
+// What each of an organism's allocations may hold in memory (compose's
+// `mem_limit`): guardrails sized several times what each uses at rest (a
+// habitat's Postgres about 80 MiB, its NATS under 10, its senses' store
+// about 50), so a runaway is a restart the operator sees instead of a small
+// machine swapping. spec/habitat.md, "Running on a small machine".
+const MEMORY_LIMIT: String = "512m";
+const NERVES_LIMIT: String = "128m";
+const SENSES_LIMIT: String = "512m";
+const FORGE_LIMIT: String = "384m";
+
 // A compose service's `labels:` block, at a service's indent, for a part
 // `role` of the organism called `organism`.
 fn compose_labels(organism: String, role: String) -> String {
@@ -1410,6 +1445,7 @@ fn allocation_compose_text(k: String, organism: String) -> String {
         + "  memory-" + k + ":\n"
         + "    image: pgvector/pgvector:pg16\n"
         + compose_labels(organism, "memory")
+        + "    mem_limit: " + MEMORY_LIMIT + "\n"
         + "    network_mode: bridge\n"
         + "    environment:\n"
         + "      POSTGRES_USER: dna\n"
@@ -1421,15 +1457,17 @@ fn allocation_compose_text(k: String, organism: String) -> String {
         + "  nerves-" + k + ":\n"
         + "    image: nats:2\n"
         + compose_labels(organism, "nerves")
+        + "    mem_limit: " + NERVES_LIMIT + "\n"
         + "    network_mode: bridge\n"
         + "    command: [\"-c\", \"/etc/nats/nats.conf\"]\n"
         + "    volumes:\n"
         + "      - ./nats.conf:/etc/nats/nats.conf:ro\n"
-        + "      - ./nats.secrets.conf:/etc/nats/nats.secrets.conf:ro\n"
+        + "      - ./nerves.d:/etc/nats/nerves.d:ro\n"
         + "      - nerves-" + k + ":/data\n"
         + "  senses-" + k + ":\n"
         + "    image: " + SENSES_IMAGE + "\n"
         + compose_labels(organism, "senses")
+        + "    mem_limit: " + SENSES_LIMIT + "\n"
         + "    network_mode: bridge\n"
         + "    command: [\"--config.file=/etc/prometheus/senses.yml\", \"--storage.tsdb.path=/prometheus\", \"--storage.tsdb.retention.time="
         + SENSES_RETENTION + "\"]\n"
@@ -1467,6 +1505,23 @@ fn allocation_senses_text() -> String {
         + "  - job_name: host\n    scrape_interval: 15s\n    file_sd_configs:\n      - files: [\"/etc/prometheus/senses.d/*.json\"]\n";
 }
 
+// The habitat genome's own services (its body, face and Grafana), which
+// `hale habitat up` writes into the same compose file after a marker line,
+// before the volumes: the allocations' text rewritten keeps them where they
+// are, so applying an allocation never drops the services the habitat runs.
+const HABITAT_BLOCK_MARK: String = "# habitat-body-and-face\n";
+
+fn with_habitat_block(text: String, existing: String) -> String {
+    let at = std::str::index_of(existing, HABITAT_BLOCK_MARK);
+    if at < 0 { return text; }
+    let rest = existing[at..len(existing)];
+    let vol = std::str::index_of(rest, "\nvolumes:\n");
+    let block = if vol < 0 { rest } else { rest[0..(vol + 1)] };
+    let tv = std::str::index_of(text, "\nvolumes:\n");
+    if tv < 0 { return text + block; }
+    return text[0..(tv + 1)] + block + text[(tv + 1)..len(text)];
+}
+
 // `docker compose` on the organism's allocations in the local habitat,
 // newline-separated, its files written the first time: the arguments go
 // after it. "" when the organism has no identity yet. The other
@@ -1481,8 +1536,9 @@ fn allocation_compose(root: String) -> String {
     // the habitat's own text, so written again whenever it changed: compose
     // recreates a service whose definition moved, and keeps its volume
     let compose = dir + "/compose.yaml";
-    let text = allocation_compose_text(k, organism_label(root));
-    if (std::io::fs::read_file(compose) or "") != text {
+    let existing = std::io::fs::read_file(compose) or "";
+    let text = with_habitat_block(allocation_compose_text(k, organism_label(root)), existing);
+    if existing != text {
         std::io::fs::write_file(compose, text) or discard;
     }
     if !std::io::fs::file_exists(dir + "/senses.yml") {
@@ -1491,6 +1547,8 @@ fn allocation_compose(root: String) -> String {
     // the store's targets of the machines, mounted as a directory: a file
     // written in place there is seen, where a file's own mount keeps the old
     if run_tool("mkdir\n-p\n" + dir + "/senses.d").code != 0 { return ""; }
+    // the nerves server's accounts and their secrets (`nerves_server_text`)
+    if run_tool("mkdir\n-p\n-m\n700\n" + dir + "/nerves.d").code != 0 { return ""; }
     let ports = dir + "/ports.yaml";
     if !std::io::fs::file_exists(ports) {
         let text = "# The host ports these allocations publish on, chosen once (GH #1653).\n"

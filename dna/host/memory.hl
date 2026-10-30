@@ -179,8 +179,14 @@ fn heart_handover_verb(root: String, derive: Bool, with: String) -> Answer {
                 "none: the broker heart role is a user of the organism's own nerves server, which the habitat configures; the operator's NATS is not the habitat's to configure\n",
             );
         }
-        let infra = ReferenceInfrastructure { root: root };
-        let server = if derive { infra.nerves_if_up() } else { infra.nerves_server(root).dsn };
+        // its own server, or the habitat's for an account the habitat's
+        // server keeps (`dna::nerves_root`), as the nerves' URLs read it
+        let infra = ReferenceInfrastructure { root: dna::nerves_root(root) };
+        let server = if derive {
+            infra.nerves_if_up()
+        } else {
+            infra.nerves_server(dna::nerves_root(root)).dsn
+        };
         if len(server) == 0 {
             return answer(
                 "none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate "

@@ -140,7 +140,7 @@ To detach an application and revoke its NATS credentials, run:
 hale dna application remove [project] [--as <who>]
 ```
 
-This command appends `application.detached {name, by}` to the record, removes `app-<app>` from the habitat's `nats.conf` and `nats.secrets.conf`, deletes `nats-<org>-app-<app>` from the local vault (or instructs you to revoke it out of band when `HALE_VAULT_ADDR` is used), and restarts the `nerves-<id>` container to close any open connections:
+This command appends `application.detached {name, by}` to the record, removes the application's user (`app-<app>-<key>`) from the organization's NATS account and its password from the account's secrets, deletes `nats-<org>-app-<app>` from the local vault (or instructs you to revoke it out of band when `HALE_VAULT_ADDR` is used), and restarts the nerves server holding the account to close any open connections:
 
 ```text
 application remove: `<app>` detached (application.detached in the record)

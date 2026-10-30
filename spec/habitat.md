@@ -76,6 +76,10 @@ loopback ports. It applies a render with `docker
 compose -p <project> --project-directory <dir> -f <file>… up -d --build --wait
 [<service>…]`, with `COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat
 brings up, the habitat's own and each tenant's, is brought up this way.
+Each allocation service has a memory limit (compose's `mem_limit`): a
+Postgres 512 MiB, a NATS 128 MiB, a senses' store 512 MiB, the forge
+384 MiB, several times what each holds at rest, so a runaway is a restart
+the operator sees rather than a small machine swapping.
 `--build` builds a service whose image comes from the render's own context
 (an organism's application) from the revision being applied, so an image an
 earlier revision built under the same tag is never what runs; docker's
@@ -823,7 +827,7 @@ socket), so the habitat's head must be up.
 | Verb | Behaviour |
 |---|---|
 | `up --host <name> [--user <user>] [--port <n>] [--image <tag>] [--backends own\|operator] [--name <name>]` | Runs the habitat on another machine over SSH and keeps a pointer to it here (§ A habitat on another machine). Idempotent. |
-| `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, built from the embedded `Dockerfile` and `hale.pin` unless `--image <tag>` or `HALE_HABITAT_IMAGE` names an existing local image), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `up [--no-body] [--image <tag>] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider (one with no server of its own, every part held by the habitat's servers, is reported `held by the habitat's own servers`), migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above) and the head's URL (`head.url` and `habitat.profile`), and starts the habitat's `body` and `face` services in its compose project (`docker compose up -d`, its image `--image <tag>` or `HALE_HABITAT_IMAGE` when either names one; else, when this machine has no image of this toolchain, the release's published `ghcr.io/hale-lang/hale:<version>` pulled and used when it runs this very toolchain (`hale --version` alike); else built from the embedded `Dockerfile` and `hale.pin`), waiting on their probes: three minutes once the face has what it runs, and while the face's log says it is still building the head's programs (a first start, or one after the toolchain changed) up to twenty minutes; a face or body that does not come up is reported with its last lines of output. `--no-body` births it, brings its backing allocations up and records its placement, and starts no `body` or `face`. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `image build [<checkout>]` | Builds the habitat toolchain image from `<checkout>` (`.` by default) using its `Dockerfile`, tagged `hale-habitat:<pin>`, and prints the tag on stdout. |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's surface as the person this account maps to. |
 | `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, the services placed on its hosts under their hosts (each with its readings endpoint), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
@@ -1012,7 +1016,7 @@ events every 15 s. It is installed, found, replaced (labelled
 `lang.hale.cadvisor=<image> <the labels it keeps> <habitat>`, so one keeping
 others or made by another habitat is replaced) and removed where and when
 the node exporter is; `HALE_DNA_NODE_EXPORTER=off` turns both off. The store
-scrapes it as the job `containers` from `senses.d/containers/*.json`,
+scrapes it as the job `containers` from `senses.d/containers/*.json` (every 15 s, waiting up to 14 s for cAdvisor's answer, which renders every container's series and outlasts the store's default 5 s on a busy machine; `up` gives a job an earlier toolchain wrote the same timeout),
 which `up` adds to the habitat's store configuration when it has none.
 
 **Placed services too.** A service an organism's host command left on a
@@ -1057,7 +1061,7 @@ host gateway) when there is none, and the head rewrites it whole from the
 after a host's removal, each host at `<address>:9100`. A grafted
 organism's store has the same job and an empty directory.
 
-**Grafana is behind the face.** `up` runs the compose service `grafana`
+**Grafana is behind the face.** `up` makes the compose service `grafana`
 (`grafana/grafana`, pinned) in the face's network namespace, on the
 loopback at the head block's sixth port (`GRAFANA_OFFSET` 5; the block is
 published on macOS but for that port), served under `/grafana/` of the
@@ -1102,6 +1106,39 @@ browser's own `X-Hale-*` and `Authorization` lines never reach Grafana. A
 person is signed up in Grafana at their first visit, as an Editor.
 `HALE_DNA_GRAFANA=off` runs none, and a habitat with no senses' store of
 its own (its allocation publishes none) runs none and says so.
+
+**Grafana runs while it is used.** By default `up` creates the service
+(its image pulled, joined to the face's network; one an earlier `up` made
+is removed first) and does not start it: `up` names the directory of the
+habitat's compose files to the face (`HALE_DNA_GRAFANA_ON_DEMAND`). Every
+signed-in request under `/grafana/` stamps its time
+(`<habitat>/grafana/last-use`). While Grafana does not answer on its port,
+the face answers such a request with a page that reloads itself every 3 s
+(503, `Refresh` and `Retry-After`; a request that is not a page, under
+`/grafana/api/` or `/grafana/public/` or not a `GET`, gets the 503 refusal
+`grafana_starting`), and the face's keeper, once a second, starts it
+(`docker compose start grafana`, which makes nothing) for a use in the
+last 30 s. A start compose refuses, or one Grafana does not answer within
+60 s, is written to `<habitat>/grafana/start.err` and shown on that page,
+which then stops reloading; reloading it tries again, and the file goes
+once Grafana answers. The keeper stops Grafana (`docker compose stop
+grafana`) once the later of its last use and the face's own start is 15
+minutes past, once; an open dashboard, which refreshes itself every 30 s,
+is use. `HALE_DNA_GRAFANA=on` runs it from `up` to `down` instead, and
+the face neither starts nor stops it.
+
+**Grafana's footprint is bounded.** Its container is capped
+(`mem_limit: 384m`), its Go runtime collects under `GOMEMLIMIT=200MiB`,
+it fetches no plugin at its start (`GF_PLUGINS_PREINSTALL_DISABLED`), the
+data sources and apps it ships that the habitat never uses are disabled
+(`GF_PLUGINS_DISABLE_PLUGINS`: each data source with a backend is a
+process of its own), and its own alerting is off (the habitat's reflexes
+are its senses' rules). Running, it holds about 170 MiB with both
+dashboards' queries answered; with Grafana's defaults it held 640 MiB.
+The face and body are not capped: a face whose image does not already
+hold the head's programs builds them, in parallel, and that takes
+several GB. A habitat's whole budget, and what a small machine gives it,
+is the guide's (`docs/src/habitat.md`, Running on a small machine).
 
 ### Reflexes: what an organism watches for
 
@@ -1425,11 +1462,17 @@ server of its own, and its heart's `database`, when the habitat provides
 one, is a database of that server too. Removing the organism drops its
 schema, its roles and that database there (`record-drop`, run inside the
 habitat's memory by its superuser), and keeps the server; forgetting the
-habitat removes them with its memory. A reused `nerves` or `senses` is a
-server of its own on the habitat's machine: the nerves' configuration
-carries one organization per NATS server (its users and their subjects are
-the server's), so sharing the habitat's needs an account per organism,
-which is not built. The application plane is the organism's own
+habitat removes them with its memory. A reused `nerves` is an account of
+the organism's own on the habitat's NATS (`ORG_<KEY>`, its users keyed by
+its record, JetStream its own; spec/dna.md, The nerves), on no server of
+its own: its account and secrets are files of the habitat server's
+`nerves.d/`, which the server's configuration includes, and the server
+restarts to read them. Removing the organism drops its account there, its
+users with it, and its stream's data off the server's volume
+(`nerves-drop`), and keeps the server; forgetting the habitat removes
+them with its nerves. Neither a reused memory nor a reused nerves is ever
+brought up as a server of the organism's own (`placed_apply`). A reused
+`senses` is a server of its own on the habitat's machine. The application plane is the organism's own
 software: its compose services, placed on the `--host` machine, and the
 heart roles it needs (`database`, `broker`), which are the application's
 own when its manifest says it brings them (`[dna] brings = ["database",

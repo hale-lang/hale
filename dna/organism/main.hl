@@ -42,7 +42,7 @@ main locus Organism {
         ticks: Int = 0;
         nerves: nats::NatsConn = nats::NatsConn {
             url: dna::reach_url(dna::nerves_spine_url()),
-            user: "spine",
+            user: dna::nerves_role_user("spine"),
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "organism",
             subject_prefix: dna::nerves_subject_prefix(),

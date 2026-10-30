@@ -26,7 +26,7 @@ main locus Body {
         // and the host this program, the spine's URL and the token)
         nerves: nats::NatsConn = nats::NatsConn {
             url: dna::nerves_spine_url(),
-            user: "spine",
+            user: dna::nerves_role_user("spine"),
             credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "organization",
             subject_prefix: dna::nerves_subject_prefix(),

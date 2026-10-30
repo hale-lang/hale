@@ -196,7 +196,7 @@ locus NatsConn {
 
     birth() {
         self.client.url = self.url;
-        self.client.user = self.user;
+        self.client.user = account_user(self.user);
         self.client.pass = self.pass;
         self.client.token = self.token;
         self.client.name = self.name;
@@ -490,4 +490,26 @@ locus NatsConn {
         }
         self.client.close();
     }
+}
+
+// A nerves role's bare name (`spine`, `head`, …) on a connection of an
+// organization's (HALE_DNA_NATS_ORG set) is that role's user of the
+// organization's account: one server keeps several organizations, each an
+// account of its own, so their users are named for the record, by the rule
+// of `dna::nerves_user` (dna/core/nerves.hl). An organization's program
+// names its role, as `hale habitat graft` writes it; any other user, and
+// one already named for its record, is the one given.
+fn account_user(user: String) -> String {
+    let org = if std::env::var_exists("HALE_DNA_NATS_ORG") {
+        std::env::var("HALE_DNA_NATS_ORG")
+    } else {
+        ""
+    };
+    if len(org) == 0
+        || !std::str::contains(" owner spine head reflexes exchange ", " " + user + " ")
+    {
+        return user;
+    }
+    let key = if std::str::starts_with(org, "dna_") && len(org) >= 16 { org[4..16] } else { org };
+    return user + "-" + key;
 }

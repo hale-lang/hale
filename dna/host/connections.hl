@@ -103,7 +103,7 @@ locus NatsExchange {
         let org = dna::schema_for(record);
         let c = exchange_client(
             url,
-            "exchange",
+            dna::nerves_user(org, "exchange"),
             dna::nerves_vault_name(org, "exchange"),
             "dna-exchange-card",
         );
@@ -142,7 +142,7 @@ locus NatsExchange {
         let kind = if dot < 0 { "received" } else { id[(dot + 1)..len(id)] };
         let c = exchange_client(
             url,
-            "exchange",
+            dna::nerves_user(org, "exchange"),
             dna::nerves_vault_name(org, "exchange"),
             "dna-exchange",
         );
@@ -193,7 +193,7 @@ locus NatsExchange {
         let org = dna::schema_for(self.mine);
         let c = exchange_client(
             url,
-            "spine",
+            dna::nerves_user(org, "spine"),
             dna::nerves_vault_name(org, "spine"),
             "dna-exchange-drain",
         );

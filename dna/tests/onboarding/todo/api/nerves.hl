@@ -17,15 +17,16 @@ fn quoted(s: String) -> String {
     return "\"" + std::json::escape_string(s) + "\"";
 }
 
-/// The application the account `user` belongs to: the name after `app-`,
-/// `todo` when the account does not say. The subject and the concern's
-/// source (`<name>/overdue`, the heart's path syntax) both carry it.
+/// The application's name, as the host hands it (HALE_DNA_NATS_APP), or
+/// `todo` when it does not: its user, `app-<name>-<key>`, carries the
+/// record's key as well, so the name is never read from it. The subject
+/// and the concern's source (`<name>/overdue`, the heart's path syntax)
+/// both carry it.
 fn app_name(user: String) -> String {
-    return if std::str::starts_with(user, "app-") && len(user) > 4 {
-        user[4..len(user)]
-    } else {
-        "todo"
-    };
+    if std::env::var_exists("HALE_DNA_NATS_APP") && len(std::env::var("HALE_DNA_NATS_APP")) > 0 {
+        return std::env::var("HALE_DNA_NATS_APP");
+    }
+    return "todo";
 }
 
 locus Nerves {

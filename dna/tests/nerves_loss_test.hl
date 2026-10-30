@@ -219,7 +219,7 @@ main locus App {
         // expired (a second), nothing the host publishes reaches it
         let c = nats::NatsClient {
             url: spine,
-            user: "spine",
+            user: dna::nerves_user(org, "spine"),
             credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") },
             name: "nerves-loss-thief",
             timeout: 2s,
@@ -236,7 +236,7 @@ main locus App {
         // their own family: a head's user subscribes, as the face's head does
         let heads = nats::NatsClient {
             url: line_value(nerves.stdout, "HALE_DNA_NATS_URL_HEAD"),
-            user: "head",
+            user: dna::nerves_user(org, "head"),
             credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "head") },
             name: "nerves-loss-head",
             timeout: 2s,

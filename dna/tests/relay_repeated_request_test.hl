@@ -267,7 +267,7 @@ main locus App {
         // it off the organization's consumer and acknowledges it.
         let c = nats::NatsClient {
             url: spine,
-            user: "spine",
+            user: dna::nerves_user(org, "spine"),
             credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") },
             name: "relay-repeat-thief",
             timeout: 2s,

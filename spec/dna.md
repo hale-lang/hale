@@ -1319,7 +1319,23 @@ sync.
   node) and hands it to the organization (`HALE_DNA_OWNER`); an owner's
   name in a subject or a durable keeps
   its letters, digits, `-` and `_`, anything else `_`.
-- **Credentials, one per family**, each a user on the server: `owner`
+- **An account per organization.** The organization's users are an
+  account of their own, `ORG_<KEY>` (its record's first 12 hex digits),
+  with JetStream: an account is its own subject space, so `*` in a
+  permission stands for the organization's token however many
+  organizations one server holds, and nothing of one account reaches
+  another. Every user is named by its role and the record's key
+  (`dna::nerves_user`: `owner-<key>`, `spine-<key>`, `head-<key>`,
+  `reflexes-<key>`, `exchange-<key>`, `app-<name>-<key>`), so a server's
+  users are distinct across its accounts; the heart's broker users
+  (`heart-<key>`, `heart-<key>-node`) are keyed already. An
+  organization's program names its role alone (`user: "spine"`, as `hale
+  habitat graft` writes it): DNA's NATS connection (`nats::NatsConn`)
+  connects a role's bare name as that role's user of the organization's
+  account (`HALE_DNA_NATS_ORG`), so a program generated before the
+  accounts connects unchanged.
+- **Credentials, one per family**, each a user of the organization's
+  account: `owner`
   creates the stream and is held by no process that runs the organism;
   `spine` publishes and reads `<org>.dna.>` and an owner's
   `<org>.<owner>.dna.>` (the host and the organization), reads
@@ -1353,8 +1369,8 @@ sync.
   row recorded before that field resolves by the project's directory
   name: a record is data already written, not an API kept compatible.
   An application publishes under its project's name. Its user is
-  `app-<name>`, its password the vault's `nats-<org>-app-<name>` and
-  the nerves allocation's `$NATS_APP_<NAME>_PASSWORD`, and it may
+  `app-<name>-<key>`, its password the vault's `nats-<org>-app-<name>` and
+  its account's secrets' `$NATS_<KEY>_APP_<NAME>_PASSWORD`, and it may
   publish on
   `<org>.app.<name>.>` and nowhere else; no other application's
   subjects, nor the reflexes'. It is provisioned when
@@ -1364,8 +1380,8 @@ sync.
   it missing. `hale dna application remove [project] [--as <who>]`
   writes `application.detached {name, by}` to the record, the
   membership's source, and revokes the account: its user leaves the
-  nerves allocation's `nats.conf`, its password the include and its
-  entry the vault, and the `nerves-<id>` allocation is restarted when
+  organization's account, its password the account's secrets and its
+  entry the vault, and the nerves server holding it is restarted when
   it is up, so a connection it holds is
   closed and none opens again. An application named `reflexes` holds
   no account: those subjects are the reflexes' alone.
@@ -1377,17 +1393,24 @@ sync.
   No URL carries a password: userinfo in a server's URL is dropped. A
   role whose entry the vault lacks is refused (`nerves migrate`, the
   host, the reflexes); nothing connects with a default.
-  - **The server's files** live beside the nerves allocation in the
-    local habitat (`allocations/<id>/`, mode 700; GH #1653), never in a
-    checkout. `nats.conf` holds no secret: it `include`s
-    `./nats.secrets.conf` and names each user's password as its
-    variable (`$NATS_<ROLE>_PASSWORD`, and the attached application's
-    `$NATS_APP_<NAME>_PASSWORD`). `nats.secrets.conf`, written by the
-    bootstrap from the same draw as the vault's entries, is the one file
-    that holds a password: mode 600, mounted with `nats.conf` into the
-    `nerves-<id>` service.
+  - **The server's files** live beside the allocation of the organism
+    whose server it is (`allocations/<id>/`, mode 700; GH #1653), never
+    in a checkout: the organism's own, or the habitat's for an
+    organization the habitat's nerves hold (`dna::nerves_root`). Each
+    organization it holds is two files of its `nerves.d/`: its account
+    (`<key>.account.conf`, no secret: each user's password is a variable,
+    `$NATS_<KEY>_<ROLE>_PASSWORD`, and the attached application's
+    `$NATS_<KEY>_APP_<NAME>_PASSWORD`) and its secrets
+    (`<key>.secrets.conf`, written by the bootstrap from the same draw as
+    the vault's entries, the one file that holds a password, mode 600),
+    which the account `include`s: NATS parses an included file in its
+    own scope, so an account reads only the variables it brings.
+    `nats.conf` is the server's: JetStream, and inside `accounts` an
+    `include` of every account, rewritten whenever one comes or goes; it and `nerves.d/` are mounted
+    into the `nerves-<id>` service, and a server that is up restarts to
+    read an account that came or changed.
   - **Rotation.** A graft and `upgrade` draw every role's password anew;
-    a `nerves-<id>` allocation that is up is restarted to read them, and
+    the nerves server holding the account, when it is up, is restarted to read them, and
     a restart that fails is said. A server of the operator's
     (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the secrets file
     again after each rotation.
@@ -6712,7 +6735,9 @@ the shell; any other answer (the sign-in redirect, the launch token's
 cookie and redirect to `/`, a refusal) is passed on unchanged. A face
 given `HALE_DNA_GRAFANA_PORT` and `HALE_DNA_GRAFANA_HEADER` serves the
 habitat's Grafana under `/grafana/` behind the same gate, in the person's
-name (`spec/habitat.md`, Readings); without them `/grafana/` is a 404. `/app/…` asks the
+name (`spec/habitat.md`, Readings), starting it at its first use and
+stopping it unused when given `HALE_DNA_GRAFANA_ON_DEMAND` too; without
+them `/grafana/` is a 404. `/app/…` asks the
 head's read (`GET /api/hale/v1/head`) as the same session which project is
 attached, and serves its `ui/` (`ops::application_asset`), or the
 head's refusal. The head has no static file and no `/app/`: those paths
@@ -7000,7 +7025,8 @@ otherwise.
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
-| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>` (`hale dna nerves migrate` prints it; GH #989). |
+| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>-<key>` (the record's key, so one server's users are distinct across its accounts; `hale dna nerves migrate` prints it; GH #989). |
+| `HALE_DNA_NATS_APP=<name>` | unset | The attached application's name, the token of the subjects it publishes on, `<org>.app.<name>.>`: handed beside its user, which carries the record's key too, so an application never derives its name from its user. |
 | `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
@@ -7035,9 +7061,10 @@ otherwise.
 | `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |
 | `HALE_HABITAT_SSH_CONFIG=<file>` | unset | An SSH config file `hale habitat up --host` and the verbs of a habitat on another machine hand `ssh -F`; unset, `ssh` reads the person's own. |
 | `HALE_DNA_IDENTITY=publish` | unset | The face's launch whose sign-in provider is the habitat's, shared with every organism it grafts (`dna/face/start.sh`): its key is kept in the face's state (`HALE_DNA_HEAD_STATE/oidc.key`, made once) and the provider is published at `<habitat>/identity.env` (issuer, the key's public half, the client, where it answers). A launch under a habitat that published one starts no provider and signs in through it. Not set by hand: the habitat's compose render sets it on its `face` service. |
-| `HALE_DNA_GRAFANA=off` | on | `hale habitat up` runs no Grafana behind the habitat's face (and removes one an earlier `up` started); `status` names none. The DNA suite sets it for every fixture; `habitat_operator_face_test` opts in on its own `up`. |
+| `HALE_DNA_GRAFANA=off` | on demand | `hale habitat up` runs no Grafana behind the habitat's face (and removes one an earlier `up` started); `status` names none. `on` runs it from `up` to `down`; unset (or anything else), `up` creates it without starting it and the face starts it at its first use and stops it after 15 minutes unused (`spec/habitat.md`, Readings). The DNA suite sets `off` for every fixture; `habitat_operator_face_test` opts in with `on` on its own `up`. |
 | `HALE_DNA_GRAFANA_PORT=<port>` | unset | The loopback port of the habitat's Grafana, which the standard face serves under `/grafana/` behind the head's gate. Not set by hand: the habitat's compose render sets it on its `face` service (the head block's sixth port). Unset, `/grafana/` is a 404. |
 | `HALE_DNA_GRAFANA_HEADER=<name>` | unset | The header the habitat's Grafana trusts for the signed-in person's name, drawn once per habitat (`X-Hale-Grafana-<32 hex>`, `<habitat>/grafana.secrets`, 0600): the face sets it on what it relays to Grafana, and nothing else on the machine knows it. Not set by hand. |
+| `HALE_DNA_GRAFANA_ON_DEMAND=<dir>` | unset | The directory of the habitat's compose files (its allocation's), set on the `face` service when Grafana runs on demand: the standard face starts the `grafana` service there (`docker compose start`) for a signed-in use while Grafana does not answer, and stops it once unused for 15 minutes. Unset, the face never starts or stops it. Not set by hand. |
 | `HALE_DNA_FACE_HOME=<path>` | unset | The path the standard face lands a signed-in visitor on in place of the organization shell at `/` (`dna::face_home`); the shell is then at `/organization`. Not set by hand: the habitat's compose render sets it on its `face` service to `/app/`, the operator face. A value that is not a path of the face is ignored. |
 | `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
 | `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
