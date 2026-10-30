@@ -1,0 +1,1 @@
+- `hale habitat organism place` through a pointer records its placement: the habitat's head (under OIDC) admitted a request only on its public port, the face's, so the call a person's toolchain makes on the head's own port was refused as misdirected (421) after the command had run; the head answers on both.

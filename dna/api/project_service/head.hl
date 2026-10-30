@@ -138,6 +138,14 @@ type DetachResult {
     reason: String = "";
 }
 
+// Whether `host` (a request's Host) names the head at `port`: the loopback
+// by either name, or the habitat's declared address (`declared`, "" when it
+// declares none). Anything else is a page on another name (DNS rebinding).
+fn head_host_ok(host: String, port: String, declared: String) -> Bool {
+    return host == "127.0.0.1:" + port || host == "localhost:" + port
+        || (len(declared) > 0 && host == declared + ":" + port);
+}
+
 fn public_port_of(cfg: HeadConfig) -> Int {
     return if cfg.public_port > 0 { cfg.public_port } else { cfg.port };
 }
@@ -1413,16 +1421,21 @@ locus Head {
         if self.cfg.principal_mode == "oidc" {
             // the loopback, or the habitat's declared address, by name
             // only: a page on another name (DNS rebinding) reaches nothing
+            // on either port it answers on: the public one (the face's,
+            // where a browser comes) and its own, where a person's
+            // toolchain calls it through a pointer (`hale habitat
+            // organism place` records a placement from that machine)
             let host = std::http::header(req, "Host");
             let port = to_string(public_port_of(self.cfg));
+            let own = to_string(self.cfg.port);
             let declared = dna::declared_address();
-            if host != "127.0.0.1:" + port && host != "localhost:" + port
-                && (len(declared) == 0 || host != declared + ":" + port)
-            {
+            if !head_host_ok(host, port, declared) && !head_host_ok(host, own, declared) {
                 return self.error(
                     421,
                     "misdirected_request",
-                    "this head answers as 127.0.0.1:" + port + " or localhost:" + port + " only",
+                    "this head answers as 127.0.0.1, localhost"
+                        + (if len(declared) > 0 { " or " + declared } else { "" }) + ", on port "
+                        + port + " or " + own + " only",
                     false,
                 );
             }
