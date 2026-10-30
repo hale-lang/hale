@@ -244,9 +244,18 @@ main locus App {
             "sh\n-c\necho canned | env XDG_STATE_HOME=\"$0\" \"$1\" dna secret set NOBODYS_KEY\n"
                 + state + "\n" + toolchain(),
         );
+        // refused, and the refusal lists the names the organism has a slot
+        // for: the legs' key, which work.hl names
         std::test::assert(
             unknown.code != 0
-                && std::str::contains(unknown.stdout + unknown.stderr, "dna/org/work.hl names"),
+                && std::str::contains(
+                    unknown.stdout + unknown.stderr,
+                    "`NOBODYS_KEY` is no slot of the organism's",
+                )
+                && std::str::contains(
+                    unknown.stdout + unknown.stderr,
+                    "dna/org/work.hl or the model map names: LEGS_GATEWAY_KEY)",
+                ),
             "a name neither catalog uses is refused: " + unknown.stdout + unknown.stderr,
         );
         dna::scratch_done(scratch);

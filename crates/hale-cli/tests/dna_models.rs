@@ -104,7 +104,9 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
         assert!(!catalog.contains(absent), "no hosted placeholder ({absent:?}) in:\n{catalog}");
     }
     let work = std::fs::read_to_string(app.join("dna/org/work.hl")).unwrap();
-    assert!(work.contains("return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\", mapped_only: true };"), "{work}");
+    // the generated file is formatted, so the literal is split across lines
+    assert!(work.contains("fn model() -> legs::ModelPerformer {\n    return legs::ModelPerformer {\n        router: agent_models(),\n        effect: \"effect_free\",\n        mapped_only: true,\n    };"), "{work}");
+    assert!(!work.contains("legs::NoModel"), "{work}");
     let (ok, secrets_out) = hale_env(&["dna", "secrets"], &app, &[("PATH", &bare_path())], NO_KEYS);
     assert!(ok && !secrets_out.contains("model-OPENAI_API_KEY") && !secrets_out.contains("model-ANTHROPIC_API_KEY"), "no model key is required: {secrets_out}");
     for needle in [
@@ -201,10 +203,10 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     habitat::lend(&keyed);
     let (ok, out) = hale_env(&["habitat", "graft", "keyed", "--no-pack"], &d2, &[("PATH", &path), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["ANTHROPIC_API_KEY"]);
     assert!(ok, "{out}");
-    let catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
+    let keyed_catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
     assert!(out.contains("models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk"), "{out}");
-    assert!(catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{catalog}");
-    assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{catalog}");
+    assert!(keyed_catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{keyed_catalog}");
+    assert!(keyed_catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{keyed_catalog}");
     // the organization checks and builds with the harness wired
     let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);
     assert!(ok, "matrix: {out}");
@@ -227,7 +229,9 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
 
     // the probe runs the harness (an answer-only call in a directory of
     // its own; the stand-in needs no confinement, so the org chart's
-    // leave is given in the probe's copy of the catalog)
+    // leave is given in the probe's copy of the catalog) — the keyless
+    // project's own catalog, which has no hosted backend to probe
+    assert!(!catalog.contains("fn frontier()"), "{catalog}");
     let probed = catalog.replace("confinement: dna::Bubblewrap { } };", "confinement: dna::NoConfinement { }, allow_unconfined: true };");
     std::fs::write(app.join("dna/org/models.hl"), probed).unwrap();
     let mut c = vault::hale();
