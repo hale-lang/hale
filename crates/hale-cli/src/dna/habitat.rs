@@ -2182,7 +2182,17 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
         if Some(&dir) == own.as_ref() {
             continue;
         }
+        let moved = behind(&row, &versions);
+        let root = row["root"].as_str().unwrap_or("<organism>");
+        let behind_note = if moved.is_empty() { String::new() } else { format!("; behind this toolchain ({}): `hale habitat migrate {root}` or `hale dna upgrade` migrates it", moved.join(", ")) };
         if !dir.join("compose.yaml").is_file() || !dir.join("ports.yaml").is_file() {
+            // nothing of its own to start: every part it was allocated is
+            // held by the habitat's servers (its memory a tenant of the
+            // habitat's, its nerves an account on the habitat's NATS), which
+            // are up when the habitat is
+            if dir.join("parts.json").is_file() {
+                out.push(format!("{:<8}allocation {key} ({root}): held by the habitat's own servers{behind_note}", "up"));
+            }
             continue;
         }
         // the tenant's allocations are the compose provider's to apply
@@ -2191,9 +2201,7 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
             out.push(format!("{:<8}allocation {key}: did not come up: {why}", "note"));
             continue;
         }
-        let moved = behind(&row, &versions);
-        let root = row["root"].as_str().unwrap_or("<organism>");
-        out.push(format!("{:<8}allocation {key} ({root}){}", "up", if moved.is_empty() { String::new() } else { format!("; behind this toolchain ({}): `hale habitat migrate {root}` or `hale dna upgrade` migrates it", moved.join(", ")) }));
+        out.push(format!("{:<8}allocation {key} ({root}){behind_note}", "up"));
     }
     Ok(out)
 }
