@@ -55,6 +55,10 @@ const NATS_APP_URL_ENV: String = "HALE_DNA_NATS_URL_APP";
 // The attached application's user and the vault name of its credential,
 // which its node hands it (GH #989).
 const NATS_APP_USER_ENV: String = "HALE_DNA_NATS_USER_APP";
+// The attached application's name, the token of its subjects
+// (`<org>.app.<name>.>`): its user carries the record's key besides
+// (`app-<name>-<key>`, `dna::nerves_user`), so the name is handed whole.
+const NATS_APP_NAME_ENV: String = "HALE_DNA_NATS_APP";
 const NATS_APP_VAULT_ENV: String = "HALE_DNA_NATS_VAULT_APP";
 const NATS_REFLEXES_URL_ENV: String = "HALE_DNA_NATS_URL_REFLEXES";
 // The organization's token: `dev` hands it to the host, and the host to

@@ -3338,6 +3338,7 @@ main locus Host {
         let vault = dna::nerves_app_vault(org, app);
         self.compose.hand(dna::NATS_APP_URL_ENV, url);
         self.compose.hand(dna::NATS_APP_USER_ENV, dna::nerves_app_user(org, app));
+        self.compose.hand(dna::NATS_APP_NAME_ENV, dna::nerves_app_name(app));
         self.compose.hand(dna::NATS_APP_VAULT_ENV, vault);
         self.compose.hand(dna::NATS_ORG_ENV, org);
         // a local vault's entry is a file compose can mount; a vault

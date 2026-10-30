@@ -6905,7 +6905,8 @@ otherwise.
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
-| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>` (`hale dna nerves migrate` prints it; GH #989). |
+| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>-<key>` (the record's key, so one server's users are distinct across its accounts; `hale dna nerves migrate` prints it; GH #989). |
+| `HALE_DNA_NATS_APP=<name>` | unset | The attached application's name, the token of the subjects it publishes on, `<org>.app.<name>.>`: handed beside its user, which carries the record's key too, so an application never derives its name from its user. |
 | `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |

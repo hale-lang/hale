@@ -214,6 +214,8 @@ main locus App {
                 && len(spine) > 0
                 && len(app_url) > 0
                 && app_user == dna::nerves_app_user(org, "todo")
+            // its name is handed whole: its user carries the record's key
+                && line_value(nerves.stdout, "HALE_DNA_NATS_APP") == "todo"
                 && app_vault == "nats-" + org + "-app-todo",
             "the repository's application has its account: " + nerves.stdout + nerves.stderr,
         );

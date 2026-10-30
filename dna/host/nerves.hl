@@ -324,6 +324,7 @@ fn nerves_urls(root: String, org: String, url: String) -> String {
     if len(app) > 0 && len(dna::nerves_app_refusal(app)) == 0 {
         out = out + dna::NATS_APP_URL_ENV + "=" + url + "\n";
         out = out + dna::NATS_APP_USER_ENV + "=" + dna::nerves_app_user(org, app) + "\n";
+        out = out + dna::NATS_APP_NAME_ENV + "=" + dna::nerves_app_name(app) + "\n";
         out = out + dna::NATS_APP_VAULT_ENV + "=" + dna::nerves_app_vault(org, app) + "\n";
     }
     out = out + "HALE_DNA_NATS_VAULT_REFLEXES=" + dna::nerves_vault_name(org, "reflexes") + "\n";
