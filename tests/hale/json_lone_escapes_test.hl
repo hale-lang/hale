@@ -1,0 +1,112 @@
+// `\u0000` and an unpaired UTF-16 surrogate escape are valid JSON.
+// RFC 8259 §7 lets a string carry any `\uXXXX`, other producers emit
+// them, and a tool output that read a binary file carries them. Until
+// 2026-10-30 (downstream handoff) `std::json::valid` and
+// `valid_object` refused all three of `{"a":"x\u0000y"}`,
+// `{"a":"x\ud800y"}` and `{"a":"x\udc00y"}`, so a whole document was
+// turned away for one escape the decoders already had an answer for.
+//
+// Every reader accepts them, and the decode is the one
+// `unescape_string` documents: U+FFFD for each. A native String is
+// NUL-terminated, so U+0000 has nowhere to go but the replacement
+// character; a lone surrogate has no UTF-8 encoding at all. A valid
+// pair still combines into its astral scalar, and a `\\u0000` (an
+// escaped backslash, then the text `u0000`) is text.
+
+type Wire {
+    a: String `json:"a"`;
+}
+
+fn main() {
+    let repl = "�";
+
+    // One row per case: the document, the decoded value of "a".
+    check("{\"a\":\"x\\u0000y\"}", "x" + repl + "y", "NUL");
+    check("{\"a\":\"x\\ud800y\"}", "x" + repl + "y", "lone high surrogate");
+    check("{\"a\":\"x\\udbffy\"}", "x" + repl + "y", "lone high, top of range");
+    check("{\"a\":\"x\\udc00y\"}", "x" + repl + "y", "lone low surrogate");
+    check("{\"a\":\"x\\udfffy\"}", "x" + repl + "y", "lone low, top of range");
+    check("{\"a\":\"x\\ud800\"}", "x" + repl, "lone high at the end");
+    check(
+        "{\"a\":\"x\\ud800\\u0041y\"}", "x" + repl + "Ay",
+        "high followed by a non-surrogate escape"
+    );
+    check(
+        "{\"a\":\"\\ud800\\ud800\"}", repl + repl, "two high surrogates"
+    );
+    check(
+        "{\"a\":\"\\udc00\\ud800\"}", repl + repl, "a low then a high"
+    );
+    check("{\"a\":\"x\\ud83d\\ude00y\"}", "x😀y", "a valid pair");
+    check("{\"a\":\"\\u0000\\u0000\"}", repl + repl, "two NULs");
+    check("{\"a\":\"x\\\\u0000y\"}", "x\\u0000y", "an escaped backslash");
+
+    // Nested and in an array, the strict validator walks them too.
+    std::test::assert(
+        std::json::valid("[\"\\u0000\", {\"k\": [\"\\udc00\"]}]"),
+        "valid: nested lone escapes"
+    );
+    // A lone escape in a KEY is still an escaped key, which
+    // valid_object refuses as it refuses any (it would be present and
+    // unfindable); valid accepts it.
+    std::test::assert(
+        std::json::valid("{\"\\u0000\":1}"), "valid: a NUL-escaped key"
+    );
+    std::test::assert(
+        !std::json::valid_object("{\"\\u0000\":1}"),
+        "valid_object: an escaped key is still refused"
+    );
+    // What stays refused: digits that are not hex, a cut-short escape.
+    std::test::assert(
+        !std::json::valid_object("{\"a\":\"\\ud80Z\"}"), "non-hex digits"
+    );
+    std::test::assert(
+        !std::json::valid_object("{\"a\":\"\\ud80\"}"), "three digits"
+    );
+
+    // A decoded value written back out is valid JSON again, and
+    // decodes to itself: U+FFFD is plain UTF-8 to escape_string.
+    let decoded = std::json::unescape_string("x\\u0000\\ud800y");
+    let quoted = "{\"a\":\"" + std::json::escape_string(decoded) + "\"}";
+    std::test::assert(std::json::valid_object(quoted), "re-escaped is valid");
+    std::test::assert_eq_str(
+        std::json::find_string_field(quoted, "a"), decoded, "and round-trips"
+    );
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("a", decoded);
+    b.end_object();
+    std::test::assert(std::json::valid_object(b.result()), "Builder output is valid");
+}
+
+// Every reader of `doc` (an object with one string member "a") agrees
+// that it is valid and on what "a" decodes to.
+fn check(doc: String, want: String, label: String) {
+    std::test::assert(std::json::valid(doc), "valid: " + label);
+    std::test::assert(std::json::valid_object(doc), "valid_object: " + label);
+
+    std::test::assert_eq_str(
+        std::json::find_string_field(doc, "a"), want, "find_string_field: " + label
+    );
+    let f = std::json::string_field(doc, "a");
+    std::test::assert_eq_str(f.kind, "string", "string_field kind: " + label);
+    std::test::assert_eq_str(f.text, want, "string_field text: " + label);
+
+    let it = std::json::object_first(doc);
+    std::test::assert(!it.done, "object_first: " + label);
+    std::test::assert_eq_str(
+        std::json::obj_value_string(it, doc), want, "obj_value_string: " + label
+    );
+
+    let w = Wire::from_json(doc) or {
+        std::test::assert(false, "from_json: " + label + ": " + err.kind);
+        return;
+    };
+    std::test::assert_eq_str(w.a, want, "from_json: " + label);
+
+    let v = std::json::Value::parse(doc) or {
+        std::test::assert(false, "Value::parse: " + label + ": " + err.kind);
+        return;
+    };
+    std::test::assert_eq_str(v.text, doc, "Value::parse keeps the text: " + label);
+}

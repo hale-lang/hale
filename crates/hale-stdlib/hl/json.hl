@@ -347,7 +347,7 @@ fn __json_plain_byte(c: Int) -> Bool {
 //     or a bare low one — becomes U+FFFD.
 //   - \u0000 becomes U+FFFD. A native String is NUL-terminated,
 //     so a raw 0 byte would truncate the value and let a prefix
-//     compare equal to the whole; the refusal is visible.
+//     compare equal to the whole; the substitution is visible.
 //   - An escape whose four digits are not all hex passes
 //     through verbatim, like any other unknown escape.
 //
@@ -1490,20 +1490,18 @@ fn __json_find_field_raw_in(json: String, name: String, start: Int, end_exclusiv
 // Bounded: nesting deeper than 64 is refused rather than scanned,
 // so a hostile `[[[[…` cannot cost the caller an unbounded walk.
 //
-// Three refusals go beyond "the grammar says no", and all three
-// are cases this runtime cannot carry a value for:
+// One refusal goes beyond "the grammar says no": text that is not
+// well-formed UTF-8 (including a surrogate encoded directly as
+// three bytes), which no String reader can make sense of.
 //
-//   - text that is not well-formed UTF-8 (including a surrogate
-//     encoded directly as three bytes);
-//   - a lone `\uXXXX` surrogate — a high one with no low escape
-//     after it, or a bare low one. It denotes no scalar;
-//     `unescape_string` answers U+FFFD for it, and a validator
-//     whose job is admission should say no rather than hand on
-//     something that decodes to a replacement character;
-//   - `\u0000`, for the same reason `unescape_string` refuses to
-//     produce it: a native String is NUL-terminated, so U+0000
-//     would truncate the value and let a prefix compare equal to
-//     the whole.
+// A `\uXXXX` escape is grammatical whatever its four hex digits
+// name — `\u0000` and an unpaired surrogate (a high one with no low
+// escape after it, or a bare low one) included. RFC 8259 §7 allows
+// them, other producers emit them (a tool's output that read a
+// binary file carries them), and refusing them refused valid
+// documents. They used to be refused (until 2026-10-30, downstream
+// handoff); `unescape_string` decodes each to U+FFFD, since a native
+// String is NUL-terminated and a lone surrogate has no UTF-8.
 //
 // Duplicate object keys are syntactically valid JSON and are
 // accepted here; `valid_object` is the fn that refuses them.
@@ -1757,8 +1755,10 @@ fn __json_scalar_end(text: String, start: Int, n: Int, c: Int) -> Int {
 
 // The index just past the string starting at `start`, or -1.
 // Raw bytes below 0x20 are refused (RFC 8259 §7 requires them
-// escaped), as are unknown escapes and the three \uXXXX cases
-// documented on `__json_valid`.
+// escaped), as are unknown escapes and a `\u` not followed by four
+// hex digits. `\u0000` and an unpaired surrogate escape are
+// accepted: the grammar allows any four hex digits, and
+// `unescape_string` decodes both to U+FFFD.
 fn __json_string_end(text: String, start: Int, n: Int) -> Int {
     if start >= n || std::str::byte_at_unchecked(text, start) != 34 {
         return -1;
@@ -1775,23 +1775,10 @@ fn __json_string_end(text: String, start: Int, n: Int) -> Int {
             if e == 117 {
                 // The bound check covers __json_hex4's four reads.
                 if p + 4 >= n { return -1; }
-                let cp = __json_hex4(text, p + 1);
-                // -1 = not four hex digits; 0 = \u0000.
-                if cp <= 0 { return -1; }
-                if cp >= 56320 && cp <= 57343 { return -1; }
-                if cp >= 55296 && cp <= 56319 {
-                    // A high surrogate needs its low one, as its
-                    // own escape, right here.
-                    if p + 10 >= n { return -1; }
-                    if std::str::byte_at_unchecked(text, p + 5) != 92
-                        || std::str::byte_at_unchecked(text, p + 6) != 117
-                    {
-                        return -1;
-                    }
-                    let low = __json_hex4(text, p + 7);
-                    if low < 56320 || low > 57343 { return -1; }
-                    p = p + 6;
-                }
+                // -1 = not four hex digits. Any four hex digits are
+                // grammatical, `\u0000` and an unpaired surrogate
+                // included (RFC 8259 §7); a pair is two escapes.
+                if __json_hex4(text, p + 1) < 0 { return -1; }
                 p = p + 4;
             } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102
                 && e != 110 && e != 114 && e != 116

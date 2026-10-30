@@ -1238,14 +1238,21 @@ its plain form):
 | four digits that are not all hex, `\uZZZZ` | the six source bytes, verbatim |
 | any other unknown escape, `\q` | the two source bytes, verbatim |
 
-The two refusals are deliberate. A native `String` is
+The two substitutions are deliberate. A native `String` is
 NUL-terminated, so U+0000 has no representation in one: writing
 the raw byte would truncate the value and let a prefix compare
 equal to the whole, which is worse than a visibly wrong
 character. An unpaired surrogate is not a Unicode scalar and
 has no UTF-8 encoding at all. Both answer U+FFFD rather than
 failing, because these helpers read untrusted wire bytes and
-the rest of the document is still worth decoding.
+the rest of the document is still worth decoding; both are valid
+JSON, and `valid` / `valid_object` accept them (§ Validation).
+Every field reader (`find_string_field`, `string_field`,
+`obj_value_string`, `obj_key_string`, a generated `from_json`)
+decodes through `unescape_string`, so all of them answer the
+same. Since a `String` cannot hold a NUL, `escape_string` never
+meets one; what it is handed, U+FFFD included, comes out as
+valid JSON.
 
 ### Bounded memory
 
@@ -1288,14 +1295,21 @@ spelling in every `find_*` lookup in this module, so admitting
 one lets a field be present and unfindable at the same time.
 Keys of NESTED objects are checked for syntax only.
 
-Three refusals go past the grammar. Each is a value this runtime
-cannot carry, and each is the same call the escape helpers make:
+One refusal goes past the grammar: text that is not well-formed
+UTF-8, including a surrogate encoded directly as three bytes
+(ED A0..BF) and anything above U+10FFFF.
 
-| refused | why |
-| --- | --- |
-| text that is not well-formed UTF-8 | including a surrogate encoded directly as three bytes (ED A0..BF) and anything above U+10FFFF |
-| a lone `\uXXXX` surrogate | denotes no scalar; `unescape_string` answers U+FFFD for it, and an admission gate should refuse rather than hand on a replacement character |
-| `\u0000` | a native `String` is NUL-terminated, so U+0000 would truncate the value and let a prefix compare equal to the whole |
+A `\uXXXX` escape is accepted whatever its four hex digits name,
+`\u0000` and an unpaired surrogate (`\ud800` with no low escape
+after it, a bare `\udc00`) included: RFC 8259 §7 allows any of
+them, and producers emit them (a tool's output that read a binary
+file carries them). They were refused until 2026-10-30
+(downstream handoff), which turned away a whole valid document for
+one escape. Every reader decodes them as `unescape_string` does,
+to U+FFFD (§ String escaping), so a document `valid_object` admits
+is one every `find_*`, `string_field`, cursor and `from_json` read
+answers. Four digits that are not all hex, and a `\u` cut short,
+are still refused.
 
 `valid` is linear in the input. Both are **bounded**:
 

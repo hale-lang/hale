@@ -212,7 +212,7 @@ println(std::json::unescape_string("\\ud83d\\ude00")); // 😀
 
 `unescape_string` resolves standard escapes (`\"`, `\\`, `\n`, `\t`, etc.), `\uHHHH` hex escapes, and UTF-16 surrogate pairs for code points above `U+FFFF`.
 
-- **Unpaired surrogates** and **`\u0000`** decode to `` (`U+FFFD`). Because Hale strings are NUL-terminated internally, replacing `\u0000` with `U+FFFD` prevents silent string truncation.
+- **Unpaired surrogates** and **`\u0000`** decode to `` (`U+FFFD`). Because Hale strings are NUL-terminated internally, replacing `\u0000` with `U+FFFD` prevents silent string truncation. Both are valid JSON, so `valid` and `valid_object` accept them, and every field reader (`find_string_field`, `string_field`, the object cursor, `from_json`) decodes them the same way.
 - **Unrecognized escapes** (such as `\uZZZZ`) pass through unchanged.
 
 ---
@@ -233,7 +233,7 @@ if !std::json::valid_object(row) {
 
 | Validator | Guarantees & Limits |
 |---|---|
-| `std::json::valid(doc)` | Exactly one well-formed JSON value (RFC 8259 numbers: rejects `01`, `1.`, `.5`, `1e`, `+1`; accepts `-0`, `1e5`, `-1.25e-3`), valid UTF-8, no trailing tokens, no lone surrogates or `\u0000`, maximum nesting depth of **64 levels**. Zero heap allocations (~10 ms/MB). |
+| `std::json::valid(doc)` | Exactly one well-formed JSON value (RFC 8259 numbers: rejects `01`, `1.`, `.5`, `1e`, `+1`; accepts `-0`, `1e5`, `-1.25e-3`), valid UTF-8, no trailing tokens (any `\uXXXX` escape is accepted, `\u0000` and lone surrogates included), maximum nesting depth of **64 levels**. Zero heap allocations (~10 ms/MB). |
 | `std::json::valid_object(doc)` | All guarantees of `valid(doc)`, plus the top-level value must be an object with at most **64 top-level keys**, all keys must be **unique**, and no key may contain escape sequences (preventing `"\u0061"` vs `"a"` lookup mismatches). |
 
 > [!TIP]
