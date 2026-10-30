@@ -452,7 +452,8 @@ pub(super) fn ensure_containers_job(allocation: &Path) -> Result<bool, String> {
     if text.contains("job_name: containers") || !text.contains("scrape_configs:\n") {
         return Ok(false);
     }
-    let job = format!("  # The machines' containers (cAdvisor), labelled `host`, from senses.d/containers/.\n{NOW}      - files: [\"/etc/prometheus/senses.d/containers/*.json\"]\n");
+    const FILES: &str = "      - files: [\"/etc/prometheus/senses.d/containers/*.json\"]\n";
+    let job = format!("  # The machines' containers (cAdvisor), labelled `host`, from senses.d/containers/.\n{NOW}{FILES}");
     let text = text.replacen("scrape_configs:\n", &format!("scrape_configs:\n{job}"), 1);
     std::fs::write(&conf, text).map_err(|e| format!("write {}: {e}", conf.display()))?;
     Ok(true)
