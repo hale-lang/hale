@@ -1239,6 +1239,10 @@ main locus Host {
         memory: dna::Memory = dna::Memory { };
         memory_on: Bool = false;
         memory_said: String = "";
+        // whether the projection has once reached the record's head: said
+        // once, when it does, so a reader of the log knows the start-up
+        // catch-up (every row of a record new to this memory) is over
+        memory_caught_up: Bool = false;
         // GH #1026: the genome this node runs, pulled from the forge's
         // default branch every `genome_poll` seconds (HALE_DNA_GENOME_POLL;
         // 0 is never); a sha whose build failed is not restarted for again
@@ -1803,6 +1807,18 @@ main locus Host {
     fn memory_tick() {
         if !self.memory_on { return; }
         let applied = self.graph_projection.apply();
+        // a pass with nothing left to apply is the projection at the
+        // record's head
+        if !self.memory_caught_up
+            && len(applied.error) == 0
+            && !applied.yielded
+            && applied.rows == 0
+        {
+            self.memory_caught_up = true;
+            self.say(
+                "memory: the graph holds the record (" + to_string(applied.watermark) + " rows)",
+            );
+        }
         let erased = self.vault.complete_redactions();
         let mut why = "";
         if len(applied.error) > 0 { why = "projection: " + applied.error; }
