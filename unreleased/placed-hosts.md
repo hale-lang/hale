@@ -1,0 +1,1 @@
+- The habitat names its own machine by the address it is reached at, not `local`, in a graft's placement lines and an apply's per-allocation answer.
