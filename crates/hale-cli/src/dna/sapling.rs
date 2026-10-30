@@ -356,6 +356,8 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let id = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the organism pins no record")?;
     let key = &id[..12];
     let host = h["host"].as_str().unwrap_or("");
+    // the host as said to a person: the habitat's own machine by its name
+    let shown = super::shown_host(host);
     // its own compose project on the host, named for it: its services are
     // its own, never the habitat's
     let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
@@ -367,13 +369,13 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     let mounted = mounted_entries(&tracked);
     let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
-    let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
+    let mut out = vec![format!("{:<8}its services ({key}/services) on {shown}", "placed")];
     match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false })) {
         Ok(v) => out.extend(applied_lines(&v)),
         // a first build of its images on the host outlives the head's
         // deadline; the apply goes on in the head's keeping, so the graft
         // follows the allocation until its provider observes it
-        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), host)?),
+        Err(e) if e.contains("deadline") => out.extend(follow_apply(&format!("{key}/services"), &shown)?),
         Err(e) => return Err(e),
     }
     Ok(out)
