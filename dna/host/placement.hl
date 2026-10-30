@@ -225,6 +225,13 @@ fn habitat_apply_verb(dir: String) -> Answer {
         let sp = std::str::index_of(roles, " ");
         let role = roles[0..sp];
         roles = roles[(sp + 1)..len(roles)];
+        // a part the habitat's own server holds for it (its record a schema
+        // of the habitat's memory, its organization an account of the
+        // habitat's nerves) has no server of its own to bring up
+        if (role == "memory" || role == "nerves") && dna::part_held_by_habitat(key, role) {
+            said = said + role + " on the habitat's own\n";
+            continue;
+        }
         let applied = dna::placed_apply(key, role);
         if !applied.ok { return fail(role + ": " + applied.why); }
         said = said + role + " up on " + dna::placed_on(key, role).host + "\n";

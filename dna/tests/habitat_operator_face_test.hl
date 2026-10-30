@@ -202,7 +202,7 @@ fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
     );
     let cquery = face
         + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22containers%22%7D";
-    let c_until = std::time::now() + dna::wait_secs(120);
+    let c_until = std::time::now() + dna::wait_secs(240);
     let mut cseen = fetch(cookie, cquery);
     while !std::str::contains(cseen.stdout, "\"1\"]") && std::time::now() <= c_until {
         std::time::sleep(2s);

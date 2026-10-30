@@ -197,7 +197,7 @@ State projections and row emissions inside `dna::Dna` are partitioned into **rec
 | `dna/org/own_workflows.hl` | `graft` | Project | Custom project workflow definitions (never overwritten). |
 
 > [!NOTE]
-> Infrastructure configuration files (`compose.yaml`, `ports.yaml`, `nats.conf`, `nats.secrets.conf`, `postgres.secrets`, `senses.yml`) never live in the Git checkout. They are managed as local habitat allocations under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local/allocations/<id>/` ([Memory and the record](./memory.md#the-local-habitat)).
+> Infrastructure configuration files (`compose.yaml`, `ports.yaml`, `nats.conf`, `nerves.d/`, `postgres.secrets`, `senses.yml`) never live in the Git checkout. They are managed as local habitat allocations under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local/allocations/<id>/` ([Memory and the record](./memory.md#the-local-habitat)).
 
 ### Manifest (`hale.toml`) and Lockfile (`hale.lock`)
 

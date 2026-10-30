@@ -841,7 +841,7 @@ pub fn run(raw_args: &[String]) -> ExitCode {
                 // inherits (started without the spine's, the owner's and the
                 // head's) to say its own events. URLs carry no password; a
                 // part presents its credential from the vault by name
-                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_USER_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
+                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_USER_APP" || k == "HALE_DNA_NATS_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
                 Ok(NervesPlan::NoServer(why)) => {
                     eprintln!("hale dna dev: {why}");
                     Vec::new()

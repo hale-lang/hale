@@ -364,10 +364,13 @@ fn main() {
                 "its genome repository\n  - its genome repository /private" + scratch + "/doomed",
             ))
             && std::str::contains(op, "its Forgejo account doomed-" + dkey)
+        // its nerves an account on the habitat's NATS: dropped there,
+        // the server the habitat's and kept
             && std::str::contains(
                 op,
-                dkey + "/nerves: nerves (nerves-" + dkey + ") on this machine",
+                "its organization, an account on the habitat's nerves (nerves-",
             )
+            && std::str::contains(op, "the server is the habitat's, kept")
             && std::str::contains(op, "its compose services and projects\n")
             && std::str::contains(op, "its vault slots (names only)\n  - its slots: ")
             && std::str::contains(

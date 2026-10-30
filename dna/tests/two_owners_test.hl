@@ -27,7 +27,7 @@ import "../core/pond/realtime/nats" as nats;
 fn owner_reading(url: String, org: String, owner: String, secs: Int) -> String {
     let c = nats::NatsClient {
         url: url,
-        user: "spine",
+        user: dna::nerves_user(org, "spine"),
         credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") },
         name: "two-owners-probe",
         timeout: 2s,

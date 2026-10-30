@@ -1265,8 +1265,9 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
     if !row["roles"].is_object() {
         row["roles"] = serde_json::json!({});
     }
-    // a record the habitat's memory keeps names the habitat's server
-    let service = (role == "memory" && memory_root(root) != root).then(|| allocation_service_of(&genome_dir(), "memory")).flatten();
+    // a record the habitat's memory keeps, and an organization the
+    // habitat's nerves hold, name the habitat's server
+    let service = ((role == "memory" || role == "nerves") && part_root(root, role) != root).then(|| allocation_service_of(&genome_dir(), role)).flatten();
     next_rows_as(&mut row, &id, role, version, slots, &local_habitat_project(), operator, service.as_deref());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     write_row(&path, &row)?;
@@ -1413,8 +1414,14 @@ pub(super) fn parse_part(flag: &str, value: &str, into: &mut BTreeMap<String, Pa
 /// habitat's genome when its graft made it a tenant of the habitat's memory
 /// (`parts.json`: memory = reuse), as `dna::memory_root` resolves it.
 pub(crate) fn memory_root(root: &Path) -> PathBuf {
+    part_root(root, "memory")
+}
+
+/// The root whose server holds `part` of the organism at `root` (memory,
+/// or nerves: an account of the habitat's server), as `dna::part_root`.
+fn part_root(root: &Path, part: &str) -> PathBuf {
     let Some(dir) = allocation_dir(root) else { return root.to_path_buf() };
-    let reused = std::fs::read_to_string(dir.join("parts.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).is_some_and(|v| v["memory"] == "reuse");
+    let reused = std::fs::read_to_string(dir.join("parts.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).is_some_and(|v| v[part] == "reuse");
     let genome = genome_dir();
     let mine = manifest_pin(&root.join("hale.toml")).ok().flatten();
     let habitat = manifest_pin(&genome.join("hale.toml")).ok().flatten();
@@ -1468,6 +1475,7 @@ fn plan_lines(needs: &[String], has_app: bool, here: &str, host: &str, brings: &
         }
         out.push(match part_choice(role) {
             Part::Reuse if role == "memory" => plan_row(role, "reuse", &format!("a schema of its own on the habitat's Postgres ({here})"), "--own memory=<host>: a server of its own"),
+            Part::Reuse if role == "nerves" => plan_row(role, "reuse", &format!("an account of its own on the habitat's NATS ({here})"), "--own nerves=<host>: a server of its own"),
             Part::Reuse => plan_row(role, "reuse", &format!("a server of its own on the habitat's machine ({here}); sharing the habitat's is not built"), &format!("--own {role}=<host>: elsewhere")),
             Part::Own(h) => plan_row(role, "own", &format!("a server of its own on {}", h.unwrap_or_else(|| host.clone())), ""),
         });
@@ -2196,7 +2204,17 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
         if Some(&dir) == own.as_ref() {
             continue;
         }
+        let moved = behind(&row, &versions);
+        let root = row["root"].as_str().unwrap_or("<organism>");
+        let behind_note = if moved.is_empty() { String::new() } else { format!("; behind this toolchain ({}): `hale habitat migrate {root}` or `hale dna upgrade` migrates it", moved.join(", ")) };
         if !dir.join("compose.yaml").is_file() || !dir.join("ports.yaml").is_file() {
+            // nothing of its own to start: every part it was allocated is
+            // held by the habitat's servers (its memory a tenant of the
+            // habitat's, its nerves an account on the habitat's NATS), which
+            // are up when the habitat is
+            if dir.join("parts.json").is_file() {
+                out.push(format!("{:<8}allocation {key} ({root}): held by the habitat's own servers{behind_note}", "up"));
+            }
             continue;
         }
         // the tenant's allocations are the compose provider's to apply
@@ -2205,9 +2223,7 @@ fn bring_up(backends: &str, name: &str, with_body: bool) -> Result<Vec<String>, 
             out.push(format!("{:<8}allocation {key}: did not come up: {why}", "note"));
             continue;
         }
-        let moved = behind(&row, &versions);
-        let root = row["root"].as_str().unwrap_or("<organism>");
-        out.push(format!("{:<8}allocation {key} ({root}){}", "up", if moved.is_empty() { String::new() } else { format!("; behind this toolchain ({}): `hale habitat migrate {root}` or `hale dna upgrade` migrates it", moved.join(", ")) }));
+        out.push(format!("{:<8}allocation {key} ({root}){behind_note}", "up"));
     }
     Ok(out)
 }
@@ -2610,6 +2626,29 @@ fn habitat_address() -> String {
     std::env::var(remote::ADDRESS_ENV).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
+/// `ghcr.io/hale-lang/hale:<this version>` pulled and tagged `tag`, when it
+/// runs exactly this toolchain (`hale --version` alike: a build of another
+/// commit under the same version is not this one): the published image's
+/// name, or `None` (none published, unreachable, or another build), when
+/// compose builds the image instead.
+fn pull_published(tag: &str) -> Option<String> {
+    let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+    let ours = Command::new(std::env::current_exe().ok()?).arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    progress(&format!("pulling {published}, this release's image"));
+    if !matches!(docker(&["pull", "-q", &published]), Docker::Answered(_)) {
+        return None;
+    }
+    let theirs = match docker(&["run", "--rm", "--entrypoint", "hale", &published, "--version"]) {
+        Docker::Answered(v) => v.trim().to_string(),
+        _ => return None,
+    };
+    if theirs != ours {
+        progress(&format!("{published} is another build of this version; building the image instead"));
+        return None;
+    }
+    matches!(docker(&["tag", &published, tag]), Docker::Answered(_)).then_some(published)
+}
+
 /// The socket address the habitat's listener on `port` is probed at.
 fn listen_socket(port: u16) -> std::net::SocketAddr {
     let ip: std::net::IpAddr = habitat_listen_host().parse().unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
@@ -2638,7 +2677,16 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let env_image = std::env::var("HALE_HABITAT_IMAGE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let override_image = asked_image.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).or(env_image);
     let image = override_image.clone().unwrap_or_else(|| default_habitat_image_tag(pin));
-    let build_spec = if override_image.is_some() {
+    // the published image of this release, when this machine has no image
+    // of this toolchain yet: pulled, checked to run this very toolchain,
+    // and tagged as the one compose would otherwise build (a build compiles
+    // the compiler and the head's programs, several GB at its peak, more
+    // than a small machine's docker gives)
+    let mut pulled = None;
+    if override_image.is_none() && matches!(docker(&["image", "inspect", "-f", "{{.Id}}", &image]), Docker::Failed(_)) {
+        pulled = pull_published(&image);
+    }
+    let build_spec = if override_image.is_some() || pulled.is_some() {
         String::new()
     } else {
         format!("    build:\n      context: \"{HALE_GIT}#{pin}\"\n")
@@ -2747,7 +2795,11 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         _ => None,
     };
     let grafana_note = (grafana.is_none() && senses.is_none() && !readings::grafana_off()).then(|| format!("{:<8}none: the habitat has no senses' store of its own to chart ({} publishes none)", "grafana", dir.join("ports.yaml").display()));
-    let grafana_env = grafana.as_ref().map(|(port, header)| format!("      HALE_DNA_GRAFANA_PORT: \"{port}\"\n      HALE_DNA_GRAFANA_HEADER: \"{header}\"\n")).unwrap_or_default();
+    // on demand (unless HALE_DNA_GRAFANA=on), the face starts and stops it
+    // with the compose files of this directory
+    let on_demand = readings::grafana_runs() == readings::GrafanaRuns::OnDemand;
+    let compose_dir = dir.display().to_string();
+    let grafana_env = grafana.as_ref().map(|(port, header)| readings::grafana_face_env(*port, header, on_demand.then_some(compose_dir.as_str()))).unwrap_or_default();
     // what the senses' store scrapes of the machines: this one, until the
     // head writes the hosts it adds beside it
     readings::seed_targets(&dir, &host_label_here())?;
@@ -2864,10 +2916,12 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         // their backends are the habitat's allocations, brought up by
         // their provider: `depends_on` orders the stop, never this start
         .args(["up", "-d", "--no-deps", "body", "face"])
-        .args(grafana.as_ref().map(|_| "grafana"));
-    // a Grafana an earlier `up` started, when this one runs none (the
-    // project holds the organisms' allocations too: never --remove-orphans)
-    if grafana.is_none() {
+        .args(grafana.as_ref().filter(|_| !on_demand).map(|_| "grafana"));
+    // a Grafana an earlier `up` started, when this one runs none or runs it
+    // on demand (made again below, joined to this face's network: a
+    // container joined to a face this `up` replaced would never start). The
+    // project holds the organisms' allocations too: never --remove-orphans.
+    if grafana.is_none() || on_demand {
         if let Docker::Answered(ids) = docker(&["ps", "-aq", "--filter", &format!("label=com.docker.compose.project={}", local_habitat_project()), "--filter", "label=com.docker.compose.service=grafana"]) {
             let ids: Vec<&str> = ids.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
             if !ids.is_empty() {
@@ -2883,6 +2937,28 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
     let ran = cmd.output().map_err(|e| format!("docker compose: {e}"))?;
     if !ran.status.success() {
         return Err(format!("docker compose up -d body face: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+    }
+    // an on-demand Grafana is created (its image pulled) and not started:
+    // the face starts it at its first use (`compose start`, which makes
+    // nothing). Without --no-deps, so compose joins it to the face's
+    // network: with it, compose (2.6) leaves `service:face` unresolved, and
+    // the container never starts. The face it depends on is up already.
+    if grafana.is_some() && on_demand {
+        let ran = Command::new("env")
+            .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+            .arg(local_habitat_project())
+            .arg("--project-directory")
+            .arg(&dir)
+            .arg("-f")
+            .arg(&compose_path)
+            .arg("-f")
+            .arg(&ports_path)
+            .args(["up", "--no-start", "grafana"])
+            .output()
+            .map_err(|e| format!("docker compose: {e}"))?;
+        if !ran.status.success() {
+            return Err(format!("docker compose up --no-start grafana: {}", String::from_utf8_lossy(&ran.stderr).trim()));
+        }
     }
 
     progress("waiting for the habitat's body and face probes");
@@ -2928,7 +3004,8 @@ fn start_body_and_face(genome: &Path, backends: &str, name: &str, asked_image: O
         lines.push(format!("{:<8}{link}", "sign in"));
     }
     if grafana.is_some() {
-        lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in)", "grafana", readings::GRAFANA_PATH));
+        let when = if on_demand { format!("; started at its first use, stopped after {} minutes unused", readings::GRAFANA_IDLE_MINUTES) } else { String::new() };
+        lines.push(format!("{:<8}{face_url}{} (compose service grafana, behind the face's sign-in{when})", "grafana", readings::GRAFANA_PATH));
     }
     lines.extend(grafana_note);
     lines.extend(reflexes_line);
@@ -3046,7 +3123,10 @@ fn status() -> ExitCode {
             let own = format!("memory-{key}");
             let memory_service = row["roles"]["memory"]["service"].as_str().filter(|s| s.starts_with("memory-")).unwrap_or(&own).to_string();
             let tenant = memory_service != own;
-            let service = if role == "database" || role == "memory" { memory_service.clone() } else { format!("{role}-{key}") };
+            let own_nerves = format!("nerves-{key}");
+            let nerves_service = row["roles"]["nerves"]["service"].as_str().filter(|s| s.starts_with("nerves-")).unwrap_or(&own_nerves).to_string();
+            let nerves_tenant = nerves_service != own_nerves;
+            let service = if role == "database" || role == "memory" { memory_service.clone() } else if role == "nerves" { nerves_service.clone() } else { format!("{role}-{key}") };
             let on_operator = row["roles"][role]["service"].as_str() == Some("operator");
             let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
@@ -3059,7 +3139,15 @@ fn status() -> ExitCode {
                 (Some(had), None) => format!(", schema {had}"),
                 (None, _) => String::new(),
             };
-            let whose = if tenant && (role == "memory" || role == "database") { if role == "memory" { ", the habitat's: a schema of its own there" } else { ", the habitat's: a database of its own there" } } else { "" };
+            let whose = if tenant && role == "memory" {
+                ", the habitat's: a schema of its own there"
+            } else if tenant && role == "database" {
+                ", the habitat's: a database of its own there"
+            } else if nerves_tenant && role == "nerves" {
+                ", the habitat's: an account of its own there"
+            } else {
+                ""
+            };
             println!("  {role:<7} {service} {state}{whose}{version}{migration}");
         }
     }
@@ -4105,7 +4193,7 @@ mod tests {
         let lines = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, Some("http://rack-a.lan:8803"), &|r: &str| m.get(r).cloned().unwrap_or_else(|| default_part(r, &brings)));
         let text = lines.join("\n");
         assert!(text.contains(&plan_row("memory", "own", "a server of its own on box-1", "")), "{text}");
-        assert!(text.contains(&plan_row("nerves", "reuse", "a server of its own on the habitat's machine (rack-a.lan); sharing the habitat's is not built", "--own nerves=<host>: elsewhere")), "{text}");
+        assert!(text.contains(&plan_row("nerves", "reuse", "an account of its own on the habitat's NATS (rack-a.lan)", "--own nerves=<host>: a server of its own")), "{text}");
         let defaults = plan_lines(&needs, true, "rack-a.lan", "box-1", &brings, None, &|r: &str| default_part(r, &brings)).join("\n");
         assert!(defaults.contains(&plan_row("memory", "reuse", "a schema of its own on the habitat's Postgres (rack-a.lan)", "--own memory=<host>: a server of its own")), "{defaults}");
         assert!(defaults.contains(&plan_row("identity", "own", "its own sign-in stub", "")[..]), "no published identity: {defaults}");

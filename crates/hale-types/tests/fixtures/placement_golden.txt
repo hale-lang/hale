@@ -11781,6 +11781,8 @@ dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/face_grafana_on_demand_test.hl
+
 == dna/tests/faces_named_page_test.hl
 
 == dna/tests/faces_named_start_test.hl
@@ -11968,6 +11970,8 @@ dynamic	__lib_dna__core___memory_record__RecordJournal	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #919aadb4
+
+== dna/tests/habitat_compose_block_test.hl
 
 == dna/tests/habitat_face_test.hl
 
@@ -16172,6 +16176,7 @@ row	~.handler	Face	pool:io	inherited
 row	~.handler.web	__lib_dna__api__web__web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in face/standard
+dynamic	GrafanaKeeper	on main
 dynamic	IndexReader	on pool:io
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpResponder	on pool:io

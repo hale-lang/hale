@@ -50,6 +50,7 @@ fn forgejo_compose_text(port: Int) -> String {
         + "  forge:\n"
         + "    image: " + FORGEJO_IMAGE + "\n"
         + compose_labels("habitat", "forge")
+        + "    mem_limit: " + FORGE_LIMIT + "\n"
         + "    network_mode: bridge\n"
         + "    environment:\n"
         + "      FORGEJO__security__INSTALL_LOCK: \"true\"\n"
