@@ -1,0 +1,28 @@
+// The web UIs a seed declares in its manifest (`[dna.ui.<name>]`): each
+// a label, the compose service that serves it, a path under that service's
+// address and, optionally, the declared secret a person reads to sign in.
+// The habitat's home screen lists them beside each organism's face.
+//
+// The toolchain is the one reader of the declaration (`hale dna
+// declared-uis <dir>`): this side never parses the manifest's tables.
+
+// The declaration as the toolchain read it.
+type DeclaredUis {
+    ok: Bool = false;
+    why: String = "";
+    // a UI a line: `<name>\t<label>\t<service>\t<path>\t<login or "">`
+    lines: String = "";
+}
+
+// The UIs `<dir>/hale.toml` declares; none when it has no manifest.
+fn declared_uis(dir: String) -> DeclaredUis {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let r = run_tool(hale + "\ndna\ndeclared-uis\n" + dir);
+    if r.code != 0 {
+        let said = trim_nl(r.stderr);
+        return DeclaredUis {
+            why: if len(said) > 0 { last_line(said) } else { "hale dna declared-uis failed" },
+        };
+    }
+    return DeclaredUis { ok: true, lines: r.stdout };
+}

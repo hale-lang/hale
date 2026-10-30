@@ -232,6 +232,13 @@ interface __StdApiSurface {
     fn schema_name(k: Int) -> String;
     fn schema_doc(k: Int) -> String;
     fn roles() -> String;
+    // The streams of the hubs an `http::Rest` exposure mounts (`hubs:`,
+    // GH #1780), described beside its members: stream `i` as a JSON object,
+    // the roles its row requires and the names of the schemas it reaches.
+    fn stream_count() -> Int;
+    fn stream_doc(i: Int) -> String;
+    fn stream_requires(i: Int) -> String;
+    fn stream_refs(i: Int) -> String;
 }
 
 // ---- the topics a transport, an exposure and a receiver share ----
@@ -603,6 +610,10 @@ locus __StdApiNoSurface {
     fn schema_name(k: Int) -> String { return ""; }
     fn schema_doc(k: Int) -> String { return ""; }
     fn roles() -> String { return ""; }
+    fn stream_count() -> Int { return 0; }
+    fn stream_doc(i: Int) -> String { return ""; }
+    fn stream_requires(i: Int) -> String { return ""; }
+    fn stream_refs(i: Int) -> String { return ""; }
 }
 
 /// A role source that holds nobody: the default of an exposure's.
@@ -787,6 +798,19 @@ locus __StdApiExposure {
             }
             i = i + 1;
         }
+        // the streams of the hubs the exposure's listener mounts, by the
+        // same sources (an `http::Rest`'s `hubs:`; none elsewhere)
+        let mut streams = "";
+        let sn = self.rows.stream_count();
+        let mut j = 0;
+        while j < sn {
+            if len(self.missing_role(p, self.rows.stream_requires(j))) == 0 {
+                if len(streams) > 0 { streams = streams + ","; }
+                streams = streams + self.rows.stream_doc(j);
+                reached = reached + self.rows.stream_refs(j) + ",";
+            }
+            j = j + 1;
+        }
         let mut schemas = "";
         let sc = self.rows.schema_count();
         let mut k = 0;
@@ -820,7 +844,7 @@ locus __StdApiExposure {
             + "\",\"address\":\"" + std::json::escape_string(self.address)
             + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_doc(p)
             + ",\"roles\":[" + roles + "]},\"members\":[" + members
-            + "],\"streams\":[],\"outcomes\":"
+            + "],\"streams\":[" + streams + "],\"outcomes\":"
             + (
                 if self.via == "mcp" {
                     __api_mcp_outcomes()
@@ -2213,6 +2237,19 @@ locus __StdApiHttpPeer {
             std::io::tcp::Stream,
             std::http::Request
         ) -> Bool = __api_rest_no_fallback;
+        // the hubs an `http::Rest` mounts (spec/api.md § Streams, a hub
+        // mounted on an `http::Rest`): `<path> <hub>` per mount, joined by
+        // `,`, and what a WebSocket upgrade at a mount's path is handed to
+        // (`api_hub.hl`'s, joined only to a program that mounts one)
+        hubs: String = "";
+        mounts: __StdApiRestMounts = __StdApiRestMounts { };
+        serve_mount: fn (
+            __StdApiRestMounts,
+            String,
+            Int,
+            String,
+            std::http::Request
+        ) -> Bool = __api_rest_no_mount;
     }
     bus {
         subscribe __ApiHttpOutT as on_out where key == self.route;
@@ -2258,9 +2295,20 @@ locus __StdApiHttpPeer {
         }
         if self.open && head_end >= 0 {
             let head = std::http::parse_request(buf[0..(head_end + 4)]);
+            if len(self.hubs) > 0 {
+                // a WebSocket upgrade at a mounted hub's path: the hub's
+                // connection now, with what was read of it
+                let __api_rest_mount_fn = self.serve_mount;
+                if __api_rest_mount_fn(self.mounts, self.hubs, self.fd, buf, head) {
+                    self.fd = -1;
+                    self.open = false;
+                }
+            }
             let want = std::str::parse_int(std::http::header(head, "Content-Length")) or 0;
             // the declared length, before a byte of the body is read
-            if want > self.max_request {
+            if !self.open {
+                // handed to a hub
+            } else if want > self.max_request {
                 self.respond(
                     413,
                     "{\"refusal\":"
@@ -2402,6 +2450,15 @@ locus __StdApiHttpConns {
             std::io::tcp::Stream,
             std::http::Request
         ) -> Bool = __api_rest_no_fallback;
+        hubs: String = "";
+        mounts: __StdApiRestMounts = __StdApiRestMounts { };
+        serve_mount: fn (
+            __StdApiRestMounts,
+            String,
+            Int,
+            String,
+            std::http::Request
+        ) -> Bool = __api_rest_no_mount;
     }
     fn serve(c: __StdIoTcpAccepted) {
         let n = ((c.seq - 1) % 16777215) + 1;
@@ -2415,6 +2472,9 @@ locus __StdApiHttpConns {
             has_fallback: self.has_fallback,
             fallback: self.fallback,
             serve_fallback: self.serve_fallback,
+            hubs: self.hubs,
+            mounts: self.mounts,
+            serve_mount: self.serve_mount,
         };
     }
     accept(p: __StdApiHttpPeer) { }
@@ -2472,6 +2532,20 @@ locus __StdApiHttpListener {
         ) -> Bool = __api_rest_no_fallback;
         // the handler as the connections hold it
         held: __StdApiRestFallback = __StdApiRestFallback { h: self.fallback };
+        // the hubs an `http::Rest` mounts, written by the compiler from the
+        // transport's `hubs:` (spec/api.md § Streams): the table, the hubs'
+        // connections (`std::api::ws`'s, on this listener's pool) and what
+        // hands an upgrade to them
+        hubs: String = "";
+        mounts: __StdApiRestMount = __StdApiRestNoMount { };
+        serve_mount: fn (
+            __StdApiRestMounts,
+            String,
+            Int,
+            String,
+            std::http::Request
+        ) -> Bool = __api_rest_no_mount;
+        held_mounts: __StdApiRestMounts = __StdApiRestMounts { h: self.mounts };
         // the body cap its connections hold: 1 MiB until the transport's
         // answer to its asking names another (an `http::Rest`'s
         // `max_request_bytes`)
@@ -2491,6 +2565,9 @@ locus __StdApiHttpListener {
                 has_fallback: self.has_fallback,
                 fallback: self.held,
                 serve_fallback: self.serve_fallback,
+                hubs: self.hubs,
+                mounts: self.held_mounts,
+                serve_mount: self.serve_mount,
             },
             armed: false,
         };
@@ -2522,6 +2599,9 @@ locus __StdApiHttpListener {
                 has_fallback: self.has_fallback,
                 fallback: self.held,
                 serve_fallback: self.serve_fallback,
+                hubs: self.hubs,
+                mounts: self.held_mounts,
+                serve_mount: self.serve_mount,
             },
         };
     }
@@ -2549,6 +2629,9 @@ locus __StdApiHttpListener {
                     has_fallback: self.has_fallback,
                     fallback: self.held,
                     serve_fallback: self.serve_fallback,
+                    hubs: self.hubs,
+                    mounts: self.held_mounts,
+                    serve_mount: self.serve_mount,
                 },
             };
         }
@@ -3115,6 +3198,39 @@ fn __api_rest_serves(routes: String, target: String) -> Bool {
 fn __api_rest_no_fallback(
     f: __StdApiRestFallback,
     s: std::io::tcp::Stream,
+    req: std::http::Request
+) -> Bool {
+    return false;
+}
+
+/// The hubs an `http::Rest` mounts, as its connections hold them (GH
+/// #1780): what a WebSocket upgrade at a mounted path is handed to, `h`,
+/// the hubs' connections (`std::api::ws`'s, in `api_hub.hl`). Only
+/// `api_hub.hl`'s `__api_rest_mount_serve`, joined to a program that
+/// mounts a hub, calls it.
+interface __StdApiRestMount {
+    fn mount(tid: Int, fd: Int, pre: String);
+}
+
+locus __StdApiRestMounts {
+    params {
+        h: __StdApiRestMount = __StdApiRestNoMount { };
+    }
+}
+
+/// What a REST transport that mounts no hub holds in its place; never
+/// called (`hubs` is empty wherever it is).
+locus __StdApiRestNoMount {
+    fn mount(tid: Int, fd: Int, pre: String) { }
+}
+
+/// What a connection holds in place of the mount's server when the
+/// exposure mounts no hub; never called (`hubs` is empty).
+fn __api_rest_no_mount(
+    m: __StdApiRestMounts,
+    hubs: String,
+    fd: Int,
+    pre: String,
     req: std::http::Request
 ) -> Bool {
     return false;

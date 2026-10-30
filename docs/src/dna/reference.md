@@ -217,6 +217,8 @@ hale dna declared-secrets [dir]
                              the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family
 hale dna declared-provides [dir]
                              what <dir>/hale.toml provides the habitat's organisms, a line each: capability, service, path, models_path, key
+hale dna declared-uis [dir]
+                             the web UIs <dir>/hale.toml declares, a line each: name, label, service, path, login
 ```
 
 ### Worker Legs and Voice (Models)

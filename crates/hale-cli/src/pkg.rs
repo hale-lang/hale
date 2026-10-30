@@ -165,6 +165,10 @@ pub struct DnaManifest {
     /// and checks it).
     #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
     pub provides: Option<toml::Table>,
+    /// `[dna.ui.<name>]` — a web UI the seed serves, which the habitat's
+    /// home screen lists (`dna::uis::declared` reads and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub ui: Option<toml::Table>,
     /// Every other key of `[dna]`, which this toolchain does not know.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,

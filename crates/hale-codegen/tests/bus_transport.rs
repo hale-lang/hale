@@ -19,6 +19,8 @@ mod api_grpc_proto;
 mod api_hub;
 #[path = "api_hub_desk.rs"]
 mod api_hub_desk;
+#[path = "api_hub_rest.rs"]
+mod api_hub_rest;
 #[path = "api_hub_streams.rs"]
 mod api_hub_streams;
 #[path = "api_hub_substrate.rs"]
@@ -35,6 +37,8 @@ mod api_mcp;
 mod api_pb_codec;
 #[path = "api_rest.rs"]
 mod api_rest;
+#[path = "api_rest_conc.rs"]
+mod api_rest_conc;
 #[path = "api_runtime.rs"]
 mod api_runtime;
 #[path = "api_serve_build.rs"]

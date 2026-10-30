@@ -49,6 +49,7 @@ mod head;
 mod pack;
 mod provides;
 mod secrets;
+mod uis;
 
 /// Where a toolchain before GH #1590 kept the record. Nothing reads it: a
 /// clone that still holds one is refused by `init` and `upgrade`, and its
@@ -1118,6 +1119,9 @@ pub fn run(raw_args: &[String]) -> ExitCode {
         // what the seed provides the habitat's other organisms
         // ([dna.provides.<capability>]), a line each
         Some("declared-provides") => provides::declared_cmd(&args[1..]),
+        // the web UIs the seed declares ([dna.ui.<name>]), a line each: what
+        // the habitat's head reads to list them on its home screen
+        Some("declared-uis") => uis::declared_cmd(&args[1..]),
         // GH #989: every secret the organism requires, and whether the vault holds it
         Some("secrets") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -1436,6 +1440,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family");
     eprintln!("       hale dna declared-provides [dir]");
     eprintln!("                                    what <dir>/hale.toml provides the habitat's organisms, a line each: capability, service, path, models_path, key");
+    eprintln!("       hale dna declared-uis [dir]");
+    eprintln!("                                    the web UIs <dir>/hale.toml declares, a line each: name, label, service, path, login");
     eprintln!("       hale dna application remove [project] [--as <who>]");
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
