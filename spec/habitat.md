@@ -1325,7 +1325,11 @@ grafted organism that came from a sapling the habitat pins, and a
   file at its root. The files are read where they are, under the
   habitat's directory on its machine: here, or over the person's login
   through a pointer, after the pointer's record is checked there, as the
-  vault is. The plan names the figure (`reserve`). A command that sizes
+  vault is. On a Mac docker runs in a VM the Mac gives all of its memory
+  to, whatever the containers use: there the figure is the VM's memory
+  (`docker info`'s `MemTotal`, read on the host with its facts) when that
+  is more than the limits. The plan names the figure (`reserve`), and
+  which it is. A command that sizes
   itself by the host's memory subtracts it: a provider's node offers the
   models what is left, so a node placed on a host the habitat also runs
   on does not promise the models memory the habitat's containers may

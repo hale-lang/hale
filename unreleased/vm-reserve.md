@@ -1,0 +1,1 @@
+- On a Mac, the memory a host command is told the habitat holds (`HALE_DNA_HOST_RESERVED_BYTES`) is the whole VM docker runs in when that is more than the containers' limits: the Mac gives the VM all of it, so a voice node there no longer offers models memory the habitat's VM takes.
