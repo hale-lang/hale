@@ -382,7 +382,10 @@ fn allocation_links(root: String, body: String, applied: String) -> String {
         || (ask
                 && (bind_is_loopback(address)
                         || bind_is_loopback(dna::host_listen_address(address))));
-    return allocation_links_at(published, applied, here, address, on_head, declared);
+    // the address the host's name resolves to, which its projects are told
+    // to bind (HALE_DNA_HOST_LISTEN): a port bound there is the host's own
+    let listen = if here { "" } else { dna::host_listen_address(address) };
+    return allocation_links_at(published, applied, here, address, listen, on_head, declared);
 }
 
 // Whether the habitat is local to the person's browser: it declares no
@@ -420,13 +423,15 @@ fn publishes_loopback(published: String) -> Bool {
 // interface links at the host's address, one bound to a specific address
 // at that address, and one bound to the loopback gets the note. A host is
 // named as it was added (`hale habitat host add <name>`): a port bound to
-// every interface, or to the host's own address, links at that name, not
-// the address it resolved to; one bound to another address links there.
+// every interface, or to the host's own address (`address` as recorded, or
+// `listen`, what its name resolves to and its projects are told to bind),
+// links at that name; one bound to another address links there.
 fn allocation_links_at(
     published: String,
     applied: String,
     here: Bool,
     address: String,
+    listen: String,
     on_head: Bool,
     declared: String
 ) -> String {
@@ -454,7 +459,7 @@ fn allocation_links_at(
                 "127.0.0.1"
             } else if loopback {
                 ""
-            } else if bind == address && !here {
+            } else if !here && (bind == address || (len(listen) > 0 && bind == listen)) {
                 // bound to the host's own address: the host, by its name
                 named
             } else if std::str::contains(bind, ":") {
