@@ -1223,9 +1223,15 @@ grafted organism that came from a sapling the habitat pins, and a
   habitat on another machine, `up --host`) it is that machine, reached
   over the person's login the pointer names (its host, user and SSH
   port). The scripts, the plan, the inputs and the record are the same as
-  for any host; the plan says which way it is reached. Any other name is
-  a host the habitat added: one it does not hold is refused, naming `hale
-  habitat host add <h>` and `--host local`.
+  for any host; the plan says which way it is reached. The machine also
+  answers to its own name, whole or by its first label: the pointer's
+  host (`--host rack-a.lan` or `--host rack-a` for a habitat `up --host
+  rack-a.lan`), else the habitat's address where it runs, or this
+  machine's hostname; it is recorded as `local` and said by that name,
+  and its default `{id}` is that name's first label. A host the habitat
+  added keeps its own name first. Any other name is a host the habitat
+  added: one it does not hold is refused, naming `hale habitat host add
+  <h>` and `--host local`. A graft's `--host` resolves its name the same way.
 
 - **Its source.** The organism's sapling repository at its pinned
   revision, cloned (then fetched) on the host under the login's

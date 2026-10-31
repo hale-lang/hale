@@ -2622,7 +2622,11 @@ fn habitat_listen_host() -> String {
 /// recorded at, or `local` on the loopback (as the head's `host_label`).
 pub(super) fn host_label_here() -> String {
     let at = habitat_address();
-    if at == "127.0.0.1" || at == "localhost" { "local".to_string() } else { at }
+    if at != "127.0.0.1" && at != "localhost" {
+        return at;
+    }
+    // a machine that points at a habitat on another: that machine's name
+    remote::pointer().and_then(|p| p["host"].as_str().map(str::to_string)).filter(|h| !h.is_empty()).unwrap_or_else(|| "local".to_string())
 }
 
 /// A host as a person knows it: the habitat's own machine (`local` in its
