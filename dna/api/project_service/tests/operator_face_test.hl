@@ -315,7 +315,7 @@ fn main() {
     std::test::assert_eq_int(unsigned.status, 401, "hosts is refused without a session");
     // a write is refused with no session, whatever the member, and nothing is made
     let no_add = row_call(
-        face, "", "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        face, "", "add_host", "fnv1a64:d63b078354f77b7a",
         "{\"name\": \"never.invalid\", \"user\": \"ops\", \"port\": 22}",
     );
     std::test::assert_eq_int(no_add.status, 401, "add_host without a session: " + no_add.body);
@@ -433,7 +433,7 @@ fn main() {
     std::test::assert(sshd.pid > 0, "the machine's sshd spawned");
     std::time::sleep(1s);
     let added_host = row_call(
-        face, jar, "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        face, jar, "add_host", "fnv1a64:d63b078354f77b7a",
         "{\"name\": \"127.0.0.1\", \"user\": \"ops\", \"port\": " + to_string(ssh_port) + "}",
     );
     std::test::assert(

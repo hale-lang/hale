@@ -70,11 +70,15 @@ fn surface_read(face: String, member: String, field: String) -> String {
     return std::json::find_string_field(r, field);
 }
 
-// What the head's surface answers `member` with `payload`, through the face.
+// What the head's surface answers `member` with `payload`, through the face,
+// as the trusted-local session writes: with the head's launch token.
 fn surface_call(face: String, member: String, payload: String) -> String {
+    let token = dna::trim_nl(
+        std::io::fs::read_file(dna::local_habitat_dir() + "/face-state/head.token") or "",
+    );
     return dna::run_tool(
-        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n--data\n" + payload + "\n" + face
-            + "/api/hale/v1/head/surface/call/" + member,
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Token: " + token
+            + "\n--data\n" + payload + "\n" + face + "/api/hale/v1/head/surface/call/" + member,
     ).stdout;
 }
 
