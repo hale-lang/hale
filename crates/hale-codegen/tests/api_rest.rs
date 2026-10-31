@@ -546,3 +546,64 @@ fn a_cross_site_write_is_refused() {
     assert_eq!(read.status, 200, "{}", read.body);
     assert!(server.finish().status.success());
 }
+
+/// A browser sends `Origin` on a same-origin write too, so a page the
+/// exposure serves itself (an admin UI's bodiless `POST .../archive`) names
+/// the request's own `Host`: that passes the guard as a listed origin would,
+/// over `http://` or `https://`, case aside. Another port or host, `null`,
+/// and an origin with a path are still refused.
+#[test]
+fn a_same_origin_bodiless_write_is_served() {
+    let server = Server::start(&program(), &[]);
+    server.ready();
+    let p = server.port;
+    let host = format!("127.0.0.1:{p}");
+    let write = |origin: &str, host: &str| {
+        request(
+            p,
+            "DELETE",
+            "/v1/items/5",
+            &[bearer("t-user"), h("Host", host), h("Origin", origin)],
+            None,
+        )
+    };
+    for origin in [
+        format!("http://127.0.0.1:{p}"),
+        format!("https://127.0.0.1:{p}"),
+        format!("HTTP://127.0.0.1:{p}"),
+    ] {
+        let served = write(&origin, &host);
+        assert_eq!(served.status, 204, "{origin}: {}", served.body);
+        // same-origin is not CORS: nothing is echoed
+        assert_eq!(served.header("Access-Control-Allow-Origin"), None);
+    }
+    let named = write("http://Admin.Local:8080", "admin.local:8080");
+    assert_eq!(named.status, 204, "{}", named.body);
+    for (origin, host) in [
+        (format!("http://127.0.0.1:{}", p.wrapping_add(1)), host.clone()),
+        (format!("http://127.0.0.2:{p}"), host.clone()),
+        ("http://127.0.0.1".to_string(), host.clone()),
+        ("null".to_string(), host.clone()),
+        (format!("http://127.0.0.1:{p}/admin"), host.clone()),
+        (format!("ftp://127.0.0.1:{p}"), host.clone()),
+        (format!("127.0.0.1:{p}"), host.clone()),
+        ("http://".to_string(), "".to_string()),
+    ] {
+        let refused = write(&origin, &host);
+        assert_eq!(refused.status, 403, "{origin} / {host}: {}", refused.body);
+        assert!(refused.body.contains("\"kind\":\"unauthorized\""), "{}", refused.body);
+    }
+    // a listed origin is still served whatever the Host
+    let listed = write("https://app.example", &host);
+    assert_eq!(listed.status, 204, "{}", listed.body);
+    // and the media-type check is unchanged for a same-origin body
+    let form = request(
+        p,
+        "POST",
+        "/v1/chat/completions",
+        &[bearer("t-user"), h("Host", &host), h("Origin", &format!("http://{host}")), h("Content-Type", "text/plain")],
+        Some("{\"model\":\"m1\",\"prompt\":\"hi\"}"),
+    );
+    assert_eq!(form.status, 415, "{}", form.body);
+    assert!(server.finish().status.success());
+}
