@@ -75,7 +75,7 @@ use crate::effect_rows::EffectRows;
 use crate::stdlib_surface::EffectSet;
 
 /// One node a visit reaches.
-pub(crate) enum Visited<'a> {
+pub enum Visited<'a> {
     Stmt(&'a Stmt),
     Expr(&'a Expr),
     /// `or wait`: a publish that waits for room.
@@ -83,7 +83,7 @@ pub(crate) enum Visited<'a> {
 }
 
 /// Visit every statement and expression of `b`, pre-order.
-pub(crate) fn visit_block<'a>(b: &'a Block, f: &mut dyn FnMut(Visited<'a>)) {
+pub fn visit_block<'a>(b: &'a Block, f: &mut dyn FnMut(Visited<'a>)) {
     for s in &b.stmts {
         visit_stmt(s, f);
     }
@@ -183,7 +183,7 @@ pub(crate) fn visit_stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(Visited<'a>)) {
     }
 }
 
-pub(crate) fn visit_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(Visited<'a>)) {
+pub fn visit_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(Visited<'a>)) {
     f(Visited::Expr(e));
     match e {
         Expr::Binary { left, right, .. } => {
@@ -235,7 +235,7 @@ pub(crate) fn visit_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(Visited<'a>)) {
 }
 
 /// A place a program holds an expression: a body, or one expression.
-pub(crate) enum Root<'a> {
+pub enum Root<'a> {
     Block(&'a Block),
     Expr(&'a Expr),
 }
@@ -248,7 +248,7 @@ pub(crate) enum Root<'a> {
 /// defaults), closure assertions, fns (with theirs), consts, record types'
 /// field defaults and subscriptions' `where key == …` keys; a
 /// perspective's param defaults, `stable_when` and fns (with theirs).
-pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &mut dyn FnMut(Root<'a>)) {
+pub fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &mut dyn FnMut(Root<'a>)) {
     use hale_syntax::ast::{PerspectiveMember, TopDecl};
     let defaults = |params: &'a [Param], f: &mut dyn FnMut(Root<'a>)| {
         for p in params {

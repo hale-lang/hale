@@ -97,6 +97,12 @@ pub mod repo;
 pub mod seam_expand;
 pub mod surfaces;
 pub(crate) mod listener_window;
+/// The listener window's walk over every statement and expression a
+/// program holds, for a reader outside the crate that needs the node
+/// under a position (the LSP's goto-definition).
+pub mod expr_walk {
+    pub use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
+}
 pub mod unit_graph;
 pub mod units;
 pub mod unit_values;
