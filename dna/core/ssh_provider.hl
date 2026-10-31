@@ -627,7 +627,8 @@ locus SshProvider {
             self.root,
             h,
             "docker ps -a --filter label=com.docker.compose.project='" + a.project + "'"
-                + by_service + " --format '{{.Image}}|{{.State}} {{.Status}}'",
+                + by_service
+                + " --format '{{.Image}}|{{.State}} {{.Status}}|{{.Label \"com.docker.compose.service\"}}'",
             "",
         );
         let failed = ssh_failure(ps);
@@ -642,6 +643,6 @@ locus SshProvider {
             seen.states,
         );
         st.runs = seen.images;
-        return st;
+        return naming_down(st, seen.down);
     }
 }

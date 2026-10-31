@@ -3121,6 +3121,13 @@ fn status() -> ExitCode {
     }
     let running = running_services();
     let versions = rows.iter().find_map(|(_, r)| r["root"].as_str().map(PathBuf::from).filter(|p| p.join("hale.toml").is_file())).map(|r| toolchain_versions(&r)).unwrap_or_default();
+    // an organism's own services, as their provider observes them where
+    // they are placed (the head's reading; none when no head answers)
+    let observed: Vec<serde_json::Value> = if rows.iter().any(|(_, r)| r["roles"]["services"].is_object()) {
+        sapling::head_call("Commands::allocations", serde_json::json!({ "limit": 1000 })).ok().and_then(|v| v["allocations"].as_str().and_then(|t| serde_json::from_str(t).ok())).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     for (key, row) in rows {
         println!("allocation {key} ({})", row["root"].as_str().unwrap_or("no organism recorded"));
         for role in ["memory", "nerves", "senses", "database"] {
@@ -3159,8 +3166,25 @@ fn status() -> ExitCode {
             };
             println!("  {role:<7} {service} {state}{whose}{version}{migration}");
         }
+        if row["roles"]["services"].is_object() {
+            println!("  {}", services_status(&format!("{key}/services"), &observed));
+        }
     }
     ExitCode::SUCCESS
+}
+
+/// The status line of an organism's own services (`<key>/services`) from
+/// what the head observes of its allocations: where they are and in what
+/// state, with what is not running named; or that no reading answered.
+fn services_status(allocation: &str, observed: &[serde_json::Value]) -> String {
+    match observed.iter().find(|r| r["allocation"] == allocation) {
+        Some(r) => {
+            let f = |k: &str| r[k].as_str().unwrap_or("").to_string();
+            let detail = f("detail");
+            format!("{:<7} its compose services on {}: {}{}", "services", f("host"), f("state"), if detail.is_empty() { String::new() } else { format!(" ({detail})") })
+        }
+        None => format!("{:<7} its compose services: not observed (the head did not answer, or they are not applied: `hale habitat apply`)", "services"),
+    }
 }
 
 /// The running services of the habitat's project.
@@ -4167,6 +4191,14 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_organisms_services_show_in_status() {
+        let seen = vec![serde_json::json!({ "allocation": "7817e28279f2/services", "host": "laptop", "state": "degraded", "detail": "1 of 5 running; not running: nats (created)" })];
+        let line = super::services_status("7817e28279f2/services", &seen);
+        assert!(line.contains("on laptop: degraded (1 of 5 running; not running: nats (created))"), "{line}");
+        assert!(super::services_status("aaaaaaaaaaaa/services", &seen).contains("not observed"));
+    }
+
     use super::building;
 
     #[test]
