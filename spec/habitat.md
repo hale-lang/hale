@@ -1214,18 +1214,28 @@ readers = ["api", "host.node"]
 grafted organism that came from a sapling the habitat pins, and a
 `ready` host or `local`:
 
-- **The habitat's own machine.** `--host local` names the machine the
-  habitat runs on, the host its rows already call `local` (no `host add`
-  makes it, and no SSH to oneself is needed). On a habitat on this
-  machine every script below runs here, with `sh -c`, as the person (sudo
-  asks at this terminal), without this process's `HALE_*` and `LOTUS_*`
-  variables, as a login there starts without them. Through a pointer (a
-  habitat on another machine, `up --host`) it is that machine, reached
-  over the person's login the pointer names (its host, user and SSH
-  port). The scripts, the plan, the inputs and the record are the same as
-  for any host; the plan says which way it is reached. Any other name is
-  a host the habitat added: one it does not hold is refused, naming `hale
-  habitat host add <h>` and `--host local`.
+- **The habitat's own machine, and this one.** `local` is the machine
+  the person types on. On a habitat on this machine it is the habitat's
+  own machine, the host its rows already call `local` (no `host add`
+  makes it, and no SSH to oneself is needed): every script below runs
+  here, with `sh -c`, as the person (sudo asks at this terminal), without
+  this process's `HALE_*` and `LOTUS_*` variables, as a login there starts
+  without them. Through a pointer (a habitat on another machine, `up
+  --host`) `local` is still this machine: the host the habitat added that
+  is it (one whose address resolves to an address of this machine's), its
+  scripts run here, the placement recorded under that host's name; when
+  the habitat added none, it is refused, naming the one `hale habitat host
+  add <name>` that makes it one. The habitat's own machine is then said by
+  its own name, whole or by its first label (`--host rack-a.lan` or
+  `--host rack-a` for a habitat `up --host rack-a.lan`), reached over the
+  person's login the pointer names (its host, user and SSH port), recorded
+  as `local` and said by that name; its default `{id}` is that name's first
+  label. A host the habitat added keeps its own name first. The scripts,
+  the plan, the inputs and the record are the same as for any host; the
+  plan says which way it is reached. Any other name is a host the habitat
+  added: one it does not hold is refused, naming `hale habitat host add
+  <h>`. A graft's `--host` and `--own <part>=<h>` resolve their names the
+  same way, on the machine the person types on.
 
 - **Its source.** The organism's sapling repository at its pinned
   revision, cloned (then fetched) on the host under the login's
