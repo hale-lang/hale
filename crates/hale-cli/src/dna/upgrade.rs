@@ -135,7 +135,8 @@ pub(super) fn decide(s: &Standing) -> Result<Move, String> {
     if to.digest == s.at.digest {
         let waiting = match &s.proposed {
             Some(p) => format!("; {} is proposed and not ratified: `hale habitat nursery ratify {}` (the Board's) pins it, and the upgrade moves to it then", p.revision, s.sapling),
-            None => String::new(),
+            // nothing newer is known: the nursery is only read when refreshed
+            None => format!("; `hale habitat nursery refresh` reads the nursery for a newer revision, and `hale habitat nursery ratify {}` pins it", s.sapling),
         };
         return Err(format!("`{}` is already at {}, the revision the habitat pins for `{}`{waiting}", s.organism, to.said(), s.sapling));
     }
@@ -727,6 +728,8 @@ mod tests {
         let mut rows = vec![row("habitat.sapling", "sprout", pin("v1", "sha256:1")), grafted()];
         let why = decide(&standing(&rows, "sprout").unwrap()).unwrap_err();
         assert!(why.contains("already at v1 (sha256:1)") && !why.contains("proposed"), "{why}");
+        // with nothing newer known, it names the refresh that would find one
+        assert!(why.contains("hale habitat nursery refresh") && why.contains("hale habitat nursery ratify sprout"), "{why}");
         rows.push(row("habitat.sapling.proposed", "sprout", pin("v2", "sha256:2")));
         let why = decide(&standing(&rows, "sprout").unwrap()).unwrap_err();
         assert!(why.contains("already at v1") && why.contains("v2 is proposed and not ratified") && why.contains("hale habitat nursery ratify sprout"), "{why}");

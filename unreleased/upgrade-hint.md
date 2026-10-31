@@ -1,0 +1,1 @@
+- `hale habitat organism upgrade` on an organism already at its pinned revision names the next step when nothing newer is known: `hale habitat nursery refresh` reads the nursery, `nursery ratify <sapling>` pins what it found.
