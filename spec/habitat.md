@@ -1171,12 +1171,14 @@ senses' store. `hale habitat up` renders the habitat's own reflexes (its
 defaults, then its genome's declarations, which replace a default of the
 same name) into its store's `senses.d/reflexes.rules.yml`, makes the
 store's configuration read `senses.d/*.rules.yml`, and restarts the store
-when either moved. Its defaults watch every machine it uses:
+when either moved. Its defaults watch every machine it uses (a genome's `[dna.reflex.<name>]` of the same name replaces one, a threshold or a duration of its own):
 
 | Reflex | Fires when |
 |---|---|
 | `disk-filling` | a real filesystem is over 90% full for 10 minutes (keeps firing 10 minutes after it drops below) |
 | `disk-full-within-a-day` | at its last six hours' rate a real filesystem fills within a day, for an hour |
+| `memory-pressure` | over 90% of a machine's memory is in use for 15 minutes: all but what Linux says is available, or a Mac's active, wired and compressed pages, as the Hosts dashboard reads it (keeps firing 10 minutes after it drops below) |
+| `cpu-saturated` | a machine's CPUs are over 90% busy, averaged over 5 minutes, for 15 minutes (keeps firing 10 minutes after it drops below) |
 
 `Commands::alerts`, a read, answers the store's alerts as it holds them:
 each with its labels, summary, state (`pending` while its condition holds

@@ -101,10 +101,35 @@ fn checked(r: Reflex) -> Result<Reflex, String> {
 /// watches (the Hosts dashboard's own filter).
 const REAL_FS: &str = r#"job="host", fstype!~"tmpfs|devtmpfs|overlay|squashfs|ramfs|autofs|nullfs|fuse.*|nfs.*", mountpoint!~"/System/Volumes/(VM|Preboot|Update|xarts|iSCPreboot|Hardware)|/boot.*|/snap/.*|/run.*|/var/lib/docker/.*|/dev.*""#;
 
-/// The habitat's own reflexes, which every habitat watches for: a disk of
-/// any machine it uses nearly full, or filling within a day.
+/// A machine's memory in use, in percent, as the Hosts dashboard reads it:
+/// all but what Linux says is available, or a Mac's active, wired and
+/// compressed pages (node_exporter's Darwin collector has no `available`).
+const MEMORY_USED: &str = r#"max by (host) (100 * (1 - node_memory_MemAvailable_bytes{job="host"} / node_memory_MemTotal_bytes{job="host"})) or max by (host) (100 * (node_memory_active_bytes{job="host"} + node_memory_wired_bytes{job="host"} + node_memory_compressed_bytes{job="host"}) / node_memory_total_bytes{job="host"})"#;
+
+/// The habitat's own reflexes, which every habitat watches for on any
+/// machine it uses: a disk nearly full, or filling within a day; its memory
+/// nearly all in use; its CPU nearly all busy, for long enough that it is
+/// no burst.
 pub(super) fn habitat_defaults() -> Vec<Reflex> {
     vec![
+        Reflex {
+            name: "memory-pressure".into(),
+            when: format!("({MEMORY_USED}) > 90"),
+            hold: "15m".into(),
+            keep: "10m".into(),
+            severity: "warning".into(),
+            action: "concern".into(),
+            summary: "{host}'s memory is {value}% in use".into(),
+        },
+        Reflex {
+            name: "cpu-saturated".into(),
+            when: r#"100 * (1 - avg by (host) (rate(node_cpu_seconds_total{job="host", mode="idle"}[5m]))) > 90"#.into(),
+            hold: "15m".into(),
+            keep: "10m".into(),
+            severity: "warning".into(),
+            action: "concern".into(),
+            summary: "{host}'s CPU is {value}% busy".into(),
+        },
         Reflex {
             name: "disk-filling".into(),
             when: format!("100 * (1 - node_filesystem_avail_bytes{{{REAL_FS}}} / node_filesystem_size_bytes{{{REAL_FS}}}) > 90"),
@@ -235,6 +260,10 @@ mod tests {
         assert!(rules.contains(r#"summary: "{{ $labels.host }}:{{ $labels.mountpoint }} is {{ $value | printf \"%.0f\" }}% full""#), "{rules}");
         // the PromQL survives as one YAML string: its quotes escaped
         assert!(rules.contains(r#"fstype!~\"tmpfs"#), "{rules}");
+        // memory and CPU, on Linux's and a Mac's exporter alike
+        assert!(rules.contains("- alert: \"memory-pressure\"") && rules.contains("node_memory_MemAvailable_bytes") && rules.contains("node_memory_compressed_bytes"), "{rules}");
+        assert!(rules.contains("- alert: \"cpu-saturated\"") && rules.contains(r#"mode=\"idle\""#) && rules.contains("for: 15m"), "{rules}");
+        assert!(rules.contains(r#"summary: "{{ $labels.host }}'s CPU is {{ $value | printf \"%.0f\" }}% busy""#), "{rules}");
     }
 
     #[test]

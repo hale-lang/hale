@@ -1,0 +1,1 @@
+- Every habitat now watches its machines' memory and CPU beside their disks: `memory-pressure` (over 90% of memory in use for 15 minutes, on Linux's and a Mac's exporter alike) and `cpu-saturated` (over 90% busy for 15 minutes) join `disk-filling` and `disk-full-within-a-day` as default reflexes. A genome's `[dna.reflex.<name>]` of the same name replaces one.
