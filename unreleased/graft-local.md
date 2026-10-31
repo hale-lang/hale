@@ -1,0 +1,1 @@
+- `hale habitat graft <sapling> --host local` places the organism's own services on the habitat's own machine, through the `compose` provider in a project of their own, as the spec says: it placed none, so a single-machine habitat never started a grafted organism's services.

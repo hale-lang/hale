@@ -304,7 +304,9 @@ address at `hale habitat migrate <organism>` (a memory started empty holds
 no record, and the organism is grafted again).
 
 **Graft takes a placement**: `hale habitat graft <sapling> --host <name>`
-places the new organism on that host before anything of it is brought up.
+places the new organism on that host before anything of it is brought up;
+`--host local` places it on the habitat's own machine, through the
+`compose` provider, its services in a compose project of their own there.
 Its memory, nerves and senses' store are brought up there by its birth,
 which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an

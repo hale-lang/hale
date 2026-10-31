@@ -312,11 +312,12 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
 }
 
 /// The host `name` as the habitat's record holds it, for a graft's
-/// placement: `None` for `local` (nothing to place), an error for a host
-/// that is not added or not ready.
+/// placement: `local`, the habitat's own machine, through the `compose`
+/// provider in the habitat's project (as its own allocations are); an
+/// error for a host that is not added or not ready.
 pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String> {
     if name == "local" {
-        return Ok(None);
+        return Ok(Some(local_graft_host(&local_habitat_project())));
     }
     let h = latest(&rows_of(&genome_dir()), "habitat.host").remove(name).ok_or_else(|| format!("no host `{name}` was added (`hale habitat host add {name}`)"))?;
     if h["state"] != "ready" {
@@ -328,6 +329,12 @@ pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String
         "address": h["address"].as_str().unwrap_or(name),
         "project": format!("{}-{}", local_habitat_project(), name.replace('.', "-")),
     })))
+}
+
+/// The habitat's own machine as a graft's placement: the `compose`
+/// provider on the host `local`, in the habitat's compose project `project`.
+fn local_graft_host(project: &str) -> serde_json::Value {
+    serde_json::json!({ "host": "local", "provider": "compose", "address": "", "project": project })
 }
 
 /// The entries at a repository's root that its tracked files (`git
@@ -779,6 +786,15 @@ fn refreshed() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_graft_onto_local_places_through_compose() {
+        // `--host local` is the habitat's own machine: its services are an
+        // allocation there, never nothing (GH: graft --host local ran none)
+        let h = super::local_graft_host("hale-habitat-local-7452b2c2");
+        assert_eq!((h["host"].as_str(), h["provider"].as_str(), h["project"].as_str()), (Some("local"), Some("compose"), Some("hale-habitat-local-7452b2c2")));
+    }
+
     use super::*;
 
     // a follower waits out a head busy with the apply it follows; a refusal
