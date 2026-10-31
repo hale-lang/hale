@@ -4,7 +4,7 @@
 // GitHub, the Board's surface there, mirrors every pending mutation Review as a pull
 // request and every review on it as a verdict. This is the vocabulary of
 // a code-review host and nothing of GitHub's: `gh` is one implementation
-// (the host's `github_sync`, until #648 moves it behind this), a bare
+// (the host's `forge_sync`, behind this since #648), a bare
 // remote with no forge is the honest other, and both are declared here
 // with the memory forge fixtures use.
 
@@ -26,7 +26,7 @@ type ForgeVerdict {
 
 interface Forge {
     fn kind() -> String;
-    // Whether the record's remote has a forge, and what it is called.
+    // Whether the genome's remote has a forge, and what it is called.
     fn present() -> Bool;
     fn name() -> String;
     fn open_review(candidate: String, title: String, body: String) -> ReviewRef;
@@ -39,9 +39,48 @@ interface Forge {
     fn checks(review: String, sha: String) -> String;
     fn comment(review: String, text: String) -> Bool;
     fn close_review(review: String, why: String) -> Bool;
+    // Phase 3: what became of a review a leg opened at a codebase's forge.
+    // `open`, `merged\t<the merge commit>`, `closed` (without merging), or
+    // `unknown` when the forge cannot say.
+    fn review_state(review: String) -> String;
+    // The review's description as the forge holds it now (it carries the
+    // leg's last commit as a `leg-commit:` line, see `leg_commit_in`).
+    fn review_body(review: String) -> String;
+    // Every comment a person made on the review, one per line as
+    // `who\tkey\ttext`, the text's newlines spelled `\n`; `key` names a
+    // comment once.
+    fn review_comments(review: String) -> String;
 }
 
-type MemReview { ref: String = ""; candidate: String = ""; title: String = ""; body: String = ""; verdicts: String = ""; closed: String = ""; comments: Int = 0; checks: String = ""; }
+// The line a leg's review carries to name the commit it left the branch at.
+const LEG_COMMIT_LINE: String = "leg-commit: ";
+
+// The review's body with the leg's last commit named.
+fn with_leg_commit(body: String, sha: String) -> String {
+    return body + "\n\n" + LEG_COMMIT_LINE + sha + "\n";
+}
+
+// The leg's commit a review body names, "" when it names none.
+fn leg_commit_in(body: String) -> String {
+    let at = std::str::index_of(body, "\n" + LEG_COMMIT_LINE);
+    if at < 0 { return ""; }
+    let rest = body[(at + 1 + len(LEG_COMMIT_LINE))..len(body)];
+    let nl = std::str::index_of(rest, "\n");
+    return std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+}
+
+type MemReview {
+    ref: String = "";
+    candidate: String = "";
+    title: String = "";
+    body: String = "";
+    verdicts: String = "";
+    closed: String = "";
+    comments: Int = 0;
+    checks: String = "";
+    merged: String = "";
+    said: String = "";
+}
 
 @form(hashmap)
 locus MemReviews {
@@ -49,7 +88,8 @@ locus MemReviews {
 }
 
 // A forge in memory: reviews are rows, verdicts are what the fixture
-// posts with `decide`.
+// posts with `decide`, a merge is what it posts with `merge`, a person's
+// comment what it posts with `say`.
 locus MemForge {
     params { reviews: MemReviews = MemReviews { }; next: Int = 1; }
     fn kind() -> String { return "memory"; }
@@ -66,7 +106,9 @@ locus MemForge {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
         let key = who + ":" + r.candidate + ":" + outcome;
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts + who + "\t" + outcome + "\t" + when + "\t" + key + "\n", closed: r.closed, comments: r.comments, checks: r.checks });
+        let mut n = r;
+        n.verdicts = r.verdicts + who + "\t" + outcome + "\t" + when + "\t" + key + "\n";
+        self.reviews.set(n);
         return true;
     }
     fn verdicts(review: String) -> String {
@@ -77,7 +119,9 @@ locus MemForge {
     fn report(review: String, name: String, conclusion: String, sha: String, url: String) -> Bool {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: r.closed, comments: r.comments, checks: r.checks + name + "\t" + conclusion + "\t" + sha + "\t" + url + "\n" });
+        let mut n = r;
+        n.checks = r.checks + name + "\t" + conclusion + "\t" + sha + "\t" + url + "\n";
+        self.reviews.set(n);
         return true;
     }
     fn checks(review: String, sha: String) -> String {
@@ -87,14 +131,52 @@ locus MemForge {
     fn comment(review: String, text: String) -> Bool {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: r.closed, comments: r.comments + 1, checks: r.checks });
+        let mut n = r;
+        n.comments = r.comments + 1;
+        self.reviews.set(n);
         return true;
     }
     fn close_review(review: String, why: String) -> Bool {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: why, comments: r.comments, checks: r.checks });
+        let mut n = r;
+        n.closed = why;
+        self.reviews.set(n);
         return true;
+    }
+    // A fixture's team merges the review at `commit`.
+    fn merge(review: String, commit: String) -> Bool {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return false; }
+        let mut n = r;
+        n.merged = commit;
+        self.reviews.set(n);
+        return true;
+    }
+    // A fixture's person comments on the review.
+    fn say(review: String, who: String, text: String) -> Bool {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return false; }
+        let mut n = r;
+        let key = who + ":" + to_string(len(r.said));
+        n.said = r.said + who + "\t" + key + "\t" + std::str::replace(text, "\n", "\\n") + "\n";
+        self.reviews.set(n);
+        return true;
+    }
+    fn review_state(review: String) -> String {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return "unknown"; }
+        if len(r.merged) > 0 { return "merged\t" + r.merged; }
+        if len(r.closed) > 0 { return "closed"; }
+        return "open";
+    }
+    fn review_body(review: String) -> String {
+        let r = self.reviews.get(review) or MemReview { };
+        return r.body;
+    }
+    fn review_comments(review: String) -> String {
+        let r = self.reviews.get(review) or MemReview { };
+        return r.said;
     }
 }
 
@@ -104,9 +186,14 @@ locus NoForge {
     fn kind() -> String { return "none"; }
     fn present() -> Bool { return false; }
     fn name() -> String { return "none (a bare remote)"; }
-    fn open_review(candidate: String, title: String, body: String) -> ReviewRef { return ReviewRef { why: "no forge" }; }
+    fn open_review(candidate: String, title: String, body: String) -> ReviewRef {
+        return ReviewRef { why: "no forge" };
+    }
     fn verdicts(review: String) -> String { return ""; }
     fn checks(review: String, sha: String) -> String { return ""; }
     fn comment(review: String, text: String) -> Bool { return false; }
     fn close_review(review: String, why: String) -> Bool { return false; }
+    fn review_state(review: String) -> String { return "unknown"; }
+    fn review_body(review: String) -> String { return ""; }
+    fn review_comments(review: String) -> String { return ""; }
 }

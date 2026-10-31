@@ -69,18 +69,12 @@ const WASM_ORIGINS: &[&str] = &[
 
 /// The corpus, plus the on-disk programs it does not walk.
 fn programs() -> Vec<hale_corpus::Program> {
+    // the sources git would commit: a local run's ignored output is none
     fn walk(dir: &Path, root: &Path, out: &mut Vec<hale_corpus::Program>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for p in paths {
-            if p.is_dir() {
-                walk(&p, root, out);
-            } else if p.extension().is_some_and(|e| e == "hl") {
-                if let Ok(source) = std::fs::read_to_string(&p) {
-                    let origin = p.strip_prefix(root).unwrap_or(&p).display().to_string();
-                    out.push(hale_corpus::Program { origin, source });
-                }
+        for p in hale_corpus::source_hl(dir) {
+            if let Ok(source) = std::fs::read_to_string(&p) {
+                let origin = p.strip_prefix(root).unwrap_or(&p).display().to_string();
+                out.push(hale_corpus::Program { origin, source });
             }
         }
     }

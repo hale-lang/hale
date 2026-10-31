@@ -95,4 +95,6 @@ inherits = "default"
 include = [
     { path = "release/libhale_ts_shim.a", relative-to = "target", on-missing = "error" },
     { path = "release/hale.d", relative-to = "target", on-missing = "error" },
+    { path = "release/habitat-image.tar.zst", relative-to = "target", on-missing = "ignore" },
+    { path = "release/habitat-image.tag", relative-to = "target", on-missing = "ignore" },
 ]

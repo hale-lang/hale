@@ -18,7 +18,12 @@ fn seed_dir() -> String {
 }
 
 fn hale(args: String) -> std::process::ProcessOutput {
-    return std::process::run("hale\n" + args) or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    return std::process::run("hale\n" + args) or std::process::ProcessOutput {
+        code: -9,
+        signal: 0,
+        stdout: "",
+        stderr: "run failed",
+    };
 }
 
 fn main() {
@@ -28,16 +33,30 @@ fn main() {
     let client = api + "/../ui/client/todo.ts";
 
     let exported = hale("api\nexport\n--surface\nTodo\n--check\n" + spec + "\n" + api);
-    std::test::assert_eq_int(exported.code, 0, "the exported bundle is current: " + exported.stdout + exported.stderr);
+    std::test::assert_eq_int(
+        exported.code,
+        0,
+        "the exported bundle is current: " + exported.stdout + exported.stderr,
+    );
 
     let typed = hale("api\nclient\n--surface\nTodo\n--lang\nts\n--check\n" + client + "\n" + api);
-    std::test::assert_eq_int(typed.code, 0, "the TypeScript client is current: " + typed.stdout + typed.stderr);
+    std::test::assert_eq_int(
+        typed.code,
+        0,
+        "the TypeScript client is current: " + typed.stdout + typed.stderr,
+    );
 
     // the page a reader starts from names the digest the bundle carries
     let stamp = std::io::fs::read_file(spec + "/DIGEST") or "";
     let digest = std::str::trim(stamp[0..24]);
-    std::test::assert(std::str::starts_with(digest, "fnv1a64:"), "DIGEST starts with the surface digest: " + digest);
-    std::test::assert(std::str::contains(std::io::fs::read_file(spec + "/todo.md") or "", digest), "spec/todo.md names the digest " + digest);
+    std::test::assert(
+        std::str::starts_with(digest, "fnv1a64:"),
+        "DIGEST starts with the surface digest: " + digest,
+    );
+    std::test::assert(
+        std::str::contains(std::io::fs::read_file(spec + "/todo.md") or "", digest),
+        "spec/todo.md names the digest " + digest,
+    );
 
     // the checks bite: a bundle that is not this surface's is refused
     let wrong = hale("api\nexport\n--surface\nTodo\n--check\n" + api + "\n" + api);

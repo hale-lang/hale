@@ -298,7 +298,7 @@ pub enum Input {
     SnapshotConfig,
     /// The editor buffers a load read over the disk.
     EditorBuffers,
-    /// A fleet plan's model text.
+    /// A fleet's model text.
     FleetPlan,
     /// The C compiler, its version and its flags.
     CCompiler,
@@ -357,10 +357,10 @@ pub const IDENTITIES: &[Identity] = &[
             (Input::LawRows, "by design: the law rows are a section of their own, under `law_digest`"),
         ],
         producer: ("crates/hale-types/src/topology_projection.rs", "project_shape_hash"),
-        consumers: &["topology / fleet (admission)", "replay (admission, the recording's header)", "dna (schema 1.19, semantics 2)", "baseline gates"],
+        consumers: &["topology / fleet (admission)", "replay (admission, the recording's header)", "dna (schema 1.20 or 1.21, semantics 2)", "baseline gates"],
         on_mismatch: "the artifact is refused (`verify_shape_hash`), a replay is refused, a baseline gate fails",
-        versioned_by: "the artifact schema (`TOPOLOGY_SCHEMA`, 1.19)",
-        frozen: Some("the 1,793 pinned values of `topology_projection`, the nine of `model_arrangement`, and DNA, which requires schema 1.19 and recomputes it"),
+        versioned_by: "the artifact schema (`TOPOLOGY_SCHEMA`, 1.21)",
+        frozen: Some("the 1,793 pinned values of `topology_projection`, the nine of `model_arrangement`, and DNA, which requires schema 1.20 or 1.21 and recomputes it"),
     },
     Identity {
         name: "model_hash",
@@ -386,7 +386,7 @@ pub const IDENTITIES: &[Identity] = &[
         consumers: &["topology / fleet (admission)", "dna (recomputes it)", "`hale fleet` with declared trust roots"],
         on_mismatch: "the artifact is refused",
         versioned_by: "the artifact schema; a correction changes a section's values and never its shape (I3 made relative the `sources` paths that were absolute)",
-        frozen: Some("DNA requires schema 1.19 exactly and recomputes it"),
+        frozen: Some("DNA requires schema 1.20 or 1.21 and recomputes it"),
     },
     Identity {
         name: "law_digest",
@@ -399,7 +399,7 @@ pub const IDENTITIES: &[Identity] = &[
         consumers: &["admission (`topology_law.rs`, which recomputes it from the rows)"],
         on_mismatch: "the artifact is refused: a row edited under a stale digest",
         versioned_by: "the artifact schema",
-        frozen: Some("DNA reads the law section under schema 1.19"),
+        frozen: Some("DNA reads the law section under schema 1.20 or 1.21"),
     },
     Identity {
         name: "claim_table_digest",
@@ -544,7 +544,7 @@ pub const IDENTITIES: &[Identity] = &[
         producer: ("crates/hale-types/src/evidence.rs", "analysis_inputs_digest"),
         consumers: &["the artifact's `law.inputs_digest`", "`EvidenceTable::validate`", "admission (`topology_law.rs`)"],
         on_mismatch: "the artifact is refused: evidence produced under another analysis snapshot",
-        versioned_by: "a hand-bumped constant (`ANALYSIS_SEMANTICS_VERSION`, 8), and the compiler version",
+        versioned_by: "a hand-bumped constant (`ANALYSIS_SEMANTICS_VERSION`, 9), and the compiler version",
         frozen: None,
     },
     Identity {
@@ -558,7 +558,7 @@ pub const IDENTITIES: &[Identity] = &[
         consumers: &["the artifact's `sources` section (so `artifact_digest`)", "the evidence sidecar's source-unit tie"],
         on_mismatch: "the evidence is refused; the artifact's digest differs",
         versioned_by: "the artifact schema",
-        frozen: Some("the `sources` section's shape (schema 1.19)"),
+        frozen: Some("the `sources` section's shape (schema 1.20 and 1.21)"),
     },
     Identity {
         name: "obs_entity_id_digest",
@@ -643,8 +643,8 @@ pub const IDENTITIES: &[Identity] = &[
     },
     Identity {
         name: "fleet_shape_hash",
-        identifies: "a fleet plan's model text is the one printed: the plan artifact's own shape",
-        computed: "fleet plan emission",
+        identifies: "a fleet's model text is the one printed: the fleet artifact's own shape",
+        computed: "fleet artifact emission",
         fold: Fold::Fnv64,
         covers: &[Input::FleetPlan],
         leaves_out: &[],

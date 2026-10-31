@@ -14,7 +14,7 @@ use crate::shared::options::identity_options;
 use crate::shared::options::model_identity;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
-use crate::shared::diag::render_located;
+use crate::shared::diag::render_authors;
 use crate::shared::options::refuse_unexecutable;
 use crate::shared::options::resolve_build_env;
 use crate::shared::process::wait_passing_signals;
@@ -55,6 +55,7 @@ pub(crate) fn compile_and_exec(
         model_hash: Some(model_hash),
         exec_digest: Some(exec_digest),
         obs_entity_ids,
+        site_sources: Some(crate::shared::options::site_sources(file_bases, sources)),
         ..options
     };
     if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &options) {
@@ -156,13 +157,13 @@ pub(crate) fn run_program(
     let diags = match snap.demand_check() {
         Ok(c) => &c.diags,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
     if !diags.is_empty() {
         for d in diags {
-            eprintln!("{}", render_located(d, file_bases, sources));
+            eprintln!("{}", render_authors(d, snap.demangler(), file_bases, sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
@@ -176,7 +177,7 @@ pub(crate) fn run_program(
     let view = match snap.demand_lowering() {
         Ok(v) => v,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
@@ -188,7 +189,7 @@ pub(crate) fn run_program(
     let identity = match model_identity(&snap, view, &options) {
         Ok(x) => x,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };

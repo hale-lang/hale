@@ -1,0 +1,755 @@
+// The `source-check` step (phase 3): an upstream source a practice watches.
+//
+// A watched upstream is a practice, `standard/upstream-watched/<name>` from
+// the standard pack, bound to the position that owns the integration. Its
+// text names its terms (`practice_term`, dna/core/practices.hl): `source=`
+// (an http, https or file URL, or for an OpenAPI document the surface
+// `hale api import` committed in the genome), `kind=` (changelog, docs, feed
+// or openapi), `every=` (its cadence) and `step=source-check`. Ratified, the
+// practice declares the schedule its text names, convened by its position,
+// and every occurrence runs this step with the practice as its parameters:
+// the source fetched, normalized, digested and compared with the snapshot
+// the previous occurrence named as its result, the baseline.
+//
+// - The first occurrence takes the baseline: the snapshot is kept as a
+//   receipt and named as the outcome's result. Nothing else is written.
+// - Nothing moved: the outcome names the same snapshot. Nothing else.
+// - Moved: a `reading.recorded` (`sources/<watch>.changed/<task>`) whose
+//   payload names the diff's receipt and carries the diff, and a concern
+//   from `<position>/<watch>`, routed to the position, its request the
+//   reading (`<watch>` is the last segment of the practice's name).
+// - Unreached: the occurrence fails, its result `unreached`; the
+//   `SOURCE_UNREACHABLE_AFTER`th failure in a row also lands a reading,
+//   `sources/<watch>.unreachable/<task>`, and no concern.
+// A practice whose terms cannot stand fails each occurrence saying why, its
+// result `refused`, which no streak counts. The step keeps no rows of its
+// own: what each occurrence saw is its outcome, and the snapshots and diffs
+// are receipts.
+
+// The kinds of source a practice names.
+const SOURCE_KINDS: String = "changelog docs feed openapi";
+// A fetch that fails this many times in a row lands one `unreachable`
+// reading; fewer land none.
+const SOURCE_UNREACHABLE_AFTER: Int = 3;
+// The largest diff a reading carries; a longer one is cut at a line.
+const SOURCE_DIFF_MAX: Int = 16384;
+// The largest source a check reads; a larger one is a failed fetch.
+const SOURCE_FETCH_MAX: Int = 4194304;
+// The application name the organism's readings of its sources land under
+// (`sources/<event>/<id>`), as the reflexes' land under `reflexes`.
+const SOURCE_APP: String = "sources";
+
+// Tags that end a line of text, and elements whose content is never text.
+const HTML_BREAKS: String = "p div br li ul ol dl dt dd h1 h2 h3 h4 h5 h6 tr td th table thead tbody section article header footer nav pre blockquote hr main aside figure figcaption details summary";
+const HTML_SKIPPED: String = "script style noscript template head svg iframe object";
+
+// A watched source as its practice names it; `why` when its terms cannot
+// stand.
+type SourceWatch {
+    practice: String = ""; // the practice's digest
+    name: String = ""; // the practice's name
+    watch: String = ""; // the name's last segment: its readings and its concern are named by it
+    position: String = ""; // the position it is bound to, without `position:`
+    source: String = ""; // a URL; for openapi, the surface's path in the genome
+    kind: String = ""; // changelog | docs | feed | openapi
+    codebase: String = ""; // `codebase=`: the attached codebase whose client of the source a move is a task for; "" (or the pack's `none`) = a concern only
+    why: String = "";
+}
+
+// What one read of a source saw: the normalized text, or why not.
+type SourceSeen {
+    ok: Bool = false;
+    text: String = "";
+    summary: String = ""; // openapi: the drift lines, which the diff's receipt leads with
+    why: String = "";
+}
+
+// What the occurrences of a practice before this one came to: the snapshot
+// the last one that read its source named, and the failures to reach it
+// since.
+type SourceHistory { baseline: String = ""; streak: Int = 0; }
+
+// What one check came to: the outcome to report (`disposition` "" while
+// the record has not taken what it wrote, so the step is asked again), the
+// reading it landed, and the concern's words for a move.
+type SourceAnswer {
+    disposition: String = "";
+    result: String = "";
+    narrative: String = "";
+    reading: String = "";
+    what: String = "";
+}
+
+// The source practice `doc` (its receipt, under `digest`) watches.
+fn source_watch(digest: String, doc: String) -> SourceWatch {
+    let name = std::json::find_string_field(doc, "name");
+    let text = std::json::find_string_field(doc, "text");
+    let target = std::json::find_string_field(doc, "target");
+    let w = SourceWatch {
+        practice: digest, name: name, watch: last_segment(name),
+        position: if std::str::starts_with(target, "position:") {
+            target[9..len(target)]
+        } else {
+            ""
+        },
+        source: practice_term(text, "source"),
+        kind: practice_term(text, "kind"),
+        codebase: if practice_term(text, "codebase") == "none" {
+            ""
+        } else {
+            practice_term(text, "codebase")
+        }
+    };
+    let mut out = w;
+    out.why = source_refusal(w);
+    return out;
+}
+
+// Why `w`'s terms cannot stand, "" when they can.
+fn source_refusal(w: SourceWatch) -> String {
+    if len(w.name) == 0 || len(w.watch) == 0 {
+        return "the practice has no name its readings could carry";
+    }
+    if len(w.position) == 0 {
+        return "the practice `" + w.name
+            + "` is bound to no position, which a move would be a concern for";
+    }
+    if !word_in(w.kind, SOURCE_KINDS) {
+        return "its `kind=` is one of " + SOURCE_KINDS + ", not `" + w.kind + "`";
+    }
+    if len(w.codebase) > 0 && !codebase_name_ok(w.codebase) {
+        return "its `codebase=` names an attached codebase, not `" + w.codebase + "`";
+    }
+    if w.kind == "openapi" {
+        if len(w.source) == 0
+            || std::str::starts_with(w.source, "/")
+            || std::str::contains(w.source, "..")
+            || std::str::contains(w.source, "://")
+        {
+            return "an openapi `source=` is the surface `hale api import` committed, a path inside the genome";
+        }
+        return "";
+    }
+    if !(
+        std::str::starts_with(w.source, "https://")
+            || std::str::starts_with(w.source, "http://")
+            || std::str::starts_with(w.source, "file://")
+    ) {
+        return "its `source=` is an http://, https:// or file:// URL, not `" + w.source + "`";
+    }
+    return "";
+}
+
+// The concern's words for a move: what moved, and where its reading and
+// diff are.
+fn source_concern_what(w: SourceWatch, reading: String, diff: String) -> String {
+    return "the upstream " + w.watch + " (" + w.kind + " " + w.source + ", watched by the practice "
+        + w.name + ") moved: reading " + reading + ", its diff the receipt " + diff;
+}
+
+// ---- reading a source --------------------------------------------------------
+
+// The bytes at `url` (http, https or file), or why not.
+fn source_fetch(url: String) -> SourceSeen {
+    if std::str::starts_with(url, "file://") {
+        let path = url[7..len(url)];
+        if !std::io::fs::file_exists(path) { return SourceSeen { why: "no file at " + path }; }
+        let text = std::io::fs::read_file(path) or "";
+        if len(text) > SOURCE_FETCH_MAX {
+            return SourceSeen {
+                why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes",
+            };
+        }
+        return SourceSeen { ok: true, text: text };
+    }
+    let r = std::http::get(url) or std::http::ClientResponse {
+        status: -1,
+        headers: err.kind + " " + err.detail,
+        body: b"",
+    };
+    if r.status < 0 { return SourceSeen { why: "the fetch failed: " + r.headers }; }
+    if r.status < 200 || r.status > 299 {
+        return SourceSeen { why: url + " answered " + to_string(r.status) };
+    }
+    if len(r.body) > SOURCE_FETCH_MAX {
+        return SourceSeen { why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes" };
+    }
+    let text = std::str::from_bytes(r.body);
+    if std::str::cp_count(text) < 0 { return SourceSeen { why: "the source is not UTF-8" }; }
+    return SourceSeen { ok: true, text: text };
+}
+
+// `w`'s source read and normalized: a page's text, a feed's entries, or an
+// OpenAPI document as `hale api drift --document` prints it. `root` is the
+// genome, where a surface is, and `hale` the toolchain.
+fn source_observe(w: SourceWatch, root: String, hale: String) -> SourceSeen {
+    if w.kind == "openapi" {
+        // the document itself identifies the upstream revision; the drift
+        // lines (a row and a slot) summarize it against the surface, and
+        // stay the same through a second change to a row that drifted
+        let doc = run_tool(
+            "sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\" --document\nsh\n" + root + "\n"
+                + hale + "\n" + w.source,
+        );
+        if doc.code != 0 { return SourceSeen { why: drift_failure(w.source, doc) }; }
+        let r = run_tool(
+            "sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\"\nsh\n" + root + "\n" + hale + "\n"
+                + w.source,
+        );
+        if r.code != 0 && r.code != 1 { return SourceSeen { why: drift_failure(w.source, r) }; }
+        if len(doc.stdout) > SOURCE_FETCH_MAX {
+            return SourceSeen {
+                why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes",
+            };
+        }
+        return SourceSeen { ok: true, text: doc.stdout, summary: drift_lines(r.stdout) };
+    }
+    let got = source_fetch(w.source);
+    if !got.ok { return got; }
+    if w.kind == "feed" { return SourceSeen { ok: true, text: feed_entries(got.text) }; }
+    return SourceSeen { ok: true, text: page_text(got.text) };
+}
+
+// Why the drift check of `surface` could not read its source.
+fn drift_failure(surface: String, r: RunResult) -> String {
+    let said = std::str::trim(r.stderr + " " + r.stdout);
+    return "the drift check of " + surface + " exited " + to_string(r.code)
+        + (
+            if len(said) > 0 {
+                ": " + (if len(said) > 400 { said[0..400] } else { said })
+            } else {
+                ""
+            }
+        );
+}
+
+// The `drift …` lines of `hale api drift`'s output.
+@bounded_by(out)
+fn drift_lines(out: String) -> String {
+    let mut text = "";
+    let mut rest = out;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, "drift ") { text = text + line + "\n"; }
+    }
+    return text;
+}
+
+// A page as text: HTML (a document whose first character is `<`) with its
+// markup and volatile parts (scripts, styles, the head, comments) stripped
+// and a line per block; any other text with its line endings and trailing
+// spaces made plain. Blank lines go either way.
+fn page_text(s: String) -> String {
+    let t = std::str::trim(s);
+    if std::str::starts_with(t, "<") { return text_lines(html_text(t)); }
+    return text_lines(s);
+}
+
+// A tag's name from what stands between `<` and `>`: lowercase, without
+// its `/` or attributes.
+fn tag_name(inner: String) -> String {
+    let mut s = std::str::trim(inner);
+    if std::str::starts_with(s, "/") { s = s[1..len(s)]; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 47 { return std::str::lower(s[0..i]); }
+        i = i + 1;
+    }
+    return std::str::lower(s);
+}
+
+// HTML's text, a line per block element, with the skipped elements'
+// content and every comment left out.
+@bounded_by(html)
+fn html_text(html: String) -> String {
+    let v = std::str::bytes_view(html);
+    let low = std::str::bytes_view(std::str::lower(html));
+    let n = len(html);
+    let out = std::str::builder_new();
+    let mut i = 0;
+    while i < n {
+        if std::str::byte_at(v, i) != 60 {
+            let lt = std::str::find(v, "<", i);
+            let end = if lt < 0 { n } else { lt };
+            std::str::builder_append(out, std::str::slice(v, i, end));
+            i = end;
+            continue;
+        }
+        if std::str::slice(v, i, i + 4) == "<!--" {
+            let end = std::str::find(v, "-->", i + 4);
+            i = if end < 0 { n } else { end + 3 };
+            continue;
+        }
+        let close = std::str::find(v, ">", i + 1);
+        if close < 0 { i = n; continue; }
+        let inner = std::str::slice(v, i + 1, close);
+        let name = tag_name(inner);
+        let closing = std::str::starts_with(std::str::trim(inner), "/");
+        if !closing && word_in(name, HTML_SKIPPED) && !std::str::ends_with(inner, "/") {
+            let end = std::str::find(low, "</" + name, close + 1);
+            if end < 0 { i = n; continue; }
+            let gt = std::str::find(v, ">", end);
+            i = if gt < 0 { n } else { gt + 1 };
+            continue;
+        }
+        if word_in(name, HTML_BREAKS) { std::str::builder_append(out, "\n"); }
+        i = close + 1;
+    }
+    return std::str::builder_finish(out);
+}
+
+// The entities a page's text spells most, as the characters they are.
+fn html_unescape(s: String) -> String {
+    if !std::str::contains(s, "&") { return s; }
+    let mut t = std::str::replace(s, "&nbsp;", " ");
+    t = std::str::replace(t, "&lt;", "<");
+    t = std::str::replace(t, "&gt;", ">");
+    t = std::str::replace(t, "&quot;", "\"");
+    t = std::str::replace(t, "&#39;", "'");
+    t = std::str::replace(t, "&apos;", "'");
+    t = std::str::replace(t, "&amp;", "&");
+    return t;
+}
+
+// Each line of `s` with its entities read, its runs of white space one
+// space and its ends trimmed; blank lines dropped.
+@bounded_by(s)
+fn text_lines(s: String) -> String {
+    let v = std::str::bytes_view(s);
+    let n = len(s);
+    let out = std::str::builder_new();
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::find(v, "\n", i);
+        let end = if nl < 0 { n } else { nl };
+        let mut line = std::str::replace(
+            std::str::replace(std::str::slice(v, i, end), "\r", " "),
+            "\t",
+            " ",
+        );
+        while std::str::contains(line, "  ") { line = std::str::replace(line, "  ", " "); }
+        line = std::str::trim(html_unescape(line));
+        if len(line) > 0 { std::str::builder_append(out, line + "\n"); }
+        i = end + 1;
+    }
+    return std::str::builder_finish(out);
+}
+
+// The text of the first `<tag …>…</tag>` in `entry`, CDATA and markup
+// stripped; for a self-closed `<link href="…"/>` (Atom), its `href`.
+fn feed_field(entry: String, low: String, tag: String) -> String {
+    let at = std::str::index_of(low, "<" + tag);
+    if at < 0 { return ""; }
+    let after = at + 1 + len(tag);
+    if after < len(low) {
+        let c = std::str::byte_at_unchecked(low, after);
+        // `<title` must not match `<titles`
+        if !(c == 62 || c == 32 || c == 47 || c == 9 || c == 10 || c == 13) { return ""; }
+    }
+    let gt = std::str::index_of_from(low, ">", at);
+    if gt < 0 { return ""; }
+    let open = entry[at..gt];
+    if std::str::ends_with(open, "/") {
+        let h = std::str::index_of(open, "href=\"");
+        if h < 0 { return ""; }
+        let rest = open[(h + 6)..len(open)];
+        let q = std::str::index_of(rest, "\"");
+        return if q < 0 { "" } else { rest[0..q] };
+    }
+    let end = std::str::index_of_from(low, "</" + tag, gt);
+    if end < 0 { return ""; }
+    let mut body = entry[(gt + 1)..end];
+    body = std::str::replace(std::str::replace(body, "<![CDATA[", ""), "]]>", "");
+    return std::str::trim(std::str::replace(text_lines(html_text(body)), "\n", " "));
+}
+
+// A feed's entries (RSS `<item>`, Atom `<entry>`), one line each: the
+// title, then the link, guid or id. The feed's own dates and anything
+// outside an entry are not read.
+@bounded_by(feed)
+fn feed_entries(feed: String) -> String {
+    let low_all = std::str::lower(feed);
+    let v = std::str::bytes_view(low_all);
+    let n = len(feed);
+    let tag = if std::str::find(v, "<item", 0) >= 0 { "item" } else { "entry" };
+    let out = std::str::builder_new();
+    let mut i = 0;
+    while i < n {
+        let at = std::str::find(v, "<" + tag, i);
+        if at < 0 { break; }
+        let end = std::str::find(v, "</" + tag + ">", at);
+        if end < 0 { break; }
+        let entry = feed[at..end];
+        let low = low_all[at..end];
+        let title = feed_field(entry, low, "title");
+        let link = feed_field(entry, low, "link");
+        let id = if len(link) > 0 {
+            link
+        } else if len(feed_field(entry, low, "guid")) > 0 {
+            feed_field(entry, low, "guid")
+        } else {
+            feed_field(entry, low, "id")
+        };
+        let line = std::str::trim(title + (if len(id) > 0 { " | " + id } else { "" }));
+        if len(line) > 0 { std::str::builder_append(out, line + "\n"); }
+        i = end + len(tag) + 3;
+    }
+    return std::str::builder_finish(out);
+}
+
+// The sha256 of `text`, hex: the digest its receipt is kept under.
+fn source_digest(text: String) -> String {
+    return hex(std::crypto::sha256(std::bytes::from_string(text)));
+}
+
+// The unified diff from `before` to `after`, labelled with the practice's
+// name and both digests (hex), cut at `SOURCE_DIFF_MAX` bytes on a line,
+// saying so.
+fn source_diff(name: String, before: String, after: String, from: String, to: String) -> String {
+    let base = "/tmp/dna-source-" + to_string(std::process::pid()) + "-" + short_digest(to);
+    std::io::fs::write_file(base + ".before", before) or discard;
+    std::io::fs::write_file(base + ".after", after) or discard;
+    let r = run_tool("diff\n-u\n" + base + ".before\n" + base + ".after");
+    std::io::fs::unlink(base + ".before") or discard;
+    std::io::fs::unlink(base + ".after") or discard;
+    // drop diff's own header (temporary paths and times) for ours
+    let mut body = r.stdout;
+    let mut k = 0;
+    while k < 2 && (std::str::starts_with(body, "--- ") || std::str::starts_with(body, "+++ ")) {
+        let nl = std::str::index_of(body, "\n");
+        body = if nl < 0 { "" } else { body[(nl + 1)..len(body)] };
+        k = k + 1;
+    }
+    let head = "--- " + name + " " + short_digest(from) + "\n+++ " + name + " " + short_digest(to)
+        + "\n";
+    let whole = head + body;
+    if len(whole) <= SOURCE_DIFF_MAX { return whole; }
+    let mut cut = SOURCE_DIFF_MAX;
+    while cut > 0 && whole[(cut - 1)..cut] != "\n" { cut = cut - 1; }
+    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its "
+        + to_string(len(whole)) + " bytes\n";
+}
+
+fn short_digest(d: String) -> String {
+    return if len(d) > 12 { d[0..12] } else if len(d) > 0 { d } else { "(none)" };
+}
+
+// ---- the occurrences ------------------------------------------------------------
+
+// What the occurrences of the practice named `name` came to before `task`,
+// read from their outcomes: an outcome done names the snapshot it saw (its
+// result, the baseline), and each one failed `unreached` since adds to the
+// streak. Whichever version of the practice convened them: an amendment
+// keeps the baseline.
+@bounded_by(j)
+fn source_history(j: Journal, name: String, task: String) -> SourceHistory {
+    let mut tasks = "\n";
+    let mut attempts = "\n";
+    let mut out = SourceHistory { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted"
+            && e.entity != task
+            && std::json::find_string_field(e.body, "definition") == "source-check"
+            && std::json::find_string_field(
+                std::json::find_string_field(e.body, "inputs"),
+                "name",
+            ) == name
+        {
+            tasks = tasks + e.entity + "\n";
+        }
+        if e.kind == "attempt.admitted"
+            && std::str::contains(
+                tasks,
+                "\n" + std::json::find_string_field(e.body, "task_id") + "\n",
+            )
+        {
+            attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\n";
+        }
+        if e.kind == "attempt.outcome" && std::str::contains(attempts, "\n" + e.entity + "\n") {
+            let disposition = std::json::find_string_field(e.body, "disposition");
+            let result = std::json::find_string_field(e.body, "result");
+            if disposition == "done" && std::str::starts_with(result, "sha256:") {
+                out.baseline = result;
+                out.streak = 0;
+            }
+            else if disposition == "failed" && result == "unreached" {
+                out.streak = out.streak + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Occurrence `task` of `w`, what it read being `seen`: the baseline, a move
+// (its reading, and the concern's words), the same snapshot (nothing), or a
+// failure to reach the source (its reading at the streak's threshold). The
+// journal is the organism's; the receipts keep the snapshots and diffs.
+@bounded_by(j)
+fn source_check(
+    j: Journal,
+    receipts: Receipts,
+    task: String,
+    w: SourceWatch,
+    seen: SourceSeen
+) -> SourceAnswer {
+    // a reading this occurrence landed is its observation, committed: asked
+    // again (a restart before its outcome), it answers what that reading
+    // saw, never what the source says now
+    let landed = source_replay(j, task, w);
+    if len(landed.disposition) > 0 { return landed; }
+    let h = source_history(j, w.name, task);
+    if !seen.ok {
+        let streak = h.streak + 1;
+        let reading = if streak == SOURCE_UNREACHABLE_AFTER {
+            source_unreachable(j, task, w, seen.why, streak)
+        } else {
+            ""
+        };
+        if streak == SOURCE_UNREACHABLE_AFTER && len(reading) == 0 {
+            return SourceAnswer {
+                narrative: "the unreachable reading of " + w.name + " was not taken",
+            };
+        }
+        return SourceAnswer { disposition: "failed", result: "unreached", reading: reading,
+            narrative: w.watch + " unreached (" + to_string(streak) + " in a row): " + seen.why
+                + (if len(reading) > 0 { "; reading " + reading } else { "" }) };
+    }
+    let hex_digest = source_digest(seen.text);
+    let digest = "sha256:" + hex_digest;
+    if h.baseline == digest {
+        return SourceAnswer {
+            disposition: "done",
+            result: digest,
+            narrative: w.watch + " unchanged at " + short_digest(hex_digest),
+        };
+    }
+    if receipts.store(seen.text) != hex_digest {
+        return SourceAnswer { narrative: "the snapshot of " + w.watch + " was not kept" };
+    }
+    if len(h.baseline) == 0 {
+        return SourceAnswer {
+            disposition: "done",
+            result: digest,
+            narrative: w.watch + " baseline at " + short_digest(hex_digest),
+        };
+    }
+    let from = h.baseline[7..len(h.baseline)];
+    let unified = source_diff(w.name, receipts.read(from), seen.text, from, hex_digest);
+    // an API's receipt leads with its drift lines, the summary of the move
+    let diff = if len(seen.summary) > 0 { seen.summary + unified } else { unified };
+    let diff_digest = receipts.store(diff);
+    if len(diff_digest) == 0 {
+        return SourceAnswer { narrative: "the diff of " + w.watch + " was not kept" };
+    }
+    let reading = source_changed(
+        j,
+        task,
+        w,
+        h.baseline,
+        digest,
+        "sha256:" + diff_digest,
+        diff,
+        seen.summary,
+    );
+    if len(reading) == 0 {
+        return SourceAnswer { narrative: "the reading of " + w.watch + " was not taken" };
+    }
+    return SourceAnswer {
+        disposition: "done",
+        result: digest,
+        reading: reading,
+        what: source_concern_what(w, reading, "sha256:" + diff_digest),
+        narrative: w.watch + " moved " + short_digest(from) + " -> " + short_digest(hex_digest)
+            + ": reading " + reading };
+}
+
+// What occurrence `task` of `w` already landed, as its answer: a move's
+// reading (the snapshot it moved to, and the concern's words with its
+// receipt), or the unreachable reading of a streak; no disposition when it
+// landed none.
+@bounded_by(j)
+fn source_replay(j: Journal, task: String, w: SourceWatch) -> SourceAnswer {
+    let id = reading_id(task);
+    let changed = SOURCE_APP + "/" + w.watch + ".changed/" + id;
+    let moved = first_row(j, "reading.recorded", changed);
+    if len(moved.kind) > 0 {
+        let payload = std::json::find_string_field(moved.body, "payload");
+        let to = std::json::find_string_field(payload, "to");
+        return SourceAnswer {
+            disposition: "done",
+            result: to,
+            reading: changed,
+            what: source_concern_what(w, changed, std::json::find_string_field(payload, "receipt")),
+            narrative: w.watch + " moved to "
+                + short_digest(
+                    if std::str::starts_with(to, "sha256:") { to[7..len(to)] } else { to },
+                )
+                + ": reading " + changed + " (landed already)" };
+    }
+    let unreachable = SOURCE_APP + "/" + w.watch + ".unreachable/" + id;
+    let failed = first_row(j, "reading.recorded", unreachable);
+    if len(failed.kind) > 0 {
+        return SourceAnswer { disposition: "failed", result: "unreached", reading: unreachable,
+            narrative: w.watch + " unreached: "
+                + std::json::find_string_field(
+                    std::json::find_string_field(failed.body, "payload"),
+                    "why",
+                )
+                + "; reading " + unreachable + " (landed already)" };
+    }
+    return SourceAnswer { };
+}
+
+// The reading `<watch>.changed`, its payload naming the diff's receipt and
+// carrying the diff; its entity, "" when not taken.
+fn source_changed(
+    j: Journal,
+    task: String,
+    w: SourceWatch,
+    from: String,
+    to: String,
+    receipt: String,
+    diff: String,
+    drift: String
+) -> String {
+    let b = std::json::Builder { };
+    source_payload(b, task, w);
+    b.string_field("from", from);
+    b.string_field("to", to);
+    if w.kind == "openapi" { b.string_field("drift", drift); }
+    b.string_field("receipt", receipt);
+    b.string_field("diff", diff);
+    b.end_object();
+    return source_reading(j, task, w.watch + ".changed", b.result());
+}
+
+fn source_unreachable(
+    j: Journal,
+    task: String,
+    w: SourceWatch,
+    why: String,
+    streak: Int
+) -> String {
+    let b = std::json::Builder { };
+    source_payload(b, task, w);
+    b.string_field("why", why);
+    b.int_field("failures", streak);
+    b.end_object();
+    return source_reading(j, task, w.watch + ".unreachable", b.result());
+}
+
+// A reading's payload as far as every source reading shares it, begun in
+// `b` and left open for the rest.
+fn source_payload(b: std::json::Builder, task: String, w: SourceWatch) {
+    b.begin_object();
+    b.string_field("id", reading_id(task));
+    b.string_field("practice", w.practice);
+    b.string_field("name", w.name);
+    b.string_field("kind", w.kind);
+    b.string_field("source", w.source);
+    b.string_field("position", "position:" + w.position);
+    b.string_field("task", task);
+}
+
+// A `reading.recorded` row, as the heart lands an application's event:
+// `sources/<event>/<id>`, the id the occurrence's task. Landed once.
+fn source_reading(j: Journal, task: String, event: String, payload: String) -> String {
+    let id = reading_id(task);
+    let entity = SOURCE_APP + "/" + event + "/" + id;
+    if row_exists(j, "reading.recorded", entity) { return entity; }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("app", SOURCE_APP);
+    b.string_field("event", event);
+    b.string_field("id", id);
+    b.string_field("subject", event);
+    b.string_field("payload", payload);
+    b.end_object();
+    let x = j.append(j.revision(), "reading.recorded", entity, b.result());
+    return if x.ok { entity } else { "" };
+}
+
+// A task's id as a reading's id carries it: letters, digits and `-_.:`.
+fn reading_id(task: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(task) {
+        let c = task[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "-"
+            || c == "_"
+            || c == "."
+            || c == ":";
+        out = out + (if ok { c } else { "-" });
+        i = i + 1;
+    }
+    return out;
+}
+
+// ---- the task a move is ----------------------------------------------------
+
+// The largest note and diff a task's brief carries inline; a longer one is
+// cut at a line (the whole of each is a receipt on the leg's answer).
+const SOURCE_BRIEF_MAX: Int = 8000;
+
+fn cut_at_line(text: String, most: Int) -> String {
+    if len(text) <= most { return text; }
+    let mut cut = most;
+    while cut > 0 && text[(cut - 1)..cut] != "\n" { cut = cut - 1; }
+    return text[0..cut] + "… cut here at " + to_string(cut) + " of " + to_string(len(text))
+        + " bytes\n";
+}
+
+// What a moved source's task carries into its hat: the practice that
+// convened the check, the reading, its diff (also a receipt under
+// `diff_receipt`), and the architecture note the codebase's knowledge
+// directory holds for the source. `integration` names the watch.
+fn source_brief_json(
+    w: SourceWatch,
+    reading: String,
+    diff_receipt: String,
+    diff: String,
+    note_path: String,
+    note: String
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("integration", w.watch);
+    b.string_field("practice", w.name);
+    b.string_field("codebase", w.codebase);
+    b.string_field("source", w.kind);
+    b.string_field("reading", reading);
+    b.string_field("diff_receipt", diff_receipt);
+    b.string_field("diff", cut_at_line(diff, SOURCE_BRIEF_MAX));
+    b.string_field("note_path", note_path);
+    b.string_field("note_digest", if len(note) > 0 { source_digest(note) } else { "" });
+    b.string_field("note", cut_at_line(note, SOURCE_BRIEF_MAX));
+    b.end_object();
+    return b.result();
+}
+
+// The part of an id after its last `/`.
+fn id_tail(s: String) -> String {
+    let mut out = s;
+    let mut at = std::str::index_of(out, "/");
+    while at >= 0 {
+        out = out[(at + 1)..len(out)];
+        at = std::str::index_of(out, "/");
+    }
+    return out;
+}
+
+// The task a moved source is for, in words.
+fn source_task_outcome(w: SourceWatch, reading: String) -> String {
+    return "The upstream " + w.watch + " moved (reading " + reading + ", watched by the practice "
+        + w.name + "). Assess its diff against the codebase `" + w.codebase
+        + "`'s client of it, with the architecture note: change the client, or say that nothing needs to change.";
+}

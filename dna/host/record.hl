@@ -1,24 +1,20 @@
 // dna/host/record.hl — the record as the host reads and writes it
 // (GH #566 F8). The record's API is the core's `dna::Record` (GH #646
-// stage 0, #649): the Journal is its `journal` chain, receipts are its
-// bodies, the body lease is a cell, mailboxes are chains, and the remote
-// is what it shares with and receives from. The host appends in a
-// person's or a node's name, syncs the record with its remote, and reads
-// receipts by digest. Nothing here decides, and nothing here spells the
-// tool: the one implementation over git is `dna::GitRecord`.
+// stage 0, #649): the Journal is its `journal` chain and receipts are its
+// bodies. The record is memory's (GH #1590): every clone and body reads
+// and writes the one record there, so nothing of it travels by git and
+// nothing here syncs it. The host appends in a person's or a node's name
+// and reads receipts by digest. Nothing here decides, and nothing here
+// spells the store: the one implementation is `dna::MemoryRecord`.
 
 import "../core" as dna;
 import "../organization_runtime" as org_runtime;
 
-const RECORD_REF: String = "refs/dna/journal";
 const JOURNAL: String = "journal";
-const REMOTE_JOURNAL: String = "remote/journal";
-const IDENTITY_REF: String = "refs/dna/identity";
-const IDENTITY: String = "identity";
 
-// The record at `root`, as the core implements it over git.
-fn rec(root: String) -> dna::GitRecord {
-    return dna::GitRecord { repo: root };
+// The record at `root`, as the core implements it over memory.
+fn rec(root: String) -> dna::MemoryRecord {
+    return dna::MemoryRecord { repo: root };
 }
 
 // write_file as a Bool, so a caller can act on failure.
@@ -27,25 +23,39 @@ fn write_text(path: String, text: String) -> Bool fallible(IoError) {
     return true;
 }
 
-fn record_head(root: String) -> dna::Head { let authority = org_runtime::HostAuthority { root: root }; return authority.record_head(); }
+fn record_head(root: String) -> dna::Head {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.record_head();
+}
 
-// The remote the record syncs with ("" when the repository has none).
-fn record_remote(repo: String) -> String {
+// The genome's remote, its forge (`dna.remote`, else `origin`; "" when the
+// repository has none): what revisions and candidates travel to and from.
+fn genome_remote(repo: String) -> String {
     return rec(repo).remote();
 }
 
 // GH #604 rule 6: the admission boundary for record-originated rows.
 // `dna.trust` is `local` (default: every writer to the record is
 // trusted, the operator's profile) or `signed` (a relayed row is admitted
-// only when its commit carries a signature the record's trust verifies —
-// git's own keyring or allowed-signers file is the list of who may act).
-fn trust_mode(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.trust(); }
+// only when it carries a signature the record's trust verifies: the
+// record's key for the organism's parts, a key the record enrolled for a
+// person — `hale dna signers`, GH #1590).
+fn trust_mode(root: String) -> String {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.trust();
+}
 
 // GH #664: the organization this clone's body is (`git config dna.owner`,
 // the name of its `organization` node, GH #1123), "" when unnamed.
-fn owner_here(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.owner(); }
+fn owner_here(root: String) -> String {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.owner();
+}
 // Whether this body is one of a shared record's: it names its organization.
-fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.shared(); }
+fn shared_here(root: String) -> Bool {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.shared();
+}
 // GH #1123: the graph's ownership, read from memory as the head reads it
 // (the spine's DSN where no head's is named); "" when no memory is named or
 // it does not answer — one owner, or, for a body that names its
@@ -54,7 +64,13 @@ fn ownership_graph_here(root: String) -> String {
     // one owner — the record states no organization and this body names
     // none — asks memory nothing
     if len(owner_here(root)) == 0 && len(organizations_in_record(root)) == 0 { return ""; }
-    let env = if dna::dsn_set(dna::HEAD_DSN_ENV) { dna::HEAD_DSN_ENV } else if dna::dsn_set(dna::SPINE_DSN_ENV) { dna::SPINE_DSN_ENV } else { "" };
+    let env = if dna::dsn_set(dna::HEAD_DSN_ENV) {
+        dna::HEAD_DSN_ENV
+    } else if dna::dsn_set(dna::SPINE_DSN_ENV) {
+        dna::SPINE_DSN_ENV
+    } else {
+        ""
+    };
     if len(env) == 0 { return ""; }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
@@ -68,7 +84,7 @@ fn ownership_graph_here(root: String) -> String {
 // the membership's source, so a shared record is known as one with no
 // memory at all.
 fn organizations_in_record(root: String) -> String {
-    let j = dna::GitJournal { repo: root };
+    let j = dna::RecordJournal { repo: root };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -80,7 +96,9 @@ fn organizations_in_record(root: String) -> String {
                 let mut kept = "";
                 let mut k = 0;
                 while len(dna::nth_word(out, k)) > 0 {
-                    if dna::nth_word(out, k) != name { kept = dna::word_add(kept, dna::nth_word(out, k)); }
+                    if dna::nth_word(out, k) != name {
+                        kept = dna::word_add(kept, dna::nth_word(out, k));
+                    }
                     k = k + 1;
                 }
                 out = kept;
@@ -92,20 +110,26 @@ fn organizations_in_record(root: String) -> String {
 }
 // GH #989: the application the record attaches, by the name its broker
 // account carries — `application.attached`'s `name`, or for a row written
-// before it named one, the project's directory, as `hale dna init` names
+// before it named one, the project's directory, as `hale habitat graft` names
 // it — and "" when none is attached or an `application.detached` row
 // removed it. The record is the membership source.
 fn attached_application(root: String) -> String {
-    let j = dna::GitJournal { repo: root };
+    let j = dna::RecordJournal { repo: root };
     let mut name = "";
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         if e.kind == "application.attached" {
             let named = std::json::find_string_field(e.body, "name");
-            name = dna::nerves_app_name(if len(named) > 0 { named } else { project_dir_name(root) });
+            name = dna::nerves_app_name(
+                if len(named) > 0 { named } else { project_dir_name(root) },
+            );
         }
-        if e.kind == "application.detached" && dna::nerves_app_name(std::json::find_string_field(e.body, "name")) == name { name = ""; }
+        if e.kind == "application.detached"
+            && dna::nerves_app_name(std::json::find_string_field(e.body, "name")) == name
+        {
+            name = "";
+        }
         i = i + 1;
     }
     return name;
@@ -135,7 +159,10 @@ fn ownership_note(root: String, to: String) -> String {
     return o.why_not(to);
 }
 
-fn row_verified(root: String, sha: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.row_verified(sha); }
+fn row_verified(root: String, sha: String) -> Bool {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.row_verified(sha);
+}
 
 fn short(s: String) -> String {
     if len(s) > 12 { return s[0..12]; }
@@ -169,38 +196,39 @@ fn journal_text_at(repo: String, commit: String) -> String {
     return rec(repo).text_at(commit);
 }
 
-// GH #646 stage 1: the routing version this record is on, from its own
-// rows (`ledger.adopted` / `ledger.abandoned`), and the checkpoint.
-// (a locus handed to an interface parameter is bound to a local first:
-// passed inline as a temporary it reaches the callee unborn)
-fn routing_here(root: String) -> Int { let authority = org_runtime::HostAuthority { root: root }; return authority.routing(); }
-
-fn checkpoint_here(root: String) -> String {
-    let j = dna::GitJournal { repo: root, author: "host" };
-    return dna::checkpoint_of(j);
-}
-
 // The `memory:` line of status: which memories the organism has.
 fn routing_line(root: String, memory: dna::Memory) -> String {
-    let r = routing_here(root);
-    if r == 0 { return "the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger"; }
     let sl = memory.leases;
     let probe = sl.current(store_lease_key(root));
-    let reach = if sl.reachable { "" } else { "; THE LEDGER IS UNREACHABLE (" + sl.last_error + "): what is read here is the last projection, and nothing is admitted until it answers" };
-    return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations and leases live in memory" + reach + ")";
+    let reach = if sl.reachable {
+        ""
+    } else {
+        "; THE LEDGER IS UNREACHABLE (" + sl.last_error
+            + "): what is read here is the last projection, and nothing is admitted until it answers"
+    };
+    return "record + ledger (operations and leases live in memory" + reach + ")";
 }
 
-// An operational row of an adopted organism goes to the Ledger, never into
+// An operational row goes to the Ledger, never into
 // the record itself (#646 decision 3), written straight in by this
 // process under its own role (GH #1026).
-fn ledger_append(root: String, kind: String, entity: String, body: String, memory: dna::Memory) -> Bool {
+fn ledger_append(
+    root: String,
+    kind: String,
+    entity: String,
+    body: String,
+    memory: dna::Memory
+) -> Bool {
     return ledger_submit(root, kind, entity, body, "", memory);
 }
 
 // A write's request id, minted when it is made: a write retried after an
 // answer that was lost lands once.
 fn request_id(root: String) -> String {
-    let d = dna::digest_of(root + "\n" + to_string(std::time::now()) + "\n" + to_string(std::process::pid()) + "\n" + to_string(millis()));
+    let d = dna::digest_of(
+        root + "\n" + to_string(std::time::now()) + "\n" + to_string(std::process::pid()) + "\n"
+            + to_string(millis()),
+    );
     return if std::str::starts_with(d, "sha256:") { d[7..31] } else { d[0..24] };
 }
 
@@ -219,9 +247,19 @@ fn owner_json(root: String) -> String {
 // an author this role does not write as, a claim already taken). A write
 // is done when it lands, and the verb says so; there is no request to
 // wait on and no spine to admit it.
-fn ledger_submit(root: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
+fn ledger_submit(
+    root: String,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> Bool {
     let why = ledger_write(root, -1, kind, entity, body, author, memory);
-    if len(why) > 0 { eprintln("hale dna: `", kind, " ", entity, "` was not written to the ledger: ", why); return false; }
+    if len(why) > 0 {
+        eprintln("hale dna: `", kind, " ", entity, "` was not written to the ledger: ", why);
+        return false;
+    }
     return true;
 }
 
@@ -230,9 +268,20 @@ fn ledger_submit(root: String, kind: String, entity: String, body: String, autho
 // the tail), else why it was refused. One reason per write: it outlives
 // the call only in a caller that writes several rows, one per row.
 @bounded_by(rows)
-fn ledger_write(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
+fn ledger_write(
+    root: String,
+    expected: Int,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> String {
     let l = memory.ledger;
-    if !l.ready() { return "no memory is named here (" + l.dsn_env + "); this organism's operations live in the ledger since " + short(checkpoint_here(root)); }
+    if !l.ready() {
+        return "no memory is named here (" + l.dsn_env
+            + "); the organism's operations live in its Ledger, in memory";
+    }
     let who = if len(author) > 0 { author } else { "host" };
     let r = l.write(expected, kind, entity, body, who, request_id(root));
     if r.ok { return ""; }
@@ -253,14 +302,22 @@ fn ledger_revision(root: String, memory: dna::Memory) -> Int {
 // revision a decision was read at). "" when it landed, `stale_revision`
 // when the Ledger moved (read again and decide again), else why it was
 // refused.
-fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
+fn ledger_submit_at(
+    root: String,
+    expected: Int,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> String {
     if expected < 0 { return "the ledger's revision was not read"; }
     return ledger_write(root, expected, kind, entity, body, author, memory);
 }
 
-// Whether rows this clone writes are signed (GH #604 rule 6: under
-// `dna.trust = signed` a row this clone writes is a signed commit, so a
-// relay elsewhere can admit it as its author's).
+// Whether rows this clone writes are signed (GH #604 rule 6). Every row is
+// signed as its writer signs (GH #1590), so this only says what the record's
+// trust asks of them.
 fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 
 // Append one event to the record in `author`'s name ("" = the record's
@@ -271,30 +328,47 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // wedged repository reaches. Three tries used to be the bound, and a
 // host reconciling beside a busy organism lost them all and dropped the
 // row (GH #603).
-fn append_as(repo: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
-    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author, memory); }
+fn append_as(
+    repo: String,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> Bool {
+    if dna::memory_of(kind) == "ledger" {
+        return ledger_submit(repo, kind, entity, body, author, memory);
+    }
     return len(record_append(repo, kind, entity, body, author)) > 0;
 }
 
 // A row of the record in `author`'s name, at the tail however often the
 // chain moves under it: its digest, "" when it could not be written.
 // One row per try, two hundred at most.
-@bounded_by(tries)
-fn record_append(repo: String, kind: String, entity: String, body: String, author: String) -> String {
-    let r = rec(repo);
-    let sign = signing(repo);
-    let mut tries = 0;
-    while tries < 200 {
-        tries = tries + 1;
-        let head = r.head(JOURNAL);
-        // a tail that could not be read is not an empty chain to append at
-        if !head.ok { return ""; }
-        let a = r.append(JOURNAL, head.id, dna::Row { kind: kind, entity: entity, body: body, author: author }, sign, "");
-        if a.ok { return a.id; }
-        if a.error != "stale" { return ""; }
-        // the chain moved under us: re-read and re-append at the new tail
+// GH #1590: the row lands through memory's insert function, signed as its
+// writer signs; "" names whoever runs this.
+fn record_append(
+    repo: String,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String
+) -> String {
+    let who = if len(author) > 0 { author } else { who_am_i() };
+    let j = dna::RecordJournal { repo: repo, author: who };
+    let r = j.append(j.revision(), kind, entity, body);
+    if !r.ok {
+        eprintln(
+            "hale dna: `",
+            kind,
+            " ",
+            entity,
+            "` was not written to the record: ",
+            if len(j.last_error()) > 0 { j.last_error() } else { r.error },
+        );
+        return "";
     }
-    return "";
+    return j.head();
 }
 
 // A receipt queued for `keeps_flush`: its digest, now. The queue is the
@@ -311,19 +385,34 @@ fn keeps_flush(repo: String, keeps: dna::Texts) -> Bool { return rec(repo).keep_
 // Rows written together, one commit each, at the tail however often the
 // chain moves under them: the id of the last, "" when they could not be
 // written (and then none was).
+@bounded_by(rows)
 fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
-    let r = rec(repo);
-    let sign = signing(repo);
-    let mut tries = 0;
-    while tries < 200 {
-        tries = tries + 1;
-        let head = r.head(JOURNAL);
-        if !head.ok { return ""; }
-        let a = r.append_batch(JOURNAL, head.id, rows, sign, "");
-        if a.ok { return a.id; }
-        if a.error != "stale" { return ""; }
+    let j = dna::RecordJournal { repo: repo, author: who_am_i() };
+    let mut i = 0;
+    while i < rows.len() {
+        let row = rows.get(i) or dna::Row { };
+        let r = j.append_as(
+            j.revision(),
+            row.kind,
+            row.entity,
+            row.body,
+            if len(row.author) > 0 { row.author } else { who_am_i() },
+            false,
+        );
+        if !r.ok {
+            eprintln(
+                "hale dna: `",
+                row.kind,
+                " ",
+                row.entity,
+                "` was not written to the record: ",
+                j.last_error(),
+            );
+            return "";
+        }
+        i = i + 1;
     }
-    return "";
+    return j.head();
 }
 
 // The rows of a text, one JSON object per line (`kind`, `entity`, `body`),
@@ -332,7 +421,6 @@ fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
 // The count appended, -1 when the record refused (the runs before it
 // stay: each run is its own write).
 fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
-    let routing = routing_here(repo);
     let pending = dna::RowBatch { };
     let mut n = 0;
     let mut rest = text;
@@ -344,7 +432,7 @@ fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
         let kind = std::json::find_string_field(line, "kind");
         let entity = std::json::find_string_field(line, "entity");
         let body = std::json::find_string_field(line, "body");
-        if dna::route(routing, kind) == "ledger" {
+        if dna::memory_of(kind) == "ledger" {
             if pending.len() > 0 {
                 if len(record_append_batch(repo, pending)) == 0 { return -1; }
                 while pending.len() > 0 { let gone = pending.pop() or dna::Row { }; }
@@ -366,339 +454,124 @@ fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
 // (nothing appended; read again and decide again), else why it was
 // refused (#636: a redaction that read "no hold" must not land after a
 // hold did — on either memory).
-fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
-    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory); }
-    let r = rec(repo);
+fn append_as_at(
+    repo: String,
+    expected: String,
+    ledger_expected: Int,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> String {
+    if dna::memory_of(kind) == "ledger" {
+        return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory);
+    }
+    let r = dna::MemoryRecord {
+        repo: repo,
+        author: if len(author) > 0 { author } else { who_am_i() },
+    };
     let now = r.head(JOURNAL);
     if !now.ok { return "the record's head could not be read: " + now.why; }
-    if now.id != expected { return "stale_revision"; }
-    let a = r.append(JOURNAL, expected, dna::Row { kind: kind, entity: entity, body: body, author: author }, signing(repo), "");
+    if now.id != expected && !(now.absent && len(expected) == 0) { return "stale_revision"; }
+    let a = r.append(
+        JOURNAL,
+        expected,
+        dna::Row { kind: kind, entity: entity, body: body, author: author },
+        false,
+        "",
+    );
     if a.ok { return ""; }
     if a.error == "stale" { return "stale_revision"; }
-    return "the row could not be written";
+    return "the row could not be written: " + a.error;
 }
 
 type SyncResult {
     ok: Bool = true;
     summary: String = "";
+    seen: Int = 0; // the view's rows looked at, for the next pass to start after
 }
 
 fn sync_failed(why: String) -> SyncResult {
     return SyncResult { ok: false, summary: why };
 }
 
-// Receive, reconcile, share (GH #566 F1). Local ahead: share. Remote
-// ahead: fast-forward. Diverged: the local-only events are re-appended
-// on top of the remote's head, bodies and authors unchanged, then
-// shared. Redactions and dropped candidates are applied both here and
-// at the remote; the record's identity is published.
+// GH #1590: the record is memory's, read and written there by every clone
+// and body alike, so nothing of it travels by git and there is nothing to
+// receive, reconcile or share. What a sync still does is local: a
+// candidate the record dropped loses its branch here.
 fn sync_record(repo: String, memory: dna::Memory) -> SyncResult {
-    let s = sync_record_rows(repo);
-    if !s.ok { return s; }
-    // the record and the ledger read as one (nothing of the ledger is read
-    // on routing 0); each locus built in place, never handed back by a factory
-    let record = dna::GitJournal { repo: repo, author: "host" };
-    let j = dna::RoutedJournal { record: record, ledger: memory.ledger };
-    return synced(repo, s, j);
+    let dropped = apply_drops(repo);
+    return SyncResult { ok: true, summary: "the record is memory's: nothing to sync" };
 }
 
-// The same over a journal the caller keeps (a body's view, for its life),
-// read again after the sync: only what the sync and the tick added is read.
-fn sync_record_over(repo: String, j: dna::RoutedJournal) -> SyncResult {
-    let s = sync_record_rows(repo);
-    if !s.ok { return s; }
+// The same, for a body that keeps its view of the record for its life: the
+// view read again, so what other writers appended is in it, and only the
+// rows past `from` (what the last pass saw) looked at — an idle body asks
+// memory only whether the record moved.
+fn sync_record_over(repo: String, j: dna::RoutedJournal, from: Int) -> SyncResult {
     let moved = j.refresh();
-    return synced(repo, s, j);
-}
-
-// What a sync that moved the rows does after: the withdrawals the record
-// `j` (read as it is now) asks for, and the record's identity published.
-fn synced(repo: String, s: SyncResult, j: dna::RoutedJournal) -> SyncResult {
-    let w = apply_withdrawals(repo, j);
-    // a remote that had no record had no identity either, whatever this
-    // clone published to the remote it had before
-    if std::str::contains(s.summary, "(the remote had none)") { let u = rec(repo).unset_setting("identitypublished"); }
-    if !publish_identity(repo) && len(record_remote(repo)) > 0 && len(record_identity(repo)) > 0 {
-        return SyncResult { ok: true, summary: s.summary + "; the record's identity (" + IDENTITY_REF + ") could not be published to " + record_remote(repo) + " — no other record can connect to this one until a sync publishes it" };
-    }
-    return s;
-}
-
-// GH #615: a record's identity is the root commit of its journal. It is
-// published as a cell under refs/dna/identity, so another record can name
-// this one (and write into its mailbox for it) without reading its journal.
-fn record_identity(repo: String) -> String {
-    return rec(repo).identity();
-}
-
-// The cell in this clone is not publication (the second review of #631: a
-// record synced before it had a remote, or whose first push of its
-// identity failed, kept a local ref and never published it). Until a push
-// to the remote as it is now has succeeded — `dna.identitypublished`
-// names that remote and version — every sync asks the remote and pushes.
-// Never forced: a remote holding another record's identity is refused.
-fn publish_identity(repo: String) -> Bool {
-    let r = rec(repo);
-    let genesis = record_identity(repo);
-    if len(genesis) == 0 { return false; }
-    if dna::trim_nl(r.cell(IDENTITY).text) != genesis {
-        if !r.swap(IDENTITY, genesis, "*") { return false; }
-    }
-    let remote = record_remote(repo);
-    if len(remote) == 0 { return true; }
-    let version = r.cell(IDENTITY).version;
-    let url = r.remote_url(remote);
-    let mark = (if len(url) > 0 { url } else { remote }) + " " + version;
-    if r.setting("identitypublished") == mark { return true; }
-    if r.remote_has(remote, IDENTITY) != version {
-        if !r.share(remote, IDENTITY, "").ok { return false; }
-    }
-    return r.set_setting("identitypublished", mark);
-}
-
-// One redacted receipt's body gone from this clone and the remote: how
-// many places it went from.
-fn redact_here(r: dna::GitRecord, remote: String, digest: String) -> Int {
-    let mut n = 0;
-    let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-    if r.body(hexd).present {
-        let gone = r.forget(hexd);
-        n = n + 1;
-    }
-    if len(remote) > 0 && len(r.remote_has(remote, "receipts/" + hexd)) > 0 {
-        let w = r.withdraw(remote, "receipts/" + hexd);
-        n = n + 1;
-    }
-    return n;
-}
-
-// GH #606: a redacted receipt's body goes from this clone and from the
-// remote on every sync, so a clone that fetched it drops it at its next
-// sync. The blob lingers in each object store until git collects it.
-// (GH #646 stage 4: a redaction is a row of the ledger once the record is
-// adopted, and a body filed before adoption is still a blob here — so
-// the rows are read from both memories as one.) A dropped candidate goes
-// the same way (apply_drops, below); both are found in one pass over the
-// rows of `j`, which a body's sync makes on every tick over its view.
-fn apply_withdrawals(repo: String, j: dna::RoutedJournal) -> Int {
-    let r = rec(repo);
-    let remote = record_remote(repo);
-    let mut n = 0;
-    let mut i = 0;
+    let mut i = from;
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind == "receipt.redacted" { n = n + redact_here(r, remote, e.entity); }
-        if e.kind == "candidate.dropped" { n = n + drop_here(r, remote, e.entity); }
+        if e.kind == "candidate.dropped" { let gone = drop_here(repo, e.entity); }
     }
-    return n;
+    return SyncResult {
+        ok: true,
+        summary: "the record is memory's: nothing to sync",
+        seen: j.revision(),
+    };
+}
+
+// A record's identity names its memory: the digest of its first row
+// (`record.genesis`). The genome pins it (`[dna] record` in hale.toml), and
+// a clone whose pin is unreadable has none ("", `dna::record_identity_at`
+// says why).
+fn record_identity(repo: String) -> String {
+    return dna::record_scope(repo);
+}
+
+// The record's identity as memory holds it for this clone's pin ("none"
+// when memory holds no record for it).
+fn record_identity_verb(root: String) -> Answer {
+    let j = dna::RecordJournal { repo: root, author: "host" };
+    return answer((if j.revision() > 0 { record_identity(root) } else { "none" }) + "\n");
 }
 
 // A candidate the record says was dropped (`candidate.dropped
-// <mutation>`) is unpointed here and withdrawn from the remote, as a
-// redacted receipt is; its commits stay in the object store until git
+// <mutation>`) has its branch deleted here (GH #1590: a candidate is a
+// branch of the genome); its commits stay in the object store until git
 // collects them.
 fn apply_drops(repo: String) -> Int {
-    let r = rec(repo);
-    let remote = record_remote(repo);
     let mut n = 0;
-    // `candidate.dropped` is a row of the record on every routing
-    let j = dna::GitJournal { repo: repo, author: "host" };
+    // `candidate.dropped` is a row of the record
+    let j = dna::RecordJournal { repo: repo, author: "host" };
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind == "candidate.dropped" { n = n + drop_here(r, remote, e.entity); }
+        if e.kind == "candidate.dropped" { n = n + drop_here(repo, e.entity); }
     }
     return n;
 }
 
-// One dropped candidate unpointed here and withdrawn from the remote.
-fn drop_here(r: dna::GitRecord, remote: String, mutation: String) -> Int {
-    let mut n = 0;
-    let name = "candidates/" + mutation;
-    if len(r.pointer(name)) > 0 {
-        let gone = r.unpoint(name);
-        n = n + 1;
-    }
-    if len(remote) > 0 && len(r.remote_has(remote, name)) > 0 {
-        let w = r.withdraw(remote, name);
-        n = n + 1;
-    }
-    return n;
-}
-
-// The families a sync carries besides the journal: receipts by digest,
-// candidates by mutation, and (received only) every mailbox.
-const SYNC_SHARES: String = "journal,receipts,candidates";
-const SYNC_RECEIVES: String = "journal,receipts,exchange,candidates";
-
-// #639, narrowed option 3: under `signed` trust a reconcile rebuilds only
-// rows this clone signed (re-signed, with the original named) or never
-// signed (rebuilt unsigned, so a reconcile upgrades nobody's provenance).
-// A row signed elsewhere refuses the whole reconcile before any chain
-// moves: the row and its key are named, every local row and commit stays
-// where it is, and the way that keeps the work is said. "" when every
-// local-only row may be rebuilt.
-fn provenance_refusal(r: dna::GitRecord, ids: String) -> String {
-    let own = r.own_key();
-    let mut rest = ids;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let c = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if len(c) == 0 { continue; }
-        let s = r.signer(c);
-        if !s.signed { continue; }
-        if len(own) > 0 && s.key == own { continue; }
-        let row = r.row_of(c);
-        let by = if len(s.key) > 0 { "key " + s.key + (if s.verified { "" } else { " (which this record does not verify)" }) } else { "a key this record cannot read" };
-        return "the record diverged, and local event " + c + " (" + row.kind + " " + row.entity + ", by " + row.author + ") was signed with " + by + ", not this clone's" + (if len(own) == 0 { " (this clone signs nothing)" } else { "" }) + "; a reconcile would re-sign it as this clone's, so the record was not changed and every local row is kept at " + RECORD_REF + ". Have that row's writer sync first — a writer rebuilds its own rows — then sync again to fast-forward; or fetch and fast-forward once the remote holds it";
-    }
-    return "";
-}
-
-// Whether a head read in this round stands where the last round's did or
-// after it. The chain only grows, and a reconcile's own swap is recorded
-// as where it left the chain, so anything else is a read that went wrong.
-fn grew_from(r: dna::GitRecord, before: String, now: String) -> Bool {
-    if len(before) == 0 || now == before { return true; }
-    return len(now) > 0 && r.precedes(before, now);
-}
-
-// A reconcile acts only on heads it read. A head that could not be read
-// is never "no record yet" on either side: taken for that, a clone's
-// journal was moved to the remote's head and every local-only row left
-// the chain, or a local chain was pushed as if the remote held nothing
-// (GH #961).
-fn sync_record_rows(repo: String) -> SyncResult {
-    let r = rec(repo);
-    let remote = record_remote(repo);
-    if len(remote) == 0 { return SyncResult { ok: true, summary: "no remote: the record is local" }; }
-    let f = r.receive(remote, SYNC_RECEIVES);
-    // a remote with no record yet is not an error
-    if !f.ok && !f.absent { return sync_failed("fetch " + remote + ": " + f.why); }
-    let mut summary = "";
-    let mut round = 0;
-    // where each chain stood the last round, so a round that reads either
-    // one behind it refuses instead of acting on it
-    let mut seen_local = "";
-    let mut seen_remote = "";
-    while round < 3 {
-        round = round + 1;
-        let lh = r.head(JOURNAL);
-        if !lh.ok { return sync_failed("this clone's record head could not be read (" + lh.why + "); the record was not changed"); }
-        let rh = r.head(REMOTE_JOURNAL);
-        if !rh.ok { return sync_failed("the remote's record head could not be read (" + rh.why + "); the record was not changed"); }
-        let local = lh.id;
-        let remote_head = rh.id;
-        if !grew_from(r, seen_local, local) || !grew_from(r, seen_remote, remote_head) {
-            return sync_failed("the record moved backwards while reconciling; the record was not changed");
-        }
-        seen_local = local;
-        seen_remote = remote_head;
-        if lh.absent {
-            if !rh.absent {
-                // "" expects the ref absent: one that appeared meanwhile refuses
-                if !r.move_chain(JOURNAL, remote_head, "") { return sync_failed("the record appeared here while it was being pulled; nothing was changed — sync again"); }
-                summary = "pulled the record";
-            }
-            return SyncResult { ok: true, summary: summary };
-        }
-        if rh.absent {
-            // The remote has no record yet: a governed repository whose
-            // first events were appended here, or a clone that pushed
-            // `main` alone. This said "up to date" and pushed nothing,
-            // so the record stayed on one machine and a second clone saw
-            // an organization with no history (the shakeout's finding 7).
-            summary = "pushed " + to_string(r.count(JOURNAL)) + " event(s) (the remote had none)";
-        } else if local == remote_head {
-            if len(summary) == 0 { summary = "up to date"; }
-            return SyncResult { ok: true, summary: summary };
-        } else if r.precedes(remote_head, local) {
-            // local ahead: share below
-            summary = "pushed " + to_string(count_lines(r.between(remote_head, local))) + " event(s)";
-        } else if r.precedes(local, remote_head) {
-            if !r.move_chain(JOURNAL, remote_head, local) { return sync_failed("update-ref failed"); }
-            summary = "pulled " + to_string(count_lines(r.between(local, remote_head))) + " event(s)";
-            return SyncResult { ok: true, summary: summary };
-        } else {
-            // diverged: the local-only events are re-appended on top of
-            // the remote's head — on a chain built BESIDE the live ref,
-            // swapped in with one compare-and-swap once it is whole. The
-            // ref used to be rewound to the remote's head first and the
-            // events re-appended behind it one by one: for that whole
-            // window the record had lost rows it held a moment before —
-            // a reader saw a Review vanish from the board, an organism
-            // whose append lost the ref race reloaded without its own
-            // rows, and a re-append that lost three races left them
-            // lost for good (GH #603). Nothing here changes the ref
-            // until the whole chain exists; a local-only commit with no
-            // row is a refusal, never a silent skip.
-            let mine = r.between(remote_head, local);
-            let signed_trust = signing(repo);
-            if signed_trust {
-                let refusal = provenance_refusal(r, mine);
-                if len(refusal) > 0 { return sync_failed(refusal); }
-            }
-            let mut chain = remote_head;
-            let mut n = 0;
-            let mut rest = mine;
-            let mut broken = "";
-            while len(rest) > 0 && len(broken) == 0 {
-                let nl = std::str::index_of(rest, "\n");
-                let c = if nl < 0 { rest } else { rest[0..nl] };
-                if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-                if len(c) == 0 { continue; }
-                let row = r.row_of(c);
-                if len(row.kind) == 0 { broken = "local event " + c + " has no row"; continue; }
-                // a row this clone signed is re-signed; one never signed is not
-                let sign = signed_trust && r.signer(c).signed;
-                let commit = r.build(chain, dna::Row { kind: row.kind, entity: row.entity, body: row.body, author: row.author }, sign, "Rebuilt-From: " + c);
-                if len(commit) == 0 { broken = "re-append of " + c + " failed"; continue; }
-                chain = commit;
-                n = n + 1;
-            }
-            if len(broken) > 0 { return sync_failed(broken + "; the record was not changed"); }
-            if !r.move_chain(JOURNAL, chain, local) {
-                // this clone appended while the chain was built: the
-                // record was not changed; go round with the new tail
-                summary = "the record moved while reconciling";
-                continue;
-            }
-            // the chain now stands where this reconcile swapped it
-            seen_local = chain;
-            summary = "re-appended " + to_string(n) + " local event(s) onto the remote's " + to_string(count_lines(r.between(local, remote_head)));
-        }
-        if r.share(remote, SYNC_SHARES, "").ok {
-            // the remote now holds this clone's head; a head that could not
-            // be read leaves the tracking ref for the next sync's fetch
-            let h = r.head(JOURNAL);
-            if h.ok && !h.absent { let t = r.move_chain(REMOTE_JOURNAL, h.id, "*"); }
-            return SyncResult { ok: true, summary: summary };
-        }
-        // the remote moved again: receive and go round
-        if !r.receive(remote, "journal").ok { return sync_failed("fetch failed"); }
-    }
-    if summary == "the record moved while reconciling" { return sync_failed(summary + " three times; nothing was changed — sync again"); }
-    return SyncResult { ok: true, summary: summary };
+// One dropped candidate's branch deleted here: 1 when one was kept.
+fn drop_here(repo: String, mutation: String) -> Int {
+    return if genome_uncandidate(repo, mutation) { 1 } else { 0 };
 }
 
 // ---- the body lease (GH #617) ---------------------------------------
 // A record admits one body at a time: the host that runs its organism
-// holds the cell `lease/body` — at the remote when the record has one,
-// so two hosts on two clones fence each other through the remote itself
-// (the cell shared under compare-and-swap at the remote), and in the
-// clone otherwise. The cell is the lease as `GitLeases` writes it:
-// "holder\ntoken\nexpires\npresent". The holder is `user@host:<clone>`,
-// so the same clone restarting is the same holder and takes its lease
-// back at once, and a second clone — a second body — is refused until
-// the lease expires or someone forces it. The host renews on tick and
-// asserts the lease before every consequential act; a body whose lease
-// is no longer its own stops (a partitioned server executes nothing
-// past its TTL).
-const BODY_LEASE: String = org_runtime::BODY_LEASE;
-const BODY_LEASE_TRACK: String = org_runtime::BODY_LEASE_TRACK;
+// holds the lease row in memory (`MemoryLeases`, keyed `body`, or
+// `owner/<owner>` over a shared record), swapped by its token, which is
+// the epoch every write the body makes carries. The holder is
+// `user@host:<clone>`, so the same clone restarting is the same holder and
+// takes its lease back at once, and a second clone — a second body — is
+// refused until the lease expires or someone forces it. The host renews
+// on tick and asserts the lease before every consequential act; a body
+// whose lease is no longer its own stops (a partitioned server executes
+// nothing past its TTL).
 const BODY_TTL: Int = 30;
 // GH #1026: the exit code of a node that stops to take a moved genome; its
 // unit (`Restart=always`) starts it again, and it builds the new genome at
@@ -730,50 +603,59 @@ fn body_holder(root: String) -> String {
     return (if len(user) > 0 { user } else { "body" }) + "@" + host + ":" + place;
 }
 
-fn parse_body_lease(sha: String, text: String) -> BodyLease { let authority = org_runtime::HostAuthority { }; let l = authority.parse_lease(sha, text); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
-
-fn lease_text(l: BodyLease) -> String {
-    return l.holder + "\n" + to_string(l.token) + "\n" + to_string(l.expires) + "\n" + (if l.present { "1" } else { "0" });
-}
-
-// GH #646 stage 2: on routing 1 the body lease is a row of the store,
-// swapped by its token through the service; `sha` carries the token.
-fn body_in_store(repo: String) -> Bool { return routing_here(repo) > 0; }
-
 // GH #665: the store's key for this body's lease — one per owner over a
 // shared record (`owner/<owner>`), `body` when the organization is the
 // one owner. Its token is the epoch every write the body makes carries.
-fn store_lease_key(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.lease_key(); }
+fn store_lease_key(root: String) -> String {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.lease_key();
+}
 
-fn body_lease_from_store(repo: String, memory: dna::Memory) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.store_lease(memory.leases); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
+fn body_lease_from_store(repo: String, memory: dna::Memory) -> BodyLease {
+    let authority = org_runtime::HostAuthority { root: repo };
+    let l = authority.store_lease(memory.leases);
+    return BodyLease {
+        ok: l.ok,
+        present: l.present,
+        holder: l.holder,
+        token: l.token,
+        expires: l.expires,
+        sha: l.sha,
+    };
+}
 
-// The lease as the record's authority has it: the store's row on
-// routing 1; the remote's cell when there is a remote (received now),
-// the clone's otherwise. `ok` false when the authority could not be
-// reached.
-fn body_lease_read(repo: String, memory: dna::Memory) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.body_lease(memory.leases); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
+// The lease as memory has it; `ok` false when memory could not be
+// reached. `sha` carries the token.
+fn body_lease_read(repo: String, memory: dna::Memory) -> BodyLease {
+    let authority = org_runtime::HostAuthority { root: repo };
+    let l = authority.body_lease(memory.leases);
+    return BodyLease {
+        ok: l.ok,
+        present: l.present,
+        holder: l.holder,
+        token: l.token,
+        expires: l.expires,
+        sha: l.sha,
+    };
+}
 
-// Write a lease where `expected` is the version the cell has now
-// ("" = no lease): compare-and-swap at the remote (the cell shared with
-// the version the remote must still hold) or in the clone. The clone's
-// own cell mirrors what was written. False when someone else moved it
-// first.
+// Write a lease where `expected` is the token it has now ("" = no lease),
+// swapped by that token in memory. False when someone else moved it first.
 fn body_lease_write(repo: String, l: BodyLease, expected: String, memory: dna::Memory) -> Bool {
-    if body_in_store(repo) {
-        let sl = memory.leases;
-        let expected_token = if len(expected) == 0 { 0 } else { std::str::parse_int(expected) or 0 };
-        let key = store_lease_key(repo);
-        return sl.put(key, dna::Lease { key: key, holder: l.holder, token: l.token, expires: l.expires, present: l.present }, expected_token);
-    }
-    let r = rec(repo);
-    let remote = record_remote(repo);
-    if len(remote) > 0 {
-        if !r.swap(BODY_LEASE, lease_text(l), "*") { return false; }
-        if !r.share(remote, BODY_LEASE, if len(expected) == 0 { "new" } else { expected }).ok { return false; }
-        let t = r.move_chain(BODY_LEASE_TRACK, r.cell(BODY_LEASE).version, "*");
-        return true;
-    }
-    return r.swap(BODY_LEASE, lease_text(l), expected);
+    let sl = memory.leases;
+    let expected_token = if len(expected) == 0 { 0 } else { std::str::parse_int(expected) or 0 };
+    let key = store_lease_key(repo);
+    return sl.put(
+        key,
+        dna::Lease {
+            key: key,
+            holder: l.holder,
+            token: l.token,
+            expires: l.expires,
+            present: l.present,
+        },
+        expected_token,
+    );
 }
 
 fn body_live(l: BodyLease, now: Int) -> Bool { return l.present && l.expires > now; }
@@ -791,22 +673,55 @@ fn organism_here(root: String, memory: dna::Memory) -> Bool {
 // lease of another holder is refused (present false, holder theirs),
 // unless `force`. A refused acquire because of a partition is `ok`
 // false.
-fn body_acquire(repo: String, holder: String, now: Int, force: Bool, memory: dna::Memory) -> BodyLease {
+fn body_acquire(
+    repo: String,
+    holder: String,
+    now: Int,
+    force: Bool,
+    memory: dna::Memory
+) -> BodyLease {
     let cur = body_lease_read(repo, memory);
     if !cur.ok { return cur; }
     if body_live(cur, now) && cur.holder != holder && !force {
         // theirs, not ours: `present` is false for the caller, `holder` says whose
-        return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
+        return BodyLease {
+            present: false,
+            holder: cur.holder,
+            token: cur.token,
+            expires: cur.expires,
+            sha: cur.sha,
+        };
     }
-    let l = BodyLease { present: true, holder: holder, token: cur.token + 1, expires: now + BODY_TTL };
+    let l = BodyLease {
+        present: true,
+        holder: holder,
+        token: cur.token + 1,
+        expires: now + BODY_TTL,
+    };
     if !body_lease_write(repo, l, cur.sha, memory) {
         let again = body_lease_read(repo, memory);
         if !again.ok { return again; }
         if again.holder == holder && body_live(again, now) { return again; }
-        return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
+        return BodyLease {
+            present: false,
+            holder: again.holder,
+            token: again.token,
+            expires: again.expires,
+            sha: again.sha,
+        };
     }
     let mine = body_lease_read(repo, memory);
-    return if mine.ok && mine.holder == holder && mine.token == l.token { mine } else { BodyLease { present: true, holder: holder, token: l.token, expires: l.expires, sha: rec(repo).cell(BODY_LEASE).version } };
+    return if mine.ok && mine.holder == holder && mine.token == l.token {
+        mine
+    } else {
+        BodyLease {
+            present: true,
+            holder: holder,
+            token: l.token,
+            expires: l.expires,
+            sha: to_string(l.token),
+        }
+    };
 }
 
 // Renew a lease that is still ours; the renewed lease, or the lease as
@@ -817,26 +732,58 @@ fn body_renew(repo: String, mine: BodyLease, now: Int, memory: dna::Memory) -> B
     let cur = body_lease_read(repo, memory);
     if !cur.ok { return cur; }
     if !(cur.present && cur.holder == mine.holder && cur.token == mine.token) {
-        return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
+        return BodyLease {
+            present: false,
+            holder: cur.holder,
+            token: cur.token,
+            expires: cur.expires,
+            sha: cur.sha,
+        };
     }
-    let l = BodyLease { present: true, holder: mine.holder, token: mine.token, expires: now + BODY_TTL };
+    let l = BodyLease {
+        present: true,
+        holder: mine.holder,
+        token: mine.token,
+        expires: now + BODY_TTL,
+    };
     if !body_lease_write(repo, l, cur.sha, memory) {
         let again = body_lease_read(repo, memory);
         if !again.ok { return again; }
         // the write failed and the lease is still ours as it was: not lost,
         // only unrenewed — kept until it expires, like a partition
-        if again.present && again.holder == mine.holder && again.token == mine.token { return BodyLease { ok: false }; }
-        return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
+        if again.present && again.holder == mine.holder && again.token == mine.token {
+            return BodyLease { ok: false };
+        }
+        return BodyLease {
+            present: false,
+            holder: again.holder,
+            token: again.token,
+            expires: again.expires,
+            sha: again.sha,
+        };
     }
-    return BodyLease { present: true, holder: mine.holder, token: mine.token, expires: l.expires, sha: rec(repo).cell(BODY_LEASE).version };
+    return BodyLease {
+        present: true,
+        holder: mine.holder,
+        token: mine.token,
+        expires: l.expires,
+        sha: to_string(l.token),
+    };
 }
 
 // Give the lease up (present false, token kept so a late renewal of it
 // is refused). True when it was ours to give up.
 fn body_release(repo: String, mine: BodyLease, memory: dna::Memory) -> Bool {
     let cur = body_lease_read(repo, memory);
-    if !cur.ok || !cur.present || cur.holder != mine.holder || cur.token != mine.token { return false; }
-    return body_lease_write(repo, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha, memory);
+    if !cur.ok || !cur.present || cur.holder != mine.holder || cur.token != mine.token {
+        return false;
+    }
+    return body_lease_write(
+        repo,
+        BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 },
+        cur.sha,
+        memory,
+    );
 }
 
 fn ago(secs: Int) -> String {
@@ -851,10 +798,18 @@ fn ago(secs: Int) -> String {
 // organism, from the lease alone.
 fn body_line(repo: String, now: Int, memory: dna::Memory) -> String {
     let l = body_lease_read(repo, memory);
-    if !l.ok { return "unknown (the remote cannot be reached)"; }
-    if len(l.holder) == 0 { return "none (no body has run this record; `hale dna run` takes the lease)"; }
+    if !l.ok { return "unknown (memory cannot be reached)"; }
+    if len(l.holder) == 0 {
+        return "none (no body has run this record; `hale dna run` takes the lease)";
+    }
     let ticked = ago(now - (l.expires - BODY_TTL));
-    if body_live(l, now) { return "live on " + l.holder + ", ticked " + ticked + ", lease expires in " + to_string(l.expires - now) + "s"; }
-    if l.present { return "stale: " + l.holder + " last ticked " + ticked + " and its lease has expired; `hale dna run` takes it, `hale dna body claim` says so"; }
+    if body_live(l, now) {
+        return "live on " + l.holder + ", ticked " + ticked + ", lease expires in "
+            + to_string(l.expires - now) + "s";
+    }
+    if l.present {
+        return "stale: " + l.holder + " last ticked " + ticked
+            + " and its lease has expired; `hale dna run` takes it, `hale dna body claim` says so";
+    }
     return "released by " + l.holder + "; `hale dna run` takes the lease";
 }

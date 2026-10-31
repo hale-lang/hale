@@ -1,0 +1,588 @@
+/// The voice api. Every endpoint in ../spec/openapi.yaml is routed: the
+/// ones with a row in the surface (surface.hl) by their handlers, over the
+/// store (store.hl: Postgres when the api is given a database, the process
+/// otherwise); the rest answer their happy path with a canned body from
+/// `canned/`, named by the endpoint's operationId, until each is made real.
+/// See endpoints.hl. `api migrate` brings a database's schema up to date
+/// and exits.
+///
+/// Attached to an organization (Hale's DNA), the api tells it each
+/// request's usage as an event (events.hl) on the organization's nerves,
+/// from the teller (teller.hl), a pinned locus of its own with a bounded
+/// queue: no answer waits on the nerves. The attach hands the api its
+/// server, user, the vault entry of that user's password and the
+/// organization's token (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP`,
+/// `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`); without the token
+/// nothing is published and no connection is made.
+
+import "../lib/logfmt" as logfmt;
+import "../lib/broker" as broker;
+import "../lib/pond/pq" as pq;
+import "../lib/pond/migrations" as migs;
+main locus Api {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 8080;
+        canned: String = "canned";
+        nats: String = "nats://127.0.0.1:4222";
+        // voice's own NATS: `nats` standalone, the habitat's broker grafted
+        broker: broker::Broker = broker::Broker { url: self.nats };
+        node_nats: String = "";
+        ui: String = "";
+        database: String = "";
+        // seconds a seat may take to its first output, and may go silent
+        // between events, before it has failed
+        first_s: Int = 120;
+        idle_s: Int = 30;
+        instance: String = "";
+        pulse: Pulse = Pulse { database: self.database, instance: self.instance };
+        // the organization's head, when its rate limits are the
+        // organization's ratified practices (governance.hl): its address,
+        // the application whose practices they are, the issuer it trusts,
+        // this service's client id there, the vault entry of the client's
+        // secret and how often to read them again
+        head: String = "";
+        application: String = "";
+        issuer: String = "";
+        client: String = "";
+        client_vault: String = "";
+        limits_every_s: Int = 30;
+        // the limits as the reader last read them, which the request path
+        // reads (and never the head); with no head the reader reads nothing
+        held: HeldLimits = HeldLimits { };
+        governance: Governance = Governance {
+            head: self.head,
+            application: self.application,
+            issuer: self.issuer,
+            client: self.client,
+            secret: std::secret::Credential { vault: self.client_vault },
+            every: self.limits_every_s * 1s,
+            held: self.held,
+        };
+        // the organization's nerves: its token ("" when voice is attached to
+        // none), the application's server, its user and the vault entry of
+        // that user's password
+        org: String = "";
+        nerves_url: String = "";
+        nerves_user: String = "";
+        nerves_vault: String = "";
+        // with no organization its url is "": it queues and dials nothing
+        teller: Teller = Teller {
+            url: if len(self.org) > 0 { self.nerves_url } else { "" },
+            user: self.nerves_user,
+            vault: self.nerves_vault,
+            org: self.org,
+        };
+        // the runtime's own health, readiness and capacity, on a port of
+        // their own: what a deployment's healthcheck asks (VOICE_PROBE_PORT)
+        probe_port: Int = 9090;
+        probes: std::observe::Probes = std::observe::Probes { port: self.probe_port };
+    }
+    placement {
+        pulse: pinned;
+        teller: pinned;
+        governance: pinned;
+    }
+    run() {
+        serve(
+            self.host,
+            self.port,
+            self.canned,
+            self.broker,
+            self.node_nats,
+            self.ui,
+            self.database,
+            self.first_s,
+            self.idle_s,
+            self.org,
+            self.head,
+            self.held,
+        );
+    }
+}
+
+fn serve(
+    host: String,
+    port: Int,
+    canned: String,
+    b: broker::Broker,
+    node_nats: String,
+    ui: String,
+    database: String,
+    first_s: Int,
+    idle_s: Int,
+    org: String,
+    head: String,
+    held: HeldLimits
+) {
+    log_info(
+        "serving",
+        fields2(
+            std::log::kv("url", "http://" + host + ":" + to_string(port)),
+            std::log::kv("canned", canned),
+        ),
+    );
+    log_info(
+        "nodes over NATS",
+        fields2(
+            std::log::kv("nats", b.url),
+            std::log::kv("node_nats", if len(node_nats) > 0 { node_nats } else { b.url }),
+        ),
+    );
+    if len(ui) > 0 { log_info("serving the admin ui", std::log::kv("ui", ui)); }
+    if len(org) > 0 {
+        log_info(
+            "telling the organization each served request",
+            std::log::kv("subject", org + ".app.voice.usage.recorded"),
+        );
+    }
+    if len(head) > 0 {
+        log_info(
+            "the rate limits are the organization's ratified practices",
+            std::log::kv("head", head),
+        );
+    }
+    if len(database) > 0 {
+        let d = st::parse_dsn(database);
+        log_info("the store is Postgres", std::log::kv("at", d.host + ":" + to_string(d.port)));
+        let endpoints = Endpoints {
+            canned: canned,
+            ui: ui,
+            store: st::PgStore { url: database },
+            link: NatsLink {
+                url: b.url,
+                node_url: node_nats,
+                user: b.user,
+                vault: b.vault,
+                subjects: b.root,
+                inbox: b.inbox,
+            },
+            held: held,
+            node_user: b.node_user,
+            node_secret: std::secret::Credential { vault: b.node_vault },
+        };
+        endpoints.inference.first = first_s * 1s;
+        endpoints.inference.idle = idle_s * 1s;
+        endpoints.inference.pulse = len(org) > 0;
+        endpoints.projects.governed = len(head) > 0;
+        endpoints.inference.governed = len(head) > 0;
+        std::http::Server {
+            host: host,
+            port: port,
+            handler: endpoints,
+            max_request_bytes: MAX_REQUEST_BYTES,
+            too_large: too_large(),
+        };
+    } else {
+        log_info("the store is in memory, lost on restart", "");
+        let endpoints = Endpoints {
+            canned: canned,
+            ui: ui,
+            link: NatsLink {
+                url: b.url,
+                node_url: node_nats,
+                user: b.user,
+                vault: b.vault,
+                subjects: b.root,
+                inbox: b.inbox,
+            },
+            held: held,
+            node_user: b.node_user,
+            node_secret: std::secret::Credential { vault: b.node_vault },
+        };
+        endpoints.inference.first = first_s * 1s;
+        endpoints.inference.idle = idle_s * 1s;
+        endpoints.inference.pulse = len(org) > 0;
+        endpoints.projects.governed = len(head) > 0;
+        endpoints.inference.governed = len(head) > 0;
+        std::http::Server {
+            host: host,
+            port: port,
+            handler: endpoints,
+            max_request_bytes: MAX_REQUEST_BYTES,
+            too_large: too_large(),
+        };
+    }
+}
+
+/// A request body is at most 12 MiB (openapi.yaml): one wrapped for a node
+/// stays inside the node protocol's 16 MiB message. hale's Server reads it
+/// in memory linear in its size (since 0.25.1).
+const MAX_REQUEST_BYTES: Int = 12582912;
+
+/// The answer to a body over the cap, in the contract's envelope
+/// (`TooLarge`); the Server sends it before reading the body.
+fn too_large() -> std::http::Response {
+    return std::http::Response { status: 413, content_type: "application/json", body: TOO_LARGE };
+}
+
+const TOO_LARGE: String = "{\"error\": {\"message\": \"a request body is at most 12 MiB\", \"type\": \"invalid_request\", \"code\": \"request_too_large\", \"param\": null}}";
+
+/// The migrations, in order: each a file of `dir`, store.md's SQL.
+const MIGRATIONS: String = "1 store 0001_store.sql\n2 node_draining 0002_node_draining.sql\n3 limit_holder 0003_limit_holder.sql\n4 instance_reclaimed 0004_instance_reclaimed.sql\n5 route_table 0005_route_table.sql\n";
+
+/// `api migrate --database URL [--migrations DIR]`: every migration not yet
+/// applied, each in its own transaction under Postgres's advisory lock
+/// (pond's migrations). 0 when the schema is current. Once per run, over
+/// the migrations' short list.
+@bounded_by(MIGRATIONS)
+fn migrate(database: String, dir: String) -> Int {
+    if len(database) == 0 {
+        log_error("migrate: --database (or VOICE_DATABASE_URL) is required", "");
+        return 2;
+    }
+    let d = st::parse_dsn(database);
+    let conn = pq::PgConn {
+        host: d.host,
+        port: d.port,
+        user: d.user,
+        password: d.password,
+        vault: d.vault,
+        database: d.database,
+        sslmode: d.sslmode,
+    };
+    let st = conn.open();
+    if !st.ok {
+        log_error(
+            "migrate: Postgres refused",
+            fields2(
+                std::log::kv("at", d.host + ":" + to_string(d.port)),
+                fields2(
+                    std::log::kv("kind", st.err.kind),
+                    std::log::kv("detail", st::redact(st.err.detail, d)),
+                ),
+            ),
+        );
+        return 1;
+    }
+    // pond's migrator creates its tracking table before it takes its own
+    // lock, so two runs at once could both create it: the whole run holds
+    // a lock of voice's first (lib/pond/README.md)
+    let held = conn.query_one("SELECT pg_advisory_lock(7205)");
+    if !held.ok {
+        log_error(
+            "migrate: could not take the migration lock",
+            fields2(
+                std::log::kv("kind", held.err.kind),
+                std::log::kv("detail", st::redact(held.err.detail, d)),
+            ),
+        );
+        conn.close();
+        return 1;
+    }
+    let set = migs::Migrations { };
+    let mut rest = MIGRATIONS;
+    let mut at = std::str::index_of(rest, "\n");
+    while at >= 0 {
+        let line = rest[0..at];
+        rest = rest[(at + 1)..len(rest)];
+        let s1 = std::str::index_of(line, " ");
+        let tail = line[(s1 + 1)..len(line)];
+        let s2 = std::str::index_of(tail, " ");
+        let file = dir + "/" + tail[(s2 + 1)..len(tail)];
+        let sql = std::io::fs::read_file(file) or "";
+        if len(sql) == 0 {
+            log_error("migrate: no migration", std::log::kv("file", file));
+            return 1;
+        }
+        set.add(std::str::parse_int(line[0..s1]) or 0, tail[0..s2], sql);
+        at = std::str::index_of(rest, "\n");
+    }
+    let m = migs::Migrator { driver: conn, set: set };
+    let applied = m.up() or migration_failed(err, d);
+    conn.query_one("SELECT pg_advisory_unlock(7205)");
+    conn.close();
+    if applied < 0 { return 1; }
+    log_info(
+        "migrate: the schema is current",
+        fields2(
+            std::log::kv("applied", to_string(applied)),
+            std::log::kv("version", to_string(set.count())),
+        ),
+    );
+    return 0;
+}
+
+fn migration_failed(e: migs::MigrationError, d: st::Dsn) -> Int {
+    log_error(
+        "migrate: a migration failed",
+        fields2(
+            fields2(std::log::kv("kind", e.kind), std::log::kv("version", to_string(e.version))),
+            fields2(std::log::kv("name", e.name), std::log::kv("detail", st::redact(e.detail, d))),
+        ),
+    );
+    return -1;
+}
+
+/// `api [--host H] [--port N] [--canned DIR] [--nats URL] [--node-nats URL]
+/// [--ui DIR] [--database URL] [--seat-first-s N] [--seat-idle-s N]`, or `api migrate --database URL
+/// [--migrations DIR]`. The canned and migrations directories default to
+/// `canned` and `migrations` beside the binary; with no `--ui` the app is
+/// not served. `--node-nats` is where the nodes find NATS, when that
+/// differs from where the api does. `--database` (or `VOICE_DATABASE_URL`)
+/// is `postgres://user:password@host:port/database`; without either, a
+/// grafted api's database is the one the habitat hands it
+/// (`HALE_DNA_DATABASE_DSN`, its password in the vault entry it names), and
+/// a standalone one's store is in memory. `--seat-first-s` is how long a seat may take to its first
+/// output (120 s: a slow model, or an engine that answers at the end), and
+/// `--seat-idle-s` how long it may then send nothing (30 s), before it has
+/// failed.
+fn main() {
+    // the one sink: every logger's lines are written here (log.hl)
+    let sink = logfmt::RecordSink { };
+    let migrating = std::env::args_count() > 1 && std::env::arg(1) == "migrate";
+    let mut database = if std::env::var_exists("VOICE_DATABASE_URL") {
+        std::env::var("VOICE_DATABASE_URL")
+    } else {
+        ""
+    };
+    let mut migrations = beside_binary("migrations");
+    let mut host = "127.0.0.1";
+    let mut port = 8080;
+    let mut canned = beside_binary("canned");
+    let mut nats = "nats://127.0.0.1:4222";
+    let mut node_nats = "";
+    let mut ui = "";
+    let mut first_s = 120;
+    let mut idle_s = 30;
+    let mut head = "";
+    let mut application = "";
+    let mut issuer = "";
+    let mut client = "";
+    let mut client_vault = "";
+    // how often the ratified limits are read again: VOICE_LIMITS_EVERY_S,
+    // which --limits-every-s overrides
+    let mut limits_every_s = 30;
+    if std::env::var_exists("VOICE_LIMITS_EVERY_S") {
+        limits_every_s = std::str::parse_int(std::env::var("VOICE_LIMITS_EVERY_S")) or - 1;
+        if limits_every_s < 1 {
+            log_error(
+                "VOICE_LIMITS_EVERY_S takes a number of seconds",
+                std::log::kv("value", std::env::var("VOICE_LIMITS_EVERY_S")),
+            );
+            std::process::exit(2);
+        }
+    }
+    // the runtime probes' port: VOICE_PROBE_PORT
+    let mut probe_port = 9090;
+    if std::env::var_exists("VOICE_PROBE_PORT") {
+        probe_port = std::str::parse_int(std::env::var("VOICE_PROBE_PORT")) or - 1;
+        if probe_port < 1 || probe_port > 65535 {
+            log_error(
+                "VOICE_PROBE_PORT takes a port number",
+                std::log::kv("value", std::env::var("VOICE_PROBE_PORT")),
+            );
+            std::process::exit(2);
+        }
+    }
+    let mut i = if migrating { 2 } else { 1 };
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--host" {
+            host = value;
+        } else if flag == "--port" {
+            port = std::str::parse_int(value) or - 1;
+            if port < 1 || port > 65535 {
+                log_error("--port takes a port number", std::log::kv("value", value));
+                std::process::exit(2);
+            }
+        } else if flag == "--canned" {
+            canned = value;
+        } else if flag == "--nats" {
+            nats = value;
+        } else if flag == "--node-nats" {
+            node_nats = value;
+        } else if flag == "--database" {
+            database = value;
+        } else if flag == "--migrations" {
+            migrations = value;
+        } else if flag == "--ui" {
+            ui = value;
+        } else if flag == "--seat-first-s" {
+            first_s = std::str::parse_int(value) or - 1;
+            if first_s < 1 {
+                log_error("--seat-first-s takes a number of seconds", std::log::kv("value", value));
+                std::process::exit(2);
+            }
+        } else if flag == "--head" {
+            head = value;
+        } else if flag == "--application" {
+            application = value;
+        } else if flag == "--issuer" {
+            issuer = value;
+        } else if flag == "--client" {
+            client = value;
+        } else if flag == "--client-vault" {
+            client_vault = value;
+        } else if flag == "--limits-every-s" {
+            limits_every_s = std::str::parse_int(value) or - 1;
+            if limits_every_s < 1 {
+                log_error(
+                    "--limits-every-s takes a number of seconds",
+                    std::log::kv("value", value),
+                );
+                std::process::exit(2);
+            }
+        } else if flag == "--seat-idle-s" {
+            idle_s = std::str::parse_int(value) or - 1;
+            if idle_s < 1 {
+                log_error("--seat-idle-s takes a number of seconds", std::log::kv("value", value));
+                std::process::exit(2);
+            }
+        }
+        i = i + 2;
+    }
+    // grafted, the habitat's database when none is given (store/pg_store.hl)
+    let given = database;
+    database = st::database_or_habitat(database);
+    if len(given) == 0 && len(database) > 0 {
+        log_info(
+            "grafted: the store's database is the one the habitat provisioned",
+            std::log::kv("from", st::HABITAT_DATABASE_ENV),
+        );
+    }
+    if len(database) > 0 {
+        let d = st::parse_dsn(database);
+        if len(d.problem) > 0 {
+            log_error(d.problem, "");
+            std::process::exit(2);
+        }
+        if len(d.password) > 0 {
+            log_warn(
+                "the database URL carries its password in the open: name its vault entry instead (postgres://user@host/db?vault=ENTRY)",
+                "",
+            );
+        }
+    }
+    if migrating { std::process::exit(migrate(database, migrations)); }
+    // grafted, the habitat hands over the head and this service's client
+    // there; each one it hands over replaces its flag
+    let handed = head_handover(
+        env_or("HALE_DNA_HEAD_URL", ""),
+        env_or("HALE_DNA_APPLICATION_ID", ""),
+        env_or("HALE_DNA_OIDC_ISSUER", ""),
+        env_or("HALE_DNA_OIDC_CLIENT", ""),
+        env_or("HALE_DNA_OIDC_CLIENT_VAULT", ""),
+    );
+    if len(handed.problem) > 0 {
+        log_error(handed.problem, "");
+        std::process::exit(2);
+    }
+    if handed.handed {
+        head = handed.head;
+        application = handed.application;
+        issuer = handed.issuer;
+        client = handed.client;
+        client_vault = handed.client_vault;
+    }
+    if len(head) > 0 {
+        if len(client_vault) == 0 { client_vault = "oidc-service-" + client; }
+        if len(application) == 0 || len(issuer) == 0 || len(client) == 0 {
+            log_error(
+                "--head takes --application, --issuer and --client: the limits are the application's practices, read through it as a service",
+                "",
+            );
+            std::process::exit(2);
+        }
+        let secret = std::secret::Credential { vault: client_vault };
+        if !secret.ready() {
+            log_error(
+                "the vault holds no secret for this service",
+                std::log::kv("entry", client_vault),
+            );
+            std::process::exit(2);
+        }
+    }
+    // the attach's hand-over (spec/dna.md, "One transport: the nerves")
+    let org = env_or("HALE_DNA_NATS_ORG", "");
+    let nerves_url = env_or("HALE_DNA_NATS_URL_APP", "");
+    let nerves_user = env_or("HALE_DNA_NATS_USER_APP", "");
+    let nerves_vault = env_or("HALE_DNA_NATS_VAULT_APP", "");
+    if len(org) > 0 && (len(nerves_url) == 0 || len(nerves_user) == 0 || len(nerves_vault) == 0) {
+        log_error(
+            "HALE_DNA_NATS_ORG names an organization, but its server, user or vault entry is missing (HALE_DNA_NATS_URL_APP, HALE_DNA_NATS_USER_APP, HALE_DNA_NATS_VAULT_APP)",
+            "",
+        );
+        std::process::exit(2);
+    }
+    // grafted, voice's own NATS is the habitat's broker (lib/broker)
+    let b = broker::broker_or(nats);
+    if len(b.problem) > 0 {
+        log_error(b.problem, "");
+        std::process::exit(2);
+    }
+    if b.grafted {
+        let own = std::secret::Credential { vault: b.vault };
+        if !own.ready() {
+            log_error(
+                "the vault holds no password for this heart's broker account",
+                std::log::kv("entry", b.vault),
+            );
+            std::process::exit(2);
+        }
+        log_info(
+            "grafted: voice's own NATS is the habitat's broker",
+            fields2(std::log::kv("user", b.user), std::log::kv("subjects", b.root + ".>")),
+        );
+    }
+    if len(b.node_user) > 0 {
+        let node_secret = std::secret::Credential { vault: b.node_vault };
+        if !node_secret.ready() {
+            log_error(
+                "the vault holds no password for the nodes' broker account",
+                std::log::kv("entry", b.node_vault),
+            );
+            std::process::exit(2);
+        }
+    } else if b.grafted {
+        log_warn(
+            "grafted, but no account for the nodes on the habitat's broker (HALE_DNA_BROKER_NODE_USER, HALE_DNA_BROKER_NODE_VAULT): nodes are handed none",
+            "",
+        );
+    }
+    let id = st::random_id(6);
+    Api {
+        host: host,
+        port: port,
+        canned: canned,
+        nats: b.url,
+        broker: b,
+        node_nats: node_nats,
+        ui: ui,
+        database: database,
+        first_s: first_s,
+        idle_s: idle_s,
+        instance: "api-" + id,
+        head: head,
+        application: application,
+        issuer: issuer,
+        client: client,
+        client_vault: client_vault,
+        limits_every_s: limits_every_s,
+        org: org,
+        nerves_url: nerves_url,
+        nerves_user: nerves_user,
+        nerves_vault: nerves_vault,
+        probe_port: probe_port,
+    };
+}
+
+/// The environment's `name`, or `otherwise` when it is unset.
+fn env_or(name: String, otherwise: String) -> String {
+    return if std::env::var_exists(name) { std::env::var(name) } else { otherwise };
+}
+
+/// `name` in the directory holding the running binary, or `name` as given
+/// when the binary was started without a directory in its path.
+fn beside_binary(name: String) -> String {
+    let mut dir = "";
+    let mut rest = std::env::arg(0);
+    let mut at = std::str::index_of(rest, "/");
+    while at >= 0 {
+        dir = dir + rest[0..(at + 1)];
+        rest = rest[(at + 1)..len(rest)];
+        at = std::str::index_of(rest, "/");
+    }
+    return dir + name;
+}

@@ -31,14 +31,25 @@ locus EvidenceStore {
         if !protected_class(class) { return "sha256:" + self.receipts.store(text); }
         let kept = if self.vault.ready() { self.vault.keep(text, class, by) } else { "" };
         if kept != digest {
-            let why = if !self.vault.ready() { "no memory to keep protected evidence (HALE_DNA_MEMORY_DSN_SPINE; the receipt key is memory's, set at migration)" } else if len(kept) == 0 { self.vault.last_error } else { "memory kept it under another digest" };
+            let why = if !self.vault.ready() {
+                "no memory to keep protected evidence (HALE_DNA_MEMORY_DSN_SPINE; the receipt key is memory's, set at migration)"
+            } else if len(kept) == 0 {
+                self.vault.last_error
+            } else {
+                "memory kept it under another digest"
+            };
             let b = std::json::Builder { };
             b.begin_object();
             b.string_field("class", class);
             b.string_field("by", by);
             b.string_field("why", why);
             b.end_object();
-            let x = self.journal.append(self.journal.revision(), "receipt.withheld", digest, b.result());
+            let x = self.journal.append(
+                self.journal.revision(),
+                "receipt.withheld",
+                digest,
+                b.result(),
+            );
         }
         return digest;
     }
@@ -49,13 +60,19 @@ locus EvidenceStore {
     // why and under what policy, so provenance survives the body and a
     // reader knows it is gone rather than missing. "" when done, else why.
     fn redact(digest: String, by: String, why: String, policy: String) -> String {
-        if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who, why and the policy"; }
+        if len(by) == 0 || len(why) == 0 || len(policy) == 0 {
+            return "a redaction names who, why and the policy";
+        }
         let moved = self.journal.refresh();
         let rev = self.journal.revision();
         let hold = self.hold_of(digest);
         if len(hold) > 0 { return "held: " + hold + "; redaction waits for the hold's release"; }
         let class = self.class_of(digest);
-        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let hexd = if std::str::starts_with(digest, "sha256:") {
+            digest[7..len(digest)]
+        } else {
+            digest
+        };
         let kept_here = !protected_class(class) && len(self.receipts.read(hexd)) > 0;
         let already = row_exists(self.journal, "receipt.redacted", digest);
         if protected_class(class) && row_exists(self.journal, "receipt.classified", digest) {
@@ -76,12 +93,24 @@ locus EvidenceStore {
             b.string_field("why", why);
             b.string_field("policy", policy);
             b.string_field("class", class);
-            b.string_field("store", if protected_class(class) { "none (withheld)" } else { self.receipts.kind() });
+            b.string_field(
+                "store",
+                if protected_class(class) { "none (withheld)" } else { self.receipts.kind() },
+            );
             b.end_object();
             let x = self.journal.append_exact(rev, "receipt.redacted", digest, b.result());
-            if !x.ok { return if x.error == "stale_revision" { "the record moved while redacting " + digest + "; nothing was erased, try again" } else { "the record refused the redaction: " + x.error + "; nothing was erased" }; }
+            if !x.ok {
+                return if x.error == "stale_revision" {
+                    "the record moved while redacting " + digest + "; nothing was erased, try again"
+                } else {
+                    "the record refused the redaction: " + x.error + "; nothing was erased"
+                };
+            }
         }
-        if kept_here && !self.receipts.erase(hexd) { return "the redaction of " + digest + " is recorded, but the receipt store could not erase it; redacting again erases it"; }
+        if kept_here && !self.receipts.erase(hexd) {
+            return "the redaction of " + digest
+                + " is recorded, but the receipt store could not erase it; redacting again erases it";
+        }
         return "";
     }
     fn hold(digest: String, by: String, why: String) -> String {
@@ -104,7 +133,12 @@ locus EvidenceStore {
         b.string_field("by", by);
         b.string_field("why", why);
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "receipt.hold_released", digest, b.result());
+        let x = self.journal.append(
+            self.journal.revision(),
+            "receipt.hold_released",
+            digest,
+            b.result(),
+        );
         return if x.ok { "" } else { x.error };
     }
     // "who: why" of a hold standing on `digest` ("" when none).
@@ -113,7 +147,10 @@ locus EvidenceStore {
         let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
-            if e.entity == digest && e.kind == "receipt.held" { out = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+            if e.entity == digest && e.kind == "receipt.held" {
+                out = std::json::find_string_field(e.body, "by") + ": "
+                    + std::json::find_string_field(e.body, "why");
+            }
             if e.entity == digest && e.kind == "receipt.hold_released" { out = ""; }
             i = i + 1;
         }
@@ -128,7 +165,11 @@ locus EvidenceStore {
         let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
-            if e.entity == digest && (e.kind == "receipt.classified" || e.kind == "receipt.withheld") { out = std::json::find_string_field(e.body, "class"); }
+            if e.entity == digest
+                && (e.kind == "receipt.classified" || e.kind == "receipt.withheld")
+            {
+                out = std::json::find_string_field(e.body, "class");
+            }
             i = i + 1;
         }
         return out;
@@ -142,12 +183,14 @@ locus EvidenceStore {
     fn call_bodies(ev: ModelEvidence) -> String {
         if len(ev.prompt) == 0 && len(ev.context) == 0 { return "none"; }
         if protected_class(ev.data_class) { return "withheld (data class " + ev.data_class + ")"; }
-        // The history reads the record's receipts (`refs/dna/receipts`),
+        // The history reads the record's receipts (memory's, GH #1590),
         // and a body belongs where the record is. An organism whose
         // receipts are a local file store — a fixture, an embedded use
         // with no record — keeps the digests only, and never writes a
         // prompt into whatever directory it happens to run in.
-        if self.receipts.kind() != "git" { return "none (receipts are not the record's: " + self.receipts.kind() + ")"; }
+        if self.receipts.kind() != "memory" {
+            return "none (receipts are not the record's: " + self.receipts.kind() + ")";
+        }
         let mut filed = 0;
         let mut wanted = 0;
         if len(ev.prompt) > 0 && digest_of(ev.prompt) == ev.prompt_digest {

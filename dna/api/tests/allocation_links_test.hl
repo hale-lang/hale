@@ -1,0 +1,124 @@
+// dna/api/tests/allocation_links_test.hl — the operator face's links to
+// what an organism's services publish (`allocation_links_at`), and the apply
+// they are read from (`habitat_latest_applied`).
+//
+// A port bound to another host's loopback is linked at this machine's
+// loopback only when that host and the habitat are both this machine: a
+// remote habitat's head resolving a host to the loopback says nothing of
+// the person's browser, so the port keeps its note, and that host's
+// wildcard ports are linked at the habitat's declared address. What a services
+// allocation publishes is its last successful apply's: an apply or a
+// withdrawal that failed leaves it, one that took and publishes nothing
+// replaces it. A declared UI (`[dna.ui.<name>]`, the home screen's
+// `Commands::uis`) is linked at its service's link with its path after it
+// (`ui_at`), and a service on its host's loopback names the host instead.
+import ".." as api;
+import "../../core" as dna;
+
+fn applied(j: dna::MemJournal, entity: String, body: String) {
+    std::test::assert(j.append(j.revision(), "habitat.applied", entity, body).ok, "row landed");
+}
+
+fn main() {
+    let published = "[{\"service\":\"api\",\"port\":\"8080\",\"bind\":\"\"},{\"service\":\"admin\",\"port\":\"9090\",\"bind\":\"127.0.0.1\"}]";
+
+    // a local habitat: no declared address, or the loopback
+    std::test::assert(api::habitat_is_local(""), "no declared address is local");
+    std::test::assert(api::habitat_is_local("127.0.0.1"), "the loopback is local");
+    std::test::assert(!api::habitat_is_local("rack-a.lan"), "a declared host is remote");
+    std::test::assert(api::publishes_loopback(published), "admin is on the loopback");
+
+    // the host is this machine and so is the habitat: the loopback is linked
+    std::test::assert_eq_str(
+        api::allocation_links_at(published, "localhost", false, "localhost", true, ""),
+        "[{\"service\": \"api\", \"url\": \"http://localhost:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"http://127.0.0.1:9090\", \"note\": \"\"}]",
+        "colocated host and habitat",
+    );
+    // a remote habitat (`up --host rack-a`) with a host whose listen address
+    // is the loopback there: the host is the habitat's machine, which the
+    // browser reaches at the declared address, never at its loopback
+    std::test::assert_eq_str(
+        api::allocation_links_at(published, "localhost", false, "localhost", true, "rack-a.lan"),
+        "[{\"service\": \"api\", \"url\": \"http://rack-a.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on localhost\"}]",
+        "a remote habitat links its own machine at its declared address",
+    );
+    // the remote habitat's own `local` host alike
+    std::test::assert_eq_str(
+        api::allocation_links_at(published, "local", true, "127.0.0.1", true, "rack-a.lan"),
+        "[{\"service\": \"api\", \"url\": \"http://rack-a.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on local\"}]",
+        "a remote habitat's local host is reached at its declared address",
+    );
+    // another host under a remote habitat: at the host's own address
+    std::test::assert_eq_str(
+        api::allocation_links_at(published, "rack-b.lan", false, "rack-b.lan", false, "rack-a.lan"),
+        "[{\"service\": \"api\", \"url\": \"http://rack-b.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on rack-b.lan\"}]",
+        "another host is linked at its address",
+    );
+    // this machine under a local habitat
+    std::test::assert_eq_str(
+        api::allocation_links_at(published, "local", true, "127.0.0.1", true, ""),
+        "[{\"service\": \"api\", \"url\": \"http://127.0.0.1:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"http://127.0.0.1:9090\", \"note\": \"\"}]",
+        "a local habitat's local host links its loopback",
+    );
+
+    // a declared UI at its service's link, its path after it
+    let links = api::allocation_links_at(
+        published,
+        "rack-b.lan",
+        false,
+        "rack-b.lan",
+        false,
+        "rack-a.lan",
+    );
+    let admin = api::ui_at(links, "api", "/admin");
+    std::test::assert_eq_str(
+        admin.url,
+        "http://rack-b.lan:8080/admin",
+        "a UI is linked under its service",
+    );
+    std::test::assert_eq_str(admin.loopback_host, "", "and names no loopback host");
+    std::test::assert_eq_str(
+        api::ui_at(links, "api", "/").url,
+        "http://rack-b.lan:8080/",
+        "at its root",
+    );
+    // its service on the host's loopback: the host, not a link
+    let inner = api::ui_at(links, "admin", "/");
+    std::test::assert_eq_str(inner.url, "", "a loopback service is not linked");
+    std::test::assert_eq_str(inner.loopback_host, "rack-b.lan", "its host is named");
+    // a service it does not publish, and services not applied
+    std::test::assert_eq_str(
+        api::ui_at(links, "web", "/").note,
+        "its service `web` publishes no port",
+        "an unpublished service says so",
+    );
+    std::test::assert_eq_str(
+        api::ui_at("[]", "api", "/").note,
+        "its services publish nothing (not applied)",
+        "nothing applied says so",
+    );
+
+    // the last successful apply is the one read; a failure never replaces it
+    let j = dna::MemJournal { };
+    applied(
+        j,
+        "shop/services",
+        "{\"host\":\"rack-b.lan\",\"ok\":true,\"published\":" + published + "}",
+    );
+    applied(
+        j,
+        "shop/services",
+        "{\"host\":\"rack-b.lan\",\"ok\":false,\"why\":\"withdraw failed\"}",
+    );
+    let kept = api::habitat_latest_applied(j).get("shop/services") or api::LatestRow { };
+    std::test::assert_eq_int(kept.at, 0, "a failed apply leaves the last that took");
+    applied(j, "shop/services", "{\"host\":\"rack-b.lan\",\"ok\":true,\"published\":[]}");
+    applied(j, "shop/services", "{\"host\":\"rack-b.lan\",\"ok\":false,\"why\":\"apply failed\"}");
+    let empty = api::habitat_latest_applied(j).get("shop/services") or api::LatestRow { };
+    std::test::assert_eq_int(empty.at, 2, "a successful empty publication replaces it");
+    std::test::assert_eq_str(
+        std::json::find_field_raw(j.read(empty.at).body, "published"),
+        "[]",
+        "and publishes nothing",
+    );
+}

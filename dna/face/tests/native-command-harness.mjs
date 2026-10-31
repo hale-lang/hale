@@ -2,7 +2,7 @@
 // No Playwright dependency, mocked wire data or authored outcome facts.
 //
 // GH #1029: the composition is the real one. A project is scaffolded with
-// `hale dna new`, the acceptance Body (dna/api/practice_review/tests/body)
+// a graft from the fixture's habitat, the acceptance Body (dna/api/practice_review/tests/body)
 // becomes its organization (`dna/org`), and `hale dna dev` is the host:
 // it migrates the record's memory (from the owner's DSN) and its nerves
 // (from the owner's NATS URL), builds and runs the organization, relays the
@@ -18,8 +18,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
+import { recordIdentity, recordState, receiptBody, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced, settle } from './command-wire.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -52,8 +53,10 @@ export function scaffoldProject({ hale, root, env, actor }) {
   const parent = path.dirname(root), name = path.basename(root);
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(parent, { recursive: true });
-  const bounded = boundedNative(hale, ['dna', 'new', name], { build: true, lock: false });
-  execFileSync(bounded.command, bounded.args, { cwd: parent, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  const grafting = graftEnvironment(env);
+  ensureHabitat(hale, env);
+  const bounded = boundedNative(hale, graft(name), { build: true, lock: false });
+  execFileSync(bounded.command, bounded.args, { cwd: parent, env: grafting, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const org = path.join(root, 'dna/org');
   for (const entry of fs.readdirSync(org)) fs.rmSync(path.join(org, entry), { recursive: true, force: true });
   fs.writeFileSync(path.join(org, 'main.hl'), organizationSource());
@@ -85,7 +88,7 @@ export function hostChildren(root) {
 
 export const running = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 
-/** `hale dna memory migrate` under the owner: the head's DSN for the API (idempotent; `dev` applied the schema already). */
+/** `hale dna memory migrate` under the owner: the head's DSN for the API (idempotent; `hale habitat migrate` applied the schema already). */
 export function headMemory({ hale, root, env, owner }) {
   const bounded = boundedNative(hale, ['dna', 'memory', 'migrate', root], { lock: false });
   const out = execFileSync(bounded.command, bounded.args, { cwd: root, env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner }, encoding: 'utf8', timeout: 40_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -146,7 +149,7 @@ export async function startService(options = {}) {
   const isolated = isolatedEnvironment();
   const env = Object.fromEntries([
     'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM',
-    'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR', 'HALE_DNA_TRUSTED_LOCAL',
+    'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR', 'XDG_DATA_HOME', 'HALE_DNA_HABITAT', 'HALE_DNA_TRUSTED_LOCAL',
   ].filter(key => isolated[key] !== undefined).map(key => [key, isolated[key]]));
   const principal = options.actor || 'alice';
   assert(principal && !/[\x00-\x1f\x7f]/u.test(principal), 'Expected a nonempty control-free local principal');
@@ -227,14 +230,19 @@ export async function startService(options = {}) {
   }
   const killOnExit = () => { for (const item of owned) signal(item, 'SIGKILL'); for (const { pid } of hostChildren(root)) signalPid(pid, 'SIGKILL'); };
   process.on('exit', killOnExit);
+  // The record, as memory keeps it, and its Ledger beside it (GH #1590):
+  // `head` is the record's, `rows` the record's then the Ledger's (Task,
+  // workflow and attempt rows are the Ledger's), and `moved` names both
+  // heads, for a quiet that waits on either memory.
   function journal() {
-    const head = git('rev-parse', 'refs/dna/journal').trim();
-    const text = git('show', `${head}:journal.jsonl`);
-    return { head, text, rows: text.trim().split('\n').filter(Boolean).map(line => {
-      const row = JSON.parse(line); let data = null;
+    const { head, text, rows } = recordState(root);
+    const ledger = ledgerRows(root);
+    const parsed = row => {
+      let data = null;
       try { data = JSON.parse(row.body); } catch { /* Native settlement is prose. */ }
       return { ...row, data };
-    }) };
+    };
+    return { head, text, moved: `${head}/${ledger.length ? ledger.at(-1).digest : 'genesis'}`, rows: [...rows.map(parsed), ...ledger.map(row => ({ ...parsed(row), ledger: true }))] };
   }
   function get(suffix) {
     healthy();
@@ -300,8 +308,8 @@ export async function startService(options = {}) {
   // first answers. A page opened sooner reads while those rows land, is
   // answered `snapshot_changed` twice, and stays on "Record is changing".
   async function stableHead() {
-    let head = journal().head, since = Date.now();
-    await wait('stable Record', async () => { await delay(100); const next = journal().head; if (next !== head) { head = next; since = Date.now(); } return Date.now() - since; }, quiet => quiet >= 1500);
+    let head = journal().moved, since = Date.now();
+    await wait('stable Record', async () => { await delay(100); const next = journal().moved; if (next !== head) { head = next; since = Date.now(); } return Date.now() - since; }, quiet => quiet >= 1500);
     return head;
   }
   const projecting = result => result.status === 503 && result.json.error?.code === 'knowledge_projection_unavailable';
@@ -332,15 +340,19 @@ export async function startService(options = {}) {
       // the record moved while memory caught up, or in the window after it
       // first answered: once more, bounded — a
       // record that never settles is a finding, not a quiet return
-      assert(round < 4, `The Record did not settle in five rounds: ${previous} then ${head}, now ${journal().head}`);
+      assert(round < 4, `The Record did not settle in five rounds: ${previous} then ${head}, now ${journal().moved}`);
       previous = head;
     }
   }
-  // `hale dna dev` in place of the Body and the relay: it migrates memory and
-  // the nerves from the owners' URLs (which reach no other process), builds
-  // and runs the organization, and relays the record's requests on its tick.
+  // `hale dna dev` in place of the Body and the relay, after the habitat's
+  // act: `hale habitat migrate` moves memory and the nerves with the owners'
+  // URLs (which reach no other process), and `dev`, which migrates nothing
+  // (GH #1653), builds and runs the organization and relays the record's
+  // requests on its tick.
   async function startHost() {
     assert(!alive(host), 'Stop the current host before starting another');
+    const migrate = boundedNative(hale, ['habitat', 'migrate', '.'], { lock: false });
+    execFileSync(migrate.command, migrate.args, { cwd: root, env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner, HALE_DNA_NATS_URL_OWNER: nerves }, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
     host = launch('host', hale, ['dna', 'dev', '.', '--no-iris'], {
       HALE_BIN: hale, HALE_DNA_MEMORY_DSN_OWNER: owner, HALE_DNA_NATS_URL_OWNER: nerves,
       // The host's build cache: one per home, shared across the services this worker starts.
@@ -418,8 +430,8 @@ export async function startService(options = {}) {
   }
   function exportEvidence() {
     const snapshot = journal();
-    fs.writeFileSync(path.join(evidence, 'journal.jsonl'), snapshot.text);
-    fs.writeFileSync(path.join(evidence, 'refs.txt'), git('show-ref'));
+    fs.writeFileSync(path.join(evidence, 'record.jsonl'), snapshot.text);
+    fs.writeFileSync(path.join(evidence, 'refs.txt'), (() => { try { return git('show-ref'); } catch { return ''; } })());
     save('processes.json', processLog); save('reads.json', requestLog);
     save('service.json', { application, practice, origin, root, evidence, processes: processLog, remaining_owned_processes: owned.size,
       binaries: Object.fromEntries(Object.entries({ hale, api: apiBinary, memory: memoryBinary }).map(([name, binary]) => [name, { path: binary, sha256: createHash('sha256').update(fs.readFileSync(binary)).digest('hex') }])) });
@@ -451,9 +463,10 @@ export async function startService(options = {}) {
     if (failure) throw failure;
   }
   try {
-    scaffoldProject({ hale, root, env: { ...env, USER: principal, LOGNAME: principal }, actor: principal });
-    application = git('rev-list', '--max-parents=0', 'refs/dna/journal').trim();
-    assert.match(application, /^[0-9a-f]{40,64}$/);
+    // the graft births the record in memory (GH #1590, #1653), with the owner's servers
+    scaffoldProject({ hale, root, env: { ...env, USER: principal, LOGNAME: principal, HALE_DNA_MEMORY_DSN_OWNER: owner }, actor: principal });
+    application = recordIdentity(root);
+    assert.match(application, /^[0-9a-f]{64}$/);
     // Explicit preview composition may prepare source/read fixtures here.
     // The acceptance tests omit this hook; the real organization alone bootstraps them.
     if (options.prepareProject) await options.prepareProject({ root, env: { ...env, USER: principal, LOGNAME: principal }, git });
@@ -492,7 +505,9 @@ export async function startService(options = {}) {
       admissions: requestId => journal().rows.filter(row => ['practice.requested', 'review.verdict'].includes(row.kind) && row.data?.command_payload && JSON.parse(row.data.command_payload).request_id === requestId),
       candidate: digest => {
         assert.match(digest, /^sha256:[0-9a-f]{64}$/);
-        const raw = git('cat-file', '-p', 'refs/dna/receipts/' + digest.slice(7));
+        // the body memory keeps (GH #1590)
+        const raw = receiptBody(root, digest);
+        assert(raw !== null, `memory keeps no body ${digest}`);
         assert.equal('sha256:' + createHash('sha256').update(raw, 'utf8').digest('hex'), digest);
         fs.writeFileSync(path.join(evidence, `candidate-${digest.slice(7)}.json`), raw);
         return JSON.parse(raw);

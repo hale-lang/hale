@@ -1,0 +1,10 @@
+# hale-organism: the hale organism's positions, each with its mandate,
+# proposed to its Board when the habitat grafts the `hale` sapling.
+#   hale dna pack apply hale-organism [--set board=<who>]
+open hale/compiler | Decides: how the Hale compiler, runtime and standard library change, within the spec as shipped. May not: change the spec's contract without a Review, or merge its own change. Cites: the spec, the tests and the benches. Escalates: a change to the language's surface, to the Board.
+open hale/dna | Decides: how the DNA core, host, habitat and faces change. May not: merge its own change, or move a ruling. Cites: the spec's DNA and habitat chapters, the fixtures and the record. Escalates: a change to a ruling or a row's meaning, to the Board.
+open voice/dev | Decides: how voice changes, within the contracts it serves. May not: merge its own change. Cites: voice's contracts, its tests and the record of what shipped. Escalates: a contract change, to the Board.
+practice hale/reviewed-before-merge | Every change to a codebase is approved by someone other than its author before it merges, through a review at the organism's forge.
+? fill hale/compiler {board}
+? fill hale/dna {board}
+? fill voice/dev {board}

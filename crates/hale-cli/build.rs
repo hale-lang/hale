@@ -22,7 +22,7 @@
 use std::env;
 use std::fs;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `hale mcp` docs-search: embed spec/*.md into the binary (864 KB
 /// in a 66 MB binary) so an installed hale grounds language rules
@@ -94,7 +94,7 @@ fn slug(heading: &str) -> String {
     s.trim_end_matches('-').to_string()
 }
 
-/// The toolchain's library (`hale dna init` seeds it): every chapter of the
+/// The toolchain's library (`hale habitat graft` seeds it): every chapter of the
 /// book and every `## ` section of the spec, one idea each, generated from
 /// the tree so a new chapter joins by existing. Generates
 /// OUT_DIR/library_embed.rs with a `LIBRARY` table of
@@ -362,10 +362,35 @@ fn main() {
         println!("cargo:rustc-env=HALE_STALE_SRC_COUNT=0");
         println!("cargo:rustc-env=HALE_STALE_ROOT=");
         println!("cargo:rustc-env=HALE_TOOLCHAIN_SHA256=");
+        println!("cargo:rustc-env=HALE_HABITAT_PIN=");
         return;
     };
     toolchain_digest(root);
     stale_src_hash(root);
+    println!("cargo:rerun-if-changed={}", root.join("Dockerfile").display());
+    println!("cargo:rerun-if-changed={}", root.join("hale.pin").display());
+    // the pin is HEAD's commit: rerun when HEAD moves, or the habitat image
+    // a rebuilt toolchain asks for is the commit it was first built at (a
+    // checkout that changed no watched source kept the old pin)
+    for watched in git_head_files(root) {
+        println!("cargo:rerun-if-changed={}", watched.display());
+    }
+    let pin = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .or_else(|| {
+            fs::read_to_string(root.join("hale.pin"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_default();
+    println!("cargo:rustc-env=HALE_HABITAT_PIN={pin}");
 
     // macOS: LLVM 18+ links against zstd, but the homebrew
     // `llvm@18` formula ships its libs in
@@ -390,4 +415,34 @@ fn main() {
             }
         }
     }
+}
+
+/// The files whose change moves `git rev-parse HEAD` in `root`: HEAD itself
+/// (detached, it holds the commit), and, when it names a branch, that
+/// branch's ref and `packed-refs`. Paths come from `git rev-parse
+/// --git-path`, so a worktree's own HEAD is the one watched. None outside a
+/// git checkout (a source tarball pins through `hale.pin`).
+fn git_head_files(root: &Path) -> Vec<PathBuf> {
+    let git = |args: &[&str]| -> Option<String> {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let path = |p: &str| -> Option<PathBuf> { git(&["rev-parse", "--git-path", p]).map(|g| root.join(g)) };
+    let mut out = Vec::new();
+    if let Some(head) = path("HEAD") {
+        if let Ok(text) = fs::read_to_string(&head) {
+            if let Some(r) = text.trim().strip_prefix("ref: ") {
+                out.extend(path(r));
+                out.extend(path("packed-refs"));
+            }
+        }
+        out.push(head);
+    }
+    out
 }

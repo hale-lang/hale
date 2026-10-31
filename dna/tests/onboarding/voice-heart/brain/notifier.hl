@@ -1,0 +1,161 @@
+/// The notice of the route table's new version on `<root>.route`
+/// (`voice.route` standalone; grafted, under the broker's prefix)
+/// (internal.yaml `RouteNotice`), on a thread of its own.
+///
+/// The tick hands it each version over the bus and goes on: nothing the
+/// tick does waits on NATS, so an address that never answers cannot hold
+/// the tick, its Postgres session or the lock. The notifier keeps one NATS
+/// connection, dials again with a backoff when it has none (reset only by a
+/// publish the server acknowledged), and publishes
+/// the newest version it was handed: only the newest matters, so versions
+/// that arrive while it cannot publish are folded into the last.
+///
+/// The vendored client dials with `std::io::tcp::connect`, which waits on
+/// an address that never answers until the kernel gives up (about two
+/// minutes). Each dial is first tried with `std::io::tcp::connect_within`,
+/// so a dead address costs two seconds of this thread, not two minutes.
+
+import "../lib/pond/realtime/nats" as nats;
+
+/// A route table's version, written.
+type Version { version: Int = -1; }
+
+topic RouteWritten { payload: Version; }
+
+locus Notifier {
+    params {
+        // "" for no NATS: nothing is published
+        url: String = "";
+        // grafted, the habitat broker's account and the root of its
+        // subjects (lib/broker); standalone, none and `voice`
+        user: String = "";
+        vault: String = "";
+        subjects: String = "voice";
+        // the newest version handed over, and the last one published
+        latest: Int = -1;
+        published: Int = -1;
+        // monotonic ns before which no dial is tried, and the next wait
+        retry_at: Int = 0;
+        backoff_ms: Int = 1000;
+        // the last trouble, said once each time it changes
+        trouble: String = "";
+        // a publish's flush waits at most 2 s for its PONG
+        client: nats::NatsClient = nats::NatsClient {
+            name: "voice-brain",
+            timeout: 2s,
+            user: self.user,
+            credential: std::secret::Credential { vault: self.vault },
+        };
+    }
+
+    bus {
+        subscribe RouteWritten as on_written;
+    }
+
+    run() {
+        if len(self.url) == 0 { return; }
+        self.client.url = self.url;
+        while true {
+            self.step();
+            // where the tick's versions arrive
+            std::time::sleep(100ms);
+        }
+    }
+
+    fn on_written(v: Version) {
+        if v.version > self.latest { self.latest = v.version; }
+    }
+
+    /// Publish the newest version when there is one not published yet.
+    fn step() {
+        if self.latest <= self.published { return; }
+        if !self.client.connected {
+            if std::time::monotonic_ns() < self.retry_at { return; }
+            if !self.dial() {
+                self.back_off();
+                return;
+            }
+        }
+        let version = self.latest;
+        let mut why = "";
+        self.client.pub_msg(
+            self.subjects + ".route",
+            "",
+            std::bytes::from_string("{\"version\": " + to_string(version) + "}"),
+        ) or {
+            why = self.client.last_error;
+        };
+        if len(why) == 0 { self.client.flush() or { why = self.client.last_error; }; }
+        if len(why) > 0 {
+            self.client.close();
+            self.say("the version's notice: " + why + "; dialling again");
+            self.back_off();
+            return;
+        }
+        // a flushed publish (a PING answered) is the server working: only
+        // that resets the backoff, not a dial, which a server can answer
+        // and then go silent
+        self.published = version;
+        self.backoff_ms = 1000;
+        self.say("");
+    }
+
+    /// Wait before the next dial, twice as long as the last time, up to
+    /// 30 s.
+    fn back_off() {
+        self.retry_at = std::time::monotonic_ns() + self.backoff_ms * 1000000;
+        self.backoff_ms = if self.backoff_ms >= 15000 { 30000 } else { self.backoff_ms * 2 };
+    }
+
+    /// One dial, bounded: a probe within two seconds first, then the
+    /// client's own.
+    fn dial() -> Bool {
+        let place = nats_place(self.url);
+        let probe = std::io::tcp::connect_within(place.host, place.port, 2s) or - 1;
+        if probe < 0 {
+            self.say(
+                "the version's notice: NATS does not answer at " + place.host + ":"
+                    + to_string(place.port),
+            );
+            return false;
+        }
+        std::io::tcp::close_fd(probe);
+        if !self.client.open() {
+            self.say(
+                "the version's notice: NATS unreachable at " + self.url + ": "
+                    + self.client.last_error,
+            );
+            return false;
+        }
+        return true;
+    }
+
+    /// Say trouble, or its end, once each time it changes.
+    fn say(what: String) {
+        if what == self.trouble { return; }
+        if len(what) > 0 {
+            log_warn(what, "");
+        } else {
+            log_info("the route table's version is told on NATS again", "");
+        }
+        self.trouble = what;
+    }
+}
+
+/// A NATS URL's host and port (`nats://host:port`, 4222 by default).
+type NatsPlace { host: String = ""; port: Int = 4222; }
+
+fn nats_place(url: String) -> NatsPlace {
+    let sep = std::str::index_of(url, "://");
+    let mut rest = if sep >= 0 { url[(sep + 3)..len(url)] } else { url };
+    let slash = std::str::index_of(rest, "/");
+    if slash >= 0 { rest = rest[0..slash]; }
+    let at = std::str::index_of(rest, "@");
+    if at >= 0 { rest = rest[(at + 1)..len(rest)]; }
+    let pc = std::str::index_of(rest, ":");
+    if pc < 0 { return NatsPlace { host: rest }; }
+    return NatsPlace {
+        host: rest[0..pc],
+        port: std::str::parse_int(rest[(pc + 1)..len(rest)]) or 4222,
+    };
+}

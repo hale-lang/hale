@@ -1,0 +1,228 @@
+// GH #1590 — the record in memory. Rows append through memory's insert
+// function alone, each extending the prev-digest chain and signed by its
+// writer: the organism's parts with the record's key, a person with their
+// own (`ssh-keygen -Y`). A row of the Ledger's is refused; two handles race
+// at the tail and both land, an exact append that lost is stale; a writer
+// role can neither update nor delete a row, and a row changed behind the
+// function breaks the chain a reader verifies. Receipts are kept unsealed
+// beside the protected ones, read back, and erased by a redaction that a
+// second filing cannot undo.
+
+import "../core" as dna;
+
+// A secret of the test's own into the vault the organism uses.
+fn vault_put(name: String, value: String) {
+    let dir = std::secret::vault_local_dir();
+    let made = dna::run_tool(
+        "sh\n-c\numask 077 && mkdir -p \"$1\" && printf '%s' \"$3\" > \"$1/$2\"\nsh\n" + dir + "\n"
+            + name + "\n" + value,
+    );
+    std::test::assert_eq_int(made.code, 0, "the vault holds " + name + ": " + made.stderr);
+}
+
+main locus App {
+    run() {
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
+        if len(owner) == 0 {
+            eprintln(
+                "record_memory_test: no HALE_DNA_MEMORY_DSN_OWNER; the record is memory's, so nothing was exercised",
+            );
+            return;
+        }
+        let scratch = dna::scratch_root("record-memory");
+        // a genome whose pin names a record that has no row yet
+        let nonce = dna::hex(
+            std::crypto::sha256(std::bytes::from_string(scratch + to_string(std::time::now()))),
+        );
+        let repo = scratch + "/genome";
+        let made = dna::run_tool(
+            "sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && git init -q && printf '[dna]\\nrecord = \"%s\"\\n' \"$2\" > hale.toml\nsh\n"
+                + repo + "\n" + nonce,
+        );
+        std::test::assert_eq_int(made.code, 0, "a genome: " + made.stderr);
+        std::test::assert_eq_str(dna::record_scope(repo), nonce, "its identity is its pin");
+        let org = dna::schema_for(nonce);
+        vault_put(dna::exchange_key_vault(org), "the record's own signing secret");
+        let pw = dna::provision_record_roles(nonce, "");
+        std::test::assert_eq_str(pw, "", "the record's roles");
+        let m = dna::migrate(dna::parse_dsn(owner), nonce);
+        std::test::assert(m.ok, "memory migrated: " + m.why);
+
+        // ---- two handles of the spine, one record
+        let a = dna::RecordJournal { repo: repo, dsn: m.spine_dsn, author: "dna" };
+        let b = dna::RecordJournal { repo: repo, dsn: m.spine_dsn, author: "dna" };
+        std::test::assert_eq_int(a.revision(), 0, "an empty record: " + a.last_error());
+        let r0 = a.append(0, "record.genesis", nonce, "{\"genome\": \"\", \"routing\": 2}");
+        std::test::assert(
+            r0.ok && r0.revision == 1,
+            "the first row lands: " + r0.error + " " + a.last_error(),
+        );
+        let r1 = a.append(1, "practice.proposed", "p1", "keep it small");
+        std::test::assert(r1.ok, "a second: " + r1.error);
+        let seen = b.refresh();
+        std::test::assert_eq_int(b.revision(), 2, "another handle reads both");
+        let e0 = b.read(0);
+        let e1 = b.read(1);
+        std::test::assert_eq_str(e0.prev, "genesis", "the chain begins at genesis");
+        std::test::assert_eq_str(e1.prev, e0.digest, "and each row names the one before it");
+        std::test::assert_eq_str(
+            e1.digest,
+            dna::event_digest(e0.digest, "practice.proposed", "p1", "keep it small"),
+            "a row's digest is the chain's",
+        );
+        std::test::assert(b.verify_chain(), "the chain verifies");
+        // the organism's rows carry the record's signature over their digest
+        let key = dna::record_key(org).public();
+        std::test::assert(
+            dna::signature_holds(key, dna::SIG_TAG_ROW, e1.digest, b.sig_of(1)),
+            "signed with the record's key, as a row: " + b.sig_of(1),
+        );
+        std::test::assert(
+            !dna::signature_holds(key, dna::SIG_TAG_ROW, e0.digest, b.sig_of(1)),
+            "over its own digest alone",
+        );
+        std::test::assert(
+            !dna::signature_holds(key, dna::SIG_TAG_ENVELOPE, e1.digest, b.sig_of(1))
+                && !dna::signature_holds(key, dna::SIG_TAG_CARD, e1.digest, b.sig_of(1)),
+            "and never as an envelope's or a card's",
+        );
+
+        // ---- a race at the tail: both land; an exact append that lost is stale
+        let ra = a.append(2, "concern.noted", "x", "a");
+        let rb = b.append(2, "concern.noted", "y", "b");
+        std::test::assert(
+            ra.ok && rb.ok && b.revision() == 4,
+            "both land at the tail: " + rb.error,
+        );
+        std::test::assert(a.refresh() && a.revision() == 4, "and both handles see four rows");
+        let behind = dna::RecordJournal { repo: repo, dsn: m.spine_dsn };
+        std::test::assert_eq_int(behind.revision(), 4, "a third handle at four");
+        let moved = a.append(4, "practice.proposed", "p2", "one more");
+        let lost = behind.append_exact(4, "practice.proposed", "p3", "decided at four");
+        std::test::assert(
+            moved.ok && !lost.ok && lost.error == "stale_revision",
+            "an exact append the record moved past is stale: " + lost.error,
+        );
+
+        // ---- the Ledger's rows are not the record's
+        let ledger_row = a.append(a.revision(), "task.born", "t1", "a task");
+        std::test::assert(
+            !ledger_row.ok
+                && ledger_row.error == "refused"
+                && std::str::contains(a.last_error(), "row of the Ledger"),
+            "a Ledger kind is refused: " + a.last_error(),
+        );
+
+        // ---- insert-only, and tamper evident
+        let spine = dna::pq_conn(dna::parse_dsn(m.spine_dsn));
+        std::test::assert(spine.open().ok, "the spine's role connects");
+        let sch = dna::schema_for(nonce);
+        std::test::assert(
+            !spine.exec("UPDATE " + sch + ".record_rows SET body = 'rewritten' WHERE seq = 1").ok,
+            "the spine cannot update a row",
+        );
+        std::test::assert(
+            !spine.exec("DELETE FROM " + sch + ".record_rows WHERE seq = 4").ok,
+            "nor delete one",
+        );
+        std::test::assert(
+            !spine.exec(
+                "INSERT INTO " + sch
+                    + ".record_rows (seq, kind, entity, body, author, writer, prev, digest) VALUES (99, 'x', 'x', 'x', 'x', 'x', 'x', 'x')",
+            ).ok,
+            "nor insert past the function",
+        );
+        std::test::assert(
+            !spine.exec("UPDATE " + sch + ".ledger_rows SET body = 'x'").ok
+                && !spine.exec("DELETE FROM " + sch + ".ledger_rows").ok,
+            "and the Ledger is insert-only too",
+        );
+        spine.close();
+        let admin = dna::pq_conn(dna::parse_dsn(owner));
+        std::test::assert(admin.open().ok, "the owner connects");
+        std::test::assert(
+            admin.exec(
+                "UPDATE " + sch
+                    + ".record_rows SET body = 'rewritten behind the function' WHERE seq = 1",
+            ).ok,
+            "the owner changes a row behind the function",
+        );
+        let reader = dna::RecordJournal { repo: repo, dsn: m.spine_dsn };
+        std::test::assert(
+            reader.revision() == 5 && !reader.verify_chain(),
+            "and a reader's chain no longer verifies",
+        );
+        std::test::assert(
+            admin.exec(
+                "UPDATE " + sch + ".record_rows SET body = 'keep it small' WHERE seq = 1",
+            ).ok,
+            "restored",
+        );
+        admin.close();
+
+        // ---- a person signs with their own key
+        let keydir = scratch + "/keys";
+        let keyed = dna::run_tool(
+            "sh\n-c\nmkdir -p \"$1\" && ssh-keygen -q -t ed25519 -N '' -C alice -f \"$1/alice\" && cd \"$2\" && git config gpg.format ssh && git config user.signingkey \"$1/alice\"\nsh\n"
+                + keydir + "\n" + repo,
+        );
+        std::test::assert_eq_int(
+            keyed.code,
+            0,
+            "alice's ssh key, git's signing key here: " + keyed.stderr,
+        );
+        let person = dna::RecordJournal { repo: repo, dsn: m.spine_dsn, author: "alice" };
+        let pr = person.append(person.revision(), "review.verdict", "r1", "approve");
+        std::test::assert(pr.ok, "alice's row lands: " + pr.error + " " + person.last_error());
+        let at = person.revision() - 1;
+        let sig = person.sig_of(at);
+        let pub_key = dna::trim_nl(std::io::fs::read_file(keydir + "/alice.pub") or "");
+        let words = std::str::index_of(pub_key, " ");
+        let rest = pub_key[(words + 1)..len(pub_key)];
+        let key_only = pub_key[0..(words + 1 + std::str::index_of(rest, " "))];
+        std::test::assert(std::str::starts_with(sig, "ssh:"), "an ssh signature: " + sig);
+        std::test::assert(
+            dna::ssh_verify("alice " + key_only, "alice", person.read(at).digest, sig),
+            "it verifies as alice's",
+        );
+        std::test::assert(
+            !dna::ssh_verify("mallory " + key_only, "alice", person.read(at).digest, sig),
+            "and as nobody else's",
+        );
+        std::test::assert(
+            !dna::ssh_verify("alice " + key_only, "alice", person.read(0).digest, sig),
+            "over its own row alone",
+        );
+
+        // ---- receipts, unsealed beside the protected ones
+        let rc = dna::MemoryReceipts { repo: repo, dsn: m.spine_dsn };
+        let digest = rc.store("a verification step's output");
+        std::test::assert_eq_str(
+            digest,
+            dna::hex(std::crypto::sha256(std::bytes::from_string("a verification step's output"))),
+            "filed under its content's digest: " + rc.last_error(),
+        );
+        std::test::assert_eq_str(rc.read(digest), "a verification step's output", "and read back");
+        std::test::assert_eq_str(
+            rc.store("a verification step's output"),
+            digest,
+            "filed again, the same",
+        );
+        std::test::assert(rc.erase(digest), "a redaction erases it: " + rc.last_error());
+        std::test::assert_eq_str(rc.read(digest), "", "gone");
+        std::test::assert_eq_str(
+            rc.store("a verification step's output"),
+            "",
+            "and a redacted body is not kept again",
+        );
+
+        let gone = dna::unmigrate(owner, nonce);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

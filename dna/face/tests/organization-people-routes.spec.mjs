@@ -8,7 +8,7 @@ import { UNGATED, commandReceipt, commandReply, describeLine, receiptLine, refus
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), OTHER = '2'.repeat(40);
 const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
 const PERSON = 'mara / équipe ? &', PRINCIPAL = { mode: 'local', name: 'riley' };
-const task = (index = 0) => ({ id: 'task/' + index, outcome: 'Confirm handover ' + index, state: 'handed', assignee: PERSON, obligation: 'handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '3', kind: 'task.handed', from: '', to: PERSON, by: 'leader' }] });
+const task = (index = 0) => ({ id: 'task/' + index, outcome: 'Confirm handover ' + index, state: 'handed', assignee: PERSON, obligation: 'handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '3', kind: 'task.handed', from: '', to: PERSON, by: 'leader' }], usage: { calls: '0', input_tokens: '0', output_tokens: '0', cost_micros: '0', by_position: [], by_backend: [] } });
 const query = page => new URLSearchParams(new URL(page.url()).hash.split('?')[1]);
 const tasks = page => page.getByRole('region', { name: 'Handed Task administration', exact: true });
 const recovery = page => page.getByRole('region', { name: 'Task reassignment request', exact: true });
@@ -49,7 +49,7 @@ async function fixture(page, options = {}) {
       const selected = script.rows.filter(row => (!id || row.id === id) && (!assignee || row.assignee === assignee));
       const items = structuredClone(selected.slice(offset, offset + limit));
       if (!id && script.bad === 'item' && items[0]) { items[0].assignee = 'dev'; items[0].history[0].to = 'dev'; }
-      const data = { profile: 'dna.task-administration.v1', items, page: pageInfo(selected.length, offset, limit), basis: { projection: 'dna.task-administration/1', memory: 'record', routing: '0', record_head: source(app).record_head, record_revision: source(app).record_revision } };
+      const data = { profile: 'dna.task-administration.v1', items, page: pageInfo(selected.length, offset, limit), basis: { projection: 'dna.task-administration/1', memory: 'record+ledger', record_head: source(app).record_head, record_revision: source(app).record_revision, ledger_revision: '2' } };
       if (assignee) data.assignee = script.bad === 'echo' ? 'dev' : assignee;
       if (!id && script.bad === 'missing') delete data.assignee;
       return send(200, wrap(data, app));

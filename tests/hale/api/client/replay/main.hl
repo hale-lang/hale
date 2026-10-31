@@ -12,7 +12,10 @@
 // the recording names it as the digest `served`); and a step named `~name` is
 // replied to without comparing its request, for the two recordings a typed
 // client cannot produce (a payload of the wrong type, one missing a field) and
-// the one a peer with no credentials sent.
+// the one a peer with no credentials sent. A generated client names its
+// member's own digest, which the exposure admits beside the surface's
+// (additive compatibility), so the digest a request names is the recorded
+// one or the member's, as the contract's descriptions list it.
 //
 //   replay http <wire dir> <port> <report> <recording>...
 //   replay unix <wire dir> <path> <report> <recording>...
@@ -85,6 +88,33 @@ fn read_http(s: std::io::tcp::Stream) -> String {
     return buf;
 }
 
+// The member's digests the contract's descriptions list (`Public`'s and
+// `Admin`'s), comma-joined: `"name": "<member>"` and the `"digest"` after it.
+fn member_digests(wire: String, member: String) -> String {
+    let mut out = "";
+    for doc in ["public.alice.description.json", "admin.uid-1000.description.json"] {
+        let text = compact(std::io::fs::read_file(wire + "/../" + doc) or "");
+        let key = "\"name\":\"" + member + "\",\"digest\":\"";
+        let at = std::str::index_of(text, key);
+        if at >= 0 {
+            let rest = text[(at + len(key))..len(text)];
+            let end = std::str::index_of(rest, "\"");
+            if end > 0 { out = out + "," + rest[0..end]; }
+        }
+    }
+    return out + ",";
+}
+
+// The value of the header `name` in a request head, "" when it has none.
+fn header_of(head: String, name: String) -> String {
+    let key = "\r\n" + name + ": ";
+    let at = std::str::index_of(head, key);
+    if at < 0 { return ""; }
+    let rest = head[(at + len(key))..len(head)];
+    let eol = std::str::index_of(rest, "\r\n");
+    return if eol >= 0 { rest[0..eol] } else { rest };
+}
+
 fn header_ok(head: String, headers: String, name: String) -> String {
     let want = std::json::find_string_field(headers, name);
     if len(want) == 0 { return ""; }
@@ -107,19 +137,39 @@ fn http_step(listen_fd: Int, wire: String, arg: String) -> String {
     let head = if at >= 0 { got[0..at] } else { got };
     let body = if at >= 0 { got[(at + 4)..len(got)] } else { "" };
     let mut bad = "";
-    let line = std::json::find_string_field(want, "method") + " " + std::json::find_string_field(want, "path") + " HTTP/1.1";
-    if !std::str::starts_with(head, line) { bad = bad + " request line is not " + line + " in " + head; }
-    let reply_refusal = std::json::find_field_raw(std::json::find_field_raw(reply, "body"), "refusal");
+    let line = std::json::find_string_field(want, "method") + " "
+        + std::json::find_string_field(want, "path") + " HTTP/1.1";
+    if !std::str::starts_with(head, line) {
+        bad = bad + " request line is not " + line + " in " + head;
+    }
+    let reply_refusal = std::json::find_field_raw(
+        std::json::find_field_raw(reply, "body"),
+        "refusal",
+    );
     let mut headers = std::json::find_field_raw(want, "headers");
     if std::json::find_string_field(reply_refusal, "kind") == "digest_mismatch" {
-        headers = std::str::replace(headers, std::json::find_string_field(headers, "Hale-Surface-Digest"), std::json::find_string_field(reply_refusal, "served"));
+        headers = std::str::replace(
+            headers,
+            std::json::find_string_field(headers, "Hale-Surface-Digest"),
+            std::json::find_string_field(reply_refusal, "served"),
+        );
     }
-    bad = bad + header_ok(head, headers, "Authorization") + header_ok(head, headers, "Content-Type") + header_ok(head, headers, "Hale-Surface-Digest");
+    bad = bad + header_ok(head, headers, "Authorization")
+        + header_ok(head, headers, "Content-Type");
+    let sent = header_of(head, "Hale-Surface-Digest");
+    let member = std::str::replace(std::json::find_string_field(want, "path"), "/call/", "");
+    if len(sent) == 0 || !std::str::contains(member_digests(wire, member), "," + sent + ",") {
+        bad = bad + header_ok(head, headers, "Hale-Surface-Digest");
+    }
     let expect = compact(std::json::find_field_raw(want, "body"));
     if body != expect { bad = bad + " body is " + body + " not " + expect; }
     if only { bad = ""; }
     let out = compact(std::json::find_field_raw(reply, "body"));
-    s.send("HTTP/1.1 " + to_string(std::json::find_int_field(reply, "status")) + " Recorded\r\nContent-Type: application/json\r\nContent-Length: " + to_string(len(out)) + "\r\nConnection: close\r\n\r\n" + out) or discard;
+    s.send(
+        "HTTP/1.1 " + to_string(std::json::find_int_field(reply, "status"))
+            + " Recorded\r\nContent-Type: application/json\r\nContent-Length: "
+            + to_string(len(out)) + "\r\nConnection: close\r\n\r\n" + out,
+    ) or discard;
     if len(bad) > 0 { return "MISMATCH " + name + ":" + bad + "\n"; }
     return "ok " + name + "\n";
 }
@@ -152,10 +202,31 @@ fn unix_step(listen_fd: Int, wire: String, arg: String) -> String {
     let mut expect = std::str::replace(compact(want), recorded_id, "\"id\":\"c-1\"");
     let reply_refusal = std::json::find_field_raw(reply, "refusal");
     if std::json::find_string_field(reply_refusal, "kind") == "digest_mismatch" {
-        expect = std::str::replace(expect, std::json::find_string_field(want, "digest"), std::json::find_string_field(reply_refusal, "served"));
+        expect = std::str::replace(
+            expect,
+            std::json::find_string_field(want, "digest"),
+            std::json::find_string_field(reply_refusal, "served"),
+        );
     }
     s.send(compact(reply) + "\n") or discard;
-    if got != expect && !only { return "MISMATCH " + name + ": the line is " + got + " not " + expect + "\n"; }
+    // the member's own digest is the client's to name in place of the recorded one
+    let sent = std::json::find_string_field(got, "digest");
+    if got != expect
+        && len(sent) > 0
+        && std::str::contains(
+            member_digests(wire, std::json::find_string_field(want, "call")),
+            "," + sent + ",",
+        )
+    {
+        expect = std::str::replace(
+            expect,
+            "\"digest\":\"" + std::json::find_string_field(expect, "digest") + "\"",
+            "\"digest\":\"" + sent + "\"",
+        );
+    }
+    if got != expect && !only {
+        return "MISMATCH " + name + ": the line is " + got + " not " + expect + "\n";
+    }
     return "ok " + name + "\n";
 }
 
@@ -210,29 +281,54 @@ fn ws_step(listen_fd: Int, scenario: String) -> String {
     }
     let mut bad = "";
     // the credential rides the upgrade as a bearer header or as `?access_token=`
-    let by_header = std::str::starts_with(buf, "GET / HTTP/1.1") && std::str::contains(buf, "\r\nAuthorization: Bearer t-dave\r\n");
+    let by_header = std::str::starts_with(buf, "GET / HTTP/1.1")
+        && std::str::contains(buf, "\r\nAuthorization: Bearer t-dave\r\n");
     let by_query = std::str::starts_with(buf, "GET /?access_token=t-dave HTTP/1.1");
-    if !by_header && !by_query { bad = bad + " the credential t-dave is in neither form in " + buf; }
-    let kp = if std::str::index_of(buf, "Sec-WebSocket-Key: ") >= 0 { std::str::index_of(buf, "Sec-WebSocket-Key: ") } else { std::str::index_of(buf, "sec-websocket-key: ") };
+    if !by_header && !by_query {
+        bad = bad + " the credential t-dave is in neither form in " + buf;
+    }
+    let kp = if std::str::index_of(buf, "Sec-WebSocket-Key: ") >= 0 {
+        std::str::index_of(buf, "Sec-WebSocket-Key: ")
+    } else {
+        std::str::index_of(buf, "sec-websocket-key: ")
+    };
     let rest = buf[(kp + 19)..len(buf)];
     let key = rest[0..std::str::index_of(rest, "\r\n")];
-    let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
-    s.send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + answer + "\r\n\r\n") or discard;
+    let answer = std::text::base64::encode(
+        std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")),
+    );
+    s.send(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+            + answer + "\r\n\r\n",
+    ) or discard;
     let sub = ws_read_text(s, std::bytes::from_string(""));
     if sub != SUBSCRIBE { bad = bad + " the subscribe frame is " + sub + " not " + SUBSCRIBE; }
     if scenario == "refused" {
-        ws_send(s, "{\"type\":\"refusal\",\"topic\":\"Fills\",\"refusal\":{\"kind\":\"unauthorized\",\"reason\":\"Fills requires operator\",\"requires\":[\"operator\"]}}");
+        ws_send(
+            s,
+            "{\"type\":\"refusal\",\"topic\":\"Fills\",\"refusal\":{\"kind\":\"unauthorized\",\"reason\":\"Fills requires operator\",\"requires\":[\"operator\"]}}",
+        );
     } else {
         ws_send(s, "{\"type\":\"subscribed\",\"topic\":\"Fills\"}");
         if scenario == "late" { std::time::sleep(400ms); }
-        ws_send(s, "{\"type\":\"event\",\"topic\":\"Fills\",\"seq\":1,\"payload\":{\"order\":41,\"qty\":10,\"price\":12500}}");
+        ws_send(
+            s,
+            "{\"type\":\"event\",\"topic\":\"Fills\",\"seq\":1,\"payload\":{\"order\":41,\"qty\":10,\"price\":12500}}",
+        );
         if scenario == "closed" {
-            ws_send(s, "{\"type\":\"event\",\"topic\":\"Fills\",\"seq\":3,\"payload\":{\"order\":42,\"qty\":5,\"price\":12400}}");
+            ws_send(
+                s,
+                "{\"type\":\"event\",\"topic\":\"Fills\",\"seq\":3,\"payload\":{\"order\":42,\"qty\":5,\"price\":12400}}",
+            );
             ws_send(s, "{\"type\":\"closed\",\"reason\":\"shutting_down\"}");
         }
         if scenario == "late" { ws_send(s, "{\"type\":\"closed\",\"reason\":\"shutting_down\"}"); }
-        if scenario == "revoked" { ws_send(s, "{\"type\":\"unauthorized\",\"topic\":\"Fills\",\"reason\":\"revoked\"}"); }
-        if scenario == "expired" { ws_send(s, "{\"type\":\"unauthorized\",\"topic\":\"Fills\",\"reason\":\"expired\"}"); }
+        if scenario == "revoked" {
+            ws_send(s, "{\"type\":\"unauthorized\",\"topic\":\"Fills\",\"reason\":\"revoked\"}");
+        }
+        if scenario == "expired" {
+            ws_send(s, "{\"type\":\"unauthorized\",\"topic\":\"Fills\",\"reason\":\"expired\"}");
+        }
     }
     std::time::sleep(100ms);
     if len(bad) > 0 { return "MISMATCH " + scenario + ":" + bad + "\n"; }
@@ -244,7 +340,10 @@ fn main() {
     let mut report = "";
     if transport == "http" {
         let wire = std::env::arg(2);
-        let fd = std::io::tcp::__listen_socket("127.0.0.1", std::str::parse_int(std::env::arg(3)) or 0);
+        let fd = std::io::tcp::__listen_socket(
+            "127.0.0.1",
+            std::str::parse_int(std::env::arg(3)) or 0,
+        );
         std::io::fs::write_file(std::env::arg(4) + ".ready", "listening") or discard;
         let mut i = 5;
         while i < std::env::args_count() {
@@ -268,7 +367,10 @@ fn main() {
         std::io::fs::unlink(path) or discard;
         std::io::fs::write_file(std::env::arg(4), report) or discard;
     } else {
-        let fd = std::io::tcp::__listen_socket("127.0.0.1", std::str::parse_int(std::env::arg(2)) or 0);
+        let fd = std::io::tcp::__listen_socket(
+            "127.0.0.1",
+            std::str::parse_int(std::env::arg(2)) or 0,
+        );
         std::io::fs::write_file(std::env::arg(3) + ".ready", "listening") or discard;
         let mut i = 4;
         while i < std::env::args_count() {

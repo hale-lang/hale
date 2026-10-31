@@ -1,12 +1,16 @@
-//! The `lifecycle_locus` integration-test binary: 22 test files of this area, kept
+//! The `lifecycle_locus` integration-test binary: 26 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "array_of_loci_teardown.rs"]
+mod array_of_loci_teardown;
 #[path = "di_entry_reset_is_universal.rs"]
 mod di_entry_reset_is_universal;
+#[path = "held_field_view.rs"]
+mod held_field_view;
 #[path = "locus_fallible_return_multichild.rs"]
 mod locus_fallible_return_multichild;
 #[path = "locus_field_cascade.rs"]
@@ -25,6 +29,8 @@ mod main_return_call_teardown;
 mod main_return_dissolve_frame;
 #[path = "method_call_from_free_fn.rs"]
 mod method_call_from_free_fn;
+#[path = "returned_aggregate_of_loci.rs"]
+mod returned_aggregate_of_loci;
 #[path = "params_default_scalar_self_ref.rs"]
 mod params_default_scalar_self_ref;
 #[path = "perspective_ctor_override_agreement.rs"]
@@ -37,6 +43,8 @@ mod repr_field_accessors;
 mod restart_bound;
 #[path = "restart_in_place_params.rs"]
 mod restart_in_place_params;
+#[path = "self_field_enum_retire.rs"]
+mod self_field_enum_retire;
 #[path = "self_containing_locus.rs"]
 mod self_containing_locus;
 #[path = "self_field_alias.rs"]

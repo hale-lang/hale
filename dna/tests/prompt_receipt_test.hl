@@ -14,7 +14,11 @@ fn toolchain() -> String {
 
 // Run `argv` (newline-separated) in `dir`, model discovery off.
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
+            + dir
+            + "\n" + argv,
+    );
 }
 
 fn hex_of(digest: String) -> String {
@@ -38,7 +42,9 @@ fn block_body(out: String, what: String, digest: String) -> String {
     let body = rest[start..(start + n)];
     let tail = "\n       end of " + what + "\n";
     let after = rest[(start + n)..len(rest)];
-    if !std::str::starts_with(after, tail) { return "!the body is not followed by `end of " + what + "`"; }
+    if !std::str::starts_with(after, tail) {
+        return "!the body is not followed by `end of " + what + "`";
+    }
     return body;
 }
 
@@ -46,13 +52,23 @@ main locus App {
     params {
         // a placeholder until the scratch project exists; its receipts go
         // nowhere near the working directory
-        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("prompt-placeholder") } } };
+        core: dna::Dna = dna::Dna {
+            verification: dna::HaleVerification {
+                receipts: dna::FileReceipts { dir: dna::scratch_root("prompt-placeholder") },
+            },
+        };
         // the leader plans every ask as a person's job, so nothing is mutated
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "pr", charter: "You are the architect.",
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\nask the supplier" },
-                deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\nask the supplier" }
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\nask the supplier",
+                },
+                deep: dna::FakeModel {
+                    name: "deep",
+                    answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\nask the supplier",
+                }
             }
         };
         // a hosted-shaped backend that refuses customer data, and still
@@ -71,25 +87,43 @@ main locus App {
     }
     run() {
         let scratch = dna::scratch_root("prompt");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nreceipts");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nreceipts"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/receipts";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
-        let receipts = dna::GitReceipts { repo: app };
+        std::test::assert_eq_str(
+            dna::memory_fixture(app),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let receipts = dna::MemoryReceipts { repo: app };
 
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: app },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: app },
+                ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) },
+            },
             gateway: dna::MutationGateway {
-                workspaces: dna::IsolatedWorktrees { repo: app, root: app + "/.hale/dna/worktrees" },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: app,
+                    root: app + "/.hale/dna/worktrees",
+                },
                 repo: dna::LocalGit { repo: app }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: app }, scratch: app + "/.hale/dna/scratch", repo: app },
+            verification: dna::HaleVerification {
+                hale_bin: toolchain(),
+                receipts: dna::MemoryReceipts { repo: app },
+                scratch: app + "/.hale/dna/scratch",
+                repo: app,
+            },
             planned: true, org_id: "pr"
         };
 
         // ---- a planned ask: the plan's prompt and context are receipts
-        let asked = self.core.ask(dna::Intent { id: "i1", outcome: "get the supplier's invoice approved", from: "riley" });
+        let asked = self.core.ask(
+            dna::Intent { id: "i1", outcome: "get the supplier's invoice approved", from: "riley" },
+        );
         std::time::sleep(400ms);
         std::test::assert_eq_str(asked, "planning", "the leader's word comes first (card 18)");
         // the plan is the ask's: its model call is named by the intent
@@ -98,55 +132,151 @@ main locus App {
         std::test::assert(len(row) > 0, "the plan call is in the record as " + attempt);
         let pd = std::json::find_string_field(row, "prompt_digest");
         let cd = std::json::find_string_field(row, "context_digest");
-        std::test::assert(std::str::starts_with(pd, "sha256:") && std::str::starts_with(cd, "sha256:"), "the row names both digests: " + row);
-        std::test::assert_eq_str(std::json::find_string_field(row, "bodies"), "stored", "and says the bodies were filed");
+        std::test::assert(
+            std::str::starts_with(pd, "sha256:") && std::str::starts_with(cd, "sha256:"),
+            "the row names both digests: " + row,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(row, "bodies"),
+            "stored",
+            "and says the bodies were filed",
+        );
         let prompt = receipts.read(hex_of(pd));
         let context = receipts.read(hex_of(cd));
-        std::test::assert(std::str::contains(prompt, "assignee:"), "the receipt is the plan prompt: " + prompt);
-        std::test::assert_eq_str(dna::digest_of(prompt), pd, "the prompt receipt hashes to its digest");
-        std::test::assert_eq_str(dna::digest_of(context), cd, "the context receipt hashes to its digest");
-        std::test::assert(!std::str::contains(row, "assignee:"), "the row itself carries digests, not the text");
+        std::test::assert(
+            std::str::contains(prompt, "assignee:"),
+            "the receipt is the plan prompt: " + prompt,
+        );
+        std::test::assert_eq_str(
+            dna::digest_of(prompt),
+            pd,
+            "the prompt receipt hashes to its digest",
+        );
+        std::test::assert_eq_str(
+            dna::digest_of(context),
+            cd,
+            "the context receipt hashes to its digest",
+        );
+        std::test::assert(
+            !std::str::contains(row, "assignee:"),
+            "the row itself carries digests, not the text",
+        );
 
         // ---- the CLI renders them byte-exact
         let h = in_dir(app, toolchain() + "\ndna\nhistory\n" + attempt);
         std::test::assert_eq_int(h.code, 0, "hale dna history: " + h.stderr);
         let shown_prompt = block_body(h.stdout, "prompt", pd);
-        std::test::assert(!std::str::starts_with(shown_prompt, "!"), shown_prompt + ":\n" + h.stdout);
-        std::test::assert_eq_str(dna::digest_of(shown_prompt), pd, "the rendered prompt hashes to the row's prompt_digest");
+        std::test::assert(
+            !std::str::starts_with(shown_prompt, "!"),
+            shown_prompt + ":\n" + h.stdout,
+        );
+        std::test::assert_eq_str(
+            dna::digest_of(shown_prompt),
+            pd,
+            "the rendered prompt hashes to the row's prompt_digest",
+        );
         std::test::assert_eq_str(shown_prompt, prompt, "and is the receipt, byte for byte");
         let shown_context = block_body(h.stdout, "context", cd);
-        std::test::assert(!std::str::starts_with(shown_context, "!"), shown_context + ":\n" + h.stdout);
-        std::test::assert_eq_str(dna::digest_of(shown_context), cd, "the rendered context hashes to the row's context_digest");
+        std::test::assert(
+            !std::str::starts_with(shown_context, "!"),
+            shown_context + ":\n" + h.stdout,
+        );
+        std::test::assert_eq_str(
+            dna::digest_of(shown_context),
+            cd,
+            "the rendered context hashes to the row's context_digest",
+        );
 
         // ---- a customer-class call files no body
         let secret_prompt = "summarise the March ledger for account 4411";
         let secret_context = "account 4411 owes 1200.00 since 2026-03-02";
-        let r = self.probe.complete(dna::ModelRequest { attempt_id: "probe/customer", role: "review", prompt: secret_prompt, context: secret_context, data_class: "customer" });
+        let r = self.probe.complete(
+            dna::ModelRequest {
+                attempt_id: "probe/customer",
+                role: "review",
+                prompt: secret_prompt,
+                context: secret_context,
+                data_class: "customer",
+            },
+        );
         std::time::sleep(400ms);
         std::test::assert(!r.ok, "the hosted-shaped backend refused customer data");
         let crow = self.row_body("probe/customer");
         std::test::assert(len(crow) > 0, "the refused call is still evidence");
-        std::test::assert_eq_str(std::json::find_string_field(crow, "data_class"), "customer", "of class customer");
-        std::test::assert_eq_str(std::json::find_string_field(crow, "bodies"), "withheld (data class customer)", "and files nothing");
+        std::test::assert_eq_str(
+            std::json::find_string_field(crow, "data_class"),
+            "customer",
+            "of class customer",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(crow, "bodies"),
+            "withheld (data class customer)",
+            "and files nothing",
+        );
         let cpd = std::json::find_string_field(crow, "prompt_digest");
         let ccd = std::json::find_string_field(crow, "context_digest");
         std::test::assert_eq_str(cpd, dna::digest_of(secret_prompt), "the digest is kept");
-        std::test::assert_eq_str(receipts.read(hex_of(cpd)), "", "no receipt for the customer prompt");
-        std::test::assert_eq_str(receipts.read(hex_of(ccd)), "", "no receipt for the customer context");
+        std::test::assert_eq_str(
+            receipts.read(hex_of(cpd)),
+            "",
+            "no receipt for the customer prompt",
+        );
+        std::test::assert_eq_str(
+            receipts.read(hex_of(ccd)),
+            "",
+            "no receipt for the customer context",
+        );
         let ch = in_dir(app, toolchain() + "\ndna\nhistory\nprobe/customer");
-        std::test::assert(std::str::contains(ch.stdout, "prompt " + cpd + " withheld (data class customer): no body is stored"), "the history says the body is withheld: " + ch.stdout);
-        std::test::assert(!std::str::contains(ch.stdout + ch.stderr, "account 4411"), "and never shows it");
+        std::test::assert(
+            std::str::contains(
+                ch.stdout,
+                "prompt " + cpd + " withheld (data class customer): no body is stored",
+            ),
+            "the history says the body is withheld: " + ch.stdout,
+        );
+        std::test::assert(
+            !std::str::contains(ch.stdout + ch.stderr, "account 4411"),
+            "and never shows it",
+        );
         // ---- a wider history names a call and leaves its body to the attempt
-        let ra = self.probe.complete(dna::ModelRequest { attempt_id: "probe/a0", role: "review", prompt: "check the probe's arithmetic", context: "2 + 2", data_class: "internal" });
+        let ra = self.probe.complete(
+            dna::ModelRequest {
+                attempt_id: "probe/a0",
+                role: "review",
+                prompt: "check the probe's arithmetic",
+                context: "2 + 2",
+                data_class: "internal",
+            },
+        );
         std::time::sleep(400ms);
-        std::test::assert_eq_str(std::json::find_string_field(self.row_body("probe/a0"), "bodies"), "stored", "an internal call's bodies are filed");
+        std::test::assert_eq_str(
+            std::json::find_string_field(self.row_body("probe/a0"), "bodies"),
+            "stored",
+            "an internal call's bodies are filed",
+        );
         let wide = in_dir(app, toolchain() + "\ndna\nhistory\nprobe");
-        std::test::assert(std::str::contains(wide.stdout, "probe/a0"), "the wider history selects the call: " + wide.stdout);
+        std::test::assert(
+            std::str::contains(wide.stdout, "probe/a0"),
+            "the wider history selects the call: " + wide.stdout,
+        );
         std::test::assert(!std::str::contains(wide.stdout, "end of prompt"), "and shows no body");
         let own = in_dir(app, toolchain() + "\ndna\nhistory\nprobe/a0");
-        std::test::assert_eq_str(block_body(own.stdout, "prompt", dna::digest_of("check the probe's arithmetic")), "check the probe's arithmetic", "the attempt's own history does");
-        let grep = in_dir(app, "sh\n-c\ngit for-each-ref --format='%(refname)' refs/dna/receipts/ | while read r; do git cat-file -p \"$r\"; done | grep -c 'account 4411' || true");
-        std::test::assert_eq_str(dna::trim_nl(grep.stdout), "0", "no receipt anywhere in the record carries the customer text");
+        std::test::assert_eq_str(
+            block_body(own.stdout, "prompt", dna::digest_of("check the probe's arithmetic")),
+            "check the probe's arithmetic",
+            "the attempt's own history does",
+        );
+        // the bodies are memory's (GH #1590): none of them carries it
+        let grep = dna::run_tool(
+            "psql\n" + std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+                + "\n-tAq\n-c\nSELECT count(*) FROM " + dna::schema_for(dna::record_scope(app))
+                + ".protected_receipts WHERE body LIKE '%account 4411%'",
+        );
+        std::test::assert_eq_str(
+            dna::trim_nl(grep.stdout),
+            "0",
+            "no receipt anywhere in the record carries the customer text: " + grep.stderr,
+        );
 
         dna::scratch_done(scratch);
         dna::scratch_done("/tmp/dna-prompt-placeholder-" + to_string(std::process::pid()));

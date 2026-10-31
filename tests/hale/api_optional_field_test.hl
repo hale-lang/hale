@@ -1,0 +1,217 @@
+// tests/hale/api_optional_field_test.hl — an optional field on an api
+// surface (spec/api.md § Codecs, a presence pair): a field `x` beside a
+// `has_x: Bool` is optional on the JSON wire. A key with a value other than
+// `null` is its presence; an absent key and `null` are its absence; `has_x`
+// says which, and is no key of its own. The encoder writes the field only
+// when its flag is set. Covered for a string, a list (where JSON tells a
+// present empty list from an absent one) and a record, through a served
+// exposure, with the description's schema for the pair.
+
+fn api_sock() -> String {
+    return "/tmp/hale-api-optional-" + to_string(std::process::pid()) + ".sock";
+}
+
+locus Table {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return true; }
+}
+
+type Inner { a: Int; b: String; }
+// a range that leaves out zero: an absent value of it is its least value
+type Pos = Int { range: 1..10; };
+type Ranged { n: Pos; }
+
+type Req {
+    name: String;
+    note: String;
+    has_note: Bool;
+    tags: bounded[String; 4];
+    has_tags: Bool;
+    opt: Inner;
+    has_opt: Bool;
+    mood: String = "calm";
+    has_mood: Bool;
+    ranged: Ranged;
+    has_ranged: Bool;
+    pair: [Pos; 2];
+    has_pair: Bool;
+    lvl: Pos;
+    has_lvl: Bool;
+}
+
+type Seen {
+    note: Bool;
+    tags: Bool;
+    opt: Bool;
+    tag_count: Int;
+    mood: String;
+    ranged: Int;
+    pair: Int;
+    lvl: Int;
+    echo: Req;
+}
+
+locus Echo {
+    fn on_req(r: Req) -> Seen {
+        return Seen {
+            note: r.has_note, tags: r.has_tags, opt: r.has_opt, tag_count: count(r.tags),
+            mood: r.mood, ranged: Int(r.ranged.n), pair: Int(r.pair[0]), lvl: Int(r.lvl), echo: r
+        };
+    }
+}
+
+api Public { rpc Echo::on_req; }
+
+locus Conn {
+    params {
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        buf: String = "";
+    }
+    fn open(sock: String) -> Bool {
+        let fd = std::io::unix::connect_wait(sock, 10s) or - 1;
+        if fd < 0 { return false; }
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        return true;
+    }
+    fn ask(line: String) -> String {
+        self.stream.send(line + "\n") or discard;
+        let mut i = 0;
+        while i < 25 {
+            let nl = std::str::index_of(self.buf, "\n");
+            if nl >= 0 {
+                let got = self.buf[0..nl];
+                self.buf = self.buf[(nl + 1)..len(self.buf)];
+                return got;
+            }
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 { i = i + 1; } else { self.buf = self.buf + chunk; }
+        }
+        return "";
+    }
+    fn call(payload: String) -> String {
+        return self.ask("{\"call\":\"Echo::on_req\",\"payload\":" + payload + ",\"id\":\"c\"}");
+    }
+}
+
+main locus App {
+    params {
+        echo: Echo = Echo { };
+        sock: api::Exposure = api::serve(
+            Public,
+            unix::Rpc { path: api_sock(), roles: Table { } },
+            as: "sock",
+            receivers: { Echo: self.echo },
+            bound: 8,
+            on_full: refuse
+        );
+        conn: Conn = Conn { };
+    }
+    placement { echo: cooperative(pool = work) where async_io; }
+    run() {
+        std::test::assert(self.conn.open(api_sock()), "connected to the exposure's socket");
+
+        // absent: no flag set, and the echo writes none of the three keys
+        let absent = self.conn.call("{\"name\":\"a\"}");
+        std::test::assert(
+            std::str::contains(
+                absent,
+                "\"note\":false,\"tags\":false,\"opt\":false,\"tag_count\":0",
+            ),
+            "absent keys are absences: " + absent,
+        );
+        std::test::assert(
+            std::str::contains(absent, "\"echo\":{\"name\":\"a\"}"),
+            "the encoder writes no absent field and no flag: " + absent,
+        );
+
+        // null is an absence
+        let nulls = self.conn.call("{\"name\":\"b\",\"note\":null,\"tags\":null,\"opt\":null}");
+        std::test::assert(
+            std::str::contains(nulls, "\"note\":false,\"tags\":false,\"opt\":false"),
+            "null is an absence: " + nulls,
+        );
+
+        // present, an empty list included (JSON tells it from an absent one)
+        let present = self.conn.call(
+            "{\"name\":\"c\",\"note\":\"x\",\"tags\":[],\"opt\":{\"a\":1,\"b\":\"y\"}}",
+        );
+        std::test::assert(
+            std::str::contains(present, "\"note\":true,\"tags\":true,\"opt\":true,\"tag_count\":0"),
+            "a value is a presence, an empty list too: " + present,
+        );
+        std::test::assert(
+            std::str::contains(
+                present,
+                "\"echo\":{\"name\":\"c\",\"note\":\"x\",\"tags\":[],\"opt\":{\"a\":1,\"b\":\"y\"}}",
+            ),
+            "the encoder writes a present field: " + present);
+
+        // a list with elements
+        let two = self.conn.call("{\"name\":\"d\",\"tags\":[\"p\",\"q\"]}");
+        std::test::assert(
+            std::str::contains(two, "\"tags\":true,\"opt\":false,\"tag_count\":2"),
+            "a list read: " + two,
+        );
+
+        // the flag is no key: sent, it is an unknown key and skipped
+        let flag = self.conn.call("{\"name\":\"e\",\"has_note\":true}");
+        std::test::assert(
+            std::str::contains(flag, "\"note\":false"),
+            "a flag sent is no presence: " + flag,
+        );
+
+        // a range that leaves out zero: present values decode on their own,
+        // and an absence is the range's least value
+        let ranged = self.conn.call(
+            "{\"name\":\"g\",\"ranged\":{\"n\":5},\"pair\":[3,4],\"lvl\":7}",
+        );
+        std::test::assert(
+            std::str::contains(ranged, "\"ranged\":5,\"pair\":3,\"lvl\":7"),
+            "present values of a range: " + ranged,
+        );
+        let floor = self.conn.call("{\"name\":\"h\"}");
+        std::test::assert(
+            std::str::contains(floor, "\"mood\":\"calm\",\"ranged\":1,\"pair\":1,\"lvl\":1"),
+            "absent values of a range: " + floor,
+        );
+
+        // the last of a key sent twice wins: a null after a value is an absence, the value gone
+        let twice = self.conn.call(
+            "{\"name\":\"i\",\"mood\":\"old\",\"mood\":null,\"tags\":[\"a\"],\"tags\":null}",
+        );
+        std::test::assert(
+            std::str::contains(
+                twice,
+                "\"tags\":false,\"opt\":false,\"tag_count\":0,\"mood\":\"calm\"",
+            ),
+            "a null after a value: " + twice,
+        );
+
+        // the value is still strict
+        let wrong = self.conn.call("{\"name\":\"f\",\"note\":5}");
+        std::test::assert(
+            std::str::contains(wrong, "wrong_type"),
+            "an optional field of the wrong kind is wrong_type: " + wrong,
+        );
+
+        // the description: the field may be null and is not required; the flag is no property
+        let doc = self.conn.ask("{\"describe\":true}");
+        std::test::assert(
+            std::str::contains(
+                doc,
+                "\"note\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]}",
+            ),
+            "an optional field's schema: " + doc,
+        );
+        std::test::assert(!std::str::contains(doc, "has_note"), "a flag is no property: " + doc);
+        std::test::assert(
+            std::str::contains(doc, "\"required\":[\"name\"]"),
+            "an optional field is not required: " + doc,
+        );
+
+        self.sock.stop();
+        std::io::fs::unlink(api_sock()) or discard;
+    }
+}
+
+fn main() { App { }; }

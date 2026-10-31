@@ -1,0 +1,14 @@
+{
+  "why": "A map on one side only leaves its values uncompared, a gap of its own that must be committed.",
+  "side": "bundle",
+  "set": [
+    "components",
+    "schemas",
+    "Health",
+    "properties",
+    "checks",
+    "additionalProperties"
+  ],
+  "value": true,
+  "expect": "Health.checks{}"
+}

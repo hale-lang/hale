@@ -42,27 +42,74 @@ fn main() {
     let p = h.proposals;
 
     // a cell naming the seed names the process it belongs to
-    std::test::assert(std::str::contains(p, "`api/reviewer` under process api, signing its code and x.yaml"), "api's reviewer signs what its seed serves: " + p);
-    std::test::assert(std::str::contains(p, "`api/dev` under process api") && std::str::contains(p, "the work `x.yaml`: done when ci/x passes"), "and api delivers x.yaml: " + p);
-    std::test::assert(!std::str::contains(p, "`x.yaml/dev`"), "x.yaml is served, so no dev of its own: " + p);
-    std::test::assert(std::str::contains(p, "`web/reviewer` under seed web, signing its code and x.yaml"), "a consuming seed's reviewer signs what it consumes: " + p);
+    std::test::assert(
+        std::str::contains(p, "`api/reviewer` under process api, signing its code and x.yaml"),
+        "api's reviewer signs what its seed serves: " + p,
+    );
+    std::test::assert(
+        std::str::contains(p, "`api/dev` under process api")
+            && std::str::contains(p, "the work `x.yaml`: done when ci/x passes"),
+        "and api delivers x.yaml: " + p,
+    );
+    std::test::assert(
+        !std::str::contains(p, "`x.yaml/dev`"),
+        "x.yaml is served, so no dev of its own: " + p,
+    );
+    std::test::assert(
+        std::str::contains(p, "`web/reviewer` under seed web, signing its code and x.yaml"),
+        "a consuming seed's reviewer signs what it consumes: " + p,
+    );
 
     // two parts delivering one contract: one work item
     std::test::assert_eq_int(count(p, "\"name\": \"y.yaml\""), 1, "y.yaml is one work item: " + p);
-    std::test::assert(std::str::contains(p, "`a/dev`") && std::str::contains(p, "`b/dev`"), "each part serving it has a dev: " + p);
+    std::test::assert(
+        std::str::contains(p, "`a/dev`") && std::str::contains(p, "`b/dev`"),
+        "each part serving it has a dev: " + p,
+    );
 
     // a validated contract no part serves, named where its file is a part's
-    std::test::assert(std::str::contains(p, "`spec/vendor/api/dev` under contract spec/vendor/api") && std::str::contains(p, "the work `spec/vendor/api`: done when ci/v passes"), "named by its whole path, never api's: " + p);
-    std::test::assert_eq_int(count(p, "\"name\": \"api/dev\""), 1, "api/dev is proposed once: " + p);
-    std::test::assert(!std::str::contains(p, "/support`"), "no role unless the project names one: " + p);
+    std::test::assert(
+        std::str::contains(p, "`spec/vendor/api/dev` under contract spec/vendor/api")
+            && std::str::contains(p, "the work `spec/vendor/api`: done when ci/v passes"),
+        "named by its whole path, never api's: " + p,
+    );
+    std::test::assert_eq_int(
+        count(p, "\"name\": \"api/dev\""),
+        1,
+        "api/dev is proposed once: " + p,
+    );
+    std::test::assert(
+        !std::str::contains(p, "/support`"),
+        "no role unless the project names one: " + p,
+    );
 
     // the roles: known ones, each once, whatever the whitespace
     let opted = ops::graph_holes(graph(), " support\tsupport\non-call ");
     std::test::assert_eq_str(opted.error, "", "the roles derive");
-    std::test::assert_eq_int(opted.count, h.count + 4, "two roles under one deployment, each with its mandate");
-    std::test::assert_eq_int(count(opted.proposals, "\"name\": \"compose/support\""), 1, "support once: " + opted.proposals);
-    std::test::assert(std::str::contains(opted.proposals, "`compose/on-call` under deployment compose, proposed empty"), "on-call under the deployment, empty: " + opted.proposals);
+    std::test::assert_eq_int(
+        opted.count,
+        h.count + 4,
+        "two roles under one deployment, each with its mandate",
+    );
+    std::test::assert_eq_int(
+        count(opted.proposals, "\"name\": \"compose/support\""),
+        1,
+        "support once: " + opted.proposals,
+    );
+    std::test::assert(
+        std::str::contains(
+            opted.proposals,
+            "`compose/on-call` under deployment compose, proposed empty",
+        ),
+        "on-call under the deployment, empty: " + opted.proposals,
+    );
     let odd = ops::graph_holes(graph(), "operator");
-    std::test::assert(std::str::contains(odd.error, "dna/org/structure.hl names `operator`, which is not an operational role (support accounts billing on-call)"), "a derived seat is no role: " + odd.error);
+    std::test::assert(
+        std::str::contains(
+            odd.error,
+            "dna/org/structure.hl names `operator`, which is not an operational role (support accounts billing on-call)",
+        ),
+        "a derived seat is no role: " + odd.error,
+    );
     std::test::assert(len(ops::graph_holes(graph(), "support dev").error) > 0, "nor is dev");
 }

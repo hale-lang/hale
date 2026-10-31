@@ -1,0 +1,63 @@
+// dna/tests/face_grafana_on_demand_test.hl — the standard face's keeper of
+// an on-demand Grafana: it starts Grafana for a recent use while Grafana
+// does not answer, waits on a start under way, and stops Grafana once it
+// has gone unused for the idle period, once. What it decides is a pure
+// step over the times it reads; running it needs a habitat (docker).
+
+import "../face/standard" as standard;
+
+fn main() {
+    let boot = 1000000;
+    let idle = standard::GRAFANA_IDLE_S;
+    // a fresh face: nothing used, nothing to do
+    std::test::assert(
+        standard::grafana_step(boot + 5, 0, boot, false, 0, false) == "",
+        "no use, no start",
+    );
+    // a person asks while Grafana does not answer: started
+    std::test::assert(
+        standard::grafana_step(boot + 10, boot + 9, boot + 9, false, 0, false) == "start",
+        "a recent use starts it",
+    );
+    // a start under way is waited on, not repeated
+    std::test::assert(
+        standard::grafana_step(boot + 12, boot + 11, boot + 11, false, boot + 70, false) == "",
+        "a start under way is not repeated",
+    );
+    // Grafana answering is left alone
+    std::test::assert(
+        standard::grafana_step(boot + 30, boot + 29, boot + 29, true, 0, false) == "",
+        "an answering Grafana is left alone",
+    );
+    // a use long past starts nothing (a stale stamp from an earlier face)
+    std::test::assert(
+        standard::grafana_step(boot + 100, boot + 40, boot + 40, false, 0, true) == "",
+        "an old use starts nothing",
+    );
+    // idle: stopped, once
+    let used = boot + 50;
+    std::test::assert(
+        standard::grafana_step(used + idle - 1, used, used, true, 0, false) == "",
+        "used within the idle period: kept",
+    );
+    std::test::assert(
+        standard::grafana_step(used + idle, used, used, true, 0, false) == "stop",
+        "unused for the idle period: stopped",
+    );
+    std::test::assert(
+        standard::grafana_step(used + idle + 1, used, used, false, 0, true) == "",
+        "stopped once",
+    );
+    // a Grafana this face never started (an earlier face's) is stopped once
+    // the face itself has run the idle period with no use
+    std::test::assert(
+        standard::grafana_step(boot + idle, 0, boot, true, 0, false) == "stop",
+        "an earlier face's Grafana is stopped after the idle period",
+    );
+    // used again after the stop: started again
+    let again = used + idle + 600;
+    std::test::assert(
+        standard::grafana_step(again + 1, again, again, false, 0, true) == "start",
+        "used again: started again",
+    );
+}

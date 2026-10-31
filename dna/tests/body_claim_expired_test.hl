@@ -10,8 +10,8 @@
 // --force an expired lease is reported, as the status line reports it,
 // and left to `hale dna run`.
 //
-// The lease is planted in the record already expired, so nothing here
-// waits on a clock.
+// The lease is planted in memory already expired (GH #1590: the body
+// lease is a row of memory), so nothing here waits on a clock.
 
 import "../core" as dna;
 
@@ -21,11 +21,17 @@ fn toolchain() -> String {
 }
 
 fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n"
+            + dir + "\n" + cache + "\n" + argv,
+    );
 }
 
 fn rows(repo: String, kind: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -41,8 +47,12 @@ main locus App {
         dna::reap_on_exit(scratch);
         let cache = scratch + "/cache";
         std::io::fs::mkdir(cache) or discard;
-        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nclaimed");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(
+            scratch,
+            cache,
+            dna::in_habitat(toolchain() + "\nhabitat\ngraft\nclaimed"),
+        );
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/claimed";
         let g1 = in_dir(a, cache, "git\nconfig\nuser.name\noperator");
         let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nop@dna");
@@ -50,27 +60,60 @@ main locus App {
         let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
 
         // a body that ran this record and died a minute ago: its lease is
-        // in the record, present and expired
-        let r = dna::GitRecord { repo: a };
+        // in memory, present and expired
+        let r = dna::MemoryLeases { repo: a };
         let gone = "gone@elsewhere:/tmp/its/clone";
-        let planted = r.swap("lease/body", gone + "\n3\n" + to_string(std::time::now() - 60) + "\n1", "");
-        std::test::assert(planted, "an expired lease is planted in the record");
+        let planted = r.put(
+            "body",
+            dna::Lease {
+                key: "body",
+                holder: gone,
+                token: 3,
+                expires: std::time::now() - 60,
+                present: true,
+            },
+            0,
+        );
+        std::test::assert(planted, "an expired lease is planted in memory: " + r.last_error);
 
         let status = in_dir(a, cache, toolchain() + "\ndna\nbody");
-        std::test::assert(std::str::contains(status.stdout, "stale: " + gone) && std::str::contains(status.stdout, "expired"), "the status says the body is gone and its lease expired: " + status.stdout + status.stderr);
+        std::test::assert(
+            std::str::contains(status.stdout, "stale: " + gone)
+                && std::str::contains(status.stdout, "expired"),
+            "the status says the body is gone and its lease expired: " + status.stdout
+                + status.stderr,
+        );
 
         // without --force: said so, taken by nobody
         let plain = in_dir(a, cache, toolchain() + "\ndna\nbody\nclaim");
-        std::test::assert(std::str::contains(plain.stdout + plain.stderr, "expired"), "a plain claim says the lease expired: " + plain.stdout + plain.stderr);
-        std::test::assert(std::str::contains(r.cell("lease/body").text, "\n1"), "and leaves the lease as it was");
+        std::test::assert(
+            std::str::contains(plain.stdout + plain.stderr, "expired"),
+            "a plain claim says the lease expired: " + plain.stdout + plain.stderr,
+        );
+        std::test::assert(
+            r.current("body").present && r.current("body").holder == gone,
+            "and leaves the lease as it was",
+        );
         std::test::assert_eq_int(rows(a, "body.claimed"), 0, "claiming nothing");
 
         // with --force: taken, like the lease of a body that died a second ago
         let forced = in_dir(a, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
-        std::test::assert_eq_int(forced.code, 0, "the forced claim succeeds: " + forced.stdout + forced.stderr);
-        std::test::assert(std::str::contains(forced.stdout, "body.claimed, forced") && std::str::contains(forced.stdout, gone), "and says whose lease it took: " + forced.stdout);
-        std::test::assert(std::str::contains(r.cell("lease/body").text, "\n0"), "the lease is released in the record");
-        std::test::assert_eq_int(rows(a, "body.claimed"), 1, "and the claim is a row, in the claimant's name");
+        std::test::assert_eq_int(
+            forced.code,
+            0,
+            "the forced claim succeeds: " + forced.stdout + forced.stderr,
+        );
+        std::test::assert(
+            std::str::contains(forced.stdout, "body.claimed, forced")
+                && std::str::contains(forced.stdout, gone),
+            "and says whose lease it took: " + forced.stdout,
+        );
+        std::test::assert(!r.current("body").present, "the lease is released in memory");
+        std::test::assert_eq_int(
+            rows(a, "body.claimed"),
+            1,
+            "and the claim is a row, in the claimant's name",
+        );
         dna::scratch_done(scratch);
     }
 }

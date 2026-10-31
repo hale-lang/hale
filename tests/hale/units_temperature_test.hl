@@ -28,7 +28,14 @@ fn main() {
     std::test::assert(Celsius(cold) == Celsius(0mK - 273_150mK), "0 K is below the Celsius origin");
 
     let rise = boil - freeze;
-    std::test::assert_eq_str(to_string(rise), "100000mK", "two points of one origin differ by a quantity");
-    std::test::assert(Kelvin(boil) - Kelvin(freeze) == rise, "the same difference at the other origin");
+    std::test::assert_eq_str(
+        to_string(rise),
+        "100000mK",
+        "two points of one origin differ by a quantity",
+    );
+    std::test::assert(
+        Kelvin(boil) - Kelvin(freeze) == rise,
+        "the same difference at the other origin",
+    );
     std::test::assert(freeze + rise == boil, "a point moves by a quantity");
 }

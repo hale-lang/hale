@@ -27,7 +27,8 @@ async function prepare(page, service, to = 'blair') {
   await task(page).getByRole('button', { name: 'Review reassignment', exact: true }).click();
   await expect(confirmation(page)).toContainText('alex → ' + to);
 }
-const reassignments = service => service.journal().rows.filter(row => row.kind === 'task.reassigned' && row.entity === service.task);
+// a Task's moves are the Ledger's rows (GH #1590)
+const reassignments = service => service.ledger().filter(row => row.kind === 'task.reassigned' && row.entity === service.task);
 const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
 
 test('native reassignment preserves the same open Task and joins exact assignment history', async ({ page, service }, info) => {
@@ -58,7 +59,7 @@ test('native reassignment preserves the same open Task and joins exact assignmen
   expect(current.assignment_digest).not.toBe(service.initial.assignment_digest); expect(current.history).toHaveLength(2);
   expect(current.history[0]).toEqual(service.initial.history[0]); expect(current.history[1]).toMatchObject({ kind: 'task.reassigned', from: 'alex', to: 'blair', by: 'riley' });
   expect(posts).toHaveLength(1); expect(reassignments(service)).toHaveLength(1);
-  expect(service.journal().rows.some(row => row.kind === 'task.done' && row.entity === service.task)).toBe(false);
+  expect(service.ledger().some(row => row.kind === 'task.done' && row.entity === service.task)).toBe(false);
   await task(page).getByRole('button', { name: /^Handoff to alex/ }).click();
   await expect(task(page).getByRole('group', { name: 'Selected assignment' })).toContainText('Handed to alex');
   await page.screenshot({ path: info.outputPath('actual-native-task-reassignment.png') });
@@ -98,7 +99,7 @@ test('native current-assignment conflict and retired/outside-policy recipients c
   const response = page.waitForResponse(r => isWrite(r.request()) && new URL(r.url()).pathname === service.prefix + '/commands');
   await confirmation(page).getByRole('button', { name: 'Confirm reassignment', exact: true }).click();
   // The binding answered; the provider refused the stale subject.
-  const stale = await response; expect(stale.status()).toBe(200); expect((await stale.json()).value).toMatchObject({ ok: false, code: 'stale_subject' });
+  const stale = await response; expect(stale.status()).toBe(200); expect(await stale.json()).toMatchObject({ ok: false, code: 'stale_subject' });
   await expect(recovery(page).getByRole('alert')).toBeVisible(); expect(reassignments(service)).toHaveLength(1);
   const current = await service.current(); expect(current.assignee).toBe('casey');
   const plan = await service.read(service.prefix + '/dna/people?id=' + encodeURIComponent(current.assignee)); expect(plan.status).toBe(200);

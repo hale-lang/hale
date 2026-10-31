@@ -77,7 +77,11 @@ locus Db {
     // cannot be fallible; failure stamps the 0 sentinel and is
     // reported by the first SQL call (kind = "open_failed").
     birth() {
-        self.conn_handle = if self.create { lotus_sqlite_open(self.path) } else { lotus_sqlite_open_existing(self.path) };
+        self.conn_handle = if self.create {
+            lotus_sqlite_open(self.path)
+        } else {
+            lotus_sqlite_open_existing(self.path)
+        };
     }
 
     // dissolve() — close the connection. rc is dropped inside

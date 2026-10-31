@@ -1,4 +1,4 @@
-//! GH #528 — `hale dna init` / `upgrade` (Track C, PR 23).
+//! GH #528 — `hale habitat graft` / `hale dna upgrade` (Track C, PR 23).
 //!
 //! What these hold the command to (the issue's acceptance for the
 //! existing-application path):
@@ -18,7 +18,13 @@
 
 #[path = "support/vault.rs"]
 mod vault;
-use std::path::{Path, PathBuf};
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
+use std::path::Path;
 use std::process::Command;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
@@ -29,8 +35,8 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
     )
 }
 
-fn workdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hale_dna_init_{}_{}", std::process::id(), tag));
+fn workdir(tag: &str) -> scratch::Scratch {
+    let d = scratch::Scratch::new(format!("hale_dna_init_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -38,8 +44,8 @@ fn workdir(tag: &str) -> PathBuf {
 
 /// The pinned renderer fixture as an existing application: two
 /// loci, two topics, a group, two claims, and one indirect call.
-fn pipeline_app(tag: &str) -> PathBuf {
-    let d = workdir(tag).join("pipeline");
+fn pipeline_app(tag: &str) -> scratch::Scratch {
+    let d = workdir(tag).nested("pipeline");
     std::fs::create_dir_all(&d).unwrap();
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/topology/pipeline.hl");
     std::fs::copy(fixture, d.join("main.hl")).unwrap();
@@ -48,10 +54,8 @@ fn pipeline_app(tag: &str) -> PathBuf {
 }
 
 fn journal_rows(root: &Path) -> Vec<serde_json::Value> {
-    // the record is the branch refs/dna/journal; its tree holds the events
-    let out = std::process::Command::new("git").args(["-C", &root.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .to_string()
+    // the record's rows, as the toolchain reads them
+    record::text(root)
         .lines()
         .filter(|l| !l.is_empty())
         .map(|l| serde_json::from_str(l).expect("journal line is JSON"))
@@ -62,7 +66,8 @@ fn journal_rows(root: &Path) -> Vec<serde_json::Value> {
 fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     let app = pipeline_app("attach");
     let before = std::fs::read_to_string(app.join("main.hl")).unwrap();
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     for f in [
         "vendor/dna/assembly.hl",
@@ -127,21 +132,42 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     assert!(run.status.success(), "run: {}", String::from_utf8_lossy(&run.stderr));
 
     // Re-running keeps everything.
-    let (ok, out2) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out2) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out2}");
     assert!(out2.contains("kept") && !out2.contains("created "), "second init is non-destructive:\n{out2}");
     assert_eq!(after, std::fs::read_to_string(app.join("main.hl")).unwrap(), "main.hl untouched on re-run");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
+/// A seed in a directory holding `.hale-fmt-frozen` (a recorded fixture)
+/// is not formatted by graft: tools that format on their own honour it.
+#[test]
+fn graft_leaves_a_frozen_seed_as_written() {
+    let app = pipeline_app("frozen");
+    let long = format!("fn wide() {{ println({}); }}\n", ["\"a-long-argument\""; 8].join(", "));
+    let text = std::fs::read_to_string(app.join("main.hl")).unwrap() + &long;
+    std::fs::write(app.join("main.hl"), &text).unwrap();
+    std::fs::write(app.join(".hale-fmt-frozen"), "recorded fixture\n").unwrap();
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
+    assert!(ok, "{out}");
+    assert_eq!(std::fs::read_to_string(app.join("main.hl")).unwrap(), text, "the frozen seed is as written");
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
 #[test]
 fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     let app = pipeline_app("journal");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     let rows = journal_rows(&app);
     let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
-    assert_eq!(kinds[0], "application.attached");
+    // the record is born before init writes (GH #1590): its genesis and
+    // its key, then the application
+    assert_eq!(&kinds[..2], ["record.genesis", "record.key"], "the record's birth: {kinds:?}");
+    assert_eq!(kinds[2], "application.attached");
     assert_eq!(kinds.last().copied(), Some("review.requested"), "the baseline review is requested last: {kinds:?}");
     let body = |r: &serde_json::Value| -> serde_json::Value { serde_json::from_str(r["body"].as_str().unwrap()).unwrap() };
     // observed structure: every locus, topic and claim of the fixture
@@ -179,7 +205,7 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     assert_eq!(review["question"], "ratify the declared purpose?");
     let main = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
     assert!(!main.contains("review_id: \"purpose\"") && main.contains("catalog: workflows()"), "no Review of its own in the organization; it admits from the catalog");
-    // the record is ordered (its chain is git's: one commit per event)
+    // the record is ordered (its chain is memory's: one row per event)
     for (i, r) in rows.iter().enumerate() {
         assert_eq!(r["seq"].as_u64().unwrap() as usize, i);
     }
@@ -189,7 +215,8 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
 #[test]
 fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     let app = pipeline_app("upgrade");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     let assembly = app.join("dna/org/main.hl");
     let owned = std::fs::read_to_string(&assembly).unwrap().replace("self.core.request_tick(", "self.core.tick(");
@@ -227,22 +254,26 @@ fn upgrade_retires_the_owners_map() {
     // the cut has `dna/org/owners` and the generated `ownership:` field;
     // upgrade removes both, and says what the file named
     let app = pipeline_app("owners-cut");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     assert!(!app.join("dna/org/owners").exists(), "init writes no owners file: {out}");
     let main = app.join("dna/org/main.hl");
     let text = std::fs::read_to_string(&main).unwrap();
     let anchor = "            budget: dna::Budget { policy: org_budget() },\n";
     assert!(text.contains(anchor), "the generated main.hl has its budget line");
+    // the solo path is in what the toolchain generates now; an organism born
+    // before it is born again for it (no migration)
+    assert!(text.contains("            planned: true,\n            // the solo path: with no model (none mapped, none the catalog\n            // reaches) every ask and every leg's Work is a person's\n            solo_without_model: true\n"), "the generated chart takes the solo path: {text}");
     let old = "            // Owners (GH #664): who admits which position. The map is the\n            // genome's file dna/org/owners — empty while this organization\n            // is the only owner; once the record is shared, every position\n            // names its owner and this body says which it is (dna.owner).\n            ownership: dna::Ownership { path: \"dna/org/owners\" },\n";
     // GH #1143: and the older generator's optimize field and monotonic tick
     let older = text
         .replace(anchor, &format!("{anchor}{old}"))
         .replace(
-            "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true\n",
+            "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true,\n            // the solo path: with no model (none mapped, none the catalog\n            // reaches) every ask and every leg's Work is a person's\n            solo_without_model: true\n",
             "            planned: true,\n            // GH #596 O: the optimize pass — the leader walks the machinery\n            // on this cadence, in milliseconds; 0 is never. The Board's to set.\n            optimize_every_ms: 0\n",
         )
-        .replace("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000); }", "self.core.request_tick(std::time::monotonic_ns() / 1000000); }")
+        .replace("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000);\n        }", "self.core.request_tick(std::time::monotonic_ns() / 1000000); }")
         // and its Board field, before it was `board`
         .replace("            board: dna::Board { who: \"board\" },\n", "            membrane: dna::Board { who: \"board\" },\n");
     assert!(older.contains("optimize_every_ms: 0") && older.contains("monotonic_ns()") && older.contains("membrane: dna::Board"), "the older generator's main.hl is built");
@@ -264,8 +295,48 @@ fn init_refuses_a_seed_without_a_main_locus() {
     let d = workdir("nomain");
     std::fs::write(d.join("main.hl"), "fn main() { println(\"hi\"); }\n").unwrap();
     std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
-    let (ok, out) = hale(&["dna", "init", "."], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &d);
     assert!(!ok);
     assert!(out.contains("declares no `main locus`"), "{out}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// GH #1653: an init that stopped part way is finished by the next, each
+/// seed step checking its own completion rather than one gate for the
+/// whole: with `.git/config.lock` held, seating the person fails after the
+/// record is seeded; the retry keeps the seed, seats the person, and
+/// proposes each family once, and a third run proposes nothing again.
+#[test]
+fn an_interrupted_init_is_finished_step_by_step() {
+    let app = pipeline_app("resume");
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&*app).args(args).output().unwrap();
+    assert!(git(&["init", "-q"]).status.success());
+    let lock = app.join(".git/config.lock");
+    std::fs::write(&lock, "").unwrap();
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
+    assert!(!ok, "a held config lock stops the init: {out}");
+    std::fs::remove_file(&lock).unwrap();
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
+    assert!(ok && out.contains("kept    the record (memory holds it; not reseeded)"), "the retry keeps the seed the first run wrote and finishes it: {out}");
+    let member = String::from_utf8_lossy(&git(&["config", "--local", "--get-all", "dna.unix.member"]).stdout).to_string();
+    let trust = String::from_utf8_lossy(&git(&["config", "--local", "--get", "dna.trust"]).stdout).trim().to_string();
+    assert!(member.starts_with("uid:") && trust == "local", "the person is seated: {member} {trust}\n{out}");
+    let proposed = |rows: &[serde_json::Value], family: &str| {
+        rows.iter()
+            .filter(|r| r["kind"] == "knowledge.proposed")
+            .filter(|r| r["body"].as_str().is_some_and(|b| b.contains(&format!("\"name\": \"{family}/"))))
+            .count()
+    };
+    let rows = journal_rows(&app);
+    let counts: Vec<usize> = ["design", "operating", "using"].iter().map(|f| proposed(&rows, f)).collect();
+    assert!(counts.iter().all(|n| *n > 0), "every family proposed: {counts:?}");
+    habitat::habitat();
+    let (ok, again) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
+    assert!(ok && again.contains("seeded  design (0 practice(s) proposed"), "a finished init proposes nothing again: {again}");
+    let rows = journal_rows(&app);
+    let after: Vec<usize> = ["design", "operating", "using"].iter().map(|f| proposed(&rows, f)).collect();
+    assert_eq!(after, counts, "each family once");
 }

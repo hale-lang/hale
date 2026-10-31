@@ -6,6 +6,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 // The codegen suite's: what a child listens on, read from `/proc`.
@@ -38,13 +44,13 @@ const DRIVER: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
         gateway: dna::MutationGateway {
-            leases: dna::GitLeases { repo: "." },
+            leases: dna::MemoryLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -62,8 +68,8 @@ fn main() {
 
 #[test]
 fn the_surface_serves_the_record_and_takes_no_command() {
-    let d = std::env::temp_dir().join(format!("hale_dna_ui_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_ui_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
@@ -72,7 +78,8 @@ fn the_surface_serves_the_record_and_takes_no_command() {
         .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", &cache).output().expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
-    let (ok, out) = hale(&["dna", "new", "uiapp"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "uiapp", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("uiapp");
     let bare = d.join("origin.git");
@@ -82,7 +89,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     std::fs::create_dir_all(app.join("mutate")).unwrap();
     std::fs::write(app.join("mutate/main.hl"), DRIVER).unwrap();
     let (ok, out) = hale(&["run", "mutate"], &app);
@@ -145,8 +152,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     // is refused, and the record is untouched
     let refused = http(port, "POST", "/api/verdict", r#"{"id":"m1","verdict":"reject","as":"riley","comment":"not like this"}"#).unwrap_or_default();
     assert!(refused.starts_with("HTTP/1.1 405") && refused.contains("parked"), "{refused}");
-    let rows = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    let rows = String::from_utf8_lossy(&rows.stdout).to_string();
+    let rows = record::text(&app);
     assert!(!rows.contains("review.verdict"), "a parked head writes nothing: {rows}");
     stop(&mut ui);
     let _ = std::fs::remove_dir_all(&d);

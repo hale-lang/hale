@@ -1,0 +1,864 @@
+// dna/api/habitat_rows.hl — the habitat's hosts, allocations, policy,
+// nurseries and saplings as the head's surface reads them (phase 4).
+//
+// Three rows of `HeadCommands`, reads like `Commands::index`: `hosts` (each
+// `habitat.host` row but a removed host's: the machine, the provider that
+// produced it, its state, what it offers, how it is reached and the host
+// key first seen there), `allocations` (each `habitat.allocated` row: the role, the
+// instance, the provider and the host it is placed on, with what that
+// provider observes of it now: `up`, `degraded` or `down`) and `policy`
+// (each `habitat.policy` row: the provider a role is allocated by). The
+// latest row for an entity is the one that holds. Each list is a JSON array;
+// they write nothing. The operator face's hardware and infrastructure
+// screens read them. `uis` (below) is the home screen's: the web UIs of
+// every organism, its face and what its manifest declares.
+import "../core" as dna;
+
+// What a reader asks: at most `limit` entries.
+type HabitatAsk { limit: Int = 200; }
+
+// What the habitat's reflexes say now: its senses' store's alerts, as the
+// store answers them (`/api/v1/alerts`: each with its `labels`, among them
+// `alertname` and `reflex`, its `annotations` (`summary`), its `state`,
+// `pending` while its condition has not yet held long enough, else
+// `firing`, its `activeAt` and its `value`). A read: nothing is acted on.
+type AlertRows {
+    ok: Bool = false;
+    why: String = "";
+    alerts: String = "[]";
+}
+
+type HostRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    hosts: String = "[]";
+}
+
+type AllocationRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    allocations: String = "[]";
+}
+
+type PolicyRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    policy: String = "[]";
+}
+
+// Where the latest row of a kind is, for each entity: the record's index.
+type LatestRow {
+    entity: String = "";
+    at: Int = -1;
+}
+
+@form(hashmap)
+locus LatestRows {
+    capacity { pool rows of LatestRow indexed_by entity; }
+}
+
+// The index of the latest `kind` row of each entity in `j`.
+@bounded_by(j)
+fn habitat_latest(j: dna::Journal, kind: String) -> LatestRows {
+    let latest = LatestRows { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        // an organism removed (its graft's and its allocations' latest rows
+        // say `"state": "removed"`) is the record's history alone: no row of
+        // it holds (a host keeps its `removed` state, which its readers say)
+        if e.kind == kind {
+            let gone = kind != "habitat.host"
+                && std::json::find_string_field(e.body, "state") == "removed";
+            latest.set(LatestRow { entity: e.entity, at: if gone { -2 } else { i } });
+        }
+        i = i + 1;
+    }
+    return latest;
+}
+
+// The index of the latest successful `habitat.applied` row of each
+// allocation in `j`: what its services publish is read where it was last
+// applied, and an apply or withdrawal that failed there changed nothing
+// (it records no `published`), so it never replaces the last that took.
+// An apply that took and publishes nothing (`published: []`) does.
+@bounded_by(j)
+fn habitat_latest_applied(j: dna::Journal) -> LatestRows {
+    let latest = LatestRows { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.applied" && std::json::find_bool_field(e.body, "ok") {
+            latest.set(LatestRow { entity: e.entity, at: i });
+        }
+        i = i + 1;
+    }
+    return latest;
+}
+
+// Whether the row at `i` is its entity's latest.
+fn habitat_holds(latest: LatestRows, entity: String, i: Int) -> Bool {
+    let r = latest.get(entity) or LatestRow { };
+    return r.at == i;
+}
+
+fn habitat_cap(limit: Int) -> Int {
+    return if limit < 1 { 1 } else if limit > 1000 { 1000 } else { limit };
+}
+
+// The habitat's record, refreshed.
+fn habitat_journal(root: String) -> dna::RecordJournal {
+    return habitat_journal_by(root, "api");
+}
+
+// The habitat's record, refreshed, its rows written by `author`: the person
+// a Board act is in the name of.
+fn habitat_journal_by(root: String, author: String) -> dna::RecordJournal {
+    let j = dna::RecordJournal { repo: root, author: author };
+    let moved = j.refresh();
+    return j;
+}
+
+fn habitat_alerts(root: String) -> AlertRows {
+    let key = dna::allocation_key(root);
+    let port = dna::allocation_port_of(key, "senses-" + key);
+    if len(key) == 0 || len(port) == 0 {
+        return AlertRows { why: "the habitat has no senses' store of its own" };
+    }
+    let url = "http://" + dna::loopback_host() + ":" + port + "/api/v1/alerts";
+    let r = std::http::get(url) or std::http::ClientResponse {
+        status: -1,
+        headers: err.kind + " " + err.detail,
+        body: b"",
+    };
+    if r.status != 200 {
+        return AlertRows {
+            why: "the habitat's senses' store did not answer at " + url + " ("
+                + (if r.status < 0 { r.headers } else { to_string(r.status) }) + ")",
+        };
+    }
+    let alerts = std::json::find_field_raw(
+        std::json::find_field_raw(std::str::from_bytes(r.body), "data"),
+        "alerts",
+    );
+    return AlertRows {
+        ok: true,
+        alerts: if std::str::starts_with(alerts, "[") { alerts } else { "[]" },
+    };
+}
+
+fn habitat_hosts(root: String, limit: Int) -> HostRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let latest = habitat_latest(j, "habitat.host");
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let h = dna::host_of_row(e.body);
+        if h.state == "removed" { continue; }
+        n = n + 1;
+        // the host as its row states it (never the habitat's key: no row
+        // holds one)
+        out.value(dna::host_row_body(h));
+    }
+    out.end_array();
+    return HostRows { ok: true, revision: j.revision(), hosts: out.result() };
+}
+
+fn habitat_policy(root: String, limit: Int) -> PolicyRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let latest = habitat_latest(j, "habitat.policy");
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.policy" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let body = e.body;
+        out.begin_object();
+        out.string_field("role", std::json::find_string_field(body, "role"));
+        out.string_field("provider", std::json::find_string_field(body, "provider"));
+        out.string_field("profile", std::json::find_string_field(body, "profile"));
+        out.end_object();
+    }
+    out.end_array();
+    return PolicyRows { ok: true, revision: j.revision(), policy: out.result() };
+}
+
+// The allocation a `habitat.allocated` row states.
+fn allocation_of_row(entity: String, body: String) -> dna::Allocation {
+    let slash = std::str::index_of(entity, "/");
+    return dna::Allocation {
+        role: std::json::find_string_field(body, "role"),
+        instance: if slash < 0 { entity } else { entity[0..slash] },
+        provider: std::json::find_string_field(body, "provider"),
+        host: std::json::find_string_field(body, "host"),
+        project: std::json::find_string_field(body, "project"),
+        service: std::json::find_string_field(body, "service"),
+        address: std::json::find_string_field(body, "address"),
+        placed: true,
+    };
+}
+
+// The allocation `a` where it was last applied (dna/core/placement.hl):
+// `a` itself when nothing says it ran elsewhere.
+fn applied_at(a: dna::Allocation) -> dna::Allocation {
+    if a.role != "memory" && a.role != "nerves" && a.role != "senses" && a.role != "services" {
+        return a;
+    }
+    if !std::io::fs::file_exists(dna::placed_path(a.instance, a.role)) {
+        // never placed off this machine: it runs here, or (an organism's own
+        // services never applied) where its row says
+        if a.role == "services" || a.host == "local" || len(a.host) == 0 { return a; }
+        let mut here = a;
+        here.host = "local";
+        here.provider = "compose";
+        here.project = dna::local_habitat_project();
+        return here;
+    }
+    let p = dna::placed_on(a.instance, a.role);
+    let mut there = a;
+    there.host = p.host;
+    there.provider = p.provider;
+    there.project = p.project;
+    return there;
+}
+
+// How an allocation runs, beside the provider that fills it: the habitat's
+// own Forgejo (its `forge` service) and sign-in stub (inside its `face`
+// service) run under compose like its memory; any other runs as its
+// provider says.
+fn allocation_runs_by(a: dna::Allocation) -> String {
+    if a.provider == "forgejo" || a.provider == "oidc-stub" { return "compose"; }
+    return a.provider;
+}
+
+// What the allocation's provider observes of it now.
+fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
+    // the identity: the habitat's sign-in, answering at its issuer
+    // the identity (the habitat's sign-in, at its issuer) and the forge
+    // (Forgejo, at its address): up while they answer there
+    if a.provider == "oidc-stub" || a.provider == "forgejo" {
+        return dna::observe_address(a.address);
+    }
+    if a.provider == "compose" { return dna::ComposeProvider { }.observe(a); }
+    if a.provider == "ssh" { return dna::SshProvider { root: root }.observe(a); }
+    return dna::AllocationState {
+        state: "",
+        detail: "the " + (if len(a.provider) > 0 { a.provider } else { "unnamed" })
+            + " provider's: not observed by the habitat",
+    };
+}
+
+// The pulse of the organism keyed `key`: the worst state its providers
+// observe of its allocations (`down` over `degraded` over `up`), "" when
+// none is observed.
+@bounded_by(j)
+fn organism_pulse(root: String, j: dna::Journal, latest: LatestRows, key: String) -> String {
+    let mut worst = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !std::str::starts_with(e.entity, key + "/") {
+            continue;
+        }
+        if !habitat_holds(latest, e.entity, i - 1) { continue; }
+        // its forge and identity are the habitat's services it is given (its
+        // Forgejo, its sign-in), observed with the allocations, not its pulse
+        let role = std::json::find_string_field(e.body, "role");
+        if role == "forge" || role == "identity" { continue; }
+        let seen = observe_row(root, applied_at(allocation_of_row(e.entity, e.body))).state;
+        if seen == "down" { return "down"; }
+        if seen == "degraded" { worst = "degraded"; }
+        if seen == "up" && len(worst) == 0 { worst = "up"; }
+    }
+    return worst;
+}
+
+// Each allocation with what its provider observes of it. The `compose`
+// provider observes its own; an allocation on the `operator` backends is
+// the operator's server, adopted, which the habitat does not observe: its
+// state is "" and the detail says so.
+fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let latest = habitat_latest(j, "habitat.allocated");
+    // what each allocation publishes, as its last successful apply read it
+    // where it ran (`habitat.applied`'s `published`)
+    let applies = habitat_latest_applied(j);
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let entity = e.entity;
+        let body = e.body;
+        let slash = std::str::index_of(entity, "/");
+        let a = allocation_of_row(entity, body);
+        // observed where it runs: where it was last applied, which is where
+        // its row places it once the placement is applied
+        let ran = applied_at(a);
+        let seen = observe_row(root, ran);
+        out.begin_object();
+        out.string_field("allocation", entity);
+        out.string_field("role", a.role);
+        out.string_field("instance", a.instance);
+        out.string_field("organism", std::json::find_string_field(body, "organism"));
+        out.string_field("provider", a.provider);
+        out.string_field("runs_by", allocation_runs_by(a));
+        out.string_field("host", a.host);
+        out.string_field("service", a.service);
+        out.string_field("address", a.address);
+        out.string_field("applied", ran.host);
+        out.string_field("state", seen.state);
+        out.string_field("detail", seen.detail);
+        out.string_field("runs", seen.runs);
+        let last = applies.get(entity) or LatestRow { };
+        let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
+        out.field(
+            "links",
+            allocation_links(
+                root,
+                if std::str::starts_with(
+                    std::json::find_field_raw(applied_body, "published"),
+                    "[",
+                ) {
+                    applied_body
+                } else {
+                    body
+                },
+                ran.host,
+            ),
+        );
+        out.end_object();
+    }
+    out.end_array();
+    return AllocationRows { ok: true, revision: j.revision(), allocations: out.result() };
+}
+
+// The links to what an organism's own services publish, as `body` records
+// it (`published`: each service's port and the address it is bound to
+// there, "" for every interface; the allocation's last successful apply,
+// read where it ran with the environment it ran with), resolved against
+// the host the allocation runs on (`allocation_links_at`).
+fn allocation_links(root: String, body: String, applied: String) -> String {
+    let published = std::json::find_field_raw(body, "published");
+    if !std::str::starts_with(published, "[") { return "[]"; }
+    let here = len(applied) == 0 || applied == "local";
+    let address = if here {
+        "127.0.0.1"
+    } else {
+        let recorded = dna::recorded_host(root, applied).address;
+        if len(recorded) > 0 { recorded } else { applied }
+    };
+    // whether the host is the head's own machine: `local`, or an address
+    // that resolves to the loopback where the head runs (`hale habitat
+    // resolve`, asked only where the answer changes a link)
+    let declared = dna::declared_address();
+    let ask = !here
+        && (if habitat_is_local(declared) {
+            publishes_loopback(published)
+        } else {
+            !std::json::array_first(published).done
+        });
+    let on_head = here
+        || (ask
+                && (bind_is_loopback(address)
+                        || bind_is_loopback(dna::host_listen_address(address))));
+    return allocation_links_at(published, applied, here, address, on_head, declared);
+}
+
+// Whether the habitat is local to the person's browser: it declares no
+// address (`HALE_DNA_HABITAT_ADDRESS`), or declares the loopback.
+fn habitat_is_local(declared: String) -> Bool {
+    return len(declared) == 0 || bind_is_loopback(declared);
+}
+
+fn bind_is_loopback(bind: String) -> Bool {
+    return bind == "localhost" || bind == "::1" || std::str::starts_with(bind, "127.");
+}
+
+// Whether any service in `published` is bound to the loopback.
+fn publishes_loopback(published: String) -> Bool {
+    let mut it = std::json::array_first(published);
+    while !it.done {
+        if bind_is_loopback(std::json::find_string_field(it.element, "bind")) { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+// The links to `published` (a JSON array of `{service, port, bind}`) on
+// the host `applied` reached at `address` (`here`: the head's machine's
+// `local`; `on_head`: the host is the head's machine, its address the
+// loopback there), under a habitat that declares `declared` ("" for none),
+// as a JSON array of `{service, url, note}`, `[]` for none. A link is
+// given only where it is reachable from the person's browser. Under a
+// local habitat (`habitat_is_local`) the head's machine is the browser's:
+// there a port links at the loopback, or at the address it is bound to.
+// Under a habitat on another machine the head's machine is reached at its
+// declared address, never its loopback: a port bound to every interface
+// links there, and one bound to the loopback gets no URL (its note says
+// `loopback only on <host>`). On any other host a port bound to every
+// interface links at the host's address, one bound to a specific address
+// at that address, and one bound to the loopback gets the note.
+fn allocation_links_at(
+    published: String,
+    applied: String,
+    here: Bool,
+    address: String,
+    on_head: Bool,
+    declared: String
+) -> String {
+    let local = habitat_is_local(declared);
+    // this machine's loopback, reachable from the browser
+    let mine = local && on_head;
+    let base = if !local && on_head { declared } else if here { "127.0.0.1" } else { address };
+    let host = if len(applied) == 0 { "local" } else { applied };
+    let out = std::json::Builder { };
+    out.begin_array();
+    if std::str::starts_with(published, "[") {
+        let mut it = std::json::array_first(published);
+        while !it.done {
+            let service = std::json::find_string_field(it.element, "service");
+            let port = std::json::find_string_field(it.element, "port");
+            let bind = std::json::find_string_field(it.element, "bind");
+            let every = len(bind) == 0 || bind == "0.0.0.0" || bind == "::";
+            let loopback = bind_is_loopback(bind);
+            let at = if every {
+                base
+            } else if loopback && mine {
+                "127.0.0.1"
+            } else if loopback {
+                ""
+            } else if std::str::contains(bind, ":") {
+                "[" + bind + "]"
+            } else {
+                bind
+            };
+            out.begin_object();
+            out.string_field("service", service);
+            out.string_field(
+                "url",
+                if len(at) > 0 && len(port) > 0 { "http://" + at + ":" + port } else { "" },
+            );
+            out.string_field("note", if len(at) == 0 { "loopback only on " + host } else { "" });
+            out.end_object();
+            it = std::json::array_next(it);
+        }
+    }
+    out.end_array();
+    return out.result();
+}
+
+// ---- the web UIs across the habitat's organisms ---------------------------
+//
+// `Commands::uis`, a read like `Commands::index`: what the habitat's home
+// screen lists. Each organism the habitat grafted gives its face (`face`,
+// at the address its graft row holds, signed in through the habitat), then
+// each UI its manifest declares (`[dna.ui.<name>]`, read from the
+// organism's directory now, so an upgrade's declaration is the one listed),
+// linked at the address its services allocation publishes for the UI's
+// service (as `Commands::allocations`' `links` give it) with the UI's path
+// after it. A service published only on its host's loopback is not linked:
+// the entry names the host (`loopback_host`). `login` names the declared
+// secret a person reads to sign in (`hale dna secret show <login>`), never
+// its value.
+
+type UiRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    // a JSON array of `{organism, kind, name, label, url, loopback_host,
+    // login, note}`: `kind` `face` or `declared`
+    uis: String = "[]";
+}
+
+// Where a declared UI is, from its organism's services' links.
+type UiAt {
+    url: String = "";
+    loopback_host: String = "";
+    note: String = "";
+}
+
+// The UI served by `service` at `path`, against `links` (a JSON array of
+// `{service, url, note}`, `allocation_links_at`'s): its URL when the
+// service is linked, the host when it is published on that host's loopback
+// alone, else a note saying why it has no address.
+fn ui_at(links: String, service: String, path: String) -> UiAt {
+    let mut it = std::json::array_first(links);
+    while !it.done {
+        if std::json::find_string_field(it.element, "service") == service {
+            let url = std::json::find_string_field(it.element, "url");
+            if len(url) > 0 { return UiAt { url: url + path }; }
+            let note = std::json::find_string_field(it.element, "note");
+            if std::str::starts_with(note, "loopback only on ") {
+                return UiAt { loopback_host: note[17..len(note)], note: note };
+            }
+            return UiAt { note: if len(note) > 0 { note } else { "not published" } };
+        }
+        it = std::json::array_next(it);
+    }
+    return UiAt {
+        note: if std::json::array_first(links).done {
+            "its services publish nothing (not applied)"
+        } else {
+            "its service `" + service + "` publishes no port"
+        },
+    };
+}
+
+// The directory of the organism keyed `key`, as its allocation's cache
+// names it ("" when none).
+fn organism_root_of(key: String) -> String {
+    let cache = std::io::fs::read_file(
+        dna::local_habitat_dir() + "/allocations/" + key + "/allocation.json",
+    )
+    or "";
+    return std::json::find_string_field(cache, "root");
+}
+
+// The links of what the organism keyed `key` publishes: its services
+// allocation's, as `habitat_allocations` gives them ("[]" when it has none).
+fn organism_links(
+    root: String,
+    j: dna::Journal,
+    allocated: LatestRows,
+    applies: LatestRows,
+    key: String
+) -> String {
+    let held = allocated.get(key + "/services") or LatestRow { };
+    if held.at < 0 { return "[]"; }
+    let body = j.read(held.at).body;
+    let ran = applied_at(allocation_of_row(key + "/services", body));
+    let last = applies.get(key + "/services") or LatestRow { };
+    let applied_body = if last.at >= 0 { j.read(last.at).body } else { "" };
+    return allocation_links(
+        root,
+        if std::str::starts_with(std::json::find_field_raw(applied_body, "published"), "[") {
+            applied_body
+        } else {
+            body
+        },
+        ran.host,
+    );
+}
+
+fn ui_entry(
+    out: std::json::Builder,
+    organism: String,
+    kind: String,
+    name: String,
+    label: String,
+    at: UiAt,
+    login: String
+) {
+    out.begin_object();
+    out.string_field("organism", organism);
+    out.string_field("kind", kind);
+    out.string_field("name", name);
+    out.string_field("label", label);
+    out.string_field("url", at.url);
+    out.string_field("loopback_host", at.loopback_host);
+    out.string_field("login", login);
+    out.string_field("note", at.note);
+    out.end_object();
+}
+
+fn habitat_uis(root: String, limit: Int) -> UiRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let grafted = habitat_latest(j, "habitat.grafted");
+    let allocated = habitat_latest(j, "habitat.allocated");
+    let applies = habitat_latest_applied(j);
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.grafted" || !habitat_holds(grafted, e.entity, i - 1) { continue; }
+        let named = std::json::find_string_field(e.body, "name");
+        let organism = if len(named) > 0 { named } else { e.entity };
+        let key = e.entity;
+        // its face, as its graft row holds its address
+        ui_entry(
+            out, organism, "face", "face", organism + " face",
+            UiAt { url: std::json::find_string_field(e.body, "face") }, "",
+        );
+        n = n + 1;
+        let dir = organism_root_of(key);
+        if len(dir) == 0 { continue; }
+        let declared = dna::declared_uis(dir);
+        if !declared.ok {
+            ui_entry(
+                out, organism, "declared", "", "its declared UIs",
+                UiAt { note: "refused: " + declared.why }, "",
+            );
+            n = n + 1;
+            continue;
+        }
+        if len(declared.lines) == 0 { continue; }
+        let links = organism_links(root, j, allocated, applies, key);
+        let mut rest = declared.lines;
+        while len(rest) > 0 && n < cap {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let name = dna::declared_field(line, 0);
+            if len(name) == 0 { continue; }
+            ui_entry(
+                out, organism, "declared", name, dna::declared_field(line, 1),
+                ui_at(links, dna::declared_field(line, 2), dna::declared_field(line, 3)),
+                dna::declared_field(line, 4),
+            );
+            n = n + 1;
+        }
+    }
+    out.end_array();
+    return UiRows { ok: true, revision: j.revision(), uis: out.result() };
+}
+
+// ---- the habitat's nurseries and saplings (phase 4) --------------------------
+//
+// `Commands::nurseries`: the toolchain's bundled nursery, always, and each
+// `habitat.nursery` row the Board trusts (its source and kind).
+// `Commands::saplings`: each `habitat.sapling` row, the sapling as the
+// habitat pins it (name, purpose, repository, revision, digest, nursery,
+// the packs it adopts), with the revision a newer `habitat.sapling.proposed`
+// row files for the Board (`proposed`, "" when none waits). The operator
+// face's organisms screen reads them.
+
+type NurseryRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    nurseries: String = "[]";
+}
+
+type SaplingRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    saplings: String = "[]";
+}
+
+fn habitat_nurseries(root: String, limit: Int) -> NurseryRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    out.begin_object();
+    out.string_field("source", "toolchain");
+    out.string_field("kind", "bundled");
+    out.end_object();
+    let latest = habitat_latest(j, "habitat.nursery");
+    let cap = habitat_cap(limit);
+    let mut n = 1;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.nursery" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if std::json::find_string_field(e.body, "state") == "removed" { continue; }
+        n = n + 1;
+        out.begin_object();
+        out.string_field("source", e.entity);
+        out.string_field("kind", std::json::find_string_field(e.body, "kind"));
+        out.end_object();
+    }
+    out.end_array();
+    return NurseryRows { ok: true, revision: j.revision(), nurseries: out.result() };
+}
+
+fn habitat_saplings(root: String, limit: Int) -> SaplingRows {
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.sapling");
+    let proposals = habitat_latest(j, "habitat.sapling.proposed");
+    let out = std::json::Builder { };
+    out.begin_array();
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.sapling" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let b = e.body;
+        // a proposal filed after the pin, for another revision, waits
+        let p = proposals.get(e.entity) or LatestRow { };
+        let proposed = if p.at > i - 1 {
+            std::json::find_string_field(j.read(p.at).body, "revision")
+        } else {
+            ""
+        };
+        out.begin_object();
+        out.string_field("name", e.entity);
+        out.string_field("purpose", std::json::find_string_field(b, "purpose"));
+        out.string_field("repo", std::json::find_string_field(b, "repo"));
+        out.string_field("revision", std::json::find_string_field(b, "revision"));
+        out.string_field("digest", std::json::find_string_field(b, "digest"));
+        out.string_field("nursery", std::json::find_string_field(b, "nursery"));
+        out.field("packs", std::json::find_field_raw(b, "packs"));
+        out.string_field(
+            "proposed",
+            if proposed != std::json::find_string_field(b, "revision") { proposed } else { "" },
+        );
+        out.end_object();
+    }
+    out.end_array();
+    return SaplingRows { ok: true, revision: j.revision(), saplings: out.result() };
+}
+
+// ---- the Board's nursery acts ------------------------------------------------
+
+type NurseryAdd { source: String = ""; }
+type SaplingNamed { name: String = ""; }
+
+type NurseryReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+}
+
+fn nursery_refused(code: String, why: String) -> NurseryReply {
+    return NurseryReply { code: code, why: why };
+}
+
+// A nursery the Board trusts: a `habitat.nursery <source>` row, written by
+// `by`. What it offers is read into the record by the habitat's next act
+// that reads its nurseries (`hale habitat nursery add` runs it at once).
+fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply {
+    let source = std::str::trim(a.source);
+    if len(source) == 0 || len(source) > 1024 || std::str::contains(source, " ")
+        || std::str::contains(source, "\n") || source == "toolchain"
+    {
+        return nursery_refused(
+            "invalid_nursery",
+            "a nursery is a directory or a git URL, one word",
+        );
+    }
+    let kind = if std::str::starts_with(source, "/") { "dir" } else { "git" };
+    let j = habitat_journal_by(root, by);
+    let latest = habitat_latest(j, "habitat.nursery");
+    let held = latest.get(source) or LatestRow { };
+    if held.at >= 0 && std::json::find_string_field(j.read(held.at).body, "state") == "trusted" {
+        return NurseryReply { ok: true, why: "the Board trusts it already" };
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("source", source);
+    b.string_field("kind", kind);
+    b.string_field("state", "trusted");
+    b.end_object();
+    let r = j.append(j.revision(), "habitat.nursery", source, b.result());
+    if !r.ok {
+        return nursery_refused(
+            "record_refused",
+            "the habitat's record refused the row (" + r.error + ")",
+        );
+    }
+    // what it offers, read into the record now (the habitat's act, run as
+    // the operator's own command would be: none of the head's own memory,
+    // nerves or socket reaches it)
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let read = dna::run_tool_timeout(
+        600,
+        "sh\n-c\nfor v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; exec \"$@\"\nsh\n"
+            + hale + "\nhabitat\nnursery\nrefresh",
+    );
+    if read.code != 0 {
+        return NurseryReply {
+            ok: true,
+            why: "trusted; what it offers is read at the habitat's next act: "
+                + dna::trim_nl(read.stderr),
+        };
+    }
+    return NurseryReply { ok: true, why: dna::trim_nl(read.stdout) };
+}
+
+// The newer revision a nursery offered for `name`, ratified by `by`: the
+// sapling is pinned at the revision and digest its proposal filed. Nothing
+// grafted moves with it.
+fn habitat_sapling_ratify(root: String, name: String, by: String) -> NurseryReply {
+    let j = habitat_journal_by(root, by);
+    let pins = habitat_latest(j, "habitat.sapling");
+    let proposals = habitat_latest(j, "habitat.sapling.proposed");
+    let pin = pins.get(name) or LatestRow { };
+    let p = proposals.get(name) or LatestRow { };
+    if pin.at < 0 {
+        return nursery_refused("not_found", "the habitat pins no sapling `" + name + "`");
+    }
+    if p.at < pin.at {
+        return nursery_refused("no_proposal", "no newer revision of `" + name + "` waits");
+    }
+    let r = j.append(j.revision(), "habitat.sapling", name, j.read(p.at).body);
+    if !r.ok {
+        return nursery_refused(
+            "record_refused",
+            "the habitat's record refused the row (" + r.error + ")",
+        );
+    }
+    return NurseryReply { ok: true };
+}
+
+// ---- the forge, allocated by the Board ---------------------------------------
+//
+// `Commands::allocate_forge` allocates an organism's forge (`habitat` for the
+// habitat's own): `forgejo` (a user and a repository at the habitat's
+// Forgejo, its token a vault slot), `github` with its repository and the
+// vault slot of its token (never the token), `file` or `none`. The act is
+// `hale habitat forge <organism> <provider> … --no-head`, run by the head
+// with the toolchain that launched it.
+
+type ForgeAllocate {
+    organism: String = "";
+    provider: String = "";
+    repo: String = "";
+    key_vault: String = "";
+}
+
+fn habitat_allocate_forge(root: String, a: ForgeAllocate) -> NurseryReply {
+    let words = a.organism + a.provider + a.repo + a.key_vault;
+    if len(a.organism) == 0 || len(a.provider) == 0 || std::str::contains(words, " ")
+        || std::str::contains(words, "\n") || std::str::starts_with(a.organism, "-")
+        || std::str::starts_with(a.repo, "-") || std::str::starts_with(a.key_vault, "-")
+    {
+        return nursery_refused(
+            "invalid",
+            "an organism, a provider, a repository and a vault slot's name, one word each",
+        );
+    }
+    if len(a.key_vault) > 0 && !std::secret::vault_name_is_safe(a.key_vault) {
+        return nursery_refused("invalid", "`" + a.key_vault + "` names no vault slot");
+    }
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let mut args = "habitat\nforge\n" + a.organism + "\n" + a.provider + "\n--no-head";
+    if len(a.repo) > 0 { args = args + "\n--repo\n" + a.repo; }
+    if len(a.key_vault) > 0 { args = args + "\n--key-vault\n" + a.key_vault; }
+    let r = dna::run_tool_timeout(
+        300,
+        "sh\n-c\nfor v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; exec \"$@\"\nsh\n"
+            + hale + "\n" + args,
+    );
+    if r.code != 0 { return nursery_refused("not_allocated", dna::trim_nl(r.stderr)); }
+    return NurseryReply { ok: true, why: dna::trim_nl(r.stdout) };
+}

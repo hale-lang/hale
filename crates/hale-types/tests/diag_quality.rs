@@ -291,11 +291,13 @@ fn legitimate_param_defaults_are_not_rejected() {
         ),
         (
             // The corpus's perspective fixtures do exactly this, and
-            // plain assignability does not know about `serves`.
+            // plain assignability does not know about `serves`. The
+            // holder's type is the slot type, `perspective(P)`: a bare
+            // `P` is no type a value has, and the check refuses it.
             "a locus serving the perspective the param is typed as",
             r#"perspective P { fn go(); }
                locus V1 : serves P { fn go() { } }
-               locus L { params { p: P = V1 { }; } }
+               locus L { params { p: perspective(P) = V1 { }; } }
                fn main() { let l = L { }; }"#,
         ),
     ] {
@@ -308,5 +310,631 @@ fn legitimate_param_defaults_are_not_rejected() {
             what,
             param_errs
         );
+    }
+}
+
+#[test]
+fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
+    // A bounded field copies another of its own type whole (the
+    // behaviour is pinned in tests/hale/bounded_whole_assign_test.hl);
+    // any other value is refused at the assignment, once, naming the
+    // place's type.
+    let ok = diags(
+        r#"
+        type A { xs: bounded[String; 4]; }
+        fn main() {
+            let mut a = A { };
+            let b = A { };
+            a.xs = b.xs;
+        }
+    "#,
+    );
+    assert!(ok.is_empty(), "a same-typed whole assignment checks clean; got: {ok:?}");
+    let ds = diags(
+        r#"
+        type A { xs: bounded[String; 4]; }
+        type B { xs: bounded[String; 8]; }
+        fn main() {
+            let mut a = A { };
+            let b = B { };
+            a.xs = b.xs;
+            a.xs = ["a"];
+        }
+    "#,
+    );
+    assert_eq!(ds.len(), 2, "one refusal per assignment; got: {ds:?}");
+    assert!(ds[0].contains("not assignable from `bounded[String; 8]`"), "got: {ds:?}");
+    assert!(
+        ds[1].contains("a `bounded[String; 4]` is assigned whole only from another `bounded[String; 4]`"),
+        "got: {ds:?}"
+    );
+    // A bounded local views the place it was bound from: assigned whole,
+    // its elements would be anchored in the frame, not where the place
+    // lives. Refused, naming the place to assign.
+    let ds = diags(
+        r#"
+        type R { xs: bounded[String; 2]; }
+        locus L {
+            params { xs: bounded[String; 2]; }
+            fn put(r: R) {
+                let mut dest = self.xs;
+                dest = r.xs;
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    assert_eq!(ds.len(), 1, "one refusal; got: {ds:?}");
+    assert!(ds[0].contains("`dest` is a `bounded[String; 2]` local, a view of the place"), "got: {ds:?}");
+}
+
+#[test]
+fn a_route_params_copy_taken_before_the_match_is_warned_at_its_capture_read() {
+    // `is_route` writes its `:name` captures into `c.params`; a copy
+    // taken before the match never sees them, so `path_param` on it is
+    // "" for every route. Warned at the read, naming the working spelling.
+    let ds = diags(
+        r#"
+        fn route(req: std::http::Request) -> String {
+            let c = std::http::build_context(req);
+            let p = c.params;
+            if std::http::is_route(c, "GET", "/m/:model") {
+                return std::http::path_param(p, "model");
+            }
+            return "";
+        }
+        fn main() { }
+    "#,
+    );
+    let warned: Vec<&String> = ds.iter().filter(|m| m.contains("is a copy of `c.params`")).collect();
+    assert_eq!(warned.len(), 1, "one warning at the read; got: {ds:?}");
+    assert!(warned[0].contains("`std::http::path_param(c.params, …)`"), "got: {ds:?}");
+
+    // The shapes that read what the match wrote, or need no capture,
+    // are not warned: the context's own params after the match, a copy
+    // taken after the match, a query read through the early copy.
+    let clean = diags(
+        r#"
+        fn route(req: std::http::Request) -> String {
+            let c = std::http::build_context(req);
+            let early = c.params;
+            if std::http::is_route(c, "GET", "/a/:id") {
+                return std::http::path_param(c.params, "id") + std::http::query_param(early, "q");
+            }
+            if std::http::is_route(c, "GET", "/b/:id") {
+                let late = c.params;
+                return std::http::path_param(late, "id");
+            }
+            return "";
+        }
+        fn main() { }
+    "#,
+    );
+    assert!(!clean.iter().any(|m| m.contains("is a copy of")), "got: {clean:?}");
+}
+
+/// An assignment target's field path is resolved as a read's is: a field
+/// the owner does not declare is refused with the read path's diagnostic,
+/// one level down a child or several. It used to check clean and fail
+/// only at the build ("no field `record` on `self.j`").
+#[test]
+fn an_assignment_target_names_only_declared_fields() {
+    let refused = |body: &str, field: &str, owner: &str| {
+        let src = format!(
+            r#"
+            type Pair {{ a: String = ""; b: Int = 0; }}
+            type Rec {{ p: Pair = Pair {{ }}; ps: [Pair; 2] = [Pair {{ }}, Pair {{ }}]; }}
+            locus Inner {{ params {{ repo: String = "."; rec: Rec = Rec {{ }}; }} }}
+            locus Outer {{
+                params {{ j: Inner = Inner {{ }}; rec: Rec = Rec {{ }}; }}
+                birth() {{ {body} }}
+            }}
+            fn main() {{ let o = Outer {{ }}; println(o.j.repo); }}
+        "#
+        );
+        let ds = diags(&src);
+        let want = format!("no field `{field}` on `{owner}`");
+        assert!(ds.iter().any(|m| m.starts_with(&want)), "`{body}`: want {want}; got {ds:?}");
+    };
+    // the issue's two forms
+    refused(r#"self.j.missing = "x";"#, "missing", "Inner");
+    refused(r#"self.j.record.repo = "x";"#, "record", "Inner");
+    // each shape of a place
+    refused(r#"self.nope = 1;"#, "nope", "Outer");
+    refused(r#"self.rec.p.c = 1;"#, "c", "Pair");
+    refused(r#"self.rec.ps[0].c = 1;"#, "c", "Pair");
+    refused(r#"let mut r = Rec { }; r.q = 1;"#, "q", "Rec");
+    refused(r#"let h = Inner { }; h.repoo = "x";"#, "repoo", "Inner");
+    // a near name is offered
+    let ds = diags(
+        r#"
+        locus Inner { params { repo: String = "."; } }
+        locus Outer { params { j: Inner = Inner { }; } birth() { self.j.rpeo = "x"; } }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.contains("no field `rpeo` on `Inner` — did you mean `repo`?")), "{ds:?}");
+
+    // the value is held to the field's type down the path
+    let ds = diags(
+        r#"
+        type Pair { a: String = ""; b: Int = 0; }
+        locus Inner { params { repo: String = "."; p: Pair = Pair { }; } }
+        locus Outer { params { j: Inner = Inner { }; } birth() { self.j.p.a = 5; } }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.contains("target type `String` not assignable from `Int`")), "{ds:?}");
+
+    // every shape, declared, checks clean
+    let ds = diags(
+        r#"
+        type Pair { a: String = ""; b: Int = 0; }
+        type Rec { p: Pair = Pair { }; ps: [Pair; 2] = [Pair { }, Pair { }]; }
+        locus Inner { params { repo: String = "."; rec: Rec = Rec { }; } }
+        locus Outer {
+            params { j: Inner = Inner { }; rec: Rec = Rec { }; n: Int = 0; }
+            birth() {
+                self.n = 1;
+                self.j.repo = "x";
+                self.j.rec.p.a = "y";
+                self.rec.p.b = 2;
+                self.rec.ps[1].a = "z";
+                let mut r = Rec { };
+                r.p.a = "w";
+                r.ps[0].b = 3;
+                let h = Inner { };
+                h.repo = "v";
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
+/// spec/api.md § Error classes: a variant's class is one of the five words,
+/// and any other is refused at it, naming the classes.
+#[test]
+fn an_error_class_is_one_of_the_classes() {
+    let ds = diags(
+        r#"
+        type E = enum { @not_found A, @conflict B(String), @invalid C, @forbidden D, @unavailable F, G };
+        type Bad = enum { @missing A, B };
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("is no error class")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`@missing` on the variant `A` of `Bad`"), "{ds:?}");
+    assert!(hits[0].contains("`@not_found`, `@conflict`, `@invalid`, `@forbidden`, `@unavailable`"), "{ds:?}");
+    assert_eq!(ds.len(), 1, "nothing else: {ds:?}");
+}
+
+/// `==` on an enum holds only when every payload of every variant has its
+/// own `==`, through nested enums; a struct payload is refused at the
+/// check, naming the path to it (it failed at the build, "match on
+/// TypeRef not supported").
+#[test]
+fn enum_equality_needs_every_payload_to_compare() {
+    let ds = diags(
+        r#"
+        type P { a: Int; }
+        type Inner = enum { X(P), Y };
+        type E = enum { A(Int), B(Inner) };
+        type F = enum { A(P), B };
+        type G = enum { A(Int, String), B(Bytes) };
+        type H = enum { A(Int, String), B };
+        fn main() {
+            let e = E::A(1) == E::A(1);
+            let f = F::B != F::B;
+            let g = G::A(1, "") == G::A(1, "");
+            let h = H::A(1, "") == H::B;
+        }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `E`: its variant `B` carries `Inner`, whose variant `X` carries a struct (`P`)")), "{ds:?}");
+    assert!(ds.iter().any(|m| m.starts_with("`!=` does not apply to `F`: its variant `A` carries a struct (`P`)")), "{ds:?}");
+    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `G`: its variant `B` carries a byte string (`Bytes`)")), "{ds:?}");
+    assert_eq!(ds.len(), 3, "`H` compares: {ds:?}");
+}
+
+/// Review of #1616: a generic enum's monomorph (`Value<P>`, `Value_P`) is
+/// judged by its substituted payloads, as an enum carrying it is: a struct
+/// argument is refused at the check (it failed at the build), and an `Int`
+/// or a comparable enum argument compares.
+#[test]
+fn a_generic_enums_equality_is_its_arguments() {
+    let ds = diags(
+        r#"
+        type P { n: Int; }
+        type Inner = enum { A, B(Int) };
+        type Value<T> = enum { Some(T), None };
+        type Outer = enum { Has(Value<P>), Empty };
+        fn same(a: Value<P>, b: Value<P>) -> Bool { return a == b; }
+        fn outer(a: Outer, b: Outer) -> Bool { return a == b; }
+        fn ints(a: Value<Int>, b: Value<Int>) -> Bool { return a == b; }
+        fn inners(a: Value<Inner>, b: Value<Inner>) -> Bool { return a != b; }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `Value_P`: its variant `Some` carries a struct (`P`)")), "{ds:?}");
+    assert!(
+        ds.iter().any(|m| m.starts_with("`==` does not apply to `Outer`: its variant `Has` carries `Value_P`, whose variant `Some` carries a struct (`P`)")),
+        "{ds:?}"
+    );
+    assert_eq!(ds.len(), 2, "`Value<Int>` and `Value<Inner>` compare: {ds:?}");
+}
+
+
+/// GH #1608 follow-up: a pointer-shaped element stored into a bounded place
+/// under a parameter is kept in the frame that calls (a free fn) or in the
+/// member's scratch (a locus member). A free fn's call that hands it a
+/// place of a locus is refused at the argument, and so is a member doing
+/// it at all; a frame-local place, a copy of a record, a scalar element and
+/// a free fn's own body are sound.
+#[test]
+fn an_element_stored_through_a_parameters_place_is_refused_where_it_cannot_last() {
+    let ds = diags(
+        r#"
+        type Row { xs: bounded[String; 4]; n: bounded[Int; 4]; }
+        fn fill(r: Row, k: Int) { push(r.xs, "x" + to_string(k)) or raise; }
+        fn relay(r: Row, k: Int) { fill(r, k); }
+        fn ints(r: Row) { push(r.n, 1) or raise; }
+        locus L {
+            params { row: Row = Row { }; }
+            fn put(k: Int) {
+                fill(self.row, k);
+                relay(self.row, k);
+                ints(self.row);
+                let mut mine = Row { };
+                fill(mine, k);
+                let copy = self.row;
+                fill(copy, k);
+                self.row = mine;
+            }
+            fn through(r: Row, k: Int) {
+                set(r.xs, 0, "m" + to_string(k)) or raise;
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    let calls: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
+    assert_eq!(calls.len(), 2, "fill(self.row) and relay(self.row); got: {ds:?}");
+    assert!(calls.iter().all(|m| m.contains("this locus's arena")), "{ds:?}");
+    assert!(calls[0].starts_with("`fill`") && calls[1].starts_with("`relay`"), "{ds:?}");
+    let member: Vec<&String> = ds.iter().filter(|m| m.contains("under a parameter of a locus member")).collect();
+    assert_eq!(member.len(), 1, "the member's own set; got: {ds:?}");
+    assert!(member[0].starts_with("`set` of a `String` element"), "{ds:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
+/// The stdlib's `std::http::is_route` writes its captures into
+/// `ctx.params`: a context a locus holds is refused as its argument, and a
+/// frame's own is not.
+#[test]
+fn is_route_on_a_context_a_locus_holds_is_refused() {
+    let ds = diags(
+        r#"
+        locus Api {
+            params { last: std::http::Context = std::http::build_context(std::http::Request { method: "GET", path: "/", body: "" }); }
+            fn handle(req: std::http::Request) -> std::http::Response {
+                let ctx = std::http::build_context(req);
+                if std::http::is_route(ctx, "GET", "/u/:id") {
+                    return std::http::Response { status: 200, body: std::http::path_param(ctx.params, "id") };
+                }
+                if std::http::is_route(self.last, "GET", "/v/:id") {
+                    return std::http::Response { status: 200, body: "" };
+                }
+                return std::http::Response { status: 404, body: "" };
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`std::http::is_route`"), "{ds:?}");
+}
+
+/// Review of #1612: an alias of the element or of the bounded type is the
+/// same place (refused); a writer reached through a function value is the
+/// writer (refused), and one the check cannot name is refused when handed
+/// such a place; an owned record copy is no view (accepted).
+#[test]
+fn a_parameter_place_writer_is_found_through_aliases_and_fn_values() {
+    let refused = |src: &str, why: &str| {
+        let ds = diags(src);
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    refused(
+        r#"
+        type Text = String;
+        type Row { xs: bounded[Text; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+        "an alias of the element",
+    );
+    refused(
+        r#"
+        type Items = bounded[String; 4];
+        type Row { xs: Items; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+        "an alias of the bounded type",
+    );
+    refused(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { let f = fill; f(self.row); } }
+        fn main() { }
+    "#,
+        "a writer through a function value",
+    );
+    refused(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn apply(g: fn (Row) -> (), r: Row) { g(r); }
+        locus L { params { row: Row = Row { }; } fn put() { apply(fill_one, self.row); } }
+        fn fill_one(r: Row) { push(r.xs, "x") or raise; }
+        fn main() { }
+    "#,
+        "a call through a fn the check cannot name",
+    );
+    let ds = diags(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { let copy = r; push(copy.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+    );
+    assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "an owned copy is no view: {ds:?}");
+}
+
+/// `diags` over a program the snapshot minted, as the toolchain checks
+/// it: each use names its declaration (`Snapshot::binding_of`).
+fn minted_diags(src: &str) -> Vec<String> {
+    let mut program = parse_source(src).expect("parse");
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
+    );
+    let ids = hale_types::snapshot::mint([("test.hl", &mut program)], &[]);
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("test.hl".to_string(), &program);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
+    let (scope, mut ds) = hale_types::resolve::build_top_scope(&bundle);
+    ds.extend(hale_types::check::check_bundle(&bundle, &scope, true));
+    ds.iter().map(|d| d.message.clone()).collect()
+}
+
+/// Fifth review of #1612: a type parameter is the fn's own binding, opaque,
+/// whatever global type shares its name (a record `T`, a locus `T`): the
+/// field path through it may be a writer's place, so the call is refused.
+#[test]
+fn a_type_parameter_is_not_a_global_type_of_its_name() {
+    for global in ["type T { other: Int; }", "type T { xs: bounded[Int; 4]; }", "locus T { }"] {
+        let ds = minted_diags(&format!(
+            r#"{global}
+            type Row {{ xs: bounded[String; 4]; }}
+            fn fill<T>(r: T) {{ push(r.xs, "fresh" + to_string(1)) or raise; }}
+            locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ fill(self.row); }} }}
+            fn main() {{ }}"#
+        ));
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{global}: {ds:?}");
+    }
+}
+
+/// Second review of #1612: a fn value's target follows the binding a call
+/// names. Assigned (`f = fill;`), the binding names no one fn and the call
+/// is refused for any argument holding such a place; an inner `let f`
+/// names nothing after its block, so the outer writer is still refused;
+/// a tuple `let` binds each name to its element. A shadowing owned copy
+/// (`let r = r;`) is not the parameter, so writing its places is no write
+/// through it, and a member's `let r = Row { }` shadowing its parameter is
+/// a frame-local place.
+#[test]
+fn a_parameter_place_writer_follows_bindings_not_spellings() {
+    const PRE: &str = r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn noop(r: Row) { }
+        fn gfill<T>(r: Row, value: T) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn gapply<T>(g: fn (T) -> (), x: T) { g(x); }
+        fn pass_on(r: Row) { gapply(fill, r); }
+        fn gid<T>(x: T) { }
+        fn tfill<T>(r: T) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn vfill<T>(r: T) { let mut dst = r.xs; push(dst, "fresh" + to_string(1)) or raise; }
+        fn afill<T>(r: T) { let mut dst: bounded[String; 4] = r.xs; push(dst, "fresh" + to_string(1)) or raise; }
+    "#;
+    let refused = |body: &str, why: &str| {
+        let src = format!("{PRE} locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ {body} }} }}\nfn main() {{ }}");
+        let ds = minted_diags(&src);
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    let accepted = |src: &str, why: &str| {
+        let ds = minted_diags(&format!("{PRE}{src}\nfn main() {{ }}"));
+        assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    refused("let mut f = noop; f = fill; f(self.row);", "a binding assigned a writer");
+    refused("let mut f = fill; f(self.row); f = noop;", "a binding assigned after the call");
+    refused(
+        "let f = fill; if true { let f = noop; f(self.row); } f(self.row);",
+        "the outer writer after an inner binding's block",
+    );
+    refused("let (f, n) = (fill, 0); f(self.row);", "a tuple binder");
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { let (f, n) = (noop, 0); f(self.row); } }",
+        "a tuple binder of a non-writer",
+    );
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { let f = fill; if true { let f = noop; f(self.row); } } }",
+        "the inner non-writer",
+    );
+    accepted(
+        r#"fn copy_fill(r: Row) { let r = r; push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { copy_fill(self.row); } }"#,
+        "a shadowing owned copy",
+    );
+    accepted(
+        "locus L { fn put(r: Row) { let r = Row { }; fill(r); } }",
+        "a member's fresh local shadowing its parameter",
+    );
+    // a generic writer is a writer (third review): its parameter of a
+    // concrete record type is written through, and one of a type
+    // parameter may be such a record
+    refused("gfill(self.row, 1);", "a generic writer");
+    // a field path through a type parameter, which the template cannot
+    // resolve, may be a bounded place (fourth review)
+    refused("tfill(self.row);", "a field path through a type parameter");
+    // fifth review: a view bound through a type parameter, and a type
+    // parameter named as a global type is
+    refused("vfill(self.row);", "a view of a field path through a type parameter");
+    refused("afill(self.row);", "an annotated view through a type parameter");
+    refused("pass_on(self.row);", "a generic fn handing a type parameter to a fn value");
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { gid(self.row); } }",
+        "a generic fn that writes nothing",
+    );
+    let ds = minted_diags(&format!(
+        "{PRE} locus L {{ fn put(r: Row) {{ fill(r); }} }}\nfn main() {{ }}"
+    ));
+    assert!(
+        ds.iter().any(|m| m.contains("pointer-shaped elements") && m.contains("not this member's")),
+        "the member's parameter itself is still refused: {ds:?}"
+    );
+}
+
+/// A fn, a method or an interface's method declared to return a `bounded`
+/// (written or through an alias) is refused at the check with the build's
+/// reason: the build cannot return one by value, and the check passed it
+/// (a downstream handoff hit the build's refusal with no file or line). A
+/// record holding the `bounded` returns it.
+#[test]
+fn a_bounded_return_is_refused_at_the_check() {
+    let ds = diags(
+        r#"
+        type E { code: Int; }
+        type Items = bounded[Int; 4];
+        type Row { names: bounded[String; 4]; }
+        type Names { items: bounded[String; 4]; }
+        fn names() -> bounded[String; 4] { let mut r = Row { }; push(r.names, "a") or discard; return r.names; }
+        fn ints() -> bounded[Int; 4] fallible(E) { let r = Row { }; return [1]; }
+        locus L { params { xs: bounded[Int; 4]; } fn get() -> Items { return self.xs; } }
+        interface I { fn get() -> bounded[Int; 4]; }
+        fn wrapped() -> Names { let mut n = Names { }; push(n.items, "a") or discard; return n; }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("cannot be returned by value")).collect();
+    assert_eq!(hits.len(), 4, "{ds:?}");
+    for (who, ty) in [("`names`", "bounded[String; 4]"), ("`ints`", "bounded[Int; 4]"), ("`L::get`", "bounded[Int; 4]"), ("`I::get`", "bounded[Int; 4]")] {
+        assert!(hits.iter().any(|m| m.starts_with(&format!("{who} returns a `{ty}`"))), "{who}: {hits:?}");
+    }
+    assert!(!ds.iter().any(|m| m.contains("`wrapped`")), "a record holding it returns: {ds:?}");
+
+    // Review of #1625: a type parameter is the declaration's own, whatever
+    // global type shares its name; the global alias itself is a bounded
+    let ds = diags(
+        r#"
+        type T = bounded[String; 4];
+        fn identity<T>(x: T) -> T { return x; }
+        locus Box<T> { fn get(x: T) -> T { return x; } }
+        fn aliased() -> T { let r = Row { }; return r.names; }
+        type Row { names: bounded[String; 4]; }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("cannot be returned by value")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`aliased` returns a `bounded[String; 4]`"), "{hits:?}");
+}
+
+/// `len` of a `bounded` (written or through an alias) is refused at the
+/// check, pointing at `count`: the build has no `len` of one, and the
+/// check passed it. `count` on it, and `len` of a String or an array, pass.
+#[test]
+fn len_of_a_bounded_is_refused_for_count() {
+    let ds = diags(
+        r#"
+        type Items = bounded[Int; 4];
+        type Row { xs: bounded[String; 4]; ys: Items; }
+        fn main() {
+            let r = Row { };
+            let a = len(r.xs);
+            let b = len(r.ys);
+            let c = count(r.xs);
+            let d = len("abc");
+            let e = len([1, 2, 3]);
+        }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("`len` does not apply")).collect();
+    assert_eq!(hits.len(), 2, "{ds:?}");
+    assert!(hits[0].contains("`bounded[String; 4]`") && hits[0].contains("`count(x)`"), "{hits:?}");
+    assert!(hits[1].contains("`bounded[Int; 4]`"), "{hits:?}");
+    assert_eq!(ds.len(), 2, "nothing else: {ds:?}");
+}
+
+/// The one-owner rule (spec/memory.md, invariant 3 of the per-method
+/// scratch reclaim): a call publishes one arena for a callee that may
+/// write through its arguments, so handing it both a record a field of
+/// `self` holds and a parameter, which the caller owns, is refused at the
+/// call, in two arguments or in one carrier. The diagnostic names both
+/// owners and the fix. A call handing only one owner's storage, a reader,
+/// or a local copy beside the held record passes.
+#[test]
+fn a_writer_handed_a_held_record_and_a_parameter_is_refused() {
+    let program = |body: &str| {
+        format!(
+            r#"
+type Bag {{ b: Bytes = b""; }}
+locus Sink {{
+    params {{ held: Bag = Bag {{ }}; }}
+    fn put(x: Bag, p: Bytes) {{ x.b = p; }}
+    fn put_two(a: Bag, b: Bag, p: Bytes) {{ a.b = p; b.b = p; }}
+    fn read_two(a: Bag, b: Bag) -> Int {{ return len(a.b) + len(b.b); }}
+    {body}
+}}
+fn main() {{ let s = Sink {{ }}; }}
+"#
+        )
+    };
+    let refused = |m: &String| m.contains("a record this locus holds");
+    let two = diags(&program("fn mixed(x: Bag, p: Bytes) { self.put_two(self.held, x, p); }"));
+    let hit: Vec<&String> = two.iter().filter(|m| refused(m)).collect();
+    assert_eq!(hit.len(), 1, "two arguments of two owners: {two:?}");
+    assert!(
+        hit[0].contains("`self.held`") && hit[0].contains("the parameter `x`") && hit[0].contains("Copy one of them into a local record"),
+        "the diagnostic names both owners and the fix: {}",
+        hit[0]
+    );
+    let one = diags(&program(
+        "fn mixed(x: Bag, p: Bytes, choose: Bool) { self.put(if choose { self.held } else { x }, p); }",
+    ));
+    assert_eq!(one.iter().filter(|m| refused(m)).count(), 1, "one carrier of two owners: {one:?}");
+    // Through a wrapper that hands both on through carriers: the wrapper
+    // writes through both its positions, so the call to it is refused.
+    let wrapped = diags(&program(
+        "fn wrap(a: Bag, b: Bag, p: Bytes) { self.put_two({ a }, { b }, p); }\n    \
+         fn mixed(x: Bag, p: Bytes) { self.wrap(self.held, x, p); }",
+    ));
+    assert_eq!(wrapped.iter().filter(|m| refused(m)).count(), 1, "a wrapper of two owners: {wrapped:?}");
+    for ok in [
+        "fn only_held(p: Bytes, c: Bool) { self.put(if c { self.held } else { self.held }, p); }",
+        "fn only_param(x: Bag, y: Bag, p: Bytes) { self.put_two(x, { y }, p); }",
+        "fn reads(x: Bag) -> Int { return self.read_two(self.held, x); }",
+        "fn copied(x: Bag, p: Bytes) { let mine = Bag { b: x.b }; self.put_two(self.held, mine, p); }",
+    ] {
+        let ds = diags(&program(ok));
+        assert!(!ds.iter().any(refused), "{ok}: {ds:?}");
     }
 }

@@ -524,8 +524,12 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // Per-type usage gating avoids false-positives for users
     // who happen to name a type `ParseError` in a program
     // that never calls `std::str::parse_*`.
-    let stdlib_usage = scan_stdlib_error_usage(bundle, &scope);
-    check_stdlib_error_shadowing(&scope, &stdlib_usage, &mut diags);
+    // The usage scan (the program's bodies, and the stdlib's once per
+    // process) is read only for a type that would be refused: the stdlib's
+    // own copies, merged into every program, match their shape and are
+    // never asked about.
+    let stdlib_usage = std::cell::OnceCell::new();
+    check_stdlib_error_shadowing(&scope, &|| stdlib_usage.get_or_init(|| scan_stdlib_error_usage(bundle, &scope)), &mut diags);
 
     scope.topics = topics;
     scope.names = scope.name_table(&bundle.import_renames);
@@ -868,6 +872,10 @@ fn register_top_decls(
             TopDecl::Api(_) => {
                 // GH #1417: a surface names a table of rows, never a
                 // value or a type; `api::serve` reads it by name.
+            }
+            TopDecl::Fleet(_) => {
+                // Phase 4 (C2): a fleet is a deployment, never a value or
+                // a type; the fleet laws and the deployment rows read it.
             }
         }
     }
@@ -1235,6 +1243,30 @@ fn register_locus(
                     fallible: None,
                 });
             }
+            // GH #1530: a callable seam still here is one its expansion
+            // refused (`seam_expand::refusals` reports why). Its method is
+            // still declared, from what the seam spells: so a call of it
+            // checks, and the refusal is the one error. What the seam does
+            // not spell (an undeclared result, the failure an `or end;`
+            // passes on) is unknown, which every use accepts.
+            LocusMember::Seam(sd) => {
+                if let (Some(name), Some(p)) = (&sd.name, &sd.param) {
+                    let ret = match &sd.ret {
+                        Some(TypeExpr::Tuple(ts, _)) if ts.is_empty() => Ty::Unit,
+                        Some(te) => resolve_type_expr(te, known),
+                        None => Ty::Unknown,
+                    };
+                    let fallible = matches!(sd.on_failure, Some(hale_syntax::ast::SeamFailure::End(_)))
+                        .then_some(Ty::Unknown);
+                    methods.push(MethodInfo {
+                        name: name.name.clone(),
+                        params: vec![resolve_type_expr(&p.ty, known)],
+                        min_params: None,
+                        ret,
+                        fallible,
+                    });
+                }
+            }
             LocusMember::Fn(f) => {
                 let scoped = known.with_parameters(&f.generics);
                 let known = scoped.as_ref();
@@ -1437,6 +1469,7 @@ fn register_type(
                     name: v.name.name.clone(),
                     fields: v.fields.iter().map(|t| resolve_type_expr(t, known)).collect(),
                     span: v.span,
+                    member: v.member,
                 })
                 .collect();
             TypeKind::Enum(infos)
@@ -1653,7 +1686,7 @@ fn register_symbol(
 /// `known` and not primitive resolve to [`Ty::Unknown`].
 /// M3 stage 3 tranche 2: mirror of codegen's m61
 /// `type_expr_mangle_token` — one token per generic arg.
-fn type_expr_mangle_token(
+pub(crate) fn type_expr_mangle_token(
     t: &TypeExpr,
     known: &KnownNames,
     bindings: &BTreeMap<String, Ty>,
@@ -2424,6 +2457,10 @@ struct StdlibErrorUsage<'a> {
     /// path that renames to one fails with that fn's error type.
     scope: &'a TopScope,
     reached: std::collections::BTreeSet<String>,
+    /// Whether a struct literal naming a builtin error type reaches it:
+    /// the stdlib's (which builds the builtin's shape), never the
+    /// program's own (which builds its own type).
+    literals: bool,
 }
 
 /// Scan every top-level item, every fn / locus-method body,
@@ -2436,11 +2473,44 @@ fn scan_stdlib_error_usage<'a>(
     bundle: &Bundle<'_>,
     scope: &'a TopScope,
 ) -> StdlibErrorUsage<'a> {
-    let mut out = StdlibErrorUsage { scope, reached: Default::default() };
+    let mut out = StdlibErrorUsage { scope, reached: Default::default(), literals: false };
     for program in bundle.programs.values() {
         scan_items_for_stdlib_usage(&program.items, &mut out);
     }
+    // The stdlib's own bodies are merged into every program and lowered
+    // with it, and they build a builtin error type under its bare name
+    // (a parser's `ParseError`, `std::crypto`'s `fail CryptoError { .. }`,
+    // a `bounded` push's `CapacityError`), so a program's same-named type
+    // stands in for it there too: `std::cli`'s `parse_int` reaches
+    // `ParseError` whether or not the program calls a parser, and the
+    // build refused a `type ParseError { code: Int; }` the check accepted
+    // (and panicked on an `IndexError`, a `KeyError` or a
+    // `CapacityError`). What the stdlib reaches is read once.
+    out.reached.extend(stdlib_reached_errors(scope).iter().cloned());
     out
+}
+
+/// The builtin error types the bundled stdlib's own bodies reach, as a
+/// program's are read, plus each one a stdlib body spells as a literal.
+/// Read once: a stdlib path's error is its registered fn's or its
+/// surface row's, the same in every scope (every scope registers the
+/// stdlib's fns).
+fn stdlib_reached_errors(scope: &TopScope) -> &'static std::collections::BTreeSet<String> {
+    static REACHED: std::sync::OnceLock<std::collections::BTreeSet<String>> = std::sync::OnceLock::new();
+    REACHED.get_or_init(|| {
+        let mut out = StdlibErrorUsage { scope, reached: Default::default(), literals: true };
+        if let Some(stdlib) = crate::stdlib_bodies::program() {
+            scan_items_for_stdlib_usage(&stdlib.items, &mut out);
+            // A name the stdlib declares itself (`IoError`) is refused to
+            // a program by the internal-name rule (`stdlib_names`) already.
+            for item in &stdlib.items {
+                if let TopDecl::Type(t) = item {
+                    out.reached.remove(&t.name.name);
+                }
+            }
+        }
+        out.reached
+    })
 }
 
 /// The error type a stdlib path-call fails with, read as the check
@@ -2491,9 +2561,13 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                             scan_block_for_stdlib_usage(&md.body, out)
                         }
                         LocusMember::Failure(fd) => {
+                            // lowering hands the handler a `ClosureViolation`
+                            out.reached.insert("ClosureViolation".to_string());
                             scan_block_for_stdlib_usage(&fd.body, out)
                         }
                         LocusMember::Closure(c) => {
+                            // a closure's breach is a `ClosureViolation`
+                            out.reached.insert("ClosureViolation".to_string());
                             if let Some(a) = &c.assertion {
                                 scan_expr_for_stdlib_usage(&a.left, out);
                                 scan_expr_for_stdlib_usage(&a.right, out);
@@ -2586,6 +2660,7 @@ fn scan_stmt_for_stdlib_usage(s: &Stmt, out: &mut StdlibErrorUsage) {
             }
         }
         Stmt::Violate { payload, .. } => {
+            out.reached.insert("ClosureViolation".to_string());
             if let Some(p) = payload {
                 scan_expr_for_stdlib_usage(p, out);
             }
@@ -2602,6 +2677,10 @@ fn scan_expr_for_stdlib_usage(e: &Expr, out: &mut StdlibErrorUsage) {
     match e {
         Expr::Call { callee, args, .. } => {
             check_callee_path_for_stdlib_error(callee, out);
+            // a `bounded` push at capacity fails with a `CapacityError`
+            if matches!(callee.as_ref(), Expr::Ident(i) if i.name == "push") {
+                out.reached.insert("CapacityError".to_string());
+            }
             scan_expr_for_stdlib_usage(callee, out);
             for a in args {
                 scan_expr_for_stdlib_usage(a, out);
@@ -2630,7 +2709,14 @@ fn scan_expr_for_stdlib_usage(e: &Expr, out: &mut StdlibErrorUsage) {
                 scan_expr_for_stdlib_usage(p, out);
             }
         }
-        Expr::Struct { inits, .. } => {
+        Expr::Struct { path, inits, .. } => {
+            if out.literals {
+                if let [name] = path.segments.as_slice() {
+                    if crate::builtin_types::builtin_type(&name.name).is_some() {
+                        out.reached.insert(name.name.clone());
+                    }
+                }
+            }
             for i in inits {
                 scan_expr_for_stdlib_usage(&i.value, out);
             }
@@ -2711,29 +2797,33 @@ fn mark_stdlib_error_from_path(
     }
 }
 
-fn check_stdlib_error_shadowing(
+fn check_stdlib_error_shadowing<'u, 's: 'u>(
     scope: &TopScope,
-    usage: &StdlibErrorUsage,
+    usage: &dyn Fn() -> &'u StdlibErrorUsage<'s>,
     diags: &mut Vec<Diag>,
 ) {
     // (stdlib type name, qualified-path suggestion to surface in the
     // diagnostic, "is this type actually used in this program" gate);
     // the expected fields are the builtin type's row.
-    let expected: &[(&str, &str)] = &[
-        ("ParseError", "std::str::ParseError"),
-        ("IoError", "std::io::IoError"),
-        ("IndexError", "std::index::IndexError"),
-        ("KeyError", "std::form::hashmap::KeyError"),
-        ("EmptyError", "std::form::ring_buffer::EmptyError"),
-        ("CryptoError", "std::crypto::CryptoError"),
+    let expected: &[(&str, Option<&str>)] = &[
+        ("ParseError", Some("std::str::ParseError")),
+        ("IoError", Some("std::io::IoError")),
+        ("IndexError", Some("std::index::IndexError")),
+        ("KeyError", Some("std::form::hashmap::KeyError")),
+        ("EmptyError", Some("std::form::ring_buffer::EmptyError")),
+        ("CryptoError", Some("std::crypto::CryptoError")),
+        // A `bounded` push's and an `on_failure` handler's: no path
+        // names the builtin, so the repair is the rename.
+        ("CapacityError", None),
+        ("ClosureViolation", None),
     ];
     for (name, qualified) in expected {
         let expected_fields = crate::builtin_types::builtin_type(name)
             .expect("a shadowable stdlib error type is a builtin type")
             .fields;
-        if !usage.reached.contains(*name) {
-            continue;
-        }
+        // (whether the program reaches it is asked only of a type the
+        // shape check below would refuse)
+        let unreached = || !usage().reached.contains(*name);
         let Some(TopSymbol::Type(ti)) = scope.symbols.get(*name)
         else {
             continue;
@@ -2744,17 +2834,22 @@ fn check_stdlib_error_shadowing(
         if ti.span.start.0 == 0 && ti.span.end.0 == 0 {
             continue;
         }
+        let qualify = match qualified {
+            Some(q) => format!(", or use `{q}` qualified where you need the stdlib's shape"),
+            None => String::new(),
+        };
         let TypeKind::Struct(actual) = &ti.kind else {
+            if unreached() {
+                continue;
+            }
             diags.push(Diag::ty(
                 ti.span,
                 format!(
-                    "user-declared `type {}` shadows the stdlib's \
-                     `{}` (used by stdlib path-calls that return \
-                     `fallible({})`) but is not a struct type. \
-                     Either rename your type (e.g. `My{}`) or use \
-                     `{}` qualified where you need the stdlib's \
-                     shape.",
-                    name, name, name, name, qualified,
+                    "user-declared `type {name}` shadows the stdlib's \
+                     `{name}` (built under that name by the stdlib's own \
+                     code, merged into every program, and by lowering) but \
+                     is not a struct type. Rename your type (e.g. \
+                     `My{name}`){qualify}.",
                 ),
             ));
             continue;
@@ -2767,23 +2862,19 @@ fn check_stdlib_error_shadowing(
             if matches {
                 continue;
             }
+            if unreached() {
+                break;
+            }
             diags.push(Diag::ty(
                 ti.span,
                 format!(
-                    "user-declared `type {}` shadows the stdlib's \
-                     `{}` but is missing the expected `{}: {}` \
-                     field (used by stdlib path-calls that \
-                     allocate `{}` on failure). Either match the \
-                     stdlib shape, rename your type (e.g. `My{}`), \
-                     or use `{}` qualified where you need the \
-                     stdlib's shape.",
-                    name,
-                    name,
-                    field_name,
+                    "user-declared `type {name}` shadows the stdlib's \
+                     `{name}` but is missing the expected `{field_name}: {}` \
+                     field (the stdlib's own code, merged into every \
+                     program, and lowering build `{name}` under that name on \
+                     failure). Either match the stdlib shape, rename your \
+                     type (e.g. `My{name}`){qualify}.",
                     prim_display(*expected_ty),
-                    name,
-                    name,
-                    qualified,
                 ),
             ));
             break;

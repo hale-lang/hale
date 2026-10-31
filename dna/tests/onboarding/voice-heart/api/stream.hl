@@ -1,0 +1,394 @@
+// A streamed answer (`"stream": true`): the standard event stream as
+// Server-Sent Events, through std::http's chunked response path.
+//
+// `/v1/responses` streams the node's events as they come, each `event:
+// <type>`, renumbered from 0 across seats; a seat that fails before any
+// output is a `voice:attempt` event before the next seat's first; the
+// terminal `response.completed`, `response.incomplete` or `response.failed`
+// carries the response with its `voice` object; then `data: [DONE]`.
+// `/v1/chat/completions` streams the same events as `chat.completion.chunk`s:
+// the assistant's role first, each text delta and each tool call, and a last
+// chunk with the finish reason, `usage` and `voice`; then `data: [DONE]`.
+//
+// The stream opens at the first event of a seat that accepted, so a request
+// every seat refuses is answered whole (`502`, as unstreamed). A seat that
+// fails once the stream is open (after output, or the last seat) ends it with
+// that evidence: on `/v1/responses` an `error` event, then `response.failed`
+// carrying the response as far as it came (its output so far, its error, its
+// `voice` with every attempt); on `/v1/chat/completions` a last chunk whose
+// `finish_reason` is `error`, with an `error` object, `usage: null` and
+// `voice`. Either way `data: [DONE]` follows, and a truncated answer never
+// ends as a complete one does.
+//
+// A seat is waited for between events, not for the whole answer: it has the
+// first-output span (120 s) from one message to the next until its first
+// output, then the idle span (30 s). Whenever nothing has been sent for 15 s
+// while a seat that accepted is waited for, the api sends an SSE comment
+// (`: keep-alive`), opening the stream if no event has, so a proxy does not
+// cut a quiet connection. A caller that goes away is found by the write that
+// fails, an event's or a keep-alive's. The first write after a caller closes
+// is taken, and only answered with a reset, so a keep-alive is followed a
+// second later by an empty comment (`:`), the write that fails: a caller gone
+// during a quiet gap is found within about 16 s. The stream ends then, and
+// the seat is sent `cancel`.
+
+/// The caller's end of a stream. It opens its writer at the first event or
+/// keep-alive, so nothing is sent while seats are still refusing. In process (a
+/// request with no connection, `conn_fd` -1, as the tests hand it) the
+/// events are kept and answered as the body.
+locus EventStream {
+    params {
+        conn_fd: Int = -1;
+        // the stream's head lines (`X-Request-Id`)
+        headers: String = "";
+        opened: Bool = false;
+        // the client went away: nothing more is sent
+        gone: Bool = false;
+        w: std::http::SseWriter = std::http::SseWriter { conn_fd: -1 };
+        kept: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 4096 };
+        // monotonic ns of the last thing sent (before the first, of the
+        // stream's start)
+        sent_ns: Int = 0;
+        // monotonic ns of the comment due after a keep-alive (0: none)
+        probe_ns: Int = 0;
+        // the last response object an event carried, and the text sent so
+        // far: what a `response.failed` carries
+        snapshot: String = "";
+        text: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 1024 };
+    }
+
+    /// The stream's head, once.
+    fn open() {
+        if self.opened { return; }
+        self.opened = true;
+        if self.conn_fd >= 0 {
+            self.w = std::http::SseWriter { conn_fd: self.conn_fd, headers: self.headers };
+        }
+    }
+
+    /// One event: `name` "" for an unnamed one (`data:` alone).
+    fn send(name: String, data: String) {
+        self.open();
+        self.sent_ns = std::time::monotonic_ns();
+        if self.conn_fd < 0 {
+            self.kept.append_str(
+                (if len(name) > 0 { "event: " + name + "\n" } else { "" }) + "data: " + data
+                    + "\n\n",
+            );
+            return;
+        }
+        if self.gone { return; }
+        self.w.event(std::http::SseEvent { event: name, data: data }) or { self.gone = true; };
+    }
+
+    /// An SSE comment when nothing was sent for `every`, opening the stream
+    /// if nothing has, so an idle connection is not cut; on a connection, an
+    /// empty comment a second after it. A write that fails marks the caller
+    /// `gone`: a caller that closed takes the first write after it and
+    /// answers it with a reset, so it is the second that fails.
+    fn keep_alive(every: Duration) {
+        if self.gone { return; }
+        let now = std::time::monotonic_ns();
+        if self.probe_ns > 0 && now >= self.probe_ns {
+            self.probe_ns = 0;
+            self.w.body.chunk(":\n\n") or { self.gone = true; };
+            return;
+        }
+        if now - self.sent_ns < every / 1ns { return; }
+        self.open();
+        self.sent_ns = now;
+        if self.conn_fd < 0 {
+            self.kept.append_str(": keep-alive\n\n");
+            return;
+        }
+        self.w.body.chunk(": keep-alive\n\n") or { self.gone = true; };
+        self.probe_ns = now + 1000000000;
+    }
+
+    /// What a seat's events said: the last response object, and the text.
+    fn note(event: String) {
+        let kind = std::json::find_string_field(event, "type");
+        if kind == "response.output_text.delta" {
+            self.text.append_str(std::json::find_string_field(event, "delta"));
+        }
+        let response = std::str::trim(std::json::find_field_raw(event, "response"));
+        if std::str::starts_with(response, "{") { self.snapshot = response; }
+    }
+
+    fn text_so_far() -> String {
+        let b = self.text.snapshot() or b"";
+        return std::str::from_bytes(b);
+    }
+
+    /// What the handler returns once the stream is over.
+    fn end() -> std::http::Response {
+        if self.conn_fd >= 0 { return self.w.end(); }
+        let b = self.kept.snapshot() or b"";
+        return std::http::Response {
+            status: 200,
+            content_type: "text/event-stream",
+            headers: self.headers,
+            body: std::str::from_bytes(b),
+        };
+    }
+}
+
+/// Where a stream stands: what was sent, and what a chat stream needs to
+/// write its chunks.
+type StreamState {
+    // responses | chat
+    endpoint: String = "responses";
+    request_id: String = "";
+    model: String = "";
+    created: Int = 0;
+    // the next sequence number (responses)
+    seq: Int = 0;
+    // the assistant's role was sent (chat)
+    role_sent: Bool = false;
+    // tool calls begun (chat), the last one's index
+    tools: Int = 0;
+    // output reached the caller from the seat serving now
+    output: Bool = false;
+}
+
+/// `event`, renumbered: its members but `sequence_number`, then ours.
+fn renumbered(event: String, seq: Int) -> String {
+    let out = st::JsonList { };
+    let mut it = std::json::object_first(event);
+    while !it.done {
+        let key = std::json::obj_key_string(it, event);
+        if key != "sequence_number" {
+            out.add(jq(key) + ": " + std::str::trim(std::json::obj_value_raw(it, event)));
+        }
+        it = std::json::object_next(it, event);
+    }
+    out.add("\"sequence_number\": " + to_string(seq));
+    return "{" + out.text() + "}";
+}
+
+/// True for the events that end a response.
+fn terminal(kind: String) -> Bool {
+    return kind == "response.completed"
+        || kind == "response.incomplete"
+        || kind == "response.failed";
+}
+
+/// True for the events that are output reaching the caller.
+fn output_event(kind: String) -> Bool {
+    return kind == "response.output_text.delta"
+        || kind == "response.function_call_arguments.delta"
+        || kind == "response.refusal.delta";
+}
+
+/// A chat completion chunk with one choice.
+fn chat_chunk(s: StreamState, delta: String, finish: String, extra: String) -> String {
+    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"chat.completion.chunk\", \"created\": "
+        + to_string(s.created) + ", \"model\": " + jq(s.model)
+        + ", \"choices\": [{\"index\": 0, \"delta\": " + delta + ", \"finish_reason\": "
+        + (if len(finish) > 0 { jq(finish) } else { "null" }) + "}]" + extra + "}";
+}
+
+/// A node's event, as the caller's stream carries it; the state moves on.
+/// A terminal event is not sent here: it waits for the result, which says
+/// what served it (`finish_stream`).
+fn forward(out: EventStream, s: StreamState, event: String) -> StreamState {
+    let mut st = s;
+    let kind = std::json::find_string_field(event, "type");
+    if output_event(kind) { st.output = true; }
+    out.note(event);
+    if st.endpoint == "responses" {
+        out.send(kind, renumbered(event, st.seq));
+        st.seq = st.seq + 1;
+        return st;
+    }
+    if !st.role_sent {
+        out.send("", chat_chunk(st, "{\"role\": \"assistant\", \"content\": \"\"}", "", ""));
+        st.role_sent = true;
+    }
+    if kind == "response.output_text.delta" {
+        out.send(
+            "",
+            chat_chunk(
+                st,
+                "{\"content\": " + jq(std::json::find_string_field(event, "delta")) + "}",
+                "",
+                "",
+            ),
+        );
+    } else if kind == "response.output_item.added" {
+        let item = std::json::find_field_raw(event, "item");
+        if std::json::find_string_field(item, "type") == "function_call" {
+            st.tools = st.tools + 1;
+            out.send(
+                "",
+                chat_chunk(
+                    st,
+                    "{\"tool_calls\": [{\"index\": " + to_string(st.tools - 1) + ", \"id\": "
+                        + jq(std::json::find_string_field(item, "call_id"))
+                        + ", \"type\": \"function\", \"function\": {\"name\": "
+                        + jq(std::json::find_string_field(item, "name"))
+                        + ", \"arguments\": \"\"}}]}",
+                    "",
+                    ""));
+        }
+    } else if kind == "response.function_call_arguments.delta" && st.tools > 0 {
+        out.send(
+            "",
+            chat_chunk(
+                st,
+                "{\"tool_calls\": [{\"index\": " + to_string(st.tools - 1)
+                    + ", \"function\": {\"arguments\": "
+                    + jq(std::json::find_string_field(event, "delta")) + "}}]}",
+                "",
+                "",
+            ),
+        );
+    }
+    return st;
+}
+
+/// A seat failed before any output and the request moves on.
+fn attempt_event(out: EventStream, s: StreamState, a: Attempt, next_seat: String) -> StreamState {
+    let mut st = s;
+    if st.endpoint != "responses" { return st; }
+    let one = attempts_json(attempts_of(a).items);
+    let attempt = one[1..(len(one) - 1)];
+    out.send(
+        "voice:attempt",
+        "{\"type\": \"voice:attempt\", \"sequence_number\": " + to_string(st.seq)
+            + ", \"attempt\": " + attempt
+            + (if len(next_seat) > 0 { ", \"next_seat\": " + jq(next_seat) } else { "" }) + "}");
+    st.seq = st.seq + 1;
+    return st;
+}
+
+fn attempts_of(a: Attempt) -> Attempts {
+    let mut out = Attempts { };
+    push(out.items, a) or discard;
+    return out;
+}
+
+/// The end of a served stream: the terminal event (or the last chunk)
+/// with what served it, then `[DONE]`.
+fn finish_stream(out: EventStream, s: StreamState, terminal_event: String, served: Served) {
+    if s.endpoint == "responses" {
+        let kind = std::json::find_string_field(terminal_event, "type");
+        out.send(
+            kind,
+            "{\"type\": " + jq(kind) + ", \"response\": " + response_json(served)
+                + ", \"sequence_number\": " + to_string(s.seq) + "}",
+        );
+    } else {
+        let calls = tool_calls_json(served.response);
+        let finish = if len(calls) > 0 {
+            "tool_calls"
+        } else if served.status == "incomplete" {
+            "length"
+        } else {
+            "stop"
+        };
+        out.send(
+            "",
+            chat_chunk(
+                s,
+                "{}",
+                finish,
+                ", \"usage\": {\"prompt_tokens\": " + to_string(served.input_tokens)
+                    + ", \"completion_tokens\": " + to_string(served.output_tokens)
+                    + ", \"total_tokens\": " + to_string(served.input_tokens + served.output_tokens)
+                    + "}, \"voice\": " + voice_json(served.voice)));
+    }
+    out.send("", "[DONE]");
+}
+
+/// A stream that cannot go on, with the evidence: on `/v1/responses` an
+/// `error` event, then `response.failed` carrying the response as far as it
+/// came with `voice`; on `/v1/chat/completions` a last chunk finished
+/// `error`, with an `error` object, `usage: null` and `voice`. Then
+/// `[DONE]`.
+fn fail_stream(
+    out: EventStream,
+    s: StreamState,
+    code: String,
+    message: String,
+    voice: VoiceExtension
+) {
+    let error = "{\"code\": " + jq(code) + ", \"message\": " + jq(message) + "}";
+    if s.endpoint == "responses" {
+        out.send(
+            "error",
+            "{\"type\": \"error\", \"sequence_number\": " + to_string(s.seq)
+                + ", \"error\": {\"type\": \"server_error\", \"code\": " + jq(code)
+                + ", \"message\": " + jq(message) + ", \"param\": null}}",
+        );
+        // a stream a keep-alive opened may have no response yet
+        let snapshot = if len(out.snapshot) > 0 { out.snapshot } else { pending_response(s) };
+        out.send(
+            "response.failed",
+            "{\"type\": \"response.failed\", \"response\": "
+                + failed_response(snapshot, out.text_so_far(), error, voice)
+                + ", \"sequence_number\": " + to_string(s.seq + 1) + "}",
+        );
+    } else {
+        out.send(
+            "",
+            chat_chunk(
+                s,
+                "{}",
+                "error",
+                ", \"error\": {\"message\": " + jq(message)
+                    + ", \"type\": \"server_error\", \"code\": " + jq(code)
+                    + "}, \"usage\": null, \"voice\": " + voice_json(voice),
+            ),
+        );
+    }
+    out.send("", "[DONE]");
+}
+
+/// A response object for a stream no seat sent one on: the standard's
+/// defaults, as a node's engine would have begun it.
+fn pending_response(s: StreamState) -> String {
+    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"response\", \"created_at\": "
+        + to_string(s.created) + ", \"completed_at\": null, \"status\": \"in_progress\""
+        + ", \"incomplete_details\": null, \"model\": " + jq(s.model)
+        + ", \"previous_response_id\": null, \"instructions\": null, \"output\": [], \"error\": null"
+        + ", \"tools\": [], \"tool_choice\": \"auto\", \"truncation\": \"disabled\", \"parallel_tool_calls\": false, \"text\": {\"format\": {\"type\": \"text\"}}"
+        + ", \"top_p\": 1, \"presence_penalty\": 0, \"frequency_penalty\": 0, \"top_logprobs\": 0, \"temperature\": 1, \"reasoning\": null, \"usage\": null"
+        + ", \"max_output_tokens\": null, \"max_tool_calls\": null, \"store\": false, \"background\": false, \"service_tier\": \"default\", \"metadata\": {}"
+        + ", \"safety_identifier\": null, \"prompt_cache_key\": null}";
+}
+
+/// The last response object a seat sent, failed: its status `failed`, its
+/// `error`, the text sent so far as its output, and `voice`.
+fn failed_response(snapshot: String, text: String, error: String, voice: VoiceExtension) -> String {
+    let out = st::JsonList { };
+    let mut it = std::json::object_first(snapshot);
+    while !it.done {
+        let key = std::json::obj_key_string(it, snapshot);
+        let value = std::str::trim(std::json::obj_value_raw(it, snapshot));
+        if key == "status" {
+            out.add("\"status\": \"failed\"");
+        } else if key == "error" {
+            out.add("\"error\": " + error);
+        } else if key == "output" {
+            let id = "msg_" + std::json::find_string_field(snapshot, "id");
+            out.add(
+                "\"output\": "
+                    + (
+                        if len(text) > 0 {
+                            "[{\"type\": \"message\", \"id\": " + jq(id)
+                                + ", \"status\": \"incomplete\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": "
+                                + jq(text) + ", \"annotations\": []}]}]"
+                        } else {
+                            "[]"
+                        }
+                    ),
+            );
+        } else if key != "voice" {
+            out.add(jq(key) + ": " + value);
+        }
+        it = std::json::object_next(it, snapshot);
+    }
+    out.add("\"voice\": " + voice_json(voice));
+    return "{" + out.text() + "}";
+}

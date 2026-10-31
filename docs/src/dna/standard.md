@@ -1,122 +1,145 @@
-# Held together by the compiler
+# DNA Architectural Engineering Standard
 
-> **This chapter is a standard, and partly a goal.** It says how a DNA project uses the whole toolchain, one way for each concern, so that the compiler can hold a distributed system together. Every rule says what it is, why, what it replaces, how it is enforced, and where DNA itself stands today. A rule marked *goal* is not yet followed by DNA's own source; the list of those is the migration this chapter commits to.
+This document defines the architectural engineering standard for DNA organisms and the DNA runtime itself. While individual Hale language features (surfaces, topics, effect classes, units, constitutional claims) are opt-in for general-purpose programs, a distributed DNA organism requires uniform conventions across every process so the compiler can verify cross-process contracts, authority boundaries, memory bounds, and units end to end.
 
-Most of Hale's features are opt-in and orthogonal: a program can use topics without surfaces, claims without effects, units without either. That is right for a language, and wrong for an organization. A system stays coherent only if every part makes the same choices, so that the compiler can see the whole of it: which processes exist, what crosses between them, what each part may reach, what a value means. This chapter makes those choices once.
+> [!NOTE]
+> **Enforced Today vs. Roadmap Goals:** Each rule below states its engineering requirement, what pattern it replaces, how the toolchain enforces it, and its current status in the DNA codebase (**Enforced Today** vs. **Roadmap Goal**).
 
-An organism is a distributed system: the record and its memory, a head, nodes, legs, an application with its heart, a broker for the nerves, a vault, the senses. The aim is that everything which joins those parts is a declaration the compiler checks, not a convention people remember.
+## Core Principle
 
-## The rule behind the rules
+**Every boundary crossing must be declared in source code and statically checked by the compiler.** In DNA, boundaries include process boundaries, locus ownership boundaries, authority/principal transitions, physical/monetary units of measure, and secret material.
 
-**Anything that crosses a boundary is declared, and anything declared is checked.** A boundary is a process, a part, an authority, a unit of measure or a secret. The rest of the chapter applies that rule to each concern.
+## Summary Matrix: Today vs. Roadmap
 
-## Structure: one tree, one plan
+| Domain | Rule | Status in `dna/` Today |
+| --- | --- | --- |
+| **Structure** | Single locus tree per program (`accept` / `dissolve` lifecycle) | **Enforced Today** (`dna::Dna` tower; workflows/tasks/steps are accepted children) |
+| **Structure** | Thread and pool placement via `placement { }` on `main locus` | **Enforced Today** (host, head, reflexes, and generated `dna/org`) |
+| **Structure** | Multi-process composition via `fleet locus` (`hale fleet check`) | **Roadmap Goal** (bindings currently duplicated across host and `dna/org`) |
+| **Boundaries** | Inter-process RPC via `api` surfaces (`api::serve` + `hale api client`) | **Partial** (`HeadCommands` mutations use `api`; head reads and face client are a **Roadmap Goal**) |
+| **Boundaries** | External system calls via consumed `api::client` surfaces | **Enforced Today** (`spec/api.md` § Calling a surface) |
+| **Boundaries** | Asynchronous events via typed `topic` declarations and `bindings { }` | **Enforced Today** in `dna/core/topics.hl` (~50 topics); typed heart events are a **Roadmap Goal** |
+| **Boundaries** | Committed OpenAPI/MCP/Schema/client artifacts verified by tests | **Enforced Today** in the reference todo application |
+| **Boundaries** | Surface and interface failures declared with `fallible(E)` | **Roadmap Goal** (head commands currently return `{ok, code}`; awaits fallible interface methods) |
+| **Data** | Record rows defined as typed structs with `json` tags | **Roadmap Goal** (rows are currently built and parsed as raw JSON strings) |
+| **Data** | Closed string sets represented as `enum` types | **Roadmap Goal** |
+| **Data** | Currency as `Decimal`, time as `Time`/`Duration`, measures as `quantity` | **Roadmap Goal** (spend is currently integer micro-dollars; timestamps are `Int`) |
+| **Data** | Boundary lists typed as `bounded[T; N]` or collection loci | **Roadmap Goal** (currently passed as newline-delimited strings) |
+| **Authority** | Shared base constitution (`[claims] base`) across all programs | **Partial** (`dna/org/law.hl` is checked under `no_base`; host/head/reflexes/face are a **Roadmap Goal**) |
+| **Authority** | Direct OS syscalls attributed via `require attributed(all syscall)` | **Partial** (`dna/core/types.hl` annotates core carriers; host/head binaries are a **Roadmap Goal**) |
+| **Authority** | Record projections marked `@no_syscall` and `@deterministic` | **Partial** (1 projection annotated today; remaining projections are a **Roadmap Goal**) |
+| **Authority** | Secrets confined to `@sealed` loci via `std::secret` | **Enforced Today** for model keys and NATS passwords; provisioning/DB/forge tokens are a **Roadmap Goal** |
+| **Authority** | Principal tracking via `runs_under(locus, principal)` | **Roadmap Goal** |
+| **Resources** | All long-lived allocations proven with `@bounded_by(<input>)` | **Enforced Today** across all of `dna/` (270 functions annotated, zero `@unbounded`, gated by `hale verify`) |
+| **Resources** | Health/readiness/capacity served via `std::observe::Probes` | **Roadmap Goal** for `dna/` binaries (supported by the runtime today) |
+| **Quality** | Verification pipeline reads structured JSON output from `hale` tools | **Partial** (`dna/core/verification.hl` runs the suite; `hale test --json` and facet topology diffing are a **Roadmap Goal**) |
+| **Quality** | `hale verify` zero-finding CI gate | **Enforced Today** on `dna/core`, `dna/host`, `dna/host/verb`, `dna/operations`, and `dna/api` |
+| **Quality** | API surfaces tested via `std::api::test::Rpc` and models via `FakeModel` / `RecordedModel` | **Enforced Today** |
+| **Observability** | Unified metrics via `std::metrics` and structured logs via `std::log` | **Roadmap Goal** (`standard` nursery pack proposes structured logging as law) |
 
-**A program is one locus tree.** Each part of an organism is a locus with its children as params; work that comes and goes is a child born by `accept` and ended by `dissolve`; failure goes to the owner's `on_failure` (`spec/semantics.md` § Locus instantiation).
-- *Why:* ownership is the one structure the compiler, the runtime and the memory model all share.
-- *Instead of:* processes, threads or registries kept beside the tree.
-- *Today:* followed. The organization is one tower (`dna/core/assembly.hl`'s `Dna`), and an execution's workflows, tasks and steps are accepted children.
+---
 
-**Every process is an instance of a fleet plan, and every deployment is derived from it.** The organism's programs (the host, the organization, the head, the application, the reflexes) are instances of one plan, their routes the topics they bind; `hale fleet check` composes them. A deployment backend renders the plan for the platform it runs on (GH #1477).
-- *Why:* only a plan lets the compiler check what crosses between processes, and only a derived deployment cannot drift from the program.
-- *Instead of:* hand-written compose files, pid files and ports repeated in several places.
-- *Enforced by:* `hale fleet check` in verification, on every candidate.
-- *Today:* **goal.** The organism has no plan of its own; its bindings are copied by hand between the host, the generated organization and the reference organism, and its processes are started by the host.
+## 1. Structure: One Locus Tree and One Fleet Plan
 
-**Placement is declared on the main locus.** Pools, pinning and replicas are `placement { }`, never threads or process flags.
-- *Today:* followed by the host, the head, the reflexes and the generated organization.
+### Single Locus Tree per Process
+Every program is structured as a single locus hierarchy where child components are declared as `params`, dynamic per-request or per-execution units are spawned via `accept` and reclaimed on `dissolve`, and structural failures route upward to the parent's `on_failure` handler (`spec/semantics.md` § Locus instantiation).
+- **Replaces:** Unsupervised background threads, side-table registries, or ad-hoc process trees.
+- **Status (`dna/`):** **Enforced Today.** The organization runtime is a single locus tower rooted at `dna::Dna` (`dna/core/assembly.hl`), and workflow executions, tasks, and steps are accepted children.
 
-## Boundaries: declared, typed, generated
+### Placement on `main locus`
+Thread pools, core pinning, and worker replicas are declared exclusively in the `placement { }` block on the `main locus`—never via ad-hoc threading calls or CLI flags.
+- **Status (`dna/`):** **Enforced Today** across the host, head, reflexes, and generated `dna/org`.
 
-**Every call between processes is an `api` surface.** A program serves a surface with `api::serve` over the transport the deployment chooses (`unix::Rpc`, `http::Rpc`, `mcp::Rpc`), with roles on its rows; callers use clients generated from its description (`hale api client`), checked current in CI.
-- *Why:* the surface is the contract: its description is what `hale api describe` reads, what an agent's tools are rendered from, and what a change is diffed against.
-- *Instead of:* hand-written HTTP routes that build JSON field by field, and hand-written clients that read it back.
-- *Today:* the head's commands are a surface (`HeadCommands`, served over a socket and HTTP) with a generated client for the legs, checked by its digest. The head's **reads are a goal**: every read route, the project head's operations and the face's client are written by hand.
+### Multi-Process Composition via `fleet locus`
+All processes of an organism (host, organization, head, application heart, and reflexes) should be declared as instances inside a single `fleet locus` whose `bindings` wire inter-process topics, verified by `hale fleet check` and rendered by deployment backends.
+- **Replaces:** Hand-maintained Docker Compose files, PID files, and duplicated port/topic bindings across entrypoints.
+- **Enforcement:** `hale fleet check` during candidate verification.
+- **Status (`dna/`):** **Roadmap Goal.** Bindings are currently maintained separately across the host, `dna/org`, and reference organism.
 
-**Every event between parts is a declared topic, bound through an adapter.** A topic names its payload type and subject; a main locus binds it (`bindings { T: Adapter }`), and keyed subscriptions say whose events a locus hears.
-- *Instead of:* raw broker connections and subject strings.
-- *Today:* followed inside the organism (about fifty topics in `dna/core/topics.hl`). **Goal:** the heart. An application's events reach the organism untyped, and the todo application publishes to the broker over a raw connection, because its public library lacks a credentialed publisher.
+---
 
-**A surface's machine forms are generated and committed, and a test holds them current.**
-- *Today:* followed by the todo application (its OpenAPI, MCP, description and JSON Schema forms, and its TypeScript client).
+## 2. Boundaries: Typed Surfaces and Topics
 
-**A handler's failure is declared.** A surface handler or an interface method that can fail says `fallible(E)`, so a failure is the transport's error outcome, never a success carrying a code.
-- *Today:* **goal.** The head's command handlers return `{ok, code}`; interface methods cannot be fallible yet (`dna/FRICTION.md` F.7).
+### Inter-Process RPC via `api` Surfaces
+Every synchronous call between processes is declared on an `api` surface, served via `api::serve` over the configured transport (`unix::Rpc`, `http::Rpc`, `mcp::Rpc`) with role guards on each operation, and called through generated clients (`hale api client`) verified in CI.
+- **Replaces:** Hand-written HTTP routers, manual JSON serialization, and hand-rolled HTTP client wrappers.
+- **Status (`dna/`):** **Enforced Today** for all mutations (`HeadCommands`, served over Unix socket and HTTP with a digest-verified client in `dna/core/legs/head_commands`). **Roadmap Goal** for head HTTP read routes, project head operations, and the browser face client.
 
-## Data: one meaning per value
+### External Calls via Consumed `api::client` Surfaces
+Calls to external services use an `api NAME from openapi|mcp` declaration imported via `hale api import` (or a peer Hale surface) and invoked through a typed `api::client(NAME, http::Client { … } | mcp::Client { … })` parameter backed by vault credentials.
+- **Why:** Provides five typed transport outcomes, drift detection (`hale api drift`), compile-time effect tracking (`client(NAME)`), and automatic agent tool schema export (`hale api export --tools-for`).
+- **Status (`dna/`):** **Enforced Today** (`spec/api.md` § Calling a surface).
 
-**Every row of the record is a declared type.** A row kind is a type with `json` tags; it is written and read through its generated codec, and the routing table names types, not strings.
-- *Why:* the record is the organism's memory, and a field name typed twice is a bug the compiler cannot see.
-- *Instead of:* building row bodies with a JSON builder and reading them field by field.
-- *Today:* **goal.** Rows are strings, and their fields are read by hand in over a thousand places.
+### Events via Declared Topics and Adapters
+Asynchronous events between components use typed `topic` declarations bound on `main locus` via `bindings { T: Adapter }`, using `keyed_by` subscriptions to filter traffic at the bus layer.
+- **Status (`dna/`):** **Enforced Today** inside the organism (~50 topics in `dna/core/topics.hl`). **Roadmap Goal** for application heart events.
 
-**A closed set is an enum.** *Instead of:* a `String` with its allowed values in a comment. *Today:* **goal** (one hand-written enum).
+### Generated Machine Artifacts and `fallible(E)` Handlers
+- **Machine artifacts:** OpenAPI, MCP, `.description.json`, JSON Schema, and TypeScript/JS client files are generated from the `api` surface, committed to the repository, and kept current by a test (**Enforced Today** in the reference todo app).
+- **Declared handler failures:** Surface handlers and interface methods that can fail should declare `fallible(E)` rather than returning `{ok: Bool, code: String}` envelopes (**Roadmap Goal**; awaits `fallible` support on interface methods).
 
-**Money is `Decimal` with its currency; time is `Time` and `Duration`; any other measure is a quantity in its unit.** An integer quantity (`quantity Int in …`) is the choice where performance demands it, never a bare `Int` (`spec/units.md`).
-- *Why:* the unit is part of the value's meaning, and the compiler can only check what it is told.
-- *Today:* **goal.** Spend is integer micro-dollars and times are integers with their unit in the name.
+---
 
-**Lists are collections, not delimited strings.** A list that crosses a boundary is a `bounded[T; N]` where its size is known, or a collection locus where it is not.
-- *Today:* **goal**, and partly a language question: types cannot hold unbounded collections (`notes/value-collections.md`), so lists travel as newline-joined strings.
+## 3. Data: Explicit Types, Enums, and Units
 
-## Authority: law, effects and secrets
+- **Typed Record Rows:** Every row kind in the record (`record_rows` and `ledger_rows`) should be a Hale `type` with `json` field tags, serialized via its generated codec and mapped by type in `dna/core/routing.hl`. (**Roadmap Goal:** rows are currently constructed and parsed as raw JSON strings.)
+- **Closed Sets as Enums:** Fixed state machines and category sets should be `enum` declarations rather than free-form `String` fields. (**Roadmap Goal.**)
+- **Quantities and Units:** Monetary values must use `Decimal` with an explicit currency; timestamps and intervals must use `Time` and `Duration`; and domain measures must use `quantity Int in <unit>` (`spec/units.md`). (**Roadmap Goal:** spend currently uses integer micro-dollars and timestamps use integer milliseconds/seconds.)
+- **Collections over Delimited Strings:** Lists crossing boundaries should use `bounded[T; N]` (when fixed-cap) or collection loci (`@form(vec)`) rather than newline-delimited strings. (**Roadmap Goal.**)
 
-**Every program carries a constitution, over a base every environment shares.** `hale.toml` names a base (`[claims] base = "…"`) and each environment's constitution; the organism's own law (`dna/org/law.hl`) is the base.
-- *Instead of:* `no_base`, and programs with no law at all.
-- *Today:* the generated organization has its law, but under `no_base`; the host, the head, the reflexes and the face carry none. **Goal.**
+---
 
-**Every place a program touches the operating system names its purpose.** `require attributed(all syscall)` in the base: each function that performs a syscall directly carries a user-declared effect class (`spec/verification.md` § Claims).
-- *Why:* a purpose can be claimed over (`forbid reaches`), reviewed and narrowed.
-- *Today:* **goal.** The organism declares its effect classes (`dna/core/types.hl`) and annotates its carriers, but the programs that run it declare none.
+## 4. Authority: Constitutions, Attributed Effects, and `@sealed` Secrets
 
-**A projection is a pure function.** Every projection of the record is `@no_syscall` (and `@deterministic` where it is), so replay gives the same answer.
-- *Today:* one projection is; the rest are **goal.**
+### Shared Base Constitution
+Every program in an organism should adopt a `constitution` in `hale.toml` over a shared base (`[claims] base = "…"`), using `dna/org/law.hl` as the foundational law.
+- **Status (`dna/`):** **Partial.** Generated `dna/org` enforces `constitution Org` (`dna/org/law.hl`), while extending a shared base across the host, head, reflexes, and face is a **Roadmap Goal**.
 
-**A secret is held only by a sealed locus.** Through `std::secret`, revealed only in the statement that writes it to a wire.
-- *Instead of:* a secret as a `String` from the environment, or passed to a child process.
-- *Today:* followed for every model key and broker password. **Goal:** provisioning (the vault's own writes, a database role's password, the forge token, an application's bearer table), which the standard library does not cover yet.
+### Attributed OS Syscalls (`require attributed(all syscall)`)
+Every function that directly invokes a built-in `syscall` effect must carry a domain-specific `@effects(is: { … })` annotation so constitutional claims (`forbid reaches(…)`) can constrain *why* a boundary is crossed, not just *where*.
+- **Status (`dna/`):** **Partial.** Core effect carriers in `dna/core/types.hl` are annotated; enforcing `require attributed(all syscall)` across host and head entrypoints is a **Roadmap Goal**.
 
-**Authority belongs to principals, and a backend's policy is a projection of it** (`runs_under`, [The habitat, as designed](../habitat.md)). *Today:* not built.
+### Pure Record Projections (`@no_syscall`, `@deterministic`)
+Functions that project state from record rows must be marked `@no_syscall` (and `@deterministic` where applicable) to guarantee deterministic replay.
+- **Status (`dna/`):** **Partial** (1 projection annotated today; remaining projections are a **Roadmap Goal**).
 
-## Resources: bounded by design
+### Secret Confinement (`@sealed` and `std::secret`)
+Secrets are held exclusively inside `@sealed` loci via `std::secret` and revealed only inside the expression that writes to the wire—never read from environment variables into `String` bindings or passed on child process command lines.
+- **Status (`dna/`):** **Enforced Today** for all LLM API keys (`HostedCredential`) and NATS broker passwords. Extending `std::secret` to vault provisioning writes, Postgres role passwords, and `FORGE_TOKEN` is a **Roadmap Goal**.
 
-**Placement and capacity are declared, and a growing allocation says what bounds it.** A hot path declares its budget (`@budget`), a buffer its form (`@form(ring_buffer)`, a `capacity` slot). A growth the memory-bound survey reports is answered at its cause: fixed where the allocation need not accumulate (the work of a long-lived loop moved into a method, whose per-call scratch frees it; a field mutated in place; a loop that ends on its condition rather than `while true`), or marked on its function. `@bounded_by(<input>)` states the input that bounds a real growth: the journal a load reads whole (`@bounded_by(self.j)`), one document's members (`@bounded_by(document)`), the command line (`@bounded_by(argv)`). A test is a run-to-exit driver that the survey judges long-lived, because it starts loci with handlers; its growth is bounded by its own script: a helper names what it reads whole (`@bounded_by(repo)`), a poll its own limit (`@bounded_by(tries)`), and a capture of what the run publishes, or a read only a test's loop repeats, the script (`@bounded_by(script)`). `@unbounded` means the growth is not yet understood, and the comment above it names the issue that tracks it (`// GH #…`). A decorator that silences nothing is removed: `scripts/unbounded-unused.sh` lists every one in `dna/`, and lists none.
-- *Why:* an annotation that silences nothing teaches nothing, and an organism's processes run for months: a growth per tick of a long-lived loop is a leak, never a bound.
-- *Instead of:* `@unbounded` copied with refactored code to quiet the gate, and a bound kept in a comment, or nowhere.
-- *Enforced by:* `hale verify` (below), which fails on an unanswered growth; `scripts/unbounded-unused.sh`, which lists none.
-- *Today:* followed by all of `dna/` (GH #1490): no `@unbounded` is left, 270 functions carry `@bounded_by`, and every one silences something. Answering them found real leaks, each a long-lived loop or locus keeping what every pass built: the body's supervision and lease fence, the head's push watch and the books application's intake (each pass a method now), the role readers replaced whole on every record change (reset in place), pending sign-ins and sessions never reclaimed, seven queues of the assembly's records whose emptied slots were never taken again, and its list of optimize walks asked, never shortened.
+### Principal Tracking (`runs_under`)
+Associating loci with runtime principals (`runs_under(locus, principal)`) to project backend ACLs (Postgres roles, NATS accounts, Vault policies) directly from the compiler graph is a **Roadmap Goal** ([The habitat, as designed](../habitat.md)).
 
-**A program says when it is healthy and how full it is.** The runtime serves liveness, readiness and capacity from what it already knows, with the application's own readings added, and the deployment backend maps them to the platform's probes and scaling (GH #1477). *Today:* not built.
+---
 
-## Quality: the toolchain is the gate
+## 5. Resources: Proven Memory Bounds and Health Probes
 
-**Every candidate is judged by the toolchain, and the judgment is read as data.** Verification runs `hale fmt --check`, `hale check`, `hale verify`, `hale test`, `hale fleet check` and `hale model diff` on every change and reads their JSON output.
-- *Instead of:* scraping text (a test count in prose) or deciding a topology change by file name.
-- *Today:* the gate is followed (`dna/core/verification.hl`); **goal:** reading `hale test --json`, and judging topology from the model diff's facets.
+### Memory-Bound Proofs (`@bounded_by`)
+Because DNA daemons run continuously for months over arena-allocated loci, every growing allocation flagged by the compiler's memory-bound survey must be either refactored to run in a per-iteration helper method (whose scratch arena reclaims on return) or explicitly proven bounded with `@bounded_by(<input>)`:
+- **Production code:** Names the finite input that bounds the allocation—such as a journal slice loaded once (`@bounded_by(self.j)`), a parsed document (`@bounded_by(document)`), or CLI arguments (`@bounded_by(argv)`).
+- **Tests:** Because test drivers spawn loci with handlers, the survey treats them as long-lived; test helpers annotate their bound as `@bounded_by(repo)`, `@bounded_by(tries)`, or `@bounded_by(script)`.
+- **No silent `@unbounded`:** `@unbounded` is reserved strictly for unanalyzed growth accompanied by a `// GH #<issue>` tracking comment. Unused annotations are rejected by `scripts/unbounded-unused.sh`.
+- **Status (`dna/`):** **Enforced Today** across all of `dna/`. Every `@unbounded` annotation has been eliminated, 270 functions carry verified `@bounded_by` proofs, `scripts/unbounded-unused.sh` reports zero unused annotations, and `hale verify` gates CI.
 
-**`hale verify` is a required gate on the organism's source.** It fails on any finding, the survey's advisories included, so a growth is answered when it is written, not found in production.
-- *Enforced by:* `dna_core_host_operations_api_verify_clean` (`crates/hale-cli/tests/dna_native_suite.rs`), in the `dna` jobs, which run on every change that can reach DNA and on every merge, behind the `required` check.
-- *Today:* followed by `dna/core` (with one deferral: `pq` does not take a `Credential` yet), the host's two programs (`dna/host`, its body, and `dna/host/verb`), `dna/operations` and `dna/api`. **Goal:** the head, the reflexes, the face and the rest of `dna/`.
+### Runtime Health and Capacity Probes (`std::observe::Probes`)
+Long-lived programs attach `std::observe::Probes { port }` on their `main locus` to expose liveness, readiness, and arena/queue capacity from runtime telemetry ([Observing a program](../everyday/observing.md)).
+- **Status (`dna/`):** **Roadmap Goal** to wire `std::observe::Probes` into all `dna/` daemons and map them to deployment platform health checks.
 
-**A surface is tested through its fixture transport.** `std::api::test::Rpc` drives the surface as a caller would; a test never builds a call context by hand. *Today:* followed by the todo application; **goal** for the head's tests.
+---
 
-**Model calls in tests are scripted or replayed, never live.** `FakeModel` (rules, answers, turns) for mechanics, `RecordedModel` tapes for replay; a live model is a deliberate evaluation, not a test.
+## 6. Quality Gates, Observability, and Project Layout
 
-## Observability: one channel
+### Automated Toolchain Gates (`hale verify`)
+Candidate verification (`dna/core/verification.hl`) runs `hale fmt --check`, `hale check`, `hale verify`, `hale test`, `hale fleet check`, and `hale model diff`.
+- **CI Gate:** `dna_core_host_operations_api_verify_clean` (`crates/hale-cli/tests/dna_native_suite.rs`) enforces zero `hale verify` findings across `dna/core`, `dna/host`, `dna/host/verb`, `dna/operations`, and `dna/api` on every PR and merge.
+- **Surface & Model Testing:** API surfaces are tested through `std::api::test::Rpc` rather than synthetic contexts, and automated tests use `FakeModel` or `RecordedModel` tapes—never live LLM network calls (**Enforced Today**).
 
-**Readings are declared, and the organism and the platform read the same ones.** A series is declared beside the code that moves it, served by `std::metrics`, and is the same endpoint a deployment's probes read.
-- *Instead of:* series names as string literals, and two channels (the senses and the inspector) that never meet.
-- *Today:* **goal.** The senses and `LOTUS_OBS` are separate, and the todo application serves no readings.
+### Unified Metrics and Structured Logging
+- **Metrics (`std::metrics`):** Series should be declared alongside the code that updates them and exposed on a single endpoint scraped by both the organism's senses and the deployment platform (**Roadmap Goal**).
+- **Structured Logging (`std::log`):** Every log line emitted by a running component must be a structured record (timestamp, level, message, and key-value fields) via `std::log` rather than unstructured `print` / `println` calls. The built-in `standard` nursery pack (`hale dna pack apply standard`) proposes this rule as organizational law (**Roadmap Goal** for compiler stdio effect enforcement).
 
-## Layout
-
-- **A part is a seed** (a directory of `.hl` with its `hale.toml`), with its tests in `*_test.hl` beside it or under its `tests/`.
-- **Contracts live in `spec/`**, generated from the surfaces and committed.
-- **The organism's own source is `dna/org/`**, generated by `init` and changed only through reviewed changes; `vendor/dna` is the toolchain's and is never edited by hand.
-- **Configuration is typed params on the main locus**, bound per environment in `hale.toml`; an environment variable is read in one place, at the edge.
-
-## What follows from it
-
-Followed, these rules make a change to the organism checkable before it runs: a new topic that no instance binds, a surface field whose type changed under a caller, a function that reaches a secret or the network without its purpose, a deployment that no longer matches its program, a money value passed where a duration was meant. Each is a build error with a path through the source, not an incident.
-
-The *goal* rules above are DNA's own migration, in the order they tighten the system most: typed rows; the organism as a fleet plan, with its broker permissions derived from its bindings; the head's reads as surfaces with generated clients; a typed heart; law and attributed effects on every program; verification reading data; units for money and time; enums; secrets provisioned on the sealed side.
+### Standard Directory Layout
+- **Seeds:** Each component is a self-contained seed directory with its own `hale.toml` and `*_test.hl` / `tests/` suite.
+- **Contracts (`spec/`):** Generated OpenAPI, MCP, and `.description.json` contracts are committed under `spec/`.
+- **Organization (`dna/org/` vs. `vendor/dna/`):** Project-owned governance and topology live in `dna/org/` and change only through reviewed mutations; `vendor/dna/` is managed exclusively by `hale dna upgrade`.
+- **Configuration:** Passed as typed `params` on `main locus` and bound per environment in `hale.toml`, reading environment variables only at the process entrypoint edge.

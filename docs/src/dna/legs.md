@@ -1,127 +1,90 @@
-# Legs, hands and voice
+# Worker Processes, Tools, and Model Routing (Legs, Hands, and Voice)
 
-A **leg** performs one unit of work for a position: it claims an
-attempt, wears the attempt's **hat**, acts with the **hands** it is
-given, speaks to models through the **voice**, and hands the outcome
-back under the lease it was given. The project owns its legs (the
-performers in `dna/org/work.hl`); the spine admits the claim and
-settles the outcome. A leg fails by letting its lease lapse: the spine
-asks again, or, for a performer that may already have acted, waits for
-a person. A leg holds nothing between tasks, and never holds a database
-role, a lease past its end, or the right to settle its own work.
-
-| part | what it is | where it lives |
-| --- | --- | --- |
-| legs | `hale dna work`: the verbs, the performers, the worker loop | `dna/core/legs` (vendored as `vendor/dna/legs`), `dna/org/work.hl` |
-| hat | one Work's context, as structure, read per task | `dna/core/hat.hl` |
-| hands | what a performer acts with: git, the forge, the toolchain | `dna/core/legs/hands.hl` |
-| voice | the model seam: the catalog, its backends, the tape | `dna/org/models.hl`, `dna/core/models.hl`, `dna/core/tape.hl` |
-
-## One judgment, performed by hand
-
-You need an organism running ([The heart and the body](./heart.md))
-and a head serving its API ([The head and the face](./head.md)). The
-verbs reach the head at `--api`, which defaults to `HALE_DNA_API`, else
-`http://127.0.0.1:8793`. They read over HTTP, presenting
-`HALE_DNA_ID_TOKEN` as the bearer where the head serves OIDC, and send
-their commands over the socket the head names, where the kernel
-vouches for who you are.
-
-Where the head serves OIDC, get the token first. On the local stub
-issuer (the one `hale dna head` starts), `login` mints it for the
-person the record maps, with the client secret read from the vault
-and never printed:
+In DNA, a **leg** (`hale dna work`) is a stateless worker process that claims one task attempt from the edge API (`head`), reads the attempt's structured context package (**hat**), executes sandboxed tools (**hands**) and LLM requests (**voice**), and submits the outcome back under a time-bounded lease. Legs hold no persistent state between tasks, hold no direct Postgres roles, and cannot settle their own work—the organization spine validates and settles every submitted outcome.
 
 ```sh
-eval "$(hale dna work login --as alice)"   # export HALE_DNA_ID_TOKEN=…
-```
+# 1. Authenticate against the local OIDC stub (or print the browser login URL)
+eval "$(hale dna work login --as alice)"
 
-A real issuer is refused: `login` prints the head's `/auth/login` URL
-to sign in at in a browser, and mints nothing.
-
-```sh
+# 2. Enqueue a judgment task and run a single worker cycle as position:agent
 hale dna task create --judgment assess whether the storage migration is safe to ship
-hale dna work next --as position:agent
-hale dna work brief --attempt <attempt> --render text --plain
-hale dna work submit --as position:agent --attempt <attempt> --token <n> --result "assessment: safe to ship"
-hale dna work settle --attempt <attempt> --token <n> --wait 30
-```
-
-A judgment is admitted as one Work that the organization hands to
-legs. `next` answers with the lease: the attempt, its Work and task,
-the holder, the token, and `until`. `brief --render text --plain`
-prints the hat written for a person. `submit` hands the result back
-under the lease, and `settle` reads it back until the owner answers:
-`settled` with the disposition, or refused with the reason. The record
-now holds the attempt's rows, from `attempt.claimed` to
-`attempt.outcome` ([One task, end to end](./workflow.md)).
-
-The next judgment can go to a worker instead; `--once` runs each child
-one task and ends:
-
-```sh
 hale dna work loop --as position:agent --parallel 1 --once
 ```
 
-## The verbs
+## Architecture Overview
 
-Every verb but `loop` prints one JSON object (`verb`, `state`,
-`reason`, and the receipt's `attempt`) and holds nothing afterwards.
-`submit` and `release` are keyed on the lease
-(`work-submit:<attempt>:<token>`), so a verb run twice is one act and
-the second run reads the first's receipt; `--request-id` overrides any
-verb's id. Every verb takes `--api`.
-
-| verb | what it does | its flags |
+| Component | Engineering Role | Source Location |
 | --- | --- | --- |
-| `login` | prints `export HALE_DNA_ID_TOKEN=…` for a head under the local stub issuer; the sign-in URL (and exit 1) for a real one | `--as <person>` (the record's only one when omitted), `--api` |
-| `next` | claims the next attempt for a position (`Commands::claim`) | `--as`, `--kind`, `--capabilities`, `--classes` (default `public internal`), `--orgs`, `--ttl` (600), `--effect`, `--worker` |
-| `brief` | reads the hat, or renders it | `--attempt` or `--work`, `--render text\|prompt\|agent`, `--plain` |
-| `renew` | extends the lease and keeps the token (`AttemptRenew`) | `--as`, `--attempt`, `--token`, `--ttl`, `--renewal <n>` (1, 2, … per renewal) |
-| `allowance` | asks the spine for the attempt's spend, and waits (`AttemptAllowance`) | `--as`, `--attempt`, `--token`, `--wait` (60) |
-| `hand` | runs one of the Work's hands here: a file hand in the attempt's kept worktree, an infrastructure hand through the head | `--attempt`, `--name`, `--args` (JSON, as the hand's schema says) |
-| `submit` | hands the outcome back under the lease (`AttemptOutcome`) | `--as`, `--attempt`, `--token`, `--from-worktree` (the kept worktree, validated and committed), `--result` or `--result-file`, `--disposition` (`done`), `--narrative`, `--evidence-file`, `--receipt-file`, `--receipt-class` (`internal`), `--effect`; the hat it wore: `--hat-digest`, `--hat-head`, `--hat-watermark`, `--prompt-digest`, `--renderer` |
-| `settle` | reads the outcome back until the owner answers (`CommandLookup`) | `--attempt`, `--token`, `--wait` (0) |
-| `release` | gives the lease back with no outcome (`AttemptRelease`) | `--as`, `--attempt`, `--token`, `--why` |
-| `friction` | files what got in the way, a row nobody admits (`FrictionFile`) | `--as`, `--text`, `--attempt` |
-| `run` | one cycle: claim, brief, perform, submit, settle | `--as`, `--kind`, `--performer person\|deterministic\|model`, `--wait` (30), and `next`'s filters |
-| `loop` | a worker: supervised children, each a `run` | `--as`, `--parallel N` (1..64), `--once`, `--only <kind>`, `--idle-ms` (2000), `--performer`; `loop --drain` ends a running loop |
+| **Legs** (`hale dna work`) | CLI verbs, performer dispatch, and supervised worker loop | `dna/core/legs` (vendored as `vendor/dna/legs`), `dna/org/work.hl` |
+| **Hat** | Deterministic, structured per-Work context package fetched per attempt | `dna/core/hat.hl` |
+| **Hands** (`legs::Hands`) | Sandboxed execution interfaces for Git, GitHub (`gh`), Hale/Go toolchains, and lease management | `dna/core/legs/hands.hl`, `dna/core/contracts.hl`, `dna/core/tools.hl` |
+| **Voice** (`ModelBackend`) | LLM client router, credential vault bindings, budget gate, and record/replay tape | `dna/org/models.hl`, `dna/core/models.hl`, `dna/core/tape.hl` |
 
-`--as` is the graph's id, `position:<name>`, never a free string, and
-`/` is allowed (`position:api/dev`). It must be a position your person
-holds: by the record's `holds` edges (a holder `hale dna fill` proposed
-holds once the Board ratifies it), or any position under a record that
-declares `dna.trust = local`, as `hale dna new` and `hale dna init`
-declare. Who you are comes from the socket: your uid, mapped to a
-person by `git config --local --add dna.unix.member "uid:<n>=<person>"`,
-which `new` and `init` write for whoever runs them.
+The leg binary is compiled once per project from `dna/org/work.hl` and `vendor/dna/legs` into `.hale/dna/legs/<key>`. When running an MCP server via `hale mcp`, the leg verbs are exposed as the `hale_dna_work` tool and the current Work's hands as `hale_dna_hand` (under MCP, `loop` only runs with `--once` or `--drain`).
 
-A claim matches attempts by performer kind, and `--kind` names it. The
-kinds the organization hands to legs are `agent`, `software` and the
-like; a position the graph states (`position:api/dev`) works as an
-`agent`, and also takes the Works routed to it: a change asked with
-`hale dna task create --to position:api/dev` is one `Patch` Work that
-only that position's holder can claim, briefed in that position's hat,
-and performed by the tool loop below. A `position` word in your
-`--capabilities` is dropped: the head grants it from your seat alone. When nothing matches, the refusal names the kinds that
-are outstanding for a leg and the flag that claims one.
+---
 
-Exit codes: **0** the head admitted it, or the read answered; **1** a
-refusal (printed with `state: refused` and the reason), a verb outside
-your slice, an unreachable head, or a `run` that ends `unsettled` or
-`unresolved`; **2** a usage error, judged before the head is asked.
+## Step-by-Step Manual Execution
 
-The leg is a program of the project's own, its performers over the
-vendored legs seed, built once under `.hale/dna/legs/<key>`. `hale mcp`
-exposes the verbs as `hale_dna_work`, and a Work's hands as
-`hale_dna_hand`; over MCP a loop runs
-only with `--once` or `--drain`.
+Before running worker commands, start the organism ([The heart and the body](./heart.md)) and the edge API server ([The head and the face](./head.md)).
 
-## Performers and their effect classes
+All `hale dna work` subcommands connect to `--api` (defaulting to `HALE_DNA_API`, or `http://127.0.0.1:8793`). Read requests use HTTP (`Authorization: Bearer $HALE_DNA_ID_TOKEN` when OIDC is enabled), while mutations (`HeadCommands`) are sent over the local Unix domain socket advertised by the head, where the OS kernel authenticates your UID, or over the head's HTTP commands port.
 
-`dna/org/work.hl` names one performer of each kind. `init` writes it
-beside the catalog; on a machine with `claude` on `PATH` its model and
-its catalog read:
+1. **Authenticate (OIDC heads):**
+   When connected to the local stub OIDC issuer started by `hale dna head`, `login` reads the client secret from the vault and prints an `export HALE_DNA_ID_TOKEN=…` statement without exposing the secret:
+   ```sh
+   eval "$(hale dna work login --as alice)"
+   ```
+   Against an external production OIDC issuer, `login` refuses to mint a token, prints the head's `/auth/login` URL for browser sign-in, and exits `1`.
+
+2. **Claim, inspect, submit, and settle an attempt step by step:**
+   ```sh
+   hale dna task create --judgment assess whether the storage migration is safe to ship
+   hale dna work next --as position:agent
+   hale dna work brief --attempt <attempt> --render text --plain
+   hale dna work submit --as position:agent --attempt <attempt> --token <n> --result "assessment: safe to ship"
+   hale dna work settle --attempt <attempt> --token <n> --wait 30
+   ```
+   - `next` claims the next matching attempt and returns the lease metadata: `attempt`, `work`, `task`, `holder`, fencing `token`, and expiration timestamp (`until`).
+   - `brief --render text --plain` fetches and formats the Work's hat for human reading.
+   - `submit` records the outcome under the lease (`attempt.outcome_requested`).
+   - `settle` polls until the spine settles the outcome (`settled` with disposition, or `refused` with a reason), recording rows from `attempt.claimed` through `attempt.outcome` ([One task, end to end](./workflow.md)).
+
+---
+
+## `hale dna work` CLI Reference
+
+Every subcommand except `loop` outputs a single JSON object (`verb`, `state`, `reason`, and the receipt's `attempt`) and exits immediately. `submit` and `release` derive deterministic idempotency keys from the lease (`work-submit:<attempt>:<token>`), so repeating a command returns the original receipt; pass `--request-id` to override the key on any verb. Every verb accepts `--api`.
+
+| Subcommand | Description | Flags |
+| --- | --- | --- |
+| `login` | Prints `export HALE_DNA_ID_TOKEN=…` on the local stub OIDC issuer, or prints the browser `/auth/login` URL (exit `1`) on an external issuer | `--as <person>` (defaults to the record's sole member), `--api` |
+| `next` | Claims the next available attempt for a position (`Commands::claim`) | `--as`, `--kind`, `--capabilities`, `--classes` (default `"public internal"`), `--orgs`, `--ttl` (`600`), `--effect`, `--worker` |
+| `brief` | Fetches the raw JSON hat or renders it for a target consumer | `--attempt` or `--work`, `--render text\|prompt\|agent`, `--plain` |
+| `renew` | Extends an active lease while preserving its fencing token (`AttemptRenew`) | `--as`, `--attempt`, `--token`, `--ttl`, `--renewal <n>` (`1, 2, …` per renewal) |
+| `allowance` | Requests the attempt's model spend allowance from the spine and waits (`AttemptAllowance`) | `--as`, `--attempt`, `--token`, `--wait` (`60`) |
+| `hand` | Executes one of the Work's granted hands locally (file hands in the attempt's kept worktree, infra hands via the head) | `--attempt`, `--name`, `--args` (JSON object matching the hand's schema) |
+| `submit` | Submits the attempt outcome under the lease (`AttemptOutcome`) | `--as`, `--attempt`, `--token`, `--from-worktree`, `--result` or `--result-file`, `--disposition` (`done`), `--narrative`, `--evidence-file`, `--receipt-file`, `--receipt-class` (`internal`), `--effect`, `--hat-digest`, `--hat-head`, `--hat-watermark`, `--prompt-digest`, `--renderer` |
+| `settle` | Polls for outcome settlement from the spine (`CommandLookup`) | `--attempt`, `--token`, `--wait` (`0`) |
+| `release` | Releases the lease without an outcome (`AttemptRelease`) | `--as`, `--attempt`, `--token`, `--why` |
+| `friction` | Files an un-gated `friction.filed` diagnostic row (`FrictionFile`) | `--as`, `--text`, `--attempt` |
+| `run` | Runs one full lifecycle: claim, brief, perform, submit, and settle | `--as`, `--kind`, `--performer person\|deterministic\|model`, `--wait` (`30`), plus all `next` filter flags |
+| `loop` | Runs supervised worker children that repeatedly execute `run` | `--as`, `--parallel N` (`1..64`), `--once`, `--only <kind>`, `--idle-ms` (`2000`), `--performer`; `loop --drain` stops a running loop |
+
+### Position Identity, Routing, and Exit Codes
+
+- **Position identity (`--as`):** Must be a graph position ID formatted as `position:<name>` (slashes are allowed, such as `position:api/dev`). Your authenticated person must hold that position via ratified `holds` edges in memory (`hale dna fill`), or the repository must declare `dna.trust = local` (the default set by `hale habitat graft`). Over the Unix socket, the head maps your OS UID to a person via `git config --local --add dna.unix.member "uid:<n>=<person>"`.
+- **Performer kinds and position routing (`--kind`):** Standard performer kinds include `agent` and `software`. Any graph position (`position:api/dev`) acts as an `agent` and also claims Works explicitly routed to that seat (`hale dna task create --to position:api/dev`). Routed tasks create a `Patch` Work that only a holder of `position:api/dev` can claim, briefed with that position's mandate and executed via the tool loop. Any `position` token passed manually in `--capabilities` is stripped by the head; seat capabilities are derived strictly from your authenticated position. When no attempt matches, the refusal message lists the outstanding kinds and the flag required to claim them.
+- **Exit codes:**
+  - `0`: Command admitted by the head, or read query succeeded.
+  - `1`: Refusal (`state: "refused"` with `reason`), unauthorized verb, unreachable head, or a `run` ending in `unsettled` or `unresolved`.
+  - `2`: CLI usage or configuration error rejected before contacting the head.
+
+---
+
+## Performers and Effect Classes
+
+`dna/org/work.hl` defines the project's performer catalog (`legs::PerformerCatalog`) across three slots: `person`, `deterministic`, and `model`.
 
 ```hale,fragment
 fn model() -> legs::ModelPerformer {
@@ -129,38 +92,42 @@ fn model() -> legs::ModelPerformer {
 }
 
 fn performers() -> legs::PerformerCatalog {
-    // a person answers what they are asked; asked again, they answer again
-    return legs::PerformerCatalog { person: legs::Person { effect: "idempotent" }, deterministic: deterministic(), model: model() };
+    // A person answers what they are asked; asked again, they answer again
+    return legs::PerformerCatalog {
+        person: legs::Person { effect: "idempotent" },
+        deterministic: deterministic(),
+        model: model(),
+    };
 }
 ```
 
-With hosted backends and no harness the model's class is
-`effect_free`. With no backend at all the model is `legs::NoModel { }`,
-which takes nothing, so agent work goes to a person instead of burning
-attempts; the deterministic performer is `legs::NoDeterministic { }`
-until you write one (`legs::FixedAnswer { kinds: "agent", effect:
-"effect_free", result: "…" }` is the smallest).
-
-| performer | takes | briefed as | what it does |
+| Performer Type | Accepted Kinds | Brief Render Mode | Behavior |
 | --- | --- | --- | --- |
-| a person (`legs::Person`) | every kind | `text` | prints the brief; the outcome is theirs to `submit` |
-| a deterministic one (`legs::FixedAnswer`, or your own) | the kinds it names, and it wins for them | `agent` | a program of the project's |
-| the model (`legs::ModelPerformer`) | `agent`, `service`, `software` | `prompt` | the catalog's router, one task per run |
+| `legs::Person` | Every kind | `text` | Prints the rendered brief; the human operator runs `submit` when finished |
+| Deterministic (`legs::FixedAnswer`, `legs::CodebaseWork`, or custom) | Kinds explicitly listed by the performer (takes precedence) | `agent` | Executes deterministic Hale code (`legs::NoDeterministic { }` by default) |
+| `legs::ModelPerformer` | `agent`, `service`, `software` | `prompt` / `agent` | Routes the task to an LLM backend: the agent router, or, generated with no backend configured, the same router with `mapped_only: true`, which asks only where the model map names an endpoint (the habitat's models) and gives any other Work back unperformed (`legs::NoModel { }` takes nothing) |
 
-`run` picks the deterministic performer when it takes the kind, a
-person for `human` work or when the model does not take the kind, and
-the model otherwise. `--performer` forces one, but a performer never
-answers a kind it does not take.
+### Performer Selection Rules
 
-For a dry run with no key, put a scripted model behind the leg. Every
-performer declares its class, the model included:
+During `hale dna work run`, the leg selects a performer in priority order:
+1. The **deterministic** performer, if it accepts the attempt's kind (`legs::FixedAnswer { kinds: "agent", effect: "effect_free", result: "…" }` is the minimal implementation; `legs::CodebaseWork` handles attached foreign repositories).
+2. The **person** performer, if the work kind is `human` or if the model performer does not accept the kind (for example, when `model` is `legs::NoModel { }`). A `mapped_only` model performer takes the kind but gives a Work the map names no endpoint for back unperformed (`refused`, the lease released, no attempt spent), so unconfigured agents burn nothing.
+3. The **model** performer otherwise.
+
+Passing `--performer person|deterministic|model` forces a specific slot, though a performer will never claim a kind it does not accept.
+
+To run dry-run rehearsals without API keys, wire `dna::FakeModel` into `dna/org/work.hl`:
 
 ```hale
 import "vendor/dna" as dna;
 import "vendor/dna/legs" as legs;
 
 fn fake() -> dna::FakeModel {
-    return dna::FakeModel { name: "fake", model: "fake-1", answer: "assessment: the migration is additive and safe to ship" };
+    return dna::FakeModel {
+        name: "fake",
+        model: "fake-1",
+        answer: "assessment: the migration is additive and safe to ship",
+    };
 }
 
 fn agent_models() -> dna::ModelRouter {
@@ -172,126 +139,106 @@ fn model() -> legs::ModelPerformer {
 }
 ```
 
-**The effect class** says what a settle that failed may have left
-behind. There is no default: a catalog with a performer that declares
-none is refused by `next`, `submit`, `run` and `loop` (exit 2).
+### Effect Classes and Failure Recovery
 
-| class | means | a failed settle becomes |
+Every performer in `dna/org/work.hl` **must** declare an `effect` class. There is no default; if any performer omits `effect`, `next`, `submit`, `run`, and `loop` exit `2`.
+
+| Effect Class | Semantics | Behavior on Failed Settle or Expired Lease |
 | --- | --- | --- |
-| `effect_free` | answered and touched nothing | `unsettled`: the lease goes back, and the loop performs again after a rest |
-| `idempotent` | may be run again to the same end | the same |
-| `uncertain` | may have acted once already: an agent's seat with tools | `unresolved`: nothing is retried by a program |
+| `effect_free` | Pure computation or read-only model call; no external state mutated (default for hosted models without a local harness) | Marks attempt `unsettled`, releases the lease, and retries automatically after backoff |
+| `idempotent` | Safe to repeat to reach the same state | Marks attempt `unsettled`, releases the lease, and retries automatically after backoff |
+| `uncertain` | May have caused external side effects (e.g., an agent harness with local tools, `claude` on `PATH`) | Marks attempt `unresolved` (`attempt.unresolved`), files friction, halts that worker slot, and waits for human resolution |
 
-The class rides on the claim, and the hat says which classes a Work
-admits: an answered Work admits all three, and an edit admits no
-`effect_free` performer. An outcome names its claim's class. `run` and
-`loop` claim with their performer's class; only `next` and `submit`
-take `--effect`.
+The claim records the performer's effect class, and the Work's hat specifies which effect classes the Work admits (for example, an assessment admits all three, whereas a code edit refuses `effect_free` performers). Only `next` and `submit` accept a manual `--effect` flag; `run` and `loop` always use the performer's declared class.
 
-An `uncertain` attempt whose settle failed is marked unresolved at the
-head (`attempt.unresolved`, and its effect's result unknown), the leg
-files friction naming the attempt, the holder and the lease, and the
-loop stops that slot. An `uncertain` claim whose lease lapses with no
-outcome is treated the same, which is why such a claim is taken for an
-hour by default. A person decides:
+Because an expired `uncertain` lease halts automated retries, `uncertain` claims default to a 1-hour TTL. When an `uncertain` attempt becomes `unresolved`, a human operator must inspect its history and resolve the effect outcome manually:
 
 ```sh
 hale dna effect resolve attempt:<attempt> --outcome ok|failed
 ```
 
-## The worker loop
+---
 
-`hale dna work loop --as position:agent --parallel N` starts `N`
-children, each a `run` as its own holder, `position:agent#1` to
-`position:agent#N`, so two workers never share a lease. A child that
-performed starts again at once; one that found nothing, left the Work
-to a person, or gave it back waits its slot's backoff first
-(`--idle-ms`, doubling per idle run up to a minute). Each child's
-answer is one JSON line as it ends, and the loop's own line comes last.
+## Supervised Worker Loop (`hale dna work loop`)
 
-SIGTERM or SIGINT drains the loop: no child starts again, and each is
-told to end and, after three seconds, made to. From another terminal,
-`hale dna work loop --drain` writes a marker (`.hale/dna/legs/drain`)
-that tells the running loop to take no new work and end once its
-children have. A child ended mid-task leaves a lease that expires, and
-the owner asks again.
+`hale dna work loop --as position:agent --parallel N` spawns `N` supervised worker processes (`1..64`). Each child claims work under a distinct holder identity (`position:agent#1` through `position:agent#N`) so concurrent workers never share a lease.
 
-Workers move the record under each other. A head that read it while it
-moved answers `snapshot_changed` or `command_busy`; neither admits the
-command, and the leg asks again under the same request id for up to
-ten seconds.
+- **Backoff:** A worker that completes a task immediately checks for the next one. A worker that finds no matching work, leaves work for a human, or releases its lease waits for `--idle-ms` (default `2000` ms), doubling its wait on each consecutive idle pass up to 60 seconds.
+- **Output:** Each child prints one JSON receipt line as it finishes a cycle; the supervisor prints a summary JSON line when the loop exits.
+- **Graceful Drain:** Sending `SIGTERM` or `SIGINT` stops spawning new children and signals active children to finish (forcing termination after 3 seconds). From another terminal, running `hale dna work loop --drain` writes `.hale/dna/legs/drain`, instructing the active loop to stop claiming new attempts and exit once in-flight children complete. Any child terminated mid-task leaves its lease to expire so the spine can re-queue the attempt.
+- **Concurrency Retries:** When concurrent workers advance the record simultaneously, the head may return `snapshot_changed` or `command_busy`. The leg automatically retries the command under the same `request_id` for up to 10 seconds.
 
-## The hat
+---
 
-The hat is what a leg reads: one Work's context as structure, never a
-prompt. `brief` reads it from the head (`…/dna/context?id=<work>`). It
-carries the position and its charter; the practices ratified for the
-Work's target, with their ids; the objective, target, output contract,
-data class and requirement; the effect classes the Work admits, its
-cost ceiling and knowledge bindings; its **hands**, the tools the
-output contract gives (each with its description and the schema of its
-arguments), the tool grant that names them, and which of them validate
-the outcome; the model its mapping chose (mode, size, category,
-model and the rule that chose it); the history of the execution the
-Work belongs to; and the record head and memory
-watermark it was read at, with its digest.
+## The Hat (Work Context Package)
 
-On a head that serves OIDC the hat is the lease holder's: the person your
-token maps to, who claimed the attempt and still holds the lease, reads it
-exactly as on a local head. Anyone else, and you before `next` claims, is
-refused `lease_required`, naming the Work. The claim row is the record's own
-answer to who may see this Work's hat; nothing outside the record has to
-vouch for it.
+The **hat** (`dna/core/hat.hl`) is a deterministic, structured representation of a single Work's execution context—never an ad-hoc prompt string. Calling `hale dna work brief` fetches the hat from the head (`GET /dna/context?id=<work>`).
 
-The hat reads no clock, no environment value and no random id, so read
-twice at one head it is one digest. Rendering is the leg's: `text` for
-a person, `prompt` for a model, `agent` for the prompt with each hand
-named and the validators to run before handing the outcome back. The renderer's version (`legs-render/2`), the hat's
-digest and the digest of the rendering go back with the outcome, so a
-replay renders from the recorded hat.
+### Contents of a Hat
 
-## Hands
+- **Position & Governance:** The target position, its charter, and all ratified practices bound to the Work's target (with their digests/IDs).
+- **Work Specification:** Objective, target, output contract (`Patch`, `Assessment`, etc.), data classification, requirements, admitted effect classes, cost ceiling, and bound knowledge nodes.
+- **Hands & Validation:** The tool definitions granted by the output contract (name, description, JSON Schema of arguments), the tool grant authorizing them, and the subset of tools designated as outcome validators.
+- **Model Resolution:** The selected model (`mode`, `size`, `category`, `model`, and the routing rule that selected it).
+- **Execution Lineage & Provenance:** The execution history of the enclosing Task, the record head digest, the Postgres memory watermark at which the hat was read, and the hat's own SHA-256 digest.
 
-What a Work's hands are is its output contract's to say, and the hat
-carries them (`dna/core/contracts.hl`, `dna/core/tools.hl`):
+### Lease-Gated Access Control and Deterministic Rendering
 
-| contract | hands | validated by |
+On an OIDC-enabled head, reading `/dna/context` requires holding the active lease on that Work's attempt. If you have not claimed the attempt with `next`, or if another person holds the lease, the head refuses the read with `lease_required`.
+
+Because the hat incorporates no wall-clock timestamps, environment variables, or random IDs, reading the same Work at the same record head always produces an identical digest. The leg renders the hat into one of three formats:
+- `text`: Formatted for a human operator.
+- `prompt`: Formatted for a single-turn LLM call.
+- `agent`: Formatted for a tool-calling agent, listing every granted hand and the required validators.
+
+When submitting an outcome, the leg includes the renderer version (`legs-render/2`), `--hat-digest`, and `--prompt-digest` so replays can reconstruct the exact prompt from the recorded hat.
+
+---
+
+## Hands (Sandboxed Tool Execution)
+
+A Work's **output contract** (`dna/core/contracts.hl`, `dna/core/tools.hl`) determines which tools (**hands**) a performer may invoke and which validators must pass before an outcome is accepted:
+
+| Output Contract | Granted Hands (`BUILTIN_TOOLS`) | Required Validators |
 | --- | --- | --- |
-| `Patch` | `read`, `edit`, `check`, `test`, `fmt`, `patch` | `check`, `test`, `fmt` |
-| `Assessment` | `record_status`, `record_history`, `org_chart` (read-only) | — |
-| any other | none yet | — |
+| `Patch` | `read`, `edit`, `check`, `test`, `fmt`, `patch` (plus `go_vet`, `go_test`, `gofmt_check` on Go codebases) | `check`, `test`, `fmt` (or Go equivalents) |
+| `Assessment` | `record_status`, `record_history`, `org_chart` (read-only infrastructure queries) | None |
+| Other contracts | None by default | None |
 
-Every hand runs where the performer is, never in the organism. A
-validator is run before the outcome is handed back, and the owner runs
-the same check again on submit: only the owner's verdict counts.
+All hands execute locally on the leg's machine—never inside the organism's spine. Validators run locally before `submit`, and the spine re-runs the exact same checks upon receiving the submission.
 
-A performer is handed `legs::Hands`, a set of interfaces:
+### The `legs::Hands` Interface Catalog
 
-| hand | what it does |
-| --- | --- |
-| git | a scratch clone (never the primary checkout), a patch applied, a commit, the commit's patch |
-| forge | a review opened through `gh`, a verdict read; the forge decides, and a leg never merges |
-| toolchain | `hale check`, `hale test`, `hale fmt --check` |
-| deploy, heart | refuse: neither is a leg's hand yet |
-| lease | renews the lease while the performer waits, and asks for its allowance |
+Inside `dna/core/legs/hands.hl`, a performer receives a `legs::Hands` locus containing seven capability interfaces, each returning a `HandResult { ok: Bool, output: String, error: String }`:
 
-A Work whose output contract is `Patch` asks for a change. The leg
-commits in its scratch clone and hands back `result_ref: commit:<sha>`
-with the commit's patch as a receipt; the owner applies the patch at
-the genome's head, verifies it, and opens the Review with the leg as
-its author ([Reviews](./head.md#reviews)).
+| Hand Slot | Interface & Default Implementation | Operations |
+| --- | --- | --- |
+| `git` | `GitHand` (`ScratchGit`) | Clones a scratch worktree outside the primary checkout (`worktree` with `gc.auto=0`), applies unified diffs (`apply`), commits staged changes (`commit`), formats the head commit as a patch (`patch`), creates branches (`branch`), pushes to `origin` (`push`), and removes scratch directories (`clean`). |
+| `forge` | `ForgeHand` (`GhForge` / `ForgeBridge`) | Opens a pull request via `gh pr create` (`open_review`) and reads the PR review decision (`verdict` -> `approve`, `revise`, or `pending`). A leg never merges PRs. |
+| `toolchain` | `ToolchainHand` (`Toolchain`) | Runs `hale check <path>` (`check`), `hale test <path>` (`test`), and `hale fmt --check <path>` (`fmt_check`). |
+| `go` | `GoHand` (`GoToolchain`) | For attached Go codebases: checks for `go` and `gofmt` on `PATH` (`available`), runs `go vet ./...` (`vet`), runs `go test <pkg>` (`test`, validating package patterns), and checks formatting with `gofmt -l .` (`gofmt_check`). |
+| `lease` | `HeadLease` | Renews the active attempt lease (`renew`) and requests/polls the attempt's model spend allowance from the spine (`allowance`). |
+| `deploy` | `DeployHand` (`NoDeploy`) | Refuses execution; deployment expression is owned by the body. |
+| `heart` | `HeartHand` (`NoHeart`) | Refuses execution; application heart API calls are not yet delegated to legs. |
 
-## Voice: the model catalog
+When completing a `Patch` Work, the leg commits its changes in the scratch clone and submits `result_ref: commit:<sha>` along with the `git format-patch` receipt. The spine applies the patch to the genome's base, re-verifies it, and opens a Review with the leg recorded as the author ([Reviews](./head.md#reviews-verdicts-and-signer-routing)). For foreign repositories attached via `hale dna codebase attach`, `legs::CodebaseWork` works on a branch of the attached repository, runs its configured build/test commands, and opens a pull request on its forge.
 
-The organization calls models through a router over backends that
-share one interface, `ModelBackend`. Which model each position calls
-is a catalog in source, `dna/org/models.hl`, written by `init` for
-what the machine had, and yours to edit. A backend is a constructor
-function; a position's router is composed from them:
+---
+
+## Voice: Model Catalog, Routing, and Tapes
+
+The organization routes LLM calls through a unified `ModelBackend` interface configured in `dna/org/models.hl`. `hale habitat graft` generates this file based on the tools and keys available on the machine, and you can edit it as part of your genome. A hosted pair (`frontier()`, `fast()`) is written only for a model key already in the vault, Anthropic's or OpenAI's, as below; with none, no hosted backend is written at all (a harness on `PATH`, else the desk, fills every tier), and the default backend is **the habitat's models**: when the habitat holds an organism that provides `models` (voice), the graft points the organism's model map at it, with a key the habitat draws for it ([The Habitat's Models](../habitat.md#the-habitats-models)). A Work the map resolves to an endpoint is asked there, whatever the catalog holds:
 
 ```hale,fragment
 fn frontier() -> dna::OpenAiChat {
-    return dna::OpenAiChat { name: "deep", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { key: "OPENAI_API_KEY", scheme: "bearer" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 };
+    return dna::OpenAiChat {
+        name: "deep",
+        model: "gpt-4o",
+        endpoint: "https://api.openai.com/v1/chat/completions",
+        credential: dna::HostedCredential { key: "OPENAI_API_KEY", scheme: "bearer" },
+        input_micros_per_1k: 2500,
+        output_micros_per_1k: 10000,
+    };
 }
 // …
 fn agent_models() -> dna::ModelRouter {
@@ -299,52 +246,33 @@ fn agent_models() -> dna::ModelRouter {
 }
 ```
 
-`leader_models()` and `editor_models()` are the Leader's and the
-editor's; `agent_models()` is the model leg's. The catalog's
-`org_budget()` is the one allowance, which the spine owns
-([The spine](./spine.md)).
+`leader_models()` and `editor_models()` configure the Leader and SourceEditor positions inside the spine; `agent_models()` configures the model leg; and `org_budget()` defines the organization's spend ceiling enforced by the spine ([The spine](./spine.md)).
 
-| backend | speaks | notes |
+### Supported Model Backends
+
+| Backend Locus | Protocol / Target | Security & Effect Notes |
 | --- | --- | --- |
-| `dna::OpenAiChat` | the OpenAI chat shape: OpenAI, OpenRouter, vLLM, Ollama | key presented as `scheme: "bearer"` |
-| `dna::AnthropicMessages` | Anthropic's native Messages API | key presented as `scheme: "x-api-key"` |
-| `dna::LocalModel` | the OpenAI shape, to this machine | no key, no `external_model` effect, any data class |
-| `dna::HarnessModel` | an installed harness (`claude`, or `codex`) with its own tools | works in an export of the worktree, under a confinement (`dna::Bubblewrap`) |
-| `dna::RecordedModel` | a tape over any of the above | below |
-| `dna::FakeModel` | scripted answers | no key; for rehearsal and fixtures |
+| `dna::OpenAiChat` | OpenAI Chat Completions API (OpenAI, OpenRouter, vLLM, Ollama) | Authenticates via `scheme: "bearer"`; carries the `external_model` effect class |
+| `dna::AnthropicMessages` | Anthropic native Messages API | Authenticates via `scheme: "x-api-key"`; carries the `external_model` effect class |
+| `dna::LocalModel` | OpenAI-compatible HTTP endpoint on localhost | No API key, no `external_model` effect; permitted for any data classification |
+| `dna::HarnessModel` | Local CLI agent harness (`claude` or `codex`) with built-in tools | Runs in an exported copy of the worktree confined under `dna::Bubblewrap` |
+| `dna::RecordedModel` | Record/replay wrapper around any `ModelBackend` | Captures or replays multi-turn tool loops and patches deterministically |
+| `dna::FakeModel` | Scripted static or multi-turn answers (`turns_dir`) | Keyless; used for tests, dry runs, and fixtures |
 
-A hosted backend's call carries the `external_model` effect class, so
-the law can keep customer data away from it. `init` writes
-`claude-opus-5` and `claude-haiku-4-5-20251001` over
-`AnthropicMessages` when the vault holds an Anthropic key, else
-`gpt-4o` and `gpt-4o-mini` over `OpenAiChat`, naming `OPENAI_API_KEY`
-until you set it; `ollama` on `PATH` gives the desk model, and `claude`
-(else `codex`) on `PATH` becomes `harness()`. Its `models` lines say
-what each position was given.
+Because hosted backends (`OpenAiChat`, `AnthropicMessages`) carry the `external_model` effect class, constitutional claims in `dna/org/law.hl` can forbid customer or confidential data from reaching external providers.
 
-**Keys are vault slots.** A hosted backend names its key, never the
-bytes: `dna::HostedCredential { key: "OPENAI_API_KEY", scheme: "bearer" }`
-reads the vault slot `model-OPENAI_API_KEY`, which you fill from stdin:
+### Vault Credentials and Probing (`hale dna models`)
+
+> [!IMPORTANT]
+> **Model API keys are read exclusively from the vault—never from environment variables.** A `dna::HostedCredential { key: "OPENAI_API_KEY", scheme: "bearer" }` reads the vault slot `model-OPENAI_API_KEY` fresh on every request in the exact statement that writes to the socket, and never returns the raw secret bytes. If the vault slot is empty, the router refuses the call before touching the network.
+
+Store a model key from `stdin`:
 
 ```sh
 hale dna secret set OPENAI_API_KEY
 ```
 
-`secret set` takes a name the catalog's `HostedCredential` names (or
-`FORGE_TOKEN`, or `OIDC_CLIENT_SECRET`). **No environment variable is
-read**, first or otherwise: the credential reads its vault slot and
-nothing else, fresh on every call, in the one statement that sends the
-request, and never returns the bytes. `init`'s discovery reads the
-same slots. A backend whose slot is empty is not permitted, and the
-router refuses before the wire. The vault is the one where the call is
-made: the local directory (`HALE_VAULT_DIR`, else
-`$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`), or the
-vault at `HALE_VAULT_ADDR` when set ([The skin](./skin.md)).
-
-**The probe.** `hale dna models` builds the catalog beside a one-line
-main in `.hale/dna/probe` and sends one small request to each permitted
-backend; it starts nothing and journals nothing. On a fresh project
-with no key:
+To verify your catalog without starting the organism or writing to the record, run `hale dna models`. It compiles `dna/org/models.hl` into `.hale/dna/probe` and sends a minimal probe request to each configured backend:
 
 ```text
 $ hale dna models
@@ -352,138 +280,87 @@ catalog dna/org/models.hl
 backend     slot      model                         answer
 frontier    deep      gpt-4o                        not permitted (no credential present)
 fast        quick     gpt-4o-mini                   not permitted (no credential present)
-…
+desk        private   llama3                        not permitted (no credential present)
 ```
 
-A backend that answers prints `ok`, the time, the cost and the reply's
-first line; one that fails prints `refused: …`.
+(A catalog generated with `OPENAI_API_KEY` in the vault whose slot has since been emptied; with no key at graft there is no `frontier` or `fast` to probe. The habitat's models are not in the catalog: `hale habitat model-probe <organism> <category>` asks the endpoint the map names.)
 
-**The model leg's calls.** Before its first call the model performer
-asks the spine for the attempt's spend (`allowance`); refused, it makes
-no call and hands back `declined`. The model is sent the rendered
-prompt alone. A rate-limited call the backend never acted on is tried
-again up to three times, a second first and each wait double the last,
-the lease renewed before each wait and each wait a row of evidence.
-Every call goes back with the outcome as evidence (the adapter that
-answered, backend, model, tokens, cost, wall time); the owner journals
-it as `model.called` on the attempt, and `hale dna history <task>`
-sums it (`usage of <task>: …`).
+Permitted backends print `ok`, latency, cost, and the first line of the response; failing backends print `refused: <reason>`.
 
-**The tool loop.** A Work whose hat carries hands, and whose model
-mapping makes it a `tools` or `do` Work, is performed as a loop: the
-model is offered the hands as tools in the chat API's shape, and every
-tool call it asks for is run by the leg, never by the model or the
-gateway, its result going back as the next turn, until the model
-answers. A `do` Work runs in a scratch clone of the leg's repository at
-its `HEAD` (`ModelPerformer { repo }` names another): `read`, `edit`
-and `patch` work there, and `check`, `test` and `fmt` run the
-toolchain on a path of it. Its answer stands only once the hat's
-validators pass on every touched directory that holds Hale source (a
-nested seed is its own); a refusal goes back to the model as one more
-turn. A `Patch` is then
-handed back as one commit on the base, its patch first among the
-receipts, which is what the owner applies, verifies again and reviews.
-A `tools` Work's hands are the head's reads (`record_status`,
-`record_history`, the whole execution an id belongs to, and
-`org_chart`), and its answer is text. A hand the hat does not give, or
-a path outside the worktree, is refused and the refusal is the call's
-answer: `..` or `.git` in any spelling, a control character, or a
-symbolic link anywhere on the way, since a link in a clone may lead
-anywhere. Every model call is evidence (each turn
-its own `Idempotency-Key`, `<attempt>:call:<turn>`), every tool call a
-row of the `tool-calls` receipt (the hand, digests of what it was given
-and what it answered, why it failed), and the loop ends at
-`max_turns` (16) or when the attempt's allowance is spent.
+### Budget Gate, Retries, and the Agent Tool Loop
 
-A scripted model drives the loop without a wire: `dna::FakeModel {
-turns_dir }` answers turn *n* of a request that offers tools from
-`<dir>/<n>.json`, an object with `content` (the answer) and/or
-`tool_calls` (each `{name, arguments}`).
+Before making its first LLM request, `legs::ModelPerformer` calls `allowance` to reserve spend from the spine:
+- If the budget gate refuses, the leg makes no LLM call and submits `declined`.
+- If a backend returns a rate-limit error without having acted, the leg retries up to 3 times (waiting 1s, 2s, 4s), renewing the attempt lease before each sleep and recording each backoff as evidence.
+- Every LLM call is attached to the submitted outcome as evidence (adapter, backend, model, input/output tokens, micro-dollar cost, wall time) and journaled by the spine as `model.called`. `hale dna history <task>` totals the spend (`usage of <task>: …`).
 
-**The model mapping.** Every call can go through one OpenAI-compatible
-gateway, and which of its models a Work gets is decided by two tables of
-rows in the record, each written in the setter's name:
+When a Work's hat grants hands (`tools` or `do` mode), the leg runs a multi-turn **tool loop** (up to `max_turns = 16` or until the attempt's allowance is exhausted):
+1. The model receives the rendered prompt and the JSON Schema tool definitions for the Work's granted hands.
+2. Every tool call requested by the model is executed locally by the leg—never by the model provider or gateway—and its output is returned as the next conversation turn.
+3. **Path and tool confinement:** Any tool not in the hat's grant, or any file path containing `..`, `.git`, control characters, or symbolic links escaping the scratch worktree, is rejected and returned to the model as a refusal turn.
+4. **Validation (`do` mode):** For `Patch` Works running in a scratch clone, when the model finishes, the leg runs the hat's validators (`check`, `test`, `fmt`) across every modified directory containing Hale source. If validation fails, the diagnostics are fed back to the model as another turn. Once clean, the leg commits the change on the base and submits `result_ref: commit:<sha>` with the patch receipt first.
+5. **Audit trail:** Each turn uses a deterministic `Idempotency-Key` (`<attempt>:call:<turn>`), and every tool invocation is logged in the `tool-calls` receipt (hand name, input/output digests, and failure reason).
+
+To test the tool loop offline, point `dna::FakeModel { turns_dir: "<dir>" }` at a directory of `<n>.json` files, where each file specifies `content` and/or `tool_calls` (`[{ "name": "…", "arguments": {…} }]`).
+
+### Dynamic Model Mapping (`category` and `rule`)
+
+When routing through a unified OpenAI-compatible gateway, two record tables map each Work to a concrete model without editing `models.hl`:
 
 ```sh
 hale dna models category do.deep coder-l --tools --price-in 300 --price-out 1200
 hale dna models category think.quick thinker-s
 hale dna models rule default quick
 hale dna models rule position:api/dev deep --permit standard
-hale dna task create --size standard "…"      # an override for this ask
-hale dna models map                           # both tables, as they stand
+hale dna task create --size standard "…"      # per-task size override
+hale dna models map                           # inspect both tables
 ```
 
-A category is `<mode>.<size>`. The **mode** is the harness's, read off
-the Work's hands: `think` with none, `tools` with hands but no
-workspace, `do` with a workspace; a `tools` or `do` category needs a
-model that returns tool calls (`--tools`). The **size** is the
-model's, `quick`, `standard` or `deep`, and the most specific rule
-decides it: `position:<name>`, then `contract:<Name>`, then `default`,
-else `standard`. A task's override (`--size`, or a `task:<id>` rule)
-moves it only inside the sizes the rule beneath it permits. The hat
-carries the resolution (`model`: mode, size, category, model and the
-rule that chose it, or why no model fills the category), and the model
-leg names that model in its request, with the call's `metadata` (the
-attempt, position and holder, for attribution only) and an
-`Idempotency-Key`. A backend sends `metadata` only with
-`send_metadata: true`, for a gateway that keeps it; a provider may
-refuse it. With no category filled, the catalog's backend chooses as
-before. A `tools` or `do` Work whose category names a model that
-returns no tool calls is declined before any spend
-(`the model mapping refused <model> for this Work`): fill the
-category with one that does (`hale dna models category <mode>.<size>
-<model> --tools`).
+- **Category (`<mode>.<size>`):**
+  - `mode` is derived from the Work's hands: `think` (no hands), `tools` (read-only hands, no workspace), or `do` (workspace hands). Categories for `tools` and `do` require models registered with `--tools`.
+  - `size` is `quick`, `standard`, or `deep`.
+- **Rule resolution order:** Most specific wins: `task:<id>` (or `--size` on `task create`, constrained by the `--permit` list of the underlying rule) -> `position:<name>` -> `contract:<Name>` -> `default` -> `standard`.
+- The resolved mapping is embedded in the hat, and the leg sends that model name along with an `Idempotency-Key` and optional attribution `metadata` (`attempt`, `position`, `holder`, enabled via `send_metadata: true`). If a `tools` or `do` Work resolves to a model without `--tools`, the attempt is declined before any spend (`the model mapping refused <model> for this Work`).
 
-**The tape.** `dna::RecordedModel { dir, mode, inner }` wraps any
-backend. In `record` mode it forwards to `inner` and writes the answer
-under a key made of the request's identity (role, backend, the model the
-request asks for,
-prompt and context digests, data class, grant, for a harness the
-workspace's starting tree, and for a tool loop's turn the tools offered
-and the turns so far), with the tool calls the model asked for and the
-patch a harness made beside it, so a taped loop replays turn by turn.
-In `replay` mode it answers from the directory, keyless, and applies
-that patch; a miss is refused, naming the request and, when an entry
-shares its prompt, the fields that differed. `dir_env` and `mode_env`
-name environment variables it reads at birth, as the acceptance
-fixture's catalog does (`dna/acceptance/trio.fixture/catalog.hl`):
+### Record and Replay Tapes (`dna::RecordedModel`)
+
+`dna::RecordedModel { dir, mode, inner }` wraps any `ModelBackend` to record or replay LLM interactions deterministically:
 
 ```hale,fragment
 fn frontier() -> dna::RecordedModel {
-    return dna::RecordedModel { name: "deep", dir: ".hale/dna/tape", dir_env: "HALE_DNA_TAPE_DIR", mode_env: "HALE_DNA_TAPE", inner: dna::AnthropicMessages { name: "deep", model: "claude-sonnet-5", input_micros_per_1k: 3000, output_micros_per_1k: 15000 } };
+    return dna::RecordedModel {
+        name: "deep",
+        dir: ".hale/dna/tape",
+        dir_env: "HALE_DNA_TAPE_DIR",
+        mode_env: "HALE_DNA_TAPE",
+        inner: dna::AnthropicMessages {
+            name: "deep",
+            model: "claude-sonnet-5",
+            input_micros_per_1k: 3000,
+            output_micros_per_1k: 15000,
+        },
+    };
 }
 ```
 
-A tape proves how the organization handles recorded outcomes; model
-quality is only tested by a fresh run.
+- **`record` mode:** Forwards requests to `inner` and writes the response, tool calls, and any harness workspace patch under a composite key derived from the request identity (role, backend, requested model, prompt and context digests, data class, grant, starting workspace tree digest for a harness, and offered tools plus prior turns for a tool loop).
+- **`replay` mode:** Serves responses and applies patches directly from `dir` without API keys or network calls. A cache miss fails immediately, reporting the request key and—if an entry shares the same prompt digest—the exact fields that differed.
 
-## An external harness
+---
 
-A harness of your own needs no performer in `work.hl`. It claims with
-`next`, reads `brief --render agent`, asks `allowance` before its first
-model call and keeps within the grant, does the work, and hands it back
-with `submit --evidence-file calls.json`, a JSON array of
-`model.called` bodies, each naming its `adapter`. Calls that cost more
-than was granted, or anything when nothing was asked, settle the
-attempt `failed`, naming the overrun.
+## External Harnesses and Interactive Human Sessions
 
-## A person's session
+### Custom External Harnesses
 
-A person can work a Work with an agent of their own, a coding assistant
-in their editor, say, and still have the organization's hat and hands.
-`hale mcp` gives that agent two tools: `hale_dna_work` for the verbs
-(`next` to claim, `brief` for the hat) and `hale_dna_hand` to run one of
-the Work's hands by name, with its arguments. Every hand runs on the
-person's machine: a file hand (`read`, `edit`, `check`, `test`, `fmt`,
-`patch`) in a worktree kept for the attempt under the project's
-`.hale/dna/work/`, a clone of the repository at its `HEAD`; an
-infrastructure hand through the head's reads. A hand the hat does not
-give is refused, as it is to a model leg. When the change is ready,
-`submit --from-worktree` runs the hat's validators over every touched
-directory holding Hale source, refuses the change if one fails, and
-otherwise hands back one commit on the base with its patch, which the
-owner applies, verifies and reviews as any leg's; the kept worktree
-goes with it.
+An external agent harness does not need to be compiled into `dna/org/work.hl`. It can drive the leg CLI directly:
+1. Claim an attempt with `hale dna work next`.
+2. Fetch the agent brief with `hale dna work brief --attempt <id> --render agent`.
+3. Reserve budget with `hale dna work allowance --attempt <id> --token <n>` and stay within the granted micro-dollar ceiling.
+4. Submit the result with `hale dna work submit … --evidence-file calls.json`, passing a JSON array of `model.called` objects (each naming its `adapter`). Exceeding the granted allowance—or spending without calling `allowance`—settles the attempt as `failed`.
+
+### Interactive Human Sessions and Editor Assistants
+
+A human operator (or an IDE coding assistant connected via `hale mcp`) can work on an attempt using the organization's hat and validated hands:
 
 ```sh
 hale dna work next --as position:api/dev
@@ -492,25 +369,18 @@ hale dna work hand --attempt <attempt> --name edit --args '{"path": "api/todo.hl
 hale dna work submit --as position:api/dev --attempt <attempt> --token <n> --from-worktree --result "…"
 ```
 
-## How it breaks
+File hands (`read`, `edit`, `check`, `test`, `fmt`, `patch`) operate inside a persistent per-attempt worktree cloned at `.hale/dna/work/<attempt>`. When ready, `submit --from-worktree` runs the hat's validators across all touched Hale directories, commits the change on the base, submits the commit and patch receipt for spine verification and Review, and cleans up the worktree.
 
-- **``the head's socket lists no `Commands::claim` for <person>``**:
-  your uid maps to no person, or the person holds no position. Map the
-  uid with `dna.unix.member`, and fill a position (`hale dna fill`).
-- **`the model performer declares no effect class`** (exit 2): add
-  `effect:` to it in `dna/org/work.hl`.
-- **Nothing to claim**: no attempt of that kind was relayed to legs, or
-  none fits your `--classes` or `--capabilities`; the refusal names what
-  stood in the way.
-- **`declined: the model mapping refused <model> for this Work`**: a
-  `tools` or `do` Work's category names a model that returns no tool
-  calls. Fill it with one that does (`hale dna models category
-  <mode>.<size> <model> --tools`).
-- **`` `<name>` is not a hand of this Work ``** / **`` `<path>` is outside the
-  worktree ``**: the hat's grant and the worktree bound every hand; a
-  `..` or `.git` component, a control character or a symbolic link on
-  the way is refused.
-- **`unresolved`**: an `uncertain` performer may have acted. Read the
-  attempt's history, then `hale dna effect resolve`.
-- **`declined`**: the budget gate admitted no spend
-  ([The spine](./spine.md)).
+---
+
+## Troubleshooting Worker Errors
+
+| Diagnostic / Symptom | Cause & Resolution |
+| --- | --- |
+| ``the head's socket lists no `Commands::claim` for <person>`` | Your OS UID is not mapped to a person, or that person holds no ratified position. Map the UID with `git config --local --add dna.unix.member "uid:<uid>=<person>"` and assign a seat with `hale dna fill`. |
+| `the model performer declares no effect class` (exit `2`) | Add `effect: "effect_free"`, `"idempotent"`, or `"uncertain"` to the performer in `dna/org/work.hl`. |
+| `no admitted attempt awaits a … leg with capabilities …` | No attempt of that kind is queued for legs, or none matches your `--classes` or `--capabilities`. The refusal message lists the outstanding attempts and why each was skipped. |
+| `declined: the model mapping refused <model> for this Work` | A `tools` or `do` Work resolved to a model category registered without `--tools`. Update the category: `hale dna models category <mode>.<size> <model> --tools`. |
+| `` `<name>` is not a hand of this Work `` / `` `<path>` is outside the worktree `` | The tool is not granted by the Work's output contract, or the path contains `..`, `.git`, control characters, or symlinks escaping the worktree. |
+| `unresolved` | An `uncertain` performer failed to settle or let its lease expire. Inspect `hale dna history <attempt>` and resolve with `hale dna effect resolve attempt:<attempt> --outcome ok\|failed`. |
+| `declined` | The spine's budget gate refused spend because the budget window is exhausted ([The spine](./spine.md)). |

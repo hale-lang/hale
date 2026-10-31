@@ -1,0 +1,7 @@
+// The hale organism's own program. It serves nothing of its own: its work
+// is on its codebases, done by its legs and reviewed at its forge.
+main locus HaleOrganism {
+    run() { println("the hale organism: its work is its codebases'"); }
+}
+
+fn main() { HaleOrganism { }; }

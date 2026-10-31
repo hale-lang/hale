@@ -7,47 +7,89 @@ import "../../oidc" as oidc;
 
 // The shell's URL as the head printed it: `/?token=<launch token>`.
 fn shell_url(f: fixture::Fixture) -> String {
-    return "/?token=" + dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
+    return "/?token="
+        + dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
 }
 
 // The browser's request: exact Origin, JSON, the command marker.
-fn forward(f: fixture::Fixture, method: String, url: String, body: String, headers: Bool) -> fixture::HttpResponse {
-    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--path-as-is\n--request\n" + method;
+fn forward(
+    f: fixture::Fixture,
+    method: String,
+    url: String,
+    body: String,
+    headers: Bool
+) -> fixture::HttpResponse {
+    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--path-as-is\n--request\n"
+        + method;
     // the launch token the head printed, as a tool that read its file sends it
     let token = dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
-    if headers { argv = argv + "\n--header\nOrigin: " + f.url() + "\n--header\nContent-Type: application/json\n--header\nX-Hale-Command: 1\n--header\nX-Hale-Token: " + token; }
+    if headers {
+        argv = argv + "\n--header\nOrigin: " + f.url()
+            + "\n--header\nContent-Type: application/json\n--header\nX-Hale-Command: 1\n--header\nX-Hale-Token: "
+            + token;
+    }
     if len(body) > 0 { argv = argv + "\n--data\n" + body; }
     let result = dna::run_tool(argv + "\n" + url);
     let split = std::str::index_of(result.stdout, "\r\n\r\n");
     if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
     let head = result.stdout[0..split];
     let space = std::str::index_of(head, " ");
-    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
-    return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+    let status = if space < 0 || len(head) < space + 4 {
+        0
+    } else {
+        std::str::parse_int(head[(space + 1)..(space + 4)]) or 0
+    };
+    return fixture::HttpResponse {
+        status: status,
+        headers: head,
+        body: result.stdout[(split + 4)..len(result.stdout)],
+    };
 }
 
 // One POSTed line to the binding's HTTP transport under `token` ("" sends none).
 fn bearer(url: String, body: String, token: String) -> fixture::HttpResponse {
     let auth = if len(token) > 0 { "\n--header\nAuthorization: Bearer " + token } else { "" };
-    let result = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--request\nPOST" + auth + "\n--data\n" + body + "\n" + url);
+    let result = dna::run_tool(
+        "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--request\nPOST"
+            + auth + "\n--data\n" + body + "\n" + url,
+    );
     let split = std::str::index_of(result.stdout, "\r\n\r\n");
     if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
     let head = result.stdout[0..split];
     let space = std::str::index_of(head, " ");
-    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
-    return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+    let status = if space < 0 || len(head) < space + 4 {
+        0
+    } else {
+        std::str::parse_int(head[(space + 1)..(space + 4)]) or 0
+    };
+    return fixture::HttpResponse {
+        status: status,
+        headers: head,
+        body: result.stdout[(split + 4)..len(result.stdout)],
+    };
 }
 
 // The same, as a GET: the description route of the commands port.
 fn bearer_get(url: String, token: String) -> fixture::HttpResponse {
     let auth = if len(token) > 0 { "\n--header\nAuthorization: Bearer " + token } else { "" };
-    let result = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include" + auth + "\n" + url);
+    let result = dna::run_tool(
+        "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include" + auth + "\n"
+            + url,
+    );
     let split = std::str::index_of(result.stdout, "\r\n\r\n");
     if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
     let head = result.stdout[0..split];
     let space = std::str::index_of(head, " ");
-    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
-    return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+    let status = if space < 0 || len(head) < space + 4 {
+        0
+    } else {
+        std::str::parse_int(head[(space + 1)..(space + 4)]) or 0
+    };
+    return fixture::HttpResponse {
+        status: status,
+        headers: head,
+        body: result.stdout[(split + 4)..len(result.stdout)],
+    };
 }
 
 locus Cases {
@@ -55,12 +97,20 @@ locus Cases {
     fn application_identity() {
         let f = fixture::Fixture { root: self.root + "/01" };
         f.start();
-        let payload = f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
+        let payload = f.validate(
+            f.http("GET", fixture::APPLICATIONS, "", ""),
+            "ApplicationsResponse",
+            200,
+        );
         f.source(payload);
         std::test::assert_eq_int(self.json.count(payload), 1, "one application");
         let app = self.json.first(payload);
         self.json.eq(app, "id", f.identity); self.json.eq(app, "kind", "dna");
-        let capability = f.validate(f.http("GET", self.json.string(app, "capabilities_url"), "", ""), "CapabilitiesResponse", 200);
+        let capability = f.validate(
+            f.http("GET", self.json.string(app, "capabilities_url"), "", ""),
+            "CapabilitiesResponse",
+            200,
+        );
         f.source(capability);
         let data = self.json.data(capability);
         self.json.is_bool(data, "read_only", true);
@@ -68,10 +118,18 @@ locus Cases {
         self.json.is_bool(self.json.raw(data, "reads"), "reviews", true);
         self.json.is_bool(self.json.raw(data, "reads"), "organization", false);
         // the record's commands are the api socket's, named here and never offered over HTTP
-        std::test::assert_eq_str(self.json.raw(data, "writes"), "", "no HTTP write flags: " + capability);
+        std::test::assert_eq_str(
+            self.json.raw(data, "writes"),
+            "",
+            "no HTTP write flags: " + capability,
+        );
         self.json.eq(self.json.raw(data, "api"), "transport", "unix");
-        std::test::assert(std::str::ends_with(self.json.string(self.json.raw(data, "api"), "socket"), ".sock"), "the head names its socket: " + capability);
-        self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
+        std::test::assert(
+            std::str::ends_with(self.json.string(self.json.raw(data, "api"), "socket"), ".sock"),
+            "the head names its socket: " + capability,
+        );
+        self.json.is_bool(data, "runtime_observation", false);
+        self.json.is_bool(data, "recursive_workflows", false);
         self.json.eq(self.json.raw(data, "principal"), "mode", "local");
     }
     // The head's HTTP exposure (GH #1135, #1417): `POST /call/<member>` per
@@ -82,90 +140,252 @@ locus Cases {
     // needs; nothing adds a principal of its own.
     fn forwarding() {
         // with the shell: the launch token opens it
-        let f = fixture::Fixture { root: self.root + "/fw" }; f.standard(); f.prepare_web(); f.start();
+        let f = fixture::Fixture { root: self.root + "/fw" };
+        f.standard();
+        f.prepare_web();
+        f.start();
         let path = "http://127.0.0.1:" + to_string(f.commands_port) + "/";
         let token = dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
         let described = bearer_get(path + ".description", token);
         std::test::assert_eq_int(described.status, 200, described.body);
-        std::test::assert(std::str::contains(described.body, "\"mode\":\"bearer\"") && std::str::contains(described.body, "\"name\":\"Commands::create_task\""), "the description, over the HTTP exposure, under the launch token's principal: " + described.body);
-        let raised = bearer(path + "call/Commands::create_task", "{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}", token);
+        std::test::assert(
+            std::str::contains(described.body, "\"mode\":\"bearer\"")
+                && std::str::contains(described.body, "\"name\":\"Commands::create_task\""),
+            "the description, over the HTTP exposure, under the launch token's principal: "
+                + described.body,
+        );
+        let raised = bearer(
+            path + "call/Commands::create_task",
+            "{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}",
+            token,
+        );
         std::test::assert_eq_int(raised.status, 200, raised.body);
-        std::test::assert(std::str::contains(raised.body, "\"code\":\"commands_unsupported\""), "the handler ran; the standalone head composes no provider: " + raised.body);
-        let gated = bearer(path + "call/Commands::retire_person", "{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}", token);
+        std::test::assert(
+            std::str::contains(raised.body, "\"code\":\"commands_unsupported\""),
+            "the handler ran; the standalone head composes no provider: " + raised.body,
+        );
+        let gated = bearer(
+            path + "call/Commands::retire_person",
+            "{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}",
+            token,
+        );
         std::test::assert_eq_int(gated.status, 403, gated.body);
-        std::test::assert(std::str::contains(gated.body, "\"kind\":\"unauthorized\"") && std::str::contains(gated.body, "\"requires\":[\"owner\"]"), "a closed row is refused to this principal, naming its role: " + gated.body);
+        std::test::assert(
+            std::str::contains(gated.body, "\"kind\":\"unauthorized\"")
+                && std::str::contains(gated.body, "\"requires\":[\"owner\"]"),
+            "a closed row is refused to this principal, naming its role: " + gated.body,
+        );
         // a Knowledge change is a row like the rest; its recovery is not gated
-        let knowledge = bearer(path + "call/Commands::link_knowledge", "{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}", token);
-        std::test::assert(knowledge.status == 403 && std::str::contains(knowledge.body, "\"kind\":\"unauthorized\""), "a Knowledge change outside the principal's roles is refused: " + knowledge.body);
-        let recovered = bearer(path + "call/Commands::lookup_knowledge", "{\"request_id\":\"k-1\"}", token);
-        std::test::assert(recovered.status == 200 && std::str::contains(recovered.body, "\"code\":\"commands_unsupported\""), "a Knowledge lookup reaches its handler; no policy, no provider: " + recovered.body);
+        let knowledge = bearer(
+            path + "call/Commands::link_knowledge",
+            "{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}",
+            token,
+        );
+        std::test::assert(
+            knowledge.status == 403
+                && std::str::contains(knowledge.body, "\"kind\":\"unauthorized\""),
+            "a Knowledge change outside the principal's roles is refused: " + knowledge.body,
+        );
+        let recovered = bearer(
+            path + "call/Commands::lookup_knowledge",
+            "{\"request_id\":\"k-1\"}",
+            token,
+        );
+        std::test::assert(
+            recovered.status == 200
+                && std::str::contains(recovered.body, "\"code\":\"commands_unsupported\""),
+            "a Knowledge lookup reaches its handler; no policy, no provider: " + recovered.body,
+        );
         let looked = bearer(path + "call/Commands::lookup", "{\"request_id\":\"ask-1\"}", token);
-        std::test::assert(looked.status == 200 && std::str::contains(looked.body, "\"code\":\"commands_unsupported\""), "a lookup is the Commands::lookup row: " + looked.body);
+        std::test::assert(
+            looked.status == 200
+                && std::str::contains(looked.body, "\"code\":\"commands_unsupported\""),
+            "a lookup is the Commands::lookup row: " + looked.body,
+        );
         let bare = bearer_get(path + ".description", "");
-        std::test::assert(bare.status == 401 && std::str::contains(bare.body, "\"kind\":\"unauthenticated\""), "without a bearer the exposure takes nothing: " + bare.body);
+        std::test::assert(
+            bare.status == 401 && std::str::contains(bare.body, "\"kind\":\"unauthenticated\""),
+            "without a bearer the exposure takes nothing: " + bare.body,
+        );
         let wrong = bearer_get(path + ".description", "not-the-token");
-        std::test::assert(wrong.status == 401 && std::str::contains(wrong.body, "\"kind\":\"unauthenticated\""), "a token the head did not mint names nobody: " + wrong.body);
+        std::test::assert(
+            wrong.status == 401 && std::str::contains(wrong.body, "\"kind\":\"unauthenticated\""),
+            "a token the head did not mint names nobody: " + wrong.body,
+        );
         // the session's line, relayed: the same slice, under the same principal
-        let relayed = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"describe\":true}", true);
-        std::test::assert(relayed.status == 200 && std::str::contains(relayed.body, "\"name\":\"TaskCreate\""), "the session's line reaches the exposure under the launch token: " + relayed.body);
-        let relayed_call = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"ask-1\"}}", true);
-        std::test::assert(relayed_call.status == 200 && std::str::contains(relayed_call.body, "\"code\":\"commands_unsupported\""), "and so does its call, named as the face names it: " + relayed_call.body);
-        let relayed_unknown = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"call\":\"NotACommand\",\"payload\":{}}", true);
-        std::test::assert(relayed_unknown.status == 400 && std::str::contains(relayed_unknown.body, "\"reason\":\"unknown_member\""), "a call the surface has no member for is malformed: " + relayed_unknown.body);
-        let no_session = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"describe\":true}", false);
-        std::test::assert_eq_int(no_session.status, 401, "without the session nothing is relayed: " + no_session.body);
-        let forged = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--max-time\n40\n--output\n/dev/null\n--write-out\n%{http_code}\n--header\nX-Hale-Token: " + token + "\n--header\nContent-Type: application/json\n--data\n{\"describe\":true}\n" + f.url() + f.prefix + "/commands");
-        std::test::assert_eq_str(forged.stdout, "403", "a session's line without the page's origin and marker is not relayed");
-        let lookup_get = forward(f, "GET", f.url() + f.prefix + "/commands?request_id=ask-1", "", false);
-        std::test::assert_eq_int(lookup_get.status, 405, "a lookup is a line, not a GET: " + lookup_get.body);
-        let old_knowledge = forward(f, "POST", f.url() + f.prefix + "/dna/knowledge/commands", "{\"describe\":true}", true);
-        std::test::assert_eq_int(old_knowledge.status, 405, "the Knowledge command route is gone: " + old_knowledge.body);
+        let relayed = forward(
+            f,
+            "POST",
+            f.url() + f.prefix + "/commands",
+            "{\"describe\":true}",
+            true,
+        );
+        std::test::assert(
+            relayed.status == 200 && std::str::contains(relayed.body, "\"name\":\"TaskCreate\""),
+            "the session's line reaches the exposure under the launch token: " + relayed.body,
+        );
+        let relayed_call = forward(
+            f,
+            "POST",
+            f.url() + f.prefix + "/commands",
+            "{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"ask-1\"}}",
+            true,
+        );
+        std::test::assert(
+            relayed_call.status == 200
+                && std::str::contains(relayed_call.body, "\"code\":\"commands_unsupported\""),
+            "and so does its call, named as the face names it: " + relayed_call.body,
+        );
+        let relayed_unknown = forward(
+            f,
+            "POST",
+            f.url() + f.prefix + "/commands",
+            "{\"call\":\"NotACommand\",\"payload\":{}}",
+            true,
+        );
+        std::test::assert(
+            relayed_unknown.status == 400
+                && std::str::contains(relayed_unknown.body, "\"reason\":\"unknown_member\""),
+            "a call the surface has no member for is malformed: " + relayed_unknown.body,
+        );
+        let no_session = forward(
+            f,
+            "POST",
+            f.url() + f.prefix + "/commands",
+            "{\"describe\":true}",
+            false,
+        );
+        std::test::assert_eq_int(
+            no_session.status,
+            401,
+            "without the session nothing is relayed: " + no_session.body,
+        );
+        let forged = dna::run_tool(
+            "curl\n-q\n--noproxy\n*\n--silent\n--max-time\n40\n--output\n/dev/null\n--write-out\n%{http_code}\n--header\nX-Hale-Token: "
+                + token
+                + "\n--header\nContent-Type: application/json\n--data\n{\"describe\":true}\n"
+                + f.url() + f.prefix + "/commands",
+        );
+        std::test::assert_eq_str(
+            forged.stdout,
+            "403",
+            "a session's line without the page's origin and marker is not relayed",
+        );
+        let lookup_get = forward(
+            f,
+            "GET",
+            f.url() + f.prefix + "/commands?request_id=ask-1",
+            "",
+            false,
+        );
+        std::test::assert_eq_int(
+            lookup_get.status,
+            405,
+            "a lookup is a line, not a GET: " + lookup_get.body,
+        );
+        let old_knowledge = forward(
+            f,
+            "POST",
+            f.url() + f.prefix + "/dna/knowledge/commands",
+            "{\"describe\":true}",
+            true,
+        );
+        std::test::assert_eq_int(
+            old_knowledge.status,
+            405,
+            "the Knowledge command route is gone: " + old_knowledge.body,
+        );
         let shell = f.http("GET", "/", "", "");
-        std::test::assert_eq_int(shell.status, 401, "and the shell opens only with the token: status " + to_string(shell.status) + " " + shell.headers + " " + shell.body);
+        std::test::assert_eq_int(
+            shell.status,
+            401,
+            "and the shell opens only with the token: status " + to_string(shell.status) + " "
+                + shell.headers + " " + shell.body,
+        );
         let opened = f.http("GET", "/?token=" + token, "", "");
-        std::test::assert_eq_int(opened.status, 200, "the URL the head printed opens it: " + opened.body);
-        std::test::assert(std::str::contains(dna::response_header(opened.headers, "Set-Cookie"), "dna_local="), "and sets the session cookie: " + opened.headers);
+        std::test::assert_eq_int(
+            opened.status,
+            200,
+            "the URL the head printed opens it: " + opened.body,
+        );
+        std::test::assert(
+            std::str::contains(dna::response_header(opened.headers, "Set-Cookie"), "dna_local="),
+            "and sets the session cookie: " + opened.headers,
+        );
         f.stop();
     }
     fn native_unicode() {
         let f = fixture::Fixture { root: self.root + "/02" };
-        let p = f.practice("acceptance/résumé", "Première ligne — ✓\n第二行 / preserve", "org/support/équipe", "org/reviews/決定:α", false);
+        let p = f.practice(
+            "acceptance/résumé",
+            "Première ligne — ✓\n第二行 / preserve",
+            "org/support/équipe",
+            "org/reviews/決定:α",
+            false,
+        );
         let before = f.refs(); f.start();
         f.source(f.read("practices", "", ""));
         let item = f.item("practices", p.digest);
-        self.json.eq(item, "name", p.name); self.json.eq(item, "text", p.text); self.json.eq(item, "target", p.target);
-        self.json.eq(item, "review_id", p.review_id); self.json.eq(item, "id", p.digest); self.json.eq(item, "digest", p.digest);
+        self.json.eq(item, "name", p.name);
+        self.json.eq(item, "text", p.text);
+        self.json.eq(item, "target", p.target);
+        self.json.eq(item, "review_id", p.review_id);
+        self.json.eq(item, "id", p.digest);
+        self.json.eq(item, "digest", p.digest);
         self.json.eq(item, "author", "org"); self.json.eq(item, "requester", "alice");
         self.json.eq(item, "rationale", "Two lines\nexplain why / pourquoi");
-        self.json.is_bool(item, "text_available", true); self.json.eq(item, "text_status", "available");
+        self.json.is_bool(item, "text_available", true);
+        self.json.eq(item, "text_status", "available");
         let review = f.item("reviews", p.review_id);
-        self.json.eq(review, "id", p.review_id); self.json.eq(review, "subject_digest", p.digest); self.json.eq(review, "question", p.question);
+        self.json.eq(review, "id", p.review_id);
+        self.json.eq(review, "subject_digest", p.digest);
+        self.json.eq(review, "question", p.question);
         std::test::assert_eq_str(f.refs(), before, "reads move no Record or receipt ref");
     }
     fn approval_is_not_activation() {
         let f = fixture::Fixture { root: self.root + "/03" };
-        let p = f.standard(); f.append("review.settled", p.review_id, "approve by alice"); f.start();
+        let p = f.standard();
+        f.append("review.settled", p.review_id, "approve by alice");
+        f.start();
         let pending = f.item("practices", p.digest);
         self.json.eq(pending, "state", "pending"); self.json.eq(pending, "review_state", "settled");
-        self.json.eq(pending, "review_settled", "approve by alice"); self.json.eq(pending, "review_outcome", "approve");
+        self.json.eq(pending, "review_settled", "approve by alice");
+        self.json.eq(pending, "review_outcome", "approve");
         self.json.is_bool(pending, "ratified", false);
-        f.append("knowledge.refused", p.digest, "{\"why\":\"supersedes a version already retired by another proposal\"}");
+        f.append(
+            "knowledge.refused",
+            p.digest,
+            "{\"why\":\"supersedes a version already retired by another proposal\"}",
+        );
         let refused = f.item("practices", p.digest);
         self.json.eq(refused, "state", "refused"); self.json.is_bool(refused, "ratified", false);
         self.json.eq(refused, "review_settled", "approve by alice");
         let review = f.item("reviews", p.review_id);
-        self.json.eq(review, "state", "settled"); self.json.eq(review, "settled", "approve by alice"); self.json.eq(review, "outcome", "approve");
+        self.json.eq(review, "state", "settled");
+        self.json.eq(review, "settled", "approve by alice");
+        self.json.eq(review, "outcome", "approve");
     }
     fn design_codec() {
         let f = fixture::Fixture { root: self.root + "/04" };
-        let p = f.practice("design/record-authority", "The Record is authoritative.", "org", "", true); f.start();
+        let p = f.practice(
+            "design/record-authority",
+            "The Record is authoritative.",
+            "org",
+            "",
+            true,
+        );
+        f.start();
         let item = f.item("practices", p.digest);
         self.json.eq(item, "text", p.text); self.json.eq(item, "provenance", "design");
-        self.json.is_bool(item, "text_available", true); self.json.eq(item, "text_status", "available");
+        self.json.is_bool(item, "text_available", true);
+        self.json.eq(item, "text_status", "available");
     }
     fn ratification_precedence() {
         let f = fixture::Fixture { root: self.root + "/05" };
-        let p = f.standard(); f.append("knowledge.ratified", p.digest, "{}"); f.append("knowledge.declined", p.digest, "{}"); f.start();
+        let p = f.standard();
+        f.append("knowledge.ratified", p.digest, "{}");
+        f.append("knowledge.declined", p.digest, "{}");
+        f.start();
         self.json.eq(f.item("practices", p.digest), "state", "ratified");
         f.append("knowledge.retired", p.digest, "{\"by\":\"replacement\"}");
         self.json.eq(f.item("practices", p.digest), "state", "retired");
@@ -178,19 +398,36 @@ locus Cases {
         f.start();
         let first = f.read("practices", "limit=2", ""); f.source(first);
         let page = self.json.page(first);
-        self.json.is_int(page, "limit", 2); self.json.is_int(page, "offset", 0); self.json.is_int(page, "total", 3); self.json.is_int(page, "next_offset", 2);
-        let snapshot = self.json.string(page, "snapshot"); std::test::assert_eq_str(snapshot, f.journal.head(), "page basis");
+        self.json.is_int(page, "limit", 2);
+        self.json.is_int(page, "offset", 0);
+        self.json.is_int(page, "total", 3);
+        self.json.is_int(page, "next_offset", 2);
+        let snapshot = self.json.string(page, "snapshot");
+        std::test::assert_eq_str(snapshot, f.journal.head(), "page basis");
         let query = "limit=2&offset=2&snapshot=" + snapshot;
-        let second = f.read("practices", query, ""); self.json.is_int(self.json.page(second), "next_offset", -1);
-        std::test::assert_eq_int(self.json.count(first) + self.json.count(second), 3, "all three without repeats");
+        let second = f.read("practices", query, "");
+        self.json.is_int(self.json.page(second), "next_offset", -1);
+        std::test::assert_eq_int(
+            self.json.count(first) + self.json.count(second),
+            3,
+            "all three without repeats",
+        );
         let mut seen = "\n";
         let mut page_index = 0;
         while page_index < 2 {
-            let mut it = std::json::array_first(self.json.items(if page_index == 0 { first } else { second }));
+            let mut it = std::json::array_first(
+                self.json.items(if page_index == 0 { first } else { second }),
+            );
             while !it.done {
                 let id = self.json.string(it.element, "id");
-                std::test::assert(id == p0.digest || id == p1.digest || id == p2.digest, "a page item has an expected id");
-                std::test::assert(!std::str::contains(seen, "\n" + id + "\n"), "no duplicate page id");
+                std::test::assert(
+                    id == p0.digest || id == p1.digest || id == p2.digest,
+                    "a page item has an expected id",
+                );
+                std::test::assert(
+                    !std::str::contains(seen, "\n" + id + "\n"),
+                    "no duplicate page id",
+                );
                 seen = seen + id + "\n";
                 it = std::json::array_next(it);
             }
@@ -198,7 +435,9 @@ locus Cases {
         }
         let added = f.practice("practice/new", "a newly proposed version", "org", "", false);
         f.error("GET", f.prefix + "/dna/practices?" + query, 409, "", "");
-        let fresh = f.read("practices", "", ""); f.source(fresh); self.json.is_int(self.json.page(fresh), "total", 4);
+        let fresh = f.read("practices", "", "");
+        f.source(fresh);
+        self.json.is_int(self.json.page(fresh), "total", 4);
     }
     fn missing_ids() {
         let f = fixture::Fixture { root: self.root + "/07" }; let p = f.standard(); f.start();
@@ -213,12 +452,17 @@ locus Cases {
         let cases = "limit=0\nlimit=101\nlimit=-1\nlimit=nan\noffset=-1\noffset=1\nlimit=1&limit=2\nid=\nid=%\nid=%GG\nid=%00\nid=%FF\nid=%C0%AF\nas=board\nrole=board\nposition_id=org\nunknown=value";
         let mut i = 0;
         while i < dna::count_lines(cases) {
-            f.error("GET", f.prefix + "/dna/practices?" + dna::line_at(cases, i), 400, "", ""); i = i + 1;
+            f.error("GET", f.prefix + "/dna/practices?" + dna::line_at(cases, i), 400, "", "");
+            i = i + 1;
         }
     }
     fn no_writes() {
-        let f = fixture::Fixture { root: self.root + "/09" }; let p = f.standard(); let before = f.refs(); f.start();
-        let methods = "POST\nPUT\nPATCH\nDELETE"; let paths = "/dna/practices\n/dna/reviews\n/commands";
+        let f = fixture::Fixture { root: self.root + "/09" };
+        let p = f.standard();
+        let before = f.refs();
+        f.start();
+        let methods = "POST\nPUT\nPATCH\nDELETE";
+        let paths = "/dna/practices\n/dna/reviews\n/commands";
         let mut i = 0;
         while i < 4 {
             let mut j = 0;
@@ -227,19 +471,30 @@ locus Cases {
             // relay, which without the launch token goes nowhere
             while j < 3 {
                 let expected = if i == 0 && j == 2 { 401 } else { 405 };
-                f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), expected, "", "{\"as\":\"board\",\"verdict\":\"approve\"}");
+                f.error(
+                    dna::line_at(methods, i),
+                    f.prefix + dna::line_at(paths, j),
+                    expected,
+                    "",
+                    "{\"as\":\"board\",\"verdict\":\"approve\"}",
+                );
                 j = j + 1;
             }
             i = i + 1;
         }
-        f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}"); f.error("POST", "/api/task/create", 405, "", "{\"as\":\"board\"}");
+        f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}");
+        f.error("POST", "/api/task/create", 405, "", "{\"as\":\"board\"}");
         std::test::assert_eq_str(f.refs(), before, "all fourteen mutation requests preserve refs");
     }
     fn service_restart() {
         let f = fixture::Fixture { root: self.root + "/10" }; let p = f.standard();
         f.append("review.settled", p.review_id, "approve by alice"); f.start();
         let before = f.read("practices", "", ""); let refs = f.refs(); f.stop(); f.start();
-        std::test::assert_eq_str(f.read("practices", "", ""), before, "retained response after restart");
+        std::test::assert_eq_str(
+            f.read("practices", "", ""),
+            before,
+            "retained response after restart",
+        );
         std::test::assert_eq_str(f.refs(), refs, "restart moves no refs");
     }
     fn redacted() {
@@ -247,129 +502,271 @@ locus Cases {
         let p = f.practice("redacted", "REDACTED-CANARY: customer private data", "org", "", false);
         f.append("review.settled", p.review_id, "approve by DECIDER-CANARY");
         f.append("review.reasoned", p.review_id, "REASONED-CANARY: private justification");
-        f.append("receipt.redacted", p.digest, "{\"by\":\"alice\",\"why\":\"expired\",\"policy\":\"retention\"}"); f.start(); f.hidden(p, "redacted");
-        let item = f.item("practices", p.digest); self.json.eq(item, "review_outcome", "approve"); self.json.eq(item, "review_settled", "");
-        let review = f.item("reviews", p.review_id); self.json.eq(review, "outcome", "approve"); self.json.eq(review, "settled", "");
-        std::test::assert(std::str::contains(f.blob(p.digest), "REDACTED-CANARY"), "stale blob physically remains");
+        f.append(
+            "receipt.redacted",
+            p.digest,
+            "{\"by\":\"alice\",\"why\":\"expired\",\"policy\":\"retention\"}",
+        );
+        f.start();
+        f.hidden(p, "redacted");
+        let item = f.item("practices", p.digest);
+        self.json.eq(item, "review_outcome", "approve");
+        self.json.eq(item, "review_settled", "");
+        let review = f.item("reviews", p.review_id);
+        self.json.eq(review, "outcome", "approve");
+        self.json.eq(review, "settled", "");
+        std::test::assert(
+            std::str::contains(f.blob(p.digest), "REDACTED-CANARY"),
+            "stale blob physically remains",
+        );
         let all = f.read("reviews", "", "");
-        std::test::assert(!std::str::contains(all, "REASONED-CANARY") && !std::str::contains(all, "DECIDER-CANARY"), "embedded review text absent");
+        std::test::assert(
+            !std::str::contains(all, "REASONED-CANARY")
+                && !std::str::contains(all, "DECIDER-CANARY"),
+            "embedded review text absent",
+        );
     }
     fn protected_receipts() {
         let f = fixture::Fixture { root: self.root + "/12" };
         let p = f.practice("protected/0", "PROTECTED-CANARY-classified", "org", "", false);
         let q = f.practice("protected/1", "PROTECTED-CANARY-withheld", "org", "", false);
-        f.append("receipt.classified", p.digest, "{\"class\":\"confidential\",\"store\":\"knowledge\"}");
-        f.append("receipt.withheld", q.digest, "{\"class\":\"confidential\",\"store\":\"knowledge\"}");
+        f.append(
+            "receipt.classified",
+            p.digest,
+            "{\"class\":\"confidential\",\"store\":\"knowledge\"}",
+        );
+        f.append(
+            "receipt.withheld",
+            q.digest,
+            "{\"class\":\"confidential\",\"store\":\"knowledge\"}",
+        );
         f.start(); f.hidden(p, "protected"); f.hidden(q, "protected");
     }
+    // A record kept in memory has its Ledger from its first rows (GH #1590):
+    // its receipt rows are read there, and one the Ledger leaves
+    // unrestricted is visible, as one it classifies is not.
     fn adopted() {
-        let f = fixture::Fixture { root: self.root + "/13" }; let p = f.practice("adopted", "LEDGER-VISIBILITY-CANARY", "org", "", false);
-        f.append("ledger.adopted", "ledger", "{\"routing\":1}"); f.start(); f.hidden(p, "source_unavailable"); f.source(f.read("practices", "", ""));
-    }
-    fn abandoned() {
-        let f = fixture::Fixture { root: self.root + "/14" }; let p = f.practice("abandoned", "ABANDONED-LEDGER-CANARY", "org", "", false);
-        f.append("review.settled", p.review_id, "approve by VISIBILITY-DECIDER-CANARY"); f.append("ledger.adopted", "ledger", "{\"routing\":1}");
-        f.append("ledger.abandoned", "ledger", "{\"why\":\"keeper unavailable\",\"by\":\"alice\"}");
-        std::test::assert(std::str::contains(f.blob(p.digest), p.text), "unmarked stale blob present"); f.start(); f.uncertain(p);
+        let f = fixture::Fixture { root: self.root + "/13" };
+        let p = f.practice("adopted", "LEDGER-VISIBILITY-CANARY", "org", "", false);
+        let q = f.practice("adopted/1", "LEDGER-CLASSIFIED-CANARY", "org", "", false);
+        f.append(
+            "receipt.classified",
+            q.digest,
+            "{\"class\":\"confidential\",\"store\":\"knowledge\"}",
+        );
+        f.start(); f.hidden(q, "protected"); f.source(f.read("practices", "", ""));
+        std::test::assert(
+            std::str::contains(f.read("practices", "", ""), "LEDGER-VISIBILITY-CANARY"),
+            "a practice the Ledger leaves unrestricted is read",
+        );
     }
     fn malformed_classification() {
         let bodies = "{}\n{\"class\":null}\n{\"class\":42}\n{\"class\":{\"name\":\"confidential\"}}\n{\"class\":\"unknown-class\"}\n{}";
         let mut i = 0;
         while i < 6 {
             let f = fixture::Fixture { root: self.root + "/15-" + to_string(i) };
-            let p = f.practice("uncertain", "UNCERTAIN-CLASS-CANARY-" + to_string(i), "org", "", false);
+            let p = f.practice(
+                "uncertain",
+                "UNCERTAIN-CLASS-CANARY-" + to_string(i),
+                "org",
+                "",
+                false,
+            );
             f.append("review.settled", p.review_id, "approve by VISIBILITY-DECIDER-CANARY");
-            f.append(if i == 5 { "receipt.withheld" } else { "receipt.classified" }, p.digest, dna::line_at(bodies, i));
-            std::test::assert(std::str::contains(f.blob(p.digest), p.text), "stale classified blob present");
+            f.append(
+                if i == 5 { "receipt.withheld" } else { "receipt.classified" },
+                p.digest,
+                dna::line_at(bodies, i),
+            );
+            std::test::assert(
+                std::str::contains(f.blob(p.digest), p.text),
+                "stale classified blob present",
+            );
             f.start(); f.uncertain(p); f.stop(); i = i + 1;
         }
     }
     fn ordinary_review() {
         let f = fixture::Fixture { root: self.root + "/16" };
-        let id = "operations/nonknowledge-review"; let question = "Approve the service change?\nScope: org/support — exact candidate";
+        let id = "operations/nonknowledge-review";
+        let question = "Approve the service change?\nScope: org/support — exact candidate";
         let subject = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        f.review(id, question, subject, ""); f.append("review.settled", id, "approve by alice"); f.start();
+        f.review(id, question, subject, "");
+        f.append("review.settled", id, "approve by alice");
+        f.start();
         let review = f.item("reviews", id);
-        self.json.eq(review, "knowledge_digest", ""); self.json.eq(review, "subject_digest", subject); self.json.eq(review, "text_status", "not_applicable");
-        self.json.is_bool(review, "text_available", false); self.json.eq(review, "question", question); self.json.eq(review, "settled", "approve by alice"); self.json.eq(review, "outcome", "approve");
+        self.json.eq(review, "knowledge_digest", "");
+        self.json.eq(review, "subject_digest", subject);
+        self.json.eq(review, "text_status", "not_applicable");
+        self.json.is_bool(review, "text_available", false);
+        self.json.eq(review, "question", question);
+        self.json.eq(review, "settled", "approve by alice");
+        self.json.eq(review, "outcome", "approve");
     }
     fn unlinked_review() {
-        let f = fixture::Fixture { root: self.root + "/17" }; let digest = f.receipt("UNLINKED-RECEIPT-CANARY"); let id = "operations/review-without-knowledge-link";
-        f.review(id, "UNLINKED-QUESTION-CANARY", digest, ""); f.append("review.settled", id, "approve by VISIBILITY-DECIDER-CANARY");
-        f.append("ledger.adopted", "ledger", "{\"routing\":1}"); f.start();
+        let f = fixture::Fixture { root: self.root + "/17" };
+        let digest = f.receipt("UNLINKED-RECEIPT-CANARY");
+        let id = "operations/review-without-knowledge-link";
+        f.review(id, "UNLINKED-QUESTION-CANARY", digest, "");
+        f.append("review.settled", id, "approve by VISIBILITY-DECIDER-CANARY");
+        // the record's Ledger is read with it (GH #1590): a subject it
+        // restricts suppresses the review's display
+        f.append("receipt.withheld", digest, "{\"class\":\"confidential\"}"); f.start();
         let review = f.uncertain_item("reviews", id, "UNLINKED-QUESTION-CANARY", false);
-        if len(review) > 0 { self.json.eq(review, "question", ""); self.json.eq(review, "settled", ""); self.json.eq(review, "outcome", "approve"); }
+        if len(review) > 0 {
+            self.json.eq(review, "question", "");
+            self.json.eq(review, "settled", "");
+            self.json.eq(review, "outcome", "approve");
+        }
     }
     fn inconsistent_links() {
         let f = fixture::Fixture { root: self.root + "/18" };
-        let visible = f.practice("visible/practice", "A visible canonical practice", "org", "", false);
-        let redacted = f.practice("redacted/practice", "MISMATCHED-SUBJECT-CANARY", "org", "", false);
-        f.append("receipt.redacted", redacted.digest, "{\"by\":\"alice\",\"why\":\"expired\",\"policy\":\"retention\"}");
-        let id = "review/inconsistent-receipt-links"; f.review(id, redacted.text, redacted.digest, visible.digest);
+        let visible = f.practice(
+            "visible/practice",
+            "A visible canonical practice",
+            "org",
+            "",
+            false,
+        );
+        let redacted = f.practice(
+            "redacted/practice",
+            "MISMATCHED-SUBJECT-CANARY",
+            "org",
+            "",
+            false,
+        );
+        f.append(
+            "receipt.redacted",
+            redacted.digest,
+            "{\"by\":\"alice\",\"why\":\"expired\",\"policy\":\"retention\"}",
+        );
+        let id = "review/inconsistent-receipt-links";
+        f.review(id, redacted.text, redacted.digest, visible.digest);
         f.append("review.settled", id, "approve by VISIBILITY-DECIDER-CANARY"); f.start();
         self.json.eq(f.item("practices", visible.digest), "text", visible.text);
         let review = f.uncertain_item("reviews", id, redacted.text, true);
-        if len(review) > 0 { self.json.eq(review, "question", ""); self.json.eq(review, "settled", ""); self.json.eq(review, "outcome", "approve"); }
+        if len(review) > 0 {
+            self.json.eq(review, "question", "");
+            self.json.eq(review, "settled", "");
+            self.json.eq(review, "outcome", "approve");
+        }
     }
     fn missing_and_mismatched_receipts() {
         let f = fixture::Fixture { root: self.root + "/19" };
-        let missing = f.practice("missing", "MISSING-CANARY", "org", "", false); f.git("update-ref\n-d\nrefs/dna/receipts/" + missing.digest[7..len(missing.digest)]);
+        // a body memory lost, and one changed behind its digest (GH #1590:
+        // the bodies are memory's)
+        let missing = f.practice("missing", "MISSING-CANARY", "org", "", false);
+        f.owner_sql("DELETE FROM protected_receipts WHERE digest = '" + missing.digest + "'");
         let wrong = f.practice("wrong", "ORIGINAL-CANARY", "org", "", false);
-        let replacement = f.receipt("{\"text\":\"TAMPERED-CANARY\"}");
-        let blob = f.git("rev-parse\nrefs/dna/receipts/" + replacement[7..len(replacement)]);
-        f.git("update-ref\nrefs/dna/receipts/" + wrong.digest[7..len(wrong.digest)] + "\n" + blob);
+        f.owner_sql(
+            "UPDATE protected_receipts SET body = '{\"text\":\"TAMPERED-CANARY\"}' WHERE digest = '"
+                + wrong.digest + "'",
+        );
         f.start(); f.hidden(missing, "missing"); f.hidden(wrong, "digest_mismatch");
-        std::test::assert(!std::str::contains(f.read("practices", "", ""), "TAMPERED-CANARY"), "tampered text absent");
+        std::test::assert(
+            !std::str::contains(f.read("practices", "", ""), "TAMPERED-CANARY"),
+            "tampered text absent",
+        );
     }
     fn malformed_document() {
-        let f = fixture::Fixture { root: self.root + "/20" }; let digest = f.receipt("{\"kind\":\"practice\",\"text\":\"INVALID-DOCUMENT-CANARY\"");
+        let f = fixture::Fixture { root: self.root + "/20" };
+        let digest = f.receipt("{\"kind\":\"practice\",\"text\":\"INVALID-DOCUMENT-CANARY\"");
         let id = dna::knowledge_review_id(digest); let b = std::json::Builder { };
-        f.append("knowledge.proposed", digest, "{\"digest\":" + b.quote(digest) + ",\"review_id\":" + b.quote(id) + ",\"kind\":\"practice\",\"name\":\"invalid/document\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
+        f.append(
+            "knowledge.proposed",
+            digest,
+            "{\"digest\":" + b.quote(digest) + ",\"review_id\":" + b.quote(id)
+                + ",\"kind\":\"practice\",\"name\":\"invalid/document\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}",
+        );
         f.review(id, "INVALID-DOCUMENT-CANARY", digest, digest); f.start();
-        f.hidden(fixture::Practice { digest: digest, review_id: id, text: "INVALID-DOCUMENT-CANARY" }, "invalid_document"); f.source(f.read("practices", "", ""));
+        f.hidden(
+            fixture::Practice { digest: digest, review_id: id, text: "INVALID-DOCUMENT-CANARY" },
+            "invalid_document",
+        );
+        f.source(f.read("practices", "", ""));
     }
     fn missing_record() {
-        let f = fixture::Fixture { root: self.root + "/21" }; f.start(); f.git("update-ref\n-d\nrefs/dna/journal"); f.error("GET", fixture::APPLICATIONS, 503, "", "");
+        // memory holds no row of the record the genome pins
+        let f = fixture::Fixture { root: self.root + "/21" };
+        f.start();
+        f.owner_sql("TRUNCATE record_rows");
+        f.error("GET", fixture::APPLICATIONS, 503, "", "");
     }
     fn malformed_record() {
+        // a row written behind memory's insert function, its chain broken
         let f = fixture::Fixture { root: self.root + "/22" }; let p = f.standard(); f.start();
-        std::io::fs::write_file(f.root + "/broken.jsonl", "not a JSON journal\n") or discard;
-        let blob = f.git("hash-object\n-w\n" + f.root + "/broken.jsonl");
-        let index = f.root + "/malformed.index";
-        let u = dna::run_tool("env\nGIT_INDEX_FILE=" + index + "\ngit\n-C\n" + f.root + "\nupdate-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl"); std::test::assert_eq_int(u.code, 0, u.stderr);
-        let t = dna::run_tool("env\nGIT_INDEX_FILE=" + index + "\ngit\n-C\n" + f.root + "\nwrite-tree"); std::test::assert_eq_int(t.code, 0, t.stderr);
-        let commit = f.git("commit-tree\n" + dna::trim_nl(t.stdout) + "\n-p\n" + f.journal.head() + "\n-m\nmalformed fixture");
-        f.git("update-ref\nrefs/dna/journal\n" + commit); f.error("GET", fixture::APPLICATIONS, 503, "", "");
+        f.owner_sql(
+            "INSERT INTO record_rows (seq, kind, entity, body, author, writer, prev, digest, sig) SELECT max(seq) + 1, 'fixture.malformed', 'x', 'not a row', 'fixture', 'fixture', 'not-the-head', 'not-a-digest', '' FROM record_rows",
+        );
+        f.error("GET", fixture::APPLICATIONS, 503, "", "");
     }
     fn oidc_refusals() {
-        let f = fixture::Fixture { root: self.root + "/23" }; let p = f.standard(); let before = f.refs(); f.configure_oidc(self.issuer_url);
-        f.error("GET", fixture::APPLICATIONS, 401, "", ""); f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
-        let unmapped = f.sign_in("unmapped-sub"); std::test::assert_eq_int(unmapped.status, 403, unmapped.body);
-        std::test::assert(!std::str::contains(dna::response_header(unmapped.headers, "Set-Cookie"), "dna_session="), "unmapped receives no session");
+        let f = fixture::Fixture { root: self.root + "/23" };
+        let p = f.standard();
+        let before = f.refs();
+        f.configure_oidc(self.issuer_url);
+        f.error("GET", fixture::APPLICATIONS, 401, "", "");
+        f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
+        let unmapped = f.sign_in("unmapped-sub");
+        std::test::assert_eq_int(unmapped.status, 403, unmapped.body);
+        std::test::assert(
+            !std::str::contains(
+                dna::response_header(unmapped.headers, "Set-Cookie"),
+                "dna_session=",
+            ),
+            "unmapped receives no session",
+        );
         std::test::assert_eq_str(f.refs(), before, "authentication writes no domain refs");
     }
     fn oidc_incomplete() {
-        let f = fixture::Fixture { root: self.root + "/24" }; f.git("config\ndna.principal\noidc"); let before = f.refs(); f.spawn();
+        let f = fixture::Fixture { root: self.root + "/24" };
+        f.git("config\ndna.principal\noidc");
+        let before = f.refs();
+        f.spawn();
         let deadline = std::time::now() + 10; let mut code = -2;
-        while code == -2 && std::time::now() < deadline { code = std::process::try_wait(f.api) or - 1; if code == -2 { std::time::sleep(25ms); } }
-        std::test::assert(code != -2 && code != 0, "incomplete OIDC must fail startup: " + f.log()); f.api.pid = -1;
+        while code == -2 && std::time::now() < deadline {
+            code = std::process::try_wait(f.api) or - 1;
+            if code == -2 { std::time::sleep(25ms); }
+        }
+        std::test::assert(code != -2 && code != 0, "incomplete OIDC must fail startup: " + f.log());
+        f.api.pid = -1;
         std::test::assert_eq_str(f.refs(), before, "failed startup writes no refs");
     }
     fn oidc_session() {
-        let f = fixture::Fixture { root: self.root + "/25" }; let p = f.standard(); f.configure_oidc(self.issuer_url);
-        let initial = fixture::curl("GET", self.issuer_url + "/test/exchanges", "", ""); let count = self.json.integer(initial.body, "exchanges");
+        let f = fixture::Fixture { root: self.root + "/25" };
+        let p = f.standard();
+        f.configure_oidc(self.issuer_url);
+        let initial = fixture::curl("GET", self.issuer_url + "/test/exchanges", "", "");
+        let count = self.json.integer(initial.body, "exchanges");
         let login = f.sign_in(""); std::test::assert_eq_int(login.status, 302, login.body);
-        std::test::assert(std::str::contains(dna::response_header(login.headers, "Set-Cookie"), "HttpOnly"), "HttpOnly session");
+        std::test::assert(
+            std::str::contains(dna::response_header(login.headers, "Set-Cookie"), "HttpOnly"),
+            "HttpOnly session",
+        );
         let session = fixture::cookie(login);
-        let capability = f.validate(f.http("GET", f.prefix + "/capabilities", session, ""), "CapabilitiesResponse", 200);
-        let principal = self.json.raw(self.json.data(capability), "principal"); self.json.eq(principal, "mode", "oidc"); self.json.eq(principal, "name", "alice");
+        let capability = f.validate(
+            f.http("GET", f.prefix + "/capabilities", session, ""),
+            "CapabilitiesResponse",
+            200,
+        );
+        let principal = self.json.raw(self.json.data(capability), "principal");
+        self.json.eq(principal, "mode", "oidc");
+        self.json.eq(principal, "name", "alice");
         self.json.eq(self.json.first(f.read("practices", "", session)), "digest", p.digest);
-        let exchanged = fixture::curl("GET", self.issuer_url + "/test/exchanges", "", ""); self.json.is_int(exchanged.body, "exchanges", count + 1);
-        std::test::assert_eq_int(f.http("GET", "/auth/logout", session, "").status, 302, "logout"); f.error("GET", fixture::APPLICATIONS, 401, session, "");
+        let exchanged = fixture::curl("GET", self.issuer_url + "/test/exchanges", "", "");
+        self.json.is_int(exchanged.body, "exchanges", count + 1);
+        std::test::assert_eq_int(f.http("GET", "/auth/logout", session, "").status, 302, "logout");
+        f.error("GET", fixture::APPLICATIONS, 401, session, "");
         let again = f.sign_in(""); std::test::assert_eq_int(again.status, 302, again.body);
         let old_session = fixture::cookie(again);
-        std::test::assert(std::str::starts_with(old_session, "dna_session=") && len(old_session) > 20, "second sign-in really created a session");
-        f.validate(f.http("GET", fixture::APPLICATIONS, old_session, ""), "ApplicationsResponse", 200);
+        std::test::assert(
+            std::str::starts_with(old_session, "dna_session=") && len(old_session) > 20,
+            "second sign-in really created a session",
+        );
+        f.validate(
+            f.http("GET", fixture::APPLICATIONS, old_session, ""),
+            "ApplicationsResponse",
+            200,
+        );
         f.stop(); f.start(); f.error("GET", fixture::APPLICATIONS, 401, old_session, "");
     }
     fn web_assets() {
@@ -382,29 +779,103 @@ locus Cases {
         let mut i = 0;
         while i < dna::count_lines(paths) {
             // the shell itself opens with the launch token; its assets are public
-            let response = f.http("GET", if i == 0 { shell_url(f) } else { dna::line_at(paths, i) }, "", "");
+            let response = f.http(
+                "GET",
+                if i == 0 { shell_url(f) } else { dna::line_at(paths, i) },
+                "",
+                "",
+            );
             std::test::assert_eq_int(response.status, 200, response.body);
-            std::test::assert_eq_str(dna::response_header(response.headers, "Content-Type"), if i == 0 { "text/html; charset=utf-8" } else if i == 2 { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" }, "asset media type");
-            std::test::assert_eq_str(dna::response_header(response.headers, "Cache-Control"), "no-store", "assets are not cached");
-            std::test::assert_eq_str(dna::response_header(response.headers, "X-Content-Type-Options"), "nosniff", "assets are not sniffed");
+            std::test::assert_eq_str(
+                dna::response_header(response.headers, "Content-Type"),
+                if i == 0 {
+                    "text/html; charset=utf-8"
+                } else if i == 2 {
+                    "text/css; charset=utf-8"
+                } else {
+                    "text/javascript; charset=utf-8"
+                },
+                "asset media type",
+            );
+            std::test::assert_eq_str(
+                dna::response_header(response.headers, "Cache-Control"),
+                "no-store",
+                "assets are not cached",
+            );
+            std::test::assert_eq_str(
+                dna::response_header(response.headers, "X-Content-Type-Options"),
+                "nosniff",
+                "assets are not sniffed",
+            );
             let policy = dna::response_header(response.headers, "Content-Security-Policy");
-            std::test::assert(std::str::contains(policy, "default-src 'none'") && std::str::contains(policy, "script-src 'self'") && std::str::contains(policy, "style-src 'self'") && std::str::contains(policy, "connect-src 'self'") && std::str::contains(policy, "frame-ancestors 'none'") && !std::str::contains(policy, "unsafe-inline"), "same-origin external asset policy");
-            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else if i == 2 { fixture::SHELL_CSS } else if i == 3 { fixture::SHELL_APPLICATION_JS } else if i == 4 { fixture::SHELL_DEFINITION_DRAFT_JS } else if i == 5 { fixture::SHELL_ORGANIZATION_DRAFT_JS } else if i == 6 { fixture::SHELL_KNOWLEDGE_DRAFT_JS } else if i == 7 { fixture::SHELL_TASK_ADMINISTRATION_JS } else if i == 8 { fixture::SHELL_PROJECTS_JS } else { fixture::SHELL_TASK_CREATE_JS }, "exact static asset");
-            std::test::assert(!std::str::contains(response.body, p.text) && !std::str::contains(response.body, p.digest) && !std::str::contains(response.body, "PRIVATE-RECORD-NAME"), "static assets have no Record data");
+            std::test::assert(
+                std::str::contains(policy, "default-src 'none'")
+                    && std::str::contains(policy, "script-src 'self'")
+                    && std::str::contains(policy, "style-src 'self'")
+                    && std::str::contains(policy, "connect-src 'self'")
+                    && std::str::contains(policy, "frame-ancestors 'none'")
+                    && !std::str::contains(policy, "unsafe-inline"),
+                "same-origin external asset policy",
+            );
+            std::test::assert_eq_str(
+                response.body,
+                if i == 0 {
+                    fixture::SHELL_HTML
+                } else if i == 1 {
+                    fixture::SHELL_JS
+                } else if i == 2 {
+                    fixture::SHELL_CSS
+                } else if i == 3 {
+                    fixture::SHELL_APPLICATION_JS
+                } else if i == 4 {
+                    fixture::SHELL_DEFINITION_DRAFT_JS
+                } else if i == 5 {
+                    fixture::SHELL_ORGANIZATION_DRAFT_JS
+                } else if i == 6 {
+                    fixture::SHELL_KNOWLEDGE_DRAFT_JS
+                } else if i == 7 {
+                    fixture::SHELL_TASK_ADMINISTRATION_JS
+                } else if i == 8 {
+                    fixture::SHELL_PROJECTS_JS
+                } else {
+                    fixture::SHELL_TASK_CREATE_JS
+                },
+                "exact static asset",
+            );
+            std::test::assert(
+                !std::str::contains(response.body, p.text)
+                    && !std::str::contains(response.body, p.digest)
+                    && !std::str::contains(response.body, "PRIVATE-RECORD-NAME"),
+                "static assets have no Record data",
+            );
             f.error("POST", dna::line_at(paths, i), 405, "", "{}");
             f.error("HEAD", dna::line_at(paths, i), 405, "", "");
             i = i + 1;
         }
         let expected_csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
-        std::test::assert_eq_str(dna::response_header(f.http("GET", shell_url(f), "", "").headers, "Content-Security-Policy"), expected_csp, "the shell connects to its own origin only");
+        std::test::assert_eq_str(
+            dna::response_header(
+                f.http("GET", shell_url(f), "", "").headers,
+                "Content-Security-Policy",
+            ),
+            expected_csp,
+            "the shell connects to its own origin only",
+        );
         let absent = "/index.html\n/secret.txt\n/main.hl\n/.git/config\n/../secret.txt\n/%2e%2e/secret.txt\n/app.js/../secret.txt\n/app.js.map\n/missing.css\n/nested/app.js\n//app.js\n/%61pp.js";
         i = 0;
-        while i < dna::count_lines(absent) { f.error("GET", dna::line_at(absent, i), 404, "", ""); i = i + 1; }
+        while i < dna::count_lines(absent) {
+            f.error("GET", dna::line_at(absent, i), 404, "", "");
+            i = i + 1;
+        }
         // The configured bundle is fixed at startup; deleting a source file
         // cannot fall through to another directory or change what is served.
         let removed = dna::run_tool("rm\n" + f.webroot + "/app.js");
         std::test::assert_eq_int(removed.code, 0, "remove loaded asset");
-        std::test::assert_eq_str(f.http("GET", "/app.js", "", "").body, fixture::SHELL_JS, "loaded bundle remains coherent");
+        std::test::assert_eq_str(
+            f.http("GET", "/app.js", "", "").body,
+            fixture::SHELL_JS,
+            "loaded bundle remains coherent",
+        );
         f.read("practices", "", "");
         std::test::assert_eq_str(f.refs(), before, "web requests preserve domain refs");
     }
@@ -414,7 +885,27 @@ locus Cases {
             let f = fixture::Fixture { root: self.root + "/27-" + to_string(i) };
             f.prepare_web();
             if i < 10 {
-                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else if i == 2 { "styles.css" } else if i == 3 { "application.js" } else if i == 4 { "definition-draft.js" } else if i == 5 { "organization-draft.js" } else if i == 6 { "knowledge-draft.js" } else if i == 7 { "task-administration.js" } else if i == 8 { "projects.js" } else { "task-create.js" };
+                let filename = if i == 0 {
+                    "index.html"
+                } else if i == 1 {
+                    "app.js"
+                } else if i == 2 {
+                    "styles.css"
+                } else if i == 3 {
+                    "application.js"
+                } else if i == 4 {
+                    "definition-draft.js"
+                } else if i == 5 {
+                    "organization-draft.js"
+                } else if i == 6 {
+                    "knowledge-draft.js"
+                } else if i == 7 {
+                    "task-administration.js"
+                } else if i == 8 {
+                    "projects.js"
+                } else {
+                    "task-create.js"
+                };
                 let removed = dna::run_tool("rm\n" + f.webroot + "/" + filename);
                 std::test::assert_eq_int(removed.code, 0, "remove required asset");
             } else if i == 10 { f.webroot = f.root + "/absent"; }
@@ -432,12 +923,20 @@ locus Cases {
         std::io::fs::write_file(f.root + "/index.html", fixture::SHELL_HTML) or discard;
         std::io::fs::write_file(f.root + "/app.js", fixture::SHELL_JS) or discard;
         std::io::fs::write_file(f.root + "/styles.css", fixture::SHELL_CSS) or discard;
-        std::io::fs::write_file(f.root + "/application.js", fixture::SHELL_APPLICATION_JS) or discard;
-        std::io::fs::write_file(f.root + "/definition-draft.js", fixture::SHELL_DEFINITION_DRAFT_JS) or discard;
+        std::io::fs::write_file(
+            f.root + "/application.js",
+            fixture::SHELL_APPLICATION_JS,
+        ) or discard;
+        std::io::fs::write_file(
+            f.root + "/definition-draft.js",
+            fixture::SHELL_DEFINITION_DRAFT_JS,
+        ) or discard;
         f.start();
         f.error("GET", "/application.js", 404, "", "");
         f.error("GET", "/definition-draft.js", 404, "", "");
-        f.error("GET", shell_url(f), 404, "", ""); f.error("GET", "/app.js", 404, "", ""); f.error("GET", "/styles.css", 404, "", "");
+        f.error("GET", shell_url(f), 404, "", "");
+        f.error("GET", "/app.js", 404, "", "");
+        f.error("GET", "/styles.css", 404, "", "");
         f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
     }
     fn web_oidc() {
@@ -445,25 +944,52 @@ locus Cases {
         f.prepare_web(); f.configure_oidc(self.issuer_url);
         let shell = f.http("GET", shell_url(f), "", "");
         std::test::assert_eq_int(shell.status, 200, "the public shell needs no DNA session");
-        std::test::assert_eq_str(shell.body, fixture::SHELL_HTML, "unauthenticated shell is static");
-        std::test::assert(!std::str::contains(shell.body, p.text), "no practice body in public shell");
+        std::test::assert_eq_str(
+            shell.body,
+            fixture::SHELL_HTML,
+            "unauthenticated shell is static",
+        );
+        std::test::assert(
+            !std::str::contains(shell.body, p.text),
+            "no practice body in public shell",
+        );
         std::test::assert_eq_int(f.http("GET", "/app.js", "", "").status, 200, "public script");
         std::test::assert_eq_int(f.http("GET", "/styles.css", "", "").status, 200, "public styles");
-        std::test::assert_eq_int(f.http("GET", "/application.js", "", "").status, 200, "public application script");
-        std::test::assert_eq_int(f.http("GET", "/definition-draft.js", "", "").status, 200, "public definition draft script");
+        std::test::assert_eq_int(
+            f.http("GET", "/application.js", "", "").status,
+            200,
+            "public application script",
+        );
+        std::test::assert_eq_int(
+            f.http("GET", "/definition-draft.js", "", "").status,
+            200,
+            "public definition draft script",
+        );
         f.error("GET", fixture::APPLICATIONS, 401, "", "");
         f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
         let login = f.sign_in("");
         std::test::assert_eq_int(login.status, 302, login.body);
-        std::test::assert_eq_str(dna::response_header(login.headers, "Location"), "/", "callback returns to served shell");
+        std::test::assert_eq_str(
+            dna::response_header(login.headers, "Location"),
+            "/",
+            "callback returns to served shell",
+        );
         let session = fixture::cookie(login);
         let landing = f.http("GET", dna::response_header(login.headers, "Location"), session, "");
         std::test::assert_eq_int(landing.status, 200, "authenticated callback landing works");
-        std::test::assert_eq_str(landing.body, fixture::SHELL_HTML, "session changes no shell bytes");
+        std::test::assert_eq_str(
+            landing.body,
+            fixture::SHELL_HTML,
+            "session changes no shell bytes",
+        );
         self.json.eq(self.json.first(f.read("practices", "", session)), "digest", p.digest);
         f.http("GET", "/auth/logout", session, "");
         f.error("GET", fixture::APPLICATIONS, 401, session, "");
-        std::test::assert_eq_int(f.http("GET", "/", "", "").status, 200, "the shell survives logout");
+        std::test::assert_eq_int(
+            f.http("GET", "/", "", "").status,
+            200,
+            "the shell survives logout",
+        );
     }
     fn organization_seed(f: fixture::Fixture, extra: Bool) {
         std::io::fs::mkdir(f.root + "/dna") or discard;
@@ -472,7 +998,8 @@ locus Cases {
             + "locus Team { params { first: Reviewer = Reviewer { }; second: Reviewer = Reviewer { }; } }\n"
             + "locus Metrics { params { count: Int = 0; } }\ngroup positions = { Reviewer };\n"
             + "main locus Org { params { team: Team = Team { }; metrics: Metrics = Metrics { }; "
-            + (if extra { "audit: Reviewer = Reviewer { }; " } else { "" }) + "} }\nfn main() { Org { }; }\n";
+            + (if extra { "audit: Reviewer = Reviewer { }; " } else { "" })
+            + "} }\nfn main() { Org { }; }\n";
         std::io::fs::write_file(f.root + "/dna/org/main.hl", code) or raise;
         f.git("add\n--\ndna/org"); f.git("commit\n-q\n-m\norganization fixture");
     }
@@ -480,10 +1007,18 @@ locus Cases {
         let f = fixture::Fixture { root: self.root + "/30" };
         self.organization_seed(f, false);
         let before = f.refs(); f.start();
-        let caps = f.validate(f.http("GET", f.prefix + "/capabilities", "", ""), "CapabilitiesResponse", 200);
+        let caps = f.validate(
+            f.http("GET", f.prefix + "/capabilities", "", ""),
+            "CapabilitiesResponse",
+            200,
+        );
         self.json.is_bool(self.json.raw(self.json.data(caps), "reads"), "organization", true);
         let path = f.prefix + "/dna/organization";
-        let payload = f.validate(f.http("GET", path + "?limit=2", "", ""), "OrganizationResponse", 200);
+        let payload = f.validate(
+            f.http("GET", path + "?limit=2", "", ""),
+            "OrganizationResponse",
+            200,
+        );
         f.source(payload);
         self.json.is_int(self.json.page(payload), "total", 5);
         let data = self.json.data(payload);
@@ -493,15 +1028,32 @@ locus Cases {
         self.json.is_bool(basis, "position_group_declared", true);
         self.json.eq(self.json.raw(data, "ownership"), "instance_binding", "unavailable");
         let snapshot = self.json.string(self.json.page(payload), "snapshot");
-        let second = f.validate(f.http("GET", path + "?limit=2&offset=2&snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        let second = f.validate(
+            f.http("GET", path + "?limit=2&offset=2&snapshot=" + dna::url_encode(snapshot), "", ""),
+            "OrganizationResponse",
+            200,
+        );
         std::test::assert_eq_int(self.json.count(second), 2, "second organization page");
-        let detail = f.validate(f.http("GET", path + "?id=Org.team.first&snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        let detail = f.validate(
+            f.http(
+                "GET",
+                path + "?id=Org.team.first&snapshot=" + dna::url_encode(snapshot),
+                "",
+                "",
+            ),
+            "OrganizationResponse",
+            200,
+        );
         let node = self.json.first(detail);
         self.json.eq(node, "id", "Org.team.first"); self.json.eq(node, "parent_id", "Org.team");
         self.json.eq(node, "role", "position"); self.json.eq(node, "declaration", "Reviewer");
         self.json.is_bool(node, "in_position_outline", true);
         f.error("GET", path + "?id=org%2Fteam", 404, "", "");
-        std::test::assert_eq_str(f.refs(), before, "organization reads change no source or Record refs");
+        std::test::assert_eq_str(
+            f.refs(),
+            before,
+            "organization reads change no source or Record refs",
+        );
     }
     fn organization_snapshots() {
         let f = fixture::Fixture { root: self.root + "/31" };
@@ -510,8 +1062,16 @@ locus Cases {
         let first = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
         let snapshot = self.json.string(self.json.page(first), "snapshot");
         std::io::fs::write_file(f.root + "/dna/org/main.hl", "INVALID DIRTY SOURCE") or raise;
-        let clean = f.validate(f.http("GET", path + "?snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
-        std::test::assert_eq_str(first, clean, "dirty source is not presented as committed structure");
+        let clean = f.validate(
+            f.http("GET", path + "?snapshot=" + dna::url_encode(snapshot), "", ""),
+            "OrganizationResponse",
+            200,
+        );
+        std::test::assert_eq_str(
+            first,
+            clean,
+            "dirty source is not presented as committed structure",
+        );
         self.organization_seed(f, true);
         f.error("GET", path + "?snapshot=" + dna::url_encode(snapshot), 409, "", "");
         let changed = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
@@ -527,13 +1087,21 @@ locus Cases {
         let f = fixture::Fixture { root: self.root + "/32" };
         f.start(); f.error("GET", f.prefix + "/dna/organization", 503, "", "");
         self.organization_seed(f, false);
-        f.validate(f.http("GET", f.prefix + "/dna/organization", "", ""), "OrganizationResponse", 200);
+        f.validate(
+            f.http("GET", f.prefix + "/dna/organization", "", ""),
+            "OrganizationResponse",
+            200,
+        );
         std::io::fs::write_file(f.root + "/dna/org/main.hl", "PRIVATE INVALID SOURCE") or raise;
         f.git("add\n--\ndna/org/main.hl"); f.git("commit\n-q\n-m\ninvalid declared source");
         let response = f.http("GET", f.prefix + "/dna/organization", "", "");
         f.validate(response, "ErrorResponse", 503);
         self.json.eq(self.json.raw(response.body, "error"), "code", "organization_check_failed");
-        std::test::assert(!std::str::contains(response.body, "PRIVATE INVALID SOURCE") && !std::str::contains(response.body, "Org.team"), "failed refresh returns neither compiler internals nor old structure");
+        std::test::assert(
+            !std::str::contains(response.body, "PRIVATE INVALID SOURCE")
+                && !std::str::contains(response.body, "Org.team"),
+            "failed refresh returns neither compiler internals nor old structure",
+        );
     }
     fn organization_identity() {
         let f = fixture::Fixture { root: self.root + "/33" };
@@ -543,7 +1111,11 @@ locus Cases {
         let session = fixture::cookie(f.sign_in(""));
         let payload = f.validate(f.http("GET", path, session, ""), "OrganizationResponse", 200);
         self.json.eq(self.json.first(payload), "id", "Org.team.first");
-        let capability = f.validate(f.http("GET", f.prefix + "/capabilities", session, ""), "CapabilitiesResponse", 200);
+        let capability = f.validate(
+            f.http("GET", f.prefix + "/capabilities", session, ""),
+            "CapabilitiesResponse",
+            200,
+        );
         self.json.eq(self.json.raw(self.json.data(capability), "principal"), "name", "alice");
         f.http("GET", "/auth/logout", session, "");
         f.error("GET", path, 401, session, "");
@@ -564,7 +1136,6 @@ locus Cases {
         self.redacted();
         self.protected_receipts();
         self.adopted();
-        self.abandoned();
         self.malformed_classification();
         self.ordinary_review();
         self.unlinked_review();
@@ -603,24 +1174,39 @@ main locus App {
 }
 
 fn main() {
-    // Native GitJournal/GitReceipts invoke Git in this process's environment.
-    // Re-exec before constructing any fixture so inherited plumbing cannot
-    // redirect a temporary Record into another checkout or object directory.
+    // The genome's git runs in this process's environment. Re-exec before
+    // constructing any fixture so inherited plumbing cannot redirect a
+    // temporary project into another checkout or object directory; the
+    // owner's DSN stays, since the record is memory's (GH #1590).
     if std::env::var("HALE_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_VAULT_ADDR\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool(
+            "env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_VAULT_ADDR\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_API_TEST_CLEAN=1\n"
+                + std::env::arg_or(0, ""),
+        );
         print(clean.stdout);
         if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
-    let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_MEMORY_DSN_OWNER\nHALE_DNA_MEMORY_DSN_SPINE\nHALE_DNA_MEMORY_DSN_HEAD\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\nHALE_DNA_EVIDENCE_KEY";
+    let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_MEMORY_DSN_SPINE\nHALE_DNA_MEMORY_DSN_HEAD\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\nHALE_DNA_EVIDENCE_KEY";
     let mut i = 0;
     while i < dna::count_lines(forbidden) {
         let key = dna::line_at(forbidden, i);
-        std::test::assert(!std::env::var_exists(key), "inherited test marker must not bypass Git and DNA environment cleanup");
+        std::test::assert(
+            !std::env::var_exists(key),
+            "inherited test marker must not bypass Git and DNA environment cleanup",
+        );
         i = i + 1;
     }
-    std::test::assert_eq_str(std::env::var("GIT_CONFIG_NOSYSTEM"), "1", "system Git config disabled");
-    std::test::assert_eq_str(std::env::var("GIT_CONFIG_GLOBAL"), "/dev/null", "global Git config disabled");
+    std::test::assert_eq_str(
+        std::env::var("GIT_CONFIG_NOSYSTEM"),
+        "1",
+        "system Git config disabled",
+    );
+    std::test::assert_eq_str(
+        std::env::var("GIT_CONFIG_GLOBAL"),
+        "/dev/null",
+        "global Git config disabled",
+    );
     std::test::assert_eq_str(std::env::var("GIT_TERMINAL_PROMPT"), "0", "Git cannot prompt");
     std::test::assert_eq_str(std::env::var("HALE_DNA_DISCOVER"), "off", "no model discovery");
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-api-native.XXXXXX");
@@ -629,5 +1215,18 @@ fn main() {
     fixture::reap_and_remove_on_exit(root);
     let port = dna::free_port(997);
     let url = "http://127.0.0.1:" + to_string(port);
-    App { root: root, issuer_url: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: url, client: "dna-api-tests", secret: "fake-secret", subject: "alice-sub" } } };
+    App {
+        root: root,
+        issuer_url: url,
+        server: std::http::Server {
+            host: "127.0.0.1",
+            port: port,
+            handler: oidc::StubIssuer {
+                base: url,
+                client: "dna-api-tests",
+                secret: "fake-secret",
+                subject: "alice-sub",
+            },
+        },
+    };
 }

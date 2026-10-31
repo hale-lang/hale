@@ -1,7 +1,7 @@
 // dna/tests/ui_assets_test.hl — a `ui/` with no manifest is no seed
 // (ruling 11b, 2026-10-12).
 //
-// Three repositories through the real `hale dna init`, then the head's
+// Three repositories through the real `hale habitat graft`, then the head's
 // answer for the application's static assets (`ops::application_asset`,
 // which the head's `GET /app/...` returns):
 //
@@ -23,7 +23,11 @@ fn toolchain() -> String {
 }
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -31,7 +35,10 @@ fn source() -> String {
 // committed, and returned.
 @bounded_by(files)
 fn repository(root: String, files: String) -> String {
-    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n" + root);
+    let made = dna::run_tool(
+        "sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n"
+            + root,
+    );
     std::test::assert_eq_int(made.code, 0, "a repository at " + root + ": " + made.stderr);
     let mut rest = files;
     while len(rest) > 0 {
@@ -43,16 +50,20 @@ fn repository(root: String, files: String) -> String {
         let dir = dna::run_tool("sh\n-c\nmkdir -p \"$(dirname \"$1\")\"\nsh\n" + root + "/" + path);
         std::io::fs::write_file(root + "/" + path, one[(nl + 1)..len(one)]) or discard;
     }
-    let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -q --allow-empty -m tree\nsh\n" + root);
+    let committed = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git add -A && git commit -q --allow-empty -m tree\nsh\n" + root,
+    );
     std::test::assert_eq_int(committed.code, 0, "committed: " + committed.stderr);
     return root;
 }
 
 fn init(repo: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init . --no-library\nsh\n" + repo + "\n" + toolchain());
+    return dna::grafted(repo, ".\n--attach\n--no-library");
 }
 
-fn journal(repo: String) -> String { return dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl").stdout; }
+fn journal(repo: String) -> String {
+    return dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo).stdout;
+}
 
 const SERVED: String = "note    ui/ holds no manifest, so it is no seed: the head serves it as the application's static assets, at /app/";
 const IGNORED: String = "note    ui/ holds no manifest and nothing references it: no seed, and ignored";
@@ -63,43 +74,111 @@ main locus App {
 
         // ---- todo: referenced by a README link and a compose volume
         let todo = scratch + "/todo";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + todo + "\n" + source());
-        std::test::assert_eq_int(made.code, 0, "the todo fixture, a repository of its own: " + made.stderr);
+        let made = dna::run_tool(
+            "sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n"
+                + todo + "\n" + source(),
+        );
+        std::test::assert_eq_int(
+            made.code,
+            0,
+            "the todo fixture, a repository of its own: " + made.stderr,
+        );
         let t = init(todo);
-        std::test::assert_eq_int(t.code, 0, "init reads the todo repository: " + t.stdout + t.stderr);
-        std::test::assert(std::str::contains(t.stdout, SERVED + "\n"), "init says once that the head serves ui/: " + t.stdout);
+        std::test::assert_eq_int(
+            t.code,
+            0,
+            "init reads the todo repository: " + t.stdout + t.stderr,
+        );
+        std::test::assert(
+            std::str::contains(t.stdout, SERVED + "\n"),
+            "init says once that the head serves ui/: " + t.stdout,
+        );
         std::test::assert(!std::str::contains(t.stdout, IGNORED), "and not that it is ignored");
         std::test::assert(!std::str::contains(journal(todo), "seed:ui"), "ui is no seed");
         std::test::assert_eq_str(ops::application_assets(todo), "ui", "the head's assets are ui/");
         let index = ops::application_asset(todo, "/app/");
-        std::test::assert(index.status == 200 && index.content_type == "text/html; charset=utf-8" && len(index.bytes) == len(std::io::fs::read_bytes(todo + "/ui/index.html") or b""), "/app/ is its index.html: " + index.why);
+        std::test::assert(
+            index.status == 200
+                && index.content_type == "text/html; charset=utf-8"
+                && len(index.bytes) == len(std::io::fs::read_bytes(todo + "/ui/index.html") or b""),
+            "/app/ is its index.html: " + index.why,
+        );
         let page = ops::application_asset(todo, "/app");
         std::test::assert_eq_int(page.status, 200, "and so is /app");
         let js = ops::application_asset(todo, "/app/seq.js");
-        std::test::assert(js.status == 200 && js.content_type == "text/javascript; charset=utf-8" && len(js.bytes) == len(std::io::fs::read_bytes(todo + "/ui/seq.js") or b""), "/app/seq.js is ui/seq.js, as JavaScript: " + js.why);
+        std::test::assert(
+            js.status == 200
+                && js.content_type == "text/javascript; charset=utf-8"
+                && len(js.bytes) == len(std::io::fs::read_bytes(todo + "/ui/seq.js") or b""),
+            "/app/seq.js is ui/seq.js, as JavaScript: " + js.why,
+        );
         let ts = ops::application_asset(todo, "/app/client/todo.ts");
         std::test::assert_eq_int(ts.status, 200, "a file in a subdirectory");
-        std::test::assert_eq_int(ops::application_asset(todo, "/app/../README.md").status, 404, "nothing above ui/");
-        std::test::assert_eq_int(ops::application_asset(todo, "/app/client/../../compose.yaml").status, 404, "however it climbs");
-        std::test::assert_eq_int(ops::application_asset(todo, "/app/.hidden").status, 404, "no hidden file");
-        std::test::assert_eq_int(ops::application_asset(todo, "/app/missing.js").status, 404, "nor a file that is not there");
+        std::test::assert_eq_int(
+            ops::application_asset(todo, "/app/../README.md").status,
+            404,
+            "nothing above ui/",
+        );
+        std::test::assert_eq_int(
+            ops::application_asset(todo, "/app/client/../../compose.yaml").status,
+            404,
+            "however it climbs",
+        );
+        std::test::assert_eq_int(
+            ops::application_asset(todo, "/app/.hidden").status,
+            404,
+            "no hidden file",
+        );
+        std::test::assert_eq_int(
+            ops::application_asset(todo, "/app/missing.js").status,
+            404,
+            "nor a file that is not there",
+        );
 
         // ---- stray: a ui/ nothing references
-        let stray = repository(scratch + "/stray", "README.md\n# stray\n\nA repository with a page nobody mentions.\n<<eof>>ui/index.html\n<!doctype html>\n<p>stray</p>\n<<eof>>");
+        let stray = repository(
+            scratch + "/stray",
+            "README.md\n# stray\n\nA repository with a page nobody mentions.\n<<eof>>ui/index.html\n<!doctype html>\n<p>stray</p>\n<<eof>>",
+        );
         let s = init(stray);
-        std::test::assert_eq_int(s.code, 0, "init reads the stray repository: " + s.stdout + s.stderr);
-        std::test::assert(std::str::contains(s.stdout, IGNORED + "\n") && !std::str::contains(s.stdout, SERVED), "said once, and ignored: " + s.stdout);
+        std::test::assert_eq_int(
+            s.code,
+            0,
+            "init reads the stray repository: " + s.stdout + s.stderr,
+        );
+        std::test::assert(
+            std::str::contains(s.stdout, IGNORED + "\n") && !std::str::contains(s.stdout, SERVED),
+            "said once, and ignored: " + s.stdout,
+        );
         std::test::assert(!std::str::contains(journal(stray), "seed:ui"), "no seed");
         std::test::assert_eq_str(ops::application_assets(stray), "", "the head serves nothing");
-        std::test::assert_eq_int(ops::application_asset(stray, "/app/").status, 404, "not even its index");
+        std::test::assert_eq_int(
+            ops::application_asset(stray, "/app/").status,
+            404,
+            "not even its index",
+        );
 
         // ---- manifested: a ui/ with a package.json is a seed
-        let manifested = repository(scratch + "/manifested", "README.md\n# manifested\n\nA repository whose page is built. See [the page](./ui/).\n<<eof>>ui/package.json\n{}\n<<eof>>ui/index.html\n<p>built</p>\n<<eof>>");
+        let manifested = repository(
+            scratch + "/manifested",
+            "README.md\n# manifested\n\nA repository whose page is built. See [the page](./ui/).\n<<eof>>ui/package.json\n{}\n<<eof>>ui/index.html\n<p>built</p>\n<<eof>>",
+        );
         let m = init(manifested);
-        std::test::assert_eq_int(m.code, 0, "init reads the manifested repository: " + m.stdout + m.stderr);
-        std::test::assert(!std::str::contains(m.stdout, "note    ui/"), "nothing said: " + m.stdout);
+        std::test::assert_eq_int(
+            m.code,
+            0,
+            "init reads the manifested repository: " + m.stdout + m.stderr,
+        );
+        std::test::assert(
+            !std::str::contains(m.stdout, "note    ui/"),
+            "nothing said: " + m.stdout,
+        );
         std::test::assert(std::str::contains(journal(manifested), "seed:ui"), "ui is a seed");
-        std::test::assert_eq_str(ops::application_assets(manifested), "", "and no assets of the head's");
+        std::test::assert_eq_str(
+            ops::application_assets(manifested),
+            "",
+            "and no assets of the head's",
+        );
 
         dna::scratch_done(scratch);
     }

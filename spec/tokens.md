@@ -135,7 +135,10 @@ in slot-clause position inside a capacity block: `pool P of T
 as_parent_for ChildL;` (v1.x-4 — share the slot's allocator with
 a child locus's same-named slot at accept time) and `pool P of T
 indexed_by field;` (v1.x-FORM-4 — names the hashmap key field on
-a `@form(hashmap)` cell type).
+a `@form(hashmap)` cell type), and after a struct field's type,
+`checks: bounded[Check; 16] indexed_by name;` (a wire map, spec/api.md §
+Codecs), there followed by `-> <field>` for a map of values
+(`indexed_by name -> status`).
 The slot-kind words `pool` and `heap` are **contextual idents** —
 they lex as ordinary Idents and the parser recognizes them only
 in slot-decl head position inside a capacity block. So
@@ -515,6 +518,23 @@ everywhere else:
 transport are named (`as:`, `receivers:`, `bound:`, `on_full:`); no
 other call takes named arguments (spec/api.md § Serving).
 
+### Fleet words (phase 4)
+
+```
+fleet           host
+```
+
+Both are **contextual keywords** (spec/verification.md § Fleet
+composition), ordinary names everywhere else:
+
+- **`fleet`** — at top level, directly before `locus`: `fleet locus
+  Prod { … }` declares a deployment of other seeds' mains. A fleet is
+  a locus KIND, beside `main`.
+- **`host`** — in a placement entry inside a fleet locus, once per host
+  the param runs an instance on: `orders: host("box-a");`,
+  `gw: host("box-a"), host("box-b");`. A fleet's other placement, `replicas(n)`,
+  reuses the placement word.
+
 ## Operators
 
 ### Arithmetic
@@ -689,12 +709,9 @@ annotations are not in v1.
   Rust String invariant would UTF-8-encode them as two bytes
   and surprise the caller. No `\u{NNNN}` Unicode escape at
   v1; agents needing non-ASCII drop to byte literals.
-- Raw strings (`r"..."`) and multi-line strings
-  (`"""..."""`) are NOT implemented — the lexer rejects both
-  (verified 2026-07-22, GH #228 docs-drift audit; both were
-  previously listed here aspirationally). Byte literals +
-  f-strings cover the practical cases; add these forms to the
-  lexer before re-documenting them.
+- Multi-line text that is itself a program, a query or a document
+  is a **block string** (below). There is no `r"..."` raw form: the
+  block string is the one raw string.
 - F-strings (v1.x-10): `f"hello {name}"` — interpolates Hale
   expressions inside `{...}`, each rendered via the same
   formatter `println` uses. `{{` and `}}` are literal braces.
@@ -754,6 +771,77 @@ annotations are not in v1.
   happens to also be a local is unusual, not illegal. `{{`
   anywhere in the literal suppresses it, since that spelling
   signals the author knows the syntax.
+
+### Block strings
+
+A block string is a raw, multi-line string literal. It is for text
+that has its own syntax — Hale source written into a test fixture, a
+SQL query, a JSON document — which an escaped one-line string turns
+into `\"` and `\n` soup:
+
+```hale,fragment
+const PROGRAM: String = """
+    fn main() {
+        println("a\n{b}");
+    }
+
+    """;
+```
+
+Its value is the program exactly as it reads, ending in one line
+break (the blank line before the closing fence): the escaped string
+`"fn main() {\n    println(\"a\\n{b}\");\n}\n"`. The rules:
+
+- **Fences.** It opens with a run of three or more `"` (the *fence*)
+  that ends its line: only spaces and tabs may follow it before the
+  line break, and the text starts on the next line. It closes at the
+  first line whose first characters, after spaces and tabs, are a run
+  of exactly as many `"`; whatever follows that run on the line is
+  ordinary source (`""";`, `""")`, `""",`). A closing line whose run
+  is longer than the fence is a lex error that names the fence to use.
+  `""` is still the empty string: a block string needs three.
+- **A longer fence for quotes.** A `"""` in the middle of a line is
+  text. A line of the text that starts with a run of `"` as long as the
+  fence would close it, so such a body opens and closes with a longer
+  fence: `""""` carries a body holding a `"""` block string of its own.
+- **Indentation.** The whitespace before the closing fence is stripped
+  from every line of the text. Each line that is not blank must start
+  with exactly that whitespace, byte for byte (a tab is not four
+  spaces); a line that starts left of it is a lex error at that line.
+  Whitespace beyond it is kept. A line of spaces and tabs alone is an
+  empty line, however wide.
+- **Line breaks.** The lines join with `\n`, and a `\r\n` in the
+  source is one `\n`. The break after the opening fence and the break
+  before the closing line are not part of the value, so the value ends
+  with a line break only when a blank line stands before the closing
+  fence. A body of no lines, or of one blank line, is `""`.
+- **Raw.** No escape is processed — a `\` is a backslash — and `{` is
+  text: there is no interpolation. Any UTF-8 is text.
+- **Kind.** The value is a `String`, the same token as a `"..."`
+  literal (`STRING_LIT`), so a block string goes wherever a string
+  literal does: an argument, a `const`, a `match` arm. There is no
+  `f"""` or `b"""` form.
+
+`hale fmt` moves a block string with the code around it: the closing
+fence stands one level deeper than the line the literal opens on, and
+every line of the text keeps its distance from the fence, which is
+what keeps the value. The formatter's re-lex gate holds a block string
+to its value rather than its raw text.
+
+Why this spelling. The lexer had two string bodies, the escaped
+`"..."` (with `f"` and `b"` prefixes) and the backtick span of time
+literals and field tags; it had no raw form, and earlier drafts of this
+section listed `r"..."` and `"""..."""` aspirationally. A raw block
+answers the text it exists for: embedded Hale, SQL and JSON carry
+escapes of their own (`\n` inside a Hale string, `\"` inside JSON), so
+a block that processed escapes would double every backslash in them,
+and a raw `r"..."` on one line would still be one line. The fence is
+the string's own quote, so the literal reads as a string; its length
+grows instead of a `#` count (Rust's `r#"`), so a body holding the
+form itself needs no other punctuation; and the indentation is the
+closing fence's, so the text indents with the code that holds it. The
+fence-length and closing-indent rules are C# 11's raw string literals;
+the closing-indent rule is also Swift's and Java's text blocks'.
 
 ### Boolean literals
 
@@ -995,6 +1083,8 @@ They attach to the declaration that follows.
 | `@effects(causes: {…})` | fn | effect classes this fn may cause via bus edges |
 | `@supervised` | locus | every locus in the subtree has a failure policy |
 | `@sealed` | locus | this locus's `params` are readable only from inside it |
+| `@repo(T)` | locus | the locus is where `T`'s state lives; held to the method set and the state classes (spec/api.md § Repositories) |
+| `@idempotent` / `@not_idempotent` | fn | a `@repo` method's marker: repeating the write is, or is not, safe |
 | `@secret` | fn param | **lint**: flags a value reaching a publish or log/file sink in the same body |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |
@@ -1018,9 +1108,12 @@ may be built-ins or other declared classes; a definition cycle is
 rejected.
 
 The built-in classes are `syscall`, `block`, `time`, `entropy`,
-`env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`, and
+`env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`,
 `secret_use` (GH #436 — a privileged operation over confined secret
-material, carried by `std::secret`'s methods). **Every built-in name
+material, carried by `std::secret`'s methods), and `stdio` (a write to
+standard output or standard error; a sub-class of `syscall`, carried
+with it by `println`, `print`, `eprintln`, `eprint` and every stdlib
+leaf writing fd 1 or 2). **Every built-in name
 is reserved**: `effect secret_use;` — or `effect syscall;` — is an
 error, because the built-in wins at every use site and the
 declaration would be a silent no-op.

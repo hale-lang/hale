@@ -1,16 +1,23 @@
-//! GH #583 K1 — the knowledge graph, in memory. `init` writes
-//! `dna/compose.yaml`; `hale dna dev` applies memory's schema with the
-//! owner's DSN and runs the organization's host as the spine, which
+//! GH #583 K1 — the knowledge graph, in memory. Birth applies memory's
+//! schema with the owner's DSN (or in the organism's memory allocation in
+//! the local habitat, GH #1653) and `hale dna dev` runs the organization's
+//! host as the spine on it, migrating nothing, which
 //! projects the record into memory on its tick (GH #985): a proposal
 //! ratified by the Board becomes a context package for the position it
 //! binds to, with a digest and the record revision, read by a head under
 //! its own role. K2: an ask makes the organization consult memory and
 //! fold the practice into the editor's objective (`knowledge.consulted`);
 //! three concerns from one path become a proposal bound to its parent,
-//! the Board's to ratify. K3: structure, signals and ranking, from memory.
+//! the Board's to ratify. K3: structure and ranking, from memory.
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -32,9 +39,10 @@ fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
+    let _s = trace::Span::new("hale", "dna record-rows");
+    // the record's rows and its Ledger's (GH #1590: a consultation and a
+    // concern are the Ledger's)
+    (record::text(app) + "\n" + &record::ledger_text(app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -54,8 +62,8 @@ import "vendor/dna" as dna;
 
 fn main() {
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, repo: "." },
         board: dna::Board { who: "board" }
     };
     // the Board's practice for the application: `org` is the root, the
@@ -78,9 +86,8 @@ fn main() {
     let k = dna::MemoryKnowledge { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_HEAD", budget: budget };
     let p = k.package_for(env("KT"), env("KQ"));
     println("pkg\t" + p.error + "\t" + to_string(p.included_n) + "\t" + p.included + "\t" + p.digest + "\t" + to_string(p.revision));
-    let j = dna::GitJournal { repo: "." };
     let store = dna::Pq { dsn_env: "HALE_DNA_MEMORY_DSN_HEAD" };
-    store.scope(j.genesis());
+    store.scope(dna::record_scope("."));
     if !store.open() { println("store\t" + store.last_error()); return; }
     let s = store.idea(env("KI"));
     println("idea\t" + (if s.present { "present" } else { "absent" }) + "\t" + (if s.idea.accepted { "accepted" } else { "not accepted" }) + "\t" + s.idea.provenance + "\t" + s.idea.author);
@@ -114,11 +121,12 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         eprintln!("dna_knowledge: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_knowledge_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_knowledge_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "knowing"], &d, &[]);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "knowing", "--no-pack"], &d, &[]);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("knowing");
     // the toolchain's library is one idea per chapter or spec section,
@@ -130,9 +138,9 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         .and_then(|r| r.split(' ').next())
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("init seeded no library:\n{out}"));
-    // init wrote the compose file, a named volume per repository
-    let compose = std::fs::read_to_string(app.join("dna/compose.yaml")).expect("dna/compose.yaml");
-    assert!(compose.contains("image: pgvector/pgvector:pg16") && compose.contains("name: hale-dna-knowing-knowledge") && compose.contains("127.0.0.1:54"), "{compose}");
+    // GH #1653: init wrote no infrastructure into the checkout: the
+    // organism's services are its allocations in the local habitat
+    assert!(!app.join("dna/compose.yaml").exists(), "the checkout holds no compose file");
 
     // the record: a proposal, made by a position, then the Board's verdict
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -145,7 +153,8 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
     assert!(ok && reviews.contains(&format!("k:{}", &digest[7..19])) && reviews.contains("needs board"), "the knowledge Review is pending for the Board:\n{reviews}");
 
-    // dev: the organization and the application, the host as the spine
+    // dev: the organization and the application, the host as the spine,
+    // on memory the habitat's act migrated
     let (ok, migrated) = hale(&["dna", "memory", "migrate"], &app, &[]);
     assert!(ok, "{migrated}");
     let head = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).expect("the head's DSN").to_string();
@@ -188,6 +197,12 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     // proposed, not ratified: no package yet
     let pkg = field(&read_memory(&app, &head, "org/knowing/mailer", "8", "", ""), "pkg");
     assert!(pkg.split('\t').nth(1) == Some("0"), "nothing ratified yet: {pkg}");
+    // a model is mapped, so the ask below is the editor's (with none, the
+    // solo path hands it to a person and nothing consults memory for it);
+    // mapped before the ratification is waited for, so the projection the
+    // ask reads has the row too
+    let (ok, out) = hale(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "riley"], &app, &[]);
+    assert!(ok, "the model mapped: {out}");
     // the Board ratifies the exact digest
     let (ok, out) = hale(&["dna", "review", &format!("k:{}", &digest[7..19]), "approve", "--as", "riley", "--authority", "board", "--comment", "a good practice"], &app, &[]);
     assert!(ok, "verdict: {out}");
@@ -213,13 +228,10 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         trace::sleep("between concerns", Duration::from_millis(300));
     }
     let proposed = wait_row(&app, 60, "concern.proposed", "org/knowing/echo");
-    // ---- K3: the projections and ranking, from memory; wait for the third
-    // concern to be projected rather than for a fixed half second
-    let mut k3 = String::new();
-    trace::wait_until("the spine counted three concerns", Duration::from_secs(60), Duration::from_millis(300), || {
-        k3 = read_memory(&app, &head, "org/knowing/mailer", "1", "retry the mail send", "");
-        field(&k3, "signals").contains("\"count\":3")
-    });
+    // ---- K3: the projections and ranking, from memory (the signals are
+    // not among them: a concern is the Ledger's, GH #1590, and the spine
+    // projects the record alone)
+    let k3 = read_memory(&app, &head, "org/knowing/mailer", "1", "retry the mail send", "");
     let rows = journal(&app);
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
     let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
@@ -234,8 +246,6 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     // the code's structure as init observed it, projected by kind and name
     let structure = field(&k3, "structure");
     assert!(structure.contains("Echo") && structure.contains("Pings"), "the application's loci and topics: {structure}");
-    // the concerns, counted per source
-    assert!(field(&k3, "signals").contains("{\"kind\":\"concern\",\"source\":\"org/knowing/echo\",\"what\":\"pings arrive twice under load\",\"count\":3,"), "three concerns counted: {k3}");
     // ranked inside the bound, by what the work is about
     let ranked = field(&k3, "pkg");
     assert!(ranked.split('\t').nth(1) == Some("1") && ranked.contains(&digest), "ranked: {ranked}");

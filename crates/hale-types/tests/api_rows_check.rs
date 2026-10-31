@@ -103,6 +103,11 @@ fn law_4_a_required_role_is_declared() {
         with("api Public { rpc Orders::cancel requires: [tradr]; }"),
         vec!["rpc `Orders::cancel` requires `tradr`, which no `role` declares; did you mean `trader`?"]
     );
+    // A surface's default is each row's that writes none, judged per row.
+    assert_eq!(
+        with("api Public requires: [tradr] { rpc Orders::cancel; rpc Orders::place requires: [trader]; }"),
+        vec!["rpc `Orders::cancel` requires `tradr`, which no `role` declares; did you mean `trader`?"]
+    );
 }
 
 #[test]
@@ -345,4 +350,238 @@ fn a_qualified_role_nothing_declares_is_refused_as_written() {
         errors.iter().any(|e| e.contains("requires `other::reader`, which no `role` declares")),
         "{errors:#?}"
     );
+}
+
+/// An enum is carried, as a field, a payload-free one as a list's element,
+/// and as a whole request or response; a variant's value that is a list, or
+/// an enum with payloads of its own, is refused named by the variant, and so
+/// is a list of an enum with payloads (spec/api.md § Codecs).
+#[test]
+fn law_5_an_enum_is_carried() {
+    let enums = "
+type Inner { a: Int; }
+type Status = enum { Up, Down };
+type Shape = enum { Empty, Circle(Float), Rect(Int, Int), Boxed(Inner), Mood(Status), At(Time) };
+type Holder { s: Status; shape: Shape; many: bounded[Status; 4]; }
+type Listy = enum { Many(bounded[Int; 3]) };
+type Deep = enum { Inside(Shape) };
+type Shapes { all: bounded[Shape; 2]; }
+locus Board {
+    fn hold(h: Holder) -> Holder { return h; }
+    fn whole(s: Shape) -> Status { return Status::Up; }
+    fn listy(h: Holder) -> Listy { return Listy::Many([]); }
+    fn deep(h: Holder) -> Deep { return Deep::Inside(Shape::Empty); }
+    fn shapes(h: Holder) -> Shapes { return Shapes { }; }
+}
+";
+    let rows = |api: &str| row_errors(&format!("{BASE}\n{enums}\n{api}"));
+    assert!(rows("api Boards { rpc Board::hold; rpc Board::whole; }").is_empty(), "an enum is carried");
+    assert_eq!(
+        rows("api Boards { rpc Board::listy; }"),
+        vec!["rpc `Board::listy`: its response `Listy` has a field `Many: bounded[Int; 3]`, which the JSON codec does not carry"]
+    );
+    assert_eq!(
+        rows("api Boards { rpc Board::deep; }"),
+        vec!["rpc `Board::deep`: its response `Deep` has a field `Inside: Shape`, which the JSON codec does not carry"]
+    );
+    assert_eq!(
+        rows("api Boards { rpc Board::shapes; }"),
+        vec!["rpc `Board::shapes`: its response `Shapes` has a field `all: bounded[Shape; 2]`, which the JSON codec does not carry"]
+    );
+}
+
+/// The `indexed_by` errors a program draws.
+fn map_errors(src: &str) -> Vec<String> {
+    let program = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+    let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+    let diags = match snap.demand_check() {
+        Ok(c) => c.diags.clone(),
+        Err(b) => b.because.clone(),
+    };
+    diags.iter().filter(|d| d.is_error() && d.message.starts_with("`indexed_by`")).map(|d| d.message.clone()).collect()
+}
+
+/// A wire map (`bounded[T; N] indexed_by <key>`, spec/api.md § Codecs) has
+/// the hashmap slot clause's rules: a bounded list, of a user-declared
+/// struct, keyed by a `String` field of it; each other shape is refused at
+/// the clause.
+#[test]
+fn indexed_by_keys_a_bounded_list_of_records_by_a_string_field() {
+    let decls = "
+type Check { name: String; n: Int; }
+type Ok1 { checks: bounded[Check; 4] indexed_by name; }
+fn main() { }
+";
+    assert!(map_errors(decls).is_empty(), "a bounded list of records keyed by a String field: {:?}", map_errors(decls));
+    let refused = |field: &str| map_errors(&format!("type Check {{ name: String; n: Int; }}\ntype Bad {{ {field} }}\nfn main() {{ }}\n"));
+    assert_eq!(
+        refused("checks: [Check; 4] indexed_by name;"),
+        vec!["`indexed_by` on `Bad.checks`: the field is `[Check; 4]`, not a `bounded[T; N]`: `indexed_by` keys a bounded list of records by one of their fields"]
+    );
+    assert_eq!(
+        refused("names: bounded[String; 4] indexed_by name;"),
+        vec!["`indexed_by` on `Bad.names`: the element type `String` must be a user-declared struct (so the `indexed_by` field can resolve to a typed key); got a primitive, qualified path, or composite type"]
+    );
+    assert_eq!(
+        refused("checks: bounded[Check; 4] indexed_by nam;"),
+        vec!["`indexed_by` on `Bad.checks`: the element type `Check` has no field `nam`; the `indexed_by` field must exist on the element struct"]
+    );
+    assert_eq!(
+        refused("checks: bounded[Check; 4] indexed_by n;"),
+        vec!["`indexed_by` on `Bad.checks`: key `Check.n` is a `Int`: a wire map's key is a `String` (it is the object's key on the JSON wire); key the element by one"]
+    );
+}
+
+/// A map of values (`indexed_by <key> -> <value>`, spec/api.md § Codecs):
+/// the element is the key and the value alone, the value a field of it
+/// other than the key, of a scalar, a `Time` or a payload-free enum.
+#[test]
+fn a_map_of_values_is_a_record_of_its_key_and_a_scalar() {
+    let decls = "
+type Level = enum { low, high };
+type Check { name: String; status: String; }
+type Gauge { name: String; depth: Int; }
+type Mark { name: String; level: Level; }
+type Stamp { name: String; at: Time; }
+type Ok1 {
+    checks: bounded[Check; 4] indexed_by name -> status;
+    gauges: bounded[Gauge; 4] indexed_by name -> depth;
+    marks: bounded[Mark; 4] indexed_by name -> level;
+    stamps: bounded[Stamp; 4] indexed_by name -> at;
+}
+fn main() { }
+";
+    assert!(map_errors(decls).is_empty(), "maps of values: {:?}", map_errors(decls));
+    let refused = |decls: &str, field: &str| map_errors(&format!("{decls}\ntype Bad {{ {field} }}\nfn main() {{ }}\n"));
+    assert_eq!(
+        refused("type Check { name: String; status: String; }", "checks: bounded[Check; 4] indexed_by name -> state;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> state`: the element type `Check` has no field `state`"]
+    );
+    assert_eq!(
+        refused("type Check { name: String; status: String; }", "checks: bounded[Check; 4] indexed_by name -> name;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> name`: the value is the key; a map's value is the element's other field"]
+    );
+    assert_eq!(
+        refused("type Check { name: String; status: String; detail: String = \"\"; }", "checks: bounded[Check; 4] indexed_by name -> status;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> status`: `Check` has other fields (detail), which a map of values would drop: its element is the key and the value alone"]
+    );
+    assert_eq!(
+        refused("type Inner { n: Int; }\ntype Check { name: String; inner: Inner; }", "checks: bounded[Check; 4] indexed_by name -> inner;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> inner`: `Check.inner` is a `Inner`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+    // the value read through its aliases: an aliased list is a list
+    assert_eq!(
+        refused("type Tags = bounded[Int; 2];\ntype Check { name: String; tags: Tags; }", "checks: bounded[Check; 4] indexed_by name -> tags;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> tags`: `Check.tags` is a `Tags`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+    // an aliased scalar is the scalar
+    assert_eq!(
+        refused("type Status = String;\ntype Check { name: String; status: Status; }", "checks: bounded[Check; 4] indexed_by name -> status;"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        refused("type Shape = enum { Dot, Circle(Float) };\ntype Check { name: String; shape: Shape; }", "checks: bounded[Check; 4] indexed_by name -> shape;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> shape`: `Check.shape` is a `Shape`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+}
+
+/// A program calls the api codec of a record or an enum the codec carries
+/// (`T::api_decode` / `T::api_encode`, spec/api.md § Codecs); a call of
+/// any other type is refused at the call.
+#[test]
+fn a_program_calls_the_codec_of_a_carried_record() {
+    let errors = |src: &str| -> Vec<String> {
+        let program = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+        let diags = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        };
+        diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+    };
+    let carried = "type Item { id: Int; tags: bounded[String; 2]; }\n\
+                   fn main() { let i = Item::api_decode(\"{}\") or { return; }; println(Item::api_encode(i)); }\n";
+    assert!(errors(carried).is_empty(), "{:?}", errors(carried));
+    let blob = "type Blob { raw: Bytes; }\nfn main() { let b = Blob::api_decode(\"{}\") or { return; }; }\n";
+    assert_eq!(
+        errors(blob),
+        vec!["`Blob::api_decode`: the api codec carries `Blob` only if it is a record or an enum all of which the \
+              JSON codec carries (spec/api.md § Codecs); it is not one, so there is no codec to call"]
+    );
+    // an enum whole, as a row's request may be one
+    let status = "type Status = enum { Open, Held(String) };\n\
+                  fn main() { let s = Status::api_decode(\"\\\"Open\\\"\") or { return; }; println(Status::api_encode(s)); }\n";
+    assert!(errors(status).is_empty(), "{:?}", errors(status));
+    let listy = "type Listy = enum { Many(bounded[Int; 2]) };\nfn show(l: Listy) { println(Listy::api_encode(l)); }\nfn main() { }\n";
+    assert_eq!(
+        errors(listy),
+        vec!["`Listy::api_encode`: the api codec carries `Listy` only if it is a record or an enum all of which the \
+              JSON codec carries (spec/api.md § Codecs); it is not one, so there is no codec to call"]
+    );
+}
+
+#[test]
+fn law_9_a_route_is_well_formed_and_binds_fields_of_the_request() {
+    // well formed, with a parameter that is a field and a literal beside a capture
+    assert!(with("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\" status: 204; rpc Orders::place at \"POST /orders\" status: 201; }")
+        .is_empty());
+    assert_eq!(
+        with("api Public { rpc Orders::cancel at \"FETCH /orders\"; }"),
+        vec!["rpc `Orders::cancel`: route \"FETCH /orders\": `FETCH` is no method a route takes: one of GET, POST, PUT, PATCH, DELETE"]
+    );
+    assert_eq!(
+        with("api Public { rpc Orders::cancel at \"GET /orders/{oder}\"; }"),
+        vec!["rpc `Orders::cancel`: route \"GET /orders/{oder}\": the parameter `{oder}` names no field of its request (`CancelOrder`); did you mean `order`?"]
+    );
+    assert_eq!(
+        with("api Public { rpc Orders::place at \"GET /orders\" status: 404; }"),
+        vec!["rpc `Orders::place`: route \"GET /orders\": `status: 404` is no success status: a route's is 2xx"]
+    );
+    // a parameter the path cannot carry
+    assert_eq!(
+        with("type Box { tags: bounded[Int; 2]; }\nlocus Boxes { fn open(b: Box) -> Box { return b; } }\napi Public { rpc Boxes::open at \"GET /boxes/{tags}\"; }")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn law_10_the_routes_of_a_surface_are_unambiguous() {
+    assert_eq!(
+        with("api Public { rpc Orders::cancel at \"GET /orders/{order}\"; rpc Orders::place at \"GET /orders/{order}\"; }"),
+        vec!["rpc `Orders::cancel` and rpc `Orders::place` are ambiguous routes of `Public`: both are served at `GET /orders/{}`"]
+    );
+    // a literal beside a capture is the more specific, and another surface is another route
+    assert!(with("api Public { rpc Orders::cancel at \"GET /orders/{order}\"; rpc Orders::place at \"GET /orders/open\"; }")
+        .is_empty());
+    assert!(with("api Public { rpc Orders::cancel at \"GET /orders/{order}\"; }\napi Admin { rpc Orders::place at \"GET /orders/{order}\"; }")
+        .is_empty());
+    // overlapping with neither more specific
+    let errs = with("type Pair { a: Int; b: Int; }\nlocus Pairs { fn one(p: Pair) -> Pair { return p; } fn two(p: Pair) -> Pair { return p; } }\napi Public { rpc Pairs::one at \"GET /p/{a}/x\"; rpc Pairs::two at \"GET /p/y/{b}\"; }");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("neither is the more specific"), "{errs:?}");
+}
+
+/// A route is part of the contract: two surfaces that differ only in a
+/// route have different digests, in the producer (`surface_rows`) and in the
+/// adapter a serve site is built from (`rpc_expand::selection`), and a
+/// surface with no route keeps the digest it had.
+#[test]
+fn a_route_moves_the_surface_digest() {
+    let digests = |api: &str| -> (u64, u64) {
+        let program = hale_syntax::parse_source(&format!("{BASE}\n{api}")).expect("parse");
+        let (_, adapter) = hale_types::rpc_expand::selection(&[&program], "Public", &[], "app");
+        let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+        let rows = snap.demand_surface_rows().ok().expect("rows");
+        (rows.surface("Public").expect("Public").digest, adapter)
+    };
+    let plain = digests("api Public { rpc Orders::cancel; }");
+    let a = digests("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\"; }");
+    let moved = digests("api Public { rpc Orders::cancel at \"POST /orders/{order}/cancel\"; }");
+    let status = digests("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\" status: 204; }");
+    assert_eq!(plain.0, plain.1);
+    assert_eq!(a.0, a.1, "the producer and the adapter agree");
+    assert_ne!(plain.0, a.0);
+    assert_ne!(a.0, moved.0);
+    assert_ne!(a.0, status.0);
 }

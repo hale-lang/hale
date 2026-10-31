@@ -57,6 +57,14 @@ main locus Desk {
     params {
         probe: Probe = Probe { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
+        h: api::Exposure = api::serve(
+            Shapes,
+            self.f,
+            as: "shapes",
+            receivers: { Probe: self.probe },
+            bound: 8,
+            on_full: refuse
+        );
     }
 
     fn refused(id: Int, member: String, body: String, what: String) {
@@ -71,12 +79,14 @@ main locus Desk {
         let before = self.probe.entered;
         self.f.call_as_peer(id, member, body, 1000);
         std::test::assert_eq_str(self.f.await_outcome(id, 2000), "result", what);
-        std::test::assert(std::str::contains(self.f.line(id), "\"value\":" + value + ","), what + ": its value");
+        std::test::assert(
+            std::str::contains(self.f.line(id), "\"value\":" + value + ","),
+            what + ": its value",
+        );
         std::test::assert_eq_int(self.probe.entered, before + 1, what + ": the handler ran once");
     }
 
     run() {
-        let h = api::serve(Shapes, self.f, as: "shapes", receivers: { Probe: self.probe }, bound: 8, on_full: refuse);
         let index = "{\"kind\":\"short\",\"index\":3,\"len\":2}";
         let wrapped = "{\"n\":5,\"why\":" + index + ",\"label\":\"x\",\"seat\":9}";
 
@@ -93,16 +103,43 @@ main locus Desk {
 
         // ---- a builtin record is its fields ----
         self.ran(10, "Probe::index", index, index, "a builtin record");
-        self.refused(11, "Probe::index", "{\"kind\":\"short\",\"index\":\"3\",\"len\":2}", "a field of the wrong kind");
-        std::test::assert(std::str::contains(self.f.line(11), "wrong_type: index"), "named by its field");
+        self.refused(
+            11,
+            "Probe::index",
+            "{\"kind\":\"short\",\"index\":\"3\",\"len\":2}",
+            "a field of the wrong kind",
+        );
+        std::test::assert(
+            std::str::contains(self.f.line(11), "wrong_type: index"),
+            "named by its field",
+        );
         self.refused(12, "Probe::index", "{\"kind\":\"short\",\"index\":3}", "a field missing");
-        std::test::assert(std::str::contains(self.f.line(12), "missing_field: len"), "named by its field");
+        std::test::assert(
+            std::str::contains(self.f.line(12), "missing_field: len"),
+            "named by its field",
+        );
         self.refused(13, "Probe::index", "7", "a scalar where the record is");
 
         // ---- both in a struct ----
-        self.ran(14, "Probe::wrap", wrapped, wrapped, "a struct with an alias, a builtin record and an alias of an identity");
-        self.refused(15, "Probe::wrap", "{\"n\":\"5\",\"why\":" + index + ",\"label\":\"x\",\"seat\":9}", "its alias field of the wrong kind");
-        self.refused(16, "Probe::wrap", "{\"n\":5,\"why\":{\"kind\":\"short\",\"index\":\"3\",\"len\":2},\"label\":\"x\",\"seat\":9}", "its builtin field of the wrong shape");
+        self.ran(
+            14,
+            "Probe::wrap",
+            wrapped,
+            wrapped,
+            "a struct with an alias, a builtin record and an alias of an identity",
+        );
+        self.refused(
+            15,
+            "Probe::wrap",
+            "{\"n\":\"5\",\"why\":" + index + ",\"label\":\"x\",\"seat\":9}",
+            "its alias field of the wrong kind",
+        );
+        self.refused(
+            16,
+            "Probe::wrap",
+            "{\"n\":5,\"why\":{\"kind\":\"short\",\"index\":\"3\",\"len\":2},\"label\":\"x\",\"seat\":9}",
+            "its builtin field of the wrong shape",
+        );
     }
 }
 

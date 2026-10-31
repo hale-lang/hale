@@ -1,0 +1,28 @@
+api Desk {
+    rpc Counter::bump;
+}
+
+locus Counter {
+    params {
+        log: std::log::Logger = std::log::Logger { name: "counter" };
+    }
+    fn bump(n: Int) -> Int {
+        println("bumped ", n);
+        return n + 1;
+    }
+}
+
+main locus App {
+    params {
+        counter: Counter = Counter { };
+        f: std::api::test::Rpc = std::api::test::Rpc { };
+        h: api::Exposure = api::serve(
+            Desk,
+            self.f,
+            as: "desk",
+            receivers: { Counter: self.counter },
+            bound: 8,
+            on_full: refuse
+        );
+    }
+}

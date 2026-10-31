@@ -18,6 +18,7 @@ pub(crate) fn usage() {
     eprintln!("    hale topology graph <artifact> render a --dump-topology artifact (svg|mermaid|dot; experimental)");
     eprintln!("    hale model dump <file.hl | dir> derive + print the canonical ApplicationModel (internal; experimental)");
     eprintln!("    hale model diff <a> <b>       semantic diff of two --dump-topology artifacts (--json|--text)");
+    eprintln!("    hale deploy render <path>     a program's placement as compose or Kubernetes (never deploys)");
     eprintln!("    hale fleet check|dump|sign    compose topology artifacts across binaries (also attest|keygen)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("        [--observe[=<port>]] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
@@ -33,7 +34,9 @@ pub(crate) fn usage() {
     eprintln!("    hale iris  [port] [artifact]  the embedded observer: attach to LOTUS_OBS=1 processes, serve :8787");
     eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
     eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
-    eprintln!("    hale dna init|new|upgrade     attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
+    eprintln!("    hale habitat up | graft <dir> the local habitat, and an organism grafted from it (vendor/dna, dna/, its record)");
+    eprintln!("    hale dna upgrade [dir]        re-materialize an organism's vendor/dna for this toolchain");
+    eprintln!("    hale habitat migrate [dir]    bring an organism's allocations in the local habitat up and migrate them");
     eprintln!("    hale node  <name>             express a fleet plan's instances on this machine, from the record");
     eprintln!("    hale targets                  the targets this compiler can name, and which it can build");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
@@ -95,6 +98,10 @@ pub(crate) fn subcommand_help(cmd: &str) -> bool {
             check_usage(cmd == "verify");
             return true;
         }
+        "deploy" => {
+            print!("{}", crate::deploy::usage());
+            return true;
+        }
         "fleet" => {
             print!("{}", fleet_usage());
             return true;
@@ -109,6 +116,10 @@ pub(crate) fn subcommand_help(cmd: &str) -> bool {
         }
         "node" => {
             print!("{}", dna::node_usage());
+            return true;
+        }
+        "habitat" => {
+            print!("{}", dna::habitat::usage_text());
             return true;
         }
         "lex" => "\

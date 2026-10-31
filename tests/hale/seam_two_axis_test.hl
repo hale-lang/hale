@@ -1,0 +1,99 @@
+// tests/hale/seam_two_axis_test.hl — a seam (GH #1530 step 2) over a
+// two-axis tag: a frame names an operation (insert, delete) and a table
+// (orders, users), and the decoder flattens the pair into one member each,
+// so the store has one method per (operation, table) and the dispatch is
+// one branch, never two. The decoder's failure, `BadFrame`, is taken by
+// the store (a later hop whose method set holds it), so it is answered. A
+// delete of a row that is not there fails with `StoreError`, which no later
+// hop takes: `or end;` makes the callable seam fail with it, and the
+// caller's `or` sees it.
+
+type InsertOrder { id: Int; qty: Int; }
+type DeleteOrder { id: Int; }
+type InsertUser { name: String; }
+type DeleteUser { name: String; }
+type Change = InsertOrder | DeleteOrder | InsertUser | DeleteUser;
+type BadFrame { frame: String; }
+type StoreError { why: String; }
+
+locus Wire {
+    fn decode(f: String) -> Change fallible(BadFrame) {
+        if len(f) < 4 || f[1..2] != ":" { fail BadFrame { frame: f }; }
+        let op = f[0..1];
+        let rest = f[2..len(f)];
+        let colon = std::str::index_of(rest, ":");
+        if colon < 0 { fail BadFrame { frame: f }; }
+        let table = rest[0..colon];
+        let arg = rest[(colon + 1)..len(rest)];
+        if table == "orders" {
+            let id = std::str::parse_int(arg) or { fail BadFrame { frame: f }; };
+            if op == "I" { return InsertOrder { id: id, qty: 1 }; }
+            if op == "D" { return DeleteOrder { id: id }; }
+        }
+        if table == "users" {
+            if op == "I" { return InsertUser { name: arg }; }
+            if op == "D" { return DeleteUser { name: arg }; }
+        }
+        fail BadFrame { frame: f };
+    }
+}
+
+locus Store {
+    params { orders: Int = 0; users: String = ""; }
+    fn insert_order(o: InsertOrder) -> String {
+        self.orders = self.orders + o.qty;
+        return "order " + to_string(o.id) + " in";
+    }
+    fn delete_order(o: DeleteOrder) -> String fallible(StoreError) {
+        if self.orders == 0 { fail StoreError { why: "no order " + to_string(o.id) }; }
+        self.orders = self.orders - 1;
+        return "order " + to_string(o.id) + " out";
+    }
+    fn insert_user(u: InsertUser) -> String {
+        self.users = self.users + u.name + ",";
+        return "user " + u.name + " in";
+    }
+    fn delete_user(u: DeleteUser) -> String fallible(StoreError) {
+        if !std::str::contains(self.users, u.name + ",") {
+            fail StoreError { why: "no user " + u.name };
+        }
+        return "user " + u.name + " out";
+    }
+    // the decoder's failure enters the chain here, a member like the rest
+    fn bad(b: BadFrame) -> String { return "bad frame " + b.frame; }
+}
+
+locus Db {
+    params { wire: Wire = Wire { }; store: Store = Store { }; }
+    seam apply(frame: String) -> String {
+        frame -> self.wire.decode -> self.store;
+        or end;
+    }
+}
+
+fn run(db: Db, frame: String) -> String {
+    return db.apply(frame) or { return "refused: " + err.why; };
+}
+
+fn main() {
+    let db = Db { };
+    std::test::assert_eq_str(run(db, "I:orders:7"), "order 7 in", "insert into orders");
+    std::test::assert_eq_str(run(db, "I:users:ann"), "user ann in", "insert into users");
+    std::test::assert_eq_str(run(db, "D:orders:7"), "order 7 out", "delete from orders");
+    std::test::assert_eq_str(
+        run(db, "D:orders:8"),
+        "refused: no order 8",
+        "the store's failure ends the call",
+    );
+    std::test::assert_eq_str(run(db, "D:users:ann"), "user ann out", "delete from users");
+    std::test::assert_eq_str(
+        run(db, "D:users:bob"),
+        "refused: no user bob",
+        "and for the other table",
+    );
+    std::test::assert_eq_str(
+        run(db, "X:orders:1"),
+        "bad frame X:orders:1",
+        "the decoder's failure, answered",
+    );
+}

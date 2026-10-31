@@ -183,6 +183,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let subregion_fn = self
             .module
             .add_function("lotus_arena_create_subregion", subregion_ty, None);
+        // An iteration arena: `lotus_arena_iteration_enter(cur, parent)`
+        // frees the previous iteration's arena (`cur`, NULL before the
+        // first) and returns a fresh one owned by `parent`;
+        // `lotus_arena_iteration_leave(cur)` frees the last one when the
+        // loop is left (`Cx::lower_loop_body`).
+        self.module.add_function(
+            "lotus_arena_iteration_enter",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_arena_iteration_leave",
+            self.context.void_type().fn_type(&[ptr_t.into()], false),
+            None,
+        );
         let arena_alloc_ty =
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
         let arena_alloc_fn = self
@@ -779,12 +794,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // ... and a payload-enum field's: the same arguments, `desc`
+        // the enum's variant table.
+        self.module.add_function(
+            "lotus_self_field_retire_replaced_enum",
+            void_t.fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // An on_failure handler never runs before its locus's params
         // are settled: open/settle bracket a handler-bearing locus's
         // params loop, and every routed failure asks hold first.
         let ptr_arg_void = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_params_open", ptr_arg_void, None);
+        // GH #1566: F.31's runtime backstop — a pinned or pool-placed
+        // root's init stamps its domain; the compiled check's cold side.
+        self.module.add_function("lotus_domain_here", i64_t.fn_type(&[], false), None);
+        self.module.add_function("lotus_domain_act", i64_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function("lotus_domain_restore", void_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function("lotus_domain_also_enter", void_t.fn_type(&[i64_t.into(), ptr_t.into(), ptr_t.into()], false), None);
+        self.module.add_function("lotus_domain_also_leave", void_t.fn_type(&[], false), None);
+        let xpool_failed = self.module.add_function(
+            "lotus_cross_pool_check_failed",
+            void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()], false),
+            None,
+        );
+        xpool_failed.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("cold"), 0),
+        );
         self.module
             .add_function("lotus_params_settle", ptr_arg_void, None);
         let hold_ty = self.context.i64_type().fn_type(
@@ -835,6 +884,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_drain_observer_add", obs_ty, None);
+        // An instance counted out of the drain observers: when its run()
+        // has returned for good, or at its arena's destroy, whichever
+        // comes first (`self`, its locus's name).
+        let obs_out_ty = void_t.fn_type(
+            &[
+                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("lotus_drain_observer_enter", obs_out_ty, None);
+        self.module.add_function("lotus_drain_observer_finished", obs_out_ty, None);
+        self.module.add_function("lotus_drain_observer_leave", obs_out_ty, None);
         self.module.add_global(
             self.context.i64_type(),
             None,
@@ -914,6 +976,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), f64_t.into()], false);
         self.module
             .add_function("lotus_str_from_float", str_from_float_ty, None);
+        // declare ptr @lotus_str_float_text(ptr arena, double f): the
+        // shortest text that reads back as `f` (the api codec's)
+        self.module
+            .add_function("lotus_str_float_text", str_from_float_ty, None);
         let str_from_dur_ty =
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         self.module
@@ -1073,6 +1139,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         self.mark_pure_read(str_index_of_from_fn);
+        // declare i64 @lotus_str_range_index_of(ptr s, i64 n, ptr sub, i64 start)
+        let str_range_index_of_ty =
+            i64_t.fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into(), i64_t.into()], false);
+        let str_range_index_of_fn = self.module.add_function(
+            "lotus_str_range_index_of",
+            str_range_index_of_ty,
+            None,
+        );
+        self.mark_pure_read(str_range_index_of_fn);
 
         // m89: Bytes value primitives.
         // declare ptr @lotus_bytes_create(ptr arena, i64 len)
@@ -1386,6 +1461,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // declare void @lotus_form_retire_replaced_flat(...) — the same
+        // arguments, for a descriptor with no nested entry.
+        self.module.add_function(
+            "lotus_form_retire_replaced_flat",
+            self.context.void_type().fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // declare void @lotus_vec_truncate(ptr vec, i64 new_len, ptr arena,
         //     i64 size, ptr desc, i64 n_desc) — @form(vec) truncate/clear,
         // each removed element retired as `pop` retires it.
@@ -1417,7 +1509,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None,
             );
         }
-        self.module.add_function(
+        let alloc_reusable_fn = self.module.add_function(
             "lotus_arena_alloc_reusable",
             ptr_t.fn_type(
                 &[ptr_t.into(), i64_t2.into(), i64_t2.into()],
@@ -1425,6 +1517,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // A fresh-memory allocator like `lotus_arena_alloc` (see the
+        // arena family's aliasing block): the block it hands back is a
+        // retired one whose owner is dead, or a fresh bump allocation —
+        // malloc's contract. Without `noalias` on the return, LLVM kept
+        // the per-element copy of every returned fixed array (#1518 moved
+        // that copy here) unrolled: a locus with five `[T; 512]` params
+        // emitted 3x the object code (smoke 2026-10-16).
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let attr = |n: &str| self.context.create_enum_attribute(Attribute::get_named_enum_kind_id(n), 0);
+            alloc_reusable_fn.add_attribute(AttributeLoc::Return, attr("noalias"));
+            alloc_reusable_fn.add_attribute(AttributeLoc::Function, attr("nounwind"));
+            alloc_reusable_fn.add_attribute(AttributeLoc::Function, attr("willreturn"));
+        }
         // iris P4 — lifecycle observation probes (lotus_obs.c):
         // declare void @lotus_obs_locus_birth(ptr self, ptr type_name, ptr parent)
         // declare void @lotus_obs_locus_dissolve(ptr self, i64 reason)
@@ -1447,6 +1553,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_caller_arena_get",
             ptr_t.fn_type(&[], false),
+            None,
+        );
+        // declare ptr @lotus_caller_arena_owning(ptr snapshot, ptr own)
+        self.module.add_function(
+            "lotus_caller_arena_owning",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
             None,
         );
         // iris handoff-2: publisher-attribution TLS + topic shapes.
@@ -2370,6 +2482,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             start_ingress_ty,
             None,
         );
+        // GH #1477: a `std::observe::Probes` param — its birth serves the
+        // runtime's probes on its port from a thread of their own
+        // (`lotus_probes_start`, through `std::observe::__probes_start`),
+        // and the main locus marks the process ready at its boot/run
+        // boundary, only in a program declaring them.
+        // declare void @lotus_probes_start(i64 port)
+        let probes_start_ty = void_t.fn_type(&[self.context.i64_type().into()], false);
+        self.module.add_function("lotus_probes_start", probes_start_ty, None);
+        // declare void @lotus_probes_ready()
+        self.module.add_function("lotus_probes_ready", void_t.fn_type(&[], false), None);
 
         // declare i32 @lotus_bus_register_remote(ptr subject, ptr url, i32 role)
         let i32_t = self.context.i32_type();
@@ -2814,6 +2936,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             child_struct_release_ty,
             None,
         );
+        // GH #1570: the struct of a locus a fn hands back.
+        // declare ptr @lotus_returned_struct_alloc(i64 size)
+        // declare void @lotus_returned_struct_release(ptr self, i64 size)
+        self.module.add_function("lotus_returned_struct_alloc", ptr_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function(
+            "lotus_returned_struct_release",
+            void_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare void @lotus_run_cancel_queued(ptr child)
         // (decision line 19: the Reclaim bracket's first call, before
         //  the child's arena or struct is released, cancels the runs
@@ -2832,6 +2963,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_reclaim_request",
             void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_composite_array_restore",
+            void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
             None,
         );
         for name in ["lotus_reclaim_flush_owned", "lotus_run_cancel_only", "lotus_reclaim_scope_leave", "lotus_reclaim_release_leave"] {
@@ -3212,6 +3348,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
         self.module
             .add_function("lotus_tls_recv_bytes", tls_recv_bytes_ty, None);
+        // The HTTP client's call deadline: the send and the read bounded
+        // by an absolute CLOCK_MONOTONIC instant (i64 ns, 0 = none).
+        let i64_t_until = self.context.i64_type();
+        self.module.add_function(
+            "lotus_tls_send_bytes_until",
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into(), i64_t_until.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tls_recv_bytes_until",
+            ptr_t.fn_type(&[i32_t.into(), i32_t.into(), i64_t_until.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tcp_send_bytes_until",
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into(), i64_t_until.into()], false),
+            None,
+        );
         // declare i32 @lotus_tls_close(i32 handle)
         let tls_close_ty = i32_t.fn_type(&[i32_t.into()], false);
         self.module
@@ -3570,6 +3724,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_tls_recv_into", tls_recv_into_ty, None);
+        // declare i64 @lotus_tls_recv_into_until(i32 handle, ptr builder,
+        // i64 max_bytes, i64 until_ns): the http client's streamed body
+        self.module.add_function(
+            "lotus_tls_recv_into_until",
+            i64_t.fn_type(&[i32_t.into(), ptr_t.into(), i64_t.into(), i64_t.into()], false),
+            None,
+        );
         // 2026-06-14 — TLS fast-path siblings (handle-addressed): nodelay,
         // SO_TIMESTAMPNS opt-in, recv_stamped + the stamp getters.
         self.module
@@ -3787,6 +3948,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let sha256_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_crypto_sha256", sha256_ty, None);
+        // The incremental SHA-256 (the `std::crypto::Sha256` locus) and
+        // `sha256_file`, over the same core:
+        // declare i64 @lotus_crypto_sha256_new()
+        // declare i64 @lotus_crypto_sha256_update(i64 handle, ptr bytes)
+        // declare ptr @lotus_crypto_sha256_finish(i64 handle)
+        // declare i64 @lotus_crypto_sha256_free(i64 handle)
+        // declare ptr @lotus_crypto_sha256_file(ptr path)  ; NULL + errno
+        self.module.add_function(
+            "lotus_crypto_sha256_new",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_update",
+            i64_t.fn_type(&[i64_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_finish",
+            ptr_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_free",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_crypto_sha256_file",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
         // declare ptr @lotus_crypto_hmac_sha256(ptr key, ptr msg)
         let hmac_sha256_ty =
             ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
@@ -3894,6 +4087,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // GH #1592: the process-wide series table a `std::observe::Scrape`
+        // scrapes (`std::observe`). Called only from such a
+        // program; every other one lowers the calls to constants.
+        {
+            let f64_t = self.context.f64_type();
+            for (name, ty) in [
+                ("lotus_observe_registry", i64_t.fn_type(&[ptr_t.into()], false)),
+                ("lotus_observe_registry_drop", i64_t.fn_type(&[i64_t.into()], false)),
+                (
+                    "lotus_observe_series",
+                    i64_t.fn_type(
+                        &[i64_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into()],
+                        false,
+                    ),
+                ),
+                ("lotus_observe_add", i64_t.fn_type(&[i64_t.into(), f64_t.into()], false)),
+                ("lotus_observe_set", i64_t.fn_type(&[i64_t.into(), f64_t.into()], false)),
+                ("lotus_observe_hist", i64_t.fn_type(&[i64_t.into(), f64_t.into()], false)),
+                ("lotus_observe_snapshot", i64_t.fn_type(&[], false)),
+                ("lotus_observe_snap_str", ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_snap_num", f64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_snap_int", i64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
+                // restarts and failures, counted (and, for `events`, an
+                // event) in a program declaring `metrics` or `events` only
+                (
+                    "lotus_observe_note",
+                    self.context.void_type().fn_type(&[i64_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+                ),
+                // GH #1592 S4: the event ring `observe { events }` drains
+                ("lotus_observe_events_take", i64_t.fn_type(&[i64_t.into()], false)),
+                ("lotus_observe_event_str", ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_event_int", i64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_events_dropped", i64_t.fn_type(&[i64_t.into()], false)),
+            ] {
+                self.module.add_function(name, ty, None);
+            }
+        }
         // GH #607: Time is i64 nanoseconds since the epoch.
         // declare i64 @lotus_time_now_ns()  — CLOCK_REALTIME, replayable
         self.module.add_function(

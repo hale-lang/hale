@@ -1,0 +1,168 @@
+// dna/tests/watch/support.hl — what the fixtures about a watched upstream's
+// task read of the record (phase 3): the rows of a kind, the last body, the
+// knowledge proposals, the source-check executions still open, and the task
+// a move filed. Each takes the organism's clone and reads through its
+// journal; none holds state.
+
+import "../../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(script: String, dir: String) -> dna::RunResult {
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && eval \"$2\"\nsh\n"
+            + dir + "\n" + script,
+    );
+}
+
+fn journal(repo: String) -> dna::RoutedJournal {
+    return dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
+}
+
+fn dna_cli(repo: String, args: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n"
+            + repo + "\n" + toolchain() + "\ndna\n" + args,
+    );
+}
+
+// How many rows of `kind` name an entity starting with `prefix`.
+fn rows(repo: String, kind: String, prefix: String) -> Int {
+    let j = journal(repo);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && std::str::starts_with(e.entity, prefix) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// The last such row's body.
+fn last_body(repo: String, kind: String, prefix: String) -> String {
+    let j = journal(repo);
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && std::str::starts_with(e.entity, prefix) { out = e.body; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The author of the last such row, "-" when there is none. The organism's
+// own rows (readings, concerns, tasks) are the ledger's, so it reads there.
+fn last_author(repo: String, kind: String, prefix: String) -> String {
+    let l = dna::MemoryLedger { repo: repo };
+    let mut out = "-";
+    let mut i = 0;
+    while i < l.revision() {
+        let e = l.read(i);
+        if e.kind == kind && std::str::starts_with(e.entity, prefix) { out = l.author_of(i); }
+        i = i + 1;
+    }
+    return out;
+}
+
+// How many knowledge proposals name a node starting with `name`.
+fn proposals(repo: String, name: String) -> Int {
+    let j = journal(repo);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.proposed"
+            && std::str::starts_with(std::json::find_string_field(e.body, "name"), name)
+        {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+// The last such proposal's body.
+fn proposal(repo: String, name: String) -> String {
+    let j = journal(repo);
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "knowledge.proposed"
+            && std::str::starts_with(std::json::find_string_field(e.body, "name"), name)
+        {
+            out = e.body;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Source-check and concern-escalate executions admitted and not yet settled.
+fn open_executions(repo: String) -> Int {
+    let j = journal(repo);
+    let mut admitted = "\n";
+    let mut open = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        let def = std::json::find_string_field(e.body, "definition");
+        if e.kind == "workflow.admitted" && (def == "source-check" || def == "concern-escalate") {
+            admitted = admitted + e.entity + "\n";
+            open = open + 1;
+        }
+        if e.kind == "workflow.settled" && std::str::contains(admitted, "\n" + e.entity + "\n") {
+            open = open - 1;
+        }
+        i = i + 1;
+    }
+    return open;
+}
+
+fn admitted_checks(repo: String) -> Int {
+    let j = journal(repo);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted"
+            && std::json::find_string_field(e.body, "definition") == "source-check"
+        {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+// The n-th task whose request starts with `prefix` (`source-<watch>-`).
+fn task_of(repo: String, prefix: String, n: Int) -> String {
+    let j = journal(repo);
+    let mut k = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted"
+            && std::str::starts_with(dna::native_json_string(e.body, "request"), prefix)
+        {
+            k = k + 1;
+            if k == n { return e.entity; }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// The author of the admission of task `task`.
+fn task_author(repo: String, task: String) -> String {
+    return last_author(repo, "workflow.admitted", task);
+}

@@ -1,0 +1,178 @@
+// dna/core/codebases.hl — a foreign codebase the organism works on
+// (phase 3, heart-protocol item 4: a codebase comes first).
+//
+// A codebase is attached with a repository, a build command and a test
+// command, and no application: the record states it with
+// `codebase.attached {name, repo, build, test, branch, by}` and revokes it
+// with `codebase.detached {name, by}`. The commands are opaque strings,
+// run in a leg's worktree; the repository is where a leg's work is
+// branched from and where its reviews open. A later attach of a name
+// states it anew (the last row wins); a detach removes it.
+
+// The name is a token: a leg's branch and the verb's argument carry it.
+fn codebase_name_ok(name: String) -> Bool {
+    if len(name) == 0 || len(name) > 64 { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let c = name[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-" || c == "_";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The toolchains a codebase may declare; anything else reads as none.
+fn toolchain_known(t: String) -> Bool { return t == "go" || t == "hale" || t == "none"; }
+fn toolchain_of(t: String) -> String { return if toolchain_known(t) { t } else { "none" }; }
+
+type Codebase {
+    present: Bool = false;
+    name: String = "";
+    repo: String = "";
+    build: String = "";
+    test: String = "";
+    branch: String = "main"; // the default branch a leg branches from and proposes against
+    by: String = "";
+    toolchain: String = "none"; // go | hale | none: the toolchain hand a leg works it with; none leaves build and test opaque
+    knowledge: String = "docs/integrations/"; // the directory of the default branch where a watched source's architecture note `<watch>.md` lives
+}
+
+// The `codebase.attached` row's body.
+fn codebase_body(c: Codebase) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", c.name);
+    b.string_field("repo", c.repo);
+    b.string_field("build", c.build);
+    b.string_field("test", c.test);
+    b.string_field("branch", c.branch);
+    b.string_field("by", c.by);
+    b.string_field("toolchain", c.toolchain);
+    b.string_field("knowledge", c.knowledge);
+    b.end_object();
+    return b.result();
+}
+
+// The record's codebase named `name`: its last attach, unless a detach
+// followed it.
+@bounded_by(j)
+fn codebase_of(j: Journal, name: String) -> Codebase {
+    let mut out = Codebase { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "codebase.attached" && std::json::find_string_field(e.body, "name") == name {
+            let branch = std::json::find_string_field(e.body, "branch");
+            let kdir = std::json::find_string_field(e.body, "knowledge");
+            out = Codebase {
+                present: true, name: name,
+                repo: std::json::find_string_field(e.body, "repo"),
+                build: std::json::find_string_field(e.body, "build"),
+                test: std::json::find_string_field(e.body, "test"),
+                branch: if len(branch) > 0 { branch } else { "main" },
+                by: std::json::find_string_field(e.body, "by"),
+                toolchain: toolchain_of(std::json::find_string_field(e.body, "toolchain")),
+                knowledge: if len(kdir) > 0 { kdir } else { "docs/integrations/" }
+            };
+        }
+        if e.kind == "codebase.detached" && std::json::find_string_field(e.body, "name") == name {
+            out = Codebase { };
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Every attached codebase's name, one per line, in the order first attached.
+@bounded_by(j)
+fn codebase_names(j: Journal) -> String {
+    let mut seen = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "codebase.attached" {
+            let n = std::json::find_string_field(e.body, "name");
+            if !std::str::contains(seen, "\n" + n + "\n") { seen = seen + n + "\n"; }
+        }
+        i = i + 1;
+    }
+    let mut out = "";
+    let mut rest = seen[1..len(seen)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let n = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if codebase_of(j, n).present { out = out + n + "\n"; }
+    }
+    return out;
+}
+
+// The attached codebases as `hale dna codebase list` prints them, one line each.
+@bounded_by(j)
+fn codebase_listing(j: Journal) -> String {
+    let mut out = "";
+    let mut rest = codebase_names(j);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let c = codebase_of(j, rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        out = out + "  " + c.name + "  " + c.repo + " (" + c.branch + ")  build: "
+            + (if len(c.build) > 0 { c.build } else { "-" }) + "  test: "
+            + (if len(c.test) > 0 { c.test } else { "-" }) + "  toolchain: " + c.toolchain + "\n";
+    }
+    return out;
+}
+
+// ---- the knowledge directory ---------------------------------------------------
+
+// A knowledge directory as the codebase declares it: a relative path inside
+// the repository, no `..`, with its trailing `/`. "" when it cannot stand.
+fn knowledge_dir_ok(d: String) -> String {
+    let t = std::str::trim(d);
+    if len(t) == 0
+        || len(t) > 200
+        || std::str::starts_with(t, "/")
+        || std::str::contains(t, "..")
+        || std::str::contains(t, "\n")
+    {
+        return "";
+    }
+    return if std::str::ends_with(t, "/") { t } else { t + "/" };
+}
+
+// The path of watched source `name`'s architecture note in the codebase.
+fn codebase_note_path(c: Codebase, name: String) -> String {
+    return c.knowledge + name + ".md";
+}
+
+// Whether the codebase's repository is a path on this machine (a clone is
+// then not needed to read it).
+fn codebase_repo_local(c: Codebase) -> Bool {
+    return std::str::starts_with(c.repo, "/") && std::io::fs::file_exists(c.repo);
+}
+
+// Watched source `name`'s architecture note as the codebase's default branch
+// holds it now, "" when it holds none.
+fn codebase_note(c: Codebase, name: String) -> String {
+    if !c.present || !codebase_name_ok(name) || len(knowledge_dir_ok(c.knowledge)) == 0 {
+        return "";
+    }
+    let ref = if codebase_repo_local(c) { c.branch } else { "origin/" + c.branch };
+    let r = codebase_git(c, "show\n" + ref + ":" + codebase_note_path(c, name));
+    return if r.code == 0 { r.stdout } else { "" };
+}
+
+// The diff from commit `a` to commit `b` of the codebase, cut at a line
+// past `SOURCE_DIFF_MAX` bytes, saying so; "" when they differ in nothing.
+fn codebase_diff(c: Codebase, a: String, b: String) -> String {
+    if len(a) == 0 || len(b) == 0 || a == b { return ""; }
+    let r = codebase_git(c, "diff\n" + a + "\n" + b);
+    if r.code != 0 { return ""; }
+    let whole = r.stdout;
+    if len(whole) <= SOURCE_DIFF_MAX { return whole; }
+    let mut cut = SOURCE_DIFF_MAX;
+    while cut > 0 && whole[(cut - 1)..cut] != "\n" { cut = cut - 1; }
+    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its "
+        + to_string(len(whole)) + " bytes\n";
+}

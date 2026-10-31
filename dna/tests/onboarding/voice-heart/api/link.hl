@@ -1,0 +1,300 @@
+// The api's link to the nodes: NATS, as ../spec/protocol.yaml says. The
+// api publishes `assign` on a node's subject, and `serve` as a request
+// whose answer is the node's ack; the node then streams the request's
+// events and its result to the reply subject the api named.
+//
+// Everything above reaches it through `Link`, so the tests serve through
+// a node of their own, in process.
+
+import "../lib/pond/realtime/nats" as nats;
+
+/// How one `serve` went. `ack` is `accepted`, `refused` (with `reason`),
+/// `unanswered` (no ack in time: a seat failure) or `lost` (the link is
+/// down). For an accepted request, `outcome` is the result's (`served`,
+/// `incomplete`, `failed`, `cancelled`), or `unfinished` when no result
+/// came before the wait ran out; `response` is the response object the
+/// terminal event carried, as JSON.
+type ServeOutcome {
+    ack: String = "";
+    reason: String = "";
+    outcome: String = "unfinished";
+    // the result's `served.model`, and its timing
+    model: String = "";
+    first_output_ms: Int = 0;
+    engine_ms: Int = 0;
+    // for `failed`: the result's error
+    error_code: String = "";
+    error_message: String = "";
+    retryable: Bool = false;
+    response: String = "";
+    // whether output reached the api before the seat failed
+    output: Bool = false;
+}
+
+interface Link {
+    /// Where NATS is, from a node's side: what registration tells it.
+    fn place() -> String;
+    /// The root every subject is under: `voice`, or the habitat broker's
+    /// prefix (lib/broker).
+    fn root() -> String;
+    /// Publish `body` on `<root>.node.<node>.assign`; false when it could
+    /// not be sent.
+    fn assign(node: String, body: String) -> Bool;
+    /// Offer `body` (a `serve` message naming `reply_to`) to the node: its
+    /// ack (`accepted`, `refused`, `unanswered` or `lost`, with `reason`).
+    /// An accepted offer stays open for `next` until `finish`.
+    fn offer(node: String, reply_to: String, body: String) -> ServeOutcome;
+    /// The open offer's next message, waiting at most `wait`: an `event`
+    /// (the standard event object), the `result`, `none` when the wait
+    /// ran out, or `lost`.
+    fn next(wait: Duration) -> LinkMsg;
+    /// End the open offer; one whose result has not come is sent `cancel`.
+    fn finish();
+}
+
+/// One message of an open offer. `json` is the event object, or the result.
+type LinkMsg { kind: String = "none"; json: String = ""; }
+
+/// Offer `body` and read it to its result: the whole outcome, for an
+/// answer that is not streamed. The seat has `first` from each message to
+/// the next until its first output, and `idle` once output has come.
+fn serve_over(
+    link: Link,
+    node: String,
+    reply_to: String,
+    body: String,
+    first: Duration,
+    idle: Duration
+) -> ServeOutcome {
+    let mut out = link.offer(node, reply_to, body);
+    if out.ack != "accepted" { return out; }
+    let mut deadline = std::time::monotonic() + first;
+    let mut done = false;
+    while !done && std::time::monotonic() < deadline {
+        let m = link.next(1s);
+        if m.kind == "event" {
+            out = take_event(out, m.json);
+        } else if m.kind == "result" {
+            out = take_result(out, m.json);
+            done = true;
+        } else if m.kind == "lost" {
+            done = true;
+        }
+        if m.kind == "event" || m.kind == "result" {
+            deadline = std::time::monotonic() + (if out.output { idle } else { first });
+        }
+    }
+    link.finish();
+    return out;
+}
+
+/// The link over core NATS. Each use opens a connection of its own and
+/// closes it after: a client held for the api's life keeps part of every
+/// message it frames (FRICTION.md), and a connection to NATS on the
+/// private network costs a millisecond, against a request that holds the
+/// api for as long as its seat takes.
+locus NatsLink {
+    params {
+        // the address the api dials; "" for no NATS (nothing is sent)
+        url: String = "";
+        // the address nodes dial, when theirs differs
+        node_url: String = "";
+        // grafted, the habitat broker's account (its user, and the vault
+        // entry of its password), the root of its subjects and where a
+        // request's inbox is (lib/broker); standalone, none, `voice` and
+        // NATS's own
+        user: String = "";
+        vault: String = "";
+        subjects: String = "voice";
+        inbox: String = "_INBOX";
+        // the offer open now
+        attempt: NatsAttempt = NatsAttempt { };
+    }
+
+    fn place() -> String { return if len(self.node_url) > 0 { self.node_url } else { self.url }; }
+
+    fn root() -> String { return self.subjects; }
+
+    fn assign(node: String, body: String) -> Bool {
+        if len(self.url) == 0 { return false; }
+        let c = nats::NatsClient {
+            url: self.url,
+            name: "voice-api",
+            user: self.user,
+            credential: std::secret::Credential { vault: self.vault },
+        };
+        if !c.open() {
+            log_warn(
+                "NATS unreachable",
+                fields2(std::log::kv("nats", self.url), std::log::kv("error", c.last_error)),
+            );
+            return false;
+        }
+        let mut sent = true;
+        c.pub_msg(
+            self.subjects + ".node." + node + ".assign",
+            "",
+            std::bytes::from_string(body),
+        ) or {
+            sent = false;
+        };
+        c.flush() or { sent = false; };
+        c.close();
+        return sent;
+    }
+
+    /// Subscribe to the attempt's replies first, then offer it, so no
+    /// event can arrive before the api listens. Each offer is an attempt
+    /// of its own, with its own connection, gone when the next replaces it.
+    fn offer(node: String, reply_to: String, body: String) -> ServeOutcome {
+        if len(self.url) == 0 {
+            return ServeOutcome { ack: "lost", reason: "no NATS is configured" };
+        }
+        self.attempt = NatsAttempt {
+            node: node,
+            reply_to: reply_to,
+            request_id: std::json::find_string_field(body, "request_id"),
+            subjects: self.subjects,
+            c: nats::NatsClient {
+                name: "voice-api",
+                user: self.user,
+                credential: std::secret::Credential { vault: self.vault },
+                inbox_prefix: self.inbox,
+            },
+        };
+        return self.attempt.offer(self.url, body);
+    }
+
+    fn next(wait: Duration) -> LinkMsg { return self.attempt.next(wait); }
+
+    fn finish() { self.attempt.finish(); }
+}
+
+/// One offer over NATS, from its subscription to its finish. Only messages
+/// that name its request count. A seat the api stops waiting for (no ack in
+/// time, no result before `finish`, the connection lost) is sent `cancel`,
+/// so it stops serving a request nobody reads.
+locus NatsAttempt {
+    params {
+        node: String = "";
+        reply_to: String = "";
+        request_id: String = "";
+        subjects: String = "voice";
+        c: nats::NatsClient = nats::NatsClient { name: "voice-api" };
+        open: Bool = false;
+        finished: Bool = false;
+    }
+
+    fn offer(url: String, body: String) -> ServeOutcome {
+        self.c.url = url;
+        if !self.c.open() {
+            return ServeOutcome {
+                ack: "lost",
+                reason: "NATS unreachable at " + url + ": " + self.c.last_error,
+            };
+        }
+        let sid = self.c.sub_to(self.reply_to + ".>", "") or - 1;
+        if sid < 0 {
+            let why = self.c.last_error;
+            self.c.close();
+            return ServeOutcome { ack: "lost", reason: why };
+        }
+        let reply = self.c.request(
+            self.subjects + ".node." + self.node + ".serve",
+            std::bytes::from_string(body),
+            5s,
+        ) or nats::NatsMsg { };
+        let ack = std::str::from_bytes(reply.data);
+        let mut out = ServeOutcome { ack: std::json::find_string_field(ack, "outcome") };
+        if len(ack) > 0 && std::json::find_string_field(ack, "request_id") != self.request_id {
+            out.ack = "";
+        }
+        if out.ack != "accepted" {
+            if len(ack) == 0 || out.ack != "refused" {
+                // it may still take the request once it reads it
+                let why = self.c.last_error;
+                cancel(self.c, self.subjects, self.node, self.request_id);
+                self.c.close();
+                return ServeOutcome {
+                    ack: "unanswered",
+                    reason: "node " + self.node + " did not answer: " + why,
+                };
+            }
+            self.c.close();
+            out.reason = std::json::find_string_field(ack, "reason");
+            return out;
+        }
+        self.open = true;
+        return out;
+    }
+
+    fn next(wait: Duration) -> LinkMsg {
+        if !self.open { return LinkMsg { kind: "lost" }; }
+        let deadline = std::time::monotonic() + wait;
+        while std::time::monotonic() < deadline {
+            if self.c.read_msg(deadline - std::time::monotonic()) {
+                let msg = std::str::from_bytes(self.c.last.data);
+                // a message that names another request is not this one's
+                if std::json::find_string_field(msg, "request_id") == self.request_id {
+                    if self.c.last.subject == self.reply_to + ".event" {
+                        return LinkMsg {
+                            kind: "event",
+                            json: std::str::trim(std::json::find_field_raw(msg, "event")),
+                        };
+                    }
+                    if self.c.last.subject == self.reply_to + ".result" {
+                        self.finished = true;
+                        return LinkMsg { kind: "result", json: msg };
+                    }
+                }
+            } else if !self.c.connected {
+                return LinkMsg { kind: "lost" };
+            }
+        }
+        return LinkMsg { kind: "none" };
+    }
+
+    fn finish() {
+        if !self.open { return; }
+        if !self.finished && self.c.connected {
+            cancel(self.c, self.subjects, self.node, self.request_id);
+        }
+        self.c.close();
+        self.open = false;
+    }
+}
+
+/// `cancel` on the node's subject: the api stopped waiting for the
+/// request, so the seat should stop serving it.
+fn cancel(c: nats::NatsClient, subjects: String, node: String, request_id: String) {
+    let msg = "{\"type\": \"cancel\", \"request_id\": " + jq(request_id)
+        + ", \"reason\": \"abandoned\"}";
+    c.pub_msg(subjects + ".node." + node + ".cancel", "", std::bytes::from_string(msg)) or discard;
+    c.flush() or discard;
+}
+
+/// What an event tells the api: that output began, and the response the
+/// terminal event carries.
+fn take_event(o: ServeOutcome, event: String) -> ServeOutcome {
+    let mut out = o;
+    let kind = std::json::find_string_field(event, "type");
+    if output_event(kind) { out.output = true; }
+    if kind == "response.completed" || kind == "response.incomplete" || kind == "response.failed" {
+        out.response = std::str::trim(std::json::find_field_raw(event, "response"));
+    }
+    return out;
+}
+
+fn take_result(o: ServeOutcome, result: String) -> ServeOutcome {
+    let mut out = o;
+    out.outcome = std::json::find_string_field(result, "outcome");
+    out.model = std::json::find_string_field(std::json::find_field_raw(result, "served"), "model");
+    let timing = std::json::find_field_raw(result, "timing");
+    out.first_output_ms = std::json::find_int_field(timing, "first_output_ms");
+    out.engine_ms = std::json::find_int_field(timing, "engine_ms");
+    let e = std::json::find_field_raw(result, "error");
+    out.error_code = std::json::find_string_field(e, "code");
+    out.error_message = std::json::find_string_field(e, "message");
+    out.retryable = std::json::find_bool_field(e, "retryable");
+    return out;
+}

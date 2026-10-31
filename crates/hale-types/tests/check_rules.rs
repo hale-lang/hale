@@ -2291,11 +2291,11 @@ mod tests {
             vec![(
                 "user-declared `type ParseError` shadows the stdlib's \
                  `ParseError` but is missing the expected `kind: String` \
-                 field (used by stdlib path-calls that allocate \
-                 `ParseError` on failure). Either match the stdlib \
-                 shape, rename your type (e.g. `MyParseError`), or use \
-                 `std::str::ParseError` qualified where you need the \
-                 stdlib's shape.",
+                 field (the stdlib's own code, merged into every program, \
+                 and lowering build `ParseError` under that name on \
+                 failure). Either match the stdlib shape, rename your \
+                 type (e.g. `MyParseError`), or use `std::str::ParseError` \
+                 qualified where you need the stdlib's shape.",
                 "type ParseError { code: Int; }",
             )],
             "all diagnostics: {:?}",
@@ -2369,10 +2369,13 @@ mod tests {
     }
 
     #[test]
-    fn ok_user_parse_error_in_form_free_program() {
-        // Without any form machinery in use, inject_builtin_types
-        // doesn't run, so the collision check is skipped. The
-        // user is free to declare any type name.
+    fn err_user_parse_error_in_a_program_that_calls_no_parser() {
+        // The stdlib's own bodies are merged into every program and
+        // call `std::str::parse_int` (`std::cli`, `std::http`), so a
+        // program's `ParseError` stands in for the stdlib's whether or
+        // not the program calls a parser: the build refused this one
+        // after the check accepted it (the check/build agreement
+        // ratchet). The check refuses it at the declaration now.
         let src = r#"
             type ParseError { code: Int; }
             fn main() {
@@ -2381,9 +2384,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.is_empty(),
-            "user-declared ParseError in a form-free program \
-             should typecheck clean; got: {:?}",
+            diags.iter().any(|d| d.message.contains("shadows the stdlib's `ParseError`")),
+            "expected the ParseError-shadow diagnostic; got: {:?}",
             diags
         );
     }
@@ -2612,5 +2614,532 @@ mod unowned_subscriber_tests {
             fn main() { Disp { }; }
         "#;
         assert!(!flagged(src, false));
+    }
+}
+
+mod set_type_tests {
+    //! GH #1530 step 1: a set type, `type S = A | B;`. Its members are
+    //! distinct structs or enums, none a set; a member's value flows into
+    //! its set; a pattern names a member by its type alone, exhaustively.
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const MEMBERS: &str = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Side = enum { Buy, Sell };\n";
+
+    #[test]
+    fn members_flow_into_their_set_and_match_by_type() {
+        let src = format!(
+            "{MEMBERS}type In = Book | Trade | Side;\n\
+             fn make(n: Int) -> In {{ if n == 0 {{ return Book {{ id: 1 }}; }} return Side::Buy; }}\n\
+             fn name(m: In) -> String {{ return match m {{ Book(b) -> \"book\", Trade(_) -> \"trade\", Side(_) -> \"side\" }}; }}\n\
+             fn main() {{ let t: In = Trade {{ qty: 2 }}; println(name(t)); println(name(make(0))); }}\n"
+        );
+        assert_eq!(errors(&src), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_member_is_a_declared_struct_or_enum_and_named_once() {
+        assert_eq!(
+            errors(&format!("{MEMBERS}type Count = Int;\ntype In = Book | Count;\nfn main() {{ }}\n")),
+            vec!["set `In`: its member `Count` is not a struct or an enum the program declares; a member is its own \
+                  discriminant, so it is a type of its own: declare a struct that holds the value"]
+        );
+        assert_eq!(
+            errors(&format!("{MEMBERS}type In = Book | Trade | Book;\nfn main() {{ }}\n")),
+            vec!["set `In`: `Book` is its member twice; a member is named once"]
+        );
+        // a generic record's alias is a record (`type P = Box<Int>;`)
+        let generic = format!("{MEMBERS}type Box<T> {{ value: T; }}\ntype P = Box<Int>;\ntype In = P | Book;\nfn main() {{ }}\n");
+        assert_eq!(errors(&generic), Vec::<String>::new());
+        assert_eq!(
+            errors(&format!("{MEMBERS}type In = Book | Trade;\ntype Out = In | Side;\nfn main() {{ }}\n")),
+            vec!["set `Out`: its member `In` is a set itself; a set's members are the types it holds, so name `In`'s \
+                  members in `Out` instead"]
+        );
+    }
+
+    #[test]
+    fn a_set_member_is_a_named_type() {
+        for member in ["[Int; 2]", "Int", "(Int, Int)"] {
+            let e = parse_source(&format!("type Book {{ id: Int; }}\ntype In = Book | {member};\n")).err().expect("refused");
+            assert!(e[0].message.starts_with("a set's member is a named type the program declares"), "{member}: {}", e[0].message);
+        }
+    }
+
+    #[test]
+    fn a_match_names_members_of_its_set_and_covers_them() {
+        let set = format!("{MEMBERS}type In = Book | Trade;\n");
+        assert_eq!(
+            errors(&format!("{set}fn f(m: In) -> Int {{ return match m {{ Book(_) -> 1, Side(_) -> 2, _ -> 3 }}; }}\nfn main() {{ }}\n")),
+            vec!["`Side` is not a member of the set `In`, whose members are Book, Trade"]
+        );
+        assert_eq!(
+            errors(&format!("{set}fn f(m: In) -> Int {{ return match m {{ Book(_) -> 1 }}; }}\nfn main() {{ }}\n")),
+            vec!["match is not exhaustive; add a `_` arm or cover all cases of `In`"]
+        );
+        // a value of no member's type is no set's
+        assert_eq!(
+            errors(&format!("{set}fn f(m: In) {{ }}\nfn main() {{ f(Side::Buy); }}\n")),
+            vec!["argument 0 type mismatch: expected `In`, got `Side`"]
+        );
+    }
+}
+
+mod seam_tests {
+    //! GH #1530 step 2: a seam's refusals. Coverage both ways (every member
+    //! has one eater; every member a hop meets is in its parameter's set),
+    //! every failure placed, one tower, and the closed flow is the locus's
+    //! `run`.
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const PARTS: &str = "\
+type A { n: Int; }
+type B { n: Int; }
+type C { n: Int; }
+type In = A | B;
+type Out = A | B;
+type Oops { why: String; }
+locus Dec {
+    fn decode(s: String) -> In { return A { n: len(s) }; }
+    fn risky(s: String) -> In fallible(Oops) { return A { n: len(s) }; }
+}
+locus Enc { fn encode(o: Out) -> String { return \"x\"; } }
+locus Sink { fn put(s: String) { } }
+interface Handler { fn a(x: A) -> String; }
+";
+
+    fn seam(handler: &str, chain: &str) -> Vec<String> {
+        errors(&format!(
+            "{PARTS}{handler}\nlocus G {{\n    params {{ dec: Dec = Dec {{ }}; h: H = H {{ }}; enc: Enc = Enc {{ }}; sink: Sink = Sink {{ }}; }}\n    {chain}\n}}\nfn main() {{ }}\n"
+        ))
+    }
+
+    const H: &str = "locus H { fn a(x: A) -> String { return \"a\"; } fn b(x: B) -> String { return \"b\"; } }";
+
+    #[test]
+    fn a_covered_seam_checks() {
+        assert_eq!(seam(H, "seam f(s: String) { s -> self.dec.decode -> self.h; }"), Vec::<String>::new());
+    }
+
+    /// A refused seam is the one error: its method is still declared from
+    /// what the seam spells, so its callers check (the refusal used to
+    /// cascade as "no field `f` on `G`" at every call).
+    #[test]
+    fn a_refused_seam_is_its_callers_one_error() {
+        let refusal = "`self.h` has no method taking `B`, which reaches it from `self.dec.decode`: every member has one eater";
+        let h = "locus H { fn a(x: A) -> String { return \"a\"; } }";
+        // a declared result: its callers use it as one
+        assert_eq!(
+            seam(h, "seam f(s: String) -> String { s -> self.dec.decode -> self.h; }\n    fn use_it() -> Int { return len(self.f(\"x\")); }"),
+            vec![refusal]
+        );
+        // no result written: unknown, which any use accepts
+        assert_eq!(
+            seam(h, "seam f(s: String) { s -> self.dec.decode -> self.h; }\n    fn use_it() { let r = self.f(\"x\"); println(r); }"),
+            vec![refusal]
+        );
+        // `or end;` passes a failure on: its callers address it
+        assert_eq!(
+            seam(h, "seam f(s: String) -> String { s -> self.dec.risky -> self.h; or end; }\n    fn use_it() -> String { return self.f(\"x\") or \"none\"; }"),
+            vec![refusal.replace("decode", "risky")]
+        );
+    }
+
+    /// A closed seam's `or violate NAME;` checks: its frame is a turn that
+    /// returns a value, so the violation is `run`'s, where a value-returning
+    /// method's would be refused (F.42). Both the locus's own hops and a
+    /// chain through child loci.
+    #[test]
+    fn a_closed_seams_or_violate_checks() {
+        let own = "type Bad { why: String; }\n\
+            locus G {\n\
+                params { k: Int = 0; }\n\
+                closure fuse { captures: k; epoch inline; }\n\
+                fn next() -> Int { return 1; }\n\
+                fn decode(x: Int) -> String fallible(Bad) { fail Bad { why: \"bad\" }; }\n\
+                fn put(s: String) { println(s); }\n\
+                seam { self.next() -> self.decode -> self.put; or violate fuse; }\n\
+            }\n\
+            fn main() { G {}; }\n";
+        assert_eq!(errors(own), Vec::<String>::new());
+        let children = "type Bad { why: String; }\n\
+            locus Src { fn next() -> Int { return 1; } }\n\
+            locus Dec { fn decode(x: Int) -> String fallible(Bad) { fail Bad { why: \"bad\" }; } }\n\
+            locus Sink { fn put(s: String) { println(s); } }\n\
+            locus G {\n\
+                params { k: Int = 0; src: Src = Src { }; dec: Dec = Dec { }; sink: Sink = Sink { }; }\n\
+                closure fuse { captures: k; epoch inline; }\n\
+                seam { self.src.next() -> self.dec.decode -> self.sink.put; or violate fuse; }\n\
+            }\n\
+            fn main() { G {}; }\n";
+        assert_eq!(errors(children), Vec::<String>::new());
+    }
+
+    #[test]
+    fn every_member_has_one_eater() {
+        assert_eq!(
+            seam("locus H { fn a(x: A) -> String { return \"a\"; } }", "seam f(s: String) { s -> self.dec.decode -> self.h; }"),
+            vec!["`self.h` has no method taking `B`, which reaches it from `self.dec.decode`: every member has one eater"]
+        );
+        assert_eq!(
+            seam(
+                "locus H { fn a(x: A) -> String { return \"a\"; } fn b(x: B) -> String { return \"b\"; } fn any(x: In) -> String { return \"i\"; } }",
+                "seam f(s: String) { s -> self.dec.decode -> self.h; }"
+            ),
+            vec![
+                "`self.h.a` and `self.h.any` both take `A`: a member has one eater",
+                "`self.h.b` and `self.h.any` both take `B`: a member has one eater"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_member_a_method_hop_meets_is_its_parameters() {
+        assert_eq!(
+            seam("locus H { fn a(x: A) -> C { return C { n: 1 }; } fn b(x: B) -> A { return A { n: 2 }; } }", "seam f(s: String) { s -> self.dec.decode -> self.h -> self.enc.encode; }"),
+            vec!["`self.enc.encode` takes `Out`, and `C` reaching it from `self.h.a` is not one of its members"]
+        );
+    }
+
+    #[test]
+    fn every_failure_is_placed() {
+        assert_eq!(
+            seam(H, "seam f(s: String) { s -> self.dec.risky -> self.h; }"),
+            vec!["`self.dec.risky` fails with `Oops`, and no later hop takes it: add `Oops` to a later hop's set, or route it with `or end;` or `or violate <closure>;`"]
+        );
+        assert_eq!(seam(H, "seam f(s: String) { s -> self.dec.risky -> self.h; or end; }"), Vec::<String>::new());
+        assert_eq!(
+            seam(H, "seam f(s: String) { s -> self.dec.risky -> self.h; or violate broken; }"),
+            vec!["a callable seam's uncovered failure fails the call: write `or end;` (a closure is violated by the flow `run` is, the closed seam)"]
+        );
+    }
+
+    #[test]
+    fn a_seam_is_one_tower_with_a_static_chain() {
+        assert_eq!(
+            errors(&format!(
+                "{PARTS}{H}\nlocus G {{ params {{ h: Handler; }} seam f(x: A) {{ x -> self.h; }} }}\nfn main() {{ }}\n"
+            )),
+            vec!["`self.h` is the interface `Handler`, so the method a hop on it calls is not known here: a seam's chain is static"]
+        );
+        assert_eq!(
+            errors(&format!(
+                "{PARTS}{H}\nmain locus G {{\n    params {{ dec: Dec = Dec {{ }}; h: H = H {{ }}; }}\n    placement {{ h: cooperative(pool = work); }}\n    seam f(s: String) {{ s -> self.dec.decode -> self.h; }}\n}}\nfn main() {{ G {{ }}; }}\n"
+            )),
+            vec!["`self.h` runs on pool `work`, another tower than the seam's: a seam is one tower; across pools, use the bus"]
+        );
+        assert_eq!(
+            seam(H, "seam f(s: String) { s -> self.nope; }"),
+            vec!["`self.nope` is neither a method of `G` nor a child locus of it"]
+        );
+    }
+
+    #[test]
+    fn a_closed_seam_is_the_run_and_ends_at_a_sink() {
+        let feed = "locus Feed { fn next() -> String fallible(Oops) { return \"x\"; } }";
+        let g = |chain: &str, extra: &str| {
+            errors(&format!(
+                "{PARTS}{H}\n{feed}\nlocus G {{\n    params {{ feed: Feed = Feed {{ }}; dec: Dec = Dec {{ }}; enc: Enc = Enc {{ }}; sink: Sink = Sink {{ }}; }}\n    {extra}\n    {chain}\n}}\nfn main() {{ }}\n"
+            ))
+        };
+        assert_eq!(g("seam { self.feed.next() -> self.dec.decode -> self.enc.encode -> self.sink.put; }", ""), Vec::<String>::new());
+        assert_eq!(
+            g("seam { self.feed.next() -> self.dec.decode -> self.enc.encode; }", ""),
+            vec!["the seam's last hop ends with `String` from `self.enc.encode`; a closed flow ends at a sink, a method that takes the value and returns nothing"]
+        );
+        assert_eq!(
+            g("seam { self.feed.next() -> self.dec.decode -> self.enc.encode -> self.sink.put; }", "run() { }"),
+            vec!["`G` has its own `run`: a closed seam is the locus's `run`, so the locus has one or the other"]
+        );
+    }
+
+    #[test]
+    fn a_callable_seam_begins_at_its_parameter() {
+        assert_eq!(
+            seam(H, "fn side(s: String) -> String { return s; }\n    seam f(s: String) { self.side(s) -> self.dec.decode -> self.h; }"),
+            vec!["a callable seam's chain begins at its parameter (`s -> …`); a call there is a source, which only the closed seam (`seam { … }`) has"]
+        );
+        assert_eq!(
+            seam(H, "seam f(s: String) { missing -> self.dec.decode -> self.h; }"),
+            vec!["a callable seam's chain begins at its parameter (`s -> …`); a call there is a source, which only the closed seam (`seam { … }`) has"]
+        );
+    }
+
+    #[test]
+    fn a_sink_spelled_unit_returns_nothing() {
+        let feed = "locus Feed { fn next() -> String fallible(Oops) { return \"x\"; } }\nlocus Unit { fn put(s: String) -> () { } }";
+        assert_eq!(
+            errors(&format!(
+                "{PARTS}{H}\n{feed}\nlocus G {{\n    params {{ feed: Feed = Feed {{ }}; dec: Dec = Dec {{ }}; enc: Enc = Enc {{ }}; u: Unit = Unit {{ }}; }}\n    seam {{ self.feed.next() -> self.dec.decode -> self.enc.encode -> self.u.put; }}\n}}\nfn main() {{ }}\n"
+            )),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_callable_seam_returns_one_type_and_fails_with_one() {
+        assert_eq!(
+            seam(
+                "locus H { fn a(x: A) -> String { return \"a\"; } fn b(x: B) -> Int { return 1; } }",
+                "seam f(s: String) { s -> self.dec.decode -> self.h; }"
+            ),
+            vec!["the seam's paths end in `Int`, `String`; declare what it returns (`seam f(…) -> R`), a set holding them all"]
+        );
+        assert_eq!(
+            seam(
+                "type E2 { why: String; }\nlocus H { fn a(x: A) -> String fallible(E2) { return \"a\"; } fn b(x: B) -> String { return \"b\"; } }",
+                "seam f(s: String) { s -> self.dec.risky -> self.h; or end; }"
+            ),
+            vec!["the seam fails with `E2`, `Oops`, and a callable seam fails with one type: route the others to a later hop"]
+        );
+    }
+}
+
+mod default_literal_tests {
+    //! A record literal in a default is held to the rule every record
+    //! literal is: a field with no default of its own is written. A default
+    //! is typed where it is evaluated, and that walk's errors are not the
+    //! caller's, so a literal default that left one out passed the check and
+    //! failed the build ("literal missing field").
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const BUDGET: &str = "type BudgetSet { cap: Int; spent: Int = 0; slots: bounded[Int; 4]; }\n";
+
+    #[test]
+    fn a_literal_default_missing_a_field_is_refused_at_the_literal() {
+        let missing = vec!["type `BudgetSet`: missing field `cap`".to_string()];
+        // a record type's field default
+        assert_eq!(errors(&format!("{BUDGET}type Cfg {{ budget: BudgetSet = BudgetSet {{ }}; }}\nfn main() {{ }}\n")), missing);
+        // a fn's parameter default
+        assert_eq!(errors(&format!("{BUDGET}fn f(b: BudgetSet = BudgetSet {{ }}) -> Int {{ return b.cap; }}\nfn main() {{ }}\n")), missing);
+        // a method's
+        assert_eq!(
+            errors(&format!("{BUDGET}locus L {{ fn f(b: BudgetSet = BudgetSet {{ spent: 1 }}) -> Int {{ return b.cap; }} }}\nfn main() {{ }}\n")),
+            missing
+        );
+        // nested inside another literal
+        assert_eq!(
+            errors(&format!("{BUDGET}type Inner {{ b: BudgetSet; }}\ntype Cfg {{ inner: Inner = Inner {{ b: BudgetSet {{ }} }}; }}\nfn main() {{ }}\n")),
+            missing
+        );
+        // a locus's `params` default reports it once, where it is typed
+        assert_eq!(errors(&format!("{BUDGET}locus L {{ params {{ budget: BudgetSet = BudgetSet {{ }}; }} }}\nfn main() {{ }}\n")), missing);
+    }
+
+    #[test]
+    fn a_complete_literal_default_checks() {
+        // every field without a default written; a defaulted and a bounded
+        // field left out
+        assert_eq!(
+            errors(&format!(
+                "{BUDGET}type Cfg {{ budget: BudgetSet = BudgetSet {{ cap: 3 }}; }}\nfn f(b: BudgetSet = BudgetSet {{ cap: 1 }}) -> Int {{ return b.cap; }}\nfn main() {{ }}\n"
+            )),
+            Vec::<String>::new()
+        );
+    }
+}
+
+mod default_scope_tests {
+    //! A default reads only its own fields and constants (spec/types.md §
+    //! Locus params): it is evaluated where the literal or call that leaves
+    //! it is written, and nothing of that scope is the declaration's to
+    //! read. A name it reads must be a module-level item, a builtin, or one
+    //! it binds itself; `self` is its own only in a locus's `params`. A
+    //! caller binding that would shadow a name the default reads is refused
+    //! where the default is left out.
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    fn caller(name: &str) -> String {
+        format!("a default reads only its own fields and constants; `{name}` is in the caller's scope")
+    }
+
+    const SELF: &str = "a default reads only its own fields and constants; `self` here is the caller's";
+
+    #[test]
+    fn a_default_naming_the_callers_scope_is_refused_where_it_is_written() {
+        // a record type's field default: a caller local, a fn value bound there
+        assert_eq!(errors("type R { b: Int = a + 1; }\nfn main() { let a = 2; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(
+            errors("fn value() -> Int { return 3; }\ntype R { b: Int = compute(); }\nfn main() { let compute = value; let r = R { }; }\n"),
+            vec![caller("compute")]
+        );
+        // a fn's, a method's and a hook's parameter default
+        assert_eq!(errors("fn f(n: Int = a) -> Int { return n; }\nfn main() { let a = 1; f(); }\n"), vec![caller("a")]);
+        assert_eq!(errors("locus L { fn m(n: Int = a) -> Int { return n; } }\nfn main() { }\n"), vec![caller("a")]);
+        // an earlier parameter is no name of the default's either
+        assert_eq!(errors("fn f(a: Int, b: Int = a * 2) -> Int { return b; }\nfn main() { }\n"), vec![caller("a")]);
+        // a locus's `params` default is typed where it is written, so a
+        // name of no scope there is already unknown
+        assert_eq!(
+            errors("locus L { params { n: Int = a; } }\nfn main() { }\n"),
+            vec!["param `n`: unknown identifier `a` in its default".to_string()]
+        );
+        // `self` in a fn's or method's default is the caller's
+        assert_eq!(
+            errors("locus L { params { k: Int = 1; } fn m(n: Int = self.k) -> Int { return n; } }\nfn main() { }\n"),
+            vec![SELF.to_string()]
+        );
+        assert_eq!(errors("type R { b: Int = self.a; a: Int = 1; }\nfn main() { }\n"), vec![SELF.to_string()]);
+    }
+
+    #[test]
+    fn a_default_of_module_items_checks() {
+        let src = "const K: Int = 4;\n\
+                   fn value(n: Int = K) -> Int { return n; }\n\
+                   type OrderId = distinct Int;\n\
+                   type Color = enum { red, blue };\n\
+                   type Hue = Color;\n\
+                   type Inner { c: Int = 3; }\n\
+                   type R {\n\
+                       k: Int = K + 1;\n\
+                       f: Int = value();\n\
+                       v: fn() -> Int = value;\n\
+                       b: Int = len(\"abc\") + abs(-1);\n\
+                       id: OrderId = OrderId(3);\n\
+                       at: Time = Time(3ns);\n\
+                       hue: Color = Hue::blue;\n\
+                       inner: Inner = Inner { };\n\
+                       q: Int = std::math::abs_int(-2);\n\
+                       own: Int = { let x = 2; x * K };\n\
+                       m: Int = match Color::red { Color::red -> 1, Color::blue -> 2, };\n\
+                   }\n\
+                   locus L { params { a: Int = K; b: Int = self.a + 1; } }\n\
+                   fn main() { let r = R { }; }\n";
+        assert_eq!(errors(src), Vec::<String>::new());
+    }
+
+    /// A name a default binds itself is its own only where it is in scope,
+    /// as the checker scopes it: after its `let`, within its block, a match
+    /// arm's binding within its arm, an `or` handler's `err` within the
+    /// handler. A read before or outside that is the caller's.
+    #[test]
+    fn a_defaults_own_names_are_its_own_only_in_their_scope() {
+        // read in its own initializer: the caller's `a`
+        assert_eq!(errors("type R { b: Int = { let a = a + 1; a }; }\nfn main() { let a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        // bound in an inner block, read after it
+        assert_eq!(
+            errors("type R { b: Int = { let ignored = { let a = 99; a }; a + 1 }; }\nfn main() { let a = 1; let r = R { }; }\n"),
+            vec![caller("a")]
+        );
+        // a constant read before a `let` of its name: still the constant,
+        // which the caller's binding would shadow where the literal leaves it
+        let k = "const K: Int = 4;\ntype R { b: Int = { let first = K; let K = 8; first }; }\n";
+        assert_eq!(
+            errors(&format!("{k}fn main() {{ let K = 2; let r = R {{ }}; }}\n")),
+            vec!["a default reads only its own fields and constants; `K` here is the caller's binding, which a default \
+                  left out here would read in place of the module's `K`: rename the binding or pass the value"
+                .to_string()]
+        );
+        assert_eq!(errors(&format!("{k}fn main() {{ let r = R {{ }}; }}\n")), Vec::<String>::new());
+        // a match arm's binding: its own within the arm, not after the match
+        assert_eq!(errors("type R { b: Int = match 2 { n -> n + 1, }; }\nfn main() { }\n"), Vec::<String>::new());
+        assert_eq!(
+            errors("type R { b: Int = { let m = match 2 { n -> n, }; m + n }; }\nfn main() { let n = 1; let r = R { }; }\n"),
+            vec![caller("n")]
+        );
+        // an `or` handler's `err`: its own within the handler only
+        let fallible = "type Oops { kind: String; }\nfn pick() -> Int fallible(Oops) { return 1; }\n";
+        assert_eq!(errors(&format!("{fallible}type R {{ b: Int = pick() or len(err.kind); }}\nfn main() {{ }}\n")), Vec::<String>::new());
+        assert_eq!(
+            errors(&format!("{fallible}type R {{ b: Int = (pick() or len(err.kind)) + len(err.kind); }}\nfn main() {{ }}\n")),
+            vec![caller("err")]
+        );
+    }
+
+    /// A word after `or` is a narrowing's policy only where the checker
+    /// reads the `or` as a narrowing; after any other fallible it is a
+    /// value, read like any name: the caller's if no module item, and
+    /// refused where a caller's binding shadows the module's.
+    #[test]
+    fn a_policy_word_is_a_name_unless_the_or_narrows() {
+        let parse = "type R { b: Int = std::str::parse_int(\"bad\") or clamp; }\n";
+        assert_eq!(errors(&format!("{parse}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), vec![caller("clamp")]);
+        let shadowed = format!("const clamp: Int = 3;\n{parse}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n");
+        assert_eq!(
+            errors(&shadowed),
+            vec!["a default reads only its own fields and constants; `clamp` here is the caller's binding, which a \
+                  default left out here would read in place of the module's `clamp`: rename the binding or pass the value"
+                .to_string()]
+        );
+        // a narrowing's policy word names nothing, whatever the caller binds
+        let narrowing = "type Session = Int { range: 0..64; }\ntype R { s: Session = Session(70) or clamp; }\n";
+        assert_eq!(errors(&format!("{narrowing}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), Vec::<String>::new());
+    }
+
+    /// An assignment's target is a name the default resolves too: one of
+    /// the caller's is refused, written with `=` or `+=`; a local the
+    /// default declares and assigns is its own.
+    #[test]
+    fn an_assignment_in_a_default_resolves_its_target_as_a_read_does() {
+        assert_eq!(errors("type R { b: Int = { a = 3; 0 }; }\nfn main() { let mut a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(errors("type R { b: Int = { a += 3; 0 }; }\nfn main() { let mut a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(
+            errors("type R { b: Int = { let mut x = 1; x += 2; x = x * 2; x }; }\nfn main() { let r = R { }; }\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    /// `self` assigned in a record's or a method's default is the caller's
+    /// as a `self` read is, with `=` or `+=`; a locus's params default
+    /// reads its own earlier param through `self.<param>`.
+    #[test]
+    fn a_self_assigned_in_a_default_is_the_callers() {
+        let self_ = vec![SELF.to_string()];
+        let app = "main locus App { params { a: Int = 1; } fn make() -> Int { let r = R { }; return r.b; } }\nfn main() { App { }; }\n";
+        assert_eq!(errors(&format!("type R {{ b: Int = {{ self.a += 3; 0 }}; }}\n{app}")), self_);
+        assert_eq!(errors(&format!("type R {{ b: Int = {{ self.a = 3; 0 }}; }}\n{app}")), self_);
+        assert_eq!(
+            errors("locus L { params { k: Int = 1; } fn m(n: Int = { self.k = 2; 0 }) -> Int { return n; } }\nfn main() { }\n"),
+            self_
+        );
+        assert_eq!(errors("locus L { params { a: Int = 1; b: Int = self.a + 1; } }\nfn main() { let l = L { }; }\n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_caller_binding_that_shadows_a_defaults_name_is_refused_at_the_use() {
+        let shadow = |name: &str| {
+            format!(
+                "a default reads only its own fields and constants; `{name}` here is the caller's binding, which a default \
+                 left out here would read in place of the module's `{name}`: rename the binding or pass the value"
+            )
+        };
+        let decls = "const K: Int = 4;\ntype R { b: Int = K + 1; }\nfn f(n: Int = K) -> Int { return n; }\n";
+        assert_eq!(errors(&format!("{decls}fn main() {{ let K = 0; let r = R {{ }}; }}\n")), vec![shadow("K")]);
+        assert_eq!(errors(&format!("{decls}fn main() {{ let K = 0; f(); }}\n")), vec![shadow("K")]);
+        // a locus's params default, where the locus is built
+        assert_eq!(
+            errors("const K: Int = 4;\nlocus L { params { n: Int = K + 1; } }\nfn main() { let K = 0; let l = L { }; }\n"),
+            vec![shadow("K")]
+        );
+        // the value passed, or no binding of the name: nothing to refuse
+        assert_eq!(errors(&format!("{decls}fn main() {{ let K = 0; let r = R {{ b: K }}; f(K); }}\n")), Vec::<String>::new());
+        assert_eq!(errors(&format!("{decls}fn main() {{ let r = R {{ }}; f(); }}\n")), Vec::<String>::new());
     }
 }

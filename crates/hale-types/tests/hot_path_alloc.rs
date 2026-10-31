@@ -943,3 +943,211 @@ fn main() {{ pump(); }}
     assert_eq!(hot_errors(&program("xs[Child { n: 0 }.get()]")), expected, "inside the index");
     assert_eq!(hot_errors(&program("Child { n: 0 }.get()")), expected, "the control");
 }
+
+// ---- the cell-read rule's copies (spec/forms.md § Reading a cell) ----
+
+/// A map that reads in place, and fns that write into what they read
+/// from it: `NOSET` writes and never sets the value back (a copy on
+/// write), `RMW` sets it straight back (no copy).
+fn cells(decorator: &str, body: &str) -> String {
+    format!(
+        r#"
+type Level {{ p: Int = 0; q: Int = 0; }}
+type Big {{ id: Int = 0; inner: Level = Level {{ }}; }}
+@form(hashmap)
+locus M {{ capacity {{ pool cells of Big indexed_by id; }} }}
+{decorator}
+fn walk(m: M, n: Int) -> Int {{
+    let mut t = 0;
+    let mut i = 0;
+    while i < n {{
+        let mut e = m.get(i) or Big {{ id: i }};
+        e.inner.p = e.inner.p + 1;
+        {body}
+        i = i + 1;
+    }}
+    return t;
+}}
+fn main() {{ let m = M {{ }}; println(walk(m, 3)); }}
+"#
+    )
+}
+const NOSET: &str = "t = t + e.inner.p;";
+const RMW: &str = "m.set(e);";
+
+#[test]
+fn a_cell_copy_in_a_loop_warns_and_names_its_reason() {
+    let ds = all_diags(&cells("", NOSET));
+    let found: Vec<&(bool, String)> = ds.iter().filter(|(_, m)| m.contains("hot-path copy")).collect();
+    assert_eq!(found.len(), 1, "{ds:?}");
+    assert!(!found[0].0, "a warning outside @hot: {ds:?}");
+    assert!(found[0].1.contains("copy: the value is not set back into its map"), "{ds:?}");
+}
+
+#[test]
+fn a_cell_copy_in_a_hot_fn_is_an_error() {
+    let ds = all_diags(&cells("@hot", NOSET));
+    assert!(ds.iter().any(|(is_err, m)| *is_err && m.contains("@hot") && m.contains("hot-path copy")), "{ds:?}");
+}
+
+#[test]
+fn a_get_modify_set_in_a_hot_loop_is_silent() {
+    let ds = all_diags(&cells("@hot", RMW));
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}
+
+#[test]
+fn a_cell_copy_counts_against_a_zero_allocation_budget() {
+    let ds = all_diags(&cells("@budget(alloc_per_call = 0)", NOSET));
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err && m.contains("a copy of a value read from a form's cell")),
+        "{ds:?}"
+    );
+    let ds = all_diags(&cells("@budget(alloc_per_call = 0)", RMW));
+    assert!(!ds.iter().any(|(_, m)| m.contains("a copy of a value read from a form's cell")), "{ds:?}");
+}
+
+/// A primitive bound from a call's result and handed on to a fn value
+/// is no copy at all (review round 3 on #1558): lowering loads and
+/// stores an `i64`, and the local-place rule must not report a
+/// `place-copy` the `@hot` check would refuse. An array read from a
+/// field and handed to a writer is one, and `@hot` refuses it.
+#[test]
+fn a_primitive_bound_from_a_call_is_no_hot_path_copy() {
+    let src = r#"
+type In { k: Int = 0; }
+fn one() -> Int { return 1; }
+fn poke(xs: [In; 2]) { xs[0].k = 8; }
+@hot
+fn scalar(cb: fn(Int) -> Int) -> Int { let a = one(); let b = a; return cb(b); }
+locus H {
+    params { arr: [In; 2] = [In { }, In { }]; }
+    @hot
+    fn compound() { let a = self.arr; poke(a); }
+}
+fn twice(x: Int) -> Int { return x * 2; }
+fn main() { println(scalar(twice)); let h = H { }; }
+"#;
+    let ds = all_diags(src);
+    let copies: Vec<&(bool, String)> = ds.iter().filter(|(_, m)| m.contains("hot-path copy")).collect();
+    assert_eq!(copies.len(), 1, "{ds:?}");
+    assert!(copies[0].0 && copies[0].1.contains("passed to a call that may write"), "{ds:?}");
+}
+
+/// A primitive however it is carried out — an `if`, a `match`, a block,
+/// a tuple `let` of a literal or of a tuple field, a method of a known
+/// locus named like a form's op — is no copy (review of #1558, finding
+/// 3: each was refused at `let b = a` though lowering only moves an
+/// `i64`).
+#[test]
+fn an_inferred_primitive_is_no_hot_path_copy() {
+    let src = r#"
+type R { ok: Bool = true; n: Int = 0; pair: (Int, Int) = (1, 2); }
+locus L { params { v: Int = 3; } fn get() -> Int { return self.v; } }
+@hot fn f_if(cb: fn(Int) -> Int, r: R) -> Int { let a = if r.ok { 1 } else { 2 }; let b = a; return cb(b); }
+@hot fn f_match(cb: fn(Int) -> Int, r: R) -> Int { let a = match r.n { 0 -> 1, _ -> 2, }; let b = a; return cb(b); }
+@hot fn f_block(cb: fn(Int) -> Int, r: R) -> Int { let a = { r.n }; let b = a; return cb(b); }
+@hot fn f_tup(cb: fn(Int) -> Int) -> Int { let (a, c) = (1, 2); let b = a; return cb(b) + c; }
+@hot fn f_pair(cb: fn(Int) -> Int, r: R) -> Int { let (a, c) = r.pair; let b = a; return cb(b) + c; }
+@hot fn f_get(cb: fn(Int) -> Int, l: L) -> Int { let a = l.get(); let b = a; return cb(b); }
+fn twice(x: Int) -> Int { return x * 2; }
+fn main() { let r = R { }; let l = L { }; println(f_if(twice, r) + f_match(twice, r) + f_block(twice, r) + f_tup(twice) + f_pair(twice, r) + f_get(twice, l)); }
+"#;
+    let ds = all_diags(src);
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}
+
+/// A call through a parameter declared `fn(Int) -> Int` hands back a
+/// primitive, as a declared fn of that signature does: binding its
+/// result and copying the binding is no copy (codex review of #1558,
+/// post-merge). Lowering loads and stores an `i64`.
+#[test]
+fn a_typed_callbacks_primitive_result_is_no_hot_path_copy() {
+    let src = r#"
+@hot fn forward(cb: fn(Int) -> Int) -> Int {
+    let a = cb(1);
+    let b = a;
+    return cb(b);
+}
+fn identity(x: Int) -> Int { return x; }
+fn main() { println(forward(identity)); }
+"#;
+    let ds = all_diags(src);
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}
+
+/// The copies a store makes are allocations like any other: a place's
+/// value stored into a part of a parameter (`h.arr = r.arr`, copied so
+/// the caller's two arguments never share a block), and a value stored
+/// into a locus's field from outside its methods (the locus's own copy,
+/// GH #1561). `@hot` refuses both and a zero-allocation budget counts
+/// them (codex review of #1558, post-merge: lowering made three arena
+/// allocations the survey did not report). A store of an inline scalar
+/// copies nothing, and a locus store in a loop outside `@hot` is the
+/// store-latest copy a method's `self.f = v` is: no warning.
+#[test]
+fn a_stores_copy_counts_against_hot_and_a_zero_allocation_budget() {
+    let src = |ann: &str| {
+        format!(
+            r#"
+type In {{ k: Int = 0; }}
+type R {{ arr: [In; 2] = [In {{ }}, In {{ }}]; }}
+type Holder {{ arr: [In; 2] = [In {{ }}, In {{ }}]; }}
+locus L {{ params {{ name: String = ""; r: R = R {{ }}; n: Int = 0; ints: [Int; 3] = [0, 0, 0]; }} }}
+{ann} fn put_array(h: Holder, r: R) {{ h.arr = r.arr; }}
+{ann} fn put_name(l: L, s: String) {{ l.name = s; }}
+{ann} fn put_arr(l: L, r: R) {{ l.r.arr = r.arr; }}
+{ann} fn put_n(l: L, n: Int) {{ l.n = n; l.n = l.n + 1; l.r.arr[0].k = n; l.ints[1] = n; }}
+fn churn(l: L, s: String, n: Int) {{ let mut i = 0; while i < n {{ l.name = s; i = i + 1; }} }}
+fn main() {{ let h = Holder {{ }}; let r = R {{ }}; put_array(h, r); let l = L {{ }}; put_name(l, "x"); put_arr(l, r); put_n(l, 3); churn(l, "y", 3); }}
+"#
+        )
+    };
+    let hot = all_diags(&src("@hot"));
+    let copies: Vec<&String> = hot.iter().filter(|(e, m)| *e && m.contains("hot-path copy")).map(|(_, m)| m).collect();
+    assert_eq!(copies.len(), 3, "{hot:?}");
+    assert!(copies[0].contains("a place's value stored into a part of a parameter"), "{hot:?}");
+    assert!(copies[1].contains("a value stored into a locus's field from outside its methods"), "{hot:?}");
+    assert!(copies[2].contains("a value stored into a locus's field from outside its methods"), "{hot:?}");
+    let budget = all_diags(&src("@budget(alloc_per_call = 0)"));
+    let over: Vec<&String> =
+        budget.iter().filter(|(e, m)| *e && m.contains("hot-path budget exceeded")).map(|(_, m)| m).collect();
+    assert_eq!(over.len(), 3, "put_array, put_name and put_arr allocate; put_n does not: {budget:?}");
+    assert!(budget.iter().any(|(_, m)| m.contains("a store's copy of its value")), "{budget:?}");
+    let plain = all_diags(&src(""));
+    assert!(!plain.iter().any(|(_, m)| m.contains("hot-path copy")), "{plain:?}");
+}
+
+/// A store into a locus reached by indexing an array of loci (`ls[0].name
+/// = s`) copies into that element's arena as a store through a locus
+/// parameter does, so it is the same survey site: `@hot` and a zero
+/// allocation budget refuse it (codex review of #1566: the summary said
+/// `put` allocates nothing, while both targets' IR call
+/// `lotus_str_assign_in_place`, which takes a slot copy). A scalar store
+/// into the element copies nothing and stays accepted.
+#[test]
+fn a_store_into_an_element_of_an_array_of_loci_is_a_stores_copy() {
+    let src = r#"
+locus L { params { name: String = ""; n: Int = 0; } }
+@hot @budget(alloc_per_call = 0)
+fn put(ls: [L; 2], s: String) { ls[0].name = s; }
+@hot @budget(alloc_per_call = 0)
+fn put_n(ls: [L; 2], n: Int) { ls[0].n = n; }
+fn main() {
+    let a = L {}; let b = L {}; let ls = [a, b];
+    put(ls, std::str::upper("hello"));
+    put_n(ls, 3);
+}
+"#;
+    let ds = all_diags(src);
+    let errs: Vec<&String> = ds.iter().filter(|(e, _)| *e).map(|(_, m)| m).collect();
+    assert_eq!(errs.len(), 1, "only `put`'s String store copies: {ds:?}");
+    assert!(
+        errs[0].contains("hot-path copy") && errs[0].contains("a value stored into a locus's field from outside its methods"),
+        "{ds:?}"
+    );
+    let budget = all_diags(&src.replace("@hot ", ""));
+    let over: Vec<&String> = budget.iter().filter(|(e, m)| *e && m.contains("hot-path budget exceeded")).map(|(_, m)| m).collect();
+    assert_eq!(over.len(), 1, "{budget:?}");
+    assert!(over[0].contains("`put`"), "{budget:?}");
+}

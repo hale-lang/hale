@@ -1,0 +1,115 @@
+// GH #1530 (fourth pass, section 3): `@repo(T)`. A repo is a locus the
+// compiler is told to trust as the place Order's state lives: it carries
+// the whole method set over the key the `db` tag names, and each method
+// declares one state class and, for every class but `reads`, whether
+// repeating it is safe. The driver here is the in-memory one, written by
+// hand; a handler holds it and inherits its classes through its calls.
+
+type OrderId = Int;
+type Order {
+    id: OrderId `db:"id,key"`;
+    customer: Int;
+    total: Int;
+}
+type Table { items: bounded[Order; 8]; }
+type OrderError = enum { @not_found Missing, @conflict Exists };
+
+@repo(Order)
+locus MemOrders {
+    params { rows: Table = Table { }; }
+
+    @effects(is: { reads(Order) })
+    fn get(id: OrderId) -> Order fallible(OrderError) {
+        for r in self.rows.items {
+            if r.id == id { return r; }
+        }
+        fail OrderError::Missing;
+    }
+
+    @effects(is: { creates(Order) }) @idempotent
+    fn create(o: Order) -> Order fallible(OrderError) {
+        for r in self.rows.items {
+            if r.id == o.id { fail OrderError::Exists; }
+        }
+        push(self.rows.items, o) or fail OrderError::Exists;
+        return o;
+    }
+
+    @effects(is: { writes(Order) }) @idempotent
+    fn put(id: OrderId, o: Order) -> Order fallible(OrderError) {
+        let mut kept = Table { };
+        let mut found = false;
+        for r in self.rows.items {
+            if r.id == id {
+                push(kept.items, o) or discard;
+                found = true;
+            } else {
+                push(kept.items, r) or discard;
+            }
+        }
+        if !found { fail OrderError::Missing; }
+        self.rows = kept;
+        return o;
+    }
+
+    @effects(is: { deletes(Order) }) @idempotent
+    fn remove(id: OrderId) fallible(OrderError) {
+        let mut kept = Table { };
+        let mut found = false;
+        for r in self.rows.items {
+            if r.id == id { found = true; } else { push(kept.items, r) or discard; }
+        }
+        if !found { fail OrderError::Missing; }
+        self.rows = kept;
+    }
+
+    // an extra method needs a class of its own
+    @effects(is: { reads(Order) })
+    fn total_of(customer: Int) -> Int {
+        let mut sum = 0;
+        for r in self.rows.items {
+            if r.customer == customer { sum = sum + r.total; }
+        }
+        return sum;
+    }
+}
+
+locus Desk {
+    params { orders: MemOrders = MemOrders { }; misses: Int = 0; }
+
+    fn place(id: OrderId, customer: Int, total: Int) -> Bool {
+        let o = self.orders.create(
+            Order { id: id, customer: customer, total: total },
+        ) or Order { id: 0, customer: 0, total: 0 };
+        return o.id != 0;
+    }
+    fn amount(id: OrderId) -> Int {
+        let o = self.orders.get(id) or Order { id: 0, customer: 0, total: -1 };
+        return o.total;
+    }
+    fn cancel(id: OrderId) -> Bool {
+        let before = self.misses;
+        self.orders.remove(id) or { self.misses = self.misses + 1; };
+        return self.misses == before;
+    }
+    fn spent(customer: Int) -> Int { return self.orders.total_of(customer); }
+}
+
+fn main() {
+    let d = Desk { };
+    std::test::assert(d.place(1, 7, 30), "create");
+    std::test::assert(d.place(2, 7, 12), "create a second");
+    std::test::assert(!d.place(1, 9, 5), "a taken key is refused");
+    std::test::assert_eq_int(d.amount(1), 30, "get");
+    std::test::assert_eq_int(d.amount(3), -1, "a missing key fails");
+    std::test::assert_eq_int(d.spent(7), 42, "an extra read method");
+    let o = d.orders.put(
+        1,
+        Order { id: 1, customer: 7, total: 50 },
+    ) or Order { id: 0, customer: 0, total: 0 };
+    std::test::assert_eq_int(o.total, 50, "put returns the row");
+    std::test::assert_eq_int(d.spent(7), 62, "put replaced");
+    std::test::assert(d.cancel(2), "remove");
+    std::test::assert(!d.cancel(2), "a second remove finds nothing");
+    std::test::assert_eq_int(d.spent(7), 50, "remove took the row");
+}

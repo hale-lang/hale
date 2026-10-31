@@ -5,6 +5,12 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "api_error_classes.rs"]
+mod api_error_classes;
+#[path = "api_exposure_param.rs"]
+mod api_exposure_param;
+#[path = "api_serve_memory.rs"]
+mod api_serve_memory;
 #[path = "api_grpc.rs"]
 mod api_grpc;
 #[path = "api_grpc_proto.rs"]
@@ -13,6 +19,8 @@ mod api_grpc_proto;
 mod api_hub;
 #[path = "api_hub_desk.rs"]
 mod api_hub_desk;
+#[path = "api_hub_rest.rs"]
+mod api_hub_rest;
 #[path = "api_hub_streams.rs"]
 mod api_hub_streams;
 #[path = "api_hub_substrate.rs"]
@@ -27,6 +35,10 @@ mod api_http_witness;
 mod api_mcp;
 #[path = "api_pb_codec.rs"]
 mod api_pb_codec;
+#[path = "api_rest.rs"]
+mod api_rest;
+#[path = "api_rest_conc.rs"]
+mod api_rest_conc;
 #[path = "api_runtime.rs"]
 mod api_runtime;
 #[path = "api_serve_build.rs"]

@@ -1,22 +1,44 @@
-# Units, end to end
+# Units, End to End
 
-[Math, money & time](./basics/math.md) introduced the pieces: a
-`unit`, a `quantity` counted in one, a `point` over a quantity, an
-identity, a range. This chapter puts them together in one program, the
-example the dialect was designed around, then shows the three mistakes
-the compiler catches most often, word for word, and the report that
-tells you what every number in a program counts.
+Hale includes a compile-time unit, quantity, affine-point, and integer-range type system designed around a single invariant: **widening is automatic and exact; narrowing requires an explicit rounding or failure policy.** Multiplication by ratios preserves exact fractional denominations until you explicitly round into a target unit or boundary type.
 
-The rule underneath all of it fits on one line: **widening is free,
-and narrowing is named.** A conversion that multiplies by a whole
-number is exact, so Hale does it for you. A conversion that divides,
-or that may not fit, loses something, so the program says what: at
-the place it happens (`or floor`), or once, on the type it goes into
-(`{ round: half_even; }`). Never by a default.
+```hale
+unit cent;
+unit USD = 100 cent;
+unit bp  = 1 / 10000;
 
-## The catalogue
+type Money  = quantity Int in cent;
+type Ratio  = quantity Int in bp;
+type Ledger = quantity Int in cent { round: half_even; }
 
-A program declares the units it counts in, and what each equals:
+fn main() {
+    let odd  = 1_234_567USD * 3bp;      // exact: Money in 1/10000 cent (370.3701 USD)
+    let paid: Ledger = odd;             // 37037cent (rounded via Ledger's half_even policy)
+    let up   = odd.in(cent) or ceil;    // 37038cent (rounded at the call site)
+    println(odd, " | ", paid, " | ", up);
+}
+```
+
+## Syntax and Construct Summary
+
+| Construct | Declaration / Expression Syntax | Description |
+|---|---|---|
+| **Base unit** | `unit cent;` / `unit B;` / `unit tick;` | Starts a new unit component (dimension) |
+| **Derived unit** | `unit USD = 100 cent;` / `unit KiB = 1024 B;` | Defines a unit as an exact multiple of another unit in the same component |
+| **Dimensionless unit** | `unit bp = 1 / 10000;` / `unit pct = 100 bp;` | Defines a dimensionless ratio relative to `1` |
+| **Quantity type** | `type Money = quantity Int in cent;` | 64-bit integer counted in a specific base denomination |
+| **Redenominated alias** | `type Seconds = Duration in s;` | Names an existing quantity at a coarser or finer unit |
+| **Boundary type** | `type Ledger = Money { round: half_even; }` | Automatically rounds narrower/finer inputs using `floor`, `ceil`, `trunc`, `half_up`, or `half_even` |
+| **Affine point** | `type Price = point Tick;` | Position on a quantity axis (`Point - Point -> Quantity`, `Point + Quantity -> Point`) |
+| **Shifted origin point** | `type Celsius = point TempDelta { origin: 273_150 mK; }` | Affine point with a non-zero origin offset |
+| **Distinct identity** | `type OrderId = distinct Int;` | Strongly typed ID with no arithmetic; converts via `OrderId(n)` and `Int(id)` |
+| **Bounded range** | `type Byte = Int { range: 0..256; }` | Integer constrained to `[0, 256)` (or `0..=255`); narrows via `or clamp`, `or wrap`, `or <val>`, `or raise` |
+| **Explicit conversion** | `d.in(s) or floor` | Converts quantity `d` to unit `s` using the specified remainder policy |
+| **Lossless split** | `let (sec, rem) = d.split(s);` | Splits `d` into whole units `(Int)` and the remainder `(Quantity)` without losing precision |
+
+## Declaring Units and Quantities
+
+Units connected by `=` equations belong to the same **component** (dimension):
 
 ```hale,fragment
 unit B;
@@ -24,21 +46,14 @@ unit KiB = 1024 B;
 
 unit cent;
 unit USD = 100 cent;
-unit bp = 1 / 10000;     // a basis point, against the number one
+unit bp = 1 / 10000;     // basis point (dimensionless ratio)
 unit pct = 100 bp;
 
-unit tick;               // a unit with no edges is its own component
+unit tick;               // standalone component
 unit mK;
 ```
 
-The units connected by equations form a **component**: `cent` and
-`USD` are one, `B` and `KiB` another, `bp` and `pct` a third, the
-dimensionless one, because `bp` is defined against the number. Time is
-a component you already have: the standard library declares `ns`,
-`us`, `ms`, `s`, `min`, `h` and `day` the same way, and the types
-`Duration` (a quantity in `ns`) and `Time` (a point over it).
-
-Each component has one **quantity**, the integer type counted in it:
+Each component has a primary `quantity` type counted in its base unit:
 
 ```hale,fragment
 type ByteCount = quantity Int in B;
@@ -48,228 +63,154 @@ type Tick      = quantity Int in tick;
 type TempDelta = quantity Int in mK;
 ```
 
-No quantity, and no unit, takes a builtin type's name: `Bytes` is the
-buffer type, so the byte count is `ByteCount`.
+- **No shadowing builtin type names:** Neither a `unit` nor a `type` may use a built-in type name (for example, `Bytes` is the binary buffer primitive, so a byte quantity is named `ByteCount`).
+- **Literal token rules:** In expressions, a number and its unit suffix must be written as a single token with no space (`1_250_000USD`, `4KiB`, `500ms`). In declarations (`unit` equations, `in <unit>`, and `origin:` clauses), whitespace between the multiplier and unit is optional (`1024 B` or `1024B`).
+- **Standard library time units:** The standard library pre-declares `ns`, `us`, `ms`, `s`, `min`, `h`, and `day`, along with `Duration` (`quantity Int in ns`) and `Time` (`point Duration`). User programs can extend the time component by defining derived units (`unit frame_tick = 16 ms;`).
 
-A literal names its unit with no space, and counts in its quantity's
-denomination: `1_250_000USD` is 125,000,000 cents, `4KiB` is 4096 `B`,
-`500ms` is 500,000,000 nanoseconds. In an expression the literal is one
-token, so `1_250_000 USD` is two and refused; a declaration's magnitude
-and unit, in a `unit` equation, a denomination and an `origin:`, may
-be written either way (`1024 B` or `1024B`, `100 ms` or `100ms`).
+## Conversions, `.split()`, and Boundary Types
 
-## Time
+### Site-Level Conversions (`.in(u)` and `.split(u)`)
+
+Converting a quantity to a finer unit (such as `2_000ms` into `Seconds`) is exact when the value is a compile-time multiple or when widening (`Seconds` to `Duration`). Converting to a coarser unit divides by the scale factor and requires an `or` clause to handle any remainder:
 
 ```hale
 type Seconds = Duration in s;
 
 fn main() {
-    let d = 3s + 500ms;               // a Duration: 3500000000ns
-    let whole = d.in(s) or 0;         // 3.5 s is no whole number of seconds: 0
-    let secs = d.in(s) or floor;      // 3s: the policy says what becomes of the rest
-    let (sec, rem) = d.split(s);      // 3, and 500000000ns: nothing lost
-    let n: Int = d / 1ms;             // 3500: a quantity over a quantity is a count
-    let exact: Seconds = 2_000ms;     // 2s, exact, so no policy is needed
+    let d = 3s + 500ms;               // 3500000000ns
+    let whole = d.in(s) or 0;         // 0s (3.5s is not a whole second, so fallback 0 applies)
+    let secs  = d.in(s) or floor;     // 3s (rounded down)
+    let (sec, rem) = d.split(s);      // sec = 3 (Int), rem = 500000000ns (Duration)
+    let n: Int = d / 1ms;             // 3500 (Quantity / Quantity -> Int count)
+    let exact: Seconds = 2_000ms;     // 2s (exact compile-time multiple, no `or` needed)
     println(d, " ", whole, " ", secs, " ", sec, " ", rem, " ", n, " ", exact);
 }
 ```
 
-`d.in(s)` divides by 1,000,000,000 (a `Duration` counts nanoseconds),
-so it has a remainder to decide about: `or 0` takes the value only when
-it is a whole number of seconds, `or floor` rounds down. `d.split(s)`
-never loses anything: the whole seconds, and the rest. `Seconds` is a
-name for `Duration` counted in seconds; storing `2_000ms` into it is a
-whole number of seconds, so it is free.
+### Boundary Types with `{ round: ... }`
 
-## Boundary types
-
-A type can carry its own rounding, for the place a value crosses into
-a coarser denomination, such as a wire format in microseconds or a
-histogram in buckets:
+When values cross into a coarser representation—such as a wire timestamp in microseconds, a histogram bucket, or a cent-denominated ledger—attach `{ round: <policy>; }` to the type declaration:
 
 ```hale
 type WireStamp = Time in us { round: floor; }
-type Bucket = quantity Int in 100ms { round: floor; }
+type Bucket    = quantity Int in 100ms { round: floor; }
 
 fn main() {
     let a = Time(1_700_000_000_123_456_789 * 1ns);
-    let out: WireStamp = a;           // ns -> us narrows; the type says how
+    let out: WireStamp = a;           // narrows ns -> us automatically via `floor`
     let d = 3s + 500ms;
     let bucket: Bucket = d;           // 35 Bucket
-    let early: Bucket = 150ms;        // 1 Bucket, rounded down at compile time
+    let early: Bucket  = 150ms;       // 1 Bucket (rounded at compile time)
     println(out, " ", bucket, " ", early);
 }
 ```
 
-No `or` is needed on these lines: the type's `round:` is the policy.
+Assigning a finer-grained value to a boundary type applies the type's `round:` policy automatically without requiring an `or` clause at each assignment.
 
-## Money and ratios
+## Exact Ratio Arithmetic (Money and Basis Points)
 
-Multiplying money by a rate is where unit systems usually round too
-early. Hale doesn't round at the product at all: `Money` times a
-`Ratio` is `Money` counted in the product of the two units, here a
-ten-thousandth of a cent, so it is exact. The rounding happens where
-the value is stored as cents, once, by the policy that place declares.
+Multiplying a quantity by a dimensionless ratio (`unit bp = 1 / 10000;`) does not round at the multiplication step. Instead, the product has type `Money in 1/10000 cent`—an exact compound denomination:
 
 ```hale
 unit cent;
 unit USD = 100 cent;
-unit bp = 1 / 10000;
+unit bp  = 1 / 10000;
 
-type Money = quantity Int in cent;
-type Ratio = quantity Int in bp;
+type Money  = quantity Int in cent;
+type Ratio  = quantity Int in bp;
 type Ledger = quantity Int in cent { round: half_even; }
 
 fn main() {
-    let fee = 1_250_000USD * 3bp;     // 375 USD, exact
-    let odd = 1_234_567USD * 3bp;     // 370.3701 USD, still exact here
-    let paid: Ledger = odd;           // 37037cent: half_even, from Ledger
-    let cents = odd.in(cent) or ceil; // 37038cent: or name the rounding at the site
+    let fee = 1_250_000USD * 3bp;     // 375000000 Money in 1/10000 cent (exact 375 USD)
+    let odd = 1_234_567USD * 3bp;     // 370370100 Money in 1/10000 cent (exact 370.3701 USD)
+    let paid: Ledger = odd;           // 37037cent (half_even from Ledger)
+    let cents = odd.in(cent) or ceil; // 37038cent (explicit site rounding)
     println(fee, " | ", odd, " | ", paid, " | ", cents);
 }
 ```
 
-`fee` prints as `375000000 Money in 1/10000 cent`: a type no
-declaration names, made up of the quantity and its denomination, and
-an ordinary type for a binding, an argument or a return. Each ratio
-factor makes the denomination finer and the range an `Int` can hold
-smaller, which the report below shows.
+Each ratio multiplication refines the denomination and reduces the maximum magnitude that fits in a signed 64-bit `Int` (which `hale check --units` calculates and reports).
 
-## Ticks and prices
+## Affine Points and Shifted Origins (`point` and `origin:`)
 
-A **point** is a position on a quantity's line. Two prices differ by a
-number of ticks, a price moves by ticks, and two prices never add:
+A `point` represents a location on a quantity axis (such as a timestamp on a timeline, a price on a tick ladder, or a temperature on a thermodynamic scale):
+
+- **Difference of two points (`p2 - p1`):** Produces the underlying `quantity`.
+- **Translating a point (`p + q`, `p - q`):** Shifts the point by a `quantity`.
+- **Adding two points (`p1 + p2`):** Compile error.
 
 ```hale
 unit tick;
-type Tick = quantity Int in tick;
+type Tick  = quantity Int in tick;
 type Price = point Tick;
 
 fn main() {
     let bid = Price(100tick);
     let ask = Price(103tick);
-    let spread = ask - bid;                  // 3tick
-    let mid = bid + (spread / 2 or floor);   // half a tick does not exist: 101
+    let spread = ask - bid;                  // 3tick (Tick)
+    let mid = bid + (spread / 2 or floor);   // 101 (Price)
     println(spread, " ", mid);
 }
 ```
 
-Dividing by a number you wrote down is a question with a remainder,
-so `spread / 2` says what to do with it; a divisor that arrives at run
-time divides as integers do.
+### Multiple Origins (Affine Scales)
 
-## Identities and widths
-
-Some integers must never mix. An identity has no arithmetic and
-compares only with itself; a range is an `Int` with bounds, and a
-width is a range. Bounds are half-open: `0..256` holds 0 to 255;
-`..=` includes the upper bound (`0..=255` is the same range):
-
-```hale
-type OrderId = distinct Int;
-type SeqNo = distinct Int { range: 0..65536; }
-type Session = distinct Int { range: 0..64; }
-type Byte = Int { range: 0..256; }
-
-fn main() {
-    let id = OrderId(7);
-    let sess = Session(70) or 0;          // outside 0..64: the substitute
-    let seq = SeqNo(70_000) or wrap;      // 70000 modulo 65536: 4464
-    let b: Byte = 200;
-    let top = Byte(b + 100) or clamp;     // the nearest bound: 255
-    println(Int(id), " ", sess, " ", seq, " ", top);
-}
-```
-
-Going into a range can fail, so `Session(n)` says what becomes of a
-value outside it: a value of the type; `clamp`, the nearest bound;
-`wrap`, the value modulo the range's width, counted from the lower
-bound so that it lands inside (`low + (v - low) mod width`, the
-remainder never negative: `SeqNo(0 - 1) or wrap` is 65535); a handler
-given the `RangeError`; or `raise`.
-
-## Two origins
-
-Celsius and Kelvin count the same quantity from different zeros. Two
-point types over one quantity, one with an `origin:`, are all it
-takes; no affine edges:
+When two scales measure the same quantity from different zero points (such as Kelvin and Celsius), declare both as `point` types over the same quantity and specify `{ origin: ...; }` on the shifted scale:
 
 ```hale
 unit mK;
 type TempDelta = quantity Int in mK;
-type Kelvin = point TempDelta;
-type Celsius = point TempDelta { origin: 273_150 mK; }
+type Kelvin    = point TempDelta;
+type Celsius   = point TempDelta { origin: 273_150 mK; }
 
 fn main() {
     let boil = Celsius(100_000mK);
-    let k = Kelvin(boil);                    // 373150: the shift is the origin
-    let rise = boil - Celsius(0mK);          // 100000mK, a TempDelta
+    let k    = Kelvin(boil);                 // 373150 (adds 273_150 mK origin shift)
+    let rise = boil - Celsius(0mK);          // 100000mK (TempDelta)
     println(k, " ", rise);
 }
 ```
 
-## Three common mistakes
+## Distinct Identities and Bounded Ranges
 
-**Mixing quantities.** Adding time to bytes is refused at the
-operator, naming both:
+Use `distinct Int` for identifiers that must not participate in arithmetic, and `{ range: low..high; }` (half-open) or `{ range: low..=high; }` (inclusive) for bounded integer widths:
 
-```hale,fragment
-let bad = 5ms + 4KiB;
+```hale
+type OrderId = distinct Int;
+type SeqNo   = distinct Int { range: 0..65536; }
+type Session = distinct Int { range: 0..64; }
+type Byte    = Int { range: 0..256; }
+
+fn main() {
+    let id   = OrderId(7);
+    let sess = Session(70) or 0;          // out of 0..64 -> substitutes 0
+    let seq  = SeqNo(70_000) or wrap;     // 70000 mod 65536 -> 4464
+    let b: Byte = 200;
+    let top  = Byte(b + 100) or clamp;    // clamped to upper bound -> 255
+    println(Int(id), " ", sess, " ", seq, " ", top);
+}
 ```
 
-```text
-type error: `Duration` + `ByteCount`: different quantities, `Duration` and `ByteCount`; `+` holds within one
-```
+| Range Narrowing Policy | Behavior |
+|---|---|
+| `or <fallback>` | Substitutes `<fallback>` (must itself be within the range) |
+| `or clamp` | Clamps to the nearest valid bound (`low` or `high - 1`) |
+| `or wrap` | Wraps modulo the range width (`low + (v - low) mod width`, always non-negative; `SeqNo(-1) or wrap == 65535`) |
+| `or handler(err)` | Passes `RangeError` (containing the value and bounds) to `handler` |
+| `or raise` | Propagates `RangeError` to the caller |
 
-The same holds for two prices (`bid + ask`: "two points do not add;
-their difference is a quantity (\`b - a\`), and a point moves by a
-quantity (\`a + d\`)") and for an identity (`id + id`: "\`OrderId\` is an
-identity; it has no arithmetic").
+## Common Compile-Time Diagnostics
 
-**A narrowing with no policy.** `Money` has no `round:`, so storing a
-value counted in ten-thousandths of a cent into it would have to drop
-something, and nothing says what:
+| Mistake | Invalid Example | Why It Fails & How to Fix |
+|---|---|---|
+| **Mixing incompatible quantities** | `let x = 5ms + 4KiB;` | `Duration` and `ByteCount` belong to different unit components. |
+| **Adding two points or identities** | `let p = bid + ask;` / `id + id` | Points only subtract (`ask - bid`) or shift by a quantity (`bid + 1tick`); `distinct Int` has no arithmetic. |
+| **Narrowing without a policy** | `let bad: Money = odd;` | Converting `1/10000 cent` to `cent` divides by `10,000`; add `.in(cent) or floor` or use a `{ round: ... }` boundary type. |
+| **Bare `Int` vs. quantity** | `if d > 0 { ... }` / `let w: Duration = n;` | Quantities only compare with their own kind (`d > 0ns`). Convert `Int` to a quantity by multiplying (`n * 1ms`) and extract a count by dividing (`d / 1ms` or `x / 1cent`). |
 
-```hale,fragment
-let bad: Money = odd;
-```
+## Auditing Units with `hale check --units`
 
-```text
-type error: `Money` from `Money in 1/10000 cent` divides by 10,000: say what happens to the remainder: convert explicitly (`.in(u) or floor`, `Money(…) or half_even`, `or <value>`, `or raise`), or give `Money` a `round:` policy
-```
-
-Every form a narrowing takes is held to this: `.in(u)`, a cast, a
-division by a literal, a binding, an argument, a return, a field, a
-compound assignment, a literal that is no whole count, and a range's
-narrowing (`Session(n)` alone: "…this conversion says nothing about a
-value outside it: write `or <fallback>` …").
-
-**A bare number where a quantity goes.** A count is not a duration
-until you say in what:
-
-```hale,fragment
-if d > 0 { /* ... */ }
-let wait: Duration = n;
-```
-
-```text
-type error: `Duration` > `Int`: a quantity or a point compares with its own kind, never an `Int`; compare with a quantity (`0ns`)
-type error: `Int` is not `Duration`: a count becomes a quantity by a unit (`n * 1ns`)
-```
-
-Write `d > 0ns` and `n * 1ms`; the other way, a quantity's count is a
-quotient, `d / 1ms`. The same holds for a loop's variable: in `for x in
-prices`, over a `bounded[Money; N]` or a `[Money; N]`, `x` is a `Money`
-and `x / 1cent` its count.
-
-## The report
-
-`hale check --units` prints what every number in the program counts:
-each declaration's denomination and where it was fixed, its policy,
-the headroom an `Int` has at that denomination, and what a declared
-range fits in; then each narrowing, with its factor, the policy that
-discharged it, and where that policy came from. Two entries from the
-program the chapter's sections are cut from:
+Run `hale check --units` (or `hale check --units --json` for machine-readable output) to inspect every unit, quantity, range, and narrowing site in a seed:
 
 ```text
 units: 15 declarations, 7 narrowings
@@ -285,25 +226,12 @@ committed_form.hl:81:24  odd
     headroom     : ±922337203685477 cent (9223372036854 USD), of Money in 1/10000 cent
 ```
 
-The second entry is the money example's one rounding: a factor of
-1/10,000, `half_even`, from `Ledger`; and the product it rounds holds
-at most about 9.2 trillion USD, where `Money` holds ten thousand times
-that. The text is stable, so a project can record it and review its
-diff like any other artifact; `--json` gives the same fields as one
-object. Its files are named from the checked seed's directory, so a
-declaration in a sibling seed reads `../common/main.hl:3:1` and two
-checkouts of one project record one report. A program with no unit declarations prints one line, `units:
-no quantity is declared`.
+The report lists:
+- Every declared quantity, point, identity, and range, along with the smallest hardware integer width (`u8`, `u16`, etc.) a range fits in.
+- Every narrowing conversion across the program, its scale factor, the rounding policy that discharged it, the source location of that policy, and the `i64` overflow headroom at the finer denomination (for example, `Money in 1/10000 cent` has a headroom of `±9.22 trillion USD`).
+- Paths relative to the checked seed directory so the output can be committed and diffed deterministically in CI. If a program declares no units, `hale check --units` prints `units: no quantity is declared`.
 
-## What it does not do
-
-Not yet: a rate type such as bytes per second (one quantity over
-another of a different kind is refused; over the same kind it is a
-plain count, and stays one when rates arrive, since a rate is a
-quotient of two different kinds, the one refused today: `d / 1ms`
-keeps its meaning), `Float` quantities, calendars, and packing a
-narrow range into a narrow field (the report says what a range would
-fit in; every value is still an `Int`). `spec/units.md` is the whole
-contract.
+> [!NOTE]
+> **Current Scope (`spec/units.md`):** Cross-dimension rate types (such as bytes per second, `ByteCount / Duration`), `Float` quantities, calendar arithmetic, and automatic bit-packing of narrow ranges into sub-64-bit struct fields are not yet implemented. Dividing two quantities of the *same* component (`d / 1ms`) always returns a plain `Int` count.
 
 Next: [Functions](./basics/functions.md).

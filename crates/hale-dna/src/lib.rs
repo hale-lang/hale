@@ -5,7 +5,7 @@
 //! materializes it: `hale iris`, whose observer imports the core's
 //! typed control topics (`dna.review.verdict`, `dna.intent.offered`)
 //! so a verdict or an intent published from the browser is the SAME
-//! declaration the organism binds. Track C (`hale dna init` /
+//! declaration the organism binds. Track C (`hale habitat graft` /
 //! `upgrade`) materializes the same set into a project's `vendor/dna`.
 //!
 //! Paths are relative to a materialization root and keep the repo's
@@ -58,15 +58,21 @@ pub const FILES: &[EmbeddedFile] = core![
     "batch",
     "budget",
     "cases",
+    "codebase_reviews",
+    "codebases",
     "completion",
     "concerns",
     "contracts",
     "correlation",
     "decision",
+    "declared_secrets",
+    "declared_uis",
     "editing",
     "evidence",
     "exchange",
+    "face",
     "forge",
+    "forgejo",
     "handoff",
     "hat",
     "infrastructure",
@@ -77,8 +83,10 @@ pub const FILES: &[EmbeddedFile] = core![
     "knowledge_node_request",
     "knowledge_record",
     "memory_embed",
+    "memory_exchange",
     "memory_ledger",
     "memory_protected",
+    "memory_record",
     "memory_schema",
     "memory_spine",
     "memory_store",
@@ -92,6 +100,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "organization_source_request",
     "ownership",
     "performers",
+    "placement",
     "positions",
     "practices",
     "principal",
@@ -104,9 +113,12 @@ pub const FILES: &[EmbeddedFile] = core![
     "route",
     "routing",
     "senses",
+    "source_check",
     "spending",
+    "ssh_provider",
     "steps",
     "tape",
+    "teardown",
     "tools",
     "topics",
     "types",
@@ -153,7 +165,7 @@ macro_rules! host {
 /// with the project resolved. This seed is the host's body (`run`,
 /// `dev`, `node`, `body-fence`: the `main locus` and the renewer beside
 /// it), and the library the verb program imports.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "forgejo_habitat", "forget", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "placement", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 
@@ -190,8 +202,10 @@ macro_rules! at {
     };
 }
 
-/// The toolchain's nursery (`dna/nursery`): its index and the packs it
-/// lists, which `hale dna pack` offers when no `--from` names another. Not
+/// The toolchain's nursery (`dna/nursery`): its index, the packs it lists,
+/// which `hale dna pack` offers when no `--from` names another, and the
+/// trees of the saplings it carries itself (`saplings/<name>`, a sapling
+/// whose repository is `toolchain:saplings/<name>`, with no remote). Not
 /// part of the embedded DNA source set (`EMBEDDED_DIRS`): a pack is pinned
 /// by its own digest when it is applied.
 pub const NURSERY_FILES: &[EmbeddedFile] = at![
@@ -199,7 +213,31 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
     "dna/nursery/packs/content-team.pack",
     "dna/nursery/packs/dev-team.pack",
     "dna/nursery/packs/founder.pack",
+    "dna/nursery/packs/hale-organism.pack",
+    "dna/nursery/packs/habitat.pack",
     "dna/nursery/packs/small-startup.pack",
+    "dna/nursery/packs/standard.pack",
+    "dna/nursery/saplings/hale/README.md",
+    "dna/nursery/saplings/hale/hale.toml",
+    "dna/nursery/saplings/hale/main.hl",
+];
+
+/// GH #1653: the habitat's genome, which ships with the toolchain as the
+/// foundational law and the nursery do: what `hale habitat up` births the
+/// habitat from, the one organism that may be born without a parent. Its
+/// positions are the nursery's `habitat` pack, and its law the `standard`
+/// pack and the `law` items its document marks.
+pub const HABITAT_FILES: &[EmbeddedFile] = at![
+    "dna/habitat/README.md",
+    "dna/habitat/ui/alerts.js",
+    "dna/habitat/ui/hardware.js",
+    "dna/habitat/ui/infrastructure.js",
+    "dna/habitat/ui/organisms.js",
+    "dna/habitat/ui/head-client.js",
+    "dna/habitat/ui/host-label.js",
+    "dna/habitat/ui/index.html",
+    "dna/habitat/ui/operator.css",
+    "dna/habitat/ui/operator.js",
 ];
 
 /// Typed query operations shared by the host and service API. These must
@@ -292,6 +330,7 @@ pub const POND_FILES: &[EmbeddedFile] = at![
 /// beside the core it imports as `..`.
 pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/client.hl",
+    "dna/core/legs/codebase.hl",
     "dna/core/legs/hands.hl",
     "dna/core/legs/head_commands/client.hl",
     "dna/core/legs/model.hl",
@@ -303,8 +342,9 @@ pub const LEGS_FILES: &[EmbeddedFile] = at![
 
 /// The head (`hale dna head`): what `dna/face/start.sh` builds and serves,
 /// so a person with an installed toolchain and no checkout can start the
-/// face. The four seeds the launcher builds — the per-project API
+/// face. The five seeds the launcher builds — the per-project API
 /// (`dna/api/practice_review`), the project service (`dna/api/project_service`),
+/// the standard face (`dna/face/standard`),
 /// the stub OpenID provider (`dna/oidc/serve`) and the reflexes
 /// (`dna/reflexes`) — with the seeds they import that no list above
 /// carries (`dna/api`, `dna/oidc`), the browser's assets (`dna/face/web`),
@@ -321,6 +361,12 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/api/commands.hl",
     "dna/api/context.hl",
     "dna/api/definition_drafts.hl",
+    "dna/api/habitat_brief.hl",
+    "dna/api/habitat_hosts.hl",
+    "dna/api/habitat_organisms.hl",
+    "dna/api/habitat_placed.hl",
+    "dna/api/habitat_placement.hl",
+    "dna/api/habitat_rows.hl",
     "dna/api/http.hl",
     "dna/api/knowledge_commands.hl",
     "dna/api/knowledge.hl",
@@ -331,6 +377,8 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/api/organization_impact.hl",
     "dna/api/organization_status.hl",
     "dna/api/people.hl",
+    "dna/api/record_index.hl",
+    "dna/api/solo_tasks.hl",
     "dna/api/source.hl",
     "dna/api/tasks.hl",
     "dna/api/upstream.hl",
@@ -352,6 +400,8 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/oidc/stub.hl",
     "dna/oidc/serve/main.hl",
     "dna/reflexes/main.hl",
+    "dna/face/standard/index.hl",
+    "dna/face/standard/main.hl",
     "dna/face/web/app.js",
     "dna/face/web/application.js",
     "dna/face/web/definition-draft.js",
@@ -376,6 +426,7 @@ pub const HEAD_DIRS: &[(&str, &[&str])] = &[
     ("dna/oidc", &["hl"]),
     ("dna/oidc/serve", &["hl"]),
     ("dna/reflexes", &["hl"]),
+    ("dna/face/standard", &["hl"]),
     ("dna/face/web", &["*"]),
 ];
 
@@ -393,6 +444,9 @@ pub struct HeadSeed {
 pub const HEAD_API: HeadSeed = HeadSeed { seed: "dna/api/practice_review", bin: "dna/api/practice_review/practice_review" };
 /// The project service: the head itself.
 pub const HEAD_SERVICE: HeadSeed = HeadSeed { seed: "dna/api/project_service", bin: "dna/api/project_service/project_service" };
+/// The standard face: the application that serves the browser's shell and
+/// the project's `ui/` in front of the head, which serves surfaces only.
+pub const HEAD_FACE: HeadSeed = HeadSeed { seed: "dna/face/standard", bin: "dna/face/standard/standard" };
 /// The stub OpenID provider the head signs a person in through (GH #989).
 pub const HEAD_OIDC: HeadSeed = HeadSeed { seed: "dna/oidc/serve", bin: "dna/oidc/serve/serve" };
 /// The reflexes, started beside an attached project (GH #988).
@@ -528,6 +582,25 @@ mod tests {
     /// listed file is in one of them or is the launcher. A seed that
     /// imports a directory no list carries fails the CLI's check of the
     /// materialized tree instead (hale-cli's `dna_head.rs`).
+    /// A habitat born from an installed toolchain has only the files
+    /// `HABITAT_FILES` lists: every file of its operator face
+    /// (`dna/habitat/ui`) is listed, so a screen's script cannot ship in the
+    /// checkout and be missing from every installed habitat (alerts.js was).
+    #[test]
+    fn the_habitat_set_is_its_readme_and_its_ui() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut on_disk: Vec<String> = vec!["dna/habitat/README.md".to_string()];
+        for e in std::fs::read_dir(root.join("dna/habitat/ui")).unwrap().filter_map(|e| e.ok()) {
+            if e.path().is_file() {
+                on_disk.push(format!("dna/habitat/ui/{}", e.file_name().to_string_lossy()));
+            }
+        }
+        on_disk.sort();
+        let mut listed: Vec<String> = HABITAT_FILES.iter().map(|f| f.path.to_string()).collect();
+        listed.sort();
+        assert_eq!(listed, on_disk, "a file of the habitat's operator face (dna/habitat/ui) was added or removed without updating HABITAT_FILES in hale-dna");
+    }
+
     #[test]
     fn the_head_set_is_the_repo_directories() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

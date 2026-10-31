@@ -35,7 +35,11 @@ fn toolchain() -> String {
 
 // Run `argv` (newline-separated) in `dir`, discovery off.
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
+            + dir
+            + "\n" + argv,
+    );
 }
 
 fn log_has(path: String, needle: String) -> Bool {
@@ -88,59 +92,123 @@ fn row(kind: String, entity: String, body: String) -> dna::Row {
 main locus App {
     run() {
         if !std::io::fs::file_exists("/proc/self/stat") {
-            eprintln("idle_body_cpu_test: no /proc on this machine; the body's CPU was not measured");
+            eprintln(
+                "idle_body_cpu_test: no /proc on this machine; the body's CPU was not measured",
+            );
             return;
         }
         let scratch = dna::scratch_root("idlecpu");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nidle");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nidle"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/idle";
         std::io::fs::write_file(a + "/dna/org/main.hl", IDLE_ORG) or discard;
-        let g = in_dir(a, "sh\n-c\ngit -c user.name=organism-host -c user.email=host@dna add -A && git -c user.name=organism-host -c user.email=host@dna commit -q -m 'an idle organization'");
+        let g = in_dir(
+            a,
+            "sh\n-c\ngit -c user.name=organism-host -c user.email=host@dna add -A && git -c user.name=organism-host -c user.email=host@dna commit -q -m 'an idle organization'",
+        );
         std::test::assert_eq_int(g.code, 0, "the idle organization is the genome: " + g.stderr);
 
         // the record grown to an organization's day: Reviews asked,
         // verdicts given (requests the relay weighs) and settled, and rows
         // of work around them
-        let j = dna::GitJournal { repo: a, author: "fixture" };
+        std::test::assert_eq_str(
+            dna::memory_fixture(a),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RecordJournal { repo: a, author: "fixture" };
         let rows = dna::RowBatch { };
         let mut k = 0;
         while k < REVIEWS {
             let id = "k:idle" + to_string(k);
-            rows.push(row("review.requested", id, "{\"question\": \"ratify idle practice " + to_string(k) + "\", \"required_authority\": \"board\", \"subject_digest\": \"sha256:" + to_string(k) + "\"}"));
-            rows.push(row("review.verdict", id, "{\"review_id\": \"" + id + "\", \"verdict\": \"approve\", \"reviewer\": \"fixture\", \"authority\": \"board\"}"));
+            rows.push(
+                row(
+                    "review.requested",
+                    id,
+                    "{\"question\": \"ratify idle practice " + to_string(k)
+                        + "\", \"required_authority\": \"board\", \"subject_digest\": \"sha256:"
+                        + to_string(k) + "\"}",
+                ),
+            );
+            rows.push(
+                row(
+                    "review.verdict",
+                    id,
+                    "{\"review_id\": \"" + id
+                        + "\", \"verdict\": \"approve\", \"reviewer\": \"fixture\", \"authority\": \"board\"}",
+                ),
+            );
             rows.push(row("review.settled", id, "approve by fixture"));
             k = k + 1;
         }
         k = 0;
         while k < FILLER {
-            rows.push(row("note.filed", "note/" + to_string(k), "{\"note\": \"a row standing in for a day's work, \\\"quoted\\\" as rows are\", \"n\": " + to_string(k) + "}"));
+            rows.push(
+                row(
+                    "note.filed",
+                    "note/" + to_string(k),
+                    "{\"note\": \"a row standing in for a day's work, \\\"quoted\\\" as rows are\", \"n\": "
+                        + to_string(k) + "}",
+                ),
+            );
             k = k + 1;
         }
         let landed = j.append_batch(j.revision(), rows);
         std::test::assert(landed.ok, "the record grew: " + landed.error);
         let peak = peak_kb();
-        std::test::assert(peak < 262144, "building the record stays small: a peak of " + to_string(peak) + " kB");
+        std::test::assert(
+            peak < 262144,
+            "building the record stays small: a peak of " + to_string(peak) + " kB",
+        );
 
         // the body, under a forge of files with nothing on it
         std::io::fs::mkdir(a + "/.hale") or discard;
         std::io::fs::mkdir(a + "/.hale/dna") or discard;
         std::io::fs::mkdir(a + "/.hale/dna/forge") or discard;
         // (`dna run` execs the host: the pid is the body's)
-        let started = in_dir(a, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_FORGE=file nohup \"$1\" dna run . --no-iris >body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain());
+        let started = in_dir(
+            a,
+            "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_FORGE=file nohup \"$1\" dna run . --no-iris >body.log 2>&1 </dev/null & echo $!\nsh\n"
+                + toolchain(),
+        );
         let pid = dna::trim_nl(started.stdout);
         std::test::assert(len(pid) > 0, "the body started: " + started.stderr);
         let mut up = false;
         let mut tries = 0;
         // a host built cold takes minutes on a loaded runner
         while !up && tries < 2400 {
-            if log_has(a + "/body.log", "organization (pid") { up = true; } else { std::time::sleep(250ms); }
+            if log_has(a + "/body.log", "organization (pid") {
+                up = true;
+            } else {
+                std::time::sleep(250ms);
+            }
             tries = tries + 1;
         }
         let log = std::io::fs::read_file(a + "/body.log") or "";
         std::test::assert(up, "the organization started: " + log);
+        // a body with memory first applies every row of the record into it,
+        // which is start-up, not idling: the window opens once the graph
+        // holds the record (on a loaded runner the catch-up of this
+        // record's rows outlasted the first seconds and was measured)
+        if log_has(a + "/body.log", "memory: the graph, the ledger") {
+            let mut caught = false;
+            let mut waited = 0;
+            while !caught && waited < 2400 {
+                if log_has(a + "/body.log", "memory: the graph holds the record") {
+                    caught = true;
+                } else {
+                    std::time::sleep(250ms);
+                }
+                waited = waited + 1;
+            }
+            std::test::assert(
+                caught,
+                "the body's memory caught up with the record: "
+                    + (std::io::fs::read_file(a + "/body.log") or ""),
+            );
+        }
         // past the first ticks, which read what the body found
         std::time::sleep(3s);
         let hz = std::str::parse_int(dna::trim_nl(dna::run_tool("getconf\nCLK_TCK").stdout)) or 100;
@@ -150,12 +218,27 @@ main locus App {
         let after = cpu_ticks(pid);
         let wall = std::time::monotonic_ns() - t0;
         let k2 = dna::run_tool("kill\n" + pid);
-        std::test::assert(before >= 0 && after >= 0, "the body ran the whole window: " + (std::io::fs::read_file(a + "/body.log") or ""));
+        std::test::assert(
+            before >= 0 && after >= 0,
+            "the body ran the whole window: " + (std::io::fs::read_file(a + "/body.log") or ""),
+        );
         // percent of one core
         let used = (after - before) * 1000000000 / hz;
         let percent = used * 100 / wall;
-        eprintln("idle_body_cpu_test: the idle body used ", to_string(percent), "% of a core over ", to_string(wall / 1000000), " ms (", to_string(j.revision()), " rows)");
-        std::test::assert(percent < 10, "an idle body uses a small fraction of a core: " + to_string(percent) + "% over " + to_string(wall / 1000000) + " ms");
+        eprintln(
+            "idle_body_cpu_test: the idle body used ",
+            to_string(percent),
+            "% of a core over ",
+            to_string(wall / 1000000),
+            " ms (",
+            to_string(j.revision()),
+            " rows)",
+        );
+        std::test::assert(
+            percent < 10,
+            "an idle body uses a small fraction of a core: " + to_string(percent) + "% over "
+                + to_string(wall / 1000000) + " ms",
+        );
 
         dna::scratch_done(scratch);
     }

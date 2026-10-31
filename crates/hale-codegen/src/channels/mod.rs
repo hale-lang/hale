@@ -131,6 +131,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // GH #1592: a failure delivered, for a scrape's
+        // `hale_failures_total` and an OTLP backend's record: the failing
+        // locus and its closure, from the violation
+        if self.observes_metrics() || self.observes_events() {
+            let viol_ty = self
+                .user_types
+                .get("ClosureViolation")
+                .expect("ClosureViolation declared at startup")
+                .struct_ty;
+            let field = |i: u32| -> Result<PointerValue<'ctx>, CodegenError> {
+                let p = self
+                    .builder
+                    .build_struct_gep(viol_ty, viol_ptr, i, &format!("{name}.note.f{i}"))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(self
+                    .builder
+                    .build_load(ptr_t, p, &format!("{name}.note.v{i}"))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value())
+            };
+            let locus = field(0)?;
+            let closure = field(1)?;
+            self.emit_observe_note(1, child_self, locus, closure)?;
+        }
         let void_t = self.context.void_type();
         let handler_callee_ty = void_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
@@ -288,6 +312,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .user_methods
             .get(&fd.name.name)
             .expect("fallible locus fn declared in pass A2");
+        self.lower_fallible_locus_method_body_into(l, info, fd, func)
+    }
+
+    /// `lower_fallible_locus_method_body` into `func`: the method itself,
+    /// or its fused clone (GH #1530, `fused_dest`).
+    pub(crate) fn lower_fallible_locus_method_body_into(
+        &mut self,
+        l: &LocusDecl,
+        info: &LocusInfo<'ctx>,
+        fd: &FnDecl,
+        func: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
         let entry = self.context.append_basic_block(func, "entry");
         self.builder.position_at_end(entry);
         self.di_begin_function();
@@ -490,7 +526,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(llvm_ret_ty, ret_slot, "fn.ret.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let copied = self.emit_method_return_deep_copy(raw, rt)?;
+            // a fused clone's return filled the caller's storage, its
+            // payload already in the caller's arena (GH #1530)
+            let copied = if self.fused_dest.is_some() {
+                raw
+            } else {
+                self.emit_method_return_deep_copy(raw, rt)?
+            };
             self.builder
                 .build_store(out_val, copied)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -715,11 +757,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// implicit main locus). Substitute joins via phi; raise
     /// terminates the err branch, so the join only has the ok
     /// branch as predecessor.
+    ///
+    /// `value_discarded`: the `or` is a statement, so its value is thrown
+    /// away. A substitute is then run for its effect, whatever the call's
+    /// success type, as the check reads it (spec/types.md: "In statement
+    /// position the substituted value is discarded, so the handler's
+    /// success type needn't match the call's"): `f() or { log(err); };`
+    /// on an `Int`-returning `f`, or `f() or note(err);` with a handler of
+    /// another type.
     pub(crate) fn lower_or_expr(
         &mut self,
         inner: &Expr,
         disposition: &OrDisposition,
         scope: &Scope<'ctx>,
+        value_discarded: bool,
     ) -> Result<(Option<BasicValueEnum<'ctx>>, Option<CodegenTy>), CodegenError> {
         // GH #793 — does this `or` hand back a proven-fresh factory's
         // locus? Decided from the AST BEFORE the inner call is
@@ -734,10 +785,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // have been consumed by an ARGUMENT of the inner call. A
         // per-node table has no such ordering to get right.
         let inner_fresh_locus: Option<String> = match inner {
-            Expr::Call { callee, .. } => self
-                .callee_fn_name(callee)
-                .and_then(|f| self.fresh_locus_factories.get(&f).cloned())
-                .map(|(l, _)| l),
+            Expr::Call { callee, .. } => self.fresh_factory_locus(callee, scope),
             _ => None,
         };
         let ok_owned_elsewhere = matches!(
@@ -784,11 +832,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // when there is one. v1.x-FORM-4: `() fallible(E)` calls
         // (e.g. hashmap.remove) carry `success_ty = None` and no
         // out_val_slot — the ok branch just falls through to the
-        // join.
+        // join. A statement `or` reads it only when it is a locus the
+        // owner registration below has to reclaim (GH #793): any other
+        // value nothing reads, so that branch loads nothing.
         self.builder.position_at_end(ok_bb);
         let ok_v_opt: Option<BasicValueEnum<'ctx>> =
             match (&call.success_ty, call.out_val_slot) {
-                (Some(succ_ty), Some(slot)) => {
+                (Some(succ_ty), Some(slot))
+                    if !value_discarded || matches!(succ_ty, CodegenTy::LocusRef(_)) =>
+                {
                     let llvm_succ_ty = self.llvm_basic_type(succ_ty);
                     let v = self
                         .builder
@@ -950,10 +1002,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the GH #402 hook reads that decision where the
                     // substitute is lowered. A nested `or` needs no
                     // re-arming for the same reason.
-                    let (sub_v, sub_ty) = if call.success_ty.is_none() {
+                    let (sub_v, sub_ty) = if call.success_ty.is_none() || value_discarded {
                         // v1.x-FORM-4: Unit-success fallible (e.g.
                         // hashmap.remove / write_file). The substitute RHS
-                        // is Unit-typed.
+                        // is Unit-typed. A statement `or` on a value-bearing
+                        // call is the same: the substitute runs for its
+                        // effect and the join below gives no value.
                         let mut sub_mut_scope = Scope {
                             locals: sub_scope.locals.clone(),
                         };
@@ -974,9 +1028,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // returning fn call works without the
                             // expression-position "fn returns no value"
                             // reject.
-                            _ => {
+                            Expr::Call { .. } | Expr::Or { .. } => {
                                 let s = Stmt::Expr(rhs.clone());
                                 self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                            Expr::If(ifs) => {
+                                let s = Stmt::If((**ifs).clone());
+                                self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                            Expr::Match(m) => {
+                                let s = Stmt::Match((**m).clone());
+                                self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                            // A plain value thrown away (`f() or 0;`):
+                            // evaluated, and dropped.
+                            _ => {
+                                let _ = self.lower_expr_opt(rhs, &sub_mut_scope)?;
                             }
                         }
                         (None, None)
@@ -1025,7 +1092,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             (sub_v, sub_ty)
                         };
-                        if sub_ty != call.success_ty {
+                        if !value_discarded && sub_ty != call.success_ty {
                             return Err(CodegenError::Unsupported(format!(
                                 "`or` substitute type mismatch: expected \
                                  {:?}, got {:?}",
@@ -1066,8 +1133,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(join_bb);
                 // `or discard` produces Unit whatever the call's
-                // success type: its value is thrown away.
-                if matches!(disposition, OrDisposition::Discard(_)) {
+                // success type: its value is thrown away; so does any
+                // statement `or`.
+                if value_discarded || matches!(disposition, OrDisposition::Discard(_)) {
                     return Ok((None, None));
                 }
                 match (ok_v_opt, sub_v, &call.success_ty) {
@@ -1321,7 +1389,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let out_err_slot = self.alloca_for(&payload_ty, "or.out_err.slot")?;
 
-        let caller_arena_at_call = self.current_arena_ptr()?;
+        let caller_arena_at_call = self.call_site_arena(args, scope)?;
         let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(sig.params.len() + 3);
         llvm_args.push(caller_arena_at_call.into());
@@ -1891,27 +1959,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // matching the Stmt::Fail and lower_return shapes.
         let payload_ty = enclosing.payload_ty.clone();
         let rewritten;
-        let e_to_lower: &Expr = match payload {
-            Expr::Struct { path, inits, span, id } => {
-                match self.resolve_generic_struct_path_for_codegen_ty(
-                    path,
-                    &payload_ty,
-                ) {
-                    Some(new_path) => {
-                        // GH #921 A2: same source expression,
-                        // renamed path — it keeps its id.
-                        rewritten = Expr::Struct {
-                            id: *id,
-                            path: new_path,
-                            inits: inits.clone(),
-                            span: *span,
-                        };
-                        &rewritten
-                    }
-                    None => payload,
-                }
+        let e_to_lower: &Expr = match self.rewrite_generic_literal(payload, &payload_ty) {
+            Some(r) => {
+                rewritten = r;
+                &rewritten
             }
-            _ => payload,
+            None => payload,
         };
 
         let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
@@ -2062,6 +2115,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #732: a fallible method called through an
                 // interface dispatches through its vtable slot.
                 if let CodegenTy::Interface(iface_name) = &recv_ty {
+                    // GH #1566: the backstop on the locus behind it
+                    self.emit_iface_cross_pool_check(recv_val.into_pointer_value(), iface_name, method_name, receiver, scope)?;
                     return self.lower_iface_fallible_method_call(
                         recv_val.into_pointer_value(),
                         iface_name,
@@ -2090,6 +2145,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             locus_name
                         ))
                     })?;
+                // GH #1566: F.31's runtime backstop
+                let what = format!("method call `{}.{}`", locus_name.rsplit("__").next().unwrap_or(&locus_name), method_name);
+                self.emit_cross_pool_check(recv_val.into_pointer_value(), Some(receiver), &locus_name.clone(), &what, receiver.span(), scope)?;
+                self.emit_stdlib_call_site(&locus_name, receiver.span())?;
                 (info, recv_val.into_pointer_value(), locus_name)
             };
 
@@ -2360,27 +2419,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the payload is `Foo<T, U>`. Mirrors the lower_return shape.
         let rewritten;
         let payload_ty = fallible.payload_ty.clone();
-        let e_to_lower: &Expr = match value {
-            Expr::Struct { path, inits, span, id } => {
-                match self.resolve_generic_struct_path_for_codegen_ty(
-                    path,
-                    &payload_ty,
-                ) {
-                    Some(new_path) => {
-                        // GH #921 A2: same source expression,
-                        // renamed path — it keeps its id.
-                        rewritten = Expr::Struct {
-                            id: *id,
-                            path: new_path,
-                            inits: inits.clone(),
-                            span: *span,
-                        };
-                        &rewritten
-                    }
-                    None => value,
-                }
+        let e_to_lower: &Expr = match self.rewrite_generic_literal(value, &payload_ty) {
+            Some(r) => {
+                rewritten = r;
+                &rewritten
             }
-            _ => value,
+            None => value,
         };
 
         let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;

@@ -12,14 +12,26 @@
 import "../core" as dna;
 import "../core/legs" as legs;
 
-fn hat_for(j: dna::Journal, kind: String, owed: String, requires: String, task: String) -> dna::Hat {
+fn hat_for(
+    j: dna::Journal,
+    kind: String,
+    owed: String,
+    requires: String,
+    task: String
+) -> dna::Hat {
     return dna::hat_compose(j, dna::HatInputs {
-        work_id: task + "/wf1/s0/w0", task_id: task, performer_kind: kind, objective: "slow the sweep", target: "org/api",
+        work_id: task + "/wf1/s0/w0",
+        task_id: task,
+        performer_kind: kind,
+        objective: "slow the sweep",
+        target: "org/api",
         output_contract: owed, requires: requires, head: "abc"
     }, dna::ContextPackage { }, false);
 }
 
-fn model_of(h: dna::Hat, field: String) -> String { return std::json::find_string_field(h.model, field); }
+fn model_of(h: dna::Hat, field: String) -> String {
+    return std::json::find_string_field(h.model, field);
+}
 
 fn row(j: dna::MemJournal, kind: String, entity: String, body: String) {
     let r = j.append(j.revision(), kind, entity, body);
@@ -30,67 +42,263 @@ fn check() {
 
     // the mode is the hands'
     let empty = hat_for(j, "edit", "Patch", "edit", "t1");
-    std::test::assert_eq_str(model_of(empty, "mode"), "do", "a Patch's workspace hands make a `do` Work");
-    std::test::assert_eq_str(model_of(hat_for(j, "agent", "Assessment", "judgment", "t1"), "mode"), "tools", "an Assessment's read-only hands make `tools`");
-    std::test::assert_eq_str(model_of(hat_for(j, "agent", "MonthlyReport", "judgment", "t1"), "mode"), "think", "no hands, `think`");
+    std::test::assert_eq_str(
+        model_of(empty, "mode"),
+        "do",
+        "a Patch's workspace hands make a `do` Work",
+    );
+    std::test::assert_eq_str(
+        model_of(hat_for(j, "agent", "Assessment", "judgment", "t1"), "mode"),
+        "tools",
+        "an Assessment's read-only hands make `tools`",
+    );
+    std::test::assert_eq_str(
+        model_of(hat_for(j, "agent", "MonthlyReport", "judgment", "t1"), "mode"),
+        "think",
+        "no hands, `think`",
+    );
     // nothing mapped: standard, and the gap is named
     std::test::assert_eq_str(model_of(empty, "size"), "standard", "no rule: standard");
     std::test::assert_eq_str(model_of(empty, "model"), "", "no category filled: no model");
-    std::test::assert(std::str::contains(model_of(empty, "why"), "no model fills `do.standard`"), "and the hat says which category is empty: " + empty.model);
+    std::test::assert(
+        std::str::contains(model_of(empty, "why"), "no model fills `do.standard`"),
+        "and the hat says which category is empty: " + empty.model,
+    );
 
     // the habitat's categories
-    row(j, "model.category", "do.standard", "{\"model\": \"coder-m\", \"tool_calls\": true, \"input_micros_per_1k\": 300, \"output_micros_per_1k\": 1200, \"by\": \"riley\"}");
-    row(j, "model.category", "do.deep", "{\"model\": \"coder-l\", \"tool_calls\": true, \"by\": \"riley\"}");
-    row(j, "model.category", "think.quick", "{\"model\": \"thinker-s\", \"tool_calls\": false, \"by\": \"riley\"}");
-    row(j, "model.category", "tools.standard", "{\"model\": \"plain-m\", \"tool_calls\": false, \"by\": \"riley\"}");
+    row(
+        j,
+        "model.category",
+        "do.standard",
+        "{\"model\": \"coder-m\", \"tool_calls\": true, \"input_micros_per_1k\": 300, \"output_micros_per_1k\": 1200, \"by\": \"riley\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "do.deep",
+        "{\"model\": \"coder-l\", \"tool_calls\": true, \"by\": \"riley\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "think.quick",
+        "{\"model\": \"thinker-s\", \"tool_calls\": false, \"by\": \"riley\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "tools.standard",
+        "{\"model\": \"plain-m\", \"tool_calls\": false, \"by\": \"riley\"}",
+    );
     let filled = hat_for(j, "edit", "Patch", "edit", "t1");
     std::test::assert_eq_str(model_of(filled, "model"), "coder-m", "the category names the model");
     std::test::assert_eq_str(model_of(filled, "why"), "", "and nothing is missing");
     std::test::assert(filled.digest != empty.digest, "the resolution is in the hat's body");
     let no_tools = hat_for(j, "agent", "Assessment", "judgment", "t1");
-    std::test::assert(std::str::contains(model_of(no_tools, "why"), "returns no tool calls"), "a `tools` Work refuses a model without tool calls: " + no_tools.model);
+    std::test::assert(
+        std::str::contains(model_of(no_tools, "why"), "returns no tool calls"),
+        "a `tools` Work refuses a model without tool calls: " + no_tools.model,
+    );
 
     // the leg never calls a model the mapping refused, nor asks for its spend
-    let refusing = legs::ModelPerformer { router: dna::ModelRouter { quick: dna::FakeModel { name: "q", answer: "should not be asked" }, deep: dna::FakeModel { name: "d", answer: "should not be asked" } }, effect: "idempotent" };
-    let declined = refusing.perform(legs::Brief { attempt_id: "t1/a0", performer_kind: "agent", hat: dna::hat_json(no_tools), rendered: "assess it" }, legs::Hands { });
-    std::test::assert(declined.disposition == "declined" && std::str::contains(declined.narrative, "refused `plain-m`") && declined.calls == "[]", "a refused model is declined before any call: " + declined.narrative);
-    std::test::assert(std::str::contains(dna::hat_json(no_tools), "\"ok\": false"), "the hat says the resolution failed");
+    let refusing = legs::ModelPerformer {
+        router: dna::ModelRouter {
+            quick: dna::FakeModel { name: "q", answer: "should not be asked" },
+            deep: dna::FakeModel { name: "d", answer: "should not be asked" },
+        },
+        effect: "idempotent",
+    };
+    let declined = refusing.perform(
+        legs::Brief {
+            attempt_id: "t1/a0",
+            performer_kind: "agent",
+            hat: dna::hat_json(no_tools),
+            rendered: "assess it",
+        },
+        legs::Hands { },
+    );
+    std::test::assert(
+        declined.disposition == "declined"
+            && std::str::contains(declined.narrative, "refused `plain-m`")
+            && declined.calls == "[]",
+        "a refused model is declined before any call: " + declined.narrative,
+    );
+    std::test::assert(
+        std::str::contains(dna::hat_json(no_tools), "\"ok\": false"),
+        "the hat says the resolution failed",
+    );
 
     // the organism's rules: default < contract < position
     row(j, "model.rule", "default", "{\"size\": \"quick\", \"permit\": \"\", \"by\": \"riley\"}");
-    std::test::assert_eq_str(model_of(hat_for(j, "agent", "MonthlyReport", "judgment", "t1"), "model"), "thinker-s", "the default rule sizes every Work");
-    row(j, "model.rule", "contract:Patch", "{\"size\": \"standard\", \"permit\": \"\", \"by\": \"riley\"}");
+    std::test::assert_eq_str(
+        model_of(hat_for(j, "agent", "MonthlyReport", "judgment", "t1"), "model"),
+        "thinker-s",
+        "the default rule sizes every Work",
+    );
+    row(
+        j,
+        "model.rule",
+        "contract:Patch",
+        "{\"size\": \"standard\", \"permit\": \"\", \"by\": \"riley\"}",
+    );
     let by_contract = hat_for(j, "edit", "Patch", "edit", "t1");
-    std::test::assert(model_of(by_contract, "model") == "coder-m" && model_of(by_contract, "rule") == "contract:Patch", "a contract's rule beats the default: " + by_contract.model);
-    row(j, "model.rule", "position:editor", "{\"size\": \"deep\", \"permit\": \"standard\", \"by\": \"riley\"}");
+    std::test::assert(
+        model_of(by_contract, "model") == "coder-m"
+            && model_of(by_contract, "rule") == "contract:Patch",
+        "a contract's rule beats the default: " + by_contract.model,
+    );
+    row(
+        j,
+        "model.rule",
+        "position:editor",
+        "{\"size\": \"deep\", \"permit\": \"standard\", \"by\": \"riley\"}",
+    );
     let by_position = hat_for(j, "edit", "Patch", "edit", "t1");
-    std::test::assert(model_of(by_position, "model") == "coder-l" && model_of(by_position, "rule") == "position:editor", "a position's rule beats the contract's: " + by_position.model);
+    std::test::assert(
+        model_of(by_position, "model") == "coder-l"
+            && model_of(by_position, "rule") == "position:editor",
+        "a position's rule beats the contract's: " + by_position.model,
+    );
 
     // a task's override: inside the permitted sizes, by the Task or by its ask
     row(j, "model.rule", "task:t2", "{\"size\": \"standard\", \"by\": \"riley\"}");
     let moved = hat_for(j, "edit", "Patch", "edit", "t2");
-    std::test::assert(model_of(moved, "size") == "standard" && model_of(moved, "rule") == "task:t2", "an override the position permits moves the size: " + moved.model);
+    std::test::assert(
+        model_of(moved, "size") == "standard" && model_of(moved, "rule") == "task:t2",
+        "an override the position permits moves the size: " + moved.model,
+    );
     row(j, "model.rule", "task:t3", "{\"size\": \"quick\", \"by\": \"riley\"}");
     let refused = hat_for(j, "edit", "Patch", "edit", "t3");
-    std::test::assert(model_of(refused, "size") == "deep" && model_of(refused, "rule") == "position:editor", "an override outside the permitted sizes never widens: " + refused.model);
-    row(j, "workflow.admitted", "t4", "{\"version\": 1, \"engine\": \"wf1\", \"task_id\": \"t4\", \"definition\": \"ask-edit\", \"request\": \"i42\"}");
+    std::test::assert(
+        model_of(refused, "size") == "deep" && model_of(refused, "rule") == "position:editor",
+        "an override outside the permitted sizes never widens: " + refused.model,
+    );
+    row(
+        j,
+        "workflow.admitted",
+        "t4",
+        "{\"version\": 1, \"engine\": \"wf1\", \"task_id\": \"t4\", \"definition\": \"ask-edit\", \"request\": \"i42\"}",
+    );
     row(j, "model.rule", "task:i42", "{\"size\": \"standard\", \"by\": \"riley\"}");
     let asked = hat_for(j, "edit", "Patch", "edit", "t4");
-    std::test::assert(model_of(asked, "size") == "standard" && model_of(asked, "rule") == "task:i42", "the override written with the ask reaches the Task admitted for it: " + asked.model);
+    std::test::assert(
+        model_of(asked, "size") == "standard" && model_of(asked, "rule") == "task:i42",
+        "the override written with the ask reaches the Task admitted for it: " + asked.model,
+    );
 
     // a Work routed to a position wears that position's hat, and its rule
-    let routed = dna::hat_compose(j, dna::HatInputs { work_id: "t5/wf1/s0/w", task_id: "t5", performer_kind: "agent", objective: "make it say two", output_contract: "Patch", requires: "position position:api/dev", head: "abc" }, dna::ContextPackage { }, false);
-    std::test::assert_eq_str(routed.position_id, "position:api/dev", "a routed Work's hat is its position's");
+    let routed = dna::hat_compose(
+        j,
+        dna::HatInputs {
+            work_id: "t5/wf1/s0/w",
+            task_id: "t5",
+            performer_kind: "agent",
+            objective: "make it say two",
+            output_contract: "Patch",
+            requires: "position position:api/dev",
+            head: "abc",
+        },
+        dna::ContextPackage { },
+        false,
+    );
+    std::test::assert_eq_str(
+        routed.position_id,
+        "position:api/dev",
+        "a routed Work's hat is its position's",
+    );
     row(j, "model.rule", "position:api/dev", "{\"size\": \"deep\", \"by\": \"riley\"}");
-    let routed2 = dna::hat_compose(j, dna::HatInputs { work_id: "t5/wf1/s0/w", task_id: "t5", performer_kind: "agent", objective: "make it say two", output_contract: "Patch", requires: "position position:api/dev", head: "abc" }, dna::ContextPackage { }, false);
-    std::test::assert(model_of(routed2, "rule") == "position:api/dev" && model_of(routed2, "size") == "deep", "and its position's model rule: " + routed2.model);
-    std::test::assert_eq_str(dna::hat_kind_of("position position:api/editor"), "agent", "a routed Work is a leg's, whatever its position's name says");
+    let routed2 = dna::hat_compose(
+        j,
+        dna::HatInputs {
+            work_id: "t5/wf1/s0/w",
+            task_id: "t5",
+            performer_kind: "agent",
+            objective: "make it say two",
+            output_contract: "Patch",
+            requires: "position position:api/dev",
+            head: "abc",
+        },
+        dna::ContextPackage { },
+        false,
+    );
+    std::test::assert(
+        model_of(routed2, "rule") == "position:api/dev" && model_of(routed2, "size") == "deep",
+        "and its position's model rule: " + routed2.model,
+    );
+    std::test::assert_eq_str(
+        dna::hat_kind_of("position position:api/editor"),
+        "agent",
+        "a routed Work is a leg's, whatever its position's name says",
+    );
     let baseline = dna::baseline_definitions();
     std::test::assert(baseline.latest("ask-position") >= 1, "the baseline defines ask-position");
 
     // the latest row is the rule
-    row(j, "model.category", "do.deep", "{\"model\": \"coder-xl\", \"tool_calls\": true, \"by\": \"riley\"}");
-    std::test::assert_eq_str(model_of(hat_for(j, "edit", "Patch", "edit", "t1"), "model"), "coder-xl", "the habitat swaps a model with one row");
+    row(
+        j,
+        "model.category",
+        "do.deep",
+        "{\"model\": \"coder-xl\", \"tool_calls\": true, \"by\": \"riley\"}",
+    );
+    std::test::assert_eq_str(
+        model_of(hat_for(j, "edit", "Patch", "edit", "t1"), "model"),
+        "coder-xl",
+        "the habitat swaps a model with one row",
+    );
+
+    // the slots the map's endpoints are asked with, each with its
+    // categories: what the organism requires (`hale dna secrets`)
+    std::test::assert_eq_str(dna::model_key_slots(j), "", "no category names an endpoint's key");
+    row(
+        j,
+        "model.category",
+        "think.standard",
+        "{\"model\": \"qwen3-0.6b\", \"tool_calls\": false, \"endpoint\": \"http://h:1/v1/chat/completions\", \"key_vault\": \"model-HABITAT_0A1B2C3D4E5F\", \"by\": \"hale habitat\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "think.quick",
+        "{\"model\": \"qwen3-0.6b\", \"tool_calls\": false, \"endpoint\": \"http://h:1/v1/chat/completions\", \"key_vault\": \"model-HABITAT_0A1B2C3D4E5F\", \"by\": \"hale habitat\"}",
+    );
+    row(
+        j,
+        "model.category",
+        "think.deep",
+        "{\"model\": \"big\", \"endpoint\": \"http://g:1/v1/chat/completions\", \"key_vault\": \"model-GATEWAY\", \"by\": \"riley\"}",
+    );
+    row(j, "model.category", "think.deep", "{\"model\": \"big\", \"by\": \"riley\"}");
+    std::test::assert_eq_str(
+        dna::model_key_slots(j),
+        "model-HABITAT_0A1B2C3D4E5F\tthink.quick think.standard\n",
+        "each slot a category's latest row names, once, with its categories",
+    );
+
+    // a catalog with no backend of its own asks only where the map names an
+    // endpoint: a Work it names none for is given back unperformed
+    let mapped_only = legs::ModelPerformer {
+        router: dna::ModelRouter {
+            quick: dna::FakeModel { name: "q", answer: "should not be asked" },
+            deep: dna::FakeModel { name: "d", answer: "should not be asked" },
+        },
+        effect: "effect_free",
+        mapped_only: true,
+    };
+    let unmapped = mapped_only.perform(
+        legs::Brief {
+            attempt_id: "t9/a0",
+            performer_kind: "agent",
+            hat: dna::hat_json(
+                hat_for(dna::MemJournal { }, "agent", "MonthlyReport", "judgment", "t9"),
+            ),
+            rendered: "report",
+        },
+        legs::Hands { },
+    );
+    std::test::assert(
+        std::str::contains(unmapped.refused, "names no endpoint") && len(unmapped.disposition) == 0,
+        "an unmapped Work is given back, never asked of the catalog: " + unmapped.refused,
+    );
 }
 main locus App { run() { check(); } }
 fn main() { App { }; }

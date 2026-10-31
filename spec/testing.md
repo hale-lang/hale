@@ -279,9 +279,19 @@ developer's vault, and no test reads a secret the developer holds
 organization's entries into `~/.cache/hale/vault`). A test that
 needs a second vault sets `HALE_VAULT_DIR` on a child it starts;
 a child that is itself `hale test` gives each of its files one of
-its own again. `HALE_TEST_KEEP_VAULT=1` keeps every file's vault
-and prints where, to look at what a test provisioned; a run killed
-before it removed its vaults has them swept by the next. A
+its own again. The file runs under a local habitat of its own as
+well (GH #1653): `XDG_DATA_HOME` is the vault directory's `data`, and
+`HALE_DNA_HABITAT` names the habitat under it outright (never the
+caller's), so
+an organism a DNA fixture births is a tenant of the file's habitat,
+never of the developer's, and the compose projects run from under the
+vault directory come down before it is removed (one that does not
+keeps the directory for the next run's sweep). `HALE_TEST_KEEP_VAULT=1`
+keeps every file's vault and habitat and prints where, to look at what
+a test provisioned; a run killed before it removed its vaults has them
+swept by the next, habitats with them, and a habitat whose vault was
+removed before it came down is found by its compose working directory
+and taken down too (`hale habitat sweep --test-vaults`). A
 test that shares a fixed resource
 with another test — a port, a path, a record — is a test that races
 under the default; a fixture takes its port and scratch directory
@@ -462,14 +472,18 @@ log, and BytesBuilder are done).
 
 Zero config, Go-style: there are no options that change the output.
 `hale fmt [paths]` formats `.hl` files in place (no path = the
-current directory tree; `vendor/` and dot-directories are skipped);
+current directory tree; `vendor/`, dot-directories and any directory that
+holds a `.hale-fmt-frozen` file are skipped, whether walked into or named —
+the marker freezes a recorded fixture whose tape is keyed on its bytes; a
+file named on the command line is still formatted, and tools that format
+on their own (graft) honour the marker too);
 `--check` lists files that would change and exits 1 (the CI gate);
 `--diff` previews without writing; `--stdin` filters stdin→stdout
 for editor integration.
 
 What canonical form means (a token-stream formatter — the author's
-line-break structure is PRESERVED, gofmt-style; there is no
-max-line-length enforcement):
+line breaks are PRESERVED, gofmt-style, wherever a line fits; a line
+wider than 100 columns is broken by the width rule below):
 
 - **Indentation** — 4 spaces per bracket depth. A closing bracket
   returns to its opener's line indent; brackets opened together on
@@ -491,14 +505,57 @@ max-line-length enforcement):
   (`let x   = 1;`) collapses to single spaces.
 - **Comments** — preserved verbatim in position: own-line comments
   indent with the code, trailing comments sit one space after it.
+- **Block strings** (spec/tokens.md § Block strings) — the closing
+  fence stands one level deeper than the line the literal opens on,
+  and every line of the text keeps its distance from it; lines of
+  whitespace alone are emptied. The value never moves.
+
+**Width.** A line wider than 100 columns is broken, and
+a line that fits is left as written: fmt never joins lines. The width
+counts the code: a trailing `//` comment does not count, nor do the
+lines of a block string's text. A line is broken canonically for its
+shape, the outermost shape first, then each resulting line that
+still does not fit, the same way:
+
+1. statements written on one line: one statement per line;
+2. a block written on one line (`{ a; b; }`, a `match`'s arms, a
+   type's fields): one statement, arm or field per line, and what
+   follows its `}` on the line (but `else`) on a line of its own;
+3. a list the author already broke (a line of `a, b, c,`): one
+   element per line;
+4. an `||` chain, else an `&&` chain: one term per line, the operator
+   leading, one level in (`||` binds loosest, so its terms are the
+   chain's and an `&&` inside a term stays on the term's line while
+   it fits); else a `+`/`-` chain: broken before the operator, as many
+   terms to a line as fit. A block's `{` after a broken chain goes on
+   a line of its own at the statement's indent, so the body sits
+   under the `if` and not under the chain;
+5. the widest call, record literal, array or parenthesis: one
+   argument or field per line, the closer back at the opener's indent,
+   and for a call or a record literal a trailing comma (a
+   declaration's parameters, a pattern and the forms inside `claims`,
+   `bus`, `bindings`, `enum`, a `closure` and an annotation get none:
+   the grammar takes none there);
+6. a bracket left open at the end of the line: one element per line
+   after it.
+
+A line with none of these (a long string literal) stays as it is.
+Wrapping is idempotent because a wrapped line fits: fmt of fmt output
+is a no-op.
 
 Safety: the formatter re-lexes its own output and refuses to write
-unless the semantic token stream is byte-identical to the input's —
-a formatter bug can mangle whitespace, never what the compiler
-sees. Files that don't lex are reported and left untouched.
+unless the semantic token stream is byte-identical to the input's
+(a block string, re-indented, is held to its value instead, and the
+trailing commas the width rule adds are the one new token, each at the
+offset the formatter recorded) — a formatter bug can mangle
+whitespace, never what the compiler sees. A trailing comma goes only
+where the grammar takes one; should one land where the output no
+longer parses, fmt wraps the file again without them. Files that don't lex are reported and left untouched.
 Formatting is idempotent; the corpus test
 (`hale-syntax/tests/fmt_corpus.rs`) holds every fixture example and
-stdlib source to both properties.
+stdlib source to both properties, and every `.hl` file in the
+repository and every program embedded in a Rust test to them at 100
+columns and at 40.
 
 ## Test assertion library
 

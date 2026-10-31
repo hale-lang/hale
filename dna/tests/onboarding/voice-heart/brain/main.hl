@@ -1,0 +1,419 @@
+/// The brain: keeps the route table (../README.md, "The route table").
+///
+/// It shares nothing with the api but Postgres. Only one brain works at a
+/// time: it holds a Postgres advisory lock on its connection, and a second
+/// brain process is a standby that tries the lock every tick and takes
+/// over when the first one's session ends (the lock goes with it). The
+/// session ends when the brain's connection drops, when its host stops
+/// answering TCP keepalives, and when the brain stops talking for ten
+/// seconds (`idle_session_timeout`, so a stopped process frees it too).
+///
+/// Each tick, while it holds the lock, it reclaims what dead api instances
+/// held (each instance in a transaction of its own, a failure logged and
+/// left for the next tick), then, in one transaction, writes each node's
+/// liveness and the route table (`route_table`, store.md), and publishes
+/// the table's new version to the notifier (notifier.hl), which tells
+/// `<root>.route` (`voice.route` standalone; internal.yaml) on a thread of its own, so an api
+/// instance can tell a newer table is there and the tick never waits on
+/// NATS. Per-tick work runs in a method, so each tick's memory is
+/// reclaimed. It needs Postgres 14 or newer (`idle_session_timeout`), and
+/// says so and stops on an older one.
+
+import "../lib/logfmt" as logfmt;
+import "../store" as st;
+import "../lib/broker" as broker;
+import "../lib/pond/pq" as pq;
+import "../lib/pond/db" as db;
+
+/// The lock every brain asks for: one key for voice's one brain.
+const BRAIN_LOCK: String = "SELECT pg_try_advisory_lock(hashtext('voice.brain'))";
+
+main locus Brain {
+    params {
+        database: String = "";
+        nats: String = "nats://127.0.0.1:4222";
+        interval: Duration = 1s;
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        opened: Bool = false;
+        // holding the lock: the one brain that works
+        holding: Bool = false;
+        // standby | working | unreachable: said once each time it changes
+        said: String = "";
+        // the last trouble writing the table, said once
+        trouble: String = "";
+        // tells NATS each version, on its own thread
+        notifier: Notifier = Notifier { };
+    }
+
+    placement {
+        notifier: pinned;
+    }
+
+    bus {
+        publish RouteWritten;
+    }
+
+    birth() {
+        let d = st::parse_dsn(self.database);
+        self.conn.host = d.host;
+        self.conn.port = d.port;
+        self.conn.user = d.user;
+        self.conn.password = d.password;
+        self.conn.vault = d.vault;
+        self.conn.database = d.database;
+        self.conn.sslmode = d.sslmode;
+    }
+
+    run() {
+        log_info(
+            "the store, and the route table's version on NATS",
+            fields2(
+                std::log::kv("store", self.conn.host + ":" + to_string(self.conn.port)),
+                std::log::kv("nats", if len(self.nats) > 0 { self.nats } else { "none" }),
+            ),
+        );
+        while true {
+            self.tick();
+            std::time::sleep(self.interval);
+        }
+    }
+
+    dissolve() { self.conn.close(); }
+
+    /// One pass.
+    fn tick() {
+        if !self.opened {
+            let st = self.conn.open();
+            if !st.ok {
+                self.say("unreachable", "Postgres unreachable: " + st.err.detail);
+                return;
+            }
+            let v = self.conn.query_one("SHOW server_version_num");
+            let num = std::str::parse_int(std::str::trim(v.data)) or 0;
+            if v.ok && num < 140000 {
+                log_error(
+                    "Postgres 14 or newer is required: idle_session_timeout frees a stopped brain's lock",
+                    std::log::kv("server_version_num", std::str::trim(v.data)),
+                );
+                std::process::exit(1);
+            }
+            let mut i = 0;
+            while i < 6 {
+                let set = self.conn.exec(session_setting(i));
+                if !set.ok {
+                    self.drop("the session's settings: " + set.err.detail);
+                    return;
+                }
+                i = i + 1;
+            }
+            self.opened = true;
+        }
+        if !self.holding {
+            let lock = self.conn.query_one(BRAIN_LOCK);
+            if !lock.ok {
+                self.drop("the lock: " + lock.err.detail);
+                return;
+            }
+            if std::str::trim(lock.data) != "t" {
+                self.say("standby", "another brain holds the lock; standing by");
+                return;
+            }
+            self.holding = true;
+            self.say("working", "holding the lock; working");
+        }
+        let reclaimed = reclaim(self.conn);
+        if reclaimed < 0 {
+            self.drop("the connection, reclaiming");
+            return;
+        }
+        if reclaimed > 0 {
+            log_info("reclaimed dead api instances", std::log::kv("count", to_string(reclaimed)));
+        }
+        let version = self.written();
+        if version < 0 { return; }
+        // the notifier tells NATS; the tick never waits on it
+        RouteWritten <- Version { version: version };
+        self.trouble_is("");
+    }
+
+    /// Node liveness and the route table; the table's new version, or -1
+    /// when it was not written: a lost connection drops the lock, any
+    /// other failure is said and tried again next tick.
+    fn written() -> Int {
+        let w = write_table(self.conn);
+        if w.version >= 0 { return w.version; }
+        if w.kind == "io" {
+            self.drop(w.step + ": " + w.detail);
+        } else {
+            self.trouble_is(w.step + " failed: " + w.detail);
+        }
+        return -1;
+    }
+
+    /// Say trouble, or its end, once each time it changes.
+    fn trouble_is(what: String) {
+        if what == self.trouble { return; }
+        if len(what) > 0 {
+            log_warn(what, "");
+        } else {
+            log_info("the route table is written again", "");
+        }
+        self.trouble = what;
+    }
+
+    /// The connection failed: the lock went with it. Stand by until it is
+    /// back and the lock is ours again.
+    fn drop(why: String) {
+        log_warn(why + "; dropping the connection and the lock", "");
+        self.conn.close();
+        self.opened = false;
+        self.holding = false;
+        self.said = "";
+    }
+
+    /// Say a change of state once.
+    fn say(state: String, line: String) {
+        if self.said == state { return; }
+        self.said = state;
+        if state == "unreachable" { log_warn(line, ""); } else { log_info(line, ""); }
+    }
+}
+
+/// Each registered node's liveness (store.md, "Reclaim"): `up` while its
+/// heartbeat is younger than three intervals, `down` after; written only
+/// where it changed, and never over `revoked`.
+const LIVENESS: String = "UPDATE node n SET status = CASE WHEN ns.last_heartbeat_at > now() - interval '15 seconds' THEN 'up' ELSE 'down' END FROM node_state ns WHERE ns.node = n.id AND n.status <> 'revoked' AND n.status <> CASE WHEN ns.last_heartbeat_at > now() - interval '15 seconds' THEN 'up' ELSE 'down' END";
+
+/// How a table's write went: its version, or -1 with the step that
+/// failed, how (`io` for a lost connection) and why.
+type Written { version: Int = -1; step: String = ""; kind: String = ""; detail: String = ""; }
+
+/// Node liveness and the route table, in one transaction (store.md, "The
+/// route table"); rolled back when a step fails.
+fn write_table(conn: pq::PgConn) -> Written {
+    let begun = conn.begin();
+    if !begun.ok {
+        return Written { step: "begin", kind: begun.err.kind, detail: begun.err.detail };
+    }
+    let live = conn.exec(LIVENESS);
+    if !live.ok { return rolled_back(conn, "node liveness", live.err.kind, live.err.detail); }
+    let none = db::Args { };
+    let rows = conn.query_params(SEAT_READ, none);
+    if !rows.ok { return rolled_back(conn, "the fleet's read", rows.err.kind, rows.err.detail); }
+    let models = conn.query_params(MODEL_READ, none);
+    if !models.ok {
+        return rolled_back(conn, "the catalog's read", models.err.kind, models.err.detail);
+    }
+    let a = db::Args { };
+    a.add(route_table(judged(rows.csv), models.csv));
+    let saved = conn.query_params(TABLE_WRITE, a);
+    if !saved.ok {
+        return rolled_back(conn, "the route table's write", saved.err.kind, saved.err.detail);
+    }
+    let done = conn.commit();
+    if !done.ok { return rolled_back(conn, "the commit", done.err.kind, done.err.detail); }
+    return Written { version: std::str::parse_int(std::str::trim(saved.csv)) or - 1 };
+}
+
+fn rolled_back(conn: pq::PgConn, step: String, kind: String, detail: String) -> Written {
+    conn.rollback();
+    return Written { step: step, kind: kind, detail: detail };
+}
+
+/// The brain's session: UTC; the server drops it, and the lock, when the
+/// brain's host stops answering (TCP keepalives, about 11 s) or the brain
+/// says nothing for 10 s, as a stopped process does; it ticks every second.
+fn session_setting(i: Int) -> String {
+    if i == 0 { return "SET TIME ZONE 'UTC'"; }
+    if i == 1 { return "SET tcp_keepalives_idle = 5"; }
+    if i == 2 { return "SET tcp_keepalives_interval = 2"; }
+    if i == 3 { return "SET tcp_keepalives_count = 3"; }
+    if i == 4 { return "SET idle_session_timeout = '10s'"; }
+    return "SET idle_in_transaction_session_timeout = '10s'";
+}
+
+/// The table's row (store.md, "The route table"): its version from the
+/// store's clock, and never below the one before it, across a takeover
+/// and a clock step alike.
+const TABLE_WRITE: String = "INSERT INTO route_table (id, version, at, body) VALUES (true, (extract(epoch FROM now()) * 1000)::bigint, now(), $1::jsonb) ON CONFLICT (id) DO UPDATE SET version = greatest(route_table.version + 1, (extract(epoch FROM now()) * 1000)::bigint), at = now(), body = EXCLUDED.body RETURNING version";
+
+/// The seats of a fleet read, judged.
+fn judged(csv: String) -> Ranked {
+    let mut seats = Ranked { };
+    let lines = std::str::bytes_view(csv);
+    let mut start = 0;
+    while start < lines.n {
+        let nl = st::line_end(lines, start);
+        let line = std::str::trim(std::str::slice(lines, start, nl));
+        start = nl + 1;
+        if len(line) > 0 {
+            push(seats.items, judge(line, Float(std::rand::next_int(1000)) / 1000.0)) or discard;
+        }
+    }
+    return seats;
+}
+
+/// The api instances to reclaim: a heartbeat older than three of their
+/// five-second intervals, and not reclaimed yet.
+const DEAD_INSTANCES: String = "SELECT id FROM api_instance WHERE last_heartbeat_at < now() - interval '15 seconds' AND reclaimed_at IS NULL ORDER BY id";
+
+/// Reclaim every dead api instance (store.md, "Reclaim"), each in a
+/// transaction of its own. The number reclaimed, or -1 when the connection
+/// is lost; an instance whose reclaim fails otherwise is said, rolled back
+/// and left for the next tick, and the tick goes on.
+fn reclaim(conn: pq::PgConn) -> Int {
+    let none = db::Args { };
+    let dead = conn.query_params(DEAD_INSTANCES, none);
+    if !dead.ok {
+        if dead.err.kind == "io" { return -1; }
+        log_warn("reading dead api instances", std::log::kv("detail", dead.err.detail));
+        return 0;
+    }
+    let mut n = 0;
+    let lines = std::str::bytes_view(dead.csv);
+    let mut start = 0;
+    while start < lines.n {
+        let nl = st::line_end(lines, start);
+        let id = std::str::trim(std::str::slice(lines, start, nl));
+        start = nl + 1;
+        if len(id) > 0 {
+            let r = reclaim_one(conn, id);
+            if r < 0 { return -1; }
+            n = n + r;
+        }
+    }
+    return n;
+}
+
+/// One dead instance: 1 when reclaimed, 0 when it was not (it beat again
+/// since it was read, or a statement failed), -1 when the connection is
+/// lost. The first statement marks it reclaimed only while it is still
+/// dead and not reclaimed, inside the transaction, and the rest happens
+/// only when it did: an instance that beats again in between keeps what
+/// it holds.
+fn reclaim_one(conn: pq::PgConn, instance: String) -> Int {
+    let begun = conn.begin();
+    if !begun.ok { return if begun.err.kind == "io" { -1 } else { 0 }; }
+    let mut i = 0;
+    while i < 6 {
+        let a = db::Args { };
+        a.add(instance);
+        let r = conn.exec_params(reclaim_step(i), a);
+        if !r.ok {
+            conn.rollback();
+            if r.err.kind == "io" { return -1; }
+            log_warn(
+                "reclaiming an instance failed; left for the next tick",
+                fields2(std::log::kv("instance", instance), std::log::kv("detail", r.err.detail)),
+            );
+            return 0;
+        }
+        if i == 0 && r.rows_affected == 0 {
+            conn.rollback();
+            return 0;
+        }
+        i = i + 1;
+    }
+    let done = conn.commit();
+    if !done.ok { return if done.err.kind == "io" { -1 } else { 0 }; }
+    return 1;
+}
+
+/// The reclaim transaction, a statement at a time, for the instance `$1`.
+/// The window and period rows are released by the sums of what its
+/// requests reserved, since several may share one.
+fn reclaim_step(i: Int) -> String {
+    if i == 0 {
+        return "UPDATE api_instance SET reclaimed_at = now() WHERE id = $1 AND reclaimed_at IS NULL AND last_heartbeat_at < now() - interval '15 seconds'";
+    }
+    if i == 1 {
+        return "UPDATE limit_state s SET concurrent = s.concurrent - x.n, input_tokens = s.input_tokens - x.inp, output_tokens = s.output_tokens - x.outp FROM (SELECT l.id AS limit_id, date_bin(make_interval(secs => l.window_seconds), r.created_at, 'epoch') AS window_start, count(*) AS n, sum(r.reserved_input) AS inp, sum(r.reserved_output) AS outp FROM request r JOIN \"limit\" l ON l.id = ANY(r.limits) WHERE r.instance = $1 AND r.status = 'in_flight' GROUP BY 1, 2) x WHERE s.limit_id = x.limit_id AND s.window_start = x.window_start";
+    }
+    if i == 2 {
+        return "UPDATE budget_state s SET reserved_micros = s.reserved_micros - x.micros FROM (SELECT project, period_start, sum(reserved_micros) AS micros FROM request WHERE instance = $1 AND status = 'in_flight' GROUP BY 1, 2) x WHERE s.project = x.project AND s.period_start = x.period_start";
+    }
+    if i == 3 {
+        return "INSERT INTO usage (id, created_at, project, key, account, requested_model, status, served, input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_tokens, price_micros, currency, record) SELECT r.id, r.created_at, r.project, r.key, NULL, r.requested_model, 'abandoned', NULL, 0, 0, 0, 0, 0, 0, coalesce(r.price->>'currency', 'USD'), jsonb_build_object('id', r.id, 'created_at', r.created_at, 'project', r.project, 'key', r.key, 'requested_model', r.requested_model, 'requested_account', r.requested_account, 'endpoint', r.endpoint, 'status', 'abandoned', 'served', NULL, 'data_class', r.data_class, 'input_tokens', 0, 'output_tokens', 0, 'price_micros', 0, 'currency', coalesce(r.price->>'currency', 'USD'), 'timing', jsonb_build_object('wall_ms', 0, 'queue_ms', 0, 'load_ms', 0), 'metadata', r.metadata) FROM request r WHERE r.instance = $1 AND r.status = 'in_flight' ON CONFLICT (id) DO NOTHING";
+    }
+    if i == 4 {
+        return "UPDATE request SET status = 'abandoned' WHERE instance = $1 AND status = 'in_flight'";
+    }
+    return "DELETE FROM api_instance WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM request WHERE instance = $1)";
+}
+
+/// `brain --database URL [--nats URL]`; `--database` may come as
+/// VOICE_DATABASE_URL, and, grafted, is the habitat's database when neither
+/// is given.
+fn main() {
+    // the one sink: every logger's lines are written here (log.hl)
+    let sink = logfmt::RecordSink { };
+    let mut database = if std::env::var_exists("VOICE_DATABASE_URL") {
+        std::env::var("VOICE_DATABASE_URL")
+    } else {
+        ""
+    };
+    let mut nats = "nats://127.0.0.1:4222";
+    let mut i = 1;
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--database" {
+            database = value;
+        } else if flag == "--nats" {
+            nats = value;
+        }
+        i = i + 2;
+    }
+    // grafted, the habitat's database when none is given (store/pg_store.hl)
+    let given = database;
+    database = st::database_or_habitat(database);
+    if len(given) == 0 && len(database) > 0 {
+        log_info(
+            "grafted: the store's database is the one the habitat provisioned",
+            std::log::kv("from", st::HABITAT_DATABASE_ENV),
+        );
+    }
+    if len(database) == 0 {
+        log_error(
+            "usage: brain --database postgres://user:password@host:port/database [--nats URL] (or, grafted, the habitat's HALE_DNA_DATABASE_DSN)",
+            "",
+        );
+        std::process::exit(2);
+    }
+    let d = st::parse_dsn(database);
+    if len(d.problem) > 0 {
+        log_error(d.problem, "");
+        std::process::exit(2);
+    }
+    if len(d.password) > 0 {
+        log_warn(
+            "the database URL carries its password in the open: name its vault entry instead (postgres://user@host/db?vault=ENTRY)",
+            "",
+        );
+    }
+    // grafted, voice's own NATS is the habitat's broker (lib/broker)
+    let b = broker::broker_or(nats);
+    if len(b.problem) > 0 {
+        log_error(b.problem, "");
+        std::process::exit(2);
+    }
+    if b.grafted {
+        let own = std::secret::Credential { vault: b.vault };
+        if !own.ready() {
+            log_error(
+                "the vault holds no password for this heart's broker account",
+                std::log::kv("entry", b.vault),
+            );
+            std::process::exit(2);
+        }
+        log_info(
+            "grafted: voice's own NATS is the habitat's broker",
+            fields2(std::log::kv("user", b.user), std::log::kv("subjects", b.root + ".>")),
+        );
+    }
+    Brain {
+        database: database,
+        nats: b.url,
+        notifier: Notifier { url: b.url, user: b.user, vault: b.vault, subjects: b.root },
+    };
+}

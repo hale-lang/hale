@@ -13,7 +13,9 @@
 //! seed and across seeds, a nested subscriber, a devirtualized (quiet)
 //! subscriber, keyed subscribers (scalar and String keys), a pinned
 //! anchor, the subtrees a pinned and a pool-placed field build on their
-//! own threads, the topic's bound, and a publisher on another thread
+//! own threads, an anchor nested in another anchor's params, each replica
+//! of a replicated field (its shard by key), wildcard subscribers (#1555),
+//! the topic's bound, and a publisher on another thread
 //! hammering while the tree is built — with and without a stall that
 //! makes a park land after the claim it raced (the forward path), and
 //! under ASan. The IR tests pin the cost: a tree that needs no
@@ -801,4 +803,283 @@ fn reservations_bracket_the_params_and_close_before_the_roots_birth() {
     assert!(root_birth == usize::MAX || end < root_birth, "the scope closes before the root's birth");
     // Three claimants of the one subject: `first`, `later`, `inner`.
     assert_eq!(text.matches("call void @lotus_bus_reserve_claim(").count(), 3);
+}
+
+// ---- #1555: the shapes #1551 left unreserved ----
+
+/// An anchor nested in another anchor's params: `h` is pinned, its params
+/// build a second `App` (through the interface-typed `sub`), whose own `h`
+/// is pinned again, so the inner `Ear` is built in an init of an init.
+/// Each `Teller` publishes at birth, before the inner `Ear` exists.
+const NESTED_ANCHORS: &str = r#"
+    type Note { n: Int; }
+    topic Fact { payload: Note; subject: "rsv.nested.fact"; }
+    interface Part { fn tag() -> String; }
+    locus Teller {
+        params { n: Int = 0; }
+        bus { publish Fact; }
+        birth() { Fact <- Note { n: self.n }; }
+    }
+    locus Ear {
+        params { tag: String = "?"; }
+        bus { subscribe Fact as on_fact; }
+        fn on_fact(f: Note) { println(self.tag + " " + to_string(f.n)); }
+    }
+    locus Leaf { params { x: Int = 0; } fn tag() -> String { return "leaf"; } }
+    locus Hold { params { e: Ear = Ear { }; sub: Part = Leaf { }; } }
+    main locus App {
+        params { t: Teller = Teller { }; h: Hold = Hold { }; }
+        placement { h: pinned(core = 0); }
+        run() { std::time::sleep(50ms); }
+        fn tag() -> String { return "app"; }
+    }
+    fn main() {
+        App {
+            t: Teller { n: 1 },
+            h: Hold { e: Ear { tag: "outer" }, sub: App { t: Teller { n: 2 }, h: Hold { e: Ear { tag: "inner" } } } }
+        };
+    }
+"#;
+
+#[test]
+fn an_anchor_nested_in_an_anchors_params_claims() {
+    // The inner Ear registers in the inner anchor's init, which the outer
+    // anchor's init starts and waits for: it claims both earlier births
+    // there, through the argument block of each init (it heard neither
+    // before #1555). The outer Ear claims the outer birth and hears the
+    // inner one directly, so the reservation copies three cells.
+    let (out, stderr) = run_env("nested_anchor", NESTED_ANCHORS, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["inner 1", "inner 2", "outer 1", "outer 2"], "{stderr}");
+    assert!(
+        stderr.contains("reservation `rsv.nested.fact` closed: parked 2 copied 3 forwarded 0 shed 0 claimants 2 missing 0"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_anchor_nested_in_an_anchors_params_claims_under_asan() {
+    let (out, _) = run_env("nested_anchor_asan", NESTED_ANCHORS, true, &[]);
+    assert_eq!(out, ["inner 1", "inner 2", "outer 1", "outer 2"]);
+}
+
+/// A replicated field: three pinned `Worker` replicas, each subscribing
+/// the sharded `Jobs` (`where key == replica`, its window bounded) and the
+/// broadcast `Fact`, built after `Source`, whose birth publishes to both.
+const REPLICAS: &str = r#"
+    type Job { shard: Int; v: Int; }
+    type Note { n: Int; }
+    topic Jobs { payload: Job; subject: "rsv.rep.jobs"; keyed_by shard; }
+    topic Fact { payload: Note; subject: "rsv.rep.fact"; }
+    locus Source {
+        params { x: Int = 0; }
+        bus { publish Jobs; publish Fact; }
+        birth() {
+            let mut s = 0;
+            while s < 3 {
+                let mut v = 0;
+                while v < 3 { Jobs <- Job { shard: s, v: s * 10 + v }; v = v + 1; }
+                s = s + 1;
+            }
+            Fact <- Note { n: 7 };
+        }
+    }
+    locus Worker {
+        params { x: Int = 0; }
+        bus {
+            subscribe Jobs as on_job bounded(2, drop_old) where key == replica;
+            subscribe Fact as on_fact;
+        }
+        fn on_job(j: Job) { println("job " + to_string(j.shard) + " " + to_string(j.v)); }
+        fn on_fact(f: Note) { println("fact " + to_string(f.n)); }
+    }
+    main locus App {
+        params { s: Source = Source { }; w: Worker = Worker { }; }
+        placement { w: pinned(replicas = 3); }
+        run() { std::time::sleep(50ms); }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn each_replica_of_a_replicated_field_claims_its_own_shard() {
+    // Each replica claims (before #1555 none did, and every cell was
+    // lost): the broadcast once per replica, and the sharded topic with
+    // its own replica index as the key, so its bound of two keeps the
+    // newest two of its own shard's three, whichever replica claims
+    // first. Each job reaches exactly one replica.
+    let (out, stderr) = run_env("replicas", REPLICAS, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(
+        out,
+        ["fact 7", "fact 7", "fact 7", "job 0 1", "job 0 2", "job 1 11", "job 1 12", "job 2 21", "job 2 22"],
+        "{stderr}"
+    );
+    assert!(stderr.contains("reservation `rsv.rep.jobs` closed: parked 9 copied 6"), "{stderr}");
+    assert!(stderr.contains("claimants 3 missing 0 keys 3"), "{stderr}");
+    assert!(stderr.contains("reservation `rsv.rep.fact` closed: parked 1 copied 3 forwarded 0 shed 0 claimants 3 missing 0"), "{stderr}");
+}
+
+#[test]
+fn each_replica_of_a_replicated_field_claims_under_asan() {
+    let (out, _) = run_env("replicas_asan", REPLICAS, true, &[]);
+    assert_eq!(out.len(), 9, "{out:?}");
+}
+
+/// Wildcard subscribers built after their publishers: `Teller` publishes
+/// the concrete `rsv.wild.a`, `Shouter` a computed subject under its
+/// declared `rsv.wild.b.**`; `All` subscribes `rsv.wild.**` (neither
+/// declaration is its pattern), `Narrow` `rsv.wild.b.**`, and `Exact`
+/// the concrete subject `All` also covers.
+const WILDCARDS: &str = r#"
+    type Note { n: Int; }
+    topic Fact { payload: Note; subject: "rsv.wild.a"; }
+    locus Teller {
+        params { x: Int = 0; }
+        bus { publish Fact; }
+        birth() { let mut i = 0; while i < 4 { Fact <- Note { n: i }; i = i + 1; } }
+    }
+    locus Shouter {
+        params { x: Int = 0; }
+        bus { publish "rsv.wild.b.**" of type Note; }
+        birth() { let s = "rsv.wild.b.c"; s <- Note { n: 9 }; }
+    }
+    locus All {
+        params { x: Int = 0; }
+        bus { subscribe "rsv.wild.**" as on_any of type Note; }
+        fn on_any(f: Note) { println("all " + to_string(f.n)); }
+    }
+    locus Narrow {
+        params { x: Int = 0; }
+        bus { subscribe "rsv.wild.b.**" as on_any of type Note; }
+        fn on_any(f: Note) { println("narrow " + to_string(f.n)); }
+    }
+    locus Exact {
+        params { x: Int = 0; }
+        bus { subscribe Fact as on_fact; }
+        fn on_fact(f: Note) { println("exact " + to_string(f.n)); }
+    }
+    main locus App {
+        params { t: Teller = Teller { }; s: Shouter = Shouter { }; a: All = All { }; n: Narrow = Narrow { }; e: Exact = Exact { }; }
+        run() { yield; std::time::sleep(20ms); }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_wildcard_subscriber_hears_what_its_pattern_matches_once() {
+    // `All`'s reservation is its own pattern, so it holds the concrete
+    // publish and the computed one alike (both were lost before #1555);
+    // `Exact` claims from the concrete subject's reservation, so a cell
+    // both cover reaches each of them once, not twice.
+    let (out, stderr) = run_env("wildcards", WILDCARDS, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(
+        out,
+        [
+            "all 0", "all 1", "all 2", "all 3", "all 9",
+            "exact 0", "exact 1", "exact 2", "exact 3",
+            "narrow 9",
+        ],
+        "{stderr}"
+    );
+    assert!(stderr.contains("reservation `rsv.wild.**` closed: parked 5 copied 5 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
+    assert!(stderr.contains("reservation `rsv.wild.a` closed: parked 4 copied 4 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
+}
+
+#[test]
+fn a_wildcard_claimants_bound_is_over_everything_its_pattern_matches() {
+    // `All` keeps the newest two of the five cells its pattern matched,
+    // across both subjects, as its queue would; `Exact` keeps its own four.
+    let src = WILDCARDS.replace(
+        r#"subscribe "rsv.wild.**" as on_any of type Note;"#,
+        r#"subscribe "rsv.wild.**" as on_any of type Note bounded(2, drop_old);"#,
+    );
+    let (out, stderr) = run_env("wildcard_bound", &src, false, &[]);
+    assert_eq!(
+        out,
+        ["all 3", "all 9", "exact 0", "exact 1", "exact 2", "exact 3", "narrow 9"],
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_cross_thread_publisher_into_a_wildcard_reservation_delivers_each_cell_once() {
+    // The hammer's sinks subscribe `rsv.**` instead of the topic, and the
+    // stall forces parks after the claims they raced: each cell reaches
+    // every sink once, in order, by its own publish, a copy or a forward.
+    let src = hammer(3000).replace(
+        "bus { subscribe Feed as on_feed; }",
+        r#"bus { subscribe "rsv.**" as on_feed of type Seq; }"#,
+    );
+    assert!(src.contains(r#"subscribe "rsv.**""#));
+    let (out, stderr) = run_env(
+        "hammer_wild",
+        &src,
+        false,
+        &[("LOTUS_BUS_LOG_RESERVE", "1"), ("LOTUS_BUS_TEST_RESERVE_STALL_US", "300")],
+    );
+    assert_eq!(out, hammer_heard(3000), "{stderr}");
+    let counts = closed_counts(&stderr, "rsv.**");
+    let get = |k: &str| counts.iter().find(|(n, _)| n == k).map(|(_, v)| *v).unwrap_or(0);
+    assert_eq!(get("missing"), 0, "{stderr}");
+    assert_eq!(get("claimants"), 8, "{stderr}");
+    assert!(get("forwarded") > 0, "the stall forced no forward:\n{stderr}");
+}
+
+#[test]
+fn trees_without_the_shapes_publishing_first_reserve_nothing() {
+    // A replicated field, a wildcard subscriber and a nested anchor are
+    // each reserved only where a publish can precede the claim: built
+    // before their publishers, or with a publisher their pattern does not
+    // match, none of them emits a reservation.
+    let replicas_first = REPLICAS.replace(
+        "params { s: Source = Source { }; w: Worker = Worker { }; }",
+        "params { w: Worker = Worker { }; s: Source = Source { }; }",
+    );
+    let disjoint = WILDCARDS
+        .replace(r#"subject: "rsv.wild.a""#, r#"subject: "rsv.other.a""#)
+        .replace(
+            "t: Teller = Teller { }; s: Shouter = Shouter { }; a: All = All { }; n: Narrow = Narrow { }; e: Exact = Exact { };",
+            "e: Exact = Exact { }; t: Teller = Teller { }; a: All = All { }; n: Narrow = Narrow { }; s: Shouter = Shouter { };",
+        );
+    let nested_quiet = NESTED_ANCHORS
+        .replace("bus { publish Fact; }", "")
+        .replace("birth() { Fact <- Note { n: self.n }; }", "");
+    for (tag, src) in [("replicas_first", replicas_first), ("wild_disjoint", disjoint), ("nested_quiet", nested_quiet)] {
+        let text = ir(tag, &src);
+        assert!(!text.contains("@lotus_bus_reserve_begin") && !text.contains("@lotus_bus_reserve_claim"), "{tag} emitted a reservation");
+    }
+}
+
+#[test]
+fn a_subscriber_outside_the_tree_hears_each_cell_once_beside_a_wildcard_reservation() {
+    // `Watcher` registers before the tree, outside it (its own root, built
+    // by `main`), with the same pattern as the tree's late `All`. The
+    // reservation for `All` is a placeholder beside `Watcher`'s own
+    // registration, never instead of it: each publish reaches `Watcher`
+    // directly, once, and `All` its copy, once.
+    let src = r#"
+        type Note { n: Int; }
+        locus Shouter {
+            params { x: Int = 0; }
+            bus { publish "rsv.live.**" of type Note; }
+            birth() { let a = "rsv.live.a"; let b = "rsv.live.b.c"; a <- Note { n: 1 }; b <- Note { n: 2 }; }
+        }
+        locus All {
+            params { x: Int = 0; }
+            bus { subscribe "rsv.live.**" as on_any of type Note; }
+            fn on_any(f: Note) { println("all " + to_string(f.n)); }
+        }
+        locus Watcher {
+            params { x: Int = 0; }
+            bus { subscribe "rsv.live.**" as on_any of type Note; }
+            fn on_any(f: Note) { println("watcher " + to_string(f.n)); }
+        }
+        main locus App {
+            params { s: Shouter = Shouter { }; a: All = All { }; }
+            run() { yield; std::time::sleep(20ms); }
+        }
+        fn main() { let w = Watcher { }; App { }; }
+    "#;
+    let (out, stderr) = run_env("outside_tree", src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["all 1", "all 2", "watcher 1", "watcher 2"], "{stderr}");
+    assert!(stderr.contains("reservation `rsv.live.**` closed: parked 2 copied 2 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
 }

@@ -53,7 +53,7 @@ async function fixture(page, options = {}) {
     if (url.pathname.endsWith('/dna/tasks')) {
       script.reads.push({ query: [...url.searchParams], source: source() });
       if (url.searchParams.has('snapshot') && url.searchParams.get('snapshot') !== source().record_head) return send(409, error('snapshot_changed', 'Captured Record changed.'));
-      return send(200, wrap({ profile: 'dna.task-administration.v1', items: [], page: pageInfo([], Number(url.searchParams.get('limit') || 25), Number(url.searchParams.get('offset') || 0)), basis: { projection: 'dna.task-administration/1', memory: 'record', routing: '0', record_head: source().record_head, record_revision: source().record_revision } }));
+      return send(200, wrap({ profile: 'dna.task-administration.v1', items: [], page: pageInfo([], Number(url.searchParams.get('limit') || 25), Number(url.searchParams.get('offset') || 0)), basis: { projection: 'dna.task-administration/1', memory: 'record+ledger', record_head: source().record_head, record_revision: source().record_revision, ledger_revision: '0' } }));
     }
     if (url.pathname.endsWith('/commands')) {
       if (request.method() === 'POST') {

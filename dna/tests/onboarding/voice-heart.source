@@ -1,0 +1,14 @@
+hale-lang/voice @ 167a42a48efebab1f3a86cf39daeed5b9308b2d0 (main, the
+merge of voice#34: voice pins hale v0.27.0 and its api main holds
+std::observe::Probes on VOICE_PROBE_PORT, so a rendered deployment's
+healthcheck asks the runtime; before it voice#29's habitat attach and the
+contract shapes of voice#30-#33)
+
+The tree beside this file is that commit's (`git archive`), vendored for
+dna/tests/first_run_test.hl (GH #1653) and the deploy render golden (GH #1477) and never fetched at test time,
+less its scripts/ and .github/, which neither its programs nor its
+documents (which the graft reads) name, and less the `.gitignore`
+rules that hide a compiled binary (`/api`, `/brain`, `/node`, `/store`:
+this repository refuses such a rule, and a build writes no binary into the
+tree). Moving the pin is re-vendoring the tree at the
+new commit and naming it here.

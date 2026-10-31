@@ -29,7 +29,11 @@ locus AttemptRecord {
     // slot a release emptied is taken again before the queue grows.
     @bounded_by(self.pending_reports)
     fn keep(r: AttemptReport) {
-        if row_exists(self.journal, "attempt.outcome", r.attempt_id) || self.reported(r.attempt_id) { return; }
+        if row_exists(self.journal, "attempt.outcome", r.attempt_id)
+            || self.reported(r.attempt_id)
+        {
+            return;
+        }
         let mut i = 0;
         while i < self.pending_reports.len() {
             let k = self.pending_reports.get(i) or AttemptReport { };
@@ -53,12 +57,16 @@ locus AttemptRecord {
         let mut i = 0;
         while i < self.pending_reports.len() {
             let r = self.pending_reports.get(i) or AttemptReport { };
-            if len(r.attempt_id) > 0 && row_exists(self.journal, "attempt.outcome", r.attempt_id) { self.pending_reports.set(i, AttemptReport { }) or discard; }
+            if len(r.attempt_id) > 0 && row_exists(self.journal, "attempt.outcome", r.attempt_id) {
+                self.pending_reports.set(i, AttemptReport { }) or discard;
+            }
             i = i + 1;
         }
     }
     fn report_count() -> Int { return self.pending_reports.len(); }
-    fn report_at(i: Int) -> AttemptReport { return self.pending_reports.get(i) or AttemptReport { }; }
+    fn report_at(i: Int) -> AttemptReport {
+        return self.pending_reports.get(i) or AttemptReport { };
+    }
     fn release_report(i: Int) { self.pending_reports.set(i, AttemptReport { }) or discard; }
     fn retried() { self.reports_retried = self.reports_retried + 1; }
     // ---- edits (card 15)
@@ -127,7 +135,13 @@ locus AttemptRecord {
     // its token and until when (0 when none was taken).
     fn claim_of(attempt_id: String) -> Lease {
         let c = recorded_leg_claim(self.journal, attempt_id, self.journal.revision());
-        return Lease { key: "attempt:" + attempt_id, holder: c.holder, token: c.token, expires: c.expires, present: c.present };
+        return Lease {
+            key: "attempt:" + attempt_id,
+            holder: c.holder,
+            token: c.token,
+            expires: c.expires,
+            present: c.present,
+        };
     }
     // Whether this submission's request was refused already (a relay
     // after a lost publish is answered once).
@@ -137,7 +151,12 @@ locus AttemptRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "attempt.outcome_refused" && e.entity == s.attempt_id && request_named(e.body) == s.request { return true; }
+            if e.kind == "attempt.outcome_refused"
+                && e.entity == s.attempt_id
+                && request_named(e.body) == s.request
+            {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -154,7 +173,12 @@ locus AttemptRecord {
         b.string_field("request", s.request);
         b.int_field("at", std::time::now());
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "attempt.outcome_refused", s.attempt_id, b.result());
+        let x = self.journal.append(
+            self.journal.revision(),
+            "attempt.outcome_refused",
+            s.attempt_id,
+            b.result(),
+        );
     }
     // GH #946 hardening (D3): a leg's claim that expired with no outcome
     // is asked again, once per lease — the attempt is redelivered pending,
@@ -185,12 +209,20 @@ locus AttemptRecord {
             if len(attempt) == 0 || set_has(settled, attempt) { continue; }
             let c = recorded_leg_claim(self.journal, attempt, n);
             let said = effect_result_body(self.journal, execution_key(attempt));
-            let resolved = len(said) > 0 && !std::str::starts_with(said, "unknown") && std::str::contains(said, "(resolved by ");
-            let key = if resolved { attempt + "@resolved" } else { attempt + "@" + to_string(c.token) };
+            let resolved = len(said) > 0
+                && !std::str::starts_with(said, "unknown")
+                && std::str::contains(said, "(resolved by ");
+            let key = if resolved {
+                attempt + "@resolved"
+            } else {
+                attempt + "@" + to_string(c.token)
+            };
             if c.present && (resolved || c.expires <= now) && !set_has(self.reopened, key) {
                 let adm = recorded_attempt_admission(self.journal, attempt, n);
                 if adm.ok && owned_by(me, adm.value.task_id) {
-                    out = out + attempt + "\t" + key + "\t" + (if resolved { "1" } else { "0" }) + "\t" + c.holder + "\t" + to_string(c.token) + "\t" + to_string(c.expires) + "\n";
+                    out = out + attempt + "\t" + key + "\t" + (if resolved { "1" } else { "0" })
+                        + "\t" + c.holder + "\t" + to_string(c.token) + "\t" + to_string(c.expires)
+                        + "\n";
                 }
             }
         }
@@ -199,11 +231,24 @@ locus AttemptRecord {
     // A lease asked again: noted, so this incarnation asks it once; and,
     // when it expired unsettled, a closure the owner absorbs, named in the
     // record once per lease (GH #989).
-    fn reopening(attempt: String, key: String, resolved: Bool, holder: String, token: String, expires: String) {
+    fn reopening(
+        attempt: String,
+        key: String,
+        resolved: Bool,
+        holder: String,
+        token: String,
+        expires: String
+    ) {
         self.reopened = set_add(self.reopened, key);
         if !resolved {
             let v = append_once(self.journal, VIOLATION_KIND, "lease_unsettled/" + key,
-                violation_body("lease_unsettled", attempt, "spine", "the lease " + holder + " held at token " + token + " expired at " + expires + " with no outcome; the attempt is asked again"));
+                violation_body(
+                    "lease_unsettled",
+                    attempt,
+                    "spine",
+                    "the lease " + holder + " held at token " + token + " expired at " + expires
+                        + " with no outcome; the attempt is asked again",
+                ));
         }
     }
 }

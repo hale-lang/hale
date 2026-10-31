@@ -1,0 +1,6 @@
+// A library seed that writes to the terminal. Its declarations are
+// not the importing entrypoint's own, so `program` does not hold them:
+// importing it costs nothing until the entrypoint calls it.
+fn shout(n: Int) {
+    println("count ", n);
+}

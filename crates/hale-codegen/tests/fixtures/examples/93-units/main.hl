@@ -52,7 +52,9 @@ locus Book {
         self.fills = self.fills + 1;
         self.paid = self.paid + f.fee;
         let after = self.open - f.notional - f.fee;
-        println(f"order {Int(f.order)}: {f.notional} at a fee of {f.fee}; balance moves {after - self.open}");
+        println(
+            f"order {Int(f.order)}: {f.notional} at a fee of {f.fee}; balance moves {after - self.open}",
+        );
         self.open = after;
     }
 }
@@ -63,8 +65,16 @@ locus Desk {
     }
     birth() {
         let rate = 3bp;
-        Fills <- Fill { order: OrderId(1), notional: 1_250_000USD, fee: fee_of(1_250_000USD, rate) };
-        Fills <- Fill { order: OrderId(2), notional: 1_234_567USD, fee: fee_of(1_234_567USD, rate) };
+        Fills <- Fill {
+            order: OrderId(1),
+            notional: 1_250_000USD,
+            fee: fee_of(1_250_000USD, rate),
+        };
+        Fills <- Fill {
+            order: OrderId(2),
+            notional: 1_234_567USD,
+            fee: fee_of(1_234_567USD, rate),
+        };
     }
 }
 

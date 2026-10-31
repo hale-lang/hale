@@ -1,0 +1,125 @@
+// A Float crosses the api codec as the same double (spec/api.md § Codecs):
+// the JSON encoder writes the shortest text that reads back as it, where it
+// used to write six significant digits (99.999995 went out as `100`). The
+// protobuf codec carries the double's eight bytes. NaN and the infinities
+// have no JSON number: the encoder writes `nan` / `inf`, which no JSON
+// decoder (this one included) reads, so such a value does not cross JSON;
+// protobuf carries them as it carries every double. This program names no
+// port: the serve site is in a method nothing calls, which is all the
+// compiler needs to write the protobuf codec.
+
+type Reading { x: Float; xs: bounded[Float; 4]; }
+
+api Floats { rpc Probe::reading; }
+locus Probe { fn reading(r: Reading) -> Reading { return r; } }
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            Floats,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "f",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+    run() {
+        // protobuf: the double's eight bytes, every one of them
+        let edges = [
+            0.1 + 0.2,
+            99.999995,
+            1e-300,
+            5e-324,
+            1.7976931348623157e308,
+                -0.0,
+            1.0 / 0.0,
+            0.0 - 1.0 / 0.0
+        ];
+        for x in edges {
+            let back = __api_pb_decode_Reading(
+                __api_pb_encode_Reading(Reading { x: x }),
+            ) or Reading { x: 7.0 };
+            std::test::assert(
+                same(back.x, x),
+                "protobuf round trip of " + std::str::__float_text(x),
+            );
+        }
+        let nan = __api_pb_decode_Reading(
+            __api_pb_encode_Reading(Reading { x: 0.0 / 0.0 }),
+        ) or Reading { x: 7.0 };
+        std::test::assert(std::str::__float_text(nan.x) == "nan", "NaN crosses protobuf");
+        json_round_trips();
+    }
+}
+
+fn same(a: Float, b: Float) -> Bool {
+    return std::str::__float_text(a) == std::str::__float_text(b);
+}
+
+fn json_round_trips() {
+    let edges = [
+        0.1 + 0.2,
+        99.999995,
+        100.0 / 3.0,
+        1e-300,
+        1e300,
+        5e-324,
+        2.2250738585072014e-308,
+        1.7976931348623157e308,
+            -0.0,
+        100.0,
+        1059438285926254.25,
+        0.1
+    ];
+    for x in edges {
+        let r = Reading { x: x };
+        let text = Reading::api_encode(r);
+        let back = Reading::api_decode(text) or {
+            std::test::assert(false, "JSON did not read back " + text + ": " + err.kind);
+            return;
+        };
+        std::test::assert(
+            same(back.x, x),
+            "JSON round trip of " + std::str::__float_text(x) + " gave "
+                + std::str::__float_text(back.x),
+        );
+        std::test::assert(back.x == x, "the same double: " + text);
+    }
+    std::test::assert_eq_str(
+        Reading::api_encode(Reading { x: 99.999995 }),
+        "{\"x\":99.999995,\"xs\":[]}",
+        "the text written",
+    );
+    std::test::assert_eq_str(
+        Reading::api_encode(Reading { x: 0.1 + 0.2 }),
+        "{\"x\":0.30000000000000004,\"xs\":[]}",
+        "seventeen digits where they are needed",
+    );
+    let mut r = Reading { x: 1.0 };
+    push(r.xs, 1.0 / 3.0) or discard;
+    push(r.xs, 1e21) or discard;
+    let back = Reading::api_decode(Reading::api_encode(r)) or Reading { x: 0.0 };
+    std::test::assert(
+        same(at(back.xs, 0) or 0.0, 1.0 / 3.0),
+        "a list element crosses as the same double",
+    );
+    std::test::assert(same(at(back.xs, 1) or 0.0, 1e21), "and a large one");
+    // NaN and the infinities: not JSON numbers, refused on the way back
+    let nan_text = Reading::api_encode(Reading { x: 0.0 / 0.0 });
+    std::test::assert_eq_str(nan_text, "{\"x\":nan,\"xs\":[]}", "NaN is written as C spells it");
+    let nan_back = Reading::api_decode(nan_text) or Reading { x: -1.0 };
+    std::test::assert(nan_back.x == -1.0, "and no JSON decoder reads it back");
+    let inf_text = Reading::api_encode(Reading { x: 1.0 / 0.0 });
+    std::test::assert_eq_str(inf_text, "{\"x\":inf,\"xs\":[]}", "an infinity likewise");
+}
+
+fn main() { Desk { }; }

@@ -45,7 +45,11 @@ locus CaseRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "case.admitted" && std::json::find_string_field(e.body, "attempt_id") == attempt_id { return e.entity; }
+            if e.kind == "case.admitted"
+                && std::json::find_string_field(e.body, "attempt_id") == attempt_id
+            {
+                return e.entity;
+            }
             i = i + 1;
         }
         return "";
@@ -79,7 +83,10 @@ locus CaseRecord {
         let mut c = 0;
         while c < self.pending_cases.len() {
             let ask = self.pending_cases.get(c) or CaseAsk { };
-            if len(ask.attempt_id) > 0 && ask.request.task_id == task_id && ask.request.work_id == work_id {
+            if len(ask.attempt_id) > 0
+                && ask.request.task_id == task_id
+                && ask.request.work_id == work_id
+            {
                 self.pending_cases.set(c, CaseAsk { }) or discard;
                 return ask;
             }
@@ -119,7 +126,15 @@ locus CaseRecord {
     // takes it, "" for this owner's own) and the performer whose attempt
     // it is (version 2, card 17: the report of its completion answers as
     // that performer).
-    fn body(c: CaseAsk, case_id: String, terms: Handoff, obligation: String, by: String, narrative: String, me: String) -> String {
+    fn body(
+        c: CaseAsk,
+        case_id: String,
+        terms: Handoff,
+        obligation: String,
+        by: String,
+        narrative: String,
+        me: String
+    ) -> String {
         let req = c.request;
         let b = std::json::Builder { };
         b.begin_object();
@@ -137,7 +152,10 @@ locus CaseRecord {
         b.string_field("acceptance", terms.practice);
         b.bool_field("evidence_required", terms.evidence_required);
         b.string_field("by", by);
-        b.string_field("narrative", if len(narrative) > 0 { "handed: " + narrative } else { "handed: a person's work" });
+        b.string_field(
+            "narrative",
+            if len(narrative) > 0 { "handed: " + narrative } else { "handed: a person's work" },
+        );
         b.string_field("owner", me);
         b.string_field("to", terms.theirs);
         b.end_object();
@@ -171,10 +189,23 @@ locus CaseRecord {
         // the tooling of the day reads a Task from its birth: the handed
         // row follows the born row, or waits for the next completion
         if !row_exists(self.journal, "task.born", case_id) {
-            let x = self.journal.append(self.journal.revision(), "task.born", case_id, work + ": " + std::json::find_string_field(adm, "objective"));
-            if !x.ok { self.hold_rows(case_id); return CaseRows { held: "task.born", why: x.error }; }
+            let x = self.journal.append(
+                self.journal.revision(),
+                "task.born",
+                case_id,
+                work + ": " + std::json::find_string_field(adm, "objective"),
+            );
+            if !x.ok {
+                self.hold_rows(case_id);
+                return CaseRows { held: "task.born", why: x.error };
+            }
         }
-        if row_exists(self.journal, "task.handed", case_id) || row_exists(self.journal, "task.transfer_requested", case_id) { self.release_rows(case_id); return CaseRows { ok: true }; }
+        if row_exists(self.journal, "task.handed", case_id)
+            || row_exists(self.journal, "task.transfer_requested", case_id)
+        {
+            self.release_rows(case_id);
+            return CaseRows { ok: true };
+        }
         let assignee = std::json::find_string_field(adm, "assignee");
         let theirs = std::json::find_string_field(adm, "to");
         let transfer = len(theirs) > 0;
@@ -186,7 +217,10 @@ locus CaseRecord {
         if len(retired) > 0 { hb.string_field("retired_assignee", retired); }
         hb.string_field("obligation", std::json::find_string_field(adm, "obligation"));
         hb.string_field("acceptance", std::json::find_string_field(adm, "acceptance"));
-        hb.bool_field("evidence_required", std::str::trim(std::json::find_field_raw(adm, "evidence_required")) == "true");
+        hb.bool_field(
+            "evidence_required",
+            std::str::trim(std::json::find_field_raw(adm, "evidence_required")) == "true",
+        );
         hb.string_field("by", std::json::find_string_field(adm, "by"));
         hb.string_field("narrative", std::json::find_string_field(adm, "narrative"));
         hb.string_field("case", case_id);
@@ -199,7 +233,15 @@ locus CaseRecord {
         let y = self.journal.append(self.journal.revision(), kind, case_id, hb.result());
         if !y.ok { self.hold_rows(case_id); return CaseRows { held: kind, why: y.error }; }
         self.release_rows(case_id);
-        return CaseRows { ok: true, notice: if transfer { case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept" } else { case_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }) } };
+        return CaseRows {
+            ok: true,
+            notice: if transfer {
+                case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept"
+            } else {
+                case_id + " handed to "
+                    + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" })
+            },
+        };
     }
     // An admitted case whose compatibility row the record refused: held,
     // once, for `RecordResumed` and `redrive`. One slot per case held at

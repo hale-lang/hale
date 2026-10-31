@@ -31,3 +31,49 @@ version = "1"
 path = "packs/founder.pack"
 summary = "one person holds every seat the organization leaves open: the Board, each part's dev and reviewer, each operator"
 params = { founder = "" }
+
+[[pack]]
+name = "standard"
+version = "1"
+path = "packs/standard.pack"
+summary = "the standard practices every organism adopts at birth, each proposed as law: first, logs are structured; and a template per watched upstream"
+params = { integration = "", position = "", source = "", kind = "", every = "", codebase = "none" }
+
+[[pack]]
+name = "habitat"
+version = "1"
+path = "packs/habitat.pack"
+summary = "the habitat's fixed positions: placement, backends, identity and admission"
+params = { holder = "" }
+
+[[pack]]
+name = "hale-organism"
+version = "1"
+path = "packs/hale-organism.pack"
+summary = "the hale organism's positions and their mandates: the compiler, the DNA, voice, and review before merge"
+params = { board = "" }
+
+# Saplings: organisms' seeds, each pinned by repository, revision and
+# digest (the sha256 of `git ls-tree -r --full-tree <revision>`), with the
+# packs it adopts at graft. `hale habitat graft <name>` fetches the pinned
+# revision into the habitat's store, checks the digest and grafts it; a
+# newer revision here is filed for the habitat's Board, never taken.
+# The toolchain carries one: the organism that makes it. An application
+# (voice, say) is a nursery of its own, a `nursery.toml` at its repository's
+# root offering itself (`repo = "."`), which the Board trusts with
+# `hale habitat nursery add <its repository>`.
+
+# The hale organism (D8): the organism that works on the Hale toolchain. Its
+# genome is the tree the toolchain carries at saplings/hale, embedded as the
+# packs are, with no remote (`toolchain:` names it); its codebases
+# (hale-lang/hale, hale-lang/voice) are listed in that tree's hale.toml and
+# attached at its graft. The digest is that tree's, made a repository (a test
+# holds the two equal); the graft makes the organism's own repository from it
+# in the habitat and mirrors it to the habitat's forge.
+[[sapling]]
+name = "hale"
+summary = "the organism that works on the Hale toolchain: its codebases are hale-lang/hale and hale-lang/voice"
+repo = "toolchain:saplings/hale"
+revision = "embedded"
+digest = "sha256:495126fbfb6bf33bcc8471f79867f2c7bb1801810510c9b217cc06c40a68d1c1"
+packs = ["hale-organism"]

@@ -146,6 +146,23 @@ Phase 2b entry in `spec/stdlib.md`.
   `false` / empty for pointer-shaped types), mirroring the
   statement form's silent-no-op fallthrough.
 
+**An enum-constructor pattern's values** are each a binding, `_` or a
+literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
+the nested pattern; bind the value and match or read the binding in the
+arm.
+
+**A literal in a pattern** is a value of the type it is matched
+against, compared as lowering compares them (an identity's or a
+range's scrutinee is its `Int`): `match n { "a" -> … }` over an
+`Int`, or the `2` of `(1, 2)` against an `(Int, String)`, is refused
+at the literal ("this pattern is of type \`String\`, and the value
+matched is of type \`Int\`"). A quantity literal in a pattern is the
+quantity it is in an expression, converted into the scrutinee's
+denomination: `match d { 1min -> … }` over a `Duration` matches sixty
+seconds. A Decimal literal takes the scrutinee's scale. The values in
+an enum constructor's pattern (`Fee::Flat(2.50d)`) are matched against
+the variant's declared types the same way.
+
 **Scrutinee-less form.** `match { cond -> body, else -> body }`
 omits the scrutinee and tests guards directly:
 
@@ -196,6 +213,62 @@ A block's trailing expression with no `;` is not a statement and
 is not judged here (§ "Expressions — `if` and block tails"). Before
 this rule the checker accepted `a + 2;` and the backend refused it
 with no file or line.
+
+## Expressions with no value
+
+A call to a fn that returns nothing, an `or` on a `() fallible(E)`
+call (`push(self.marks, t) or { }`, `write_file(p, s) or discard`),
+and an `if` / `match` / block with no tail value produce no value:
+their type is `()`, and there is no `()` value to bind, store or
+compute with. Such an expression is a statement or nothing. Where a
+place takes the type of what it is given rather than checking it
+against a declared one — a `let` (with or without an annotation),
+a tuple or array element, an operand, a generic fn's argument — the
+check refuses it at the expression:
+
+```text
+main.hl:7:20: type error: let `full` needs a value, and this
+expression produces none (its type is `()`): a call to a fn that
+returns nothing, an `or` on a `() fallible(E)` call, or an `if` /
+`match` / block with no tail value. Write it as a statement of its
+own (`call() or { ... };`), or give it a value to produce.
+```
+
+A place with a declared type (a parameter, a field, a condition, a
+return) already refused `()` as a type mismatch. Until 2026-10-13
+the others checked clean and the build refused them with no file or
+line.
+
+## Operators and their operand types
+
+`==` `!=` `<` `>` `<=` `>=` and the arithmetic, bitwise and logical
+operators apply to these operands (both of one type; an `Int` widens
+into a `Float`, F.23):
+
+| Operand | Operators |
+|---|---|
+| `Int` (an identity's and a range's are the unit dialect's, spec/units.md) | `+ - * / %`, `& \| ^ << >>`, unary `-` `~`, every comparison |
+| `Float` | `+ - * /`, unary `-`, every comparison |
+| `Decimal<S>` | `+ - * / %`, unary `-`, every comparison (one scale) |
+| `Duration`, `Time`, a quantity, a point | the unit dialect's algebra (spec/units.md) |
+| `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
+| `String` | `+` (concatenation; `String + <printable>` renders the other side), every comparison |
+| an enum | `==` `!=`: the tag, then each payload by its own `==` (a nested enum's included), so only when every payload type of every variant has `==`; a generic enum's instance by its payloads with its arguments in place (`Value<P>` compares only when `P` does) |
+| `Bytes`, a struct, a tuple, an array, a `bounded`, a locus, an interface, a perspective | none |
+
+Anything else is refused at the operator, naming the operand and
+what its type has: "\`<\` does not apply to \`Bool\`: a \`Bool\` has
+\`==\`, \`!=\`, \`&&\`, \`\|\|\` and \`!\`". A compound assignment
+(`x += v`) is its operator's: `b += true` on a `Bool` is refused the
+same way. A struct, tuple or array is compared or combined through its
+parts, and so is an enum one of whose payloads is one ("\`==\` does not
+apply to \`E\`: its variant \`B\` carries \`Inner\`, whose variant
+\`X\` carries a struct (\`P\`), which has no \`==\` …"; until 2026-10-17
+the check passed it and the build refused it, "match on TypeRef not
+supported", and an enum payload of an enum was refused at the build even
+when it compared). Until 2026-10-13 the check held only that the two sides were
+one type, and the build refused `true < false`, `p == q` of two
+structs, `b"a" + b"b"` and `!n` with no file or line.
 
 ## Binary data — Bytes and conversion
 
@@ -326,8 +399,9 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    including the field inits of a nested locus literal written in
    that default — `self.X` reads the locus being instantiated
    (earlier-declared siblings only; a default that reads a
-   later-declared sibling is a compile error, since defaults run
-   in declaration order). Inside an *override* expression, `self`
+   later-declared sibling, or its own param, is a type error at
+   the read, since defaults run in declaration order). Inside an
+   *override* expression, `self`
    belongs to the code that wrote the literal — the enclosing
    method's locus, or the enclosing params block when the literal
    itself sits in a default (F.4 call-site rule). This holds
@@ -580,7 +654,11 @@ lowered in (`spec/decisions.md` F.39).
   inside the callee and handed back, so the expression that
   consumes the handle is its owner, with **the same timing as a
   let-bound literal**. A binding owns what it names; a call
-  result nothing names is owned by the enclosing fn's scope. What
+  result nothing names is owned by the enclosing fn's scope. A
+  result **discarded** in statement position (`make(...);`, or a
+  call through a fn value, `f(...);`) is torn down at the
+  statement, as a discarded literal is: nothing can reach it
+  after the `;` (GH #1569). What
   a binding names is the expression written **at that position**,
   not a factory call nested inside it: in `let x = combine(a,
   make());` — and in `return combine(a, make());`, where the
@@ -622,7 +700,11 @@ lowered in (`spec/decisions.md` F.39).
   result to the caller, and the frame does not reclaim the locus
   it returns. Read through such calls, a fn whose every return is
   fresh is a factory like any other, so its caller's binding owns
-  the result; a call that can hand back one of several arguments
+  the result (fns handing back each other's calls are factories when
+  every return of theirs that is not such a call builds: `fn a(n)
+  -> W { if n == 0 { return W { }; } return b(n - 1); }` with `fn
+  b(n) -> W { return a(n); }`; a cycle with no way out returns
+  nothing, GH #1569); a call that can hand back one of several arguments
   (`return pick(x, y, c);`) hands back the one it returned, and
   the frame reclaims the rest. (Until the friction sweep of
   2026-10-12 the frame reclaimed it on the way out, and a caller
@@ -680,6 +762,57 @@ external handle passed in; or a call that hands back a locus
 somebody else built) is excluded at whatever depth it appears,
 and is torn down once by its real owner, at its owner's timing.
 
+**An array or a tuple of loci is the same tree.** A param holding an
+array or a tuple of a locus type (`cs: [C; 2] = [C { }, C { }]`, `t: (C,
+D) = (C { }, D { })`, or the same written at the owner's literal) holds
+each element its initializer builds as a parent-owned child: built in
+the owner's arena, drained before the owner in declaration order with
+element order inside, torn down after the owner's `dissolve()` body in
+the same order, each reclaimed once — whatever the owner's placement. An
+element written into the field later (`self.cs[i] = c`) is not the
+owner's: the element it replaces, while still one the literal built, is
+reclaimed at the store, and the instance written in is left to its own
+owner. A locus literal written into an element (`self.cs[i] = C { }`,
+`self.t.0 = C { }`, `h.cs[i] = C { }` through a handle), or a literal of
+the whole array or tuple written over the field (`self.cs = [C { }, C {
+}]`), is the reassignment of a locus field, element by element: the
+element it replaces reclaimed while the owner owns it, the new one built
+in the owner's arena as its child and torn down with the owner, not with
+the method that wrote it. A whole array or tuple written from anywhere
+else (`self.cs = xs`) leaves the instances written in to their owners.
+The value is read before the store, and an element the owner owns is
+reclaimed once the field no longer holds it: one written back in
+(`self.cs = [self.cs[1], self.cs[0]]`) stays the owner's, at its new
+place. The owner tracks every element, whatever the array's length, and
+a path to the owner is evaluated once (`ls[next()].cs[0] = C { }` calls
+`next` once). The placement table holds a row per element (`cs.0`,
+`t.1`), and the lifecycle plan owes each one its teardown, in element
+order. A name handed whole (`cs: shared`) is a borrow, as above. A param
+written without a type takes its default literal's (`cs = [C { }, C {
+}]` is `cs: [C; 2]`, `t = (C { }, 1)` is `t: (C, Int)`, `n = [1, 2]` is
+`n: [Int; 2]`): an array of one type's literals, a tuple of literals, a
+locus or record literal.
+
+**A locus handed back inside a tuple or an array** (`fn both(w: W) ->
+(H, W) { return (H { w: w }, w); }`) is owned by whatever holds the
+aggregate (GH #1569): a param holding it (`p: (H, W) = both(W { })`)
+holds each part the fn built, and each argument handed back as a part,
+as its children, exactly as one built from a literal; a binding leaves
+them to the frame, which tears them down at its flush (each iteration's
+in a loop, before the next builds its own); a call whose result is
+discarded has them torn down at the statement, in order, then the
+arguments they kept. An argument a part keeps in a field (`H { w: w }`)
+goes with the last part keeping it, so every part that keeps it is torn
+down first. A builder that keeps an argument in a literal nested in the
+locus it returns (`K { a: H { w: w } }`) gives it to that nested holder.
+A tuple's parts of other types (`fn mk2() -> (W, Int) { return (W { },
+1); }`) change none of this: each locus part the fn builds is owned as a
+factory's direct return is, and so is each one a call through a fn value
+hands back, or a fn handing back such a call's result (`fn apply(f: fn()
+-> (W, Int)) -> (W, Int) { return f(); }`). A param holding a tuple with
+a locus part (`t: (W, Int) = (W { }, 5)`) holds it as an array or a
+tuple of loci holds its elements.
+
 **What the field is DECLARED as does not change any of this.**
 A param typed by a *contract* — an `interface` the child
 satisfies (`params { j: Counter = Churner { } }`) or a
@@ -703,6 +836,20 @@ only value the field can hold, and `or <substitute>`, where the
 field owns whichever branch ran. A `reperspective` swap
 does not change it either — the swap replaces code and keeps
 state, so the holder still owns the impl its designation built.
+
+A locus literal written as a call's **argument** is an expression-position
+temporary of the frame unless the callee keeps it (GH #1566): a free fn
+that hands the argument back unchanged (`fn id(w: W) -> W { return w;
+}`) makes it the call's value, owned wherever the call's value is
+(`Routes { w: id(W { }) }` is `Routes { w: W { } }`), and a fresh factory
+that keeps it in a field of the locus it builds and returns (`fn mk(w:
+W) -> Routes { return Routes { w: w }; }`, or through a `let` bound to
+that literal) makes it that field's child, torn down with the returned
+locus — when the returned locus is held by a field, a placement or a
+binding. Which fns do either is read from their bodies: the parameter
+named nowhere but in the value handed back. Before, such an argument
+was reclaimed when the frame that built it ended, while the locus the
+call built still held it.
 
 A locus literal written inside the initializer of a param that
 **cannot hold a locus** is not an ownership transfer, because
@@ -1017,10 +1164,10 @@ is why the rule is shaped this narrowly:
   of its own; it's a method-dispatch wrapper around state that
   lives elsewhere.
 - **Mechanical sympathy** — every "method returns locus"
-  call site triggers per-call allocation through the m90
-  payload-arena routing (program-lifetime, never freed). The
-  pattern leaks by construction. Removing the shape removes
-  the allocation.
+  call site triggers a per-call allocation outside the frame
+  through the m90 routing (released at the instance's reclaim
+  since GH #1570, but still an allocation and a reclaim per
+  call). Removing the shape removes the allocation.
 
 These aren't five rules layered on top of each other — they're
 five lenses pointing at one structural error. The compiler
@@ -1171,28 +1318,50 @@ trigger of the m90 leak goes away by construction.
 
 ### Method-returning-locus heap allocation (m90)
 
-When a method declares `-> Some` and instantiates a `Some`
-in its body, the instance is allocated via the lazy global
-payload arena (program-lifetime), **not** the caller's stack
-or the callee's arena. Both the eager dissolve and the
-deferred-frame push are suppressed at the instantiation site;
-the locus semantically "moves" to the caller and lives for
-the program.
+When a fn or a method declares `-> Some` (or a tuple, an array or an
+interface that holds a `Some`) and instantiates a `Some` in its body,
+the instance's struct cannot live in the callee's frame: a stack slot
+is dangling the moment the fn returns, so the first read after the
+return sees still-valid memory and the second sees overwritten state.
+The struct is allocated outside the frame, and both the eager dissolve
+and the deferred-frame push are suppressed at the instantiation site;
+the locus moves to the caller, whose binding, holder or statement owns
+it (§ "Ownership", GH #1569). This covers both `return Some { ... };`
+and `let s = Some { }; ...; return s;`, and the locus literals the
+returned instance's params build.
 
-This is the codegen-side fix for "second method call on a
-returned locus reads stale state" — the first read sees
-still-valid memory, the second sees overwritten state. Heap
-allocation gives the returned handle program-lifetime safety
-at the cost of leaking the locus instance + its arena until
-process exit. Acceptable trade-off for v1 (matches `Bytes`
-lifetime semantics).
+**The struct goes back at the end of the instance's reclaim** (GH
+#1570). It comes from the runtime's returned-struct allocator
+(`lotus_returned_struct_alloc`) and is released at its reclaim's
+`ReleaseStruct` step, the last one: after the latch, the cancel of
+its queued runs, the wait for its admitted runs (a deferred reclaim
+releases when its runs end) and its arena's release. A loop over a
+factory therefore holds what is alive, not what was ever built: a
+discarded `mkw(i);`, a `let w = mkw(i);` and a call through a fn
+value each leave memory flat, however many locus types the loop hands
+back. A released struct is listed for reuse by a later struct of the
+same size, on a list of its own size (every size reachable, none scanned
+past a cap), and never returned to the
+operating system, as an accepted child's struct is: a stale teardown
+path reading the instance's `__arena` latch still reads memory the
+process owns, and finds it null. Where chunk recycling is off
+(`LOTUS_NO_CHUNK_POOL`, the default under a sanitizer, GH #816) each
+struct is allocated and freed on its own, so a read after the release
+is a sanitizer report.
 
-A return-slot ABI (caller passes a struct out-pointer +
-adopts the locus into its own deferred-dissolves frame) would
-tighten this without leaking — deferred to v1.x. Covers
-both `return Some { ... };` and `let s = Some { }; ...;
-return s;` because `current_user_fn_ret` is set during either
-literal's lowering.
+Which instances came from the allocator is decided per site and is
+not a property of the type, since a literal of the same type in a
+frame or a field lives elsewhere; the allocator records what it
+handed out and the release answers only for those. Codegen emits the
+release only in the reclaim of a type some fn's or method's declared
+return type names (through a tuple, an array or an interface it
+satisfies) or that is a locus field of one; a program that returns no
+locus from a fn emits nothing new. A literal of a type outside that
+set (a generic fn's `T`) and the program-lifetime literals codegen
+builds for `bindings { }` transports, adapters and codecs keep the
+program-lifetime payload arena. Deferred bloom (#1553), where a fn
+returns its plan and the locus is born at the consuming position, is
+the direction; this allocator is what the struct does until then.
 
 ## `@sealed` and a revealed secret
 
@@ -1226,7 +1395,19 @@ reveals it:**
     the body or content type of `std::http::post` /
     `std::http::Client.post`; the `headers` or `body` of a
     `std::http::ClientRequest { … }` literal handed to
-    `std::http::request` / `Client.request`. A descriptor, host, port,
+    `std::http::request` / `Client.request`, or written as the `req` of
+    a `std::http::BodyReader { … }` / `SseReader { … }` literal that
+    does not name `deferred` (or names it `false`): its birth sends it,
+    as `request` does (following any redirect its `follow_redirects`
+    allows), and then blanks the request's `headers` and `body`, so read
+    back through the reader's `req` they are empty and nothing it sent is
+    retained; an `Authorization` line is not sent on once a redirect
+    changes the origin. A reader whose literal names
+    `deferred` sends nothing at birth and keeps its `req`, readable,
+    until the opening, so a reveal into its request is refused; such a
+    reader presents a credential as `bearer: c`, which the credential
+    writes onto the wire itself, nothing revealed (`spec/stdlib.md` §
+    "Reading a streamed body"). A descriptor, host, port,
     URL or method is not the wire's: an `HttpError` repeats the host
     back, so a secret there is refused;
   - a **comparison of the whole value**: `==`, `!=`, a `match` whose
@@ -1245,6 +1426,12 @@ reveals it:**
   transparent (every call it makes is to such a fn, or writes a builder
   it made itself; it calls no method or fn value, builds no locus,
   assigns only its own locals, and sends, stores and prints nothing).
+  The list holds the conversions, encodings, hashes and
+  percent-encoding (`std::url::encode`, `decode`, `decode_query`).
+  A secret that reaches a fn of the program's own that is not
+  transparent is refused there, and the diagnostic names the first
+  thing in that fn's body that keeps it from being one (`` `tag`
+  calls `println`, which may keep what it is handed ``).
 - It is **never** bound to a `let` or a `match` pattern, assigned,
   stored in a field, a param default or a locus literal, returned,
   raised, published, printed, iterated, used to decide a branch, or
@@ -1362,13 +1549,21 @@ matching C primitive:
 | `pool X of T` | `self.X.acquire() -> Cell<T>` (no args) | `self.X.release(c)` (one Cell<T> arg) |
 | `heap Y of T` | `self.Y.alloc() -> Cell<T>` (no args) | `self.Y.free(c)` (one Cell<T> arg) |
 
-Calling a pool method on a heap slot (or vice versa) is a
-build-time diagnostic that names the right method for the
-slot kind. The `Cell<T>` cell type is documented in
+Calling a pool method on a heap slot (or vice versa), or any
+other method on a slot, is a type error at the method name that
+names the right methods for the slot kind:
+
+```
+main.hl:7:38: type error: pool slot `entries`: method `alloc` is not
+available (`alloc` is a heap slot's) — use `acquire()` to borrow a
+cell and `release(cell)` to return it
+```
+
+The `Cell<T>` cell type is documented in
 `types.md`; struct cells support `cell.field` read/write (v1.x-2)
 and `Cell<T>` carries slot-of-origin so cross-slot release is
-a hard error (v1.x-5). Primitive cells (`Cell<Int>` etc.) still
-reject field access with a focused diagnostic — direct
+a type error at the cell (v1.x-5). Primitive cells (`Cell<Int>` etc.)
+still reject field access, at the field name — direct
 load/store through a primitive Cell handle (e.g. `*cell`) is
 the natural next surface but no current workload demands it.
 
@@ -1403,7 +1598,10 @@ as_parent_for Child;`) shipped via v1.x-4 (surface) + v1.x-4b
 `__slot_borrowed_mask` field carries one bit per slot, set when
 the slot was borrowed from a parent's matching slot at accept
 time; the dissolve pass skips destroy on borrowed slots so the
-parent retains ownership of the underlying allocator.
+parent retains ownership of the underlying allocator. The child's
+slot takes the parent's allocator, so it is declared with the same
+name, the same kind (`pool` or `heap`) and the same cell type; each
+mismatch is a type error at the `as_parent_for` clause's locus name.
 
 ## Lifecycle method invocation
 
@@ -1653,6 +1851,14 @@ transition**, not a value store. It is lowered **break-before-make**:
    child from params-init.
 3. The field is repointed at the live new instance.
 
+The same transition runs when the field is replaced from outside its
+owner (`h.loc = L { … }` in a free fn, `hs[i].loc = L { … }`), with
+the owner — the locus the store's path reaches — in place of `self`
+(GH #1561; `types.md` § A store into a locus's field is the locus's
+own). Before, the new instance was the replacing frame's temporary,
+dissolved when that frame returned, and the old one was never
+dissolved.
+
 The old instance's drain and dissolve finish before the new instance
 is constructed, unless its own failure is still outstanding: then
 its whole teardown follows its handler, and a restart that handler
@@ -1769,8 +1975,14 @@ chain the walk cannot follow is left alone, never guessed at. A
 borrow the holder reads only in `birth()` is birth-scoped and sound —
 the instantiation runs inside the frame that owns the handle — which
 is the shape a resident uses to copy what it was handed before the
-dispatch ends. Not decided here: a borrow across thread domains
-(GH #730). A container a handler built and handed to a resident's
+dispatch ends. The other axis of a borrow, the thread domain, is a rule
+of its own (GH #984): a borrow is read from its holder's thread, so a
+handle whose instance runs on another pool is refused where it is handed
+over, naming both domains and the hand-over (`spec/types.md` § "One
+instance is never shared across pools", GH #1566); a type that
+synchronizes access from another domain is admitted, and a value that
+crosses by the bus is a copy, not a borrow. A program wrong on one axis
+is told that axis alone. A container a handler built and handed to a resident's
 form-typed field is the `let` row of this table (GH #712); the data
 it holds is copied at the store and is not a borrow.
 
@@ -2140,9 +2352,10 @@ compiler carries no code to accept them. `spec/api.md` is the contract:
   requires: [role]; … }` block, or `@rpc` on a handler (§ Surfaces and their
   rows). A call is a call of the handler, authorized against the row's
   `requires`; a read is an `rpc` whose handler returns the value;
-- where and how it is offered is a **serve site**,
-  `api::serve(Surface, unix::Rpc { … } | http::Rpc { … } | mcp::Rpc { … },
-  as: "name", bound: N, on_full: refuse)`, in the main locus (§ Serving), over
+- where and how it is offered is a **serve site**, the literal of an
+  exposure param, `web: api::Exposure = api::serve(Surface, unix::Rpc { … } |
+  http::Rpc { … } | mcp::Rpc { … }, as: "name", bound: N, on_full: refuse);`,
+  in the params of the locus that holds it (§ Serving; GH #1565), over
   a transport that is a locus with lifecycle (§ The `Rpc` interface), under a
   role source and a bearer source the program supplies (§ Identity sources);
 - a stream is a **topic bound to a hub**, `bindings { Topic: self.hub
@@ -2752,6 +2965,23 @@ first `main locus` of the seed's own, a module-nested one included;
 the refusal is what changed for the one seed that ran differently,
 whose only `main locus` is module-nested.
 
+The entry is started by the seed's top-level `fn main`, which
+instantiates it; a `main locus` does not start itself. A seed that
+declares its own top-level `main locus` and no `fn main` checks clean
+— an application another seed imports and starts is checked alone that
+way — but nothing in it starts the locus, so `hale build` and `hale
+run` refuse it with one located error at the locus's name (until
+2026-10-14 the build's spanless `program has no fn main()`):
+
+```text
+main.hl:1:12: codegen error: a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`
+```
+
+A program with neither says `program has no fn main(): a native
+program starts at its top-level fn main`. A module that `@export`s is
+the wasm entry inversion's instead (an export-only module needs no `fn
+main`: `spec/ffi.md` § "`@export` — exports").
+
 Whether a thread runs beside the bus's main drain, so that the bus
 queue takes its lock, is decided from what the build deploys (F.40
 phase 3, E2): a domain of the placement table that is not main (a
@@ -2784,10 +3014,20 @@ into `fn main`'s prelude, right after the bus queue is published:
 - Unix bindings call
   `lotus_bus_register_remote(subject, url, role)`.
 - Adapter bindings first instantiate the adapter locus with
-  program-lifetime allocation (same m90 routing the
-  `-> LocusRef(L)` return path uses), resolve the locus's `send`
+  program-lifetime allocation (the payload arena, which the
+  `-> LocusRef(L)` return path also used before GH #1570), resolve the locus's `send`
   method's function pointer, then call
   `lotus_bus_register_remote_adapter(subject, self, send_fn)`.
+  The adapter literal is lowered there, before the `main` locus
+  that declares the binding is built, so the checker checks it as an
+  expression of a free fn: no `self`, no enclosing locus. A read of
+  `self` anywhere in its inits (`Remote: Relay { url: self.url }`), a
+  statement that acts on an enclosing locus (`terminate`, `violate`,
+  `<-`, `reperspective`), an unknown name or a field of the wrong type is
+  refused at check time, where it is written, with the free fn's
+  diagnostic and why it applies, rather than reaching lowering. Its
+  values are written in the literal or are the adapter's own `params`
+  defaults.
 
 Subjects use the desugared wire form (so a binding for
 hierarchical `Login` registers as `"events.login"`). Topics with
@@ -3256,7 +3496,14 @@ main locus App {
    field name → typecheck error pointing at the params block.
 3. **Field values are locus types.** A placement entry on a
    non-locus field (`port: Int`, `host: String`) is a typecheck
-   error — placement applies only to locus instances.
+   error — placement applies only to locus instances. An exposure
+   param (`web: api::Exposure = api::serve(…)`, GH #1565) is one,
+   and its row places the exposure's listener and the connections
+   it starts while the exposure stays with `main`, beside the
+   sources it calls: the row is `cooperative(pool = X) where
+   async_io`, and any other is refused (spec/api.md § Serving). A
+   server locus's listener runs where the row of the param that
+   holds it places it, when that row hosts `async_io`.
 4. **At most one placement entry per field.** Duplicate keys
    are a parse error.
 5. **Pool names use snake_case Idents.** The set of pool names
@@ -3819,6 +4066,215 @@ spawns one OS worker thread per inferred pool name beyond
 named purely by use site, and the runtime materializes them
 on demand at startup.
 
+
+## Probes
+
+A param of the main locus of type `std::observe::Probes` (GH #1477,
+2026-10-19) asks the runtime to serve the process's health over HTTP on
+its `port`, every interface:
+
+```hale,fragment
+params {
+    probe_port: Int = 9090;
+    probes: std::observe::Probes = std::observe::Probes { port: self.probe_port };
+}
+```
+
+Since #1565 what the runtime serves is an ordinary param of main,
+recognized by its type as a hub and an exposure are; there is no
+keyword. The check allows one, on the main locus, built by its default:
+a param of the type on another locus, a second one, and a construction
+of the main locus that supplies it are refused. Its port is a param
+literal's field, checked as one, and a default reading `self.<param>`
+is a default like any other. Nothing is served, and nothing is sampled,
+in a program that declares none.
+
+The param's `birth()` starts the probes on a thread of the runtime's
+own, not on a pool or a thread the program places: the probes judge the
+program's pools and its main thread, so they must answer while any of
+those is wedged or busy. The param is declared and named like any
+other; a placement does not apply to the thread. A port that cannot be
+bound fails the start. `wasm32` has no threads or sockets and serves
+none.
+
+| path | answers |
+|---|---|
+| `GET /healthz` | liveness: `200 ok`, unless a queue holds work its consumer has not touched for the stall window (main's queue, each cooperative pool's; 10 s, `LOTUS_PROBES_STALL_MS`), then `503` and `stalled: <queue> …` (`main`, `pool:<name>`) |
+| `GET /readyz` | readiness: `503 starting` until the main locus's births are done (its params' children born, a placed child's readiness awaited, its bindings open, its boot subscriptions in place, its `run()` not yet entered), `200 ready` from then, `503 draining` once the process drains (a signal's drain or the main locus's tree drain, `self.draining`) |
+| `GET /capacity` | `application/json`: `{"ready", "draining", "queues": [{"name", "pending", "capacity", "stalled_ms"}]}`, a queue's cells waiting, the cells it holds before it grows or spills, and how long it has stalled (0 while it moves) |
+
+Any other path is `404`, and any method but `GET` and `HEAD` is `405`;
+each connection gets one response and closes. The readings cost the
+program nothing on its own paths: once a second the probe thread reads
+each queue's depth and its consumer's heartbeat (the count every drain
+and every cell taken bumps), and a queue is stalled while it holds work
+and that count stands still. A pool worker running one long cell with
+nothing waiting is not stalled.
+## Observe backends (GH #1592)
+
+A program is observed through a backend it holds as a param of its main
+locus, beside the others, and places with `placement { }` as any other
+(§ Placement block). Nothing is observed unless the
+program holds one.
+
+```hale
+main locus App {
+    params {
+        reg: std::metrics::Registry = std::metrics::Registry { namespace: "app" };
+        metrics: std::observe::Scrape = std::observe::Scrape { port: 9100 };
+    }
+    placement { metrics: pinned; }
+}
+
+fn main() { App { }; }
+```
+
+**Recognized by its type.** The compiler recognizes a backend param by
+its type, `std::observe::Scrape` (metrics) or `std::observe::Otlp`
+(lifecycle events, S4), as it recognizes a hub
+(`observe_expand`, beside `hub_expand`):
+
+- it numbers it: the default literal carries the param's number
+  (`oid`), which marks it as the program's backend;
+- a construction that supplies the param is refused at the field:
+  its default is the backend;
+- a main locus holds one backend of each type; a second is refused at
+  its param;
+- the backends' source (`observe.hl`) is appended only to a program
+  that holds one.
+
+Its literal is checked as any param's default: it may read an earlier
+param (`port: self.metrics_port`) or the environment.
+
+**How it runs.** `Scrape` is an ordinary locus whose `run()` serves a
+`std::http::Server` on its `host` and `port`, answering its `path`.
+It runs wherever `placement` puts it: `pinned` gives it a thread of its
+own; left unplaced it serves on main's pool, as an unplaced server
+does. It is born, drained and torn down as any param of the main locus:
+a signal's drain stops its listener, and `main`'s `run()` returning does
+not (§ "Drain cascade (whole-process)").
+
+`Otlp` is a locus whose `run()` drains the runtime's event ring and
+sends it to an OpenTelemetry collector until the tree's drain or a
+signal's (`spec/runtime.md` § "Observe backends"); holding one turns the
+event ring on, and nothing in a program that holds none.
+
+**What holding one turns on.** Three things, and only in a program that
+holds one (a program without it lowers none of them and pays nothing):
+every `std::metrics::Registry` registers in the process-wide series
+table the scrape renders, and every handle mirrors its updates there;
+restarts and delivered failures are counted; and the runtime counts in
+counters-only mode (`spec/runtime.md` § "Observe backends").
+
+**One port.** `Scrape`'s `port` is required, and it is a listener of
+its own. `std::observe::Probes` (§ Probes) is a second listener on its
+own port and does not serve `/metrics`, so a deployment that holds both
+annotates two ports.
+
+**In the topology artifact.** Schema 1.21's `observe` section lists
+each backend param with its endpoint (`param`, `kind`, `backend`, and a
+scrape's `host`, `port` and `path` or an OTLP backend's `endpoint`; a field the literal does not write is its
+declared default, a value the source computes is `null`), so a
+deployment elaborator renders the scrape annotations without parsing
+the source.
+
+## Seams
+
+A seam (GH #1530, 2026-10-17) stitches a producer whose output is a set to
+a consumer whose methods cover it, inside one locus tower. It is a member
+of a locus, beside `bus`, in one of two shapes:
+
+```hale
+locus Gateway {
+    params {
+        feed: Feed = Feed { };
+        wire: Wire = Wire { };
+        desk: Desk = Desk { };
+        log: Log = Log { };
+    }
+    seam {
+        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        or end;
+    }
+}
+
+locus Counter {
+    params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
+    seam answer(frame: String) -> String {
+        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+    }
+}
+```
+
+The **closed flow** (no name) has a source, a call of a method of the
+locus or of a child that makes the entry value, and ends at a sink, a
+method that takes the last value and returns nothing. It is the locus's
+`run`: while the locus is not draining, it pulls a value from the source
+and runs the chain on it; a failing source ends the flow (the source has
+ended). A locus with a closed seam declares no `run` of its own. The
+**callable** form, `seam name(x: T) [-> R] { x -> … ; }`, is the method
+`name`, which runs the chain on its parameter and returns the last hop's
+value: of `R` when written (each path's value flows into it), else of the
+one type every path ends in, which is refused when the paths end in more
+than one ("declare what it returns, a set holding them all").
+
+A **hop** is `self.m` or `self.child.m`, one method, or `self` or
+`self.child`, a locus, where the compiler writes the dispatch: each member
+of the incoming set goes to the locus's method whose one parameter takes
+it. A child is a `params` field holding a locus; a hop on an interface is
+refused (its method is not known statically), and so is a hop on a child
+that `placement` puts on another pool than the seam's (a seam is one
+tower; the bus crosses pools).
+
+**Coverage** is one check applied at every boundary, both ways. At a locus
+hop, every member of the incoming set (a type that is no set is a set of
+one) has exactly one eater: a method whose parameter is the member or a set
+holding it. A member with none is refused, naming the member, what
+produced it and the locus; one with two names both methods. Methods no
+member reaches are ordinary methods. At a method hop and at the sink,
+every incoming member is in the parameter's set (or is its type), and one
+that is not is refused by name. A locus hop's output is the union of the
+dispatched methods' results; a method returning nothing ends the chain.
+
+**Failures.** A hop declared `fallible(E)` has its failure placed: entering
+the chain at the first later hop whose parameter set holds `E` (so an
+`Outbound` that includes `WireError` lets `encode` answer it as a
+protocol-level reject); else by the seam's `or end;` (the closed flow
+ends, as `run` ends; the callable seam fails with `E`, declared
+`fallible(E)`, and it fails with one type) or `or violate NAME;` (the
+closed flow violates the locus's closure `NAME`); a failure placed nowhere
+is refused, naming the hop and `E`. A refused callable seam still declares its
+method, from what the seam spells: its parameter, its result when written
+(else unknown) and, under `or end;`, a failure of unknown type. So its
+callers check, and the refusal is the seam's one error.
+
+**Lowering.** A seam is expanded before the check into the methods it
+means, which are then checked as any methods are. The chain is direct
+calls, written a path per member: where a set meets a locus hop the
+expansion writes a `match` whose arm for each member runs the rest of the
+chain on that member, so a member keeps its static type from the
+producer's return to the sink and no union is built that the program did
+not declare. Each hop call is inlined into the seam. Where the seam
+splits the set a hop returns, and the split is the result's one use, the
+seam calls the hop's **fused clone**: the method lowered a second time
+with one more parameter, storage for the set in the seam's frame. Each
+`return` of the clone deep-copies a member into the caller's arena as
+the member it is, writes it there beside its tag as a constant, and
+returns that storage (a value of the whole set is copied out as the set,
+then into the storage). Inlined, each return site goes straight to its
+arm: the dispatch reads no tag back and switches on none. A program with
+no seam has no clone, and a hop whose set the seam hands on whole is
+called as written.
+A closed flow's frame is a method of its own, `__seam_turn() -> Int` (the
+source pulled, the chain run), which answers whether the flow goes on,
+has ended (the source ended, or `or end;`) or met a failure routed to
+`or violate NAME;`. The locus's `run` calls it while the locus is not
+draining, returns when the flow has ended, and violates `NAME` itself
+when the turn says so (a method that returns a value may not violate),
+so the violation is the lifecycle's, as before. What a frame's hops make
+is reclaimed when the turn returns (`spec/memory.md`), as a callable
+seam's is at its return.
+
 ## Element chains
 
 `xs.filter(<expr>).count()` and `xs.filter(<expr>).into(target)` are
@@ -4060,8 +4516,17 @@ bus payload may carry a struct whose fields are primitives,
 Strings, Bytes, or other nested structs, at any depth. Serialize
 walks the field tree in declaration order; deserialize allocates
 each nested struct in the lazy global payload arena and recurses.
-Arrays, tuples, and enums as bus payload *fields* are post-v1
-polish.
+A payload-free enum field travels as its four-byte tag (so a topic
+`keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
+such enums and an array of scalars or structs are carried too. An
+enum with payloads, a tuple, a `bounded` of pointers (strings, bytes,
+structs) and an array of strings or arrays as a payload *field* (at
+any depth) are post-v1 polish, and a topic whose payload struct holds
+one is rejected at typecheck where it is delivered, as above, naming
+the field ("topic \`Ev\` declares \`payload: Msg\`, whose field \`x\` is
+a tuple (\`(Int, Int)\`), which the wire format does not carry").
+Until 2026-10-13 the check admitted every field and the build refused
+these, and every enum field, with no file or line.
 
 **Size.** A delivery is as large as its fields make it, and local
 delivery is bounded only by the payload arena (`spec/memory.md`):
@@ -4304,8 +4769,8 @@ conformance matches it) is exempt from the law and the lint, and a
 call to it does not make its caller one that may violate. A
 perspective call cannot carry the failure yet: conformance holds
 the method to the perspective fn's fallibility (§ "Perspectives"),
-and the build refuses a `fallible` perspective call, so no spelling
-of such a method both checks and runs. Until that call lowers, the
+and `hale check` refuses a call to a `fallible` perspective fn, so
+no spelling of such a method both checks and runs. Until that call lowers, the
 method keeps today's behaviour, and a warning names the shape:
 "\`RouterV1.route\` serves \`Router.route\` and may violate
 (\`violate c\`); a perspective call cannot carry the failure yet,
@@ -4493,10 +4958,19 @@ reverse a failure the impl never sets. Either is a typecheck error
 naming both: "\`RouterV1.route\` is
 \`fallible(ClosureViolation)\` but \`Router.route\` is not: a
 method serving a perspective matches its fallibility". A
-`fallible` perspective fn is refused at the call by the build
-("fallible method call on non-locus value of type
-Perspective(\"Router\")"): a perspective call cannot carry a
-failure yet (F.42).
+call to a `fallible` perspective fn is a type error at the method
+name: "\`Router.route\` is \`fallible(ClosureViolation)\`, and a
+perspective call cannot carry a failure yet (F.42): a \`fallible\`
+perspective fn is not callable" (the build refused it, with no
+location, before the check did).
+
+A perspective handle reaches the locus behind it through the
+contract's methods only: a field read through it (`self.p.tag`) is
+refused as no field of the perspective, and so is a store through it
+(`self.p.tag = s;`, at the field name). And the handle's type is the
+slot type `perspective(P)`; the bare `P` is no type a value has, and
+`hale check` refuses it in a type position (`p: P = V1 { }`), naming
+`perspective(P)`.
 
 **Qualified contract names (2026-09-19, GH #724).** `P` may be an
 **imported** perspective, named through its import alias:
@@ -4804,18 +5278,28 @@ SIGINT or SIGTERM:
    `drain()` or `dissolve()` body pacing a flush — runs its full
    length. A receive blocked in the kernel on a pinned or classic
    thread returns at its own timeout, not earlier; an untimed wait
-   (a plain `accept`) is not interrupted.
-3. Each `run()` that watches `self.draining` returns; one that
+   (a plain `recv`) is not interrupted.
+3. The process's listeners stop: every named listener's socket is
+   shut down (as `std::io::tcp::stop(name)` does), so each accept
+   loop — a `std::http::Server`'s, a `std::io::tcp::Listener`'s, the
+   api runtime's — ends wherever it waits, on main, a pinned thread or
+   a pool, and its `run()` returns once the connections it accepted
+   are answered (`stdlib.md` § "Shutdown is a drain, never a cut").
+   A server used to keep accepting, and held the drain for the whole
+   grace. (2026-10-19, downstream handoff.)
+4. Each `run()` that watches `self.draining` returns; one that
    does not keeps running.
-4. Leaves dissolve first, each parent after its children, the
+5. Leaves dissolve first, each parent after its children, the
    root last — the ordinary end-of-program teardown, which also
    runs the runtime's own (schedulers, bus router, allocator,
    the atexit hooks).
-5. Process exits 0.
+6. Process exits 0.
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
-prints one line naming the signal — and what the drain was still
+writes one record (`runtime.md` § Runtime diagnostics are records:
+`logger=lotus.drain`, with `signal`, `grace_ms` and `waiting_on`) naming
+the signal — and what the drain was still
 waiting on: each cooperative pool with its mode, whether a worker is
 mid-iteration and in which locus, and how many cells queue behind it,
 then the live loci that read `draining`, by name — restores the
@@ -4831,9 +5315,18 @@ the default action and ends at the signal with `128 + signal`, as
 if the runtime were not there. **What can answer a drain is a live
 instance** of a locus whose own code reads `draining` (GH #1077):
 the runtime counts each such instance from its instantiation to its
-teardown. A signal that finds none live — the read sits in an
-imported package the program never builds, or every instance that
-could have answered has already ended — takes the signal's default
+teardown. A locus whose only `draining` reads are in its own `run()`
+is counted out sooner, once that `run()` has returned for good (no
+restart follows) and it has no subscription left to serve — exactly once,
+whichever of that and its teardown comes first (an admitted `run()` can
+outlive its teardown's start) — : a finished
+locus has nothing to drain, so a pinned child that already returned no
+longer holds the drain until its parent tears it down. A read anywhere
+else — a handler, a hook, a method another locus calls — keeps the
+instance counted to its teardown, since it can still answer. A signal
+that finds none live — the read sits in an imported package the
+program never builds, or every instance that could have answered has
+already finished or ended — takes the signal's default
 action at once, exactly as a program without the read does, instead
 of waiting out the grace with nothing to drain. A `draining` read
 outside any locus body (a free function handed a locus) cannot be
@@ -4855,11 +5348,22 @@ joined; the tree then dissolves, leaves first. So a `main` whose
 `run()` returns at once — or that declares none — ends its program
 once its children's loops see the drain: a server stays up because
 `main`'s `run()` waits (`while !self.draining { std::time::sleep(…); }`,
-or `std::api::run_until_stopped`), and SIGINT / SIGTERM end that wait.
+or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
+wait. A `main` that declares no `run()` and holds an exposure's listener
+is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
-alive until it returns, as under a signal; an `async_io` child parked
-on an untimed wait (a plain `accept`) is abandoned at its pool's
-shutdown (`runtime.md` § the wakeable park). The tree's drain ends
+alive until it returns, as under a signal. **`main`'s `run()` returning
+does not cut a live listener:** the tree's drain does not take step 3
+above, so a server the tree runs on main or on a pinned thread — its
+own param, or one a pinned child's `run()` builds — keeps accepting,
+and its join keeps the process alive, until a signal's drain stops it.
+A `main` that only builds its tree (no `run()`, its children doing the
+work) serves for as long as they do. (2026-10-19: GH #1659 had the
+tree's drain stop every listener, which cut such a program's servers,
+one bound before the drain and one bound after alike; downstream
+handoff.) An `async_io` child parked
+on an untimed wait (a plain `recv`, an `accept`) is abandoned at its
+pool's shutdown (`runtime.md` § the wakeable park), as before. The tree's drain ends
 with its teardown: a `main` locus built afterwards starts undrained,
 and a signal's drain is neither masked nor ended by it. (Before
 2026-10-12 a pinned or classic child's loop kept the process alive

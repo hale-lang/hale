@@ -31,7 +31,10 @@
 // The kinds the projection reads: what the runtime applies from the
 // record, and what it remembers proposal ids for.
 fn is_workflow_fact(kind: String) -> Bool {
-    return std::str::starts_with(kind, "workflow.") || std::str::starts_with(kind, "step.") || std::str::starts_with(kind, "attempt.") || kind == "work.settled";
+    return std::str::starts_with(kind, "workflow.")
+        || std::str::starts_with(kind, "step.")
+        || std::str::starts_with(kind, "attempt.")
+        || kind == "work.settled";
 }
 
 // The proposal id a committed fact carries, "" when none.
@@ -98,7 +101,9 @@ locus WorkflowRuntime {
             if is_workflow_fact(e.kind) {
                 let a = replay(self.p, e.kind, e.entity, e.body);
                 let pid = proposal_of(e.body);
-                if len(pid) > 0 { self.committed = self.committed + pid + "=" + to_string(self.cursor + 1) + "\n"; }
+                if len(pid) > 0 {
+                    self.committed = self.committed + pid + "=" + to_string(self.cursor + 1) + "\n";
+                }
             }
             self.cursor = self.cursor + 1;
         }
@@ -114,7 +119,14 @@ locus WorkflowRuntime {
     }
     fn answer(t: TransitionProposal, ok: Bool, revision: Int, why: String) {
         self.answered = self.answered + 1;
-        TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: ok, revision: revision, why: why };
+        TransitionAnswered <- TransitionAnswer {
+            scope: self.scope,
+            key: t.key,
+            proposal_id: t.proposal_id,
+            ok: ok,
+            revision: revision,
+            why: why,
+        };
     }
     // Take (or renew) the scope's lease at `now`; false when another
     // holder has it. The token granted is what every commit is fenced on.
@@ -148,14 +160,29 @@ locus WorkflowRuntime {
         self.refused = self.refused + 1;
         if basis == "conflict" { self.conflicts = self.conflicts + 1; }
         self.answered = self.answered + 1;
-        TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: false, revision: revision, why: why, basis: basis };
+        TransitionAnswered <- TransitionAnswer {
+            scope: self.scope,
+            key: t.key,
+            proposal_id: t.proposal_id,
+            ok: false,
+            revision: revision,
+            why: why,
+            basis: basis,
+        };
     }
     // The proposal a committed row was committed under, rebuilt from the
     // row: its reference gives the scope, key and id; the row the rest.
     fn committed_proposal(at: Int) -> TransitionProposal {
         let e = self.journal.read(at - 1);
         let r = transition_of(e.body);
-        return TransitionProposal { scope: r.scope, key: r.key, proposal_id: r.proposal_id, kind: e.kind, entity: e.entity, body: e.body };
+        return TransitionProposal {
+            scope: r.scope,
+            key: r.key,
+            proposal_id: r.proposal_id,
+            kind: e.kind,
+            entity: e.entity,
+            body: e.body,
+        };
     }
     fn on_proposal(t: TransitionProposal) {
         // the body carries the reference the row will be committed under
@@ -163,7 +190,14 @@ locus WorkflowRuntime {
         // say it was committed under another proposal than it was
         let r = transition_of(t.body);
         if r.scope != t.scope || r.key != t.key || r.proposal_id != t.proposal_id {
-            self.refuse(t, "conflict", self.journal.revision(), "proposal " + t.proposal_id + " carries a transition reference <" + r.scope + " " + r.key + " " + r.proposal_id + "> that is not its own <" + t.scope + " " + t.key + " " + t.proposal_id + ">");
+            self.refuse(
+                t,
+                "conflict",
+                self.journal.revision(),
+                "proposal " + t.proposal_id + " carries a transition reference <" + r.scope + " "
+                    + r.key + " " + r.proposal_id + "> that is not its own <" + t.scope + " "
+                    + t.key + " " + t.proposal_id + ">",
+            );
             return;
         }
         let mut tries = 0;
@@ -205,7 +239,12 @@ locus WorkflowRuntime {
             // takeover landed since is a row, and this append is stale
             if !self.holds_at(rev) {
                 self.fenced_off = self.fenced_off + 1;
-                self.refuse(t, "fenced", rev, fenced(self.journal, self.fence(), t.kind + " " + t.entity).why);
+                self.refuse(
+                    t,
+                    "fenced",
+                    rev,
+                    fenced(self.journal, self.fence(), t.kind + " " + t.entity).why,
+                );
                 return;
             }
             let w = self.journal.append_exact(rev, t.kind, t.entity, t.body);
@@ -215,16 +254,31 @@ locus WorkflowRuntime {
                 return;
             }
             if w.error != "stale_revision" && w.error != "claimed" {
-                self.refuse(t, "record", rev, "the record refused " + t.kind + " " + t.entity + ": " + w.error);
+                self.refuse(
+                    t,
+                    "record",
+                    rev,
+                    "the record refused " + t.kind + " " + t.entity + ": " + w.error,
+                );
                 return;
             }
             // the record moved under the decision: it is taken again
         }
-        self.refuse(t, "record", self.journal.revision(), "the record moved under " + t.proposal_id + " " + to_string(tries) + " times");
+        self.refuse(
+            t,
+            "record",
+            self.journal.revision(),
+            "the record moved under " + t.proposal_id + " " + to_string(tries) + " times",
+        );
     }
     fn reply(x: Executed, work_id: String, attempt_id: String) {
         AttemptReplied <- AttemptReply {
-            work_id: work_id, attempt_id: attempt_id, ok: x.ok, ran: x.ran, attached: x.attached, reused: x.reused,
+            work_id: work_id,
+            attempt_id: attempt_id,
+            ok: x.ok,
+            ran: x.ran,
+            attached: x.attached,
+            reused: x.reused,
             disposition: x.disposition, result: x.outcome.result, why: x.why
         };
     }
@@ -233,26 +287,56 @@ locus WorkflowRuntime {
     fn on_attempt(r: AttemptRequest) {
         self.requests = self.requests + 1;
         let moved = self.journal.refresh();
-        let admitted = recorded_attempt_admission(self.journal, r.attempt_id, self.journal.revision());
+        let admitted = recorded_attempt_admission(
+            self.journal,
+            r.attempt_id,
+            self.journal.revision(),
+        );
         if !admitted.ok {
-            self.reply(Executed { why: "attempt " + r.attempt_id + " was never admitted; nothing runs before its admission is in the record" }, r.work_id, r.attempt_id);
+            self.reply(
+                Executed {
+                    why: "attempt " + r.attempt_id
+                        + " was never admitted; nothing runs before its admission is in the record",
+                },
+                r.work_id,
+                r.attempt_id,
+            );
             return;
         }
         // the request is the Work's own: an attempt asked for under
         // another Work's name is nobody's
         if admitted.value.work_id != r.work_id {
-            self.reply(Executed { why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id + ", not of " + r.work_id + "; not this Work's to ask for" }, r.work_id, r.attempt_id);
+            self.reply(
+                Executed {
+                    why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id
+                        + ", not of " + r.work_id + "; not this Work's to ask for",
+                },
+                r.work_id,
+                r.attempt_id,
+            );
             return;
         }
         // whether this incarnation claimed or redelivered the attempt is
         // the runtime's own knowledge, never the request's word; the
         // fence is the executor's, at each write's own reading
-        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id), self.fence());
+        let x = dispatch_attempt(
+            self.journal,
+            self.work,
+            self.scope,
+            admitted.value,
+            set_has(self.claimed, r.attempt_id),
+            set_has(self.redelivered, r.attempt_id),
+            self.fence(),
+        );
         if x.fenced { self.fenced_off = self.fenced_off + 1; }
         // an unmarked relay (GH #1158) is kept as neither: the next ask
         // redelivers it and records it relayed
-        if x.ran && !x.redelivered && !x.unmarked { self.claimed = set_add(self.claimed, r.attempt_id); }
-        if x.redelivered && !x.unmarked { self.redelivered = set_add(self.redelivered, r.attempt_id); }
+        if x.ran && !x.redelivered && !x.unmarked {
+            self.claimed = set_add(self.claimed, r.attempt_id);
+        }
+        if x.redelivered && !x.unmarked {
+            self.redelivered = set_add(self.redelivered, r.attempt_id);
+        }
         self.reply(x, r.work_id, r.attempt_id);
     }
     // GH #946 hardening (D3): an attempt a leg held under a lease that
@@ -264,9 +348,25 @@ locus WorkflowRuntime {
     // one, and keeps waiting.
     fn reopen(attempt_id: String) -> Executed {
         let moved = self.journal.refresh();
-        let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
-        if !admitted.ok { return Executed { why: "attempt " + attempt_id + " was never admitted; nothing is asked again" }; }
-        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, false, false, self.fence());
+        let admitted = recorded_attempt_admission(
+            self.journal,
+            attempt_id,
+            self.journal.revision(),
+        );
+        if !admitted.ok {
+            return Executed {
+                why: "attempt " + attempt_id + " was never admitted; nothing is asked again",
+            };
+        }
+        let x = dispatch_attempt(
+            self.journal,
+            self.work,
+            self.scope,
+            admitted.value,
+            false,
+            false,
+            self.fence(),
+        );
         if x.fenced { self.fenced_off = self.fenced_off + 1; }
         if x.redelivered { self.redelivered = set_add(self.redelivered, attempt_id); }
         self.reply(x, admitted.value.work_id, attempt_id);
@@ -299,35 +399,78 @@ locus WorkflowRuntime {
                 i = i + 1;
             }
             if len(raw) == 0 {
-                AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " was never admitted: the record holds no admission of it" };
+                AdmissionAnswered <- AdmissionAnswer {
+                    scope: self.scope,
+                    ask_id: q.ask_id,
+                    task_id: q.task_id,
+                    kinds: q.kinds,
+                    why: "task " + q.task_id
+                        + " was never admitted: the record holds no admission of it",
+                };
                 return;
             }
             self.p.dry = true;
             let would = replay(self.p, "workflow.admitted", q.task_id, raw);
             self.p.dry = false;
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record and the projection refused it: " + would.why };
+            AdmissionAnswered <- AdmissionAnswer {
+                scope: self.scope,
+                ask_id: q.ask_id,
+                task_id: q.task_id,
+                kinds: q.kinds,
+                why: "the admission of " + q.task_id
+                    + " is in the record and the projection refused it: " + would.why,
+            };
             return;
         }
         let read = decode_admission(body);
         if !read.ok {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " the projection accepted cannot be read back: " + read.why };
+            AdmissionAnswered <- AdmissionAnswer {
+                scope: self.scope,
+                ask_id: q.ask_id,
+                task_id: q.task_id,
+                kinds: q.kinds,
+                why: "the admission of " + q.task_id
+                    + " the projection accepted cannot be read back: " + read.why,
+            };
             return;
         }
         let a = read.value;
         if len(a.parent_task) > 0 {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " is a child of " + a.parent_task + ", spawned by step " + a.spawning_step + " as `" + a.member_key + "`: it is recovered through its parent, not asked as a root" };
+            AdmissionAnswered <- AdmissionAnswer {
+                scope: self.scope,
+                ask_id: q.ask_id,
+                task_id: q.task_id,
+                kinds: q.kinds,
+                why: "task " + q.task_id + " is a child of " + a.parent_task + ", spawned by step "
+                    + a.spawning_step + " as `" + a.member_key
+                    + "`: it is recovered through its parent, not asked as a root",
+            };
             return;
         }
         let gap = self.p.reader.decode_bound(a.recipe);
         if len(gap) > 0 {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " carries a recipe that cannot be read: " + gap };
+            AdmissionAnswered <- AdmissionAnswer {
+                scope: self.scope,
+                ask_id: q.ask_id,
+                task_id: q.task_id,
+                kinds: q.kinds,
+                why: "the admission of " + q.task_id + " carries a recipe that cannot be read: "
+                    + gap,
+            };
             return;
         }
         // the execution's workflow identity is the one the recipe bound,
         // read from its root node — never re-derived
         let root = self.p.reader.bound_node(q.task_id);
         if root.kind != "task" || len(root.workflow_id) == 0 {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the recipe the admission of " + q.task_id + " carries binds no workflow identity for it" };
+            AdmissionAnswered <- AdmissionAnswer {
+                scope: self.scope,
+                ask_id: q.ask_id,
+                task_id: q.task_id,
+                kinds: q.kinds,
+                why: "the recipe the admission of " + q.task_id
+                    + " carries binds no workflow identity for it",
+            };
             return;
         }
         AdmissionAnswered <- AdmissionAnswer {
@@ -350,8 +493,13 @@ locus WorkflowRuntime {
         }
         WorkStateAnswered <- WorkState {
             scope: self.scope, ask_id: q.ask_id,
-            work_id: q.work_id, attempted: len(w.attempt_id) > 0, attempt_id: w.attempt_id, attempt_no: w.attempt_no,
-            performer_kind: kind, attempt_disposition: w.attempt_disposition, disposition: w.disposition
+            work_id: q.work_id,
+            attempted: len(w.attempt_id) > 0,
+            attempt_id: w.attempt_id,
+            attempt_no: w.attempt_no,
+            performer_kind: kind,
+            attempt_disposition: w.attempt_disposition,
+            disposition: w.disposition
         };
     }
     // What the record holds about an execution, from the projection.
@@ -360,9 +508,17 @@ locus WorkflowRuntime {
         let seen = self.catch_up();
         let t = self.p.task(q.task_id);
         ExecutionStateAnswered <- ExecutionState {
-            task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
-            outstanding: self.p.outstanding_in_tree(q.task_id), current_step: self.p.current_step(q.task_id),
-            cancelled_above: if len(t.parent_task) > 0 { recorded_fence(self.journal, t.parent_task, self.journal.revision()) } else { "" }
+            task_id: q.task_id,
+            admitted: len(t.task_id) > 0,
+            disposition: t.disposition,
+            reason: t.reason,
+            outstanding: self.p.outstanding_in_tree(q.task_id),
+            current_step: self.p.current_step(q.task_id),
+            cancelled_above: if len(t.parent_task) > 0 {
+                recorded_fence(self.journal, t.parent_task, self.journal.revision())
+            } else {
+                ""
+            }
         };
     }
     // An attempt's outcome reported by the adapter that did its work
@@ -386,7 +542,11 @@ locus WorkflowRuntime {
     fn settle(attempt_id: String, r: WorkResult) -> Executed {
         let x = settle_attempt(self.journal, self.work, self.scope, attempt_id, r, self.fence());
         if x.fenced { self.fenced_off = self.fenced_off + 1; }
-        let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
+        let admitted = recorded_attempt_admission(
+            self.journal,
+            attempt_id,
+            self.journal.revision(),
+        );
         self.reply(x, if admitted.ok { admitted.value.work_id } else { "" }, attempt_id);
         return x;
     }
@@ -452,10 +612,18 @@ locus WorkRun {
     // this Work, and a stale or unsolicited answer is no state.
     run() {
         self.state_asked = self.work_id + "@state";
-        WorkStateAsked <- WorkStateAsk { scope: self.scope, ask_id: self.state_asked, work_id: self.work_id };
+        WorkStateAsked <- WorkStateAsk {
+            scope: self.scope,
+            ask_id: self.state_asked,
+            work_id: self.work_id,
+        };
     }
     fn on_work_state(w: WorkState) {
-        if len(self.state_asked) == 0 || w.scope != self.scope || w.ask_id != self.state_asked || w.work_id != self.work_id {
+        if len(self.state_asked) == 0
+            || w.scope != self.scope
+            || w.ask_id != self.state_asked
+            || w.work_id != self.work_id
+        {
             self.state_strays = self.state_strays + 1;
             return;
         }
@@ -464,13 +632,20 @@ locus WorkRun {
         if len(w.disposition) > 0 {
             self.settled = true;
             self.settling = std::str::clone(w.disposition);
-            MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: w.disposition };
+            MemberSettled <- MemberSettlement {
+                step_id: self.step_id,
+                key: self.key,
+                work_id: self.work_id,
+                disposition: w.disposition,
+            };
             terminate;
         }
         if w.attempted {
             self.attempt_no = w.attempt_no;
             self.attempt_id = std::str::clone(w.attempt_id);
-            if len(w.performer_kind) > 0 { self.performer_kind = std::str::clone(w.performer_kind); }
+            if len(w.performer_kind) > 0 {
+                self.performer_kind = std::str::clone(w.performer_kind);
+            }
             // fenced while the question was out: the admitted attempt is
             // re-proposed and, admitted under the fence, settles cancelled
             // — the one path every fenced admission takes
@@ -506,11 +681,24 @@ locus WorkRun {
         self.held = false;
         self.outstanding = transition_id(self.attempt_id, "admitted");
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.work_id, proposal_id: self.outstanding, kind: "attempt.admitted", entity: self.attempt_id,
+            scope: self.scope,
+            key: self.work_id,
+            proposal_id: self.outstanding,
+            kind: "attempt.admitted",
+            entity: self.attempt_id,
             body: encode_attempt(AdmittedAttempt {
-                attempt_id: self.attempt_id, work_id: self.work_id, step_id: self.step_id, task_id: self.task_id,
-                attempt_no: self.attempt_no, performer_kind: self.performer_kind, request: self.request(),
-                transition: TransitionRef { scope: self.scope, key: self.work_id, proposal_id: self.outstanding }
+                attempt_id: self.attempt_id,
+                work_id: self.work_id,
+                step_id: self.step_id,
+                task_id: self.task_id,
+                attempt_no: self.attempt_no,
+                performer_kind: self.performer_kind,
+                request: self.request(),
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.work_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
@@ -520,16 +708,32 @@ locus WorkRun {
         self.held = false;
         self.outstanding = transition_id(self.work_id, "settled");
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.work_id, proposal_id: self.outstanding, kind: "work.settled", entity: self.work_id,
+            scope: self.scope,
+            key: self.work_id,
+            proposal_id: self.outstanding,
+            kind: "work.settled",
+            entity: self.work_id,
             body: encode_work_outcome(WorkOutcome {
-                work_id: self.work_id, step_id: self.step_id, attempt_id: self.attempt_id, disposition: disposition,
-                transition: TransitionRef { scope: self.scope, key: self.work_id, proposal_id: self.outstanding }
+                work_id: self.work_id,
+                step_id: self.step_id,
+                attempt_id: self.attempt_id,
+                disposition: disposition,
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.work_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
     fn on_answer(a: TransitionAnswer) {
         // only the answer to the one outstanding proposal, and only once
-        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        if a.scope != self.scope
+            || a.proposal_id != self.outstanding
+            || len(self.outstanding) == 0
+        {
+            return;
+        }
         self.outstanding = "";
         if !a.ok && (a.basis == "record" || a.basis == "fenced") {
             // the record would not take it — an append refused, the record
@@ -555,7 +759,12 @@ locus WorkRun {
             // and publishes no outcome it does not have
             self.unadmitted = true;
             if self.retired() {
-                MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: a.why };
+                MemberRetired <- MemberRetirement {
+                    step_id: self.step_id,
+                    key: self.key,
+                    work_id: self.work_id,
+                    why: a.why,
+                };
                 terminate;
             }
             return;
@@ -571,17 +780,30 @@ locus WorkRun {
             return;
         }
         if self.proposing == "admit" {
-            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
+            AttemptRequested <- AttemptRequest {
+                scope: self.scope,
+                attempt_id: self.attempt_id,
+                work_id: self.work_id,
+            };
             return;
         }
         // the settlement is in the record: now, and only now, the member
         // has answered
         self.settled = true;
-        MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: self.settling };
+        MemberSettled <- MemberSettlement {
+            step_id: self.step_id,
+            key: self.key,
+            work_id: self.work_id,
+            disposition: self.settling,
+        };
         terminate;
     }
     fn on_reply(r: AttemptReply) {
-        if self.settled || self.unadmitted || r.attempt_id != self.attempt_id || len(self.outstanding) > 0 {
+        if self.settled
+            || self.unadmitted
+            || r.attempt_id != self.attempt_id
+            || len(self.outstanding) > 0
+        {
             self.stale = self.stale + 1;
             return;
         }
@@ -602,7 +824,11 @@ locus WorkRun {
         if self.settled || len(self.outstanding) > 0 { return; }
         if self.request_held && !self.held {
             self.request_held = false;
-            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
+            AttemptRequested <- AttemptRequest {
+                scope: self.scope,
+                attempt_id: self.attempt_id,
+                work_id: self.work_id,
+            };
             return;
         }
         if !self.held { return; }
@@ -623,9 +849,17 @@ locus WorkRun {
         if s.disposition != "completed" && s.disposition != "failed" { return; }
         self.step_settled = std::str::clone(s.disposition);
         if self.settled || len(self.outstanding) > 0 { return; }
-        if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
+        if self.held && self.proposing == "admit" && self.attempt_no == 0 {
+            self.propose_admission();
+            return;
+        }
         if self.retired() {
-            MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; step " + self.step_id + " " + s.disposition };
+            MemberRetired <- MemberRetirement {
+                step_id: self.step_id,
+                key: self.key,
+                work_id: self.work_id,
+                why: "never admitted; step " + self.step_id + " " + s.disposition,
+            };
             terminate;
         }
     }
@@ -645,9 +879,17 @@ locus WorkRun {
         // admitted — never by a settlement naming no attempt
         if len(self.state_asked) > 0 { self.fence_reason = std::str::clone(f.reason); return; }
         if self.settled || len(self.outstanding) > 0 { return; }
-        if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
+        if self.held && self.proposing == "admit" && self.attempt_no == 0 {
+            self.propose_admission();
+            return;
+        }
         if self.unadmitted {
-            MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; " + f.reason };
+            MemberRetired <- MemberRetirement {
+                step_id: self.step_id,
+                key: self.key,
+                work_id: self.work_id,
+                why: "never admitted; " + f.reason,
+            };
             terminate;
         }
         if !self.held { self.settle_as("cancelled"); }
@@ -678,13 +920,22 @@ type LeafSpec {
 fn own_leaf(l: LeafSpec) -> LeafSpec {
     let r = l.request;
     return LeafSpec {
-        key: std::str::clone(l.key), work_id: std::str::clone(l.work_id), step_id: std::str::clone(l.step_id), step_index: l.step_index,
+        key: std::str::clone(l.key),
+        work_id: std::str::clone(l.work_id),
+        step_id: std::str::clone(l.step_id),
+        step_index: l.step_index,
         performer_kind: std::str::clone(l.performer_kind), allowance: l.allowance,
         request: WorkRequest {
-            work_id: std::str::clone(r.work_id), task_id: std::str::clone(r.task_id), step_id: std::str::clone(r.step_id),
-            objective: std::str::clone(r.objective), context_digest: std::str::clone(r.context_digest),
-            knowledge_bindings: std::str::clone(r.knowledge_bindings), output_contract: std::str::clone(r.output_contract),
-            data_class: std::str::clone(r.data_class), requires: std::str::clone(r.requires), target: std::str::clone(r.target),
+            work_id: std::str::clone(r.work_id),
+            task_id: std::str::clone(r.task_id),
+            step_id: std::str::clone(r.step_id),
+            objective: std::str::clone(r.objective),
+            context_digest: std::str::clone(r.context_digest),
+            knowledge_bindings: std::str::clone(r.knowledge_bindings),
+            output_contract: std::str::clone(r.output_contract),
+            data_class: std::str::clone(r.data_class),
+            requires: std::str::clone(r.requires),
+            target: std::str::clone(r.target),
             cost_ceiling: r.cost_ceiling, attempt_no: r.attempt_no
         }
     };
@@ -692,7 +943,15 @@ fn own_leaf(l: LeafSpec) -> LeafSpec {
 
 // A leaf from its bound node.
 fn leaf_of(n: BoundNode, task_id: String, performer_kind: String) -> LeafSpec {
-    return LeafSpec { key: n.member_key, work_id: n.id, step_id: n.parent, step_index: n.step_index, performer_kind: performer_kind, request: bound_request(n, task_id, n.parent), allowance: n.attempts };
+    return LeafSpec {
+        key: n.member_key,
+        work_id: n.id,
+        step_id: n.parent,
+        step_index: n.step_index,
+        performer_kind: performer_kind,
+        request: bound_request(n, task_id, n.parent),
+        allowance: n.attempts,
+    };
 }
 
 @form(vec)
@@ -713,14 +972,24 @@ type ChildSpec {
 
 fn own_child(c: ChildSpec) -> ChildSpec {
     return ChildSpec {
-        key: std::str::clone(c.key), task_id: std::str::clone(c.task_id), step_id: std::str::clone(c.step_id), step_index: c.step_index,
+        key: std::str::clone(c.key),
+        task_id: std::str::clone(c.task_id),
+        step_id: std::str::clone(c.step_id),
+        step_index: c.step_index,
         definition: std::str::clone(c.definition), revision: c.revision
     };
 }
 
 // A child member from its bound task node.
 fn child_of(n: BoundNode, step_index: Int) -> ChildSpec {
-    return ChildSpec { key: n.member_key, task_id: n.id, step_id: n.spawning_step, step_index: step_index, definition: n.definition, revision: n.revision };
+    return ChildSpec {
+        key: n.member_key,
+        task_id: n.id,
+        step_id: n.spawning_step,
+        step_index: step_index,
+        definition: n.definition,
+        revision: n.revision,
+    };
 }
 
 // ---- one execution, root or child --------------------------------------
@@ -793,7 +1062,11 @@ locus TaskRun {
         if len(self.gap) > 0 {
             // a recipe that cannot be read runs nothing, and says so:
             // nothing is invented for it
-            ExecutionRefused <- ExecutionRefusal { scope: self.scope, task_id: self.task_id, why: "the recipe of " + self.task_id + " cannot be read: " + self.gap };
+            ExecutionRefused <- ExecutionRefusal {
+                scope: self.scope,
+                task_id: self.task_id,
+                why: "the recipe of " + self.task_id + " cannot be read: " + self.gap,
+            };
             return;
         }
         if self.admit { self.propose_admission(); return; }
@@ -803,13 +1076,23 @@ locus TaskRun {
         self.held = false;
         self.outstanding = transition_id(self.task_id, "admitted");
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.task_id, proposal_id: self.outstanding, kind: "workflow.admitted", entity: self.task_id,
+            scope: self.scope,
+            key: self.task_id,
+            proposal_id: self.outstanding,
+            kind: "workflow.admitted",
+            entity: self.task_id,
             body: encode_admission(AdmittedWorkflow {
                 task_id: self.task_id, definition: self.definition, revision: self.revision,
-                parent_task: self.parent_task, spawning_step: self.spawning_step, member_key: self.member_key,
+                parent_task: self.parent_task,
+                spawning_step: self.spawning_step,
+                member_key: self.member_key,
                 request: self.task_id, recipe: self.recipe, limits: self.limits,
                 works: self.works, tasks: self.tasks, steps: self.steps, depth: self.depth,
-                transition: TransitionRef { scope: self.scope, key: self.task_id, proposal_id: self.outstanding }
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.task_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
@@ -830,17 +1113,35 @@ locus TaskRun {
                 // card 18: the kind named for this exact Work (its bound id), else
                 // for its key — a program's shorthand for every Work of that key
                 let by_id = map_get(self.kinds, n.id, "=");
-                leaves.push(leaf_of(n, self.task_id, if len(by_id) > 0 { by_id } else { map_get(self.kinds, n.member_key, "=") }));
+                leaves.push(
+                    leaf_of(
+                        n,
+                        self.task_id,
+                        if len(by_id) > 0 { by_id } else { map_get(self.kinds, n.member_key, "=") },
+                    ),
+                );
             }
             if n.kind == "task" && n.parent == self.task_id {
                 children.push(child_of(n, self.cat.bound_node(n.spawning_step).step_index));
             }
             i = i + 1;
         }
-        WorkflowRun { scope: self.scope, task_id: self.task_id, workflow_id: self.workflow_id, step_count: step_count, leaves: leaves, child_specs: children };
+        WorkflowRun {
+            scope: self.scope,
+            task_id: self.task_id,
+            workflow_id: self.workflow_id,
+            step_count: step_count,
+            leaves: leaves,
+            child_specs: children,
+        };
     }
     fn on_answer(a: TransitionAnswer) {
-        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        if a.scope != self.scope
+            || a.proposal_id != self.outstanding
+            || len(self.outstanding) == 0
+        {
+            return;
+        }
         self.outstanding = "";
         if !a.ok && (a.basis == "record" || a.basis == "fenced") {
             self.held = true;
@@ -857,7 +1158,12 @@ locus TaskRun {
             // retires; else it stays, reachable, until that step does
             self.unadmitted = true;
             if self.step_settled {
-                MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: a.why };
+                MemberRetired <- MemberRetirement {
+                    step_id: self.spawning_step,
+                    key: self.member_key,
+                    work_id: self.task_id,
+                    why: a.why,
+                };
                 terminate;
             }
             return;
@@ -866,13 +1172,24 @@ locus TaskRun {
         // a fence that arrived while the admission was being decided
         // applies now: the execution starts behind its admission and is
         // cancelled at once, through its own settlement
-        if self.fenced { WorkflowCancelRequested <- WorkflowCancel { task_id: self.task_id, reason: self.fence_reason }; }
+        if self.fenced {
+            WorkflowCancelRequested <- WorkflowCancel {
+                task_id: self.task_id,
+                reason: self.fence_reason,
+            };
+        }
     }
     // A step of this Task dispatches a child member: the subtree the
     // recipe bound under it, exactly, goes to the executions owner.
     fn on_child(r: ChildRequest) {
         let n = self.cat.bound_node(r.child_task);
-        if n.kind != "task" || n.parent != self.task_id || n.spawning_step != r.step_id || n.member_key != r.key { return; }
+        if n.kind != "task"
+            || n.parent != self.task_id
+            || n.spawning_step != r.step_id
+            || n.member_key != r.key
+        {
+            return;
+        }
         let mut works = 0;
         let mut tasks = 0;
         let mut steps = 0;
@@ -888,9 +1205,17 @@ locus TaskRun {
             i = i + 1;
         }
         ChildAdmitRequested <- ChildAdmission {
-            scope: self.scope, task_id: r.child_task, workflow_id: n.workflow_id, parent_task: self.task_id,
-            spawning_step: r.step_id, member_key: r.key, definition: n.definition, revision: n.revision,
-            recipe: self.cat.encode_bound_under(r.child_task), kinds: self.kinds, limits: self.limits,
+            scope: self.scope,
+            task_id: r.child_task,
+            workflow_id: n.workflow_id,
+            parent_task: self.task_id,
+            spawning_step: r.step_id,
+            member_key: r.key,
+            definition: n.definition,
+            revision: n.revision,
+            recipe: self.cat.encode_bound_under(r.child_task),
+            kinds: self.kinds,
+            limits: self.limits,
             works: works, tasks: tasks, steps: steps, depth: depth
         };
     }
@@ -901,7 +1226,12 @@ locus TaskRun {
         self.disposition = std::str::clone(w.disposition);
         if len(self.parent_task) > 0 && !self.told {
             self.told = true;
-            ChildSettled <- ChildSettlement { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id, disposition: self.disposition };
+            ChildSettled <- ChildSettlement {
+                step_id: self.spawning_step,
+                key: self.member_key,
+                task_id: self.task_id,
+                disposition: self.disposition,
+            };
         }
     }
     // This Task's workflow left: it drained and reclaimed. The step that
@@ -909,7 +1239,11 @@ locus TaskRun {
     // Task leaves.
     fn on_left(l: WorkflowLeave) {
         if len(self.parent_task) > 0 {
-            ChildLeft <- ChildLeave { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id };
+            ChildLeft <- ChildLeave {
+                step_id: self.spawning_step,
+                key: self.member_key,
+                task_id: self.task_id,
+            };
         }
         terminate;
     }
@@ -927,7 +1261,12 @@ locus TaskRun {
         self.step_settled = true;
         if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer takes it
         if self.unadmitted {
-            MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; step " + self.spawning_step + " " + s.disposition };
+            MemberRetired <- MemberRetirement {
+                step_id: self.spawning_step,
+                key: self.member_key,
+                work_id: self.task_id,
+                why: "never admitted; step " + self.spawning_step + " " + s.disposition,
+            };
             terminate;
         }
         if self.held && self.admit && !self.started { self.propose_admission(); }
@@ -944,7 +1283,12 @@ locus TaskRun {
         self.fence_reason = std::str::clone(f.reason);
         if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer applies it
         if self.unadmitted {
-            MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; " + f.reason };
+            MemberRetired <- MemberRetirement {
+                step_id: self.spawning_step,
+                key: self.member_key,
+                work_id: self.task_id,
+                why: "never admitted; " + f.reason,
+            };
             terminate;
         }
         if self.held && self.admit && !self.started { self.propose_admission(); return; }
@@ -991,7 +1335,12 @@ locus Executions {
         self.asked = self.asked + 1;
         let ask_id = a.task_id + "@ask" + to_string(self.asked);
         self.outstanding = set_add(self.outstanding, ask_id);
-        AdmissionAsked <- AdmissionAsk { scope: self.scope, ask_id: ask_id, task_id: a.task_id, kinds: a.kinds };
+        AdmissionAsked <- AdmissionAsk {
+            scope: self.scope,
+            ask_id: ask_id,
+            task_id: a.task_id,
+            kinds: a.kinds,
+        };
     }
     // Only the answer to a question this owner holds outstanding — the
     // same scope, task and identity — and only once; anything else,
@@ -999,7 +1348,10 @@ locus Executions {
     // TaskRun per execution admitted, alive until the execution settles.
     @bounded_by(a)
     fn on_admission(a: AdmissionAnswer) {
-        if a.scope != self.scope || !set_has(self.outstanding, a.ask_id) || !std::str::starts_with(a.ask_id, a.task_id + "@ask") {
+        if a.scope != self.scope
+            || !set_has(self.outstanding, a.ask_id)
+            || !std::str::starts_with(a.ask_id, a.task_id + "@ask")
+        {
             self.strays = self.strays + 1;
             return;
         }
@@ -1007,13 +1359,21 @@ locus Executions {
         if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
         if !a.admitted {
             self.refused = self.refused + 1;
-            ExecutionRefused <- ExecutionRefusal { scope: self.scope, task_id: a.task_id, why: a.why };
+            ExecutionRefused <- ExecutionRefusal {
+                scope: self.scope,
+                task_id: a.task_id,
+                why: a.why,
+            };
             return;
         }
         self.born = set_add(self.born, a.task_id);
         self.roots = self.roots + 1;
         TaskRun {
-            scope: self.scope, task_id: a.task_id, workflow_id: a.workflow_id, definition: a.definition, revision: a.revision,
+            scope: self.scope,
+            task_id: a.task_id,
+            workflow_id: a.workflow_id,
+            definition: a.definition,
+            revision: a.revision,
             recipe: a.recipe, kinds: a.kinds, limits: a.limits, admit: false
         };
     }
@@ -1024,9 +1384,22 @@ locus Executions {
         self.born = set_add(self.born, c.task_id);
         self.child_count = self.child_count + 1;
         TaskRun {
-            scope: self.scope, task_id: c.task_id, workflow_id: c.workflow_id, parent_task: c.parent_task,
-            spawning_step: c.spawning_step, member_key: c.member_key, definition: c.definition, revision: c.revision,
-            recipe: c.recipe, kinds: c.kinds, limits: c.limits, works: c.works, tasks: c.tasks, steps: c.steps, depth: c.depth, admit: true
+            scope: self.scope,
+            task_id: c.task_id,
+            workflow_id: c.workflow_id,
+            parent_task: c.parent_task,
+            spawning_step: c.spawning_step,
+            member_key: c.member_key,
+            definition: c.definition,
+            revision: c.revision,
+            recipe: c.recipe,
+            kinds: c.kinds,
+            limits: c.limits,
+            works: c.works,
+            tasks: c.tasks,
+            steps: c.steps,
+            depth: c.depth,
+            admit: true
         };
     }
 }
@@ -1130,8 +1503,15 @@ locus WorkflowRun {
             self.stage = "settled";
             self.disposition = std::str::clone(s.disposition);
             self.reason = std::str::clone(s.reason);
-            WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
-            if s.disposition == "cancelled" && s.outstanding > 0 && s.current_step < self.step_count {
+            WorkflowSettled <- WorkflowSettlement {
+                task_id: self.task_id,
+                disposition: self.disposition,
+                reason: self.reason,
+            };
+            if s.disposition == "cancelled"
+                && s.outstanding > 0
+                && s.current_step < self.step_count
+            {
                 self.fence_steps = true;
                 self.start_step(s.current_step);
                 return;
@@ -1145,7 +1525,10 @@ locus WorkflowRun {
         // state question, since a fence published before this resident
         // existed reached nobody; its cancellation is proposed, lands,
         // and it drains like any cancelled execution
-        if len(s.cancelled_above) > 0 { self.cancel_asked = true; self.cancel_reason = std::str::clone(s.cancelled_above); }
+        if len(s.cancelled_above) > 0 {
+            self.cancel_asked = true;
+            self.cancel_reason = std::str::clone(s.cancelled_above);
+        }
         if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
         self.start_step(if s.current_step < self.step_count { s.current_step } else { 0 });
     }
@@ -1171,7 +1554,16 @@ locus WorkflowRun {
         }
         self.current = index;
         self.active = true;
-        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids, fenced_at_birth: self.fence_steps };
+        StepRun {
+            scope: self.scope,
+            step_id: step_id,
+            task_id: self.task_id,
+            workflow_id: self.workflow_id,
+            step_index: index,
+            leaves: rows,
+            child_specs: kids,
+            fenced_at_birth: self.fence_steps,
+        };
     }
     fn propose_outcome(disposition: String, reason: String) {
         self.stage = "settling";
@@ -1180,22 +1572,36 @@ locus WorkflowRun {
         self.held = false;
         self.outstanding = transition_id(self.task_id, disposition);
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.task_id, proposal_id: self.outstanding, kind: "workflow.settled", entity: self.task_id,
+            scope: self.scope,
+            key: self.task_id,
+            proposal_id: self.outstanding,
+            kind: "workflow.settled",
+            entity: self.task_id,
             body: encode_workflow_outcome(WorkflowOutcome {
                 task_id: self.task_id, disposition: disposition, reason: reason,
-                transition: TransitionRef { scope: self.scope, key: self.task_id, proposal_id: self.outstanding }
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.task_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
     // A step drained: its committed outcome, and every responsibility it
     // admitted settled or retired. Only the active step's, once.
     fn on_drained(d: StepDrain) {
-        if !self.active || d.step_index != self.current || d.step_id != self.workflow_id + "/s" + to_string(self.current) {
+        if !self.active
+            || d.step_index != self.current
+            || d.step_id != self.workflow_id + "/s" + to_string(self.current)
+        {
             self.duplicates = self.duplicates + 1;
             return;
         }
         self.active = false;
-        if self.stage == "settled" { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; } // cancelled meanwhile: the step fenced and drained
+        if self.stage == "settled" {
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        } // cancelled meanwhile: the step fenced and drained
         if len(self.outstanding) > 0 || self.held { return; } // a settlement is being decided; it decides
         if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
         if d.disposition == "completed" {
@@ -1203,24 +1609,38 @@ locus WorkflowRun {
             self.propose_outcome("done", "");
             return;
         }
-        if d.disposition == "failed" { self.propose_outcome("failed", "step " + d.step_id + " failed"); return; }
+        if d.disposition == "failed" {
+            self.propose_outcome("failed", "step " + d.step_id + " failed");
+            return;
+        }
         // refused: the step could not run. The execution is neither done
         // nor failed by the record's rules; it stays, reachable, until
         // it is cancelled
     }
     fn on_answer(a: TransitionAnswer) {
-        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        if a.scope != self.scope
+            || a.proposal_id != self.outstanding
+            || len(self.outstanding) == 0
+        {
+            return;
+        }
         self.outstanding = "";
         if !a.ok && (a.basis == "record" || a.basis == "fenced") { self.held = true; return; }
         if !a.ok {
             // the state refused this outcome: the workflow is not that yet
             self.stage = "running";
-            if self.cancel_asked && self.proposing != "cancelled" { self.propose_outcome("cancelled", self.cancel_reason); }
+            if self.cancel_asked && self.proposing != "cancelled" {
+                self.propose_outcome("cancelled", self.cancel_reason);
+            }
             return;
         }
         self.stage = "settled";
         self.disposition = std::str::clone(self.proposing);
-        WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+        WorkflowSettled <- WorkflowSettlement {
+            task_id: self.task_id,
+            disposition: self.disposition,
+            reason: self.reason,
+        };
         if !self.active && self.disposition == "cancelled" {
             // cancelled with no step active — before the current step was
             // restored, or between steps: the record says what is still
@@ -1303,7 +1723,12 @@ locus StepRun {
     // The step is leaving: every admitted member settled or retired. Its
     // workflow hears that, once, before the step is reclaimed.
     fn leaving() {
-        StepDrained <- StepDrain { task_id: self.task_id, step_id: self.step_id, step_index: self.step_index, disposition: self.disposition };
+        StepDrained <- StepDrain {
+            task_id: self.task_id,
+            step_id: self.step_id,
+            step_index: self.step_index,
+            disposition: self.disposition,
+        };
     }
     // A copy of each leaf and child the recipe binds to this step.
     @bounded_by(self.leaves)
@@ -1367,11 +1792,22 @@ locus StepRun {
         self.held = false;
         self.outstanding = transition_id(self.step_id, "registered");
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.registered", entity: self.step_id,
+            scope: self.scope,
+            key: self.step_id,
+            proposal_id: self.outstanding,
+            kind: "step.registered",
+            entity: self.step_id,
             body: encode_members(RegisteredMembers {
-                step_id: self.step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: self.step_index,
+                step_id: self.step_id,
+                task_id: self.task_id,
+                workflow_id: self.workflow_id,
+                step_index: self.step_index,
                 members: self.members_text(),
-                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.step_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
@@ -1380,11 +1816,22 @@ locus StepRun {
         self.held = false;
         self.outstanding = transition_id(self.step_id, "activated");
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.activated", entity: self.step_id,
+            scope: self.scope,
+            key: self.step_id,
+            proposal_id: self.outstanding,
+            kind: "step.activated",
+            entity: self.step_id,
             body: encode_activation(ActivatedStep {
-                step_id: self.step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: self.step_index,
+                step_id: self.step_id,
+                task_id: self.task_id,
+                workflow_id: self.workflow_id,
+                step_index: self.step_index,
                 dispatched: self.required,
-                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.step_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
@@ -1392,10 +1839,22 @@ locus StepRun {
         self.held = false;
         self.outstanding = transition_id(self.step_id, disposition);
         TransitionProposed <- TransitionProposal {
-            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: kind, entity: self.step_id,
+            scope: self.scope,
+            key: self.step_id,
+            proposal_id: self.outstanding,
+            kind: kind,
+            entity: self.step_id,
             body: encode_step_outcome(StepOutcome {
-                step_id: self.step_id, task_id: self.task_id, disposition: disposition, members: self.required, failed_member: failed,
-                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+                step_id: self.step_id,
+                task_id: self.task_id,
+                disposition: disposition,
+                members: self.required,
+                failed_member: failed,
+                transition: TransitionRef {
+                    scope: self.scope,
+                    key: self.step_id,
+                    proposal_id: self.outstanding,
+                }
             })
         };
     }
@@ -1419,7 +1878,13 @@ locus StepRun {
     fn finish(disposition: String, why: String) {
         self.stage = "settled";
         self.disposition = disposition;
-        StepSettled <- StepSettlement { step_id: self.step_id, task_id: self.task_id, disposition: disposition, failed_member: self.failed_member, why: why };
+        StepSettled <- StepSettlement {
+            step_id: self.step_id,
+            task_id: self.task_id,
+            disposition: disposition,
+            failed_member: self.failed_member,
+            why: why,
+        };
     }
     // every member the step dispatched has settled, or retired never
     // admitted, and every child that settled has also left — its own
@@ -1428,7 +1893,9 @@ locus StepRun {
     // something
     fn drained() -> Bool {
         if !self.dispatched { return true; }
-        if set_count(self.answered) + set_count(self.retired) < set_count(self.required) { return false; }
+        if set_count(self.answered) + set_count(self.retired) < set_count(self.required) {
+            return false;
+        }
         return self.children_left();
     }
     fn children_left() -> Bool {
@@ -1445,14 +1912,22 @@ locus StepRun {
     // follows a settlement, never precedes one.
     fn on_child_left(c: ChildLeave) {
         let bound = self.bound_child(c.key);
-        if len(bound) == 0 || bound != c.task_id || !set_has(self.answered, c.key) { self.strays = self.strays + 1; return; }
+        if len(bound) == 0 || bound != c.task_id || !set_has(self.answered, c.key) {
+            self.strays = self.strays + 1;
+            return;
+        }
         self.left = set_add(self.left, c.key);
         if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
     }
     // The activation's answer births one WorkRun per leaf of the step.
     @bounded_by(self.mine)
     fn on_answer(a: TransitionAnswer) {
-        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        if a.scope != self.scope
+            || a.proposal_id != self.outstanding
+            || len(self.outstanding) == 0
+        {
+            return;
+        }
         self.outstanding = "";
         if !a.ok && (a.basis == "record" || a.basis == "fenced") {
             // the record would not take it: that is no outcome of the
@@ -1484,7 +1959,11 @@ locus StepRun {
             while i < self.mine.len() {
                 let l = self.mine.get(i) or LeafSpec { };
                 WorkRun {
-                    scope: self.scope, work_id: l.work_id, step_id: self.step_id, task_id: self.task_id, key: l.key,
+                    scope: self.scope,
+                    work_id: l.work_id,
+                    step_id: self.step_id,
+                    task_id: self.task_id,
+                    key: l.key,
                     performer_kind: l.performer_kind, request: l.request, allowance: l.allowance
                 };
                 i = i + 1;
@@ -1495,7 +1974,10 @@ locus StepRun {
             while i < self.mine_children.len() {
                 let c = self.mine_children.get(i) or ChildSpec { };
                 ChildRequested <- ChildRequest {
-                    parent_task: self.task_id, step_id: self.step_id, step_index: self.step_index, key: c.key,
+                    parent_task: self.task_id,
+                    step_id: self.step_id,
+                    step_index: self.step_index,
+                    key: c.key,
                     child_task: c.task_id, definition: c.definition, revision: c.revision
                 };
                 i = i + 1;
@@ -1506,7 +1988,11 @@ locus StepRun {
             // drains and leaves as any fenced step does
             if self.fenced_at_birth {
                 self.finish("cancelled", "cancelled before the restart");
-                StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled before the restart" };
+                StepFenced <- StepFence {
+                    step_id: self.step_id,
+                    task_id: self.task_id,
+                    reason: "task " + self.task_id + " was cancelled before the restart",
+                };
             }
             return;
         }
@@ -1522,7 +2008,9 @@ locus StepRun {
         if set_has(self.answered, m.key) { self.duplicates = self.duplicates + 1; return; }
         self.answered = set_add(self.answered, m.key);
         if m.disposition == "done" { self.done = set_add(self.done, m.key); }
-        if m.disposition != "done" && len(self.failed_member) == 0 { self.failed_member = std::str::clone(m.key); }
+        if m.disposition != "done" && len(self.failed_member) == 0 {
+            self.failed_member = std::str::clone(m.key);
+        }
         // the step is settled: a member's later answer is recorded by the
         // member and changes nothing here, except that once every member
         // has answered the step reclaims itself
@@ -1542,7 +2030,9 @@ locus StepRun {
         if set_has(self.answered, c.key) { self.duplicates = self.duplicates + 1; return; }
         self.answered = set_add(self.answered, c.key);
         if c.disposition == "done" { self.done = set_add(self.done, c.key); }
-        if c.disposition != "done" && len(self.failed_member) == 0 { self.failed_member = std::str::clone(c.key); }
+        if c.disposition != "done" && len(self.failed_member) == 0 {
+            self.failed_member = std::str::clone(c.key);
+        }
         if self.stage == "settled" {
             if self.drained() { self.leaving(); terminate; }
             return;
@@ -1556,8 +2046,14 @@ locus StepRun {
     fn on_retired(m: MemberRetirement) {
         let mut bound = self.bound_work(m.key);
         if len(bound) == 0 { bound = self.bound_child(m.key); }
-        if len(bound) == 0 || bound != m.work_id || self.stage != "settled" { self.strays = self.strays + 1; return; }
-        if set_has(self.answered, m.key) || set_has(self.retired, m.key) { self.duplicates = self.duplicates + 1; return; }
+        if len(bound) == 0 || bound != m.work_id || self.stage != "settled" {
+            self.strays = self.strays + 1;
+            return;
+        }
+        if set_has(self.answered, m.key) || set_has(self.retired, m.key) {
+            self.duplicates = self.duplicates + 1;
+            return;
+        }
         self.retired = set_add(self.retired, m.key);
         if self.drained() { self.leaving(); terminate; }
     }
@@ -1576,7 +2072,11 @@ locus StepRun {
         // cancelled one, so it never has a second message to end on)
         if self.stage != "settled" { self.finish("cancelled", w.reason); }
         if self.dispatched && !self.drained() {
-            StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled: " + w.reason };
+            StepFenced <- StepFence {
+                step_id: self.step_id,
+                task_id: self.task_id,
+                reason: "task " + self.task_id + " was cancelled: " + w.reason,
+            };
             return;
         }
         self.leaving();

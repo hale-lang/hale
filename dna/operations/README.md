@@ -20,10 +20,10 @@ explains availability: `available`, `missing`, `redacted`, `protected`,
 `source_unavailable`, `digest_mismatch` or `invalid_document`. Available bodies
 must match their digest, their proposal metadata, and one of the two native
 canonical codecs (`knowledge_document` or seeded `design_document`). A stored
-blob alone never establishes permission. Record-only queries suppress body text
-after any Ledger adoption because receipt restrictions may have lived in Ledger.
-Abandonment does not restore those restrictions into Record and cannot reopen
-body visibility. Missing, non-string or unknown classification cannot establish
+blob alone never establishes permission. Receipt restrictions are the Ledger's
+rows: a query reads them beside the record (a routed journal, or the Ledger
+reached through the record's location), and one that cannot read the Ledger
+answers `source_unavailable` rather than show a body. Missing, non-string or unknown classification cannot establish
 public/internal visibility; a withheld marker always suppresses the body.
 
 A knowledge Review also suppresses derived question/reason/refusal/diff/evidence
@@ -31,7 +31,7 @@ text and raw settlement when its practice receipt is unavailable. Its typed
 `outcome` and structural state remain. This includes legacy Reviews linked only
 by `subject_digest`. For a non-knowledge Review, `text_status=not_applicable`
 means there is no canonical practice receipt; `text_available=false` says nothing
-about its directly recorded question. After any Ledger adoption, even Reviews
+about its directly recorded question. When the Ledger cannot be read, even Reviews
 without knowledge linkage suppress free text and raw settlement because their
 subject visibility cannot be established. Public serializers still choose which
 non-knowledge metadata they expose and must not expose arbitrary raw event bodies.
@@ -43,10 +43,10 @@ continues its existing receipt rendering in this slice. Hosted consumers use
 `Queries.practice_of` / `review_of` (and their bounded page adapters), never those
 raw helpers. This extraction does not claim to harden existing local CLI access.
 
-Run `hale test dna/operations/tests` for real Git Record fixtures. They cover
+Run `hale test dna/operations/tests` for the record and Ledger fixtures. They cover
 separate review/activation state, pinned snapshots, source identity, pending
 requests, preserved Unicode and multiline text, native design documents, malformed
-receipts, protected/redacted stale blobs and adoption without a Ledger connection.
+receipts, protected/redacted stale blobs and a reader without a Ledger connection.
 
 ## Declared organization
 
@@ -62,7 +62,7 @@ caller's exact owned snapshot directory; it is never serialized. Call `load()` b
 provide the public projection; `error()` describes refused input. Failure leaves
 the public catalog empty, never partially loaded. One instance loads only once.
 
-The reader recognizes topology schema `1.19`, model semantics `2`, and verifies
+The reader recognizes topology schemas `1.20` and `1.21`, model semantics `2`, and verifies
 the compiler's exact whole-artifact digest before interpreting its contracts.
 Its bounds are 8 MiB of artifact, 64 KiB of ownership source, 4,096 declarations
 and 4,096 static instances. The syntax checker rejects malformed, ambiguous and

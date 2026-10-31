@@ -252,6 +252,9 @@ struct ResolvedGroup {
     loci: BTreeSet<String>,
     /// Free fns in the group.
     free_fns: BTreeSet<String>,
+    /// Stdlib modules in the group (`std::log`): their bodies are
+    /// absorbed stdlib interiors, never entities of the model.
+    std_modules: BTreeSet<String>,
 }
 
 impl ResolvedGroup {
@@ -563,6 +566,86 @@ pub fn selected_clauses(
         .collect()
 }
 
+/// The groups the clauses of `programs` name without declaring: the
+/// built-in [`PROGRAM_GROUP`], and each stdlib module written inline
+/// after `avoiding` (`std::log::*`, the group of that one member, named
+/// by its spelling). Every clause is read, a constitution's included,
+/// so an adopted law finds them in the adopting world; a clause no
+/// world adopts costs an unused group row, never a law.
+///
+/// Each is one declaration per process, keyed by its name: it is
+/// determined by the name alone, so the selection and the model builder
+/// read the same row however many snapshots ask. Its spans are
+/// synthetic; a diagnostic about the operand points at the operand.
+pub(crate) fn implicit_group_decls(programs: &[&Program]) -> Vec<&'static GroupDecl> {
+    use std::sync::Mutex;
+    static DECLS: Mutex<BTreeMap<String, &'static GroupDecl>> = Mutex::new(BTreeMap::new());
+    fn take<'p>(entries: &'p [ClaimDecl], out: &mut BTreeSet<&'p str>) {
+        for c in entries {
+            for g in c.form.group_operands() {
+                if is_implicit_group_name(&g.name) {
+                    out.insert(g.name.as_str());
+                }
+            }
+        }
+    }
+    fn clause_names<'p>(items: &'p [TopDecl], out: &mut BTreeSet<&'p str>) {
+        for item in items {
+            match item {
+                TopDecl::Claims(cb) => take(&cb.entries, out),
+                TopDecl::Constitution(cd) => take(&cd.entries, out),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Claims(cb) = m {
+                            take(&cb.entries, out);
+                        }
+                    }
+                }
+                TopDecl::Module(m) => clause_names(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    for p in programs {
+        clause_names(&p.items, &mut names);
+    }
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let mut decls = DECLS.lock().unwrap_or_else(|e| e.into_inner());
+    names
+        .into_iter()
+        .map(|name| {
+            *decls.entry(name.to_string()).or_insert_with(|| {
+                let at = hale_syntax::Span::new(0, 0);
+                let members = match name.strip_suffix("::*") {
+                    Some(module) => vec![GroupMember {
+                        segments: module.split("::").map(|s| Ident::new(s.to_string(), at)).collect(),
+                        glob: true,
+                        role: false,
+                        span: at,
+                    }],
+                    None => Vec::new(),
+                };
+                Box::leak(Box::new(GroupDecl {
+                    name: Ident::new(name.to_string(), at),
+                    members,
+                    may_be_empty: false,
+                    span: at,
+                    id: NodeId::NONE,
+                }))
+            })
+        })
+        .collect()
+}
+
+/// Whether `g` is one of [`implicit_group_decls`]' rows rather than a
+/// group a program declared.
+fn is_implicit_decl(g: &GroupDecl) -> bool {
+    is_implicit_group_name(&g.name.name) && g.span == hale_syntax::Span::new(0, 0)
+}
+
 pub(crate) fn enumerate_clauses<'a>(
     programs: &[&'a Program],
     import_renames: &[(Vec<String>, String)],
@@ -618,6 +701,7 @@ pub(crate) fn enumerate_clauses<'a>(
     for p in programs {
         walk_items(&p.items, &mut group_decls, &mut top_blocks, &mut consts, &mut lib_adopts);
     }
+    group_decls.extend(implicit_group_decls(programs));
     // The world tier is the entry row's (`EntryRow::world`): every
     // `main locus` the bundle declares states world law, an imported
     // application's included (GH #733), in the witness's order, which is
@@ -676,6 +760,9 @@ pub(crate) fn enumerate_clauses<'a>(
                     _ => None,
                 },
                 ClaimForm::OnlyEdges { src, .. } => Some(&src.name),
+                ClaimForm::RequireSeparateDomains { left, .. } => {
+                    Some(&left.name)
+                }
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
                 | ClaimForm::RequireSealed { group }
@@ -733,6 +820,12 @@ fn render_form(f: &ClaimForm) -> String {
         ClaimForm::RequireNoSilentLossGroup { group } => {
             hale_model::claim_form::require_no_silent_loss_group(
                 &group.name,
+            )
+        }
+        ClaimForm::RequireSeparateDomains { left, right } => {
+            hale_model::claim_form::require_separate_domains(
+                &left.name,
+                &right.name,
             )
         }
         ClaimForm::ForbidReaches {
@@ -827,6 +920,26 @@ fn render_form(f: &ClaimForm) -> String {
     }
 }
 
+/// The refusal of a `std::…::*` member naming no stdlib module.
+fn unknown_module(written: &str, module: &str) -> String {
+    // Compared by the last segment among the modules beside it: every
+    // path shares `std::`, which would make any two look close.
+    let (parent, last) = module.rsplit_once("::").unwrap_or(("", module));
+    let near = crate::stdlib_modules::module_paths().find(|p| {
+        p.rsplit_once("::").is_some_and(|(pp, pl)| pp == parent && close(pl, last))
+    });
+    let hint = match near {
+        Some(n) => format!(" Did you mean `{}::*`?", n),
+        None => String::new(),
+    };
+    format!(
+        "group member `{written}` names no stdlib module: a module is a \
+         namespace the stdlib declares in Hale source (`std::log::*`), \
+         and a namespace lowered natively has no declarations to name. \
+         Unknown names are errors, never empty sets.{hint}"
+    )
+}
+
 /// Resolve one group member into `rg`, or push a diagnostic.
 /// Kept with SELECTION: resolving a group's members is how the
 /// selection decides which laws exist over which entities.
@@ -871,6 +984,25 @@ fn resolve_member(
             ));
         } else {
             rg.decl_count += sel.handlers.len();
+        }
+        return;
+    }
+    if m.glob && m.segments.len() >= 2 && m.segments[0].name == "std" {
+        // `std::log::*` — a stdlib module: every fn-bearing
+        // declaration of the seed files behind it
+        // (`crate::stdlib_modules`).
+        let module = m
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        match crate::stdlib_modules::module_decls(&module) {
+            Some(decls) => {
+                rg.decl_count += decls.len();
+                rg.std_modules.insert(module);
+            }
+            None => diags.push(Diag::ty(m.span, unknown_module(&m.display(), &module))),
         }
         return;
     }
@@ -999,7 +1131,7 @@ fn claims_report_inner(
     } = enumerate_clauses(programs, import_renames, env);
     let mut diags = diags;
     let nothing_to_resolve = group_decls.is_empty() && claims.is_empty();
-    let selection = |diags, groups| LawSelection {
+    let selection = |claims, diags, groups| LawSelection {
         claims,
         origins,
         library,
@@ -1009,7 +1141,7 @@ fn claims_report_inner(
         environment: env.name.clone(),
     };
     if nothing_to_resolve {
-        return selection(diags, BTreeMap::new());
+        return selection(claims, diags, BTreeMap::new());
     }
 
     // ---- decl indexes for member / topic resolution ----
@@ -1071,7 +1203,57 @@ fn claims_report_inner(
     let mut groups: BTreeMap<String, ResolvedGroup> = BTreeMap::new();
     let mut group_selection: BTreeMap<String, GroupSelection> =
         BTreeMap::new();
+    // `program`: the closing entrypoint's own fn-bearing declarations,
+    // which are the bundle's less every imported seed's.
+    let imported: BTreeSet<&str> = import_renames.iter().map(|(_, m)| m.as_str()).collect();
+    let own_decls = locus_names
+        .iter()
+        .chain(free_fn_names.iter())
+        .filter(|n| !imported.contains(n.as_str()))
+        .count();
     for g in &group_decls {
+        let implicit = is_implicit_decl(g);
+        if g.name.name == PROGRAM_GROUP && !implicit {
+            diags.push(Diag::ty(
+                g.name.span,
+                format!(
+                    "`{PROGRAM_GROUP}` is the built-in group (every fn-bearing \
+                     declaration of the entrypoint's own seed) and cannot be \
+                     declared: a second meaning under the name would change \
+                     every law that cites it. Name this group something else"
+                ),
+            ));
+            continue;
+        }
+        if implicit {
+            // Built in, or a stdlib module written inline: nothing to
+            // misspell in a declaration, and an unknown module is
+            // refused at the operand that names it (below).
+            let mut rg = ResolvedGroup {
+                decl_count: 0,
+                may_be_empty: false,
+                loci: BTreeSet::new(),
+                free_fns: BTreeSet::new(),
+                std_modules: BTreeSet::new(),
+            };
+            if g.name.name == PROGRAM_GROUP {
+                rg.decl_count = own_decls;
+            }
+            let mut quiet = Vec::new();
+            for m in &g.members {
+                resolve_member(m, programs, false, &locus_names, &free_fn_names, import_renames, &mut rg, &mut quiet);
+            }
+            let status = if !quiet.is_empty() {
+                GroupSelection::SelectorFailed
+            } else if rg.decl_count == 0 {
+                GroupSelection::Refused
+            } else {
+                GroupSelection::Resolved
+            };
+            group_selection.insert(g.name.name.clone(), status);
+            groups.insert(g.name.name.clone(), rg);
+            continue;
+        }
         if groups.contains_key(&g.name.name) {
             diags.push(Diag::ty(
                 g.name.span,
@@ -1091,6 +1273,7 @@ fn claims_report_inner(
             may_be_empty: g.may_be_empty,
             loci: BTreeSet::new(),
             free_fns: BTreeSet::new(),
+            std_modules: BTreeSet::new(),
         };
         let mut selector_failed = false;
         for m in &g.members {
@@ -1143,7 +1326,48 @@ fn claims_report_inner(
         groups.insert(g.name.name.clone(), rg);
     }
 
-    selection(diags, group_selection)
+    // Each operand naming a stdlib module: the module must exist, and
+    // the operand must sit where a stdlib body can count. A module's
+    // bodies are absorbed interiors of the paths a walk takes, so a
+    // `forbid reaches` target or `avoiding` gate can name one; no other
+    // position reads them, and a group there would quantify over
+    // nothing the author can see.
+    for c in &claims {
+        if let ClaimForm::ForbidReaches { avoiding: Some(a), .. } = &c.form {
+            if let Some(module) = a.name.strip_suffix("::*").filter(|_| a.name.starts_with("std::")) {
+                if crate::stdlib_modules::module_decls(module).is_none() {
+                    diags.push(Diag::ty(a.span, unknown_module(&a.name, module)));
+                }
+            }
+        }
+        let readable: Vec<&Ident> = match &c.form {
+            ClaimForm::ForbidReaches { dst, avoiding, .. } => {
+                let mut v: Vec<&Ident> = avoiding.iter().collect();
+                if let ClaimSet::Group(g) = dst {
+                    v.push(g);
+                }
+                v
+            }
+            _ => Vec::new(),
+        };
+        for g in c.form.group_operands() {
+            let holds_module = groups.get(&g.name).is_some_and(|rg| !rg.std_modules.is_empty());
+            if holds_module && !readable.iter().any(|r| std::ptr::eq(*r, g)) {
+                diags.push(Diag::ty(
+                    g.span,
+                    format!(
+                        "claim `{}`: group `{}` holds a stdlib module, which \
+                         only a `forbid reaches` target or an `avoiding` gate \
+                         can name: a stdlib body is no source of a path, and \
+                         no other form counts one",
+                        c.name.name, g.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    selection(claims, diags, group_selection)
 }
 
 thread_local! {
@@ -1191,6 +1415,7 @@ pub(crate) fn attributed_mask(
         "env" => EffectSet::ENV,
         "alloc" => EffectSet::ALLOC,
         "secret_use" => EffectSet::SECRET_USE,
+        "stdio" => EffectSet::STDIO,
         _ => return None,
     })
 }

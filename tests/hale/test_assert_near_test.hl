@@ -12,5 +12,10 @@ fn main() {
     std::test::assert_near(2.5, 2.0, 0.5, "a difference equal to the tolerance passes");
     std::test::assert_near(-3.0, -3.25, 0.25, "either side of expected");
     std::test::assert_near(std::math::inf(), std::math::inf(), 0.0, "equal infinities pass");
-    std::test::assert_near(std::math::sqrt(2.0) * std::math::sqrt(2.0), 2, 0.000001, "an Int expected widens");
+    std::test::assert_near(
+        std::math::sqrt(2.0) * std::math::sqrt(2.0),
+        2,
+        0.000001,
+        "an Int expected widens",
+    );
 }

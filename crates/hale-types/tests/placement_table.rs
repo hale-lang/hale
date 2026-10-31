@@ -163,9 +163,9 @@ fn two_universes_one_numeric_id_stay_two_identities() {
     // The collision is present, or the case proves nothing.
     assert_eq!(collider_id, reader_id, "the padding no longer lands `Collider` on the reader's id");
 
-    let user_decl = DeclRef { site: SiteRef::user(collider_id), args: Vec::new(), lowered: "Collider".into() };
+    let user_decl = DeclRef { site: SiteRef::user(collider_id), args: Vec::new(), lowered: "Collider".into(), template: "Collider".into() };
     let stdlib_decl =
-        DeclRef { site: SiteRef::stdlib(reader_id), args: Vec::new(), lowered: "__StdIoUdpReader".into() };
+        DeclRef { site: SiteRef::stdlib(reader_id), args: Vec::new(), lowered: "__StdIoUdpReader".into(), template: "__StdIoUdpReader".into() };
     assert_eq!(user_decl.site.id, stdlib_decl.site.id);
     assert_ne!(user_decl.site.universe, stdlib_decl.site.universe);
     assert_ne!(user_decl, stdlib_decl, "one numeric id, two canonical declaration keys");
@@ -1145,4 +1145,30 @@ fn the_table_keeps_its_laws_over_every_fixture() {
             t.holes.iter().filter(|h| matches!(h.at, hale_types::placement::HoleAt::Instance(_))).collect();
         assert!(static_holes.is_empty(), "{name}: {static_holes:?}");
     }
+}
+
+/// A local that shares a fn's name is the local where it is read (F.40: a
+/// name is bound once, by the binding in scope), not the fn passed as a
+/// value: the `Builder` the fn `quote` builds runs on main, where its one
+/// caller does. The placement walk took every bare read of a fn's name for
+/// the fn, so `let mut quote` in another fn made the `Builder` row unknown
+/// ("`quote` passed as a value"). The fn really read as a value still is.
+#[test]
+fn a_local_of_a_fns_name_is_not_the_fn_passed_as_a_value() {
+    let s = clean("local_shadows_fn.hl");
+    let t = table(&s);
+    assert_eq!(dynamic_domains(t, "Builder"), [PlacementTable::MAIN].into_iter().collect());
+    assert!(t.holes.iter().all(|h| !matches!(h.kind, HoleKind::UnknownDomains { .. })), "{:?}", t.holes);
+
+    let s = clean("fn_passed_as_value.hl");
+    let t = table(&s);
+    let unknown: Vec<String> = t
+        .holes
+        .iter()
+        .filter_map(|h| match &h.kind {
+            HoleKind::UnknownDomains { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(unknown.iter().any(|r| r.contains("`quote` is passed as a value")), "{unknown:?}");
 }

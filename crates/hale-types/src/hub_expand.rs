@@ -16,6 +16,11 @@
 //!   the main locus (its `bind:` may read one), placed on the shared
 //!   `async_io` pool `__api_ws`, and before the exposure of a serve over the
 //!   hub (`rpc_expand` pushes it later), as a socket transport's;
+//!   A hub an `http::Rest` of the main locus mounts (`hubs: [("/path",
+//!   self.hub)]`, GH #1780) gets no listener: its connections are the Rest
+//!   listener's, handed to the hub at the upgrade (`rpc_expand` writes the
+//!   mount table into that listener), and the Rest exposure describes its
+//!   streams ([`HubExpansion::streams`]);
 //! - for each stream, an adapter binding in the main locus's `bindings`
 //!   block (`Topic: __StdApiHubStream { hub: N, stream: I } codec(…)`), so
 //!   the publish fanout reaches the hub as it reaches any adapter, and the
@@ -53,6 +58,24 @@ pub struct HubExpansion {
     pub locus: String,
     /// The param that is the hub.
     pub param: String,
+    /// Mounted on an `http::Rest` exposure's listener (`hubs:`, GH #1780):
+    /// it has no listener of its own.
+    pub mounted: bool,
+    /// Its streams as an exposure's description lists them, in binding
+    /// order: what the `http::Rest` that mounts it describes beside its rows.
+    pub streams: Vec<DescribedStream>,
+}
+
+/// One stream of a hub, as the description of the `http::Rest` exposure
+/// that mounts the hub states it.
+#[derive(Debug, Clone)]
+pub struct DescribedStream {
+    /// The stream's object of the description, compact JSON.
+    pub doc: String,
+    /// The roles its row requires.
+    pub requires: Vec<String>,
+    /// The topic's payload, whose schemas the document carries.
+    pub payload: TypeExpr,
 }
 
 /// One stream row, as the pass reads it.
@@ -76,6 +99,8 @@ struct HubPlan {
     id: i64,
     name: String,
     bind: Expr,
+    /// mounted on an `http::Rest` (`hubs:`): no listener of its own
+    mounted: bool,
     principals: Option<Expr>,
     roles: Option<Expr>,
     expiring: bool,
@@ -222,6 +247,8 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                         }
                     }
                 }
+                // the hubs an `http::Rest` of this locus mounts (GH #1780)
+                let mounts = crate::rpc_expand::locus_mounts(l);
                 for field in order {
                     // a hub is a param built by a `ws::Hub` literal, once
                     let Some(lit) = hub_literal(l, field) else { continue };
@@ -233,7 +260,20 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                     let Expr::Struct { path: lit_path, inits, .. } = lit else { continue };
                     let kind = if is_udp_hub(lit_path) { "udp" } else { "ws" };
                     let init = |n: &str| inits.iter().find(|i| i.name.name == n).map(|i| &i.value);
-                    let Some(bind) = init("bind") else { continue };
+                    // a `ws::Hub` an `http::Rest` mounts listens on the Rest's
+                    // listener: its address is that one's, and it binds none
+                    let mount = mounts.iter().find(|(m, _, _)| m.field == field).filter(|_| kind == "ws");
+                    let mount_addr;
+                    let bind = match mount {
+                        Some((m, addr, _)) => {
+                            mount_addr = addr.clone().unwrap_or(Expr::Literal(Literal::String(String::new()), m.span));
+                            &mount_addr
+                        }
+                        None => match init("bind") {
+                            Some(b) => b,
+                            None => continue,
+                        },
+                    };
                     let Some(Expr::Literal(Literal::String(name), _)) = init("as").or_else(|| init("name")) else {
                         continue;
                     };
@@ -341,6 +381,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                             })
                             .collect(),
                         span: l.name.span,
+                        mounted_on: mount.and_then(|(_, _, n)| n.clone()),
                     };
                     let pieces = crate::surface_doc::hub_pieces(&doc_hub, &schemas);
                     plans.push(HubPlan {
@@ -351,6 +392,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                         id: plans.len() as i64 + 1,
                         name: name.clone(),
                         bind: fresh(bind),
+                        mounted: mount.is_some(),
                         expiring: has_fn(principals.as_ref(), "expiry"),
                         revised: has_fn(roles.as_ref(), "grants"),
                         principals,
@@ -440,10 +482,20 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
             }
         }
         // the listener: a param born after the authored ones (the address may
-        // read one), on a pool of its own
-        if let Some((lp, entry)) = parse_listener(plan.id, plan.kind, fresh(&plan.bind), span) {
+        // read one), on a pool of its own; before the exposure params (GH
+        // #1565), which a surface served over the hub reaches it through,
+        // as when the compiler wrote the exposures last
+        // (a hub an `http::Rest` mounts has none: its connections are the
+        // Rest listener's, handed over at the upgrade)
+        let listener = if plan.mounted { None } else { parse_listener(plan.id, plan.kind, fresh(&plan.bind), span) };
+        if let Some((lp, entry)) = listener {
             if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                pb.params.push(lp);
+                let at = pb
+                    .params
+                    .iter()
+                    .position(|p| crate::surfaces::param_serve_site(p).is_some())
+                    .unwrap_or(pb.params.len());
+                pb.params.insert(at, lp);
             }
             if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
                 pl.entries.push(entry);
@@ -460,7 +512,19 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
                 }
             }
         }
-        out.push(HubExpansion { id: plan.id, name: plan.name.clone(), locus: plan.locus.clone(), param: plan.param.clone() });
+        out.push(HubExpansion {
+            id: plan.id,
+            name: plan.name.clone(),
+            locus: plan.locus.clone(),
+            param: plan.param.clone(),
+            mounted: plan.mounted,
+            streams: plan
+                .streams
+                .iter()
+                .zip(&plan.pieces.streams)
+                .map(|(st, doc)| DescribedStream { doc: doc.clone(), requires: st.requires.clone(), payload: st.payload.clone() })
+                .collect(),
+        });
     }
 
     // ---- the generated top-level items, beside the first hub's program ----

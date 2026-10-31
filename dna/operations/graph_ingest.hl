@@ -1,7 +1,7 @@
 // dna/operations/graph_ingest.hl — a repository read into the graph (GH
 // #1090).
 //
-// `hale dna init` ingests: it reads what the repository already says and
+// `hale habitat graft` ingests: it reads what the repository already says and
 // writes it as `graph.*` rows (graph.hl); it never derives one perspective
 // from the other. Most of the graph is structure — the README's first
 // paragraph, compose services, manifests, the specs and their schemas, CI
@@ -58,8 +58,16 @@ fn ingest_ext(path: String, exts: String) -> Bool {
 fn ingest_join(dir: String, target: String) -> String {
     let hash = std::str::index_of(target, "#");
     let t = std::str::trim(if hash >= 0 { target[0..hash] } else { target });
-    if len(t) == 0 || std::str::contains(t, "://") || std::str::starts_with(t, "mailto:") { return ""; }
-    let whole = if std::str::starts_with(t, "/") { t[1..len(t)] } else if len(dir) > 0 { dir + "/" + t } else { t };
+    if len(t) == 0 || std::str::contains(t, "://") || std::str::starts_with(t, "mailto:") {
+        return "";
+    }
+    let whole = if std::str::starts_with(t, "/") {
+        t[1..len(t)]
+    } else if len(dir) > 0 {
+        dir + "/" + t
+    } else {
+        t
+    };
     let mut out = "";
     let mut rest = whole + "/";
     while len(rest) > 0 {
@@ -100,7 +108,14 @@ fn ingest_value(line: String) -> String {
     let colon = std::str::index_of(t, ":");
     if colon < 0 { return ""; }
     let v = std::str::trim(t[(colon + 1)..len(t)]);
-    if len(v) >= 2 && ((std::str::starts_with(v, "\"") && std::str::ends_with(v, "\"")) || (std::str::starts_with(v, "'") && std::str::ends_with(v, "'"))) { return v[1..(len(v) - 1)]; }
+    if len(v) >= 2
+        && (
+            (std::str::starts_with(v, "\"") && std::str::ends_with(v, "\""))
+                || (std::str::starts_with(v, "'") && std::str::ends_with(v, "'"))
+        )
+    {
+        return v[1..(len(v) - 1)];
+    }
     return v;
 }
 
@@ -147,7 +162,9 @@ fn md_links(text: String) -> String {
         let after = rest[(mid + 2)..len(rest)];
         let close = std::str::index_of(after, ")");
         if close < 0 { return out; }
-        if open >= 0 { out = out + before[(open + 1)..len(before)] + "\t" + after[0..close] + "\n"; }
+        if open >= 0 {
+            out = out + before[(open + 1)..len(before)] + "\t" + after[0..close] + "\n";
+        }
         rest = after[(close + 1)..len(after)];
         mid = std::str::index_of(rest, "](");
     }
@@ -185,7 +202,15 @@ fn md_plain(text: String) -> String {
     while len(rest) > 0 {
         let tick = std::str::index_of(rest, "`");
         let bracket = std::str::index_of(rest, "[");
-        let at = if tick < 0 { bracket } else if bracket < 0 { tick } else if tick < bracket { tick } else { bracket };
+        let at = if tick < 0 {
+            bracket
+        } else if bracket < 0 {
+            tick
+        } else if tick < bracket {
+            tick
+        } else {
+            bracket
+        };
         if at < 0 { out = out + rest; rest = ""; continue; }
         out = out + rest[0..at];
         rest = rest[at..len(rest)];
@@ -215,7 +240,9 @@ fn md_words(text: String) -> String {
         mid = std::str::index_of(rest, "](");
     }
     out = out + rest;
-    return std::str::trim(std::str::replace(std::str::replace(std::str::replace(out, "[", ""), "`", ""), "**", ""));
+    return std::str::trim(
+        std::str::replace(std::str::replace(std::str::replace(out, "[", ""), "`", ""), "**", ""),
+    );
 }
 
 // Cell `n` of a table row.
@@ -247,27 +274,50 @@ fn md_column(header: String, name: String) -> Int {
 
 fn md_separator(line: String) -> Bool {
     let t = std::str::trim(line);
-    return std::str::starts_with(t, "|") && std::str::contains(t, "-") && len(std::str::replace(std::str::replace(std::str::replace(std::str::replace(t, "|", ""), "-", ""), ":", ""), " ", "")) == 0;
+    return std::str::starts_with(t, "|")
+        && std::str::contains(t, "-")
+        && len(
+            std::str::replace(
+                std::str::replace(
+                    std::str::replace(std::str::replace(t, "|", ""), "-", ""),
+                    ":",
+                    "",
+                ),
+                " ",
+                "",
+            ),
+        ) == 0;
 }
 
 // The text after a list item's marker, "" when `line` opens no item.
 fn md_item(line: String) -> String {
     let t = std::str::trim(line);
-    if std::str::starts_with(t, "- ") || std::str::starts_with(t, "* ") { return std::str::trim(t[2..len(t)]); }
+    if std::str::starts_with(t, "- ") || std::str::starts_with(t, "* ") {
+        return std::str::trim(t[2..len(t)]);
+    }
     let dot = std::str::index_of(t, ". ");
-    if dot > 0 && dot < 4 && (std::str::parse_int(t[0..dot]) or - 1) >= 0 { return std::str::trim(t[(dot + 2)..len(t)]); }
+    if dot > 0 && dot < 4 && (std::str::parse_int(t[0..dot]) or - 1) >= 0 {
+        return std::str::trim(t[(dot + 2)..len(t)]);
+    }
     return "";
 }
 
 // ---- the ingest ------------------------------------------------------------
 
 // `notes`: what the ingest took no row from and says once, one per line
-type IngestAnswer { rows: String = ""; nodes: Int = 0; edges: Int = 0; counts: String = ""; notes: String = ""; error: String = ""; }
+type IngestAnswer {
+    rows: String = "";
+    nodes: Int = 0;
+    edges: Int = 0;
+    counts: String = "";
+    notes: String = "";
+    error: String = "";
+}
 
 locus GraphIngest {
     params {
         root: String = ".";
-        // an application's graph (`hale dna init` on an application): its
+        // an application's graph (`hale habitat graft` on an application): its
         // own name, the root seed (the repository path's root is not one
         // seed, and `app` stays empty), and what `hale check --api` exports
         // for it, the surfaces it serves and the streams over a hub
@@ -296,6 +346,9 @@ locus GraphIngest {
         consumed: String = "";
         guards: String = "";
         unfolds: String = ""; // `<process>\t<seed>` per unfold the ingest wrote
+        // the named faces the description declares: `<surface>\t<application node>`
+        // per surface a face consumes
+        faced: String = "";
         appseed: String = ""; // the application's root seed node, "" for a repository
         // the API roles a contract's surface requires (`<contract>\t<role>`
         // per line, once each), read from the description the toolchain
@@ -329,7 +382,11 @@ locus GraphIngest {
     // A node, once; a name the vocabulary refuses refuses the ingest.
     fn node(kind: String, name: String, text: String, source: String) -> String {
         if !graph_text_ok(name) {
-            self.refuse(source + ": a " + kind + " named `" + name + "` cannot be a node: a name is one printable line, at most " + to_string(GRAPH_NAME_MAX) + " bytes, with no `|`");
+            self.refuse(
+                source + ": a " + kind + " named `" + name
+                    + "` cannot be a node: a name is one printable line, at most "
+                    + to_string(GRAPH_NAME_MAX) + " bytes, with no `|`",
+            );
             return "";
         }
         let id = graph_node_id(kind, name);
@@ -362,7 +419,9 @@ locus GraphIngest {
         let mut required = std::json::array_first(std::json::find_field_raw(member, "requires"));
         while !required.done {
             let e = std::str::trim(required.element);
-            if len(e) >= 3 && std::str::starts_with(e, "\"") { b.string_value(std::json::unescape_string(e[1..(len(e) - 1)])); }
+            if len(e) >= 3 && std::str::starts_with(e, "\"") {
+                b.string_value(std::json::unescape_string(e[1..(len(e) - 1)]));
+            }
             required = std::json::array_next(required);
         }
         b.end_array();
@@ -376,7 +435,9 @@ locus GraphIngest {
         if e.size() < 2 { return; }
         if self.emit("graph.edge", e.id(), e.body()) { self.edges = self.edges + 1; }
     }
-    fn add(e: GraphEdge, role: String, node: String) { if len(node) > 0 && !e.has(node) { e.member(role, node); } }
+    fn add(e: GraphEdge, role: String, node: String) {
+        if len(node) > 0 && !e.has(node) { e.member(role, node); }
+    }
     // A repository path as the node it is: a contract, a document, the
     // compose deployment, or the seed that holds it; "" when none.
     fn resolve(path: String) -> String {
@@ -399,7 +460,9 @@ locus GraphIngest {
             let nl = std::str::index_of(rest, "\n");
             let s = rest[0..nl];
             rest = rest[nl..len(rest)];
-            if (path == s || std::str::starts_with(path, s + "/")) && len(s) > len(best) { best = s; }
+            if (path == s || std::str::starts_with(path, s + "/")) && len(s) > len(best) {
+                best = s;
+            }
         }
         return if len(best) > 0 { "seed:" + best } else { "" };
     }
@@ -417,7 +480,9 @@ locus GraphIngest {
     // is for the purpose `init` declares for it.
     fn purpose_step() {
         if !self.tracked("README.md") {
-            if len(self.app) > 0 && len(self.declared) > 0 { self.purpose = self.node("purpose", self.app, self.declared, "dna/org/purpose.hl"); }
+            if len(self.app) > 0 && len(self.declared) > 0 {
+                self.purpose = self.node("purpose", self.app, self.declared, "dna/org/purpose.hl");
+            }
             return;
         }
         let text = self.read("README.md");
@@ -429,8 +494,16 @@ locus GraphIngest {
         while from >= 0 && from < len(text) {
             let line = std::str::trim(it.line_at(text, from));
             from = it.next_idx(text, from);
-            if !titled && std::str::starts_with(line, "# ") { name = std::str::trim(line[2..len(line)]); titled = true; continue; }
-            if len(line) == 0 || std::str::starts_with(line, "[![") || std::str::starts_with(line, "<") || std::str::starts_with(line, "#") {
+            if !titled && std::str::starts_with(line, "# ") {
+                name = std::str::trim(line[2..len(line)]);
+                titled = true;
+                continue;
+            }
+            if len(line) == 0
+                || std::str::starts_with(line, "[![")
+                || std::str::starts_with(line, "<")
+                || std::str::starts_with(line, "#")
+            {
                 if len(para) > 0 { from = -1; }
                 continue;
             }
@@ -444,7 +517,9 @@ locus GraphIngest {
     fn compose_step() {
         let mut i = 0;
         while len(dna::nth_word(INGEST_COMPOSE, i)) > 0 {
-            if self.tracked(dna::nth_word(INGEST_COMPOSE, i)) && len(self.compose) == 0 { self.compose = dna::nth_word(INGEST_COMPOSE, i); }
+            if self.tracked(dna::nth_word(INGEST_COMPOSE, i)) && len(self.compose) == 0 {
+                self.compose = dna::nth_word(INGEST_COMPOSE, i);
+            }
             i = i + 1;
         }
         if len(self.compose) == 0 { return; }
@@ -485,6 +560,41 @@ locus GraphIngest {
         self.note_runs(runs);
         self.edge(runs);
     }
+    // The processes the repository runs on a host rather than in its
+    // compose file: each `[dna.host.<command>]` its manifest declares (a
+    // node a habitat places, `hale habitat organism place`), run by the
+    // habitat's host placement. One compose already runs is not added again.
+    fn host_step() {
+        if !self.tracked("hale.toml") { return; }
+        let text = self.read("hale.toml");
+        let it = std::iter::Lines { };
+        let mut from = 0;
+        let mut names = "";
+        while from >= 0 && from < len(text) {
+            let t = std::str::trim(it.line_at(text, from));
+            from = it.next_idx(text, from);
+            if !std::str::starts_with(t, "[dna.host.") || !std::str::ends_with(t, "]") { continue; }
+            let name = t[10..(len(t) - 1)];
+            if !ingest_process_shaped(name) { continue; }
+            if std::str::contains(self.processes, "\n" + name + "\n") { continue; }
+            if std::str::contains("\n" + names, "\n" + name + "\n") { continue; }
+            names = names + name + "\n";
+        }
+        if len(names) == 0 { return; }
+        let runs = GraphEdge { kind: "runs" };
+        self.add(runs, "deployment", self.node("deployment", "host", "placed", "hale.toml"));
+        let mut rest = names;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let p = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let n = self.node("process", p, "", "hale.toml");
+            self.processes = self.processes + p + "\n";
+            self.add(runs, "process", "process:" + p);
+        }
+        self.note_runs(runs);
+        self.edge(runs);
+    }
     // Which deployment runs which process, for the equipment of an operator.
     fn note_runs(e: GraphEdge) {
         let mut deployment = "";
@@ -494,7 +604,9 @@ locus GraphIngest {
             let m = ms[0..nl];
             ms = ms[(nl + 1)..len(ms)];
             if std::str::starts_with(m, "deployment\t") { deployment = m[11..len(m)]; }
-            if std::str::starts_with(m, "process\t") && len(deployment) > 0 { self.runs = self.runs + deployment + "\t" + m[8..len(m)] + "\n"; }
+            if std::str::starts_with(m, "process\t") && len(deployment) > 0 {
+                self.runs = self.runs + deployment + "\t" + m[8..len(m)] + "\n";
+            }
         }
     }
     // An application's own seed: the root, named by the project directory
@@ -504,7 +616,10 @@ locus GraphIngest {
     fn app_step() {
         if len(self.app) == 0 { return; }
         self.appseed = self.node("seed", self.app, "", self.app);
-        if len(self.appseed) > 0 && std::str::contains(self.processes, "\n" + self.app + "\n") && !self.written("unfold:process:" + self.app + "|" + self.appseed) {
+        if len(self.appseed) > 0
+            && std::str::contains(self.processes, "\n" + self.app + "\n")
+            && !self.written("unfold:process:" + self.app + "|" + self.appseed)
+        {
             let u = GraphEdge { kind: "unfold" };
             self.add(u, "parent", "process:" + self.app);
             self.add(u, "child", self.appseed);
@@ -525,7 +640,12 @@ locus GraphIngest {
             let f = rest[0..nl];
             rest = rest[nl..len(rest)];
             let d = ingest_dir(f);
-            if len(d) > 0 && dna::word_in(dna::ingest_base(f), INGEST_MANIFESTS) && !std::str::contains(dirs, "\n" + d + "\n") { dirs = dirs + d + "\n"; }
+            if len(d) > 0
+                && dna::word_in(dna::ingest_base(f), INGEST_MANIFESTS)
+                && !std::str::contains(dirs, "\n" + d + "\n")
+            {
+                dirs = dirs + d + "\n";
+            }
         }
         rest = dirs;
         while len(rest) > 1 {
@@ -545,7 +665,9 @@ locus GraphIngest {
             if !outer { continue; }
             let seed = self.node("seed", d, "", d);
             self.seeds = self.seeds + d + "\n";
-            if std::str::contains(self.processes, "\n" + d + "\n") && !self.written("unfold:process:" + d + "|" + seed) {
+            if std::str::contains(self.processes, "\n" + d + "\n")
+                && !self.written("unfold:process:" + d + "|" + seed)
+            {
                 let u = GraphEdge { kind: "unfold" };
                 self.add(u, "parent", "process:" + d);
                 self.add(u, "child", seed);
@@ -581,7 +703,11 @@ locus GraphIngest {
             if std::str::contains(under, "/") || !ingest_ext(f, "yaml yml md") { continue; }
             let c = self.node("contract", f, "", f);
             self.contracts = self.contracts + f + "\n";
-            if ingest_ext(f, "md") { self.tables_of(c, self.read(f)); } else { self.schemas_of(c, self.read(f)); }
+            if ingest_ext(f, "md") {
+                self.tables_of(c, self.read(f));
+            } else {
+                self.schemas_of(c, self.read(f));
+            }
         }
     }
     // The `.md` or `.yaml` contract whose stem is `stem` (lower-case), as
@@ -595,13 +721,20 @@ locus GraphIngest {
             cs = cs[n2..len(cs)];
             if !ingest_ext(c, "md yaml yml") { continue; }
             let name = std::str::lower(c);
-            if name == "spec/" + stem + ".md" || name == "spec/" + stem + ".yaml" || name == "spec/" + stem + ".yml" { return "contract:" + c; }
+            if name == "spec/" + stem + ".md"
+                || name == "spec/" + stem + ".yaml"
+                || name == "spec/" + stem + ".yml"
+            {
+                return "contract:" + c;
+            }
         }
         return "";
     }
     fn add_role(node: String, role: String) {
         let line = node + "\t" + role + "\n";
-        if graph_text_ok(role) && !std::str::contains("\n" + self.roles, "\n" + line) { self.roles = self.roles + line; }
+        if graph_text_ok(role) && !std::str::contains("\n" + self.roles, "\n" + line) {
+            self.roles = self.roles + line;
+        }
     }
     // The roles each contract's surface requires. `spec/<Stem>.description.json`
     // is what `hale api describe` writes for a surface: the contract's own
@@ -615,17 +748,25 @@ locus GraphIngest {
             let nl = std::str::index_of(rest, "\n");
             let f = rest[0..nl];
             rest = rest[nl..len(rest)];
-            if !std::str::starts_with(f, "spec/") || !std::str::ends_with(f, ".description.json") { continue; }
+            if !std::str::starts_with(f, "spec/") || !std::str::ends_with(f, ".description.json") {
+                continue;
+            }
             let stem = std::str::lower(f[5..(len(f) - 17)]);
             if len(stem) == 0 || std::str::contains(stem, "/") { continue; }
             let matched = self.stem_contract(stem);
             if len(matched) == 0 { continue; }
-            let mut surfaces = std::json::array_first(std::json::find_field_raw(self.read(f), "surfaces"));
+            let mut surfaces = std::json::array_first(
+                std::json::find_field_raw(self.read(f), "surfaces"),
+            );
             while !surfaces.done {
-                let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
+                let mut members = std::json::array_first(
+                    std::json::find_field_raw(surfaces.element, "members"),
+                );
                 while !members.done {
                     self.tool(matched, members.element, f);
-                    let mut required = std::json::array_first(std::json::find_field_raw(members.element, "requires"));
+                    let mut required = std::json::array_first(
+                        std::json::find_field_raw(members.element, "requires"),
+                    );
                     while !required.done {
                         let e = std::str::trim(required.element);
                         if len(e) >= 3 && std::str::starts_with(e, "\"") {
@@ -650,24 +791,49 @@ locus GraphIngest {
     // the positions that serve it, never an organization.
     fn surfaces_step() {
         if len(self.appseed) == 0 || len(self.description) == 0 { return; }
+        self.faces_step();
         // only what the application serves: `surfaces` lists every declared
         // api, `exposures` the ones a serve site exposes (one surface may be
         // exposed several times; it is one contract)
         let mut served = "\n";
-        let mut exposures = std::json::array_first(std::json::find_field_raw(self.description, "exposures"));
+        let mut exposures = std::json::array_first(
+            std::json::find_field_raw(self.description, "exposures"),
+        );
         while !exposures.done {
             let s = std::json::find_string_field(exposures.element, "surface");
-            if len(s) > 0 && !std::str::contains(served, "\n" + s + "\n") { served = served + s + "\n"; }
+            if len(s) > 0 && !std::str::contains(served, "\n" + s + "\n") {
+                served = served + s + "\n";
+            }
             exposures = std::json::array_next(exposures);
         }
-        let mut surfaces = std::json::array_first(std::json::find_field_raw(self.description, "surfaces"));
+        let mut surfaces = std::json::array_first(
+            std::json::find_field_raw(self.description, "surfaces"),
+        );
         while !surfaces.done {
             let name = std::json::find_string_field(surfaces.element, "name");
+            let faced = std::str::contains(self.faced, "\n" + name + "\t")
+                || std::str::starts_with(self.faced, name + "\t");
+            if len(name) > 0 && !std::str::contains(served, "\n" + name + "\n") && faced {
+                // consumed by a face, served by none: the contract, its one `meets` edge carrying the consumers
+                let matched = self.stem_contract(std::str::lower(name));
+                let c = if len(matched) > 0 {
+                    matched
+                } else {
+                    self.node("contract", "api:" + name, "", "hale check --api")
+                };
+                self.serves(c, name, false);
+            }
             if len(name) > 0 && std::str::contains(served, "\n" + name + "\n") {
                 let matched = self.stem_contract(std::str::lower(name));
-                let c = if len(matched) > 0 { matched } else { self.node("contract", "api:" + name, "", "hale check --api") };
-                self.serves(c);
-                let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
+                let c = if len(matched) > 0 {
+                    matched
+                } else {
+                    self.node("contract", "api:" + name, "", "hale check --api")
+                };
+                self.serves(c, name, true);
+                let mut members = std::json::array_first(
+                    std::json::find_field_raw(surfaces.element, "members"),
+                );
                 while !members.done {
                     self.tool(c, members.element, "hale check --api");
                     self.requires(c, members.element);
@@ -678,12 +844,14 @@ locus GraphIngest {
         }
         let mut hubs = std::json::array_first(std::json::find_field_raw(self.description, "hubs"));
         while !hubs.done {
-            let mut streams = std::json::array_first(std::json::find_field_raw(hubs.element, "streams"));
+            let mut streams = std::json::array_first(
+                std::json::find_field_raw(hubs.element, "streams"),
+            );
             while !streams.done {
                 let topic = std::json::find_string_field(streams.element, "topic");
                 if len(topic) > 0 {
                     let c = self.node("contract", "stream:" + topic, "", "hale check --api");
-                    self.serves(c);
+                    self.serves(c, "", true);
                     self.requires(c, streams.element);
                 }
                 streams = std::json::array_next(streams);
@@ -691,25 +859,98 @@ locus GraphIngest {
             hubs = std::json::array_next(hubs);
         }
     }
-    // The application's seed serves contract `c`.
-    fn serves(c: String) {
+    // The application's seed serves contract `c` (when `serving`; else a
+    // face consumes it and the seed does not serve it), the surface `surface`
+    // of the description, and the faces that consume that surface consume it
+    // on the same edge: a contract has one `meets` edge, and the latest row
+    // says who meets there.
+    fn serves(c: String, surface: String, serving: Bool) {
         if len(c) == 0 { return; }
         let line = self.appseed + "\t" + c + "\n";
-        if std::str::contains("\n" + self.served, "\n" + line) { return; }
+        if serving && std::str::contains("\n" + self.served, "\n" + line) { return; }
         if !self.written("meets:" + c) {
             let e = GraphEdge { kind: "meets" };
             self.add(e, "contract", c);
-            self.add(e, "server", self.appseed);
+            if serving { self.add(e, "server", self.appseed); }
+            let mut rest = self.faced;
+            while len(surface) > 0 && len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let row = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+                let tab = std::str::index_of(row, "\t");
+                if row[0..tab] == surface { self.add(e, "consumer", row[(tab + 1)..len(row)]); }
+            }
             self.edge(e);
         }
-        self.served = self.served + line;
+        if serving { self.served = self.served + line; }
+    }
+    // The named faces the description declares (`dna::Face` params of the
+    // application's main): each an `application` node, its app, port and
+    // roles on the row, and the surfaces it consumes, kept for the `meets`
+    // edges of those contracts. The face is a consumer of the surface, never
+    // a part: no position is proposed for it.
+    fn faces_step() {
+        let mut faces = std::json::array_first(
+            std::json::find_field_raw(self.description, "faces"),
+        );
+        while !faces.done {
+            let name = std::json::find_string_field(faces.element, "name");
+            let app = std::json::find_string_field(faces.element, "app");
+            let port = std::json::find_int_field(faces.element, "port");
+            if len(name) > 0 && graph_text_ok(name) {
+                let id = graph_node_id("application", "face/" + name);
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("kind", "application");
+                b.string_field("name", "face/" + name);
+                b.string_field(
+                    "text",
+                    "The `" + name + "` face, an application served on port " + to_string(port)
+                        + ".",
+                );
+                b.string_field("source", "hale check --api");
+                b.string_field("face", app);
+                b.int_field("port", port);
+                b.begin_array_field("roles");
+                let mut roles = std::json::array_first(
+                    std::json::find_field_raw(faces.element, "roles"),
+                );
+                while !roles.done {
+                    let e = std::str::trim(roles.element);
+                    if len(e) >= 3 && std::str::starts_with(e, "\"") {
+                        b.string_value(std::json::unescape_string(e[1..(len(e) - 1)]));
+                    }
+                    roles = std::json::array_next(roles);
+                }
+                b.end_array();
+                b.end_object();
+                if self.emit("graph.node", id, b.result()) {
+                    self.nodes = self.nodes + 1;
+                    self.kinds = self.kinds + "application\n";
+                }
+                let mut consumes = std::json::array_first(
+                    std::json::find_field_raw(faces.element, "consumes"),
+                );
+                while !consumes.done {
+                    let e = std::str::trim(consumes.element);
+                    if len(e) >= 3 && std::str::starts_with(e, "\"") {
+                        self.faced = self.faced + std::json::unescape_string(e[1..(len(e) - 1)])
+                            + "\t" + id + "\n";
+                    }
+                    consumes = std::json::array_next(consumes);
+                }
+            }
+            faces = std::json::array_next(faces);
+        }
     }
     // The roles `holder` (a member, or a stream) requires of its callers.
     fn requires(c: String, holder: String) {
         let mut required = std::json::array_first(std::json::find_field_raw(holder, "requires"));
         while !required.done {
             let e = std::str::trim(required.element);
-            if len(e) >= 3 && std::str::starts_with(e, "\"") { self.add_role(c, std::json::unescape_string(e[1..(len(e) - 1)])); }
+            if len(e) >= 3 && std::str::starts_with(e, "\"") {
+                self.add_role(c, std::json::unescape_string(e[1..(len(e) - 1)]));
+            }
             required = std::json::array_next(required);
         }
     }
@@ -736,10 +977,21 @@ locus GraphIngest {
             if len(t) == 0 || std::str::starts_with(t, "#") { continue; }
             let ind = ingest_indent(line);
             let key = ingest_key(line);
-            if ind == 0 { components = key == "components"; comp = -1; schemas = false; current = ""; continue; }
+            if ind == 0 {
+                components = key == "components";
+                comp = -1;
+                schemas = false;
+                current = "";
+                continue;
+            }
             if !components { continue; }
             if comp < 0 { comp = ind; }
-            if ind <= comp { schemas = ind == comp && key == "schemas"; schema = -1; current = ""; continue; }
+            if ind <= comp {
+                schemas = ind == comp && key == "schemas";
+                schema = -1;
+                current = "";
+                continue;
+            }
             if !schemas { continue; }
             if schema < 0 { schema = ind; }
             if ind == schema && len(key) > 0 {
@@ -751,9 +1003,17 @@ locus GraphIngest {
             if ind > schema && len(current) > 0 && at >= 0 {
                 let mut v = std::str::trim(t[(at + 5)..len(t)]);
                 let mut end = 0;
-                while end < len(v) && v[end..(end + 1)] != "," && v[end..(end + 1)] != "}" && v[end..(end + 1)] != " " { end = end + 1; }
+                while end < len(v)
+                    && v[end..(end + 1)] != ","
+                    && v[end..(end + 1)] != "}"
+                    && v[end..(end + 1)] != " "
+                {
+                    end = end + 1;
+                }
                 v = std::str::replace(std::str::replace(v[0..end], "'", ""), "\"", "");
-                if std::str::starts_with(v, "#/components/schemas/") { refs = refs + current + "\t" + v[21..len(v)] + "\n"; }
+                if std::str::starts_with(v, "#/components/schemas/") {
+                    refs = refs + current + "\t" + v[21..len(v)] + "\n";
+                }
             }
         }
         self.nouns_and_refers(spec, names, nouns, refs, "$ref");
@@ -776,19 +1036,35 @@ locus GraphIngest {
             let create = std::str::index_of(up, "CREATE TABLE ");
             if create >= 0 {
                 let mut rest = std::str::trim(line[(create + 13)..len(line)]);
-                if std::str::starts_with(std::str::upper(rest), "IF NOT EXISTS ") { rest = std::str::trim(rest[14..len(rest)]); }
+                if std::str::starts_with(std::str::upper(rest), "IF NOT EXISTS ") {
+                    rest = std::str::trim(rest[14..len(rest)]);
+                }
                 let mut end = 0;
-                while end < len(rest) && rest[end..(end + 1)] != " " && rest[end..(end + 1)] != "(" { end = end + 1; }
+                while end < len(rest)
+                    && rest[end..(end + 1)] != " "
+                    && rest[end..(end + 1)] != "("
+                {
+                    end = end + 1;
+                }
                 if end > 0 {
                     current = rest[0..end];
-                    if !std::str::contains(nouns, "\n" + current + "\n") { nouns = nouns + current + "\n"; }
+                    if !std::str::contains(nouns, "\n" + current + "\n") {
+                        nouns = nouns + current + "\n";
+                    }
                 }
             }
             let at = std::str::index_of(up, "REFERENCES ");
             if at >= 0 && len(current) > 0 {
                 let rest = std::str::trim(line[(at + 11)..len(line)]);
                 let mut end = 0;
-                while end < len(rest) && rest[end..(end + 1)] != " " && rest[end..(end + 1)] != "(" && rest[end..(end + 1)] != "," && rest[end..(end + 1)] != ";" { end = end + 1; }
+                while end < len(rest)
+                    && rest[end..(end + 1)] != " "
+                    && rest[end..(end + 1)] != "("
+                    && rest[end..(end + 1)] != ","
+                    && rest[end..(end + 1)] != ";"
+                {
+                    end = end + 1;
+                }
                 if end > 0 { refs = refs + current + "\t" + rest[0..end] + "\n"; }
             }
         }
@@ -802,7 +1078,12 @@ locus GraphIngest {
         while len(rest) > 1 {
             rest = rest[1..len(rest)];
             let nl = std::str::index_of(rest, "\n");
-            let n = self.node("noun", rest[0..nl], "", spec[(std::str::index_of(spec, ":") + 1)..len(spec)]);
+            let n = self.node(
+                "noun",
+                rest[0..nl],
+                "",
+                spec[(std::str::index_of(spec, ":") + 1)..len(spec)],
+            );
             rest = rest[nl..len(rest)];
             if names.size() < GRAPH_MEMBERS_MAX { self.add(names, "noun", n); }
         }
@@ -861,14 +1142,30 @@ locus GraphIngest {
             let line = it.line_at(text, from);
             from = it.next_idx(text, from);
             let t = std::str::trim(line);
-            if std::str::starts_with(t, "```") { fence = !fence; self.item(path, dir, item); item = ""; prev = line; continue; }
+            if std::str::starts_with(t, "```") {
+                fence = !fence;
+                self.item(path, dir, item);
+                item = "";
+                prev = line;
+                continue;
+            }
             if fence { continue; }
             if std::str::starts_with(t, "|") {
                 self.item(path, dir, item);
                 item = "";
                 if md_separator(line) {
                     header = prev;
-                    table = if md_column(header, "Served by") >= 0 && md_column(header, "Consumed by") >= 0 { "meets" } else if md_column(header, "Deployment") == 0 && md_column(header, "Runs") > 0 { "runs" } else { "other" };
+                    table = if md_column(header, "Served by") >= 0
+                        && md_column(header, "Consumed by") >= 0
+                    {
+                        "meets"
+                    } else if md_column(header, "Deployment") == 0
+                        && md_column(header, "Runs") > 0
+                    {
+                        "runs"
+                    } else {
+                        "other"
+                    };
                 } else if table == "meets" { self.meets_row(path, dir, header, line); }
                 else if table == "runs" { self.runs_row(path, dir, header, line); }
                 prev = line;
@@ -901,13 +1198,21 @@ locus GraphIngest {
             if std::str::starts_with(text, "`" + m + "`") { mark = m; }
             i = i + 1;
         }
-        if len(mark) > 0 { self.practice(path, dir, mark, std::str::trim(text[(len(mark) + 2)..len(text)])); return; }
+        if len(mark) > 0 {
+            self.practice(path, dir, mark, std::str::trim(text[(len(mark) + 2)..len(text)]));
+            return;
+        }
         if !std::str::starts_with(text, "`axiom`") { return; }
         let body = std::str::trim(text[7..len(text)]);
         let mut name = md_bold(body);
-        while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) { name = name[0..(len(name) - 1)]; }
+        while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) {
+            name = name[0..(len(name) - 1)];
+        }
         if len(name) == 0 {
-            self.refuse(path + ": an `axiom` item names nothing — its bold sentence is its name: " + (if len(body) > 80 { body[0..80] + "…" } else { body }));
+            self.refuse(
+                path + ": an `axiom` item names nothing — its bold sentence is its name: "
+                    + (if len(body) > 80 { body[0..80] + "…" } else { body }),
+            );
             return;
         }
         let axiom = self.node("axiom", name, md_words(body), path);
@@ -925,7 +1230,13 @@ locus GraphIngest {
             let nl = std::str::index_of(links, "\n");
             let link = links[0..nl];
             links = links[(nl + 1)..len(links)];
-            self.add(c, "shaped", self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)])));
+            self.add(
+                c,
+                "shaped",
+                self.resolve(
+                    ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]),
+                ),
+            );
         }
         self.edge(c);
     }
@@ -935,20 +1246,36 @@ locus GraphIngest {
     // Its target is the first node it links, else the organization.
     fn practice(path: String, dir: String, mark: String, body: String) {
         let mut name = md_bold(body);
-        while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) { name = name[0..(len(name) - 1)]; }
-        if len(name) == 0 { self.refuse(path + ": a `" + mark + "` item names nothing — its bold sentence is its name: " + (if len(body) > 80 { body[0..80] + "…" } else { body })); return; }
-        if !graph_text_ok(name) { self.refuse(path + ": a practice named `" + name + "` cannot be proposed: a name is one printable line with no `|`"); return; }
+        while len(name) > 0 && (std::str::ends_with(name, ".") || std::str::ends_with(name, ":")) {
+            name = name[0..(len(name) - 1)];
+        }
+        if len(name) == 0 {
+            self.refuse(
+                path + ": a `" + mark + "` item names nothing — its bold sentence is its name: "
+                    + (if len(body) > 80 { body[0..80] + "…" } else { body }),
+            );
+            return;
+        }
+        if !graph_text_ok(name) {
+            self.refuse(
+                path + ": a practice named `" + name
+                    + "` cannot be proposed: a name is one printable line with no `|`",
+            );
+            return;
+        }
         let mut target = "";
         let mut links = md_links(body);
         while len(links) > 0 && len(target) == 0 {
             let nl = std::str::index_of(links, "\n");
             let link = links[0..nl];
             links = links[(nl + 1)..len(links)];
-            target = self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]));
+            target = self.resolve(
+                ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]),
+            );
         }
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("author", "hale dna init");
+        b.string_field("author", "hale habitat graft");
         b.string_field("kind", "practice");
         b.bool_field("law", mark == "law");
         b.string_field("mark", mark);
@@ -969,17 +1296,41 @@ locus GraphIngest {
             let nl = std::str::index_of(links, "\n");
             let link = links[0..nl];
             links = links[(nl + 1)..len(links)];
-            let target = self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]));
+            let target = self.resolve(
+                ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]),
+            );
             if std::str::starts_with(target, "contract:") { e.member("contract", target); }
         }
-        if e.size() == 0 { self.refuse(path + ": a `Served by | Consumed by` row links no contract: " + std::str::trim(row)); return; }
-        self.cell_members(path, e, dir, md_cell(row, md_column(header, "Served by")), "server", false);
-        self.cell_members(path, e, dir, md_cell(row, md_column(header, "Consumed by")), "consumer", true);
+        if e.size() == 0 {
+            self.refuse(
+                path + ": a `Served by | Consumed by` row links no contract: "
+                    + std::str::trim(row),
+            );
+            return;
+        }
+        self.cell_members(
+            path,
+            e,
+            dir,
+            md_cell(row, md_column(header, "Served by")),
+            "server",
+            false,
+        );
+        self.cell_members(
+            path,
+            e,
+            dir,
+            md_cell(row, md_column(header, "Consumed by")),
+            "consumer",
+            true,
+        );
         let over = md_column(header, "Over");
         let via = if over < 0 { "" } else { md_words(md_cell(row, over)) };
         if len(via) > 0 && via != "—" && via != "-" {
             e.via = via;
-            if std::str::contains(self.processes, "\n" + std::str::lower(via) + "\n") { self.add(e, "carrier", "process:" + std::str::lower(via)); }
+            if std::str::contains(self.processes, "\n" + std::str::lower(via) + "\n") {
+                self.add(e, "carrier", "process:" + std::str::lower(via));
+            }
         }
         self.edge(e);
         // which part serves which contract, and which consumes it: each
@@ -990,14 +1341,29 @@ locus GraphIngest {
             let nl = std::str::index_of(ms, "\n");
             let m = ms[0..nl];
             ms = ms[(nl + 1)..len(ms)];
-            if std::str::starts_with(m, "server\tprocess:") || std::str::starts_with(m, "server\tseed:") { self.served = self.served + m[7..len(m)] + "\t" + spec + "\n"; }
-            if std::str::starts_with(m, "consumer\tprocess:") || std::str::starts_with(m, "consumer\tseed:") { self.consumed = self.consumed + m[9..len(m)] + "\t" + spec + "\n"; }
+            if std::str::starts_with(m, "server\tprocess:")
+                || std::str::starts_with(m, "server\tseed:")
+            {
+                self.served = self.served + m[7..len(m)] + "\t" + spec + "\n";
+            }
+            if std::str::starts_with(m, "consumer\tprocess:")
+                || std::str::starts_with(m, "consumer\tseed:")
+            {
+                self.consumed = self.consumed + m[9..len(m)] + "\t" + spec + "\n";
+            }
         }
     }
     // The nodes a cell names in `role`, and when `parties`, the parties
     // outside the repository its plain words name. A name in code that is
     // no process, seed or path of this repository refuses the ingest.
-    fn cell_members(path: String, e: GraphEdge, dir: String, cell: String, role: String, parties: Bool) {
+    fn cell_members(
+        path: String,
+        e: GraphEdge,
+        dir: String,
+        cell: String,
+        role: String,
+        parties: Bool
+    ) {
         // a link's text is the link's: its code spans are not names
         let mut code = md_code(md_unlinked(cell));
         while len(code) > 0 {
@@ -1005,7 +1371,13 @@ locus GraphIngest {
             let name = code[0..nl];
             code = code[(nl + 1)..len(code)];
             let n = self.named(name);
-            if len(n) == 0 { self.refuse(path + ": `" + name + "` in a declaring table is no process, seed or file of this repository"); return; }
+            if len(n) == 0 {
+                self.refuse(
+                    path + ": `" + name
+                        + "` in a declaring table is no process, seed or file of this repository",
+                );
+                return;
+            }
             self.add(e, role, n);
         }
         let mut links = md_links(cell);
@@ -1013,7 +1385,13 @@ locus GraphIngest {
             let nl = std::str::index_of(links, "\n");
             let link = links[0..nl];
             links = links[(nl + 1)..len(links)];
-            self.add(e, role, self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)])));
+            self.add(
+                e,
+                role,
+                self.resolve(
+                    ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]),
+                ),
+            );
         }
         if !parties { return; }
         let mut plain = md_plain(cell) + ",";
@@ -1022,7 +1400,13 @@ locus GraphIngest {
             let p = std::str::trim(plain[0..comma]);
             plain = plain[(comma + 1)..len(plain)];
             if len(p) == 0 || p == "—" || p == "-" { continue; }
-            if !graph_text_ok(p) { self.refuse(path + ": a party named `" + p + "` cannot be written: one printable line with no `|`"); return; }
+            if !graph_text_ok(p) {
+                self.refuse(
+                    path + ": a party named `" + p
+                        + "` cannot be written: one printable line with no `|`",
+                );
+                return;
+            }
             e.party(p);
         }
     }
@@ -1035,12 +1419,24 @@ locus GraphIngest {
             let nl = std::str::index_of(links, "\n");
             let link = links[0..nl];
             links = links[(nl + 1)..len(links)];
-            let target = self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]));
+            let target = self.resolve(
+                ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]),
+            );
             if std::str::starts_with(target, "deployment:") { deployment = target; }
         }
         if len(deployment) == 0 {
-            let name = std::str::replace(std::str::lower(std::str::trim(md_plain(first))), " ", "-");
-            if len(name) == 0 { self.refuse(path + ": a `Deployment | Runs` row names no deployment: " + std::str::trim(row)); return; }
+            let name = std::str::replace(
+                std::str::lower(std::str::trim(md_plain(first))),
+                " ",
+                "-",
+            );
+            if len(name) == 0 {
+                self.refuse(
+                    path + ": a `Deployment | Runs` row names no deployment: "
+                        + std::str::trim(row),
+                );
+                return;
+            }
             deployment = self.node("deployment", name, "named", path);
             if len(deployment) == 0 { return; }
         }
@@ -1051,7 +1447,16 @@ locus GraphIngest {
             let nl = std::str::index_of(code, "\n");
             let name = code[0..nl];
             code = code[(nl + 1)..len(code)];
-            if !std::str::contains(self.processes, "\n" + name + "\n") { self.refuse(path + ": `" + name + "` in a `Deployment | Runs` row is no process of this repository"); return; }
+            // only a span shaped like a process's name names one: a flag
+            // or a command in the cell's prose (`--profile node`) is prose
+            if !ingest_process_shaped(name) { continue; }
+            if !std::str::contains(self.processes, "\n" + name + "\n") {
+                self.refuse(
+                    path + ": `" + name
+                        + "` in a `Deployment | Runs` row is no process of this repository",
+                );
+                return;
+            }
             self.add(e, "process", "process:" + name);
         }
         self.note_runs(e);
@@ -1068,7 +1473,9 @@ locus GraphIngest {
             let nl = std::str::index_of(rest, "\n");
             let f = rest[0..nl];
             rest = rest[nl..len(rest)];
-            if !std::str::starts_with(f, ".github/workflows/") || !ingest_ext(f, "yml yaml") { continue; }
+            if !std::str::starts_with(f, ".github/workflows/") || !ingest_ext(f, "yml yaml") {
+                continue;
+            }
             self.workflow(f, self.read(f));
         }
     }
@@ -1113,7 +1520,12 @@ locus GraphIngest {
         if len(job) > 0 { self.gate(path, workflow, job, name, block); }
     }
     fn gate(path: String, workflow: String, job: String, name: String, block: String) {
-        let g = self.node("gate", workflow + "/" + (if len(name) > 0 { name } else { job }), "", path);
+        let g = self.node(
+            "gate",
+            workflow + "/" + (if len(name) > 0 { name } else { job }),
+            "",
+            path,
+        );
         if len(g) == 0 { return; }
         let e = GraphEdge { kind: "gates" };
         self.add(e, "gate", g);
@@ -1128,13 +1540,28 @@ locus GraphIngest {
             let mut w = words[0..sp];
             words = words[(sp + 1)..len(words)];
             if len(w) == 0 { continue; }
-            while std::str::ends_with(w, ":") || std::str::ends_with(w, "/") { w = w[0..(len(w) - 1)]; }
-            let node = if w == "compose" && last == "docker" { "deployment:compose" } else if w == "." && len(self.appseed) > 0 { self.appseed } else { self.resolve(ingest_join("", w)) };
+            while std::str::ends_with(w, ":") || std::str::ends_with(w, "/") {
+                w = w[0..(len(w) - 1)];
+            }
+            let node = if w == "compose" && last == "docker" {
+                "deployment:compose"
+            } else if w == "." && len(self.appseed) > 0 {
+                self.appseed
+            } else {
+                self.resolve(ingest_join("", w))
+            };
             last = w;
-            if std::str::starts_with(node, "seed:") || std::str::starts_with(node, "contract:") || (std::str::starts_with(node, "deployment:") && len(self.compose) > 0) {
+            if std::str::starts_with(node, "seed:")
+                || std::str::starts_with(node, "contract:")
+                || (std::str::starts_with(node, "deployment:") && len(self.compose) > 0)
+            {
                 self.add(e, "guarded", node);
                 // the first gate guarding a node is its done-when
-                if !std::str::starts_with("\n" + self.guards, "\n" + node + "\t") && !std::str::contains("\n" + self.guards, "\n" + node + "\t") { self.guards = self.guards + node + "\t" + g + "\n"; }
+                if !std::str::starts_with("\n" + self.guards, "\n" + node + "\t")
+                    && !std::str::contains("\n" + self.guards, "\n" + node + "\t")
+                {
+                    self.guards = self.guards + node + "\t" + g + "\n";
+                }
             }
         }
         self.edge(e);
@@ -1193,8 +1620,20 @@ locus GraphIngest {
             links = links[(nl + 1)..len(links)];
             let label = md_words(link[0..std::str::index_of(link, "\t")]);
             let hash = std::str::index_of(label, "#");
-            if hash > 0 && std::str::contains(label[0..hash], "/") && (std::str::parse_int(label[(hash + 1)..len(label)]) or - 1) > 0 { issues = issues + label + "\n"; continue; }
-            self.add(about, "about", self.resolve(ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)])));
+            if hash > 0
+                && std::str::contains(label[0..hash], "/")
+                && (std::str::parse_int(label[(hash + 1)..len(label)]) or - 1) > 0
+            {
+                issues = issues + label + "\n";
+                continue;
+            }
+            self.add(
+                about,
+                "about",
+                self.resolve(
+                    ingest_join(dir, link[(std::str::index_of(link, "\t") + 1)..len(link)]),
+                ),
+            );
         }
         self.edge(about);
         while len(issues) > 0 {
@@ -1228,7 +1667,9 @@ locus GraphIngest {
     fn list_files() -> String {
         // paths as git holds them, not octal-quoted: a name with a byte
         // above ASCII is a name like any other
-        let listed = dna::run_tool("git\n-C\n" + self.root + "\n-c\ncore.quotePath=false\nls-files");
+        let listed = dna::run_tool(
+            "git\n-C\n" + self.root + "\n-c\ncore.quotePath=false\nls-files",
+        );
         if listed.code != 0 { return "git ls-files: " + dna::trim_nl(listed.stderr); }
         self.files = "\n" + listed.stdout;
         if !std::str::ends_with(self.files, "\n") { self.files = self.files + "\n"; }
@@ -1242,6 +1683,7 @@ locus GraphIngest {
         if len(listed) > 0 { return IngestAnswer { error: listed }; }
         self.purpose_step();
         self.compose_step();
+        self.host_step();
         self.seeds_step();
         self.contracts_step();
         self.descriptions_step();
@@ -1255,16 +1697,25 @@ locus GraphIngest {
         let mut i = 0;
         while len(dna::nth_word(GRAPH_INGEST_NODE_KINDS, i)) > 0 {
             let k = dna::nth_word(GRAPH_INGEST_NODE_KINDS, i);
-            counts = counts + (if len(counts) > 0 { ", " } else { "" }) + to_string(self.count(k)) + " " + k;
+            counts = counts + (if len(counts) > 0 { ", " } else { "" }) + to_string(self.count(k))
+                + " " + k;
             i = i + 1;
         }
         let ui = self.ui_assets();
         let notes = if ui == "assets" {
-            INGEST_ASSETS + "/ holds no manifest, so it is no seed: the head serves it as the application's static assets, at " + APP_ASSETS_PREFIX + "/\n"
+            INGEST_ASSETS
+                + "/ holds no manifest, so it is no seed: the head serves it as the application's static assets, at "
+                + APP_ASSETS_PREFIX + "/\n"
         } else if ui == "unreferenced" {
             INGEST_ASSETS + "/ holds no manifest and nothing references it: no seed, and ignored\n"
         } else { "" };
-        return IngestAnswer { rows: self.rows, nodes: self.nodes, edges: self.edges, counts: counts, notes: notes };
+        return IngestAnswer {
+            rows: self.rows,
+            nodes: self.nodes,
+            edges: self.edges,
+            counts: counts,
+            notes: notes,
+        };
     }
 }
 
@@ -1285,7 +1736,9 @@ fn ingest_ui_assets(root: String, files: String) -> String {
     if !std::str::contains(files, "\n" + dir + "/") { return ""; }
     let mut i = 0;
     while len(dna::nth_word(INGEST_MANIFESTS, i)) > 0 {
-        if std::str::contains(files, "\n" + dir + "/" + dna::nth_word(INGEST_MANIFESTS, i) + "\n") { return ""; }
+        if std::str::contains(files, "\n" + dir + "/" + dna::nth_word(INGEST_MANIFESTS, i) + "\n") {
+            return "";
+        }
         i = i + 1;
     }
     let mut c = 0;
@@ -1293,7 +1746,12 @@ fn ingest_ui_assets(root: String, files: String) -> String {
         let compose = dna::nth_word(INGEST_COMPOSE, c);
         if std::str::contains(files, "\n" + compose + "\n") {
             let text = std::io::fs::read_file(root + "/" + compose) or "";
-            if std::str::contains(text, "./" + dir + ":") || std::str::contains(text, "./" + dir + "/") || std::str::contains(text, "./" + dir + "\n") { return "assets"; }
+            if std::str::contains(text, "./" + dir + ":")
+                || std::str::contains(text, "./" + dir + "/")
+                || std::str::contains(text, "./" + dir + "\n")
+            {
+                return "assets";
+            }
         }
         c = c + 1;
     }
@@ -1303,13 +1761,17 @@ fn ingest_ui_assets(root: String, files: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let f = rest[0..nl];
         rest = rest[nl..len(rest)];
-        if std::str::ends_with(f, ".md") && !std::str::starts_with(f, dir + "/") && links_into(ingest_dir(f), std::io::fs::read_file(root + "/" + f) or "", dir) { return "assets"; }
+        if std::str::ends_with(f, ".md")
+            && !std::str::starts_with(f, dir + "/")
+            && links_into(ingest_dir(f), std::io::fs::read_file(root + "/" + f) or "", dir)
+        {
+            return "assets";
+        }
     }
     return "unreferenced";
 }
 
 // Whether a markdown document in `from` links into `dir`.
-@bounded_by(text)
 fn links_into(from: String, text: String, dir: String) -> Bool {
     let mut links = md_links(text);
     while len(links) > 0 {
@@ -1328,14 +1790,26 @@ fn links_into(from: String, text: String, dir: String) -> Bool {
 fn application_assets(root: String) -> String {
     let listed = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\nls-files");
     if listed.code != 0 { return ""; }
-    return if ingest_ui_assets(root, "\n" + listed.stdout + (if std::str::ends_with(listed.stdout, "\n") { "" } else { "\n" })) == "assets" { INGEST_ASSETS } else { "" };
+    return if ingest_ui_assets(
+        root,
+        "\n" + listed.stdout + (if std::str::ends_with(listed.stdout, "\n") { "" } else { "\n" }),
+    ) == "assets" {
+        INGEST_ASSETS
+    } else {
+        ""
+    };
 }
 
 // One of the application's static assets, as the head answers a GET of
 // `path` (under `APP_ASSETS_PREFIX`): status 200 with the file's bytes,
 // whole — an image or a font holds NUL bytes, which no `String` carries —
 // or 404 with why.
-type AppAsset { status: Int = 404; content_type: String = ""; bytes: Bytes = b""; why: String = ""; }
+type AppAsset {
+    status: Int = 404;
+    content_type: String = "";
+    bytes: Bytes = b"";
+    why: String = "";
+}
 
 // `/app/` is the assets' `index.html` and `/app/<path>` the file at
 // `ui/<path>`, a path ending in `/` its directory's `index.html`. A
@@ -1344,13 +1818,29 @@ type AppAsset { status: Int = 404; content_type: String = ""; bytes: Bytes = b""
 // extension's.
 fn application_asset(root: String, path: String) -> AppAsset {
     let dir = application_assets(root);
-    if len(dir) == 0 { return AppAsset { why: "the attached project has no static assets (a `" + INGEST_ASSETS + "/` with no manifest that the repository references)" }; }
+    if len(dir) == 0 {
+        return AppAsset {
+            why: "the attached project has no static assets (a `" + INGEST_ASSETS
+                + "/` with no manifest that the repository references)",
+        };
+    }
     let from = len(APP_ASSETS_PREFIX) + 1;
     let rest = if len(path) > from { path[from..len(path)] } else { "" };
-    let rel = if len(rest) == 0 || std::str::ends_with(rest, "/") { rest + "index.html" } else { rest };
-    if std::str::contains("/" + rel, "/.") || std::str::contains(rel, "\\") || std::str::contains(rel, "//") { return AppAsset { why: "no such asset" }; }
+    let rel = if len(rest) == 0 || std::str::ends_with(rest, "/") {
+        rest + "index.html"
+    } else {
+        rest
+    };
+    if std::str::contains("/" + rel, "/.")
+        || std::str::contains(rel, "\\")
+        || std::str::contains(rel, "//")
+    {
+        return AppAsset { why: "no such asset" };
+    }
     let file = root + "/" + dir + "/" + rel;
-    if !std::io::fs::file_exists(file) { return AppAsset { why: "no such asset: " + dir + "/" + rel }; }
+    if !std::io::fs::file_exists(file) {
+        return AppAsset { why: "no such asset: " + dir + "/" + rel };
+    }
     let bytes = std::io::fs::read_bytes(file) or b"";
     return AppAsset { status: 200, content_type: asset_type(rel), bytes: bytes };
 }
@@ -1358,12 +1848,16 @@ fn application_asset(root: String, path: String) -> AppAsset {
 // The content type of an asset, by its extension.
 fn asset_type(rel: String) -> String {
     if std::str::ends_with(rel, ".html") { return "text/html; charset=utf-8"; }
-    if std::str::ends_with(rel, ".js") || std::str::ends_with(rel, ".mjs") { return "text/javascript; charset=utf-8"; }
+    if std::str::ends_with(rel, ".js") || std::str::ends_with(rel, ".mjs") {
+        return "text/javascript; charset=utf-8";
+    }
     if std::str::ends_with(rel, ".css") { return "text/css; charset=utf-8"; }
     if std::str::ends_with(rel, ".json") { return "application/json"; }
     if std::str::ends_with(rel, ".svg") { return "image/svg+xml"; }
     if std::str::ends_with(rel, ".png") { return "image/png"; }
-    if std::str::ends_with(rel, ".jpg") || std::str::ends_with(rel, ".jpeg") { return "image/jpeg"; }
+    if std::str::ends_with(rel, ".jpg") || std::str::ends_with(rel, ".jpeg") {
+        return "image/jpeg";
+    }
     if std::str::ends_with(rel, ".gif") { return "image/gif"; }
     if std::str::ends_with(rel, ".webp") { return "image/webp"; }
     if std::str::ends_with(rel, ".ico") { return "image/x-icon"; }
@@ -1371,6 +1865,28 @@ fn asset_type(rel: String) -> String {
     if std::str::ends_with(rel, ".woff") { return "font/woff"; }
     if std::str::ends_with(rel, ".ttf") { return "font/ttf"; }
     if std::str::ends_with(rel, ".wasm") { return "application/wasm"; }
-    if std::str::ends_with(rel, ".txt") || std::str::ends_with(rel, ".md") || std::str::ends_with(rel, ".ts") { return "text/plain; charset=utf-8"; }
+    if std::str::ends_with(rel, ".txt")
+        || std::str::ends_with(rel, ".md")
+        || std::str::ends_with(rel, ".ts")
+    {
+        return "text/plain; charset=utf-8";
+    }
     return "application/octet-stream";
+}
+
+// Whether a code span in a `Deployment | Runs` cell is shaped like a
+// process's name (a compose service, a seed): letters, digits, `-`, `_`
+// and `.`, not beginning with `-`. A flag or a command a row mentions in
+// passing (`--profile node`, `docker compose up`) is not.
+fn ingest_process_shaped(name: String) -> Bool {
+    if len(name) == 0 || name[0..1] == "-" { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let c = name[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || c == "-" || c == "_" || c == ".";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
 }

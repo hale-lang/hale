@@ -618,7 +618,7 @@ mod tests {
         let mut bundle = Bundle::new(programs);
         bundle.snapshot = ids;
         let (top, _) = build_top_scope(&bundle);
-        let placement = crate::placement::derive_placement(&bundle, &top, &crate::entry::entry_row(&bundle));
+        let placement = crate::placement::derive_placement(&bundle, &top, &crate::entry::entry_row(&bundle), None);
         let forms = crate::form_rows::FormRows::configured(bundle.programs.values().flat_map(|p| p.items.iter()));
         infer_sync_for_bundle(&bundle, &top, &placement, &forms)
     }

@@ -1,489 +1,243 @@
-# The lifecycle
+# Locus Lifecycle
 
-> **Coming from Go?** A long-running locus is like a goroutine
-> with structure: instead of `go func(){...}()` and a `context`
-> you thread around for cancellation, a locus has named lifecycle
-> methods the runtime drives — `birth → run → drain → dissolve` —
-> and shutdown cascades through the tree automatically. You write
-> the phases; the runtime sequences them.
-
-Until now, loci have been object-like: state plus methods you
-call. A locus can also *run over time*. When it does, it moves
-through a fixed sequence of lifecycle states, and the runtime
-guarantees the ordering.
-
-## The five phases
-
-```hale
-locus Server {
-    params { listen_fd: Int = -1; }
-
-    birth()    { /* acquire: open sockets, files, buffers */ }
-    run()      { /* steady-state work — the main loop */ }
-    drain()    { /* stop taking new work; finish in-flight */ }
-    dissolve() { /* release what birth acquired */ }
-}
-```
-
-- **`birth()`** runs once, at construction, after the locus's
-  state is initialized. Acquire resources here — open a socket,
-  read a file, allocate a buffer. By the time it returns, the
-  locus is live.
-- **`run()`** is the steady-state body — typically a loop that
-  serves requests, drains a queue, or ticks on a timer. It runs
-  until it returns on its own or the locus is asked to shut down.
-  A locus that declares no `run()` has an empty one — the two
-  spellings are the same program — so a flow child with no `run`
-  is released as soon as its `birth()` completes, exactly as one
-  written `run() { }` is.
-- **`drain()`** runs when shutdown begins: stop accepting new
-  work, let in-flight work finish.
-- **`dissolve()`** runs last: release what `birth` acquired. The
-  locus's memory is freed wholesale right after.
-
-There's also **`accept`** and **`release`** for parent/child
-relationships — those belong to [Parents &
-children](./parents-children.md). And **`on_failure`** for
-recovery — [When things fail](./failure.md).
-
-You only write the phases you need; the compiler supplies no-op
-defaults for the rest. A locus with just `birth` and `run` is
-completely normal.
-
-> One rule: a lifecycle body returns no value. These are driven
-> by the runtime, not called by you, so "return a value" has no
-> meaning. A bare `return;` ends the body early, exactly as
-> falling off its end does; `return <value>` is refused.
-
-## A simple service
+A long-running locus executes through a deterministic sequence of runtime-managed phases: `birth → run → drain → dissolve`. Instead of threading cancellation contexts or manual `defer` callbacks through functions, you implement lifecycle hooks on the locus and the runtime sequences initialization, steady-state execution, depth-first shutdown cascading, and arena reclamation automatically.
 
 ```hale
 locus Ticker {
-    params { count: Int = 0; limit: Int = 5; }
+    params { count: Int = 0; limit: Int = 3; }
+
+    birth() {
+        println("starting ticker");
+    }
 
     run() {
-        while self.count < self.limit {
+        while !self.draining && self.count < self.limit {
             println("tick ", self.count);
             std::time::sleep(500ms);
             self.count = self.count + 1;
         }
     }
+
+    drain() {
+        println("stopping intake");
+    }
+
+    dissolve() {
+        println("cleaning up resources");
+    }
 }
 
 fn main() {
-    Ticker { limit: 3 };     // runs to completion, then tears down
+    Ticker { limit: 3 };
 }
 ```
 
-## Order matters: a blocking `run()` stops later siblings
+## Lifecycle Phases
 
-Children are born **in declaration order**, one at a time, and a
-child's `run()` runs *right there* — on the same thread, before the
-next sibling is touched. So a child whose `run()` never returns
-means the params after it are never born.
+Every lifecycle hook is optional; the compiler supplies a no-op default for any phase you omit.
+
+| Phase / Hook | Target | Execution Timing & Purpose |
+|---|---|---|
+| `accept(c: Child)` | Parent | Runs after `c`'s `params` are initialized and before `c.birth()`. Admits the child into `self.children`; cannot reject it. See [Parents & Children](./parents-children.md). |
+| `birth()` | Locus | Runs once at construction after `params` are initialized and bus subscriptions are registered. Acquire sockets, file descriptors, and buffers here. |
+| `run()` | Locus | Steady-state execution loop. Runs until it returns naturally or shutdown begins. Omitting `run()` is identical to writing `run() { }`. |
+| `drain()` | Locus | Runs when shutdown begins (`self.draining` becomes `true`). Cascades depth-first through children before running on the parent. Stop accepting new work and finish in-flight operations here. |
+| `release(c: Child)` | Parent | Runs when an accepted flow child's `run()` completes, after `c.drain()` and before `c.dissolve()`. Marks `Child` as a per-request flow rather than a long-lived resident. |
+| `dissolve()` | Locus | Runs last during teardown. Release external OS handles acquired in `birth()`. The runtime frees the locus's memory arena wholesale immediately after `dissolve()` completes. |
+| `on_failure(c: Child, err: ClosureViolation)` | Parent | Supervisor hook invoked immediately when a child's `closure`, `birth_check`, or `violate` statement triggers. See [Failure & Supervision](./failure.md). |
 
 ```hale
 locus Server {
-    run() { while true { std::time::sleep(1s); } }   // never returns
+    params { listen_fd: Int = -1; }
+
+    birth()    { /* acquire sockets, files, buffers */ }
+    run()      { /* steady-state main loop */ }
+    drain()    { /* stop taking new work; finish in-flight work */ }
+    dissolve() { /* close descriptors acquired in birth() */ }
+}
+```
+
+> [!IMPORTANT]
+> Lifecycle bodies (`birth`, `run`, `drain`, `dissolve`) are invoked by the runtime and return no value. A bare `return;` exits the phase early, whereas `return <value>;` and `fallible(E)` annotations on lifecycle hooks are rejected at compile time.
+
+## Instantiation & Teardown Scope
+
+Hale determines when a locus drains and dissolves from the syntactic position where it is constructed:
+
+| Instantiation Form | Example | Teardown Timing |
+|---|---|---|
+| **Statement position** | `Ticker { };` or `make_ticker();` | Runs `birth → run → drain → dissolve` immediately at the end of the statement (fire-and-forget). |
+| **`let`-bound local** | `let t = Ticker { };` | Born and runs immediately; `drain` and `dissolve` are deferred to the exit of the enclosing function scope. Multiple `let` bindings dissolve in reverse creation order (LIFO). |
+| **Consumed inline expression** | `Ticker { }.tick()`, `serve(Ticker { })`, `combine(a, make_ticker())` | Treated identically to a `let` binding in the enclosing function: born before the expression evaluates and dissolved when the enclosing function exits. |
+| **Owned `params` child** | `params { s: Server = Server { }; }` | Owned by the parent locus; drains and dissolves as part of the parent's teardown cascade. |
+| **Returned to caller** | `return Ticker { };` or `return pass(t);` | Ownership transfers to the caller's receiving binding or expression. |
+| **Long-lived subscriber** | Any locus with bus subscriptions or an active `run()` | Remains alive until its owning scope exits so bus handlers can continue firing. |
+
+### Factory Calls, Conditionals, and Collections
+
+When a function returns a locus handle, the consumer of that call owns the instance:
+
+- **Fallible factories**: Reaching a factory through `or` preserves ownership rules. `let c = std::process::spawn(argv) or raise;` closes the child's pipes and reaps the process when the enclosing function exits. When a fallback builds an alternative locus (`Mid { leaf: make_leaf_f() or backup_leaf() }`), the parent field owns whichever instance was constructed.
+- **Pass-through and builder functions**: Returning a locus parameter (`fn pass(t: Ticker) -> Ticker { return t; }`) or wrapping it in a returned parent (`fn routes(w: W) -> Routes { return Routes { w: w }; }`) transfers ownership to the caller or returned parent locus.
+- **Branching expressions (`if`, `match`, blocks)**: Ownership is resolved per execution path on the tail expression of each arm. Any locus constructed inside a condition, match scrutinee, or non-final statement of a block is owned by the enclosing function and dissolved at function exit.
+- **Arrays and tuples**: In `let ts: [Ticker; 2] = [make_ticker(), make_ticker()];`, the enclosing function owns and releases each element at scope exit. In a locus parameter (`cs: [C; 2] = [C { }, C { }]` or `p: (H, W) = both(W { })`), the parent locus owns every element: elements drain in index order before the parent and dissolve after the parent's `dissolve()`.
+- **Non-locus parameter initializers**: If a temporary locus is evaluated purely to compute a scalar parameter (`Lonely { n: Queries { }.total() }`), `Queries { }` is not stored in `Lonely`; it belongs to the enclosing function scope.
+
+### Loop Instantiation
+
+While a `let` binding's storage slot is allocated for the enclosing function (and its variable name is scoped to the enclosing block), a locus constructed inside a `while` or `for` loop is reclaimed on each iteration when execution reaches that line again:
+
+```hale,fragment
+while i < steps {
+    let m = zeros(rows, cols);   // fresh arena allocated each iteration
+    i = i + 1;
+}                                // previous `m` drains and dissolves at the top of the next iteration;
+                                 // the final instance dissolves when the function returns
+```
+
+- The loop holds only one live instance of `m` at a time rather than accumulating `steps` arenas.
+- This per-iteration boundary applies equally to `let` bindings, factory calls, and consumed inline literals (`Matrix { }.trace()`, `sum(Matrix { })`). A bare statement literal (`Matrix { };`) still dissolves immediately at the semicolon.
+- If a single loop iteration binds two loci in sequence, each line reclaims its own previous instance as it is reached—meaning they reclaim in declaration order across iterations (whereas function exit reclaims in reverse order).
+- `hale check` emits a performance warning when a locus is instantiated inside a loop because allocating and tearing down an arena every iteration adds overhead. For hot loops, hoist a single instance outside the loop and reset its state in place.
+
+### Early `return` Teardown
+
+Exiting a function via an early `return` (including inside `fn main()`) drains and dissolves all loci constructed up to that point in reverse creation order:
+
+```hale,fragment
+let store = Store { path: dir };
+if std::env::args_count() < 2 {
+    println("usage: report <name>");
+    return 2;                     // drains and dissolves `store`, then exits with code 2
+}
+let report = Report { store: store };
+                                  // normal exit dissolves `report`, then `store`
+```
+
+A locus constructed only inside a conditional branch is dissolved only when that branch executes.
+
+## Child Initialization Order & Blocking `run()`
+
+A parent locus initializes its `params` fields strictly in declaration order on the constructing thread:
+
+1. **Parameter defaults**: A parameter's default expression may read `self.<field>` for any parameter declared *before* it. `hale check` rejects reading a parameter declared after it (or reading the parameter itself).
+2. **Inline child execution**: When a child locus shares the parent's thread (the default `cooperative(pool = main)`), the child's `birth()` and `run()` execute immediately when its parameter slot is initialized—before the next sibling parameter is constructed.
+
+If an inline child's `run()` contains an infinite loop, subsequent sibling parameters are never born:
+
+```hale
+locus Server {
+    run() { while true { std::time::sleep(1s); } }   // blocks construction thread
 }
 locus Metrics {
-    birth() { println("metrics up"); }   // never printed
+    birth() { println("metrics up"); }               // never reached
 }
 
 main locus App {
     params {
         server:  Server  = Server { };
-        metrics: Metrics = Metrics { };   // never born
+        metrics: Metrics = Metrics { };              // never born!
     }
 }
 
 fn main() { App { }; }
 ```
 
-`Metrics` doesn't just fail to *run* — its `birth()` never happens,
-so whatever it would have subscribed to or opened simply doesn't
-exist. Nothing errors. The program boots and goes quiet, and the
-symptom ("my metrics handler never fires") points at the bus rather
-than at the params block.
+Because `Metrics` is never born, its bus subscriptions and sockets are never initialized. `hale check` warns whenever it can statically prove that an inline child on `main` runs an unbounded `while` loop before a later sibling parameter.
 
-Two fixes. Declare the never-returning child **last**:
+To prevent a blocking child from starving later siblings:
 
-```hale,fragment
-params {
-    metrics: Metrics = Metrics { };
-    server:  Server  = Server { };       // last
-}
-```
+1. **Declare the blocking child last** in `params`:
+   ```hale,fragment
+   params {
+       metrics: Metrics = Metrics { };
+       server:  Server  = Server { };
+   }
+   ```
+2. **Place the blocking child on its own thread or pool** so `main` can continue constructing subsequent parameters:
+   ```hale,fragment
+   params {
+       server:  Server  = Server { };
+       metrics: Metrics = Metrics { };
+   }
+   placement { server: pinned; }   // or cooperative(pool = io)
+   ```
+3. **Move coordinator loops into `main`'s `run()`**, which executes only after all `params` children have been born.
 
-Or give it a thread of its own, which frees the main thread to
-finish births:
+## Ownership Tree, Borrowing, and Field Replacement
 
-```hale,fragment
-params {
-    server:  Server  = Server { };
-    metrics: Metrics = Metrics { };
-}
-placement { server: pinned; }            // or cooperative(pool = io)
-```
+### No Recursive Self-Containment
 
-Only the *blocking* child's placement matters. Pinning the later
-one doesn't help — the construction itself happens on the main
-thread regardless.
-
-The compiler warns when it can prove the shape (a `while` loop with
-no `break`, on a child that runs on the main thread, with something
-declared after it). It can't prove every loop, so treat the absence
-of a warning as "not detected", not "correct".
-
-And this is why work that needs its siblings to exist belongs in
-the **main locus's** `run()`, not a child's — main's `run()` starts
-only once every child has been born.
-
-## A locus can't hold one of itself
-
-A params field is where a locus keeps its children, so this looks
-like it should be a linked list:
+A locus cannot contain an instance of itself by value with a default initializer, either directly or through a cycle of locus types (`Alpha → Beta → Alpha`):
 
 ```hale,refused
 locus Node {
-    params { n: Int = 0; next: Node = Node { n: 1 }; }   // won't compile
+    params { n: Int = 0; next: Node = Node { n: 1 }; }   // error: recursive default construction
 }
 ```
 
-It isn't one. The `Node` that default builds leaves *its* `next` to
-the same default, which builds another, and nothing ends the chain
-— not even the call site, because `Node { next: ... }` needs a
-`Node` to hand over and building one asks the same question again.
-The compiler says so at the param:
+Because every default `Node` would construct another `Node`, initialization could never terminate. To model collections or linked structures, omit the default (`next: Node;`), store elements in a [`@form` collection](../systems/forms.md) or `capacity` slot, or use a plain data `type`.
 
-```text
-param `next` of `Node` defaults to a `Node`; a locus cannot contain
-itself by value — every one the default builds needs another, and
-no locus literal can end the chain. Drop the default and take the
-child from the caller (`next: Node;`), or hold a value rather than
-a locus.
-```
+### Owned Children vs. Borrowed Handles
 
-The same error covers a ring through two or three types, and names
-it (`Alpha` → `Beta` → `Alpha`). A locus holding a *different*
-locus is the ordinary parent/child shape and is untouched.
+How a child is supplied to a `params` field determines whether the parent owns it or borrows it:
 
-What to write instead: take the child from the caller
-(`next: Node;`, supplied at the literal), keep a collection of them
-in a [form](../systems/forms.md) or a `capacity` slot, or hold a
-plain value rather than a locus. A locus is a live thing — an
-arena, a lifecycle, maybe a thread of its own — so a self-similar
-*chain* of them is almost always a collection wearing the wrong
-clothes.
-
-## When does a locus dissolve?
-
-This is the one piece of bookkeeping worth internalizing,
-because it's how Hale frees resources without a `defer` or a
-`finally`:
-
-- **Statement position** (`Ticker { };` — no binding, and the
-  value is discarded): the locus runs its whole lifecycle right
-  there and tears down at the end of the statement.
-  Fire-and-forget.
-- **`let`-bound** (`let t = Ticker { };`): it's born and runs,
-  but **drain and dissolve are deferred to the end of the
-  enclosing function's scope**. The binding stays usable for
-  method calls until then.
-- **A literal you *use*** — as a method receiver
-  (`Ticker { }.tick()`), as an argument (`serve(Ticker { })`),
-  for a field read (`Ticker { }.every_ms`): the expression that
-  consumes it is the handle, so it behaves exactly like the
-  `let` form — born before the expression runs, dissolved at the
-  end of the enclosing function. Writing it inline and naming it
-  with `let` first are the same program, whichever position it
-  is in. That is what lets you hand a fresh locus to a service
-  that keeps it: `serve(Provider { })` is as safe as
-  `let p = Provider { }; serve(p);`.
-- **A locus a function hands back** (`let t = make_ticker();`, or
-  the call used directly — `serve(make_ticker())`): whatever
-  consumes the handle owns it, so it behaves like the two above.
-  That owner is the expression *in that position*, and a factory
-  call nested deeper inside it is a handle of its own:
-  `let x = combine(a, make_ticker());` binds `combine`'s result to
-  `x`, while `make_ticker()`'s result is one nothing names — the
-  enclosing function owns that one and releases it at scope exit.
-  A **fallible** factory is reached through `or`, and that changes
-  nothing: `let c = std::process::spawn(argv) or raise;` closes
-  the child's pipes and reaps it when the scope exits, just as a
-  literal would. The two places the frame stays out of it are the
-  places the handle is *handed on* rather than consumed — written
-  straight into another locus's field (`Router { quick: make("q") }`,
-  which the router owns and reclaims with itself, exactly as it
-  would a `Quick { }` written there) and `return`ed to your caller
-  (who owns it). Returning it *through* a function that hands back
-  its argument counts as returning it: with `fn pass(t: Ticker) ->
-  Ticker { return t; }`, `let t = make_ticker(); return pass(t);`
-  and `return pass(make_ticker());` both give your caller a live
-  ticker, and your caller's `let` releases it.
-- **A locus an `if`, a `match` or a block hands back** (`return if
-  hot { fast_path() } else { make_ticker() };`): those forms have
-  no value of their own — they pass along one arm's, and exactly
-  one arm runs — so ownership is decided **per path**. Each arm's
-  last expression is what is written "in that position" on the
-  path that produces it, and the rule above applies to it
-  unchanged: returned, it is the caller's on every path; bound
-  with `let`, it is released at the enclosing function's scope
-  exit on every path. A factory called somewhere else inside the
-  form — in the condition, in the scrutinee, in a statement
-  before a block's last expression — is a handle of its own, and
-  the enclosing function releases it. An **ascribed array or
-  tuple** is the same story one level out: `let ts: [Ticker; 2] =
-  [make_ticker(), make_ticker()];` names the array, and each
-  element is a handle the enclosing function releases.
-- **Long-lived** (the locus subscribes to the bus, or its `run()`
-  hasn't returned): it stays alive until its scope exits,
-  regardless of binding — it has to, to keep receiving messages.
-
-So `let` keeps a locus alive for the scope; statement position is
-fire-and-forget. When several `let`-bound loci share a scope,
-they dissolve in reverse order of creation (the later one, which
-may depend on the earlier, goes first).
-
-Whichever line you're on, the timing is the timing of the **whole
-tree** the locus owns. A locus you write as another locus's param
-field has no teardown moment of its own — it's the owner's, and so
-is the one *it* holds, all the way down. That holds however you
-wrote it: a nested literal (`Mid { leaf: Leaf { } }`), a factory
-call (`Mid { leaf: make_leaf() }`, including `make_leaf() or
-raise`), and a param whose **default** is one, are the same
-program. An `or` with a **substitute** is too, on both branches:
-`Mid { leaf: make_leaf_f() or backup_leaf() }` reclaims whichever
-leaf was actually built, once, with the owner — the substitute is
-the field's, not a leftover of the function that built the owner,
-which is what let a `Mid` you `return` outlive its own leaf. When the
-owner goes, every level's `drain()` has run (deepest first), every
-level's `dissolve()` body has run (outermost first) and every
-level's arena is gone. The exception is a handle you pass *in* —
-`Mid { leaf: shared }` borrows `shared`, so the cascade steps over
-it at whatever depth it sits, and `shared` is released once, by the
-scope that made it. A call that hands back a locus it didn't build
-is the same borrow, written as a call. So is a handle you store
-*later*: `self.journal = shared` on a field typed by an `interface`
-or a `perspective(P)` reclaims whatever the field held until then
-and borrows `shared`, exactly as the literal would have. And an
-interface value handed to a field of the same interface — `Attempt {
-performer: self.performer }`, both `Performer` — flows in as itself,
-borrowed; no impl is built, and none is owned.
-
-A borrow has to outlive its holder, and `hale check` refuses the
-positions where it cannot: a `let` of the current frame, or a
-handler's payload, stored into a child of `self`; a field of `self`
-or a frame `let` into a literal you `return`; a `let` of an inner
-block into an outer binding; and a parameter, when any caller hands
-it something of the caller's own frame — the refusal names that call
-site. The one allowance is a handle the holder reads only in
-`birth()`: it copies what it needs while the handle is live, and
-never touches it again.
-
-This is what a bus handler hands a child that stays. A String, a row or
-a payload field is copied into the child's own storage as it is stored,
-so the child can read it long after the handler returned. A
-`@form(vec)` the handler built is a locus: handed to the child by name
-it is a borrow, `hale check` refuses it at the argument, and the shape
-that works is the child copying the rows into a `@form(vec)` of its own
-in `birth()`.
-
-**How the field is declared doesn't change the answer.** A param
-typed by an `interface` the child satisfies, or by a
-`perspective(P)` it serves, holds an owned child on the same terms
-as a locus-typed param — the cascade reaches it and everything
-under it:
+- **Owned child**: Constructed directly in the `params` initializer (via a literal `Leaf { }`, a factory `make_leaf()`, an `or` fallback `make_leaf_f() or backup_leaf()`, an `interface` slot `j: Counter = Churner { }`, or a `perspective` slot `router: perspective(Router) = RouterV1 { }`). The child's lifecycle is tied to the parent's tree.
+- **Borrowed handle**: Passed in by referencing an existing variable or field (`Mid { leaf: shared }`, or assigning `self.journal = shared` on an interface/perspective slot). The parent's teardown cascade skips borrowed handles; the scope that originally created `shared` remains responsible for dissolving it.
 
 ```hale,fragment
 locus Queries {
-    params { j: Counter = Churner { }; }   // an interface slot
+    params { j: Counter = Churner { }; }                  // owned interface child
 }
 locus Gateway {
-    params { router: perspective(Router) = RouterV1 { }; }
+    params { router: perspective(Router) = RouterV1 { }; } // owned perspective child
 }
 ```
 
-Both children go when their holder goes, and so does whatever they
-hold. Designating a different impl at the literal (`Gateway { router:
-RouterV2 { } }`) reclaims the one you actually built.
+> [!WARNING]
+> **Borrow Lifetime and Thread Constraints**
+> `hale check` enforces two invariants on every borrowed locus handle:
+> 1. **Must outlive holder**: You cannot store a function's local `let` binding or a bus handler's payload into a persistent child of `self`, return a literal that borrows `self.<field>` or a local `let`, or store an inner-block `let` into an outer binding. The sole exception is a borrowed handle read exclusively inside the holder's `birth()` hook.
+> 2. **Must stay on the same thread/pool**: Passing a handle across pools (e.g., borrowing a `main`-pool locus inside an `io`-pool locus) is rejected at compile time unless the target is a synchronized `@form` (`sync = serialized`). Bus messages copy values (`String`, structs) into the receiver's storage; to pass a collection from a handler to a child, copy the elements into the child's own `@form(vec)` inside `birth()`.
 
-A factory reads the same way in an interface slot — `Queries { j:
-make_churner() }`, `make_churner() or raise` included. The
-function's declared return names the impl, so the holder reclaims
-exactly what the factory built, whether or not that is the impl the
-param's default names.
+### Replacing a Locus Field (Break-Before-Make)
 
-One shape that is *not* a transfer: a locus written inside the
-initializer of a param that can't hold a locus. In `Lonely { n:
-Queries { }.total() }` the `Queries` is just an expression — it has
-no field to live in — so it belongs to the enclosing function's
-scope, exactly as if you had written it on a line of its own.
-
-**The lifetime is the enclosing function, not the enclosing block** —
-the slot a `let` binds lives until the function exits, including
-after the loop that bound it — while the *name* is the block's: a
-`let` is visible to the end of its block, and one that reuses a
-parameter's or an outer `let`'s name inside a branch shadows it there
-only. But a locus created **in a loop** is reclaimed
-when the next iteration reaches the same line:
+Assigning a new locus literal to an existing locus-typed parameter field (or array element `self.cs[0] = C { }`) triggers a **break-before-make** lifecycle replacement:
 
 ```hale,fragment
-while i < steps {
-    let m = zeros(rows, cols);   // a fresh arena every iteration…
-    i = i + 1;
-}                                // …each one released as the next
-                                 //    replaces it; the last at return
+self.conn = Connection { url: next };   // drains and dissolves old conn, then births new conn
+self.conn.url = next;                   // mutates existing instance in place; no teardown
 ```
 
-Coming back round to that line is the end of the previous `m`'s life:
-it runs its `drain()` and `dissolve()` and gives back its arena before
-the new one takes its place, and the function's exit releases the last
-one — the slot outlives the loop, though the name `m` is the loop
-body's and is not readable after it. The loop holds one
-instance at a time, not `steps` of them. Both spellings behave
-identically — a factory call, a `Matrix { }` literal and a literal you
-merely *use* (`Matrix { }.trace()`, `sum(Matrix { })`) all get the
-same boundary.
+1. The runtime drains and dissolves the previous `self.conn` instance (releasing its descriptors and children).
+2. The new `Connection` literal is constructed in the parent's arena and assigned to `self.conn`.
+3. The right-hand side of a field replacement **must be a locus literal**, not a factory call:
+   ```hale,fragment
+   self.conn = Connection { url: next };   // valid: constructed directly in parent arena
+   self.conn = make_connection(next);      // compile error: ambiguous ownership between factory frame and field
+   ```
 
-Each line reclaims its own previous instance, where it stands, so two
-loci bound in one iteration are released in the order they were
-written — the reverse of the newest-first order at function exit. They
-are independent either way; it only shows if one's `dissolve()` reads
-a handle it borrowed from the other, which would see the next
-iteration's instance.
+## Graceful Shutdown, `self.draining`, and `terminate;`
 
-The compiler still warns about the shape, because a fresh arena per
-iteration is real work in a hot loop even when it is reclaimed. To
-spend nothing, hoist one instance out of the loop and refill it.
+### Signal Handling and `self.draining`
 
-Dropping the binding changes *where* the reclaim lands, not whether
-one happens: a bare `Matrix { };` statement is reclaimed at the
-statement, while `Matrix { }.trace()` and `sum(Matrix { })` both *use*
-the literal, so each lives to the top of the next iteration — and the
-last of them to the end of the function — exactly as the binding did.
+Every locus has a synthetic boolean field `self.draining` (initialized to `false`). When the process receives `SIGINT` (Ctrl-C) or `SIGTERM`, or when `main`'s `run()` returns:
 
-### Early `return` is an exit, not a shortcut
-
-"The end of the enclosing function" means *whichever* way the
-function ends. A guard that returns early tears down everything
-alive at that point, and it takes nothing away from the ordinary
-exit:
-
-```hale,fragment
-let store = Store { path: dir };
-if std::env::args_count() < 2 {
-    println("usage: report <name>");
-    return 2;                     // dissolves `store`, exits 2
-}
-let report = Report { store: store };
-                                  // ordinary exit: `report`, then `store`
-```
-
-Both endings are complete. The guarded one dissolves `store`; the
-one taken when the guard does *not* fire dissolves `report` and
-then `store`, newest first as always. A locus bound only inside
-the branch that returns dissolves on that branch alone — the other
-endings never built it, so there is nothing for them to release.
-
-This holds in `fn main` too, which matters because `main` is where
-usage checks and flag guards live.
-
-### Replacing a locus held in a field
-
-If a locus holds another locus in a field — say a server that
-keeps its current connection in `self.conn` — assigning a fresh
-one **replaces a live thing**, so it's a lifecycle event, not a
-plain store:
-
-```hale,fragment
-self.conn = Connection { url: next };   // reconnect
-```
-
-Hale tears the old `self.conn` down first (drain → dissolve, so
-its socket and any children are released), *then* builds the new
-one into this locus's arena and points the field at it. The old
-and new never overlap, and the new instance lives until the
-parent dissolves — no manual close, no leak. This is
-**break-before-make**: if you need make-before-break (hold the old
-connection open while the new one warms up), keep both in
-separate fields and swap explicitly.
-
-To *reconfigure the same instance* instead of replacing it, mutate
-in place — `self.conn.url = next;` — which keeps the connection
-and triggers no teardown.
-
-One rule comes with this: the right-hand side has to be a **literal**.
-
-```hale,fragment
-self.conn = Connection { url: next };   // fine — built in place
-self.conn = make_connection(next);      // error
-```
-
-The second line looks reasonable and is rejected on purpose. Two
-things would claim that connection — the field, which tears it down
-when this locus dissolves, and the function that built it, which
-tears down what it made. The language has no way to pick, so it asks
-you to. Build it here with a literal, or if the thing genuinely
-belongs to you as a child rather than a field, take it through
-[`accept`](./parents-children.md).
-
-This is the same idea as a method not being allowed to *return* a
-locus: a locus is structure, not a value you pass around. Plain
-`let`-bound loci are unaffected — a factory result you bind and use
-locally is owned by that binding, and that's fine.
-
-## Shutdown cascades
-
-`drain()` is always **depth-first cascading**. Calling it on a
-locus first drains all of its children (and theirs, recursively),
-waits for them, then drains itself, then dissolves. You never
-write a manual teardown walk.
-
-This is what makes Ctrl-C trivial: SIGINT (or SIGTERM) drains the
-whole program. Every locus's `self.draining` turns true, a
-`sleep` returns early, and a `run()` that loops on the flag ends —
-then the tree dissolves in dependency order, leaves first, and the
-process exits 0:
+1. `self.draining` becomes `true` across all loci in the program.
+2. Any in-progress `std::time::sleep` inside `run()` wakes immediately so loops conditioned on `while !self.draining` exit without waiting out their timer. (Sleeps executed inside `drain()` or `dissolve()` run for their full duration so final network flushes can pace themselves.)
+3. `drain()` cascades depth-first (deepest children drain first, then their parents).
+4. `dissolve()` executes and arenas are reclaimed leaves-first, after which the process exits with code `0`.
 
 ```hale
 locus Poller {
     run() {
         while !self.draining {
-            // ... one unit of work ...
             std::time::sleep(100ms);
         }
-        // flush what the peer has not acknowledged yet
     }
-    dissolve() { /* release the socket */ }
+    dissolve() { /* close socket */ }
 }
 ```
-
-A long-lived loop — a broker connection, a websocket client, a
-pinned receive loop — writes its condition as `!self.draining`, and
-that is all it takes to shut down properly. Only a wait that was
-already running when the signal came is cut short; a `sleep` in your
-`drain()` or `dissolve()` that paces a final flush gets its full
-time. A `run()` that never checks the flag cannot be stopped this
-way; the runtime gives the drain five seconds (`LOTUS_DRAIN_GRACE_MS`)
-and then lets the signal end the process as it normally would — after
-printing one line that names what it was still waiting on: the pool
-and the locus a worker was inside, and the loci that read the flag and
-had not ended — and a
-second Ctrl-C ends it at once. The drain only happens while something
-live can answer it: if no locus that checks the flag has been built —
-say the only `!self.draining` loop is in a package you import but
-don't use — the signal ends the program at once, with no grace to wait
-out. Under `hale run` the same holds:
-`hale` waits for the drain instead of dying first, and passes a
-SIGTERM sent to it on to the program.
-
-A program's life is `main`'s `run()`: teardown follows the
-ownership tree. When `main`'s `run()` returns, its teardown first
-drains the whole tree the way Ctrl-C does — every `self.draining`
-turns true, a `sleep` in progress returns early — so a pinned or
-pooled child whose loop watches the flag ends, is joined, and the
-tree dissolves. A server stays up because `main`'s `run()` waits:
 
 ```hale,fragment
 main locus App {
@@ -493,107 +247,42 @@ main locus App {
 }
 ```
 
-and Ctrl-C (or SIGTERM) ends that wait. A `main` with no `run()`
-ends as soon as its children's loops have seen the drain. A child
-loop that never checks the flag still holds the process until it
-returns.
+- **Grace period (`LOTUS_DRAIN_GRACE_MS`)**: The runtime allows 5000 ms (configurable via `LOTUS_DRAIN_GRACE_MS`) for loops reading `self.draining` to finish. If the deadline expires, the runtime logs the stuck pool/worker and loci to stderr and terminates the process. Sending a second `SIGINT` terminates immediately.
+- **Immediate exit when idle**: If no live locus checks `self.draining` (or all such `run()` hooks have already returned and hold no active bus subscriptions), `SIGINT`/`SIGTERM` terminates the process immediately without waiting for the grace period.
+- **Default `main` wait behavior**: A `main locus` with no `run()` exits as soon as its children complete, except when `main` (or a child server locus beneath it) holds an active `api::Exposure` socket, in which case `main` implicitly waits until the exposure stops or the process drains.
 
-## The order, rule by rule
+### Self-Termination (`terminate;`)
 
-The runtime keeps the order without a state machine: the compiler
-emits each step where it belongs, and a torn-down locus is marked
-so nothing tears it down twice. The rules that order gives you:
+A locus can end its own lifecycle from inside any of its methods by executing `terminate;`:
 
-- **`accept` sees the params, not the birth.** A parent's
-  `accept(c)` runs once the child's params are built and before the
-  child's `birth()`. It admits the child; it cannot turn it away.
-- **Subscriptions come before `birth()`; delivery after it.** A
-  locus can publish to its own topics from `birth()` and hear it,
-  once `birth()` has returned: nothing published to a new locus is
-  delivered while its `birth()` runs. What arrives meanwhile, its
-  own sends included, waits and is delivered afterwards, in order.
-  Once a queue's worth is waiting, a publisher elsewhere waits for
-  the birth to finish; a handler on the new locus's own pool, or on
-  its pinned thread, never does. A parent's own subscriptions are
-  in place before its params are built, so what a child publishes
-  to its parent from its `birth()` or `run()` waits for the parent's
-  `birth()` too. The same holds across a tree a literal builds: a
-  later params sibling, or a locus nested under one, hears what an
-  earlier sibling published from its `birth()` or `run()`, after its
-  own `birth()` — the literal reserves those subscriptions before it
-  builds any of its params — a pinned or pool-placed field's own
-  params included, which that field's thread builds. A subscriber
-  built *after* the publish anywhere else — a locus a body builds
-  after sending — does not hear it: build subscribers first (`hale
-  check` warns where it sees the order in one body).
-- **A pinned locus checks its birth on its own thread.** Its
-  `birth_check` runs there, after `birth()` and before `run()`.
-- **A field inherits its owner's pool.** A locus field inside a
-  field placed on a cooperative pool runs its `run()` on that pool,
-  as its owner does.
-- **A failure is a `ClosureViolation`, delivered when it happens.**
-  A failing birth closure, `birth_check`, `violate` or closure
-  reaches the parent's `on_failure` at that moment, not at the
-  child's dissolve. While the parent is still building its own
-  params the failure is held and delivered once they are all set,
-  before the parent's `birth()`. The failed child stays readable in
-  the handler, and `restart` reuses it.
-- **Fields drain first, in declaration order.** A locus's own locus
-  fields drain before it does, one after another in the order they
-  are declared, each after its own fields; a pinned locus's on its
-  thread, and a field typed by an interface or a perspective like
-  any other. Each is dissolved after its owner's `dissolve()`.
-  A field lives as long as its owner: a pinned field of a `main`
-  that a function builds and returns keeps its threads, one per
-  replica, until the caller is done with that `main`, not until the
-  function returns.
-- **Dissolve-epoch closures run before `dissolve()`.** A violation
-  there reaches the parent before your cleanup runs.
-- **Replacing a field dissolves the old child before creating the new
-  one.** A started run keeps the old child's storage and owned
-  descendants alive until it returns, and so does a bus handler the
-  old child is running on its pool. If a queued main-thread handler
-  performs the replacement, storage release waits until that handler
-  returns, so another queued handler can answer the old run. Cleanup
-  in `dissolve()`, including closing handles, still happens before the
-  replacement's birth, except for a failed child its parent has not
-  heard yet: that one is torn down right after its handler runs.
-- **A waiting publisher does not hold the exit.** A publisher on a
-  pool or on a pinned thread waiting in `or wait` for room on a
-  queue only `main` drains is woken when the program tears down,
-  before its thread is joined, and its publish fails with
-  `BusWaitAborted`; it is not counted as sent. This holds however
-  `main` is torn down, a `main` built and torn down in a function
-  other than `fn main` included. A `shm_ring` reader in the same
-  program stops after the pools are joined and before any locus is
-  torn down; a publish still waiting for room on its
-  `on_overflow: block` ring then fails the same way.
-- **Ctrl-C raises a flag.** The signal calls none of your methods;
-  the `run()`s that watch `self.draining` return, and the ordinary
-  teardown follows.
-- **No restart during a drain.** A handler that asks for `restart`
-  while the process drains — or once `main`'s `run()` has returned
-  and its teardown has begun — gets no restart: the child ends as if
-  the handler had returned without asking.
+```hale,fragment
+fn on_close() {
+    terminate;   // exits method immediately and triggers drain -> dissolve
+}
+```
 
-A few rules are decided and not yet true of every program;
-`spec/runtime.md` § "Lifecycle obligations" names each one, and
-the compiler's test suite carries a program that shows today's
-behaviour until it changes:
+`terminate;` returns from the current method immediately and schedules the locus for `drain()` and `dissolve()`.
 
-- a dissolve-epoch violation of a flow child, or of a field torn
-  down from `fn main`, ends the process instead of reaching the
-  parent's handler;
-- a subscriber built by a pinned or pool-placed field nested in
-  another such field's params, or a replicated field's instance,
-  misses what an earlier part of the tree published before it was
-  built;
-- a subscribing locus that only stdlib or imported code builds hears
-  what is published to it during its `birth()` at once, not after;
-- a `birth()` that publishes to its own topic without bound keeps
-  every message waiting until memory runs out (whether such a birth
-  meets a bound or a refusal is not decided).
+## Runtime Ordering Guarantees
 
-The lifecycle is the skeleton of every long-running Hale program.
-Next, the thing those programs use to talk to each other: [The
-bus](./bus.md).
+The compiler and runtime enforce the following execution invariants across the ownership tree:
+
+1. **`accept` precedes `birth`**: A parent's `accept(c)` runs after `c`'s `params` are initialized and before `c.birth()`.
+2. **Subscriptions register before `birth`; delivery starts after `birth`**: Within a single locus literal's static tree (including nested params, `pinned` fields, pool-placed fields, and `replicas = K` shards), all bus subscriptions are reserved before any child's `birth()` runs. Messages published during `birth()` (including self-publishes and messages from earlier sibling params) are queued and delivered in order once the subscriber's `birth()` returns. Elsewhere, dynamically constructing a subscriber *after* publishing misses the earlier message (`hale check` warns when both occur in the same body).
+3. **Pinned `birth_check` thread affinity**: On a `pinned` locus, `birth_check` runs on the locus's dedicated OS thread between `birth()` and `run()`.
+4. **Pool inheritance**: A locus stored as a parameter field of a pool-placed locus inherits that cooperative pool for its own `run()` and handlers.
+5. **Immediate failure routing**: A failing closure, `birth_check`, or `violate` statement delivers a `ClosureViolation` to the parent's `on_failure` immediately. If the parent is still initializing its `params` block, the violation is held until all parent `params` are initialized and delivered just before the parent's `birth()`.
+6. **Field teardown order**: A locus's owned `params` fields drain in declaration order (depth-first, each on its own thread/pool) *before* the owner drains, and each field's arena is dissolved *after* the owner's `dissolve()` body completes. Pinned fields of a `main` locus returned from a helper function remain live until the caller finishes with that `main` locus.
+7. **Dissolve-epoch closures**: Closures with `epoch dissolve` run immediately before `dissolve()`, routing any violation to the parent before cleanup code executes.
+8. **Safe field replacement**: Replacing an owned field (`self.child = Child { }`) runs the old child's `dissolve()` before the new child's `birth()`, while keeping the old child's memory arena alive until any in-flight `run()` or pool handler on the old child returns.
+9. **Aborted waits on shutdown**: When `main` begins teardown, any publisher on a pool or pinned thread blocked in `or wait` (or waiting on a full `shm_ring` with `on_overflow: block`) is woken before thread join and fails with `BusWaitAborted`.
+10. **No restarts during drain**: Calling `restart(child)` inside `on_failure` while the process is draining (or after `main`'s `run()` has returned) is a no-op; the child terminates cleanly.
+
+> [!NOTE]
+> **Current Runtime Edge Cases (`spec/runtime.md`)**
+> - A dissolve-epoch closure violation on a flow child or a field torn down directly from `fn main` exits the process rather than invoking `on_failure`.
+> - A subscriber inside a `pinned` or pool-placed field that is itself nested inside another placed or replicated field may miss messages published by earlier tree branches before its construction completes.
+> - Subscribing loci constructed inside stdlib or imported modules may receive messages during `birth()` rather than queuing them until `birth()` returns.
+> - Unbounded self-publishing inside `birth()` buffers messages in memory without a static cap.
+
+Next: [The Bus](./bus.md).

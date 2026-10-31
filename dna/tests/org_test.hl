@@ -49,14 +49,31 @@ main locus Org {
         }
         return n;
     }
-    fn head() -> String { return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout); }
+    fn head() -> String {
+        return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout);
+    }
     run() {
         // ---- authority ranks -------------------------------------------
-        std::test::assert(dna::authority_satisfies("board", "leader"), "the board satisfies the leader's requirement");
-        std::test::assert(dna::authority_satisfies("maintainer", "board"), "maintainer is the board's older name");
-        std::test::assert(!dna::authority_satisfies("leader", "board"), "the leader does not satisfy the board");
-        std::test::assert(dna::authority_satisfies("leader", "reviewer"), "the leader satisfies a reviewer's requirement");
-        std::test::assert(!dna::authority_satisfies("reviewer", "supervisor"), "a reviewer does not satisfy a supervisor");
+        std::test::assert(
+            dna::authority_satisfies("board", "leader"),
+            "the board satisfies the leader's requirement",
+        );
+        std::test::assert(
+            dna::authority_satisfies("maintainer", "board"),
+            "maintainer is the board's older name",
+        );
+        std::test::assert(
+            !dna::authority_satisfies("leader", "board"),
+            "the leader does not satisfy the board",
+        );
+        std::test::assert(
+            dna::authority_satisfies("leader", "reviewer"),
+            "the leader satisfies a reviewer's requirement",
+        );
+        std::test::assert(
+            !dna::authority_satisfies("reviewer", "supervisor"),
+            "a reviewer does not satisfy a supervisor",
+        );
 
         // ---- the genome ------------------------------------------------
         let repo = dna::scratch_root("org");
@@ -67,22 +84,47 @@ main locus Org {
         // the law, as the genome holds it: the leader reads it at HEAD (GH #596 L)
         std::io::fs::mkdir(repo + "/dna") or discard;
         std::io::fs::mkdir(repo + "/dna/org") or discard;
-        std::io::fs::write_file(repo + "/dna/org/law.hl", "// the law of this test's organization\nconstitution Org { nothing_here: forbid reaches(editors, effects(repo_write)); }\n") or discard;
+        std::io::fs::write_file(
+            repo + "/dna/org/law.hl",
+            "// the law of this test's organization\nconstitution Org { nothing_here: forbid reaches(editors, effects(repo_write)); }\n",
+        ) or discard;
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let c0 = sh(
+            "git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
             gateway: dna::MutationGateway {
-                leases: dna::GitLeases { repo: repo },
-                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                leases: dna::MemoryLeases { repo: repo },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: repo,
+                    root: repo + "/.hale/dna/worktrees",
+                },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification {
+                hale_bin: toolchain(),
+                receipts: dna::MemoryReceipts { repo: repo },
+                scratch: repo + "/.hale/dna/scratch",
+                repo: repo,
+            },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
-                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    quick: dna::FakeModel {
+                        name: "quick",
+                        answer: DOCUMENTED,
+                        answer_role: "edit",
+                    },
                     deep: dna::FakeModel { name: "deep", answer: "readability +" }
                 },
                 tools: dna::WorktreeTools { hale_bin: toolchain() }
@@ -93,15 +135,23 @@ main locus Org {
             // a first change (novelty 3) is outside it, a second (novelty 1) inside
             boundary: dna::AutonomyBoundary {
                 child: "app",
-                grant: dna::Grant { child: "app", classes: "application", max_magnitude: 2, review: "pre" }
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "application",
+                    max_magnitude: 2,
+                    review: "pre",
+                }
             }
         };
         self.leader = dna::Leader {
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: "Approve: documented, checks clean." },
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "Approve: documented, checks clean.",
+                },
                 deep: dna::FakeModel { name: "deep", answer: "Approve: documented, checks clean." }
             },
-            receipts: dna::GitReceipts { repo: repo },
+            receipts: dna::MemoryReceipts { repo: repo },
             source: dna::SourceReader { repo: repo },
             charter: "You are the architect of this organization: you propose, the Board decides.",
             purpose: "keep the pings counted"
@@ -112,42 +162,112 @@ main locus Org {
         std::test::assert_eq_str(m1, "m1: review", m1);
         std::time::sleep(100ms);
         let req1 = self.last("review.requested", "review:m1");
-        std::test::assert_eq_str(std::json::find_string_field(req1, "disposition"), "escalate", "outside the grant");
-        std::test::assert_eq_str(std::json::find_string_field(req1, "required_authority"), "board", "escalation is the Board's: " + req1);
+        std::test::assert_eq_str(
+            std::json::find_string_field(req1, "disposition"),
+            "escalate",
+            "outside the grant",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(req1, "required_authority"),
+            "board",
+            "escalation is the Board's: " + req1,
+        );
         std::test::assert_eq_int(self.leader.escalated, 1, "the Leader saw it and left it");
         std::test::assert_eq_int(self.leader.decisions, 0, "no model call for the Board's Review");
         let cand1 = self.last("mutation.candidate", "m1");
         // a verdict claiming the leader's authority is refused by the Review
-        dna::ReviewVerdict <- dna::Verdict { review_id: "m1", subject_digest: cand1, verdict: "approve", reviewer: "someone", authority: "leader" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: "m1",
+            subject_digest: cand1,
+            verdict: "approve",
+            reviewer: "someone",
+            authority: "leader",
+        };
         std::time::sleep(100ms);
-        std::test::assert(std::str::contains(self.last("review.refused", "m1"), "authority leader does not satisfy board"), self.last("review.refused", "m1"));
+        std::test::assert(
+            std::str::contains(
+                self.last("review.refused", "m1"),
+                "authority leader does not satisfy board",
+            ),
+            self.last("review.refused", "m1"),
+        );
         // the Board's settles it, and it applies
-        dna::ReviewVerdict <- dna::Verdict { review_id: "m1", subject_digest: cand1, verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: "m1",
+            subject_digest: cand1,
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(150ms);
-        std::test::assert_eq_str(self.last("review.settled", "m1"), "approve by riley", "the Board settled it");
+        std::test::assert_eq_str(
+            self.last("review.settled", "m1"),
+            "approve by riley",
+            "the Board settled it",
+        );
         std::test::assert_eq_str(self.head(), cand1, "applied");
         std::test::assert(self.core.board.notifications() > 0, "the Board was notified");
 
         // ---- 2. inside the grant: the Leader's ---------------------------
-        let m2 = self.core.mutate("t2", "application", "document A in main.hl again", "main.hl", 200);
+        let m2 = self.core.mutate(
+            "t2",
+            "application",
+            "document A in main.hl again",
+            "main.hl",
+            200,
+        );
         std::test::assert_eq_str(m2, "m2: review", m2);
         std::time::sleep(200ms);
         let req2 = self.last("review.requested", "review:m2");
-        std::test::assert_eq_str(std::json::find_string_field(req2, "disposition"), "review", "inside the grant now (novelty 1): " + req2);
-        std::test::assert_eq_str(std::json::find_string_field(req2, "required_authority"), "leader", "the Leader's to decide");
+        std::test::assert_eq_str(
+            std::json::find_string_field(req2, "disposition"),
+            "review",
+            "inside the grant now (novelty 1): " + req2,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(req2, "required_authority"),
+            "leader",
+            "the Leader's to decide",
+        );
         std::test::assert_eq_int(self.leader.decisions, 1, "one decision");
         std::test::assert_eq_int(self.leader.approved, 1, "approved");
-        std::test::assert(std::str::contains(self.last("review.reasoned", "m2"), "model deep:"), "the Leader's reasoning is in the record: " + self.last("review.reasoned", "m2"));
-        std::test::assert_eq_str(self.last("review.settled", "m2"), "approve by leader", "settled by the Leader: " + self.last("review.refused", "m2"));
-        std::test::assert_eq_int(self.count_role("review"), 1, "the Leader's decision is a model call with evidence");
+        std::test::assert(
+            std::str::contains(self.last("review.reasoned", "m2"), "model deep:"),
+            "the Leader's reasoning is in the record: " + self.last("review.reasoned", "m2"),
+        );
+        std::test::assert_eq_str(
+            self.last("review.settled", "m2"),
+            "approve by leader",
+            "settled by the Leader: " + self.last("review.refused", "m2"),
+        );
+        std::test::assert_eq_int(
+            self.count_role("review"),
+            1,
+            "the Leader's decision is a model call with evidence",
+        );
         // the Leader decided with its brief above the diffs (GH #596 L):
         // charter, purpose, the law as the genome holds it — and no
         // practices, since no knowledge service is wired here
         let brief = self.leader.last_brief;
-        std::test::assert(std::str::starts_with(brief, "CHARTER\nYou are the architect of this organization"), "the charter leads the brief: " + brief);
-        std::test::assert(std::str::contains(brief, "PURPOSE\nkeep the pings counted\n"), "then the purpose: " + brief);
-        std::test::assert(std::str::contains(brief, "LAW\n// the law of this test's organization\nconstitution Org"), "then the law, read from HEAD: " + brief);
-        std::test::assert(!std::str::contains(brief, "PRACTICES"), "no service, no practices: " + brief);
+        std::test::assert(
+            std::str::starts_with(brief, "CHARTER\nYou are the architect of this organization"),
+            "the charter leads the brief: " + brief,
+        );
+        std::test::assert(
+            std::str::contains(brief, "PURPOSE\nkeep the pings counted\n"),
+            "then the purpose: " + brief,
+        );
+        std::test::assert(
+            std::str::contains(
+                brief,
+                "LAW\n// the law of this test's organization\nconstitution Org",
+            ),
+            "then the law, read from HEAD: " + brief,
+        );
+        std::test::assert(
+            !std::str::contains(brief, "PRACTICES"),
+            "no service, no practices: " + brief,
+        );
         std::test::assert_eq_str(self.leader.last_package, "", "and no package named");
         let cand2 = self.last("mutation.candidate", "m2");
         std::test::assert_eq_str(self.head(), cand2, "applied on the Leader's verdict");

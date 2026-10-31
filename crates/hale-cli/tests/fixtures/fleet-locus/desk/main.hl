@@ -1,0 +1,29 @@
+// The publishing service: its main binds the order topic out of its
+// process, so a fleet route can carry it.
+import "../shared" as t;
+
+locus Desk {
+    params {
+        sent: Int = 0;
+    }
+    bus {
+        publish t::OrderRequest;
+    }
+    run() {
+        t::OrderRequest <- t::Order { id: 1 };
+        self.sent = self.sent + 1;
+    }
+}
+
+main locus Orders {
+    params {
+        desk: Desk = Desk { };
+    }
+    bindings {
+        t::OrderRequest: unix("/tmp/hale-fleet-locus-orders.sock");
+    }
+}
+
+fn main() {
+    Orders { };
+}

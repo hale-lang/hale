@@ -55,7 +55,11 @@ type Ledger = quantity Int in cent { round: half_even; }
 type Header { send_ns: Int; send_us: Int; session: Int; }
 
 fn main() {
-    let hdr = Header { send_ns: 1_700_000_000_123_456_789, send_us: 1_700_000_000_123_400, session: 70 };
+    let hdr = Header {
+        send_ns: 1_700_000_000_123_456_789,
+        send_us: 1_700_000_000_123_400,
+        session: 70,
+    };
     let bid = Price(100tick);
     let ask = Price(103tick);
     let id = OrderId(7);
@@ -85,5 +89,7 @@ fn main() {
     // let bad  = 5ms + 4KiB;                // type error: different quantities
     // let nope = id + id;                   // type error: identity has no arithmetic
 
-    println(f"{whole} {secs} {sec} {rem} {n} {hop} {ok} {out} {spread} {mid} {fee} {odd} {paid} {sess} {seq} {id}");
+    println(
+        f"{whole} {secs} {sec} {rem} {n} {hop} {ok} {out} {spread} {mid} {fee} {odd} {paid} {sess} {seq} {id}",
+    );
 }

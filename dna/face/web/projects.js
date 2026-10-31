@@ -100,7 +100,7 @@
 
   // Closed argument allowlists in fingerprint order (brief §2.7), with the
   // grammar each verb enforces so an invalid value never leaves the browser.
-  const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/, SECRET = /^[A-Z_][A-Z0-9_]*$/, REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, LOGIN = /^[A-Za-z0-9-]{1,39}$/, TARGET = /^[^@\s/]+@[^@\s/]+$/;
+  const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/, SECRET = /^[A-Z_][A-Z0-9_]*$/, LOGIN = /^[A-Za-z0-9-]{1,39}$/, TARGET = /^[^@\s/]+@[^@\s/]+$/;
   const path = value => safe(value, 4096) && value.startsWith("/");
   const optional = (test) => value => value === "" || test(value);
   const word = value => safe(value) && value.length > 0 && !/\s/.test(value);
@@ -115,15 +115,14 @@
     { operation: "dna.project.init", title: "Initialize project", submit: "Initialize project", fields: [
       { key: "root", label: "Project root", kind: "text", valid: path, hint: "absolute path of an existing checkout without a Record" }] },
     { operation: "dna.project.attach", title: "Attach project", submit: "Attach project", fields: [
-      { key: "root", label: "Project root", kind: "text", valid: path, hint: "absolute path of a Git toplevel holding refs/dna/journal" }] },
+      { key: "root", label: "Project root", kind: "text", valid: path, hint: "absolute path of a project whose hale.toml pins its record" }] },
     { operation: "dna.project.detach", title: "Detach project", submit: "Detach project", project: true, fields: [] },
     { operation: "dna.project.sync", title: "Sync record", submit: "Sync record", project: true, fields: [] },
     { operation: "dna.project.publish", title: "Publish genome", submit: "Publish genome", project: true, fields: [
       { key: "remote", label: "Remote URL (optional when origin exists)", kind: "text", valid: optional(word) },
       { key: "message", label: "Commit message", kind: "textarea", valid: value => text(value, 512) && value.length > 0 && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value) && !value.startsWith("-"), hint: "1 to 512 bytes" }] },
-    { operation: "dna.forge.configure", title: "Configure forge", submit: "Configure forge", project: true, fields: [
-      { key: "github", label: "GitHub repository (owner/repo, empty to unset)", kind: "text", valid: value => value === "" || REPO.test(value) },
-      { key: "board", label: "Board logins (comma separated)", kind: "list", valid: value => value.every(login => LOGIN.test(login)) }] },
+    { operation: "dna.forge.configure", title: "Forge board", submit: "Set forge board", project: true, fields: [
+      { key: "board", label: "Board logins (comma separated; the forge itself is the habitat's: hale habitat forge)", kind: "list", valid: value => value.every(login => LOGIN.test(login)) }] },
     { operation: "dna.forge.sync", title: "Sync forge", submit: "Sync forge", project: true, fields: [] },
     { operation: "dna.body.local.start", title: "Start local body", submit: "Start local body", project: true, fields: [
       { key: "mode", label: "Mode", kind: "select", options: [["run", "run"], ["dev", "dev"]] },
@@ -148,7 +147,8 @@
     { operation: "dna.models.probe", title: "Probe models", submit: "Probe models", project: true, fields: [
       { key: "confirm_spend", label: "I confirm this probe may spend model credits", kind: "checkbox", gate: true }] },
     { operation: "dna.connection.propose", title: "Propose connection", submit: "Propose connection", project: true, fields: [
-      { key: "record_url", label: "Peer Record URL", kind: "text", valid: word },
+      { key: "nerves_url", label: "Peer's nerves (nats://host:port)", kind: "text", valid: word },
+      { key: "record", label: "Peer record identity", kind: "text", valid: word },
       { key: "name", label: "Connection name", kind: "text", valid: word },
       { key: "position", label: "Position (our side)", kind: "text", valid: word },
       { key: "purpose", label: "Purpose", kind: "text", valid: value => safe(value, 4096) && value.length > 0 },
@@ -340,7 +340,7 @@
         case "dna.project.create": case "dna.project.init": case "dna.project.attach": return data.state === "attached" && data.active.application_id === o.application_id && projects.some(item => item.application_id === o.application_id && item.active);
         case "dna.project.detach": return data.state === "detached";
         case "dna.project.forget": return !projects.some(item => item.application_id === args.application_id);
-        case "dna.forge.configure": return Boolean(project) && project.forge.github === o.github && JSON.stringify(project.forge.board) === JSON.stringify(o.board);
+        case "dna.forge.configure": return Boolean(project) && JSON.stringify(project.forge.board) === JSON.stringify(o.board);
         case "dna.body.local.start": return data.children.body.state === "running";
         case "dna.body.local.stop": return data.children.body.state !== "running";
         case "dna.secret.set": case "dna.secret.rotate": return Boolean(project) && project.secrets.includes(o.name) && recordMoved();

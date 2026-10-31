@@ -1,0 +1,115 @@
+// A map of values crosses the protobuf codec as `map<string, V>` (spec/api.md
+// § Codecs, § gRPC): each entry an occurrence of a message of the key (field
+// 1) and the value (field 2), plain proto3 fields, so an entry that leaves
+// its value out (a proto3 writer drops a zero) is the value's zero and one
+// that leaves its key out is the empty key. JSON in, protobuf through, JSON
+// out gives back the same text for a value of each kind; a key already read
+// is `duplicate_key`. This program names no port: the serve site is in a
+// method nothing calls, which is all the compiler needs to write the codecs.
+
+type Level = enum { low, high };
+type Check { name: String; status: String; }
+type Gauge { name: String; depth: Int; }
+type Mark { name: String; level: Level; }
+type Stamp { name: String; at: Time; }
+type Health {
+    checks: bounded[Check; 3] indexed_by name -> status;
+    gauges: bounded[Gauge; 2] indexed_by name -> depth;
+    marks: bounded[Mark; 2] indexed_by name -> level;
+    stamps: bounded[Stamp; 2] indexed_by name -> at;
+}
+
+api PbValueMap {
+    rpc Probe::health;
+}
+
+locus Probe {
+    fn health(h: Health) -> Health { return h; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbValueMap,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Health(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Health(__api_pb_encode_Health(v)) or {
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Health(back), json, what);
+    }
+
+    run() {
+        self.round("{\"checks\":{},\"gauges\":{},\"marks\":{},\"stamps\":{}}", "empty maps");
+        self.round(
+            "{\"checks\":{\"db\":\"ok\",\"nats\":\"unavailable\"},\"gauges\":{\"queue\":3,\"idle\":0},\"marks\":{\"disk\":\"high\",\"cpu\":\"low\"},\"stamps\":{\"boot\":\"2026-10-12T03:04:05Z\"}}",
+            "a value of each kind, zeros among them, in order"
+        );
+
+        // an entry that leaves its value out is the value's zero; one that
+        // leaves its key out, the empty key
+        let no_value = __api_pb_put_msg(2, __api_pb_put_str(1, "idle"));
+        let nv = __api_pb_decode_Health(no_value) or {
+            std::test::assert(false, "an entry with no value: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(
+            __api_encode_Health(nv),
+            "{\"checks\":{},\"gauges\":{\"idle\":0},\"marks\":{},\"stamps\":{}}",
+            "the value's zero"
+        );
+        let no_key = __api_pb_put_msg(1, __api_pb_put_str(2, "ok"));
+        let nk = __api_pb_decode_Health(no_key) or {
+            std::test::assert(false, "an entry with no key: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(
+            __api_encode_Health(nk),
+            "{\"checks\":{\"\":\"ok\"},\"gauges\":{},\"marks\":{},\"stamps\":{}}",
+            "the empty key"
+        );
+
+        // a key already read
+        let entry = __api_pb_put_msg(
+            1,
+            std::bytes::concat(__api_pb_put_str(1, "db"), __api_pb_put_str(2, "ok")),
+        );
+        let dup = __api_pb_decode_Health(std::bytes::concat(entry, entry)) or {
+            std::test::assert_eq_str(
+                err.kind + ": " + err.field,
+                "duplicate_key: checks",
+                "a duplicate key",
+            );
+            return;
+        };
+        std::test::assert(false, "a duplicate key decoded " + __api_encode_Health(dup));
+    }
+}
+
+fn main() { Desk { }; }

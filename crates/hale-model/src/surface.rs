@@ -67,6 +67,9 @@ pub struct SurfaceRow {
     pub pools: Vec<String>,
     /// The roles a caller must hold, as written.
     pub requires: Vec<String>,
+    /// The route `http::Rest` serves the row at, canonical (`METHOD
+    /// /path/:param STATUS`); part of the digest when there is one.
+    pub route: Option<String>,
     /// The `rpc` line, or the `@rpc` attribute.
     pub provenance: ProvenanceId,
 }
@@ -84,6 +87,9 @@ pub struct DigestLine<'a> {
     pub error: Option<u64>,
     /// The required roles as written; the digest sorts them.
     pub requires: &'a [String],
+    /// The row's canonical route; a sixth field of its line when there is
+    /// one, so a surface without routes keeps its digest.
+    pub route: Option<&'a str>,
 }
 
 impl<'a> From<&'a SurfaceRow> for DigestLine<'a> {
@@ -94,6 +100,7 @@ impl<'a> From<&'a SurfaceRow> for DigestLine<'a> {
             response: r.response.as_ref().map(|t| t.hash),
             error: r.error.as_ref().map(|t| t.hash),
             requires: &r.requires,
+            route: r.route.as_deref(),
         }
     }
 }
@@ -124,16 +131,36 @@ pub fn surface_digest_input(lines: &[DigestLine<'_>]) -> String {
     sorted.sort_by(|a, b| a.member.as_bytes().cmp(b.member.as_bytes()));
     let mut out = String::from("hale-api-surface 1\n");
     for l in sorted {
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\n",
-            l.member,
-            hash_field(l.request),
-            hash_field(l.response),
-            hash_field(l.error),
-            roles_field(l.requires)
-        ));
+        out.push_str(&line_text(l));
     }
     out
+}
+
+/// One row's line of a digest input: five TAB-separated fields and an LF.
+fn line_text(l: &DigestLine<'_>) -> String {
+    let route = l.route.map_or(String::new(), |r| format!("\t{r}"));
+    format!(
+        "{}\t{}\t{}\t{}\t{}{route}\n",
+        l.member,
+        hash_field(l.request),
+        hash_field(l.response),
+        hash_field(l.error),
+        roles_field(l.requires)
+    )
+}
+
+/// The hash input of a member's digest (spec/api.md § The contract
+/// digest, additive compatibility): the header line `hale-api-member 1`
+/// and the row's line of [`surface_digest_input`]. It reads that row
+/// alone, so a member added to the surface, or another member changed,
+/// leaves it where it is.
+pub fn member_digest_input(line: &DigestLine<'_>) -> String {
+    format!("hale-api-member 1\n{}", line_text(line))
+}
+
+/// A member's digest: the FNV-1a/64 fold of [`member_digest_input`].
+pub fn member_digest(line: &DigestLine<'_>) -> u64 {
+    hale_graph::identity::fnv64(member_digest_input(line).as_bytes())
 }
 
 /// A surface's contract digest: the FNV-1a/64 fold of
@@ -223,6 +250,7 @@ mod tests {
                 response: Some(0xbb4f99639cf069af),
                 error: Some(0x36c7f0561125943e),
                 requires: &none,
+                route: None,
             },
             DigestLine {
                 member: "Orders::cancel",
@@ -230,6 +258,7 @@ mod tests {
                 response: Some(0xe1506381a35c8ced),
                 error: Some(0xdb0311924c0e7333),
                 requires: &trader,
+                route: None,
             },
         ];
         let input = surface_digest_input(&public);
@@ -250,6 +279,7 @@ mod tests {
                 response: Some(0xe1506381a35c8ced),
                 error: Some(0xdb0311924c0e7333),
                 requires: &operator,
+                route: None,
             },
             DigestLine {
                 member: "Ledger::rebalance",
@@ -257,6 +287,7 @@ mod tests {
                 response: Some(0x3193bf68569ed280),
                 error: Some(0x36c7f0561125943e),
                 requires: &operator,
+                route: None,
             },
         ];
         assert_eq!(surface_digest_input(&admin).len(), 172);
@@ -282,7 +313,7 @@ mod tests {
     fn requires_is_a_sorted_set_and_none_is_a_dash() {
         let ab = roles(&["b", "a", "b"]);
         let ba = roles(&["a", "b"]);
-        let l = |r: &[String]| surface_digest_input(&[DigestLine { member: "L::f", request: None, response: None, error: None, requires: r }]);
+        let l = |r: &[String]| surface_digest_input(&[DigestLine { member: "L::f", request: None, response: None, error: None, requires: r, route: None }]);
         assert_eq!(l(&ab), l(&ba));
         assert_eq!(l(&ab), "hale-api-surface 1\nL::f\t-\t-\t-\ta,b\n");
         assert_eq!(l(&[]), "hale-api-surface 1\nL::f\t-\t-\t-\t-\n");

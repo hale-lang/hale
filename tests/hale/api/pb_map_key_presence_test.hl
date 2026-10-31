@@ -1,0 +1,89 @@
+// A wire map keyed by a field with a presence pair or a presence triple
+// (spec/api.md § Codecs): the map supplies the key, so a record read from
+// the map has its key present (`has_name`) and, for a triple, not cleared
+// (`clear_name`), whatever the record sent. Both through JSON and through
+// protobuf, for a map of records and a map of values. This program names
+// no port: the serve site is in a method nothing calls, which is all the
+// compiler needs to write the codecs.
+
+// a triple's key
+type Desk { name: String = ""; has_name: Bool = false; clear_name: Bool = false; seats: Int; }
+type Seat { name: String = ""; has_name: Bool = false; clear_name: Bool = false; taken: Int; }
+// a pair's key
+type Room { name: String = ""; has_name: Bool = false; floor: Int; }
+type Lamp { name: String = ""; has_name: Bool = false; watts: Int; }
+type Office {
+    desks: bounded[Desk; 2] indexed_by name;
+    seats: bounded[Seat; 2] indexed_by name -> taken;
+    rooms: bounded[Room; 2] indexed_by name;
+    lamps: bounded[Lamp; 2] indexed_by name -> watts;
+}
+
+api PbKeys {
+    rpc Probe::office;
+}
+
+locus Probe {
+    fn office(o: Office) -> Office { return o; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Front {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbKeys,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+
+    fn present(o: Office, how: String) {
+        for d in o.desks {
+            std::test::assert(
+                d.has_name && !d.clear_name,
+                how + ": a desk's key is present, not cleared",
+            );
+        }
+        for s in o.seats {
+            std::test::assert(
+                s.has_name && !s.clear_name,
+                how + ": a seat's key is present, not cleared",
+            );
+        }
+        for r in o.rooms {
+            std::test::assert(r.has_name, how + ": a room's key is present");
+        }
+        for l in o.lamps {
+            std::test::assert(l.has_name, how + ": a lamp's key is present");
+        }
+    }
+
+    run() {
+        let json = "{\"desks\":{\"north\":{\"seats\":4}},\"seats\":{\"a1\":1,\"a2\":0},\"rooms\":{\"lab\":{\"floor\":2}},\"lamps\":{\"desk\":40}}";
+        let o = __api_decode_Office(json) or {
+            std::test::assert(false, "the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        self.present(o, "JSON");
+        std::test::assert_eq_str(__api_encode_Office(o), json, "JSON reads back");
+        let back = __api_pb_decode_Office(__api_pb_encode_Office(o)) or {
+            std::test::assert(false, "the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        self.present(back, "protobuf");
+        std::test::assert_eq_str(__api_encode_Office(back), json, "protobuf reads back");
+    }
+}
+fn main() { Front { }; }

@@ -71,7 +71,7 @@ fn an_accept_failure_nobody_asked_for_is_still_reported() {
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("lotus_tcp_accept_one: accept: Bad file descriptor"),
+        stderr.contains("level=error logger=lotus.tcp msg=\"accept failed\" op=\"lotus_tcp_accept_one: accept\" errno=9 error=\"Bad file descriptor\""),
         "stderr: {stderr}"
     );
 }

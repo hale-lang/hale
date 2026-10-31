@@ -35,7 +35,9 @@ main locus App {
     run() {
         Gos <- Go { k: 1 };
         let until = std::time::monotonic_ns() + 5000000000;
-        while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until {
+            std::time::sleep(1ms);
+        }
         self.b = Kid { tag: 2 };
         println("ev replaced");
         std::time::sleep(500ms);

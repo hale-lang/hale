@@ -15,12 +15,27 @@ import "../core" as dna;
 locus CountingJournal {
     params { appends: Int = 0; }
     fn refresh() -> Bool { return false; }
-    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult {
+        return dna::append_rows(self, expected, rows);
+    }
+    fn append_exact(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String
+    ) -> dna::AppendResult {
+        return self.append(expected, kind, entity, body);
+    }
     fn revision() -> Int { return self.appends; }
     fn head() -> String { return "fake"; }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
-        if expected != self.appends { return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.appends }; }
+        if expected != self.appends {
+            return dna::AppendResult {
+                error: "stale_revision",
+                expected: expected,
+                actual: self.appends,
+            };
+        }
         self.appends = self.appends + 1;
         return dna::AppendResult { ok: true, revision: self.appends };
     }
@@ -39,7 +54,12 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary {
                 child: "app",
-                grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" }
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "refactor",
+                    max_magnitude: 8,
+                    review: "post",
+                }
             },
             deployment: dna::NoDeployment { }
         };
@@ -47,9 +67,18 @@ main locus App {
     run() {
         // substitution is visible in the status projection
         let s0 = self.dna.status();
-        std::test::assert(std::str::contains(s0, "\"routing\": \"human-first\""), "assembled router policy: " + s0);
-        std::test::assert(std::str::contains(s0, "\"review_policy\": \"post-review-refactors\""), "assembled review policy: " + s0);
-        std::test::assert(std::str::contains(s0, "\"deployment\": \"none\""), "assembled deployment: " + s0);
+        std::test::assert(
+            std::str::contains(s0, "\"routing\": \"human-first\""),
+            "assembled router policy: " + s0,
+        );
+        std::test::assert(
+            std::str::contains(s0, "\"review_policy\": \"post-review-refactors\""),
+            "assembled review policy: " + s0,
+        );
+        std::test::assert(
+            std::str::contains(s0, "\"deployment\": \"none\""),
+            "assembled deployment: " + s0,
+        );
 
         // intent through the Board -> durable task -> journal events on the FAKE journal
         let refused = self.dna.ask(dna::Intent { id: "i0", outcome: "" });
@@ -57,35 +86,94 @@ main locus App {
         let t = self.dna.ask(dna::Intent { id: "i1", outcome: "answer the audit", from: "human" });
         std::test::assert_eq_str(t, "t1", "task minted");
         // the refusal is journaled too (GH #528: `hale dna task create` reads the answer back from the Journal)
-        std::test::assert_eq_int(self.dna.journal.revision(), 4, "intent.refused, intent.offered, workflow.admitted, task.born on the substituted journal");
-        std::test::assert_eq_int(self.dna.executions_asked, 1, "and the ask runs in the assembly's own engine (card 18)");
+        std::test::assert_eq_int(
+            self.dna.journal.revision(),
+            4,
+            "intent.refused, intent.offered, workflow.admitted, task.born on the substituted journal",
+        );
+        std::test::assert_eq_int(
+            self.dna.executions_asked,
+            1,
+            "and the ask runs in the assembly's own engine (card 18)",
+        );
 
         // model routing returns DATA
         let r = dna::ModelRouter { };
-        let quick = r.ask(dna::ModelRequest { role: "classify", prompt_digest: "d1", context_bytes: 100 });
-        std::test::assert(quick.ok && quick.backend == "quick", "quick class by default: " + quick.backend);
-        let deep = r.ask(dna::ModelRequest { role: "review", prompt_digest: "d2", context_bytes: 100, assurance: 2 });
+        let quick = r.ask(
+            dna::ModelRequest { role: "classify", prompt_digest: "d1", context_bytes: 100 },
+        );
+        std::test::assert(
+            quick.ok && quick.backend == "quick",
+            "quick class by default: " + quick.backend,
+        );
+        let deep = r.ask(
+            dna::ModelRequest {
+                role: "review",
+                prompt_digest: "d2",
+                context_bytes: 100,
+                assurance: 2,
+            },
+        );
         std::test::assert(deep.ok && deep.backend == "deep", "review goes deep: " + deep.backend);
-        let priv = r.ask(dna::ModelRequest { role: "classify", prompt_digest: "d3", context_bytes: 100, data_class: "customer" });
-        std::test::assert(priv.ok && priv.backend == "private", "customer data stays private: " + priv.backend);
-        let too_big = r.ask(dna::ModelRequest { role: "classify", prompt_digest: "d4", context_bytes: 10000000, data_class: "customer" });
-        std::test::assert(!too_big.ok, "no permitted backend -> refused, never leaked: " + too_big.refused);
-        std::test::assert_eq_int(r.calls, 3, "three calls recorded, one refusal not counted as a call");
+        let priv = r.ask(
+            dna::ModelRequest {
+                role: "classify",
+                prompt_digest: "d3",
+                context_bytes: 100,
+                data_class: "customer",
+            },
+        );
+        std::test::assert(
+            priv.ok && priv.backend == "private",
+            "customer data stays private: " + priv.backend,
+        );
+        let too_big = r.ask(
+            dna::ModelRequest {
+                role: "classify",
+                prompt_digest: "d4",
+                context_bytes: 10000000,
+                data_class: "customer",
+            },
+        );
+        std::test::assert(
+            !too_big.ok,
+            "no permitted backend -> refused, never leaked: " + too_big.refused,
+        );
+        std::test::assert_eq_int(
+            r.calls,
+            3,
+            "three calls recorded, one refusal not counted as a call",
+        );
         std::test::assert_eq_int(r.spent_micros, 56, "cost recorded: 5 + 50 + 1");
 
         // a mutation stops at stage: the grant would release a small
         // refactor, the deployment refuses, the Board is told
         let d = self.dna.stage("refactor", "sha256:cand-1",
             dna::Magnitude { loci: 2 },
-            dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, replay_ok: true, rollback_rehearsed: true, independent_reviews: 2 });
+            dna::Evidence {
+                check_clean: true,
+                verify_clean: true,
+                tests_pass: true,
+                replay_ok: true,
+                rollback_rehearsed: true,
+                independent_reviews: 2,
+            });
         std::test::assert_eq_str(d, "stage", "released by the grant, staged by the deployment");
         std::test::assert_eq_int(self.dna.deployment.applied(), 0, "nothing applied");
         std::test::assert(self.dna.board.notifications() > 0, "the Board notified");
         // a law-touching change goes to review regardless
-        let rv = self.dna.stage("refactor", "sha256:cand-2", dna::Magnitude { loci: 1, law_touched: true }, dna::Evidence { tests_pass: true });
+        let rv = self.dna.stage(
+            "refactor",
+            "sha256:cand-2",
+            dna::Magnitude { loci: 1, law_touched: true },
+            dna::Evidence { tests_pass: true },
+        );
         std::test::assert_eq_str(rv, "review", "law touched -> review");
         let s1 = self.dna.status();
-        std::test::assert(std::str::contains(s1, "\"executions_asked\": 1"), "status reflects the run: " + s1);
+        std::test::assert(
+            std::str::contains(s1, "\"executions_asked\": 1"),
+            "status reflects the run: " + s1,
+        );
 
         // routing policy is a perspective: the assembly designated
         // human-first at construction (#525), and the WorkSystem can
@@ -94,13 +182,29 @@ main locus App {
         // admission (`kinds_of`); the substituted journal here stores no
         // row to read a recipe back from, so the policy is asked directly
         let plain = dna::WorkRequest { objective: "format the tree" };
-        std::test::assert_eq_str(self.dna.work.selection.select(plain, 0, ""), "human", "human-first routes a person first");
+        std::test::assert_eq_str(
+            self.dna.work.selection.select(plain, 0, ""),
+            "human",
+            "human-first routes a person first",
+        );
         self.dna.work.route_capability_first();
-        std::test::assert_eq_str(self.dna.work.policy(), "capability-first", "live routing-policy swap");
-        std::test::assert_eq_str(self.dna.work.selection.select(plain, 0, ""), "software", "the swapped policy routes software first");
+        std::test::assert_eq_str(
+            self.dna.work.policy(),
+            "capability-first",
+            "live routing-policy swap",
+        );
+        std::test::assert_eq_str(
+            self.dna.work.selection.select(plain, 0, ""),
+            "software",
+            "the swapped policy routes software first",
+        );
         // the swap preserved the slot's STATE: the decision counter kept
         // counting across both policies (the footprint they share)
-        std::test::assert_eq_int(self.dna.work.selection.decisions(), 2, "state survives the swap: one decision under each policy");
+        std::test::assert_eq_int(
+            self.dna.work.selection.decisions(),
+            2,
+            "state survives the swap: one decision under each policy",
+        );
         self.dna.work.route_human_first();
         std::test::assert_eq_str(self.dna.work.policy(), "human-first", "swapped back");
     }

@@ -1,0 +1,82 @@
+// The api instance's heartbeat in Postgres (store.md, "Heartbeat"): a row
+// in `api_instance`, its `last_heartbeat_at` moved every interval. The
+// brain takes an instance whose heartbeat is three intervals old for dead
+// and reclaims what it held. With no database there is nothing to beat.
+
+import "../lib/pond/pq" as pq;
+import "../lib/pond/db" as db;
+
+locus Pulse {
+    params {
+        database: String = "";
+        // this instance's id, new each start
+        instance: String = "";
+        interval: Duration = 5s;
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        opened: Bool = false;
+        // the last failure was said; said again only after a success
+        quiet: Bool = false;
+    }
+
+    birth() {
+        let d = st::parse_dsn(self.database);
+        self.conn.host = d.host;
+        self.conn.port = d.port;
+        self.conn.user = d.user;
+        self.conn.password = d.password;
+        self.conn.vault = d.vault;
+        self.conn.database = d.database;
+        self.conn.sslmode = d.sslmode;
+    }
+
+    run() {
+        if len(self.database) > 0 {
+            log_info(
+                "heartbeating",
+                fields2(
+                    std::log::kv("instance", self.instance),
+                    std::log::kv("every", to_string(self.interval / 1ms) + "ms"),
+                ),
+            );
+            while true {
+                self.beat();
+                std::time::sleep(self.interval);
+            }
+        }
+    }
+
+    /// One beat: the row, inserted or moved on. An instance the brain
+    /// reclaimed while it stalled is alive again (its abandoned requests
+    /// stay abandoned).
+    fn beat() {
+        if !self.opened {
+            let st = self.conn.open();
+            if !st.ok {
+                self.say("Postgres unreachable: " + st.err.detail);
+                return;
+            }
+            self.opened = true;
+        }
+        let a = db::Args { };
+        a.add(self.instance);
+        let r = self.conn.exec_params(
+            "INSERT INTO api_instance (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET last_heartbeat_at = now(), reclaimed_at = NULL",
+            a,
+        );
+        if !r.ok {
+            self.conn.close();
+            self.opened = false;
+            self.say("heartbeat: " + r.err.detail);
+            return;
+        }
+        self.quiet = false;
+    }
+
+    fn say(what: String) {
+        if self.quiet { return; }
+        log_warn(what, std::log::kv("instance", self.instance));
+        self.quiet = true;
+    }
+
+    dissolve() { self.conn.close(); }
+}

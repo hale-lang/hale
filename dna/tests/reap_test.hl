@@ -24,7 +24,11 @@ fn alive(pid: String) -> Bool {
 
 // `script` run detached, in the background; its pid.
 fn detached(script: String, arg: String) -> String {
-    return dna::trim_nl(dna::run_tool("sh\n-c\n" + script + " </dev/null >/dev/null 2>&1 & echo $!\nsh\n" + arg).stdout);
+    return dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\n" + script + " </dev/null >/dev/null 2>&1 & echo $!\nsh\n" + arg,
+        ).stdout,
+    );
 }
 
 fn has_line(lines: String, line: String) -> Bool {
@@ -40,7 +44,10 @@ main locus App {
         let via = scratch + "-via";
         let app = real + "/app";
         let beside = scratch + "-beside";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/app\" \"$3\" && ln -s \"$1\" \"$2\"\nsh\n" + real + "\n" + via + "\n" + beside);
+        let made = dna::run_tool(
+            "sh\n-c\nmkdir -p \"$1/app\" \"$3\" && ln -s \"$1\" \"$2\"\nsh\n" + real + "\n" + via
+                + "\n" + beside,
+        );
         std::test::assert_eq_int(made.code, 0, "the directories and the link: " + made.stderr);
         std::io::fs::write_file(app + "/x.log", "") or discard;
 
@@ -51,13 +58,29 @@ main locus App {
         let by_name = detached("cd / && exec tail -f \"$1/app/x.log\"", via);
         // beside the root, not under it
         let beside_pid = detached("cd \"$1\" && exec sleep 120", beside);
-        std::test::assert(alive(by_cwd) && alive(by_name) && alive(beside_pid), "three processes run");
+        std::test::assert(
+            alive(by_cwd) && alive(by_name) && alive(beside_pid),
+            "three processes run",
+        );
 
         let targets = dna::reap_targets(via);
-        std::test::assert(has_line(targets, by_cwd), "a process whose working directory is under the root, reached through a link, is under it: " + targets);
-        std::test::assert(has_line(targets, by_name), "and one whose command line names a path under it as given: " + targets);
-        std::test::assert(!has_line(targets, beside_pid), "a process in a sibling directory is not: " + targets);
-        std::test::assert(has_line(dna::reap_targets(scratch), by_cwd), "and the working directory is under the root that holds the link's target too");
+        std::test::assert(
+            has_line(targets, by_cwd),
+            "a process whose working directory is under the root, reached through a link, is under it: "
+                + targets,
+        );
+        std::test::assert(
+            has_line(targets, by_name),
+            "and one whose command line names a path under it as given: " + targets,
+        );
+        std::test::assert(
+            !has_line(targets, beside_pid),
+            "a process in a sibling directory is not: " + targets,
+        );
+        std::test::assert(
+            has_line(dna::reap_targets(scratch), by_cwd),
+            "and the working directory is under the root that holds the link's target too",
+        );
 
         // the reaper, for a process other than this one: once it ends, what is
         // under the root goes — its directory removed first, as `scratch_done`
@@ -66,14 +89,19 @@ main locus App {
         dna::reap_after(watched, via);
         let removed = dna::run_tool("rm\n-rf\n" + real);
         let deadline = std::time::now() + dna::wait_secs(15);
-        while (alive(by_cwd) || alive(by_name)) && std::time::now() <= deadline { std::time::sleep(200ms); }
+        while (alive(by_cwd) || alive(by_name)) && std::time::now() <= deadline {
+            std::time::sleep(200ms);
+        }
         let cwd_gone = !alive(by_cwd);
         let name_gone = !alive(by_name);
         let beside_kept = alive(beside_pid);
         let k = dna::run_tool("kill\n-9\n" + by_cwd + "\n" + by_name + "\n" + beside_pid);
         let gone = dna::run_tool("rm\n-rf\n" + beside + "\n" + via);
 
-        std::test::assert(cwd_gone, "the reaper kills a process by its working directory, through the link, its target removed");
+        std::test::assert(
+            cwd_gone,
+            "the reaper kills a process by its working directory, through the link, its target removed",
+        );
         std::test::assert(name_gone, "and by its command line");
         std::test::assert(beside_kept, "and leaves the one beside the root running");
         dna::scratch_done(scratch);

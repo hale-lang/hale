@@ -32,7 +32,10 @@ main locus App {
         if self.fired == 1 && self.at_birth == 1 && self.seen == "stored" {
             println("outcome: delivered-at-settle");
         } else {
-            println("outcome: fired=" + to_string(self.fired) + " at_birth=" + to_string(self.at_birth) + " seen=" + self.seen);
+            println(
+                "outcome: fired=" + to_string(self.fired) + " at_birth=" + to_string(self.at_birth)
+                    + " seen=" + self.seen,
+            );
         }
     }
 }

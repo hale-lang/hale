@@ -76,7 +76,11 @@ locus FlowManager {
 }
 
 main locus App {
-    params { residents: ResidentManager = ResidentManager { }; flows: FlowManager = FlowManager { }; lives: String = ""; }
+    params {
+        residents: ResidentManager = ResidentManager { };
+        flows: FlowManager = FlowManager { };
+        lives: String = "";
+    }
     bus {
         subscribe Lives as on_life;
         publish Offers;
@@ -92,10 +96,29 @@ main locus App {
         Replies <- Rep { key: "resident" };
         Replies <- Rep { key: "flow" };
         std::time::sleep(80ms);
-        std::test::assert(std::str::contains(self.lives, "resident:born") && std::str::contains(self.lives, "resident:replied") && std::str::contains(self.lives, "resident:dissolved"), "the resident outlived its run(), heard the late reply and was reclaimed: " + self.lives);
-        std::test::assert(std::str::index_of(self.lives, "resident:replied") < std::str::index_of(self.lives, "resident:dissolved"), "reclaimed after the reply, not before: " + self.lives);
-        std::test::assert(std::str::contains(self.lives, "flow:born") && std::str::contains(self.lives, "flow:dissolved"), "the flow waiter was born and reclaimed: " + self.lives);
-        std::test::assert(!std::str::contains(self.lives, "flow:replied"), "at the end of its run(), so the late reply reached nobody: " + self.lives);
+        std::test::assert(
+            std::str::contains(self.lives, "resident:born")
+                && std::str::contains(self.lives, "resident:replied")
+                && std::str::contains(self.lives, "resident:dissolved"),
+            "the resident outlived its run(), heard the late reply and was reclaimed: "
+                + self.lives,
+        );
+        std::test::assert(
+            std::str::index_of(self.lives, "resident:replied") < std::str::index_of(
+                self.lives,
+                "resident:dissolved",
+            ),
+            "reclaimed after the reply, not before: " + self.lives,
+        );
+        std::test::assert(
+            std::str::contains(self.lives, "flow:born")
+                && std::str::contains(self.lives, "flow:dissolved"),
+            "the flow waiter was born and reclaimed: " + self.lives,
+        );
+        std::test::assert(
+            !std::str::contains(self.lives, "flow:replied"),
+            "at the end of its run(), so the late reply reached nobody: " + self.lives,
+        );
     }
 }
 

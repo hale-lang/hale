@@ -70,17 +70,10 @@ enum Seed {
     Path { origin: String, path: PathBuf },
 }
 
+/// The `.hl` sources under `dir`, as git would commit them: a local run's
+/// ignored output never becomes a seed (`hale_corpus::source_files`).
 fn hl_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    for p in entries {
-        if p.is_dir() {
-            hl_files(&p, out);
-        } else if p.extension().is_some_and(|e| e == "hl") {
-            out.push(p);
-        }
-    }
+    out.extend(hale_corpus::source_hl(dir));
 }
 
 fn seeds() -> Vec<Seed> {

@@ -1,0 +1,792 @@
+// tests/hale/http_client_stream_test.hl — a response body read as it
+// arrives: `std::http::BodyReader` (chunks) and `std::http::SseReader`
+// (Server-Sent Events), the client's mirror of the Server's `BodyWriter`
+// and `SseWriter`. A Server on an async_io pool streams with gaps that
+// wait on the client: it sends its next piece only once the client,
+// holding the first, has made a request that says so, so a client that
+// read the body whole would never see the first. Then each outcome a
+// read ends in: the end, a body cut off mid-chunk, the deadline, a dial
+// refused, a body framed by Content-Length and by the close, the SSE
+// line rules, and a relay that reads events off one stream and writes
+// them on to its own. Last, the bounded reads (`event_within`,
+// `chunk_within`): a stream that goes silent fails each with `idle` and
+// stays open, the next read carrying on where it was, a partial event
+// held across the silence; the deadline still ends a silent stream.
+
+locus Streams {
+    params {
+        marked: Bool = false;
+        marked2: Bool = false;
+    }
+    // Wait (parked) until `/mark` has been asked, at most 5 s.
+    fn wait_mark() -> Bool {
+        let mut i = 0;
+        while !self.marked && i < 500 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        return self.marked;
+    }
+    fn wait_mark2() -> Bool {
+        let mut i = 0;
+        while !self.marked2 && i < 500 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        return self.marked2;
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/chunks" {
+            let w = std::http::BodyWriter { conn_fd: req.conn_fd, content_type: "text/plain" };
+            w.chunk("alpha") or discard;
+            let next = if self.wait_mark() { "omega" } else { "stalled" };
+            w.chunk(next) or discard;
+            return w.end();
+        }
+        if req.path == "/events" {
+            let w = std::http::SseWriter { conn_fd: req.conn_fd, headers: "X-Stream: on" };
+            w.event(std::http::SseEvent { event: "tick", id: "1", data: "one" }) or discard;
+            let next = if self.wait_mark2() { "two\nlines" } else { "stalled" };
+            w.event(std::http::SseEvent { retry: 1500ms, data: next }) or discard;
+            return w.end();
+        }
+        if req.path == "/burst" {
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            w.event(std::http::SseEvent { event: "token", data: "Hel" }) or discard;
+            std::time::sleep(20ms);
+            w.event(std::http::SseEvent { event: "token", data: "lo" }) or discard;
+            w.event(std::http::SseEvent { data: "[DONE]" }) or discard;
+            return w.end();
+        }
+        if req.path == "/relay" {
+            // the relay: each event off the upstream, on to this response
+            let up = std::http::SseReader {
+                req: request_to("http://" + std::http::header(req, "Host") + "/burst"),
+            };
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            while true {
+                let e = up.event() or { break; };
+                w.event(e) or { break; };
+            }
+            return w.end();
+        }
+        if req.path == "/cut" {
+            // one whole chunk, half of the next, and the connection closed
+            let w = std::http::BodyWriter { conn_fd: req.conn_fd };
+            w.chunk("first") or discard;
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            s.send("6\r\nsec") or discard;
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/held" {
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            w.event(std::http::SseEvent { data: "early" }) or discard;
+            std::time::sleep(2s);
+            w.event(std::http::SseEvent { data: "late" }) or discard;
+            return w.end();
+        }
+        if req.path == "/raw-sse" {
+            // framed by the close; CR, LF and CRLF lines, a comment, a field
+            // with no colon, and an unfinished last event
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            s.send(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                    + ": a comment\r\nevent: a\r\ndata: x\r\ndata:y\r\r"
+                    + "id: 9\nretry: 250\nretry: soon\ndata\n\n"
+                    + "event: lonely\n\n"
+                    + "data: unfinished",
+            ) or discard;
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/whoami" {
+            // the credential the request carried, as the stream's one event
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            w.event(
+                std::http::SseEvent { data: std::http::header(req, "Authorization") },
+            ) or discard;
+            return w.end();
+        }
+        if req.path == "/gated" {
+            // a gated download: the body only for the vault's bearer
+            if std::http::header(req, "Authorization") != "Bearer sk-sealed" {
+                return std::http::Response { status: 401, body: "denied" };
+            }
+            if std::http::header(req, "Accept") == "text/event-stream" {
+                let w = std::http::SseWriter { conn_fd: req.conn_fd };
+                w.event(std::http::SseEvent { data: "weights" }) or discard;
+                return w.end();
+            }
+            return std::http::Response { status: 200, body: "weights" };
+        }
+        if std::str::starts_with(req.path, "/redirect?to=") {
+            // a 302 to wherever `to` says (another server's URL, or a path)
+            let to = req.path[13..len(req.path)];
+            return std::http::Response {
+                status: 302,
+                headers: "Location: " + std::url::decode(to) + "\r\nX-Hop: origin",
+                body: "",
+            };
+        }
+        if req.path == "/loop" {
+            return std::http::Response { status: 302, headers: "Location: /loop", body: "" };
+        }
+        if req.path == "/to-ftp" {
+            return std::http::Response {
+                status: 301,
+                headers: "Location: ftp://127.0.0.1/x",
+                body: "",
+            };
+        }
+        if req.path == "/cdn" {
+            // the other host: what Authorization it was handed, if any
+            return std::http::Response {
+                status: 200,
+                headers: "X-Hop: cdn",
+                body: "cdn[" + std::http::header(req, "Authorization") + "]",
+            };
+        }
+        if req.path == "/quiet-sse" {
+            // one event, half of the next, 1.5 s of silence, then the rest
+            // and one more; framed by the close
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            s.send(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                    + "data: one\n\ndata: tw",
+            ) or discard;
+            std::time::sleep(1500ms);
+            s.send("o\n\ndata: three\n\n") or discard;
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/late-head" {
+            // the request taken, 1.5 s with no head, then the head and two
+            // events; framed by the close
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            std::time::sleep(1500ms);
+            s.send(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                    + "data: one\n\ndata: two\n\n",
+            ) or discard;
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/no-head" {
+            // the request taken and no head ever: the connection closes late
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            std::time::sleep(2s);
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/quiet-chunks" {
+            let w = std::http::BodyWriter { conn_fd: req.conn_fd };
+            w.chunk("a") or discard;
+            std::time::sleep(1500ms);
+            w.chunk("b") or discard;
+            return w.end();
+        }
+        if req.path == "/mark" {
+            self.marked = true;
+        }
+        if req.path == "/mark2" {
+            self.marked2 = true;
+        }
+        return std::http::Response { status: 200, body: "plain body" };
+    }
+}
+
+// A keyed upstream: the bearer is sealed in the vault, revealed only into
+// the reader's request, which goes on the wire at the reader's birth.
+locus Keyed {
+    params {
+        key: std::secret::Credential = std::secret::Credential { vault: "upstream-key" };
+    }
+    fn who(u: std::http::Url) -> String {
+        let s = std::http::SseReader {
+            req: std::http::ClientRequest {
+                url: u,
+                headers: "Authorization: Bearer " + self.key.reveal_text(),
+                body: b"",
+            },
+        };
+        let e = s.event() or std::http::SseEvent { data: "!" };
+        return e.data;
+    }
+    // What a reader keeps of its request once born: the revealed headers
+    // and the body went on the wire and are not kept.
+    fn kept(u: std::http::Url) -> String {
+        let r = std::http::BodyReader {
+            req: std::http::ClientRequest {
+                url: u,
+                headers: "Authorization: Bearer " + self.key.reveal_text(),
+                body: b"secret body",
+            },
+        };
+        return r.req.headers + to_string(len(r.req.body));
+    }
+    fn kept_sse(u: std::http::Url) -> String {
+        let s = std::http::SseReader {
+            req: std::http::ClientRequest {
+                url: u,
+                headers: "Authorization: Bearer " + self.key.reveal_text(),
+                body: b"secret body",
+            },
+        };
+        return s.req.headers + to_string(len(s.req.body));
+    }
+}
+
+// A gated upstream: the reader takes the credential itself (`bearer:`),
+// and the credential writes its header line onto the wire, so no
+// String the program can read ever holds it.
+locus Gated {
+    params {
+        key: std::secret::Credential = std::secret::Credential { vault: "upstream-key" };
+    }
+    // status, the body, and what the request kept (its headers, the
+    // response's head) that holds the token
+    fn body(u: std::http::Url) -> String {
+        let r = std::http::BodyReader {
+            req: std::http::ClientRequest { url: u, body: b"" },
+            bearer: self.key,
+        };
+        let b = r.chunk() or b"!";
+        let held = std::str::contains(r.req.headers, "sk-sealed")
+            || std::str::contains(r.headers, "sk-sealed");
+        return to_string(r.status) + " " + std::str::from_bytes(b) + " " + to_string(held);
+    }
+    // a deferred event reader: nothing of the token is held before the
+    // opening either
+    fn events(u: std::http::Url) -> String {
+        let s = std::http::SseReader {
+            req: std::http::ClientRequest { url: u, body: b"" },
+            bearer: self.key,
+            deferred: true,
+        };
+        let mut held = std::str::contains(s.req.headers, "sk-sealed")
+            || std::str::contains(s.body.req.headers, "sk-sealed");
+        let e = s.event() or std::http::SseEvent { data: "!" };
+        held = held
+            || std::str::contains(s.body.req.headers, "sk-sealed")
+            || std::str::contains(s.body.headers, "sk-sealed");
+        return to_string(s.body.status) + " " + e.data + " " + to_string(held);
+    }
+    // through a redirect: a 302 to `/gated` on the same origin keeps the
+    // bearer, one to another origin drops it
+    fn hop(u: std::http::Url) -> String {
+        let r = std::http::BodyReader {
+            req: std::http::ClientRequest { url: u, body: b"", follow_redirects: 2 },
+            bearer: self.key,
+        };
+        let b = r.chunk() or b"!";
+        return to_string(r.status) + " " + std::str::from_bytes(b);
+    }
+    // none: the server refuses
+    fn bare(u: std::http::Url) -> Int {
+        let r = std::http::BodyReader { req: std::http::ClientRequest { url: u, body: b"" } };
+        return r.status;
+    }
+}
+
+fn request_to(u: String) -> std::http::ClientRequest {
+    let url = std::http::parse_url(u) or std::http::Url { };
+    return std::http::ClientRequest { url: url, body: b"" };
+}
+
+fn text(b: Bytes) -> String {
+    return std::str::from_bytes(b);
+}
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 0, handler: Streams { } };
+        // a second origin, the one a redirect moves to
+        srv2: std::http::Server = std::http::Server { port: 0, handler: Streams { } };
+    }
+    placement {
+        srv: cooperative(pool = io) where async_io;
+        srv2: cooperative(pool = io) where async_io;
+    }
+    run() {
+        let port = std::io::tcp::__local_port(self.srv.listen_fd);
+        std::test::assert(port > 0, "the server is bound");
+        let base = "http://127.0.0.1:" + to_string(port);
+        // ---- chunks: the first is read before the server sends the second
+        let r = std::http::BodyReader { req: request_to(base + "/chunks") };
+        std::test::assert_eq_int(r.status, 200, "the chunked stream's status");
+        std::test::assert(
+            std::str::contains(std::str::lower(r.headers), "transfer-encoding: chunked"),
+            "the head is read at birth: " + r.headers,
+        );
+        std::test::assert_eq_str(text(r.chunk() or b"!"), "alpha", "the first chunk, alone");
+        std::http::get(base + "/mark") or discard;
+        std::test::assert_eq_str(
+            text(r.chunk() or b"!"),
+            "omega",
+            "the second chunk, after the mark",
+        );
+        let mut kind = "";
+        r.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "end", "the last chunk ends the body");
+        kind = "";
+        r.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "end", "a read after the end ends again");
+
+        // ---- events: the first is read before the server sends the second
+        let s = std::http::SseReader { req: request_to(base + "/events") };
+        std::test::assert_eq_int(s.body.status, 200, "the event stream's status");
+        let e1 = s.event() or std::http::SseEvent { data: "!" };
+        std::test::assert_eq_str(e1.data, "one", "the first event's data");
+        std::test::assert_eq_str(e1.event, "tick", "the first event's type");
+        std::test::assert_eq_str(e1.id, "1", "the first event's id");
+        std::http::get(base + "/mark2") or discard;
+        let e2 = s.event() or std::http::SseEvent { data: "!" };
+        std::test::assert_eq_str(e2.data, "two\nlines", "a two-line data, joined by LF");
+        std::test::assert_eq_str(e2.event, "", "no type: the client's message");
+        std::test::assert(e2.retry == 1500ms, "the retry field");
+        kind = "";
+        s.event() or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "end", "the stream's end");
+
+        // ---- a relay: events read off one stream, written on to another
+        let relayed = std::http::SseReader { req: request_to(base + "/relay") };
+        let mut got = "";
+        while true {
+            let e = relayed.event() or { break; };
+            got = got + e.event + "=" + e.data + ";";
+        }
+        std::test::assert_eq_str(got, "token=Hel;token=lo;=[DONE];", "the relayed events");
+
+        // ---- a body cut off mid-chunk
+        let c = std::http::BodyReader { req: request_to(base + "/cut") };
+        std::test::assert_eq_str(
+            text(c.chunk() or b"!"),
+            "first",
+            "the whole chunk before the cut",
+        );
+        let mut detail = "";
+        kind = "";
+        c.chunk() or {
+            kind = err.kind;
+            detail = err.detail;
+            b""
+        };
+        std::test::assert_eq_str(kind, "recv_failed", "a body cut off fails");
+        std::test::assert(std::str::contains(detail, "cut off"), "the cut's detail: " + detail);
+
+        // ---- the deadline bounds the stream as it bounds a whole-body read
+        let t0 = std::time::monotonic_ns();
+        let h = std::http::SseReader { req: request_to(base + "/held"), timeout_ms: 500 };
+        std::test::assert_eq_str(
+            (h.event() or std::http::SseEvent { data: "!" }).data,
+            "early",
+            "the event before the hold",
+        );
+        detail = "";
+        kind = "";
+        h.event() or {
+            kind = err.kind;
+            detail = err.detail;
+            std::http::SseEvent { data: "" }
+        };
+        let took = (std::time::monotonic_ns() - t0) / 1000000;
+        std::test::assert_eq_str(kind, "recv_failed", "the deadline ends the stream");
+        std::test::assert(
+            std::str::contains(detail, "timeout: no complete response within 500 ms"),
+            "the deadline's detail: " + detail,
+        );
+        std::test::assert(
+            took < 1500,
+            "the stream ended at its deadline, not the server's: " + to_string(took),
+        );
+
+        // ---- a dial refused: the first read says so, and every later one
+        let d = std::http::BodyReader { req: request_to("http://127.0.0.1:1/"), timeout_ms: 2000 };
+        std::test::assert_eq_int(d.status, 0, "no head");
+        kind = "";
+        d.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "connect_failed", "the dial's failure");
+        kind = "";
+        d.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "connect_failed", "the same failure again");
+
+        // ---- an empty URL is a stated outcome, never a crash
+        let empty = std::http::BodyReader { req: request_to("") };
+        std::test::assert_eq_int(empty.status, 0, "an empty URL has no head");
+        kind = "";
+        empty.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "connect_failed", "an empty host is a refused dial");
+        let blank = std::http::SseReader {
+            req: std::http::ClientRequest {
+                url: std::http::Url { scheme: "", host: "" },
+                body: b"",
+            },
+        };
+        kind = "";
+        blank.event() or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "unsupported_scheme", "an empty scheme");
+
+        // ---- a vault-sealed bearer reaches the server through a reader
+        std::io::fs::write_file(std::env::var("HALE_VAULT_DIR") + "/upstream-key", "sk-sealed")
+        or discard;
+        let keyed = Keyed { };
+        std::test::assert_eq_str(
+            keyed.who(request_to(base + "/whoami").url),
+            "Bearer sk-sealed",
+            "the sealed key on the wire",
+        );
+        let gated = Gated { };
+        std::test::assert_eq_str(
+            gated.body(request_to(base + "/gated").url),
+            "200 weights false",
+            "a reader's bearer from the vault opens the gated body, and nothing it holds has the token",
+        );
+        std::test::assert_eq_str(
+            gated.events(request_to(base + "/gated").url),
+            "200 weights false",
+            "an event reader's bearer, deferred, held nowhere before or after",
+        );
+        std::test::assert_eq_int(
+            gated.bare(request_to(base + "/gated").url),
+            401,
+            "without the bearer the server refuses",
+        );
+        let unset = std::http::BodyReader {
+            req: request_to(base + "/gated"),
+            bearer: std::secret::Credential { vault: "no-such-key" },
+        };
+        detail = "";
+        kind = "";
+        unset.chunk() or {
+            kind = err.kind;
+            detail = err.detail;
+            b""
+        };
+        std::test::assert_eq_str(
+            kind,
+            "send_failed",
+            "a bearer that resolves to nothing sends nothing",
+        );
+        std::test::assert(
+            std::str::contains(detail, "the bearer credential resolved to nothing"),
+            "its detail: " + detail,
+        );
+        // ---- redirects: followed within the limit, the target's head
+        let srv2_port = std::io::tcp::__local_port(self.srv2.listen_fd);
+        let cdn = "http://127.0.0.1:" + to_string(srv2_port) + "/cdn";
+        let hop = base + "/redirect?to=" + std::url::encode(cdn);
+        let plain = std::http::BodyReader { req: request_to(hop) };
+        std::test::assert_eq_int(plain.status, 302, "with 0, a 3xx comes back as it is");
+        std::test::assert(
+            std::str::contains(plain.headers, "Location: " + cdn),
+            "its own Location: " + plain.headers,
+        );
+        let mut hop_req = request_to(hop);
+        hop_req.headers = "Authorization: Bearer plain-token\r\nX-Keep: 1";
+        hop_req.follow_redirects = 1;
+        let moved = std::http::BodyReader { req: hop_req };
+        std::test::assert_eq_int(moved.status, 200, "the target's status");
+        std::test::assert(
+            std::str::contains(moved.headers, "X-Hop: cdn"),
+            "the target's headers: " + moved.headers,
+        );
+        std::test::assert(!std::str::contains(moved.headers, "X-Hop: origin"), "none of the 302's");
+        std::test::assert_eq_str(
+            text(moved.chunk() or b"!"),
+            "cdn[]",
+            "another origin is sent no Authorization",
+        );
+        std::test::assert_eq_str(
+            gated.hop(request_to(base + "/redirect?to=%2Fgated").url),
+            "200 weights",
+            "a same-origin redirect keeps the bearer",
+        );
+        std::test::assert_eq_str(
+            gated.hop(request_to(hop).url),
+            "200 cdn[]",
+            "the bearer is dropped once the origin changes",
+        );
+        let mut looped = request_to(base + "/loop");
+        looped.follow_redirects = 3;
+        let lp = std::http::BodyReader { req: looped };
+        detail = "";
+        kind = "";
+        let mut st = 0;
+        lp.chunk() or {
+            kind = err.kind;
+            detail = err.detail;
+            st = err.status;
+            b""
+        };
+        std::test::assert_eq_str(kind, "too_many_redirects", "one redirect past the limit fails");
+        std::test::assert_eq_int(st, 302, "with the 3xx it got");
+        std::test::assert(
+            std::str::contains(detail, "after 3 redirect(s)"),
+            "its detail: " + detail,
+        );
+        let mut ftp = request_to(base + "/to-ftp");
+        ftp.follow_redirects = 1;
+        let fp = std::http::BodyReader { req: ftp };
+        kind = "";
+        fp.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "redirect_refused", "a redirect off http / https");
+        // https -> http: no TLS server here, so the refusal is pinned
+        // where it is decided
+        let secure = std::http::Url {
+            scheme: "https",
+            host: "models.example",
+            port: 443,
+            path: "/w/a.bin",
+        };
+        kind = "";
+        detail = "";
+        __http_redirect_target(secure, "http://cdn.example/a.bin") or {
+            kind = err.kind;
+            detail = err.detail;
+            secure
+        };
+        std::test::assert_eq_str(kind, "redirect_refused", "https to http is a downgrade");
+        std::test::assert(std::str::contains(detail, "downgrade"), "its detail: " + detail);
+        let up = __http_redirect_target(
+            std::http::Url { scheme: "http", host: "a.example", port: 80, path: "/x" },
+            "https://cdn.example/b",
+        ) or secure;
+        std::test::assert_eq_str(
+            up.scheme + " " + up.host + " " + to_string(up.port) + " " + up.path,
+            "https cdn.example 443 /b",
+            "an upgrade is followed",
+        );
+        let rel = __http_redirect_target(secure, "//cdn.example:8443/c#frag") or secure;
+        std::test::assert_eq_str(
+            rel.scheme + " " + rel.host + " " + to_string(rel.port) + " " + rel.path,
+            "https cdn.example 8443 /c",
+            "scheme-relative keeps https",
+        );
+        let dir = __http_redirect_target(secure, "b.bin?x=1") or secure;
+        std::test::assert_eq_str(
+            dir.host + dir.path,
+            "models.example/w/b.bin?x=1",
+            "a relative path resolves against the directory",
+        );
+        std::test::assert_eq_str(
+            keyed.kept(request_to(base + "/whoami").url),
+            "0",
+            "a reader keeps nothing of what it sent",
+        );
+        std::test::assert_eq_str(
+            keyed.kept_sse(request_to(base + "/whoami").url),
+            "0",
+            "nor an event reader",
+        );
+
+        // ---- a Content-Length body, as it arrives, then its end
+        let p = std::http::BodyReader { req: request_to(base + "/plain") };
+        std::test::assert_eq_str(text(p.chunk() or b"!"), "plain body", "a Content-Length body");
+        kind = "";
+        p.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "end", "the length reached ends it");
+
+        // ---- the SSE line rules, on a body framed by the close
+        let x = std::http::SseReader { req: request_to(base + "/raw-sse") };
+        let a = x.event() or std::http::SseEvent { data: "!" };
+        std::test::assert_eq_str(
+            a.event + "|" + a.data,
+            "a|x\ny",
+            "CRLF and CR lines, a comment skipped",
+        );
+        let b = x.event() or std::http::SseEvent { data: "!" };
+        std::test::assert_eq_str(
+            b.id + "|" + b.data,
+            "9|",
+            "a bare `data` field is an empty line of data",
+        );
+        std::test::assert(b.retry == 250ms, "a retry that is not digits is ignored");
+        kind = "";
+        x.event() or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "end", "no data, no event; the unfinished one is dropped");
+
+        // ---- a bounded wait: silence is `idle`, and the stream goes on
+        let q = std::http::SseReader { req: request_to(base + "/quiet-sse"), timeout_ms: 0 };
+        std::test::assert_eq_str(
+            (q.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "one",
+            "the event before the silence",
+        );
+        let mut idles = 0;
+        let mut next = "";
+        while next == "" && idles < 50 {
+            kind = "";
+            let e = q.event_within(200) or {
+                kind = err.kind;
+                std::http::SseEvent { data: "" }
+            };
+            if kind == "idle" {
+                idles = idles + 1;
+            } else {
+                std::test::assert_eq_str(kind, "", "only idle while silent");
+                next = e.data;
+            }
+        }
+        std::test::assert(idles >= 3, "the silence read as idle: " + to_string(idles));
+        std::test::assert_eq_str(next, "two", "the event split across the silence, whole");
+        std::test::assert_eq_str(
+            (q.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "three",
+            "the next event",
+        );
+        kind = "";
+        q.event_within(200) or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "end", "the stream's end, after the idles");
+
+        // ---- the deadline still ends a silent stream read within bounds
+        let t1 = std::time::monotonic_ns();
+        let held = std::http::SseReader { req: request_to(base + "/held"), timeout_ms: 700 };
+        std::test::assert_eq_str(
+            (held.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "early",
+            "the event before the hold",
+        );
+        let mut held_idles = 0;
+        kind = "idle";
+        detail = "";
+        while kind == "idle" && held_idles < 50 {
+            held.event_within(200) or {
+                kind = err.kind;
+                detail = err.detail;
+                std::http::SseEvent { data: "" }
+            };
+            if kind == "idle" {
+                held_idles = held_idles + 1;
+            }
+        }
+        let held_took = (std::time::monotonic_ns() - t1) / 1000000;
+        std::test::assert(held_idles >= 1, "idle while the deadline was ahead");
+        std::test::assert_eq_str(kind, "recv_failed", "the deadline still ends the stream");
+        std::test::assert(
+            std::str::contains(detail, "timeout: no complete response within 700 ms"),
+            "the deadline's detail: " + detail,
+        );
+        std::test::assert(held_took < 1500, "ended at its deadline: " + to_string(held_took));
+
+        // ---- the same for chunks, and an unbounded read after an idle one
+        let k = std::http::BodyReader { req: request_to(base + "/quiet-chunks"), timeout_ms: 0 };
+        std::test::assert_eq_str(
+            text(k.chunk_within(200) or b"!"),
+            "a",
+            "the chunk before the silence",
+        );
+        kind = "";
+        k.chunk_within(200) or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "idle", "silence is idle");
+        kind = "";
+        k.chunk_within(200) or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "idle", "and idle again, the stream open");
+        std::test::assert_eq_str(
+            text(k.chunk() or b"!"),
+            "b",
+            "an unbounded read after a bounded one waits for the next chunk",
+        );
+        kind = "";
+        k.chunk_within(200) or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "end", "the end, read within bounds");
+
+        // ---- a deferred opening: no head yet is `false`, not a wait
+        let d = std::http::SseReader {
+            req: request_to(base + "/late-head"),
+            timeout_ms: 0,
+            deferred: true,
+        };
+        std::test::assert_eq_int(d.body.status, 0, "nothing on the wire at birth");
+        let mut opening = 0;
+        let mut open = false;
+        while !open && opening < 50 {
+            open = d.open_within(200) or {
+                kind = err.kind;
+                true
+            };
+            if !open {
+                opening = opening + 1;
+            }
+        }
+        std::test::assert(opening >= 3, "the opening read as not yet: " + to_string(opening));
+        std::test::assert_eq_int(d.body.status, 200, "the head, once it came");
+        std::test::assert(d.open_within(200) or false, "open stays open");
+        std::test::assert_eq_str(
+            (d.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "one",
+            "the first event, whole",
+        );
+        std::test::assert_eq_str(
+            (d.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "two",
+            "the second",
+        );
+        kind = "";
+        d.event_within(200) or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "end", "then the end");
+
+        // ---- the same with `event_within` alone: the opening is its first step
+        let e = std::http::SseReader {
+            req: request_to(base + "/late-head"),
+            timeout_ms: 0,
+            deferred: true,
+        };
+        let mut first_idles = 0;
+        let mut first = "";
+        while first == "" && first_idles < 50 {
+            kind = "";
+            let ev = e.event_within(200) or {
+                kind = err.kind;
+                std::http::SseEvent { data: "" }
+            };
+            if kind == "idle" {
+                first_idles = first_idles + 1;
+            } else {
+                std::test::assert_eq_str(kind, "", "only idle while the head is awaited");
+                first = ev.data;
+            }
+        }
+        std::test::assert(first_idles >= 3, "idle while opening: " + to_string(first_idles));
+        std::test::assert_eq_str(first, "one", "the first event after the opening");
+        std::test::assert_eq_str(
+            (e.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "two",
+            "and the next",
+        );
+
+        // ---- the whole deadline still ends an opening with no head
+        let t2 = std::time::monotonic_ns();
+        let n = std::http::SseReader {
+            req: request_to(base + "/no-head"),
+            timeout_ms: 700,
+            deferred: true,
+        };
+        let mut nots = 0;
+        kind = "";
+        detail = "";
+        let mut ended = false;
+        while !ended && nots < 50 {
+            let o = n.open_within(200) or {
+                kind = err.kind;
+                detail = err.detail;
+                ended = true;
+                false
+            };
+            if !o && !ended {
+                nots = nots + 1;
+            }
+            std::test::assert(!o, "no head ever comes");
+        }
+        let n_took = (std::time::monotonic_ns() - t2) / 1000000;
+        std::test::assert(nots >= 1, "not yet while the deadline was ahead");
+        std::test::assert_eq_str(kind, "recv_failed", "the deadline ends the opening");
+        std::test::assert(
+            std::str::contains(detail, "timeout: no complete response within 700 ms"),
+            "the deadline's detail: " + detail,
+        );
+        std::test::assert(n_took < 1500, "ended at its deadline: " + to_string(n_took));
+
+        std::io::tcp::stop(self.srv.listener);
+        std::io::tcp::stop(self.srv2.listener);
+    }
+}
+
+fn main() {
+    App { };
+}

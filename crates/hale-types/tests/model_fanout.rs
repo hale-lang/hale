@@ -798,6 +798,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
     for site in 0..2u32 {
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
+                entry_bus: None,
                 from: handler,
                 site,
                 entry_dispatch: None,
@@ -805,6 +806,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
                 entry_group: None,
                 entry_provenance: hale_model::ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::apply".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -845,6 +847,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
     for _ in 0..2u32 {
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
+                entry_bus: None,
                 from: handler,
                 // One AUTHORED site, two conformers: alternatives
                 // of one dispatch share the site ordinal, which is
@@ -856,6 +859,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
                 entry_group: Some(7),
                 entry_provenance: hale_model::ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::apply".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -901,6 +905,7 @@ fn interior_dispatch_alternatives_take_the_max() {
     // re-emerging at the publishing callback.
     m.analyses.stdlib_absorption.push(
         hale_model::StdlibAbsorption {
+            entry_bus: None,
             from: handler,
             site: 0,
             entry_dispatch: None,
@@ -908,6 +913,7 @@ fn interior_dispatch_alternatives_take_the_max() {
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
             nodes: vec![hale_model::AbsorbedNode {
+                decl: String::new(),
                 display: "std::http::Router::dispatch".to_string(),
                 carries: Vec::new(),
                 direct_effects: Vec::new(),
@@ -961,6 +967,7 @@ fn an_interior_edge_is_followed() {
     m.relations.calls.retain(|c| c.from != handler);
     m.analyses.stdlib_absorption.push(
         hale_model::StdlibAbsorption {
+            entry_bus: None,
             from: handler,
             site: 0,
             entry_dispatch: None,
@@ -970,6 +977,7 @@ fn an_interior_edge_is_followed() {
             nodes: vec![
                 // node 0 calls node 1…
                 hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::outer".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -982,6 +990,7 @@ fn an_interior_edge_is_followed() {
                 },
                 // …which re-emerges at the publishing callback.
                 hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::inner".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -1028,6 +1037,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
         .expect("the handler calls its emitter");
     m.analyses.stdlib_absorption.push(
         hale_model::StdlibAbsorption {
+            entry_bus: None,
             from: handler,
             site,
             entry_dispatch: None,
@@ -1035,6 +1045,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
             nodes: vec![hale_model::AbsorbedNode {
+                decl: String::new(),
                 display: "std::x::apply".to_string(),
                 carries: Vec::new(),
                 direct_effects: Vec::new(),

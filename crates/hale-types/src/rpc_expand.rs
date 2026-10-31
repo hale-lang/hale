@@ -6,13 +6,23 @@
 //! a program that holds one buildable. For each well-formed site it adds,
 //! as `api_gen` does for the structural path, source the compiler writes:
 //!
-//! - on the serving locus, a param `__rpc_x_<as>: std::api::Exposure`
-//!   built from the site (its surface, digest, bound, transport instance,
-//!   the rows adapter below, the bearer and role sources copied from the
-//!   transport's fields), declared last, so the exposure is born with the
-//!   locus after the receivers and the transport it reads. The
-//!   `api::serve(…)` call itself stays in the body: the check types it as
-//!   that exposure and lowering reads the param (`lower_serve_site`);
+//! - the exposure param itself (GH #1565: `web: api::Exposure =
+//!   api::serve(…);`, a param of the locus that holds it) gets the
+//!   exposure as its init, `std::api::Exposure { … }` built from the site
+//!   (its surface, digest, bound, transport instance, the rows adapter
+//!   below, the bearer and role sources copied from the transport's
+//!   fields); the call as written is kept beside it (`ParamDecl::serve`)
+//!   for the serve-site laws and the description;
+//! - for a socket transport, its listener: a param of the main locus,
+//!   born just before the exposure when main holds it, just after the
+//!   param a server below main sits under otherwise (reading its address
+//!   off the server as built, `address_for_main`), placed by the
+//!   exposure's own row when the
+//!   main locus holds it, by the row of the param that holds its holder
+//!   otherwise, when either puts it on a pool `where async_io`, and on the
+//!   transport's shared pool (`__api_http`, `__api_unix`, `__api_grpc`)
+//!   when neither does; and, for a main locus that writes no `run()`, the
+//!   run that waits until its exposures stop;
 //! - a top-level locus `__RpcSurface_<n>` implementing
 //!   `std::api::Surface`: the rows as if-chains (member lookup, `requires`,
 //!   receiver slot, decoding by shape, the roles that confer a role);
@@ -56,36 +66,39 @@ pub struct Expansion {
     pub param: String,
 }
 
-/// The param a serve site's exposure is, by its `as:`.
-pub fn exposure_param(name: &str) -> String {
-    let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    format!("__rpc_x_{safe}")
-}
-
-/// One row of a surface, as the pass reads it.
+/// One row of a surface, as the pass reads it (and the client binding,
+/// `client_expand`, which calls a row as this pass serves it).
 #[derive(Debug, Clone)]
-struct Row {
-    member: String,
-    locus: String,
-    method: String,
-    requires: Vec<String>,
+pub(crate) struct Row {
+    pub(crate) member: String,
+    pub(crate) locus: String,
+    pub(crate) method: String,
+    pub(crate) requires: Vec<String>,
     written_at: usize,
     takes_ctx: bool,
     served_ctx: bool,
-    request: Option<TypeExpr>,
-    response: Option<TypeExpr>,
-    error: Option<TypeExpr>,
-    server_error: bool,
+    pub(crate) request: Option<TypeExpr>,
+    pub(crate) response: Option<TypeExpr>,
+    pub(crate) error: Option<TypeExpr>,
+    pub(crate) server_error: bool,
+    /// Where `http::Rest` serves the row (`at "METHOD /path"`).
+    pub(crate) route: Option<hale_syntax::ast::RpcRoute>,
 }
 
 /// A serve site, owned.
 struct Site {
     program: usize,
     serving: String,
+    /// The exposure param that declares it.
+    param: String,
     surface: String,
     transport: Option<Expr>,
     name: String,
     bound: i64,
+    /// For a holder that is not a main locus and serves over a socket: each
+    /// main locus that holds it, the chain, and the listener's address as
+    /// that main locus evaluates it.
+    chains: Vec<(Chain, Expr)>,
 }
 
 fn lit_int(n: i64, span: Span) -> Expr {
@@ -112,7 +125,7 @@ fn q(s: &str) -> String {
 /// left out; an `api` row it cannot read leaves the whole surface
 /// unexpanded (the admission law reports it). In canonical order: member
 /// as bytes, then as written.
-fn rows_of_surface(
+pub(crate) fn rows_of_surface(
     programs: &[&Program],
     surface: &str,
     renames: &[(Vec<String>, String)],
@@ -129,7 +142,7 @@ fn rows_of_surface(
             }
         }
     }
-    let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize| -> Option<Row> {
+    let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize, route: Option<hale_syntax::ast::RpcRoute>| -> Option<Row> {
         let l = loci.get(locus)?;
         let f = l.members.iter().find_map(|m| match m {
             LocusMember::Fn(f) if f.name.name == method => Some(f),
@@ -161,6 +174,7 @@ fn rows_of_surface(
             response,
             error: f.fallible.clone(),
             server_error,
+            route,
         })
     };
     let mut rows: Vec<Row> = Vec::new();
@@ -169,7 +183,7 @@ fn rows_of_surface(
             continue;
         }
         let requires = m.requires.iter().map(|(n, _)| n.clone()).collect();
-        match row_of(m.member, &m.locus, &m.method, requires, m.written_at) {
+        match row_of(m.member, &m.locus, &m.method, requires, m.written_at, m.route) {
             Some(row) => rows.push(row),
             None if m.origin == crate::surfaces::MemberOrigin::Block => return Vec::new(),
             None => {}
@@ -194,18 +208,48 @@ pub fn selection(
     (rows.iter().map(|r| r.member.clone()).collect(), digest_of(&shapes, &rows))
 }
 
+/// Each row's member digest (spec/api.md § The contract digest), as
+/// `fnv1a64:…`: what a client built against that member alone names.
+pub(crate) fn member_digests(shapes: &Shapes<'_>, rows: &[Row]) -> Vec<String> {
+    let hash = |te: &TypeExpr| shape_hash(&shapes.shape(te, ShapeForm::Contract).unwrap_or_default());
+    rows.iter()
+        .map(|r| {
+            hale_model::surface::digest_text(hale_model::surface::member_digest(&hale_model::surface::DigestLine {
+                member: &r.member,
+                request: r.request.as_ref().map(hash),
+                response: r.response.as_ref().map(hash),
+                error: r.error.as_ref().map(hash),
+                requires: &r.requires,
+                route: canonical(r).as_deref(),
+            }))
+        })
+        .collect()
+}
+
+/// A row's route as the digest writes it (`Row::canonical_route`).
+fn canonical(r: &Row) -> Option<String> {
+    let t = r.route.as_ref()?;
+    Some(match crate::rest_routes::parse(t) {
+        Ok(p) => format!("{} {} {}", p.method, p.pattern(), p.status),
+        Err(_) => t.text.clone(),
+    })
+}
+
 fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
     let hash = |te: &TypeExpr| shape_hash(&shapes.shape(te, ShapeForm::Contract).unwrap_or_default());
     let reqs: Vec<&Vec<String>> = rows.iter().map(|r| &r.requires).collect();
+    let routes: Vec<Option<String>> = rows.iter().map(canonical).collect();
     let lines: Vec<hale_model::surface::DigestLine<'_>> = rows
         .iter()
         .zip(&reqs)
-        .map(|(r, req)| hale_model::surface::DigestLine {
+        .enumerate()
+        .map(|(i, (r, req))| hale_model::surface::DigestLine {
             member: &r.member,
             request: r.request.as_ref().map(hash),
             response: r.response.as_ref().map(hash),
             error: r.error.as_ref().map(hash),
             requires: req,
+            route: routes[i].as_deref(),
         })
         .collect();
     hale_model::surface::surface_digest(&lines)
@@ -213,7 +257,7 @@ fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
 
 /// The roles that confer `role`: itself and every role that includes it,
 /// transitively (`role owner includes support;`).
-pub(crate) fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
+pub fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
     let mut includes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in programs {
         for d in flat_decls(&p.items) {
@@ -264,6 +308,17 @@ pub(crate) fn struct_closure(
                 }
             }
         }
+        // an enum's codecs are generated beside the records', and its values
+        // reach what they reach
+        TypeClass::Enum { name, variants } => {
+            if out.insert(name.to_string()) {
+                for v in variants {
+                    for t in &v.fields {
+                        struct_closure(shapes, t, out, builtins);
+                    }
+                }
+            }
+        }
         TypeClass::Builtin(name) => {
             if out.insert(name.to_string()) {
                 let fields = shapes
@@ -301,11 +356,16 @@ impl<'a> Codec<'a> {
             TypeClass::Prim(PrimType::String) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
             TypeClass::Prim(PrimType::Time) => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
             TypeClass::Prim(PrimType::Duration) => format!("to_string({v} / 1ns)"),
+            // the shortest text that reads back as the same double
+            TypeClass::Prim(PrimType::Float) => format!("std::str::__float_text({v})"),
             TypeClass::Prim(_) => format!("to_string({v})"),
-            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_encode_{name}({v})"),
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) | TypeClass::Enum { name, .. } => {
+                format!("__api_encode_{name}({v})")
+            }
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
                 Some(c) => format!("to_string({})", c.to_int(v)),
                 None if base == PrimType::String => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
+                None if base == PrimType::Float => format!("std::str::__float_text({v})"),
                 None => format!("to_string({v})"),
             },
             _ => "\"null\"".to_string(),
@@ -321,6 +381,10 @@ impl<'a> Codec<'a> {
         match self.shapes.classify(te) {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_decode_{name}({body}) or {{ {bail} }};\n")
+            }
+            // an enum's decoder names the field it reads: a row's is the payload
+            TypeClass::Enum { name, .. } => {
+                format!("let {var} = __api_decode_{name}({body}, \"payload\") or {{ {bail} }};\n")
             }
             // a scalar payload is its complete JSON token of the type's kind
             // (the runtime's `__api_json_is_*`), checked before it is converted
@@ -351,7 +415,7 @@ impl<'a> Codec<'a> {
                     "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
                 );
                 match c {
-                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
                     Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
@@ -387,6 +451,12 @@ impl PbCodec<'_> {
         };
         match self.shapes.classify(te) {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_pb_encode_{name}({v})"),
+            // an enum with payloads is its message; a payload-free one is
+            // its number, in the one-field message a scalar row has
+            TypeClass::Enum { name, variants } if variants.iter().any(|v| !v.fields.is_empty()) => {
+                format!("__api_pb_encode_{name}({v})")
+            }
+            TypeClass::Enum { name, .. } => format!("__api_pb_put_int(1, __api_pb_enum_no_{name}({v}))"),
             // an instant is its nanoseconds since the epoch, a `Duration` its count of them
             TypeClass::Prim(PrimType::Time) => format!("__api_pb_put_int(1, std::time::nanos({v}))"),
             TypeClass::Prim(PrimType::Duration) => format!("__api_pb_put_int(1, {v} / 1ns)"),
@@ -414,6 +484,12 @@ impl PbCodec<'_> {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_pb_decode_{name}({bytes}) or {{ {bail} }};\n")
             }
+            TypeClass::Enum { name, variants } if variants.iter().any(|v| !v.fields.is_empty()) => {
+                format!("let {var} = __api_pb_decode_{name}({bytes}, \"payload\") or {{ {bail} }};\n")
+            }
+            TypeClass::Enum { name, .. } => format!(
+                "let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = __api_pb_enum_{name}(__n_{var}, \"payload\") or {{ {bail} }};\n"
+            ),
             TypeClass::Prim(PrimType::Time) => {
                 format!("let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = std::time::from_nanos(__n_{var});\n")
             }
@@ -426,7 +502,7 @@ impl PbCodec<'_> {
                 let n = format!("__n_{var}");
                 let ins = format!("let {n} = __api_pb_box_int({bytes}) or {{ {bail} }};\n");
                 match c {
-                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
                     Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
@@ -441,6 +517,9 @@ impl PbCodec<'_> {
         let mut scratch = BTreeMap::new();
         match self.schemas.type_ref(te, &mut scratch) {
             crate::surfaces::FieldSchema::Ref(n) => crate::proto_gen::message_name(&n, self.surface),
+            crate::surfaces::FieldSchema::Enum { name, variants, .. } if variants.iter().any(|(_, v)| !v.is_empty()) => {
+                crate::proto_gen::message_name(&name, self.surface)
+            }
             _ => crate::proto_gen::wrapper_name(member, what),
         }
     }
@@ -459,6 +538,7 @@ fn grpc_files(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, surface: &st
         .iter()
         .map(|r| ClientMember {
             name: r.member.clone(),
+            digest: String::new(),
             request: r.request.as_ref().map(|te| schemas.type_ref(te, &mut types)),
             response: r.response.as_ref().map(|te| schemas.type_ref(te, &mut types)),
             error: match (&r.error, r.server_error) {
@@ -494,6 +574,7 @@ const RUNTIME_NAMES: &[&str] = &[
     "ExpiringBearerSource",
     "Request",
     "Outcome",
+    "ErrorClass",
     "Rpc",
     "Handle",
     "Surface",
@@ -569,23 +650,51 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 
 /// The stdlib file an offset of the appended runtime lies in: the file's
 /// name as `crates/hale-stdlib/hl/` spells it, its text, and the offset
-/// within it. Each of the runtime's six files parses in a window of its
+/// within it. Each of the runtime's files parses in a window of its
 /// own ([`inject_runtime`], [`inject_hub`], [`inject_h2`],
-/// [`inject_grpc`], [`inject_tcp_serve`], [`inject_tcp_listener`]);
+/// [`inject_grpc`], [`inject_tcp_serve`], [`inject_tcp_listener`], the
+/// observe backends' and the client binding's, `client_expand`);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 6] = [
+    let windows: [(u32, &'static str, &'static str); 11] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
+        (REST_FALLBACK_BASE, "api_rest_fallback.hl", hale_stdlib::API_REST_FALLBACK_SOURCE),
+        (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
         (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
         (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
         (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
         (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
+        (OBSERVE_BASE, "observe.hl", hale_stdlib::OBSERVE_SOURCE),
+        (HTTP_READ_BASE, "http_read.hl", hale_stdlib::HTTP_READ_SOURCE),
+        (SHA256_BASE, "crypto_sha256.hl", hale_stdlib::SHA256_SOURCE),
     ];
     windows.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
         (local < src.len()).then_some((*name, *src, local))
     })
+}
+
+/// Where `api_rest_fallback.hl` parses: past the client binding's runtime,
+/// before the hub's.
+const REST_FALLBACK_BASE: u32 = RUNTIME_BASE + 0x0070_0000;
+
+/// The `http::Rest` fallback's server, once, for a program whose REST
+/// transport gives a `fallback:` (`hale_stdlib::API_REST_FALLBACK_SOURCE`).
+fn inject_rest_fallback(programs: &mut [&mut Program]) {
+    let have = programs.iter().any(|p| {
+        flat_decls(&p.items).any(|d| matches!(d, TopDecl::Fn(f) if f.name.name == "__api_rest_fallback_serve"))
+    });
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_REST_FALLBACK_SOURCE, REST_FALLBACK_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the REST fallback's server did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
 }
 
 /// Append the runtime to the first program, once.
@@ -764,12 +873,118 @@ pub fn item_names_tcp_serve(item: &TopDecl) -> bool {
     item_spells(item, &names_tcp_serve)
 }
 
+/// The api codec a program calls itself (spec/api.md § Codecs): for each
+/// `T::api_decode(text)` / `T::api_encode(value)` whose `T` is a record or
+/// an enum the JSON codec carries (law 5's classification, as for a row's
+/// whole request), the codecs of `T` and what it reaches, into the first program
+/// that asks, and the calls rewritten to them. A call of a type the codec
+/// does not carry is left as written; the checker refuses it.
+fn expose_api_codecs(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
+    hale_syntax::json_gen::canonicalize_api_codec_paths(programs, renames);
+    let targets = hale_syntax::json_gen::api_codec_targets(programs);
+    if targets.is_empty() {
+        return;
+    }
+    let mut names = BTreeSet::new();
+    let mut builtins = BTreeMap::new();
+    let mut carried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enums: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
+        let shapes = Shapes::of_all(&slices);
+        for (_, t) in &targets {
+            let te = TypeExpr::Named {
+                path: hale_syntax::ast::QualifiedName { segments: vec![Ident::new(t.clone(), Span::new(0, 0))], span: Span::new(0, 0) },
+                generic_args: Vec::new(),
+                span: Span::new(0, 0),
+            };
+            let class = shapes.classify(&te);
+            let enum_ = matches!(class, TypeClass::Enum { .. });
+            let record = enum_ || matches!(class, TypeClass::Struct { .. } | TypeClass::Builtin(_));
+            if record && crate::surfaces::codec_refusal(&shapes, &te).is_none() {
+                struct_closure(&shapes, &te, &mut names, &mut builtins);
+                carried.insert(t.clone());
+                if enum_ {
+                    enums.insert(t.clone());
+                }
+            }
+        }
+    }
+    if carried.is_empty() {
+        return;
+    }
+    let names: Vec<String> = names.into_iter().collect();
+    let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> = builtins.into_iter().collect();
+    hale_syntax::json_gen::generate_rpc_codecs(programs, targets[0].0, &names, &builtins);
+    hale_syntax::json_gen::rewrite_api_codec_calls(programs, &carried, &enums);
+}
+
 /// Where the substrate parses: the last window of the runtime's space.
-const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
+pub const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
 
 /// Where `std::io::tcp::Listener` parses: past the substrate, in the same
 /// last window of the runtime's space.
 const TCP_LISTENER_BASE: u32 = TCP_SERVE_BASE + 0x0008_0000;
+
+/// Where `observe.hl` parses (GH #1592): past the Listener, at the end of
+/// the runtime's space.
+pub const OBSERVE_BASE: u32 = TCP_SERVE_BASE + 0x000C_0000;
+
+/// Where `http_read.hl` parses (GH #1698): past the observe backends, in
+/// the same last window of the runtime's space.
+pub const HTTP_READ_BASE: u32 = TCP_SERVE_BASE + 0x000E_0000;
+
+/// Where `crypto_sha256.hl` parses: past the streamed body readers, in the
+/// same last window of the runtime's space.
+pub const SHA256_BASE: u32 = TCP_SERVE_BASE + 0x000F_0000;
+
+/// Whether an offset is in the incremental SHA-256's appended source.
+pub fn is_sha256_pos(pos: u32) -> bool {
+    (SHA256_BASE..SHA256_BASE + hale_stdlib::SHA256_SOURCE.len() as u32).contains(&pos)
+}
+
+/// Whether an offset is in the streamed body readers' appended source.
+pub fn is_http_read_pos(pos: u32) -> bool {
+    (HTTP_READ_BASE..HTTP_READ_BASE + hale_stdlib::HTTP_READ_SOURCE.len() as u32).contains(&pos)
+}
+
+/// Whether an offset is in the observe backends' appended source.
+pub fn is_observe_pos(pos: u32) -> bool {
+    (OBSERVE_BASE..OBSERVE_BASE + hale_stdlib::OBSERVE_SOURCE.len() as u32).contains(&pos)
+}
+
+/// Whether an offset is in stdlib source appended to the program because
+/// it names it, and not in the stdlib copy: the TCP substrate's, the
+/// observe backends', the client binding's (`client_expand`), the
+/// streamed body readers' or the incremental SHA-256's. A `std::` path to
+/// one of its loci names the program's declaration.
+pub fn is_appended_stdlib_pos(pos: u32) -> bool {
+    is_tcp_serve_pos(pos)
+        || is_observe_pos(pos)
+        || crate::client_expand::is_client_runtime_pos(pos)
+        || is_http_read_pos(pos)
+        || is_sha256_pos(pos)
+}
+
+/// The backends of `std::observe`, once, for a program whose main locus
+/// holds one (`hale_stdlib::OBSERVE_SOURCE`, `observe_expand`): a program
+/// that observes nothing carries none of them.
+pub(crate) fn inject_observe(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdObserveScrape")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::OBSERVE_SOURCE, OBSERVE_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "observe_expand: the backends did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
 
 /// Whether an offset is in the TCP substrate's appended source, or the
 /// `std::io::tcp::Listener` built on it.
@@ -819,7 +1034,7 @@ impl TcpServeDecls {
 }
 
 /// Where the substrate's topic parses.
-const TCP_TOPICS_BASE: u32 = API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000;
+pub const TCP_TOPICS_BASE: u32 = API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000;
 
 /// Whether an offset is in the TCP substrate's appended source or its
 /// topic's: a declaration [`inject_tcp_serve`] appended.
@@ -864,6 +1079,61 @@ fn inject_tcp_serve(programs: &mut [&mut Program]) {
     }
 }
 
+/// Whether the programs name `std::http::BodyReader` or `std::http::SseReader`.
+fn mentions_http_read(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| w[1] == "std" && w[2] == "http" && (w[3] == "BodyReader" || w[3] == "SseReader"))
+}
+
+/// The streamed body readers, once, for a program that names one
+/// (`hale_stdlib::HTTP_READ_SOURCE`): a program that reads no stream
+/// carries none of them.
+fn inject_http_read(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdHttpBodyReader")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::HTTP_READ_SOURCE, HTTP_READ_BASE) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the streamed body readers did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+/// Whether the programs name `std::crypto::Sha256`.
+fn mentions_sha256(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| w[1] == "std" && w[2] == "crypto" && w[3] == "Sha256")
+}
+
+/// The incremental SHA-256, once, for a program that names it
+/// (`hale_stdlib::SHA256_SOURCE`): a program that hashes no stream carries
+/// none of it.
+fn inject_sha256(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdCryptoSha256")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::SHA256_SOURCE, SHA256_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the incremental SHA-256 did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
 /// Whether the programs name `std::io::tcp::Listener`.
 fn mentions_tcp_listener(programs: &[&mut Program]) -> bool {
     spells(programs, &|w| w[0] == "std" && w[1] == "io" && w[2] == "tcp" && w[3] == "Listener")
@@ -896,7 +1166,7 @@ fn inject_tcp_listener(programs: &mut [&mut Program]) {
 /// (`ApiDecl::origin`, `mangle::api_origin`). The row is the provenance: a
 /// block of another seed, the importer's own among them, has another
 /// origin or none, so the alias never reaches it.
-fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
+pub(crate) fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
     let key = format!("{}{name}", crate::mangle::API_KEY);
     let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == key)?;
     programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| match d {
@@ -919,7 +1189,7 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
         for p in &ro {
             for d in flat_decls(&p.items) {
                 let TopDecl::Locus(l) = d else { continue };
-                for site in crate::surfaces::locus_serve_sites(l) {
+                for (_, site) in crate::surfaces::locus_serve_sites(l) {
                     let Expr::Path(qn) = site.surface else { continue };
                     let [alias, name] = qn.segments.as_slice() else { continue };
                     if let Some(s) = imported_surface(&ro, renames, &alias.name, &name.name) {
@@ -943,11 +1213,38 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
         hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
             let TopDecl::Locus(l) = d else { return };
             for m in &mut l.members {
-                match m {
-                    LocusMember::Lifecycle(lc) => crate::surfaces::serve_surfaces_in_mut(&mut lc.body, &mut rewrite),
-                    LocusMember::Fn(f) => crate::surfaces::serve_surfaces_in_mut(&mut f.body, &mut rewrite),
-                    LocusMember::Mode(md) => crate::surfaces::serve_surfaces_in_mut(&mut md.body, &mut rewrite),
-                    _ => {}
+                if let LocusMember::Params(pb) = m {
+                    for p in &mut pb.params {
+                        if let ParamInit::Value(e) = &mut p.init {
+                            crate::surfaces::serve_surface_mut(e, &mut rewrite);
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// An exposure param is typed `api::Exposure` as its author writes it, the
+/// runtime's `std::api::Exposure`: spelled so here, whether or not the site
+/// is built, so a site the laws refuse is refused for what it is.
+fn type_exposure_params(programs: &mut [&mut Program]) {
+    for p in programs.iter_mut() {
+        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+            let TopDecl::Locus(l) = d else { return };
+            for m in &mut l.members {
+                let LocusMember::Params(pb) = m else { continue };
+                for p in &mut pb.params {
+                    if crate::surfaces::param_serve_site(p).is_none() {
+                        continue;
+                    }
+                    if let Some(TypeExpr::Named { path, .. }) = &mut p.ty {
+                        let short = path.segments.len() == 2 && path.segments[0].name == "api" && path.segments[1].name == "Exposure";
+                        if short {
+                            let sp = path.segments[0].span;
+                            path.segments.insert(0, Ident::new("std", sp));
+                        }
+                    }
                 }
             }
         });
@@ -961,11 +1258,19 @@ pub fn expand(
     default_surface: &str,
 ) -> Vec<Expansion> {
     resolve_imported_surfaces(programs, renames);
+    type_exposure_params(programs);
+    expose_api_codecs(programs, renames);
     if mentions_tcp_serve(programs) {
         inject_tcp_serve(programs);
     }
     if mentions_tcp_listener(programs) {
         inject_tcp_listener(programs);
+    }
+    if mentions_http_read(programs) {
+        inject_http_read(programs);
+    }
+    if mentions_sha256(programs) {
+        inject_sha256(programs);
     }
     let hubs = crate::hub_expand::binds_a_hub(programs);
     if !mentions_runtime(programs) && !hubs {
@@ -982,9 +1287,10 @@ pub fn expand(
     if mentions_grpc(programs) {
         inject_grpc(programs);
     }
+    let mut hub_rows: Vec<crate::hub_expand::HubExpansion> = Vec::new();
     if hubs {
         inject_hub(programs);
-        crate::hub_expand::expand(programs);
+        hub_rows = crate::hub_expand::expand(programs);
     }
     // ---- the immutable phase: rows, digests, sites ----
     struct Plan {
@@ -1002,6 +1308,15 @@ pub fn expand(
         grpc: bool,
         /// a gRPC exposure's descriptors for server reflection (see `grpc_files`).
         files: String,
+        /// an `http::Rest` exposure's route table (`rest_routes::table`).
+        routes: String,
+        /// an `http::Rest` exposure's `fallback:`, the handler its listener's
+        /// connections give a request no row's path matches.
+        fallback: Option<Expr>,
+        /// an `http::Rest` exposure's `hubs:` (GH #1780): each mounted hub's
+        /// path and number, and its streams, which the exposure describes.
+        mounts: Vec<(String, i64)>,
+        mounted_streams: Vec<crate::hub_expand::DescribedStream>,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let confer;
@@ -1033,7 +1348,7 @@ pub fn expand(
         for (pi, p) in ro.iter().enumerate() {
             for d in flat_decls(&p.items) {
                 let TopDecl::Locus(l) = d else { continue };
-                for site in crate::surfaces::locus_serve_sites(l) {
+                for (param, site) in crate::surfaces::locus_serve_sites(l) {
                     let surface = match site.surface {
                         Expr::Ident(i) => i.name.clone(),
                         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
@@ -1063,10 +1378,20 @@ pub fn expand(
                     if !seen_names.insert(name.clone()) {
                         continue;
                     }
-                    if l.members.iter().any(|m| {
-                        matches!(m, LocusMember::Params(pb)
-                            if pb.params.iter().any(|p| p.name.name == exposure_param(name)))
-                    }) {
+                    // built already (the sequence runs again over its own output)
+                    if param.serve.is_some() {
+                        continue;
+                    }
+                    // the param is the exposure: typed as one, or the law says so
+                    let typed = match &param.ty {
+                        None => true,
+                        Some(TypeExpr::Named { path, .. }) => {
+                            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                            segs == ["std", "api", "Exposure"]
+                        }
+                        Some(_) => false,
+                    };
+                    if !typed {
                         continue;
                     }
                     let rows = rows_of_surface(&ro, &surface, renames, default_surface);
@@ -1090,9 +1415,7 @@ pub fn expand(
                     let mut fields: Vec<String> = Vec::new();
                     let mut ok = true;
                     for ty in &slots {
-                        let bound_here = site.receivers().iter().find(|i| {
-                            i.name.name == *ty || i.name.name.rsplit("::").next().is_some_and(|t| t == ty.as_str())
-                        });
+                        let bound_here = site.receivers().iter().find(|i| crate::surfaces::binds_type(i, ty, &params));
                         let field = match bound_here {
                             Some(i) => crate::surfaces::self_field(&i.value).map(str::to_string),
                             None => {
@@ -1122,6 +1445,42 @@ pub fn expand(
                     }
                     if !ok {
                         continue;
+                    }
+                    // the exposure is born after the receivers it binds: each
+                    // is a param declared before it (the law reports one after)
+                    let order: Vec<&str> = params_in_order(l).into_iter().map(|(p, _)| p.name.name.as_str()).collect();
+                    let at = |f: &str| order.iter().position(|p| *p == f);
+                    let me = at(&param.name.name);
+                    if fields.iter().any(|f| at(f) >= me) {
+                        continue;
+                    }
+                    // a socket's listener is the main locus's: a holder that is
+                    // not one is held by exactly one chain of params from each
+                    // main locus that holds it, its address readable there
+                    let mut chains: Vec<(Chain, Expr)> = Vec::new();
+                    if !l.is_main && has_listener(l, Some(transport)) {
+                        let found = holder_chains(&loci, &l.name.name);
+                        let mains: BTreeSet<&str> = found.iter().map(|c| c.main.as_str()).collect();
+                        let once = mains.len() == found.len()
+                            && found.iter().all(|c| {
+                                loci.get(c.main.as_str())
+                                    .and_then(|m| placement_entry(m, &c.fields[0].1))
+                                    .is_none_or(|e| entry_replicas(e) <= 1)
+                            });
+                        if found.is_empty() || !once {
+                            continue;
+                        }
+                        let Some(addr) = listener_address(l, Some(transport)) else { continue };
+                        let mut ok = true;
+                        for c in found {
+                            match address_for_main(&c, &addr) {
+                                Ok(a) => chains.push((c, a)),
+                                Err(_) => ok = false,
+                            }
+                        }
+                        if !ok {
+                            continue;
+                        }
                     }
                     // the sources: the transport literal's fields, or the
                     // literal of the param the transport names
@@ -1174,14 +1533,44 @@ pub fn expand(
                         }
                     }
                     let files = if grpc { grpc_files(&rows, &schemas, &surface, digest) } else { String::new() };
+                    let routes = if site_literal_is(l, Some(transport), is_http_rest) {
+                        let entries: Vec<crate::rest_routes::Entry<'_>> = rows
+                            .iter()
+                            .map(|r| crate::rest_routes::Entry { member: &r.member, route: r.route.as_ref(), request: r.request.as_ref() })
+                            .collect();
+                        crate::rest_routes::table(&shapes, &entries)
+                    } else {
+                        String::new()
+                    };
+                    // the hubs it mounts: each a hub of this main locus the
+                    // hub expansion built (the laws refuse any other)
+                    let mut mounts: Vec<(String, i64)> = Vec::new();
+                    let mut mounted_streams = Vec::new();
+                    if !routes.is_empty() && l.is_main {
+                        if let Some(Ok(ms)) = source_of("hubs").map(|e| mounts_of(&e)) {
+                            for m in ms {
+                                let Some(h) = hub_rows.iter().find(|h| h.mounted && h.locus == l.name.name && h.param == m.field)
+                                else {
+                                    continue;
+                                };
+                                if mounts.iter().any(|(p, id)| *p == m.path || *id == h.id) {
+                                    continue;
+                                }
+                                mounts.push((m.path.clone(), h.id));
+                                mounted_streams.extend(h.streams.iter().cloned());
+                            }
+                        }
+                    }
                     plans.push(Plan {
                         site: Site {
                             program: pi,
                             serving: l.name.name.clone(),
+                            param: param.name.name.clone(),
                             surface,
                             transport: Some(fresh(transport)),
                             name: name.clone(),
                             bound: *bound,
+                            chains,
                         },
                         rows,
                         digest,
@@ -1193,6 +1582,10 @@ pub fn expand(
                         revised,
                         grpc,
                         files,
+                        fallback: if routes.is_empty() { None } else { source_of("fallback") },
+                        routes,
+                        mounts,
+                        mounted_streams,
                     });
                 }
             }
@@ -1237,7 +1630,16 @@ pub fn expand(
         let id = i as i64 + 1;
         let site = &plan.site;
         let pb = PbCodec { surface: &site.surface, ..pb };
-        generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec, plan.grpc.then_some(&pb), &schemas));
+        generated.push_str(&surface_src(
+            id,
+            &plan.rows,
+            &plan.mounted_streams,
+            &plan.slots,
+            &confer,
+            &codec,
+            plan.grpc.then_some(&pb),
+            &schemas,
+        ));
         for (slot, ty) in plan.slots.iter().enumerate() {
             let members: Vec<(usize, &Row)> = plan
                 .rows
@@ -1259,11 +1661,19 @@ pub fn expand(
             surface: site.surface.clone(),
             digest: plan.digest,
             serving: site.serving.clone(),
-            param: exposure_param(&site.name),
+            param: site.param.clone(),
         });
     }
 
-    // ---- mutate: the serving loci ----
+    // ---- the REST fallback's server, for a program that gives one ----
+    if plans.iter().any(|p| p.fallback.is_some()) {
+        inject_rest_fallback(programs);
+    }
+
+    // ---- mutate: the holders ----
+    // the main loci a listener was added to, each with the exposures (by
+    // their path from it) a main that writes no `run()` serves until stopped
+    let mut waits: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;
         let site = &plan.site;
@@ -1271,20 +1681,25 @@ pub fn expand(
         let program = &mut *programs[site.program];
         let Some(l) = find_locus_mut(&mut program.items, &site.serving) else { continue };
         let span = l.name.span;
-        // A TCP listener the compiler adds below (the main locus's, over
-        // http / mcp / grpc) is born before the exposure, and the exposure
-        // states the address it was bound to: its name, `host:<bound
-        // port>`, so a `bind:` of port 0 is described by the port the
-        // kernel gave it. A Unix path is bound as written, and a listener
-        // the compiler does not add states its `bind:` as written.
-        let bound_listener = (l.is_main
-            && unix_path_of(l, site.transport.as_ref()).is_none()
-            && http_bind_of(l, site.transport.as_ref()).is_some())
-        .then(|| {
-            let kind = if is_grpc_site(l, site.transport.as_ref()) { "g" } else { "h" };
-            format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)")
-        });
-        // the exposure param
+        let transport = site.transport.as_ref();
+        let unix_path = unix_path_of(l, transport);
+        let http_bind = if unix_path.is_none() { http_bind_of(l, transport) } else { None };
+        let grpc = is_grpc_site(l, transport);
+        let mcp = is_mcp_site(l, transport);
+        let is_main = l.is_main;
+        // A TCP listener the compiler adds (over http / mcp / grpc) states
+        // the address it was bound to, its name, `host:<bound port>`, so a
+        // `bind:` of port 0 is described by the port the kernel gave it. The
+        // main locus's own exposure reads it off its listener, born before
+        // it. A holder below main is built before its listener (the listener
+        // reads the address off the holder as built), so its exposure starts
+        // from the `bind:` as written and is told the bound name by its
+        // transport when the listener first asks for it (`RpcEvent` kind 7).
+        // A Unix path is bound as written.
+        let kind = if grpc { "g" } else { "h" };
+        let bound_listener =
+            (http_bind.is_some() && is_main).then(|| format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)"));
+        // the exposure: the param as declared, its init the exposure it builds
         let src = format!(
             "main locus __Tmp {{ params {{ {param}: std::api::Exposure = std::api::Exposure {{ id: {id}, name: {name}, surface: {surface}, digest: {digest}, bound: {bound}, rows: __RpcSurface_{id} {{ }}{address} }}; }} }}\n",
             address = bound_listener.as_deref().unwrap_or(""),
@@ -1295,15 +1710,15 @@ pub fn expand(
             digest = q(&hale_model::surface::digest_text(plan.digest)),
             bound = site.bound,
         );
-        let Some(mut param) = parse_params(&src) else { continue };
-        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut param.init {
+        let Some(mut generated) = parse_params(&src) else { continue };
+        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut generated.init {
             let mut push = |name: &str, value: Expr| {
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
             };
-            if let Some(t) = &site.transport {
-                push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files));
+            if let Some(t) = transport {
+                push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files, &plan.routes));
                 if bound_listener.is_none() {
-                    if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
+                    if let Some(addr) = unix_path.clone().or_else(|| http_bind.clone()) {
                         push("address", addr);
                     }
                 }
@@ -1323,49 +1738,51 @@ pub fn expand(
                 }
             }
         }
-        if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-            pb.params.push(param);
-        } else {
-            l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
+        for m in l.members.iter_mut() {
+            let LocusMember::Params(pb) = m else { continue };
+            for p in pb.params.iter_mut().filter(|p| p.name.name == exposure.param) {
+                let ParamInit::Value(call) = std::mem::replace(&mut p.init, generated.init.clone()) else { continue };
+                p.serve = Some(Box::new(call));
+                p.ty = generated.ty.clone();
+            }
         }
-        // a Unix transport's listener: a param of the serving locus born
-        // after the authored params its path may read, and before the
-        // exposure (so it is subscribed when the exposure attaches), placed on a
-        // pool of its own
-        if l.is_main {
-            let unix_path = unix_path_of(l, site.transport.as_ref());
-            let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
-            let listener = match (unix_path, http_bind) {
-                (Some(path), _) => parse_unix_listener(id, path, span),
-                (None, Some(bind)) if is_grpc_site(l, site.transport.as_ref()) => parse_grpc_listener(id, bind, span),
-                (None, Some(bind)) => parse_http_listener(id, bind, is_mcp_site(l, site.transport.as_ref()), span),
+        // the listener of a socket transport: a param of the main locus,
+        // born after the authored params its address may read and before
+        // what serves through it (so it is subscribed when the exposure
+        // attaches), on the pool its placement row names
+        let listener_for = |bind: Expr, fallback: Option<Expr>| -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+            match (&unix_path, &http_bind) {
+                (Some(_), _) => parse_unix_listener(id, bind, span),
+                (None, Some(_)) if grpc => parse_grpc_listener(id, bind, span),
+                (None, Some(_)) => parse_http_listener(id, bind, mcp, &plan.routes, fallback, &plan.mounts, span),
                 (None, None) => None,
-            };
+            }
+        };
+        let field_of = |lp: &ParamDecl| lp.name.name.clone();
+        if is_main {
+            if let Some((lp, default_entry)) =
+                unix_path.clone().or_else(|| http_bind.clone()).and_then(|b| listener_for(b, plan.fallback.clone()))
             {
-                if let Some((lp, entry)) = listener {
-                    if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                        // after every authored param (the address may read one),
-                        // before the exposure just pushed
-                        let at = pb.params.iter().position(|p| p.name.name == exposure_param(&site.name)).unwrap_or(pb.params.len());
-                        pb.params.insert(at, lp);
-                    }
-                    if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
-                        pl.entries.push(entry);
-                    } else {
-                        l.members.push(LocusMember::Placement(hale_syntax::ast::PlacementBlock { entries: vec![entry], span }));
-                    }
-                }
+                let field = field_of(&lp);
+                insert_param_before(l, lp, &exposure.param);
+                // the exposure's own row places its listener (and the
+                // connections it starts); the exposure stays with its
+                // holder, beside the sources it calls. A row that cannot
+                // host a listener is left for the law to refuse.
+                let row = take_listener_row(l, &exposure.param);
+                push_placement(l, rename_entry(row, &field).unwrap_or(default_entry), span);
+                waits.entry(l.name.name.clone()).or_default().push(exposure.param.clone());
             }
         }
         // a Unix transport the serving locus holds as a param is numbered
         // in the literal that builds it, as one written in the call is
-        if let Some(f) = site.transport.as_ref().and_then(|t| crate::surfaces::self_field(t)) {
+        if let Some(f) = transport.and_then(|t| crate::surfaces::self_field(t)) {
             for m in l.members.iter_mut() {
                 if let LocusMember::Params(pb) = m {
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
                         if let ParamInit::Value(e) = &mut p.init {
                             if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || is_grpc_rpc(path)) {
-                                *e = as_stdlib_unix(e, id, &site.surface, &plan.files);
+                                *e = as_stdlib_unix(e, id, &site.surface, &plan.files, &plan.routes);
                             }
                         }
                     }
@@ -1377,6 +1794,71 @@ pub fn expand(
             let key = id * 100 + slot as i64;
             let key_param = format!("__rpc_s_{id}");
             inject_key(l, field, &key_param, key, span);
+        }
+        // a holder below a main locus: each main locus that holds it gets
+        // the listener, after the param the chain starts at (so its address
+        // is read off the holder as every construction built it), on the
+        // pool that param's row names when a listener can run there, else
+        // the transport's shared pool
+        for (chain, addr) in &site.chains {
+            // the fallback as this main locus reaches it, as the address is;
+            // one that cannot be read there is refused by the serve-site laws
+            // (`surfaces`), never served as no fallback
+            let fallback = match plan.fallback.as_ref().map(|f| fallback_for_main(chain, f)) {
+                Some(Ok(f)) => Some(f),
+                Some(Err(_)) => continue,
+                None => None,
+            };
+            let Some((lp, default_entry)) = listener_for(addr.clone(), fallback) else { continue };
+            let field = field_of(&lp);
+            let root = chain.fields[0].1.clone();
+            let mut placed = false;
+            for p in programs.iter_mut() {
+                let Some(main) = find_locus_mut(&mut p.items, &chain.main) else { continue };
+                let entry = placement_entry(main, &root)
+                    .filter(|e| hosts_listener(e))
+                    .and_then(|e| rename_entry(Some(e.clone()), &field))
+                    .unwrap_or(default_entry.clone());
+                // as early in main's birth as the address allows: before the
+                // param the server sits under when the address reads nothing
+                // of the server (no run of a child born before it can hold
+                // it back), just after it when it reads the server as built
+                // the fallback is read off the server too: a listener whose
+                // fallback reads it is born after it, whatever its address
+                if reads_holder(addr) || plan.fallback.as_ref().is_some_and(reads_holder) {
+                    insert_param_after(main, lp.clone(), &root);
+                } else {
+                    insert_param_before(main, lp.clone(), &root);
+                }
+                let mspan = main.name.span;
+                push_placement(main, entry, mspan);
+                placed = true;
+                break;
+            }
+            if placed {
+                let path = format!("{}.{}", chain.path(), exposure.param);
+                waits.entry(chain.main.clone()).or_default().push(path);
+            }
+        }
+    }
+
+    // ---- a main locus that writes no `run()` serves until its exposures stop ----
+    // (spec/api.md § Serving): the run it is given waits, as `h.wait()` does,
+    // until every exposure whose listener it holds has stopped or the
+    // process drains
+    for (main, paths) in &waits {
+        for p in programs.iter_mut() {
+            let Some(m) = find_locus_mut(&mut p.items, main) else { continue };
+            let has_run = m.members.iter().any(|x| matches!(x, LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run));
+            if !has_run {
+                let open: Vec<String> = paths.iter().map(|x| format!("!self.{x}.stopped")).collect();
+                let src = format!(
+                    "main locus __Tmp {{ run() {{ while !self.draining && ({}) {{ std::time::__idle_wait(100ms); }} }} }}\n",
+                    open.join(" || ")
+                );
+                m.members.extend(parse_members(&src));
+            }
+            break;
         }
     }
 
@@ -1396,7 +1878,18 @@ pub fn expand(
     for (ty, bs) in &bindings {
         for p in programs.iter_mut() {
             if let Some(l) = find_locus_mut(&mut p.items, ty) {
-                extend_receiver(l, bs, &codec, &pb);
+                let types = extend_receiver(l, bs, &codec, &pb);
+                // the mirror's declarations, beside the receiver
+                if !types.is_empty() {
+                    match parse_source_at(&types, MIRROR_BASE) {
+                        Ok(g) => p.items.extend(g.items),
+                        Err(ds) => eprintln!(
+                            "rpc_expand: the generated mirror did not parse: {}\n{}",
+                            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; "),
+                            types
+                        ),
+                    }
+                }
                 break;
             }
         }
@@ -1437,9 +1930,19 @@ pub(crate) fn is_unix_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
 
 /// Whether a transport literal's path is the stdlib's HTTP transport,
 /// spelled `http::Rpc` (the serve site's spelling) or `std::api::http::Rpc`.
+/// `http::Rest` is the same transport family (its listener, connections and
+/// sources), so every socket-transport question answers yes for it too;
+/// [`is_http_rest`] tells the two apart.
 pub(crate) fn is_http_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
     let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-    matches!(segs.as_slice(), ["http", "Rpc"] | ["std", "api", "http", "Rpc"])
+    matches!(segs.as_slice(), ["http", "Rpc"] | ["std", "api", "http", "Rpc"]) || is_http_rest(path)
+}
+
+/// Whether a transport literal's path is the stdlib's REST transport,
+/// spelled `http::Rest` or `std::api::http::Rest`.
+pub(crate) fn is_http_rest(path: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["http", "Rest"] | ["std", "api", "http", "Rest"])
 }
 
 /// Whether a transport literal's path is the stdlib's MCP transport,
@@ -1462,7 +1965,7 @@ pub(crate) fn is_grpc_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
 /// HTTP transport's `codec: json` is the one codec v1 has, and is not a
 /// field of the locus (nor is the gRPC transport's). The gRPC transport
 /// also carries the name of the surface it serves, which a call's path names.
-fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str) -> Expr {
+fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str, routes: &str) -> Expr {
     let mut e = fresh(t);
     if let Expr::Struct { path, inits, span, .. } = &mut e {
         let kind = if is_unix_rpc(path) {
@@ -1478,14 +1981,26 @@ fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str) -> Expr {
         };
         if let Some(kind) = kind {
             let sp = *span;
-            path.segments = ["std", "api", kind, "Rpc"].iter().map(|n| Ident::new(*n, sp)).collect();
+            let rest = is_http_rest(path);
+            let word = if rest { "Rest" } else { "Rpc" };
+            path.segments = ["std", "api", kind, word].iter().map(|n| Ident::new(*n, sp)).collect();
             inits.retain(|i| {
                 i.name.name != "tid"
+                    && i.name.name != "routes"
+                    // an `http::Rest` fallback is its listener's, which
+                    // runs where the handler does; the transport stays
+                    // with the exposure (parse_http_listener)
+                    && !(rest && i.name.name == "fallback")
+                    // its `hubs:` too: the listener takes the upgrades
+                    && !(rest && i.name.name == "hubs")
                     && i.name.name != "surface"
                     && i.name.name != "files"
                     && !((kind == "http" || kind == "grpc") && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
             });
             inits.push(StructInit { name: Ident::new("tid", sp), value: lit_int(id, sp), span: sp });
+            if rest {
+                inits.push(StructInit { name: Ident::new("routes", sp), value: Expr::Literal(Literal::String(routes.to_string()), sp), span: sp });
+            }
             if kind == "grpc" {
                 inits.push(StructInit { name: Ident::new("surface", sp), value: Expr::Literal(Literal::String(surface.to_string()), sp), span: sp });
                 inits.push(StructInit { name: Ident::new("files", sp), value: Expr::Literal(Literal::String(files.to_string()), sp), span: sp });
@@ -1603,10 +2118,28 @@ fn parse_grpc_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, ha
 
 /// The listener of HTTP exposure `id` and its placement: as the Unix one,
 /// a param of the serving main locus on a pool of its own.
-fn parse_http_listener(id: i64, bind: Expr, mcp: bool, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+fn parse_http_listener(
+    id: i64,
+    bind: Expr,
+    mcp: bool,
+    routes: &str,
+    fallback: Option<Expr>,
+    mounts: &[(String, i64)],
+    span: Span,
+) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
     let field = format!("__rpc_h_{id}");
+    // the hubs it mounts (GH #1780): a WebSocket upgrade at a mount's path
+    // is handed to the hubs' connections, which the listener holds
+    let mounted = if mounts.is_empty() {
+        String::new()
+    } else {
+        // `<path> <hub>` per mount, joined by `,` (a mount's path is
+        // letters, digits, `-._~` and `/`: the laws refuse any other)
+        let table = mounts.iter().map(|(p, n)| format!("{p} {n}")).collect::<Vec<_>>().join(",");
+        format!(", hubs: {}, mounts: __StdApiWsConns {{ }}, serve_mount: __api_rest_mount_serve", q(&table))
+    };
     let src = format!(
-        "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
+        "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id}{mounted} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
     );
     let prog = parse_source_at(&src, API_SYNTH_BASE + 0x0700_0000 + id as u32 * 0x100).ok()?;
     let mut param = None;
@@ -1629,6 +2162,17 @@ fn parse_http_listener(id: i64, bind: Expr, mcp: bool, span: Span) -> Option<(Pa
             let what = Expr::Literal(Literal::String("mcp::Rpc".to_string()), span);
             inits.push(StructInit { name: Ident::new("what", span), value: what, span });
         }
+        // an `http::Rest` fallback: its connections match a request's path
+        // against the route table and give one no row serves to the handler
+        if let Some(f) = fallback {
+            let table = Expr::Literal(Literal::String(routes.to_string()), span);
+            inits.push(StructInit { name: Ident::new("routes", span), value: table, span });
+            inits.push(StructInit { name: Ident::new("has_fallback", span), value: Expr::Literal(Literal::Bool(true), span), span });
+            inits.push(StructInit { name: Ident::new("fallback", span), value: f, span });
+            let serve = Expr::Ident(Ident::new("__api_rest_fallback_serve", span));
+            inits.push(StructInit { name: Ident::new("serve_fallback", span), value: serve, span });
+        }
+
     }
     Some((param, entry?))
 }
@@ -1661,6 +2205,63 @@ fn parse_unix_listener(id: i64, path: Expr, span: Span) -> Option<(ParamDecl, ha
         inits.push(StructInit { name: Ident::new("path", span), value: path, span });
     }
     Some((param, entry?))
+}
+
+/// Insert `param` into `l`'s params at the param `at` names, in whichever
+/// of the locus's params blocks declares it (offset 0 before it, 1 after
+/// it), or at the end of the first block when none does.
+fn insert_param_at(l: &mut LocusDecl, param: ParamDecl, name: &str, offset: usize) {
+    let span = l.name.span;
+    let holder = l.members.iter().position(|m| matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p| p.name.name == name)));
+    let first = l.members.iter().position(|m| matches!(m, LocusMember::Params(_)));
+    match holder.or(first) {
+        Some(i) => {
+            let LocusMember::Params(pb) = &mut l.members[i] else { return };
+            let at = pb.params.iter().position(|p| p.name.name == name).map_or(pb.params.len(), |i| i + offset);
+            pb.params.insert(at, param);
+        }
+        None => l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span })),
+    }
+}
+
+/// Insert `param` into `l`'s params just before the param `before`.
+fn insert_param_before(l: &mut LocusDecl, param: ParamDecl, before: &str) {
+    insert_param_at(l, param, before, 0);
+}
+
+/// Insert `param` into `l`'s params just after the param `after`.
+fn insert_param_after(l: &mut LocusDecl, param: ParamDecl, after: &str) {
+    insert_param_at(l, param, after, 1);
+}
+
+/// Take `field`'s placement row out of `l`'s placement block when it puts
+/// the field where a listener can run; a row that cannot is left for the
+/// serve-site law to refuse.
+fn take_listener_row(l: &mut LocusDecl, field: &str) -> Option<hale_syntax::ast::PlacementEntry> {
+    for m in l.members.iter_mut() {
+        let LocusMember::Placement(pb) = m else { continue };
+        let at = pb.entries.iter().position(|e| e.field.name == field && hosts_listener(e))?;
+        return Some(pb.entries.remove(at));
+    }
+    None
+}
+
+/// A placement row moved to another field: its spec and constraints, the
+/// field's name.
+fn rename_entry(e: Option<hale_syntax::ast::PlacementEntry>, field: &str) -> Option<hale_syntax::ast::PlacementEntry> {
+    let mut e = e?;
+    e.field = Ident::new(field, e.field.span);
+    e.id = hale_syntax::ast::NodeId::NONE;
+    Some(e)
+}
+
+/// Append a placement row to `l`'s placement block, making one if it has none.
+fn push_placement(l: &mut LocusDecl, entry: hale_syntax::ast::PlacementEntry, span: Span) {
+    if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
+        pl.entries.push(entry);
+    } else {
+        l.members.push(LocusMember::Placement(hale_syntax::ast::PlacementBlock { entries: vec![entry], span }));
+    }
 }
 
 fn parse_params(src: &str) -> Option<ParamDecl> {
@@ -1780,9 +2381,11 @@ topic __ApiHttpOutT { payload: __StdApiHttpOut; subject: \"__api.http.out\"; key
 ";
 
 /// The rows adapter of exposure `id`.
+#[allow(clippy::too_many_arguments)]
 fn surface_src(
     id: i64,
     rows: &[Row],
+    streams: &[crate::hub_expand::DescribedStream],
     slots: &[String],
     confer: &BTreeMap<String, Vec<String>>,
     codec: &Codec<'_>,
@@ -1800,6 +2403,12 @@ fn surface_src(
     s.push_str("        return -1;\n    }\n    fn name_of(i: Int) -> String {\n");
     for (i, r) in rows.iter().enumerate() {
         s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(&r.member)));
+    }
+    // a member's digest, which admission accepts beside the surface's
+    let digests = member_digests(codec.shapes, rows);
+    s.push_str("        return \"\";\n    }\n    fn member_digest(i: Int) -> String {\n");
+    for (i, d) in digests.iter().enumerate() {
+        s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(d)));
     }
     s.push_str("        return \"\";\n    }\n    fn requires(i: Int) -> String {\n");
     for (i, r) in rows.iter().enumerate() {
@@ -1844,7 +2453,7 @@ fn surface_src(
         }
     }
     s.push_str("        return role;\n    }\n");
-    s.push_str(&description_src(rows, schemas));
+    s.push_str(&description_src(rows, streams, schemas, &digests));
     s.push_str("}\n");
     s
 }
@@ -1868,6 +2477,7 @@ fn jstr(v: &str) -> String {
 fn field_json(f: &crate::surfaces::FieldSchema) -> String {
     use crate::surfaces::FieldSchema;
     match f {
+        FieldSchema::Any => "{\"x-hale-any\":true}".to_string(),
         FieldSchema::Scalar { json, hale_type, unit } => {
             let mut o = format!("{{\"type\":{}", jstr(json));
             if let Some(t) = hale_type {
@@ -1885,25 +2495,87 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
             let min = if *exact { format!(",\"minItems\":{max}") } else { String::new() };
             format!("{{\"type\":\"array\",\"items\":{}{min},\"maxItems\":{max}}}", field_json(items))
         }
-        FieldSchema::Unformed => "{}".to_string(),
+        FieldSchema::Nullable { inner, clear: None, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => {
+            format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}],\"x-hale-null\":\"clear\"}}", field_json(inner))
+        }
+        // no key of its own: `type_json` leaves it out
+        FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
+        FieldSchema::Enum { name, variants, classes } => {
+            // the declared error classes, as `surface_doc` renders them
+            let classed = if classes.is_empty() {
+                String::new()
+            } else {
+                let cs: Vec<String> = classes.iter().map(|(v, c)| format!("{}:{}", jstr(v), jstr(c))).collect();
+                format!(",\"x-hale-error-classes\":{{{}}}", cs.join(","))
+            };
+            let units: Vec<String> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| jstr(n)).collect();
+            let unit = format!("{{\"type\":\"string\",\"enum\":[{}]", units.join(","));
+            if units.len() == variants.len() {
+                return format!("{unit},\"x-hale-type\":{}{classed}}}", jstr(name));
+            }
+            let mut one: Vec<String> = Vec::new();
+            if !units.is_empty() {
+                one.push(format!("{unit}}}"));
+            }
+            for (v, values) in variants.iter().filter(|(_, v)| !v.is_empty()) {
+                let value = match values.as_slice() {
+                    [only] => field_json(only),
+                    many => format!(
+                        "{{\"type\":\"array\",\"prefixItems\":[{}],\"minItems\":{n},\"maxItems\":{n}}}",
+                        many.iter().map(field_json).collect::<Vec<_>>().join(","),
+                        n = many.len()
+                    ),
+                };
+                one.push(format!(
+                    "{{\"type\":\"object\",\"properties\":{{{}:{value}}},\"required\":[{}],\"additionalProperties\":false}}",
+                    jstr(v),
+                    jstr(v)
+                ));
+            }
+            format!("{{\"oneOf\":[{}],\"x-hale-type\":{}{classed}}}", one.join(","), jstr(name))
+        }
+        FieldSchema::Map { key, value, max, of: None, .. } => format!(
+            "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{}}}",
+            type_json(value),
+            jstr(key)
+        ),
+        FieldSchema::Map { key, max, of: Some((field, schema)), .. } => format!(
+            "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{},\"x-hale-value\":{}}}",
+            field_json(schema),
+            jstr(key),
+            jstr(field)
+        ),
     }
 }
 
 fn type_json(t: &crate::surfaces::TypeSchema) -> String {
-    let props: Vec<String> = t.properties.iter().map(|(k, f)| format!("{}:{}", jstr(k), field_json(f))).collect();
+    let props: Vec<String> = t
+        .properties
+        .iter()
+        .filter(|(_, f)| !matches!(f, crate::surfaces::FieldSchema::Presence { .. }))
+        .map(|(k, f)| format!("{}:{}", jstr(k), field_json(f)))
+        .collect();
     let req: Vec<String> = t.required.iter().map(|r| jstr(r)).collect();
     format!("{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}", props.join(","), req.join(","))
 }
 
 /// The static parts of a description (the rows adapter's `member_doc`,
-/// `refs`, `schema_*` and `roles`): each member as a JSON object, the
-/// schemas it reaches by name, the schemas of the surface in name order and
-/// the roles its rows require. The runtime filters these by caller.
-fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> String {
+/// `refs`, `stream_*`, `schema_*` and `roles`): each member as a JSON
+/// object, the schemas it reaches by name, the streams of the hubs an
+/// `http::Rest` mounts (GH #1780) the same way, the schemas of the surface
+/// and of those streams in name order and the roles they require. The
+/// runtime filters these by caller.
+fn description_src(
+    rows: &[Row],
+    streams: &[crate::hub_expand::DescribedStream],
+    schemas: &crate::surfaces::Schemas<'_>,
+    digests: &[String],
+) -> String {
     let mut all: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
     let mut docs: Vec<String> = Vec::new();
     let mut refs: Vec<String> = Vec::new();
-    for r in rows {
+    for (r, digest) in rows.iter().zip(digests) {
         let mut mine: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
         let mut ty = |t: &Option<TypeExpr>| match t {
             Some(te) => field_json(&schemas.type_ref(te, &mut mine)),
@@ -1913,16 +2585,48 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> Stri
         let response = ty(&r.response);
         let error = if r.server_error { jstr("ClosureViolation") } else { ty(&r.error) };
         let req: Vec<String> = r.requires.iter().map(|x| jstr(x)).collect();
+        // a routed row states its route (`METHOD /path/:param STATUS`)
+        let route = canonical(r).map_or(String::new(), |c| format!(",\"route\":{}", jstr(&c)));
         docs.push(format!(
-            "{{\"name\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]}}",
+            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]{route}}}",
             jstr(&r.member),
+            jstr(digest),
             req.join(",")
         ));
         refs.push(mine.keys().cloned().collect::<Vec<_>>().join(","));
         all.extend(mine);
     }
-    let roles: BTreeSet<&str> = rows.iter().flat_map(|r| r.requires.iter().map(String::as_str)).collect();
+    let mut stream_refs: Vec<String> = Vec::new();
+    for st in streams {
+        let mut mine: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
+        let _ = schemas.type_ref(&st.payload, &mut mine);
+        stream_refs.push(mine.keys().cloned().collect::<Vec<_>>().join(","));
+        all.extend(mine);
+    }
+    let roles: BTreeSet<&str> = rows
+        .iter()
+        .flat_map(|r| r.requires.iter().map(String::as_str))
+        .chain(streams.iter().flat_map(|st| st.requires.iter().map(String::as_str)))
+        .collect();
     let mut s = String::new();
+    s.push_str(&format!("    fn stream_count() -> Int {{ return {}; }}\n", streams.len()));
+    s.push_str("    fn stream_doc(i: Int) -> String {\n");
+    for (i, st) in streams.iter().enumerate() {
+        s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(&st.doc)));
+    }
+    s.push_str("        return \"\";\n    }\n    fn stream_requires(i: Int) -> String {\n");
+    for (i, st) in streams.iter().enumerate() {
+        if !st.requires.is_empty() {
+            s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(&st.requires.join(","))));
+        }
+    }
+    s.push_str("        return \"\";\n    }\n    fn stream_refs(i: Int) -> String {\n");
+    for (i, r) in stream_refs.iter().enumerate() {
+        if !r.is_empty() {
+            s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(r)));
+        }
+    }
+    s.push_str("        return \"\";\n    }\n");
     s.push_str("    fn member_doc(i: Int) -> String {\n");
     for (i, d) in docs.iter().enumerate() {
         s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(d)));
@@ -1951,13 +2655,14 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> Stri
 
 /// Add the plumbing of spec/api.md § Receiver failure and generations to a
 /// receiver type, for each exposure that binds it.
-fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &PbCodec<'_>) {
+fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &PbCodec<'_>) -> String {
     let span = l.name.span;
     if l.members.iter().any(|m| {
         matches!(m, LocusMember::Fn(f) if f.name.name == "__rpc_ev")
     }) {
-        return;
+        return String::new();
     }
+    let mut types = String::new();
     let mut params = String::from("__rpc_stamp: Int = 0;\n");
     let mut bus = String::from("publish __ApiRpcEventT;\n");
     let mut fns = String::from(
@@ -1981,21 +2686,29 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
         fns.push_str(&format!(
             "fn __rpc_hello_{n}(h: std::api::RpcHello) {{ self.__rpc_ev(h.exposure, 0, h.slot, 5, \"\"); }}\n"
         ));
+        // GH #1530 step 3: the call is a seam on the receiver. The decoder
+        // makes the row's mirror member (its request and context, the
+        // user never writes them), the receiver's per-row eater unpacks
+        // it into the handler's arguments, and the encoder answers each
+        // outcome: a seam through `self`, whose dispatch is the
+        // generator's. A body neither codec reads ends the seam, and the
+        // call is `malformed`.
+        let (src, ty) = mirror_seam(n, &l.name.name, slot, b, codec, pb);
+        fns.push_str(&src);
+        types.push_str(&ty);
         fns.push_str(&format!(
-            "fn __rpc_call_{n}(c: std::api::RpcCall) {{\n    if c.stamp != self.__rpc_stamp {{\n        self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\");\n        return;\n    }}\n    self.__rpc_ev(c.exposure, c.rid, {slot}, 4, \"\");\n"
+            "fn __rpc_call_{n}(c: std::api::RpcCall) {{\n    if c.stamp != self.__rpc_stamp {{\n        self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\");\n        return;\n    }}\n    self.__rpc_ev(c.exposure, c.rid, {slot}, 4, \"\");\n    self.__rpc_seam_{n}(c) or {{ self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\"); }};\n}}\n"
         ));
-        for (m, row) in &b.members {
-            fns.push_str(&format!("    if c.member == {m} {{\n"));
-            if b.grpc {
-                // the call arrived as protobuf: the same steps, the other codec
-                fns.push_str("        if std::str::starts_with(c.body, \"pb:\") {\n");
-                fns.push_str(&thunk_body_pb(row, slot, &PbCodec { surface: &b.surface, ..*pb }));
-                fns.push_str("        return;\n        }\n");
-            }
-            fns.push_str(&thunk_body(row, slot, codec));
-            fns.push_str("        return;\n    }\n");
-        }
-        fns.push_str("}\n");
+    }
+    // a handler error of a classed error type carries its class
+    // (spec/api.md § Error classes); a receiver with none has no such fn
+    let classed = bs.iter().flat_map(|b| b.members.iter()).any(|(_, row)| {
+        !row.server_error && row.error.as_ref().is_some_and(|e| Wire::Json(codec).class_steps(e).is_some())
+    });
+    if classed {
+        fns.push_str(
+            "fn __rpc_err(exposure: Int, rid: Int, slot: Int, class: Int, body: String) {\n    __ApiRpcEventT <- std::api::RpcEvent { exposure: exposure, rid: rid, slot: slot, kind: 1, stamp: self.__rpc_stamp, body: body, class: class };\n}\n",
+        );
     }
     let src = format!(
         "locus __Tmp {{\n params {{ {params} }}\n bus {{ {bus} }}\n {fns}\n birth() {{ {birth} }}\n dissolve() {{ {dissolve} }}\n}}\n"
@@ -2043,17 +2756,174 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
         }
     }
     let _ = span;
+    types
 }
 
-/// The statements that run one call of `row` on its receiver: decode the
-/// request, call the handler through the fallible ABI, publish the outcome.
-fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
-    thunk_steps(row, slot, Wire::Json(codec))
-}
+/// Where the generated mirrors parse (GH #1530 step 3).
+const MIRROR_BASE: u32 = API_SYNTH_BASE + 0x0D00_0000;
 
-/// The same steps for a call that arrived as protobuf.
-fn thunk_body_pb(row: &Row, slot: usize, pb: &PbCodec<'_>) -> String {
-    thunk_steps(row, slot, Wire::Pb(pb))
+/// GH #1530 step 3: one exposure's calls as a seam on its receiver, and the
+/// declarations it reads. For the binding `n`:
+///
+/// - the mirror: per row `k`, `__RpcIn_<n>_<k> { at; req; ctx; }`, its
+///   request and context as the decoder read them, and the set of them,
+///   `__RpcIn_<n>` (the row itself when there is one); `__RpcAt_<n>`, the
+///   call's identity carried beside the value (its exposure, its request
+///   id, and whether it arrived as protobuf);
+/// - the outcomes: per row `__RpcOk_<n>_<k>` and, for a declared error,
+///   `__RpcErr_<n>_<k>`, and `__RpcServerError_<n>` (a handler that
+///   violated), the set `__RpcOut_<n>`;
+/// - on the receiver, `__rpc_decode_<n>` (one decoder hop: JSON, or
+///   protobuf for a body that says `pb:`), an eater per row,
+///   `__rpc_row_<n>_<k>`, which unpacks its member into the handler's
+///   arguments (the context last), and `__rpc_encode_<n>`, which publishes
+///   each outcome;
+/// - the seam, `__rpc_seam_<n>(c) { c -> self.__rpc_decode_<n> -> self ->
+///   self.__rpc_encode_<n>; or end; }`, which `seam_expand` stitches: the
+///   locus hop on `self` is the dispatch, one row to one eater.
+///
+/// These are the generator's own forms: no description, digest, export or
+/// client names them.
+fn mirror_seam(n: i64, receiver: &str, slot: usize, b: &Binding, codec: &Codec<'_>, pb: &PbCodec<'_>) -> (String, String) {
+    // the types are the program's, so they name the receiver as well as the exposure
+    let t = format!("{n}_{receiver}");
+    let pbc = PbCodec { surface: &b.surface, ..*pb };
+    let mut types = format!("type __RpcAt_{t} {{ exposure: Int; rid: Int; pb: Bool; }}\ntype __RpcBad_{t} {{ }}\n");
+    let mut ins: Vec<String> = Vec::new();
+    let mut outs: Vec<String> = Vec::new();
+    let mut fns = String::new();
+    let mut decode = format!(
+        "fn __rpc_decode_{n}(c: std::api::RpcCall) -> __RpcIn_{t} fallible(__RpcBad_{t}) {{\n    let __at = __RpcAt_{t} {{ exposure: c.exposure, rid: c.rid, pb: {} }};\n",
+        if b.grpc { "std::str::starts_with(c.body, \"pb:\")" } else { "false" }
+    );
+    let mut encode = format!("fn __rpc_encode_{n}(o: __RpcOut_{t}) {{\n    match o {{\n");
+    let bail = format!("fail __RpcBad_{t} {{ }};");
+    let ctx_ty = |row: &Row| if row.served_ctx { "std::api::ServedContext" } else { "std::api::Context" };
+    for (k, row) in &b.members {
+        let inn = format!("__RpcIn_{t}_{k}");
+        ins.push(inn.clone());
+        let mut fields = format!("at: __RpcAt_{t};");
+        if let Some(te) = &row.request {
+            fields.push_str(&format!(" req: {};", crate::surfaces::type_text(te)));
+        }
+        if row.takes_ctx {
+            fields.push_str(&format!(" ctx: {};", ctx_ty(row)));
+        }
+        types.push_str(&format!("type {inn} {{ {fields} }}\n"));
+        // the decoder's arm for the row
+        decode.push_str(&format!("    if c.member == {k} {{\n"));
+        if row.served_ctx {
+            decode.push_str("        let __ctx = std::api::ServedContext { caller: c.caller, role: c.role, request_id: c.rid, via: c.via, exposure: c.exposure_name, generation: c.generation };\n");
+        } else if row.takes_ctx {
+            decode.push_str("        let __ctx = std::api::Context { caller: c.caller, role: c.role, request_id: c.rid, via: c.via };\n");
+        }
+        let build = {
+            let mut inits = vec!["at: __at".to_string()];
+            if row.request.is_some() {
+                inits.push("req: __req".to_string());
+            }
+            if row.takes_ctx {
+                inits.push("ctx: __ctx".to_string());
+            }
+            format!("return {inn} {{ {} }};\n", inits.join(", "))
+        };
+        if let Some(te) = &row.request {
+            if b.grpc {
+                decode.push_str("        if __at.pb {\n");
+                decode.push_str(&Wire::Pb(&pbc).decode(row, te, &bail));
+                decode.push_str(&format!("        {build}        }}\n"));
+            }
+            decode.push_str(&Wire::Json(codec).decode(row, te, &bail));
+        }
+        decode.push_str(&format!("        {build}    }}\n"));
+        // the row's eater: the member unpacked into the handler's arguments
+        let mut args: Vec<&str> = Vec::new();
+        if row.request.is_some() {
+            args.push("x.req");
+        }
+        if row.takes_ctx {
+            args.push("x.ctx");
+        }
+        let call = format!("self.{}({})", row.method, args.join(", "));
+        let ok = format!("__RpcOk_{t}_{k}");
+        outs.push(ok.clone());
+        types.push_str(&format!(
+            "type {ok} {{ at: __RpcAt_{t};{} }}\n",
+            row.response.as_ref().map_or(String::new(), |r| format!(" v: {};", crate::surfaces::type_text(r)))
+        ));
+        let on_fail = match (&row.error, row.server_error) {
+            (None, _) => None,
+            (Some(_), true) => Some(format!("return __RpcServerError_{t} {{ at: x.at }};")),
+            (Some(e), false) => {
+                let er = format!("__RpcErr_{t}_{k}");
+                outs.push(er.clone());
+                types.push_str(&format!("type {er} {{ at: __RpcAt_{t}; e: {}; }}\n", crate::surfaces::type_text(e)));
+                Some(format!("return {er} {{ at: x.at, e: err }};"))
+            }
+        };
+        let or = on_fail.map(|f| format!(" or {{ {f} }}")).unwrap_or_default();
+        fns.push_str(&format!("fn __rpc_row_{n}_{k}(x: {inn}) -> __RpcOut_{t} {{\n"));
+        match &row.response {
+            Some(_) => {
+                fns.push_str(&format!("    let __v = {call}{or};\n"));
+                fns.push_str(&format!("    return {ok} {{ at: x.at, v: __v }};\n}}\n"));
+            }
+            None => {
+                fns.push_str(&format!("    {call}{or};\n"));
+                fns.push_str(&format!("    return {ok} {{ at: x.at }};\n}}\n"));
+            }
+        }
+        // the encoder's arms for the row's outcomes
+        let publish = |kind: u8, body: String| format!("self.__rpc_ev(r.at.exposure, r.at.rid, {slot}, {kind}, {body});");
+        let ok_body = |w: Wire<'_>| match &row.response {
+            Some(r) => w.ok(r, "r.v"),
+            None => w.null().to_string(),
+        };
+        let both = |json: String, pbs: String| {
+            if b.grpc {
+                format!("if r.at.pb {{ {pbs} }} else {{ {json} }}")
+            } else {
+                json
+            }
+        };
+        encode.push_str(&format!(
+            "        {ok}(r) -> {{ {} }},\n",
+            both(publish(0, ok_body(Wire::Json(codec))), publish(0, ok_body(Wire::Pb(&pbc))))
+        ));
+        if let (Some(e), false) = (&row.error, row.server_error) {
+            // a classed error type's handler error carries the class its
+            // variant declares (spec/api.md § Error classes): the encoder
+            // numbers it from the `__RpcErr` member's error and publishes
+            // through `__rpc_err`; any other publishes as it always has
+            let err_event = |w: Wire<'_>| match Wire::Json(codec).class_steps(e) {
+                Some(steps) => format!("{steps}self.__rpc_err(r.at.exposure, r.at.rid, {slot}, __class, {});", w.err(row, e)),
+                None => publish(1, w.err(row, e)),
+            };
+            encode.push_str(&format!(
+                "        __RpcErr_{t}_{k}(r) -> {{ let err = r.e; {} }},\n",
+                both(err_event(Wire::Json(codec)), err_event(Wire::Pb(&pbc)))
+            ));
+        }
+    }
+    decode.push_str(&format!("    {bail}\n}}\n"));
+    outs.push(format!("__RpcServerError_{t}"));
+    types.push_str(&format!("type __RpcServerError_{t} {{ at: __RpcAt_{t}; }}\n"));
+    encode.push_str(&format!(
+        "        __RpcServerError_{t}(r) -> {{ self.__rpc_ev(r.at.exposure, r.at.rid, {slot}, 2, \"\"); }},\n    }}\n}}\n"
+    ));
+    // a set of one is its member
+    let set = |name: String, members: &[String]| match members {
+        [one] => format!("type {name} = {one};\n"),
+        many => format!("type {name} = {};\n", many.join(" | ")),
+    };
+    types.push_str(&set(format!("__RpcIn_{t}"), &ins));
+    types.push_str(&set(format!("__RpcOut_{t}"), &outs));
+    fns.push_str(&decode);
+    fns.push_str(&encode);
+    fns.push_str(&format!(
+        "seam __rpc_seam_{n}(c: std::api::RpcCall) {{\n    c -> self.__rpc_decode_{n} -> self -> self.__rpc_encode_{n};\n    or end;\n}}\n"
+    ));
+    (fns, types)
 }
 
 /// Which codec a call crosses by: the row's JSON, or its protobuf.
@@ -2089,6 +2959,37 @@ impl Wire<'_> {
             Wire::Pb(_) => "\"pb::\"",
         }
     }
+    fn shapes(&self) -> &Shapes<'_> {
+        match self {
+            Wire::Json(c) => c.shapes,
+            Wire::Pb(p) => p.shapes,
+        }
+    }
+    /// For an error type whose variants declare error classes (spec/api.md
+    /// § Error classes), the statements that number `err`'s class into
+    /// `__class` (`crate::surfaces::ERROR_CLASSES`' order from 1, 0 for a
+    /// variant declaring none); `None` for any other error type, whose
+    /// handler error is unclassed.
+    fn class_steps(&self, te: &TypeExpr) -> Option<String> {
+        let shapes = self.shapes();
+        let te = shapes.dealias(te);
+        let TypeClass::Enum { name, variants } = shapes.classify(&te) else { return None };
+        if variants.iter().all(|v| v.class.is_none()) {
+            return None;
+        }
+        let mut arms = String::new();
+        for v in variants {
+            let Some(c) = &v.class else { continue };
+            let n = crate::surfaces::ERROR_CLASSES.iter().position(|r| r.word == c.name)? + 1;
+            let pat = if v.fields.is_empty() {
+                format!("{name}::{}", v.name.name)
+            } else {
+                format!("{name}::{}({})", v.name.name, vec!["_"; v.fields.len()].join(", "))
+            };
+            arms.push_str(&format!("{pat} -> {{ __class = {n}; }}, "));
+        }
+        Some(format!("let mut __class = 0; match err {{ {arms}_ -> {{ }}, }} "))
+    }
     /// The text of a handler error's body: a protobuf one names its message.
     fn err(&self, row: &Row, te: &TypeExpr) -> String {
         match self {
@@ -2102,64 +3003,306 @@ impl Wire<'_> {
     }
 }
 
-fn thunk_steps(row: &Row, slot: usize, wire: Wire<'_>) -> String {
-    let mut s = String::new();
-    let bail = format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\"); return;");
-    let mut args = String::new();
-    if let Some(te) = &row.request {
-        s.push_str(&wire.decode(row, te, &bail));
-        args.push_str("__req");
-    }
-    if row.served_ctx {
-        s.push_str("let __ctx = std::api::ServedContext { caller: c.caller, role: c.role, request_id: c.rid, via: c.via, exposure: c.exposure_name, generation: c.generation };\n");
-    } else if row.takes_ctx {
-        s.push_str("let __ctx = std::api::Context { caller: c.caller, role: c.role, request_id: c.rid, via: c.via };\n");
-    }
-    if row.takes_ctx {
-        if !args.is_empty() {
-            args.push_str(", ");
-        }
-        args.push_str("__ctx");
-    }
-    let call = format!("self.{}({})", row.method, args);
-    let fail_branch = if row.error.is_none() {
-        None
-    } else if row.server_error {
-        Some(format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 2, \"\"); return;"))
-    } else {
-        let e = row.error.as_ref().expect("an error type");
-        Some(format!(
-            "self.__rpc_ev(c.exposure, c.rid, {slot}, 1, {}); return;",
-            wire.err(row, e)
-        ))
-    };
-    match (&row.response, fail_branch) {
-        (Some(resp), Some(fb)) => {
-            s.push_str(&format!("let __v = {call} or {{ {fb} }};\n"));
-            s.push_str(&format!(
-                "self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n",
-                wire.ok(resp, "__v")
-            ));
-        }
-        (Some(resp), None) => {
-            s.push_str(&format!("let __v = {call};\n"));
-            s.push_str(&format!(
-                "self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n",
-                wire.ok(resp, "__v")
-            ));
-        }
-        (None, Some(fb)) => {
-            s.push_str(&format!("{call} or {{ {fb} }};\n"));
-            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n", wire.null()));
-        }
-        (None, None) => {
-            s.push_str(&format!("{call};\n"));
-            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n", wire.null()));
-        }
-    }
-    s
+// ---- the holder of an exposure, and the main locus that places its listener (GH #1565) ----
+
+/// One way a main locus holds a locus: the params from the main locus down
+/// to it, each the locus that declares the param and the param.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Chain {
+    pub main: String,
+    /// `(owner, field)`, the main locus's first; the last field is the held
+    /// locus.
+    pub fields: Vec<(String, String)>,
 }
 
+impl Chain {
+    /// The fields as a path from the main locus: `admin.server`.
+    pub(crate) fn path(&self) -> String {
+        self.fields.iter().map(|(_, f)| f.as_str()).collect::<Vec<_>>().join(".")
+    }
+}
+
+/// Every locus the programs declare, by name.
+pub(crate) fn loci_by_name<'a>(programs: &[&'a Program]) -> BTreeMap<&'a str, &'a LocusDecl> {
+    let mut loci = BTreeMap::new();
+    for p in programs {
+        for d in flat_decls(&p.items) {
+            if let TopDecl::Locus(l) = d {
+                loci.insert(l.name.name.as_str(), l);
+            }
+        }
+    }
+    loci
+}
+
+/// The params of a locus in declaration order, each its name and its type
+/// as written (the declared type, or the path of its literal).
+fn params_in_order(l: &LocusDecl) -> Vec<(&ParamDecl, Option<String>)> {
+    let types = crate::surfaces::param_types(l);
+    l.members
+        .iter()
+        .filter_map(|m| match m {
+            LocusMember::Params(pb) => Some(pb.params.iter()),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| (p, types.get(&p.name.name).cloned()))
+        .collect()
+}
+
+/// Every chain by which a main locus holds `holder` through its params and
+/// theirs: the placed tree, which only a main locus roots.
+pub(crate) fn holder_chains(loci: &BTreeMap<&str, &LocusDecl>, holder: &str) -> Vec<Chain> {
+    fn walk<'a>(
+        loci: &BTreeMap<&str, &'a LocusDecl>,
+        l: &'a LocusDecl,
+        holder: &str,
+        main: &str,
+        path: &mut Vec<(String, String)>,
+        on: &mut BTreeSet<String>,
+        out: &mut Vec<Chain>,
+    ) {
+        if path.len() >= 16 {
+            return;
+        }
+        for (p, ty) in params_in_order(l) {
+            let Some(ty) = ty else { continue };
+            path.push((l.name.name.clone(), p.name.name.clone()));
+            if ty == holder {
+                out.push(Chain { main: main.to_string(), fields: path.clone() });
+            } else if let Some(child) = loci.get(ty.as_str()) {
+                if !child.is_main && on.insert(ty.clone()) {
+                    walk(loci, child, holder, main, path, on, out);
+                    on.remove(&ty);
+                }
+            }
+            path.pop();
+        }
+    }
+    let mut out = Vec::new();
+    for (name, l) in loci {
+        if !l.is_main || *name == holder {
+            continue;
+        }
+        let mut on = BTreeSet::from([name.to_string()]);
+        walk(loci, l, holder, name, &mut Vec::new(), &mut on, &mut out);
+    }
+    out
+}
+
+/// The placement entry a main locus writes for `field`.
+pub(crate) fn placement_entry<'a>(main: &'a LocusDecl, field: &str) -> Option<&'a hale_syntax::ast::PlacementEntry> {
+    main.members.iter().find_map(|m| match m {
+        LocusMember::Placement(pb) => pb.entries.iter().find(|e| e.field.name == field),
+        _ => None,
+    })
+}
+
+/// Whether a placement entry puts its field where a listener can run: a
+/// named cooperative pool `where async_io`, the one place an accept or a
+/// read parks a coroutine instead of the thread.
+pub(crate) fn hosts_listener(e: &hale_syntax::ast::PlacementEntry) -> bool {
+    use hale_syntax::ast::{PlacementConstraint, PlacementSpec};
+    matches!(&e.spec, PlacementSpec::Cooperative { pool: Some(p), .. } if p.name != "main")
+        && e.constraints.iter().any(|c| matches!(c.kind, PlacementConstraint::AsyncIo))
+}
+
+/// How many instances a placement entry fans its field into.
+pub(crate) fn entry_replicas(e: &hale_syntax::ast::PlacementEntry) -> i64 {
+    match &e.spec {
+        hale_syntax::ast::PlacementSpec::Pinned { replicas: Some(k), .. } => *k,
+        _ => 1,
+    }
+}
+
+/// Whether an address written in a holder reads the holder (`self.bind`):
+/// then the main locus can read it only once the holder is built.
+pub(crate) fn reads_holder(e: &Expr) -> bool {
+    let mut e = e.clone();
+    let mut found = false;
+    walk_expr_mut(&mut e, &mut |x| {
+        if matches!(x, Expr::KwSelf(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// An exposure's listener address (`bind:`, `path:`), written in its
+/// holder, as the main locus reads it: the listener is a param of the main
+/// locus born after the param the chain starts at, so each `self.<param>`
+/// the address reads is the holder's field as its construction built it,
+/// read down the chain (`self.server.bind`), whatever literal built it (a
+/// default, or an override at a construction of the main locus). A method
+/// of `self` or `self` itself cannot be read there; the error names it.
+pub(crate) fn address_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> {
+    rebase_for_main(chain, e, false)
+}
+
+/// An `http::Rest` exposure's `fallback:`, written in its holder, as the
+/// main locus reaches it, as its address is (`address_for_main`): the
+/// listener reads it off the holder as built. `self` itself is the holder
+/// (a holder that is its own handler), read down the chain
+/// (`self.server`); a method of the holder cannot be read there, and the
+/// error names it.
+pub(crate) fn fallback_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> {
+    rebase_for_main(chain, e, true)
+}
+
+fn rebase_for_main(chain: &Chain, e: &Expr, whole_self: bool) -> Result<Expr, String> {
+    const MAIN_SELF: &str = "__rpc_main_self";
+    let mut out = fresh(e);
+    let mut err: Option<String> = None;
+    walk_expr_mut(&mut out, &mut |x| {
+        if err.is_some() {
+            return;
+        }
+        match x {
+            Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_))) => {
+                if let Expr::Field { name, .. } = callee.as_ref() {
+                    err = Some(format!("`self.{}(…)`, a method of the holder", name.name));
+                }
+            }
+            Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                let sp = receiver.span();
+                let mut base = Expr::Ident(Ident::new(MAIN_SELF, sp));
+                for (_, f) in &chain.fields {
+                    base = Expr::Field { receiver: Box::new(base), name: Ident::new(f, sp), span: sp };
+                }
+                *receiver = Box::new(base);
+            }
+            Expr::KwSelf(sp) if whole_self => {
+                let sp = *sp;
+                let mut base = Expr::Ident(Ident::new(MAIN_SELF, sp));
+                for (_, f) in &chain.fields {
+                    base = Expr::Field { receiver: Box::new(base), name: Ident::new(f, sp), span: sp };
+                }
+                *x = base;
+            }
+            Expr::KwSelf(_) => err = Some("`self` itself".to_string()),
+            _ => {}
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    walk_expr_mut(&mut out, &mut |x| {
+        if let Expr::Ident(i) = x {
+            if i.name == MAIN_SELF {
+                *x = Expr::KwSelf(i.span);
+            }
+        }
+    });
+    Ok(out)
+}
+
+/// Whether a serve site's transport has a listener the compiler adds: a
+/// socket transport (`unix::Rpc`, `http::Rpc`, `mcp::Rpc`, `grpc::Rpc`),
+/// written at the site or held as a param of the holder.
+pub(crate) fn has_listener(l: &LocusDecl, transport: Option<&Expr>) -> bool {
+    unix_path_of(l, transport).is_some() || http_bind_of(l, transport).is_some()
+}
+
+/// The address a site's listener binds, as written in its holder.
+pub(crate) fn listener_address(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    unix_path_of(l, transport).or_else(|| http_bind_of(l, transport))
+}
+
+/// An `http::Rest` transport's `fallback:`, written at the serve site or
+/// in the param that holds the transport.
+pub(crate) fn rest_fallback_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    let lit: &Expr = match transport? {
+        e @ Expr::Struct { .. } => e,
+        e => {
+            let f = crate::surfaces::self_field(e)?;
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })?
+        }
+    };
+    match lit {
+        Expr::Struct { path, inits, .. } if is_http_rest(path) => {
+            inits.iter().find(|i| i.name.name == "fallback").map(|i| fresh(&i.value))
+        }
+        _ => None,
+    }
+}
+
+/// An `http::Rest` transport's `hubs:` (GH #1780), written at the serve
+/// site or in the param that holds the transport, as written.
+pub(crate) fn rest_hubs_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    let lit: &Expr = match transport? {
+        e @ Expr::Struct { .. } => e,
+        e => {
+            let f = crate::surfaces::self_field(e)?;
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })?
+        }
+    };
+    match lit {
+        Expr::Struct { path, inits, .. } if is_http_rest(path) => {
+            inits.iter().find(|i| i.name.name == "hubs").map(|i| fresh(&i.value))
+        }
+        _ => None,
+    }
+}
+
+/// One hub an `http::Rest` mounts: the path its WebSocket upgrade is
+/// taken at, and the main locus's param that is the hub.
+#[derive(Debug, Clone)]
+pub(crate) struct Mount {
+    pub path: String,
+    pub field: String,
+    pub span: Span,
+}
+
+/// `hubs: [("/path", self.hub), …]` as mounts, or the span of the first
+/// entry that is not a string literal and a `self.<param>` (the whole value
+/// when it is not an array literal).
+pub(crate) fn mounts_of(e: &Expr) -> Result<Vec<Mount>, Span> {
+    let Expr::Array(items, _) = e else { return Err(e.span()) };
+    let mut out = Vec::new();
+    for it in items {
+        let Expr::Tuple(parts, sp) = it else { return Err(it.span()) };
+        match parts.as_slice() {
+            [Expr::Literal(Literal::String(path), _), hub] => match crate::surfaces::self_field(hub) {
+                Some(f) => out.push(Mount { path: path.clone(), field: f.to_string(), span: *sp }),
+                None => return Err(hub.span()),
+            },
+            _ => return Err(*sp),
+        }
+    }
+    Ok(out)
+}
+
+/// The mounts a main locus's `http::Rest` exposures declare, each with
+/// the serve site's address as written (`bind:`) and its exposure's name
+/// (`as:`), in the order written.
+pub(crate) fn locus_mounts(l: &LocusDecl) -> Vec<(Mount, Option<Expr>, Option<String>)> {
+    let mut out = Vec::new();
+    for (_, site) in crate::surfaces::locus_serve_sites(l) {
+        let Some(hubs) = rest_hubs_of(l, site.transport) else { continue };
+        let Ok(ms) = mounts_of(&hubs) else { continue };
+        let addr = http_bind_of(l, site.transport);
+        let name = match site.option("as") {
+            Some(Expr::Literal(Literal::String(n), _)) => Some(n.clone()),
+            _ => None,
+        };
+        for m in ms {
+            out.push((m, addr.clone(), name.clone()));
+        }
+    }
+    out
+}
 
 // ---- the literals that build a serving locus (a construction site) ----
 
@@ -2231,7 +3374,7 @@ fn walk_match_mut(m: &mut hale_syntax::ast::MatchStmt, f: &mut dyn FnMut(&mut Ex
     }
 }
 
-fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
     for s in &mut b.stmts {
         match s {
             Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => walk_expr_mut(value, f),

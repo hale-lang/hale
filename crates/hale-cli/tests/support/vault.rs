@@ -1,5 +1,5 @@
 //! The vault a test's `hale` runs under (GH #989's Deferred line, closed):
-//! `hale dna init` and `upgrade` provision the organism's secrets and
+//! `hale habitat graft` and `hale dna upgrade` provision the organism's secrets and
 //! `hale dna secret set` fills a slot, so a test that ran them against the
 //! developer's vault left a throwaway organization's entries there, or a
 //! fake key in a real slot. Every `hale` a DNA test starts goes through
@@ -38,17 +38,12 @@ pub fn dir() -> PathBuf {
     static MADE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     MADE.get_or_init(|| {
         let root = root();
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                let Ok(pid) = name.split('-').next().unwrap_or("").parse::<i32>() else { continue };
-                let gone = pid > 0
-                    && unsafe { libc::kill(pid, 0) } != 0
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-                if gone {
-                    let _ = std::fs::remove_dir_all(e.path());
-                }
-            }
+        // the vaults of gone processes, each habitat down before its vault
+        // goes, and a habitat whose vault went first (GH #1653): `hale
+        // test`'s sweep, the one both share
+        let keep = std::env::var("HALE_DNA_KEEP_SCRATCH").is_ok_and(|v| !v.is_empty() && v != "0");
+        if !keep {
+            let _ = Command::new(env!("CARGO_BIN_EXE_hale")).args(["habitat", "sweep", "--test-vaults"]).arg(&root).output();
         }
         // a gone process whose pid this one reuses left nothing behind
         let module = module_path!().replace("::", ".");
@@ -62,9 +57,14 @@ pub fn dir() -> PathBuf {
     .clone()
 }
 
-/// `hale`, under this test process's vault.
+/// `hale`, under this test process's vault, and its local habitat (GH
+/// #1653): `XDG_DATA_HOME` inside the vault directory, so an organism a test
+/// births or migrates is never a tenant of the developer's habitat. The
+/// habitat comes down when the vault is swept, after the process is gone.
 pub fn hale() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
-    c.env("HALE_VAULT_DIR", dir()).env_remove("HALE_VAULT_ADDR");
+    // the habitat named outright too: a HALE_DNA_HABITAT the developer
+    // exported would otherwise win over XDG_DATA_HOME
+    c.env("HALE_VAULT_DIR", dir()).env_remove("HALE_VAULT_ADDR").env("XDG_DATA_HOME", dir().join("data")).env("HALE_DNA_HABITAT", dir().join("data/hale/habitat/local"));
     c
 }

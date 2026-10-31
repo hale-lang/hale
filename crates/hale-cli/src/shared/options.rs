@@ -16,6 +16,7 @@ pub(crate) const VALUE_FLAGS: &[&str] = &[
     "--target-cpu",
     "--target-cache",
     "--env",
+    "--adopt",
     "-o",
     "--out",
 ];
@@ -100,6 +101,8 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--workspace", false),
     // GH #409
     ("--env", true),
+    // a constitution adopted for this check only (`std::law::Standard`)
+    ("--adopt", true),
     ("--matrix", false),
     // F.40 P3: the target the program is checked for, parsed as
     // `hale build --target` parses it (design §1.3).
@@ -225,9 +228,21 @@ pub(crate) fn parse_build_options(
             // binding it injected.
             "--api" => {
                 return Err("`--api <path>` is retired with `bindings { api: … }`: a program \
-                            serves a surface it declares, `api::serve(NAME, unix::Rpc { path: \
-                            \"…\" })` (spec/api.md); `hale check --api` prints its description"
+                            serves a surface it declares, from an exposure param, `web: api::Exposure = \
+                            api::serve(NAME, unix::Rpc { path: \"…\" }, as: \"web\", bound: 64, on_full: refuse);` \
+                            (spec/api.md); `hale check --api` prints its description"
                     .to_string());
+            }
+            // A constitution adopted into the root locus for this build
+            // only, as an environment's is (`std::law::Standard`).
+            "--adopt" => {
+                let v = args.get(i + 1).filter(|v| !v.is_empty() && !v.starts_with("--")).ok_or_else(|| {
+                    "--adopt requires a constitution (e.g. --adopt std::law::Standard)".to_string()
+                })?;
+                if !opts.adopt.contains(v) {
+                    opts.adopt.push(v.clone());
+                }
+                i += 2;
             }
             // GH #1109: the deployment target. Its constitution is
             // adopted as `check --env` adopts it.
@@ -617,6 +632,28 @@ pub(crate) fn resolve_build_env(
 /// symbol at link, and `hale run --csrc glue.c` is the documented way to
 /// run an `@ffi` program; dropping the flag's copy leaves the options,
 /// and so the identity, exactly the flagless invocation's.
+/// GH #1566: the source table a build without a line table hands codegen
+/// (`BuildOptions::site_sources`), so F.31's runtime backstop names
+/// `file:line:col` in `hale run` and `hale test` too.
+pub(crate) fn site_sources(
+    file_bases: &[(u32, std::path::PathBuf, u32)],
+    sources: &std::collections::BTreeMap<std::path::PathBuf, String>,
+) -> hale_codegen::DebugSources {
+    hale_codegen::DebugSources {
+        files: file_bases
+            .iter()
+            .filter_map(|(base, path, len)| {
+                sources.get(path).map(|text| hale_codegen::DebugSourceFile {
+                    base: *base,
+                    len: *len,
+                    path: path.clone(),
+                    text: text.clone(),
+                })
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn identity_options(
     options: &hale_codegen::BuildOptions,
     snap: &hale_frontend::snapshot::Snapshot,
@@ -663,6 +700,7 @@ pub(crate) fn build_config(
     });
     config.allow_unowned_subscriber =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    config.adopt = options.adopt.clone();
     config
 }
 

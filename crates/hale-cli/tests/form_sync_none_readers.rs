@@ -164,31 +164,55 @@ main locus App {
 fn main() { App { }; }
 ";
 
-const UNSYNCHRONIZED: &str = "it holds unsynchronized mutable state";
+/// The map itself, reached by two main-locus fields placed on different
+/// pools.
+const ALIASED_MAP: &str = "\
+type Entry { k: Int; v: Int; }
 
-#[test]
-fn sharing_an_instance_holding_a_sync_none_map_across_pools_is_warned() {
-    let root = scratch("alias_none");
-    let (ok, out) = check(&root, ", sync = none", ALIASED_HOLDS);
-    assert!(ok, "a warning, not an error: {out}");
-    assert!(out.contains("is shared by `a` and `b`") && out.contains(UNSYNCHRONIZED), "{out}");
-    assert!(out.contains("Registry"), "the warning names the map: {out}");
-    let _ = std::fs::remove_dir_all(&root);
+@form(hashmap)
+locus Registry {
+    capacity { pool entries of Entry indexed_by k; }
 }
 
-#[test]
-fn sharing_an_instance_holding_a_map_inference_left_unsynchronized_is_still_warned() {
-    let root = scratch("alias_plain");
-    let (ok, out) = check(&root, "", ALIASED_HOLDS);
-    assert!(ok, "a warning, not an error: {out}");
-    assert!(out.contains("is shared by `a` and `b`") && out.contains(UNSYNCHRONIZED), "{out}");
-    let _ = std::fs::remove_dir_all(&root);
+locus A { params { reg: Registry = Registry { }; } run() { } }
+locus B { params { reg: Registry = Registry { }; } run() { } }
+
+main locus App {
+    params { reg: Registry = Registry { };
+             a: A = A { reg: self.reg };
+             b: B = B { reg: self.reg }; }
+    placement { a: pinned(core = 0); b: pinned(core = 1); }
 }
 
+fn main() { App { }; }
+";
+
+const ALIAS: &str = "shares one instance across pools";
+
+/// GH #1566: one instance two pools reach is refused where it is handed
+/// over, whatever map it holds: `Shared` itself is unsynchronized.
 #[test]
-fn sharing_an_instance_holding_a_serialized_map_across_pools_is_not_warned() {
-    let root = scratch("alias_serialized");
-    let (ok, out) = check(&root, ", sync = serialized", ALIASED_HOLDS);
-    assert!(ok && !out.contains(UNSYNCHRONIZED), "{out}");
+fn sharing_an_instance_holding_a_map_across_pools_is_refused() {
+    for (tag, sync) in [("none", ", sync = none"), ("plain", ""), ("serialized", ", sync = serialized")] {
+        let root = scratch(&format!("alias_{tag}"));
+        let (ok, out) = check(&root, sync, ALIASED_HOLDS);
+        assert!(!ok && out.contains(ALIAS) && out.contains("`Shared` (`self.sh`)"), "{tag}: {out}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// A map whose form synchronizes access from another domain may be
+/// shared across pools; one left unsynchronized may not.
+#[test]
+fn sharing_a_serialized_map_across_pools_is_accepted() {
+    let root = scratch("alias_map_serialized");
+    let (ok, out) = check(&root, ", sync = serialized", ALIASED_MAP);
+    assert!(ok && !out.contains(ALIAS) && !out.contains("unsynchronized"), "{out}");
     let _ = std::fs::remove_dir_all(&root);
+    for (tag, sync) in [("none", ", sync = none"), ("plain", "")] {
+        let root = scratch(&format!("alias_map_{tag}"));
+        let (ok, out) = check(&root, sync, ALIASED_MAP);
+        assert!(!ok && out.contains(ALIAS), "{tag}: {out}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

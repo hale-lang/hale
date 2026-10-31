@@ -48,7 +48,7 @@ structure outside that group and an uninstantiated declaration remain distinct.
 Dirty source, changed committed source and invalid committed source exercise the
 real provenance, conflict and failure paths. These are declaration inspection
 tests, not proof of semantic position administration or live occupants.
-One fixture uses ordinary `hale dna new` with an owned toolchain cache, preserving
+One fixture uses ordinary `hale habitat graft` with an owned toolchain cache, preserving
 the generated, ignored `vendor/dna` import. It never runs the organization or a
 model. Valid, invalid and missing ignored dependency bytes exercise cache
 invalidation at unchanged source HEAD, recovery and preservation of project refs,
@@ -403,14 +403,15 @@ use, source refusal, source races, access loss, framing/context boundaries and
 the disabled host profile. It checks project refs/status stay unchanged.
 
 `startup.spec.mjs` exercises the checkout launcher with a real disposable
-`hale dna new` project, its generated source committed only in the test worktree.
+`hale habitat graft` project, its generated source committed only in the test worktree.
 It covers building and serving the native API, captured vendored Organization
 source, existing-binary startup, independent process shutdown, temporary-build
 cleanup and incomplete private-service configuration. It does not seed a sample
 Record/catalog, run an organization body or model, or initialize Postgres/Compose.
 Native processes remain bounded; these are startup checks, not foundation suites.
 The cases after the first hand the launcher `HALE_API_BIN` and, when it is set,
-`HALE_NATIVE_HEAD_BIN`. CI builds that head beside the first case rather than
+`HALE_NATIVE_HEAD_BIN` and `HALE_NATIVE_FACE_BIN` (the standard face in front of the head,
+which serves the page; a case without it builds it). CI builds that head beside the first case rather than
 before the suite (GH #1147) and sets `HALE_NATIVE_HEAD_BUILD_STATUS` to the file
 its build writes its exit status to when it ends; a case that needs the head
 waits for that file, and fails with the build's status if it is not `0`.
@@ -680,7 +681,7 @@ node dna/face/tests/native-commands.mjs
 
 What each run starts, and from what:
 
-- **The project.** `hale dna new` scaffolds one under the evidence directory
+- **The project.** `hale habitat graft` scaffolds one under the evidence directory
   (a vendored core, a record, `dna/org`); the acceptance Body
   (`dna/api/practice_review/tests/body/main.hl`) is written in as the
   organization, its imports pointed at this checkout, and the project is
@@ -744,8 +745,8 @@ inherited from the caller. Every owned process group is stopped in cleanup,
 and the host's children reaped after it. The retained run directory contains
 the Git project, journal, canonical candidate blobs, native logs, request
 transcript, receipts, binary hashes and `result.json`; a failed case exits
-nonzero. This is local Record/host/organization acceptance, not routing-1
-Ledger or multi-clone evidence.
+nonzero. This is local Record/host/organization acceptance, not multi-clone
+evidence.
 
 ### Browser operating flow against the native provider
 
@@ -848,10 +849,15 @@ handoffs explicitly bind no practice in force; nonempty bound acceptance is
 covered separately by the focused native Task fixtures.
 
 `native-task-browser.spec.mjs` uses `native-task-harness.mjs` and two explicit,
-matching source-built binaries. It creates a fresh Git Record, invokes native
-`Dna.ask` handoffs, installs the closed application-bound Task policy and starts
-the real composed API. It seats the actor at the board — reassignment and
-retirement are the owner's gated commands — and grants retirement so the
+matching source-built binaries: the composed API (`dna/api/practice_review`;
+the plain `dna/api` head serves no person reads) and the Task seed
+(`dna/api/tests/tasks_seed.hl`). The seed births a fresh record in memory,
+owned by `HALE_DNA_MEMORY_DSN_OWNER`, and a body born over that record asks
+twice; the planner's word admits each ask and its person case is handed. It
+then installs the closed application-bound Task policy and starts the real
+composed API. The record is under local trust, so the actor's person holds
+every position and the head's slice offers every command; the policy is what
+grants or refuses reassignment and retirement, and it grants retirement so the
 assignee's person read carries the eligible recipients the picker offers. There
 is no Body, Host or graph service, and successful command responses and
 assignment outcomes are not mocked. Its three cases cover
@@ -860,14 +866,15 @@ response is discarded followed by API restart and GET-only recovery; and stale
 assignment, retired-person and outside-policy refusals.
 
 ```sh
-HALE_NATIVE_TASK_API=/absolute/path/command-api \
-HALE_NATIVE_TASK_SEED=/absolute/path/task-seed \
+HALE_NATIVE_TASK_API=/absolute/path/to/target/seeds/practice_review/practice_review \
+HALE_NATIVE_TASK_SEED=/absolute/path/to/target/seeds/tasks_seed/tasks_seed \
 HALE_NATIVE_TASK_EVIDENCE=/absolute/path/task-evidence \
   node node_modules/@playwright/test/cli.js test \
   --config tests/playwright.config.mjs native-task-browser.spec.mjs
 ```
 
-Without both binary paths, native cases skip visibly. The harness isolates the
+Without both binary paths, native cases skip visibly; no CI job supplies them
+yet, so the lane runs by hand. The harness isolates the
 environment, applies the existing native process bounds and stops every owned
 process group. Retained evidence includes native Record facts, requests, binary
 hashes and process exits. This gate does not cover person retirement commands,

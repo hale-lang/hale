@@ -90,18 +90,30 @@ fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
     })
 }
 
-/// GH #829: a program with no entry point, with `fn main() { }`
+/// Does the program have the top-level `fn main` a build starts at?
+fn has_fn_main(program: &hale_syntax::ast::Program) -> bool {
+    program.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main"))
+}
+
+/// GH #829: a program with no `fn main`, with `fn main() { }`
 /// appended — the smallest thing that makes it a program without
 /// changing what codegen must lower. Every declaration it carries is
 /// still lowered (codegen walks the decls, not the call graph), so
 /// the divergences that hide in a library-shaped snippet are reached.
 ///
-/// A program that already has an entry point is returned untouched:
-/// a second `main` would be the harness inventing a compile error.
+/// That includes a library APPLICATION seed: a `main locus` with no
+/// `fn main`, which an importer starts and which checks clean alone.
+/// Built alone it is refused at the locus's name ("a `main locus` is
+/// started by `fn main` ..."), the build's located answer for a seed
+/// nothing starts, not a divergence; built as a library it reaches
+/// every declaration the same way.
+///
+/// A program that already has a `fn main` is returned untouched: a
+/// second one would be the harness inventing a compile error.
 fn with_synthetic_main(
     program: &hale_syntax::ast::Program,
 ) -> std::borrow::Cow<'_, hale_syntax::ast::Program> {
-    if has_entry_point(program) {
+    if has_fn_main(program) {
         return std::borrow::Cow::Borrowed(program);
     }
     let stub = hale_syntax::parse_source("fn main() { }\n")
@@ -331,12 +343,14 @@ fn every_check_clean_corpus_program_also_builds() {
         checked
     );
 
-    // A RATCHET, not a clean bill of health. 44 divergences exist
-    // today over 1507 swept programs (GH #829 widened the sweep by
-    // the 88 programs with no entry point, which found four more
-    // and fixed four); each is a check the compiler performs in
-    // codegen that the checker could perform earlier, with a span.
-    // They are recorded so that:
+    // A RATCHET, not a clean bill of health. Each recorded divergence
+    // is a check the compiler performs in codegen that the checker
+    // could perform earlier, with a span. 2026-10-14 closed fourteen
+    // of the twenty-one recorded then; the seven that remain are one
+    // shape, a `main locus` with no `fn main` ("program has no `fn
+    // main()`": five check_rules.rs programs and the two
+    // imported-main-claims seeds), whose check-side refusal is its own
+    // change. They are recorded so that:
     //
     //   * a NEW divergence fails immediately — that is the point;
     //   * a FIXED one also fails, so the list cannot quietly rot
@@ -484,6 +498,27 @@ fn an_entry_point_less_program_is_built() {
     }
 }
 
+/// A library application seed — a `main locus` with no `fn main`, which
+/// an importer starts — checks clean alone, and `hale build` of it alone
+/// is refused at the locus's name (`entry_point_placement`). The sweep
+/// builds it as the library it is, with the synthetic `fn main() { }`
+/// it gives every seed without one, so its declarations are lowered and
+/// its being unstarted is not counted as a divergence.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_library_application_seed_is_built_as_a_library() {
+    let library = "main locus App {\n\
+                   run { println(\"hi\"); }\n\
+                   }\n";
+    let program = hale_syntax::parse_source(library).expect("parses");
+    assert!(!has_fn_main(&program));
+    let errors: Vec<String> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "it checks clean alone: {errors:?}");
+    assert_eq!(sweep_verdict(library, "hale_cb_library_application"), Verdict::Built);
+}
+
 /// GH #1076 (U1, review): a quantity literal in a default checked clean
 /// and was refused by the build. A parameter's default is typed at the
 /// invocation in a walk whose findings the check discards, which took
@@ -585,22 +620,247 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
     assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
 }
 
-/// GH #1076 (U1, review 2): a struct field's default is evaluated in the
-/// scope of the literal that leaves the field, so `Money(1)` in it calls
-/// the constructing fn's local `Money` (a fn), not the scalar type the
-/// declaration's scope would name. The check judges the cast there, and
-/// the program checks, builds and prints 1; with no local, the check
-/// refuses the cast before the build.
+/// A fn value bound in scope shadows a fn of the same name in a call:
+/// the call runs the binding, as the code reads, in the check and the
+/// build alike (the desugar sequence calls the binding as a value). The
+/// call ran the top-level fn: `apply(g, 2)` beside `fn f` printed 3, and
+/// `{ let helper = zero; helper() }` printed 1. A binding declared as a
+/// fn value (a parameter or a `let` of a `fn(..)` type, a `let` of a fn's
+/// name, a `for` over fns' names) shadows a fn, a generic fn among them;
+/// one the declaration does not show to be a fn value is refused.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
-fn a_struct_default_cast_is_judged_in_the_literals_scope() {
+fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
+    let rows: [(&str, &str); 4] = [
+        (
+            "fn f(n: Int) -> Int { return n + 1; }\n\
+             fn g(n: Int) -> Int { return n * 10; }\n\
+             fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }\n\
+             fn main() { println(apply(g, 2)); }\n",
+            "20\n",
+        ),
+        (
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() { let helper = zero; println(helper()); }\n",
+            "0\n",
+        ),
+        (
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() { for helper in [zero, zero] { println(helper()); } }\n",
+            "0\n0\n",
+        ),
+        (
+            "fn helper<T>(x: T) -> T { return x; }\n\
+             fn plus(x: Int) -> Int { return x + 100; }\n\
+             fn main() { let helper = plus; println(helper(5)); }\n",
+            "105\n",
+        ),
+    ];
+    for (i, (src, wanted)) in rows.iter().enumerate() {
+        assert_eq!(build_and_run_probe(src, &format!("shadowing_fn_value_{i}")), Ok(wanted.to_string()), "{src}");
+    }
+    // A variant's binding is declared as its payload is: a fn-typed
+    // payload's binding shadows (it was refused, "cannot type", and a
+    // pattern can carry no annotation).
+    let variant = "type Op = enum { Use(fn(Int) -> Int), Pair(fn(Int) -> Int, Int), Nothing };\n\
+                   fn f(n: Int) -> Int { return n + 1; }\n\
+                   fn ten(n: Int) -> Int { return n * 10; }\n\
+                   fn main() {\n\
+                       let o = Op::Use(ten);\n\
+                       let r = match o { Op::Use(f) -> f(2), Op::Pair(f, k) -> f(k), Op::Nothing -> 0, };\n\
+                       println(r);\n\
+                       let p = Op::Pair(ten, 3);\n\
+                       let q = match p { Op::Pair(f, k) -> f(k), _ -> 0, };\n\
+                       println(q);\n\
+                   }\n";
+    assert_eq!(build_and_run_probe(variant, "shadowing_variant_payload"), Ok("20\n30\n".to_string()), "{variant}");
+    // A binding the desugar cannot see as a fn value (a tuple pattern's,
+    // whose type the check does not know) would read as the callee and is
+    // not: refused at the call, rather than called past.
+    assert_refused_by_the_check(
+        &[(
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() {\n\
+                 let pair = (zero, 5);\n\
+                 match pair {\n\
+                     (helper, n) -> println(helper() + n),\n\
+                     _ -> println(\"none\"),\n\
+                 }\n\
+             }\n",
+            "helper()",
+            "`helper` is bound here to a value the check cannot type",
+        )],
+        "shadowing_unseen",
+    );
+}
+
+/// A binding named like a builtin is what a call of the name runs, as one
+/// named like a program's fn is, when it is declared as a fn value: a
+/// parameter `len`, a local `min`, a local named like a `bounded`
+/// intrinsic (`count`). A call the compiler wrote is the compiler's: an
+/// f-string's `to_string` and `__fmt` beside bindings of those names. A
+/// binding of a type that is no fn (`let max = 10`) leaves the builtin
+/// the callee, and calling a value that is no fn is refused.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_in_scope_shadows_a_builtin_in_a_call() {
+    let rows: [(&str, &str); 6] = [
+        // an f-string's rendering is the compiler's, beside a binding of
+        // `to_string` (it called the binding)
+        (
+            "fn ts(n: Int) -> String { return \"captured\"; }\n\
+             fn main() { let to_string = ts; let n = 7; println(f\"n={n}\"); }\n",
+            "n=7\n",
+        ),
+        // a binding of a known type that is no fn leaves the builtin the
+        // callee (it was a call through an `Int`, refused by the build)
+        (
+            "fn main() { let max = 10; println(max(1, 2), \" \", max); let len = 4; println(len(\"abc\"), \" \", len); }\n",
+            "2 10\n3 4\n",
+        ),
+        (
+            "fn seven(s: String) -> Int { return 7; }\n\
+             fn run(len: fn(String) -> Int) -> Int { return len(\"abc\"); }\n\
+             fn main() { println(run(seven)); }\n",
+            "7\n",
+        ),
+        (
+            "fn lower(a: Int, b: Int) -> Int { return a * 100 + b; }\n\
+             fn main() { let min = lower; println(min(1, 2)); }\n",
+            "102\n",
+        ),
+        (
+            "type Buf { vals: bounded[Int; 4]; }\n\
+             fn noop(b: Buf) -> Int { return 42; }\n\
+             fn main() { let b = Buf { }; let count = noop; println(count(b)); }\n",
+            "42\n",
+        ),
+        (
+            "fn zero(x: Int) -> String { return \"zero\"; }\n\
+             fn main() { let __fmt = zero; let n = 3; println(f\"{n:>4}|\"); }\n",
+            "   3|\n",
+        ),
+    ];
+    for (i, (src, wanted)) in rows.iter().enumerate() {
+        assert_eq!(build_and_run_probe(src, &format!("shadowing_builtin_{i}")), Ok(wanted.to_string()), "{src}");
+    }
+    // A call through a value that is no fn, refused at the callee.
+    assert_refused_by_the_check(
+        &[("fn main() { let x = 3; println(x(2)); }\n", "x", "this is a value of type `Int`, not a fn")],
+        "call_through_int",
+    );
+}
+
+/// The rule holds in every expression a program holds, not only in
+/// bodies: a block that binds a fn value in a const, a record field's
+/// default, a locus param's default or a fn param's default calls the
+/// binding (each printed 3, the top-level `f`'s answer).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_shadows_a_fn_outside_bodies_too() {
+    let src = "fn f(n: Int) -> Int { return n + 1; }\n\
+               fn g(n: Int) -> Int { return n * 10; }\n\
+               const C: Int = { let f = g; f(2) };\n\
+               type R { v: Int = { let f = g; f(3) }; }\n\
+               locus L {\n\
+                   params { p: Int = { let f = g; f(4) }; }\n\
+               }\n\
+               fn d(x: Int = { let f = g; f(5) }) -> Int { return x; }\n\
+               fn main() {\n\
+                   let l = L { };\n\
+                   let r = R { };\n\
+                   println(C, \" \", r.v, \" \", l.p, \" \", d());\n\
+               }\n";
+    assert_eq!(build_and_run_probe(src, "shadowing_outside_bodies"), Ok("20 30 40 50\n".to_string()), "{src}");
+}
+
+/// A store into an element of an array held in an array (`kk[1][0] = s`)
+/// and into a part of a tuple (`t.0 = s`), at a local or under a record's
+/// field, checked clean and the build refused them ("lvalue: cannot step
+/// into non-struct array element", "non-addressable type"): they are
+/// ordinary places, and lowering walks to them now. A copy made before the
+/// store (`let copy = kk;`, `let u = t;`) keeps its value.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_store_into_a_nested_element_or_a_tuple_part_lowers() {
+    let src = "type R { s: String = \"\"; pair: (String, Int); grid: [[Int; 2]; 2]; }\n\
+               fn main() {\n\
+                   let s = std::str::upper(\"x\");\n\
+                   let mut kk = [[\"a\", \"b\"], [\"c\", \"d\"]];\n\
+                   let copy = kk;\n\
+                   kk[1][0] = s;\n\
+                   println(kk[1][0], kk[0][1], copy[1][0]);\n\
+                   let mut t = (\"p\", 1);\n\
+                   let u = t;\n\
+                   t.0 = s;\n\
+                   t.1 = 7;\n\
+                   println(t.0, t.1, u.0, u.1);\n\
+                   let mut r = R { pair: (\"q\", 4), grid: [[1, 2], [3, 4]] };\n\
+                   r.pair.1 = 8;\n\
+                   r.grid[1][1] = 9;\n\
+                   println(r.pair.1, r.grid[1][1]);\n\
+               }\n";
+    assert_eq!(build_and_run_probe(src, "nested_lvalues"), Ok("Xbc\nX7p1\n89\n".to_string()), "{src}");
+}
+
+/// A variant's pattern takes a binding, `_` or a literal for each value:
+/// a nested pattern there (`Op::Pair((a, b))`) checked clean and the build
+/// refused it, unlocated ("constructor pattern arg must be a binding, `_`,
+/// or literal at v0.1"). The check refuses it at the nested pattern; the
+/// neighbour that binds the value and reads its parts builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
+    assert_refused_by_the_check(
+        &[(
+            "type Op = enum { Pair((Int, Int)), Nothing };\n\
+             fn main() { let o = Op::Pair((1, 2)); let r = match o { Op::Pair((a, b)) -> a + b, Op::Nothing -> 0, }; println(r); }\n",
+            "(a, b)",
+            "a variant's pattern takes a binding, `_` or a literal for each of its values",
+        )],
+        "nested_variant_pattern",
+    );
+    assert_built(
+        "type Op = enum { Pair((Int, Int)), Nothing };\n\
+         fn main() { let o = Op::Pair((1, 2)); let r = match o { Op::Pair(t) -> t.0 + t.1, Op::Nothing -> 0, }; println(r); }\n",
+        "hale_cb_nested_variant_pattern_neighbour",
+    );
+}
+
+/// The check refuses, before any build, what a default would read of the
+/// scope that leaves it (spec/types.md § Locus params: a default reads
+/// only its own fields and constants): each program's errors carry the
+/// rule's words.
+fn refused_by_the_default_rule(src: &str) -> bool {
+    let program = hale_syntax::parse_source(src).expect("parses");
+    entries::check_program(&program)
+        .into_iter()
+        .any(|d| d.is_error() && d.message.starts_with("a default reads only its own fields and constants"))
+}
+
+/// GH #1076 (U1, review 2): a struct field's default `Money(1)` is the
+/// scalar's cast, judged where the default is declared. A constructing
+/// fn's local `Money` would be read in its place where the literal leaves
+/// the field, so the check refuses that literal; with no local, the check
+/// refuses the cast itself before the build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_struct_default_cast_is_judged_where_it_is_declared() {
     let shadows = "unit cent;\n\
                    type Money = quantity Int in cent;\n\
                    type S { n: Int = Money(1); }\n\
                    fn id(n: Int) -> Int { return n; }\n\
                    fn main() { let Money = id; let s = S {}; println(s.n); }\n";
-    assert_eq!(build_and_run_probe(shadows, "unit_default_shadow"), Ok("1\n".to_string()), "{}", shadows);
+    assert!(refused_by_the_default_rule(shadows), "{}", shadows);
     let cast = "unit cent;\n\
                 type Money = quantity Int in cent;\n\
                 type S { n: Int = Money(1); }\n\
@@ -631,13 +891,13 @@ fn a_quantity_default_converts_into_its_fields_and_parameters_type() {
 }
 
 /// GH #1076 (U1, review 3): an omitted struct default is typed where it
-/// is evaluated, so the check follows the scopes it opens (a block binding
-/// `Money` itself), the parameter defaults its calls leave and the field
-/// defaults its own literals leave, each in the constructing fn's scope.
-/// Each shadowing program checks, builds and prints 1. With nothing
-/// shadowing the nested literal's cast, the check refuses it once, at
-/// `Inner`'s default, before the build (`Outer {}` evaluates `Inner {}`,
-/// whose omitted `n` the build would otherwise reach).
+/// is evaluated, so the check follows the scopes it opens: a block of the
+/// default binding `Money` itself checks, builds and prints 1. A caller's
+/// `Money` that the default, a parameter default its call leaves, or a
+/// nested literal's default would read in place of the scalar is refused
+/// at the literal or call (a default reads only its own fields and
+/// constants). With nothing shadowing the nested literal's cast, the
+/// check refuses it once, at `Inner`'s default, before the build.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -647,6 +907,7 @@ fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
                  fn id(n: Int) -> Int { return n; }\n\
                  type S { n: Int = { let Money = id; Money(1) }; }\n\
                  fn main() { let s = S {}; println(s.n); }\n";
+    assert_eq!(build_and_run_probe(block, "unit_block_default"), Ok("1\n".to_string()), "{}", block);
     let through_fn = "unit cent;\n\
                       type Money = quantity Int in cent;\n\
                       fn id(n: Int) -> Int { return n; }\n\
@@ -659,8 +920,8 @@ fn an_omitted_struct_default_is_checked_where_it_is_evaluated() {
                   type Inner { n: Int = Money(1); }\n\
                   type Outer { inner: Inner = Inner {}; }\n\
                   fn main() { let Money = id; let o = Outer {}; println(o.inner.n); }\n";
-    for (src, tag) in [(block, "unit_block_default"), (through_fn, "unit_fn_default"), (nested, "unit_nested_default")] {
-        assert_eq!(build_and_run_probe(src, tag), Ok("1\n".to_string()), "{}", src);
+    for src in [through_fn, nested] {
+        assert!(refused_by_the_default_rule(src), "{}", src);
     }
     let cast = "unit cent;\n\
                 type Money = quantity Int in cent;\n\
@@ -726,19 +987,19 @@ fn a_scalars_cast_in_an_omitted_struct_default_is_lowered_from_its_row() {
     }
 }
 
-/// U2 (review 2): one default evaluated in two scopes has two answers.
-/// A local that shadows the type in one scope makes the default's
-/// `ItemId(1)` a call of the local there, and the cast elsewhere: each
-/// evaluation's row is keyed by the evaluation (the literal that leaves
-/// the field, the call that leaves the parameter), and lowering reads
-/// the one it lowers. Before, the first evaluation's row was every
-/// evaluation's, and each program below printed `1` for the shadowed
-/// one: the call of `bump` was dropped. Both orders of the two
-/// constructions, the shadowed one alone, and a parameter's default.
+/// U2 (reviews 2 and 3): a default read in two scopes would have two
+/// answers, so a scope that would change its meaning is refused. A local
+/// that shadows the type `ItemId` where a literal or call leaves the
+/// default (`ItemId(1)` would call the local), in a fn's body or in
+/// another default's own block, is refused at that literal or call (a
+/// default reads only its own fields and constants). Both orders of two
+/// constructions, the shadowed one alone, a parameter's default, and the
+/// nested forms. Two nested evaluations in one scope, which nothing
+/// shadows, have two paths and two rows, equal, and print `1` twice.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
-fn a_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
+fn a_default_evaluated_in_a_shadowing_scope_is_refused() {
     let shadowed_second = "type ItemId = distinct Int;\n\
                            type S { n: ItemId = ItemId(1); }\n\
                            fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
@@ -767,106 +1028,50 @@ fn a_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
                      { let ItemId = bump; println(take()); }\n\
                      println(a);\n\
                      }\n";
-    for (src, tag, printed) in [
-        (shadowed_second, "default_scopes_second", "11\n1\n"),
-        (shadowed_first, "default_scopes_first", "11\n1\n"),
-        (shadowed_alone, "default_scopes_alone", "11\n"),
-        (parameter, "default_scopes_param", "11\n1\n"),
-    ] {
-        assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
+    let nested = "type ItemId = distinct Int;\n\
+                  fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                  type Inner { n: ItemId = ItemId(1); }\n\
+                  type Outer {\n\
+                  a: Inner = Inner {};\n\
+                  b: Inner = { let ItemId = bump; Inner {} };\n\
+                  }\n\
+                  fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
+    let nested_parameter = "type ItemId = distinct Int;\n\
+                            fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
+                            fn take(n: ItemId = ItemId(1)) -> ItemId { return n; }\n\
+                            type Outer {\n\
+                            a: ItemId = take();\n\
+                            b: ItemId = { let ItemId = bump; take() };\n\
+                            }\n\
+                            fn main() { let o = Outer {}; println(Int(o.a)); println(Int(o.b)); }\n";
+    for src in [shadowed_second, shadowed_first, shadowed_alone, parameter, nested, nested_parameter] {
+        assert!(refused_by_the_default_rule(src), "{}", src);
     }
-}
-
-/// U2 (review 3): the nested form. One `Outer {}` evaluates `Inner`'s
-/// default twice, once in each field's default, and `b`'s scope shadows
-/// the type. Keyed by the outermost evaluation alone, the two shared one
-/// key, so `a`'s row lowered `b`'s call of `bump` as the cast and each
-/// shadowed program below printed `1` where it says `11`. The key is the
-/// whole evaluation path (`Outer {}`, then the `Inner {}` or the call in
-/// the field's default), so each nested evaluation reads its own. The
-/// reviewer's program, its fields reversed, a parameter's default left by
-/// a call in a field's default, the shadowed field alone, and two nested
-/// evaluations in one scope: those have two paths and two rows, equal,
-/// and print `1` twice.
-///
-/// Plain string literals, for the reason given above.
-#[test]
-fn a_nested_default_evaluated_in_two_scopes_lowers_each_scopes_meaning() {
-    let reviewed = "type ItemId = distinct Int;\n\
-                    fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
-                    type Inner { n: ItemId = ItemId(1); }\n\
-                    type Outer {\n\
-                    a: Inner = Inner {};\n\
-                    b: Inner = { let ItemId = bump; Inner {} };\n\
-                    }\n\
-                    fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
-    let reversed = "type ItemId = distinct Int;\n\
-                    fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
-                    type Inner { n: ItemId = ItemId(1); }\n\
-                    type Outer {\n\
-                    a: Inner = { let ItemId = bump; Inner {} };\n\
-                    b: Inner = Inner {};\n\
-                    }\n\
-                    fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
-    let parameter = "type ItemId = distinct Int;\n\
-                     fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
-                     fn take(n: ItemId = ItemId(1)) -> ItemId { return n; }\n\
-                     type Outer {\n\
-                     a: ItemId = take();\n\
-                     b: ItemId = { let ItemId = bump; take() };\n\
-                     }\n\
-                     fn main() { let o = Outer {}; println(Int(o.a)); println(Int(o.b)); }\n";
-    let shadowed_alone = "type ItemId = distinct Int;\n\
-                          fn bump(n: Int) -> ItemId { return ItemId(n + 10); }\n\
-                          type Inner { n: ItemId = ItemId(1); }\n\
-                          type Outer { b: Inner = { let ItemId = bump; Inner {} }; }\n\
-                          fn main() { let o = Outer {}; println(Int(o.b.n)); }\n";
     let same_scope = "type ItemId = distinct Int;\n\
                       type Inner { n: ItemId = ItemId(1); }\n\
                       type Outer { a: Inner = Inner {}; b: Inner = Inner {}; }\n\
                       fn main() { let o = Outer {}; println(Int(o.a.n)); println(Int(o.b.n)); }\n";
-    for (src, tag, printed) in [
-        (reviewed, "nested_scopes_reviewed", "1\n11\n"),
-        (reversed, "nested_scopes_reversed", "11\n1\n"),
-        (parameter, "nested_scopes_param", "1\n11\n"),
-        (shadowed_alone, "nested_scopes_alone", "11\n"),
-        (same_scope, "nested_scopes_same", "1\n1\n"),
-    ] {
-        assert_eq!(build_and_run_probe(src, tag), Ok(printed.to_string()), "{}", src);
-    }
+    assert_eq!(build_and_run_probe(same_scope, "nested_scopes_same"), Ok("1\n1\n".to_string()), "{}", same_scope);
 }
 
 /// GH #1076 (U3 polish A): every conversion in a default is the
-/// evaluation's, not only a cast's. Where a local shadows `Bucket`, the
-/// default's `Bucket(2000msec)` is a call of `fake`, and its literal flows
-/// into `fake`'s `Span` (2000); elsewhere it is the cast, and its literal
-/// flows into `sec` (2). Keyed by its span alone, the literal had one row,
-/// the cast's count, and the shadowed evaluation printed `5sec`. The
-/// same for a value converted where it stands: `milli()` flows into
-/// `fake`'s `Span` in `usec` (widened by 1,000) in the shadowed scope
-/// only, and the cast's evaluation, reading that row too, converted it
-/// twice and printed `2000sec`. The literal in both orders of the two
-/// evaluations.
+/// evaluation's, not only a cast's: the default's `Bucket(2000msec)` is
+/// the cast, and its literal flows into `sec` (2); a value converted where
+/// it stands (`milli()`, in `msec`) is converted once (2, not 2000). A
+/// local `Bucket` beside the literal would make the default a call of it,
+/// so that literal is refused (a default reads only its own fields and
+/// constants).
 ///
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_literal_and_a_value_in_a_default_convert_per_evaluation() {
-    let literal = |shadowed_first: bool| {
-        let (first, second) = if shadowed_first {
-            ("{ let Bucket = fake; let m = L {}; println(m.b); }\n", "let l = L {};\nprintln(l.b);\n")
-        } else {
-            ("let l = L {};\n", "{ let Bucket = fake; let m = L {}; println(m.b); }\nprintln(l.b);\n")
-        };
-        format!(
-            "unit msec;\n\
-             unit sec = 1_000 msec;\n\
-             type Span = quantity Int in msec;\n\
-             type Bucket = Span in sec {{ round: floor; }}\n\
-             fn fake(d: Span) -> Bucket {{ return Bucket(d + 5000msec); }}\n\
-             type L {{ b: Bucket = Bucket(2000msec); }}\n\
-             fn main() {{\n{first}{second}}}\n"
-        )
-    };
+    let decls = "unit msec;\n\
+                 unit sec = 1_000 msec;\n\
+                 type Span = quantity Int in msec;\n\
+                 type Bucket = Span in sec { round: floor; }\n\
+                 fn fake(d: Span) -> Bucket { return Bucket(d + 5000msec); }\n\
+                 type L { b: Bucket = Bucket(2000msec); }\n";
+    let literal = format!("{decls}fn main() {{\nlet l = L {{}};\nprintln(l.b);\n}}\n");
     let value = "unit usec;\n\
                  unit msec = 1_000 usec;\n\
                  unit sec = 1_000 msec;\n\
@@ -874,20 +1079,16 @@ fn a_literal_and_a_value_in_a_default_convert_per_evaluation() {
                  type Milli = Span in msec;\n\
                  type Bucket = Span in sec { round: floor; }\n\
                  fn milli() -> Milli { return 2000msec; }\n\
-                 fn fake(d: Span) -> Bucket { return Bucket(d + 5sec); }\n\
                  type L { b: Bucket = Bucket(milli()); }\n\
                  fn main() {\n\
                  let l = L {};\n\
-                 { let Bucket = fake; let m = L {}; println(m.b); }\n\
                  println(l.b);\n\
                  }\n";
-    for (src, tag) in [
-        (literal(false), "default_literal_second"),
-        (literal(true), "default_literal_first"),
-        (value.to_string(), "default_value"),
-    ] {
-        assert_eq!(build_and_run_probe(&src, tag), Ok("7sec\n2sec\n".to_string()), "{}", src);
+    for (src, tag) in [(literal.clone(), "default_literal"), (value.to_string(), "default_value")] {
+        assert_eq!(build_and_run_probe(&src, tag), Ok("2sec\n".to_string()), "{}", src);
     }
+    let shadowed = format!("{decls}fn main() {{\n{{ let Bucket = fake; let m = L {{}}; println(m.b); }}\n}}\n");
+    assert!(refused_by_the_default_rule(&shadowed), "{}", shadowed);
 }
 
 /// GH #1076 (U3, review 1): a default's value flows into its declared type
@@ -2241,4 +2442,793 @@ fn a_bounded_of_time_checks_and_builds() {
     for (src, tag) in builds {
         assert_eq!(sweep_verdict(src, tag), Verdict::Built, "{}", src);
     }
+}
+
+/// An expression that produces no value, put where a value is taken by
+/// its type rather than checked against a declared one: a `let`, a
+/// tuple or array element, an operand, a generic fn's argument. `let
+/// full = push(self.marks, t) or { };` checked clean and the build
+/// refused it ("`or` expression in value position has Unit success
+/// type"), as did `let u = g();` for a fn returning nothing ("fn `g`
+/// returns no value but is used in expression position"). There is no
+/// `()` value to bind or compute with, so the check refuses each at the
+/// expression; the same call written as a statement builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_unit_value_in_a_value_position_is_refused_by_the_check_not_the_build() {
+    let marks = |stmt: &str| {
+        format!(
+            "locus L {{\n\
+             params {{ marks: bounded[Time; 2]; }}\n\
+             run() {{ let t = `2026-05-08T12:00:00Z`; {stmt} println(count(self.marks)); }}\n\
+             }}\n\
+             fn main() {{ L {{ }}; }}\n"
+        )
+    };
+    let or_block = marks("let full = push(self.marks, t) or { };");
+    let or_discard = marks("let full = push(self.marks, t) or discard;");
+    assert_refused_by_the_check(
+        &[
+            (&or_block, "push(self.marks, t) or { }", "let `full` needs a value, and this expression produces none"),
+            (&or_discard, "push(self.marks, t) or discard", "let `full` needs a value, and this expression produces none"),
+            ("fn g() { println(\"g\"); }\nfn main() { let u = g(); }\n", "g()", "let `u` needs a value, and this expression produces none"),
+            (
+                "fn main() { let c = true; let x = if c { println(\"a\"); } else { println(\"b\"); }; }\n",
+                "if c { println(\"a\"); } else { println(\"b\"); }",
+                "let `x` needs a value, and this expression produces none",
+            ),
+            ("fn g() { println(\"g\"); }\nfn main() { let (a, b) = (g(), 1); println(b); }\n", "g()", "a tuple element needs a value, and this expression produces none"),
+            ("fn g() { println(\"g\"); }\nfn main() { let a = [g()]; }\n", "g()", "an array element needs a value, and this expression produces none"),
+            ("fn g() { println(\"g\"); }\nfn main() { let n = -g(); }\n", "g()", "the operand of a unary operator needs a value, and this expression produces none"),
+            (
+                "fn g() { println(\"g\"); }\nfn id<T>(x: T) -> T { return x; }\nfn main() { id(g()); }\n",
+                "g()",
+                "an argument to generic fn `id` needs a value, and this expression produces none",
+            ),
+        ],
+        "unit_value",
+    );
+    assert_built(&marks("push(self.marks, t) or { };"), "hale_cb_unit_or_block_statement");
+}
+
+/// An operator over operands it does not apply to: the check held the
+/// two sides to one type and asked nothing more, so `true < false`, two
+/// structs compared with `==`, `b"a" + b"b"`, an enum ordered or `!` of
+/// an `Int` checked clean and the build refused each ("binop Lt on
+/// Bool", "binop Eq on TypeRef(..)", "unop Not on Int"). The table the
+/// check now holds is the one lowering implements (spec/semantics.md §
+/// "Operators and their operand types").
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_operator_over_operands_it_does_not_apply_to_is_refused_by_the_check_not_the_build() {
+    let bin = |decl: &str, ty: &str, v: &str, op: &str| {
+        format!("{decl}fn main() {{ let x: {ty} = {v}; let y: {ty} = {v}; let e = x {op} y; println(\"ok\"); }}\n")
+    };
+    let p = "type P { a: Int; }\n";
+    let c = "type Color = enum { Red, Green };\n";
+    let cases = [
+        (bin("", "Bool", "true", "<"), "x < y", "`<` does not apply to `Bool`"),
+        (bin(p, "P", "P { a: 1 }", "=="), "x == y", "`==` does not apply to a struct (`P`)"),
+        (bin("", "(Int, Int)", "(1, 2)", "=="), "x == y", "`==` does not apply to a tuple"),
+        (bin("", "Bytes", "b\"a\"", "+"), "x + y", "`+` does not apply to a byte string"),
+        (bin(c, "Color", "Color::Red", "<"), "x < y", "`<` does not apply to `Color`"),
+        (bin("", "Float", "1.5", "%"), "x % y", "`%` does not apply to `Float`"),
+        (bin("", "String", "\"a\"", "-"), "x - y", "`-` does not apply to `String`"),
+        (bin("", "Int", "1", "&&"), "x && y", "`&&` does not apply to `Int`"),
+        ("fn main() { let x = 1; let e = !x; println(\"ok\"); }\n".to_string(), "!x", "`!` does not apply to `Int`"),
+        (
+            "fn main() { let mut x = true; x += false; println(\"ok\"); }\n".to_string(),
+            "x += false;",
+            "`+` does not apply to `Bool`",
+        ),
+    ];
+    let cases: Vec<(&str, &str, &str)> = cases.iter().map(|(s, a, h)| (s.as_str(), *a, *h)).collect();
+    assert_refused_by_the_check(&cases, "operator");
+    for (i, src) in [
+        bin(c, "Color", "Color::Red", "!="),
+        bin("", "String", "\"a\"", "<"),
+        bin("", "Decimal", "1.5d", "%"),
+        bin("", "Bool", "true", "&&"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_operator_ok_{i}"));
+    }
+}
+
+/// The places that took a value's type on trust: the values an enum
+/// variant carries, a literal in a pattern, a `bounded` buffer's element
+/// type, a generic fn's type argument, a hashmap's key field, a topic
+/// payload's fields. Each checked clean and the build refused the
+/// program ("`Wr::One` arg 0: expected type Int, got String", "match arm
+/// pattern type String doesn't match scrutinee type Int", "bounded[T;
+/// N]: element type Tuple(..) not supported", "generic type argument
+/// `Money` not supported", "key type Bool unsupported", "bus payload
+/// field `x: Tuple(..)`"). The neighbours that lower are built, a
+/// payload-free enum on the wire among them (its tag, since 2026-10-13).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Wr = enum { One(Int), No };\nfn main() { let w = Wr::One(\"s\"); println(\"ok\"); }\n",
+                "\"s\"",
+                "`Wr::One` value 0: expected `Int`, got `String`",
+            ),
+            (
+                "type Wr = enum { One(Int), No };\nfn main() { let w = Wr::One(1, 2); println(\"ok\"); }\n",
+                "Wr::One(1, 2)",
+                "`Wr::One` carries 1 value, and this passes 2",
+            ),
+            (
+                "fn main() { let x = 3; match x { \"a\" -> { println(\"a\"); }, _ -> { println(\"o\"); }, } }\n",
+                "\"a\"",
+                "this pattern is of type `String`, and the value matched is of type `Int`",
+            ),
+            (
+                "fn main() { let x = (1, \"s\"); match x { (1, 2) -> { println(\"a\"); }, _ -> { println(\"o\"); }, } }\n",
+                "2",
+                "this pattern is of type `Int`, and the value matched is of type `String`",
+            ),
+            (
+                "type W { xs: bounded[(Int, Int); 2]; }\nfn main() { let w = W { }; println(count(w.xs)); }\n",
+                "bounded[(Int, Int); 2]",
+                "`bounded[(Int, Int); N]`: a tuple",
+            ),
+            (
+                "type Shape = enum { Dot, Circle(Int) };\ntype W { xs: bounded[Shape; 2]; }\n\
+                 fn main() { let w = W { }; println(count(w.xs)); }\n",
+                "bounded[Shape; 2]",
+                "`bounded[Shape; N]`: `Shape` is an enum with payloads",
+            ),
+            (
+                "unit cent;\ntype Money = quantity Int in cent;\nfn id<G>(x: G) -> G { return x; }\n\
+                 fn main() { let m: Money = 3cent; let y = id(m); println(\"ok\"); }\n",
+                "id",
+                "generic fn `id`: `G` would be `Money`, a quantity",
+            ),
+            (
+                "type Row { k: Bool; n: Int = 0; }\n@form(hashmap)\nlocus M { capacity { pool rows of Row indexed_by k; } }\n\
+                 fn main() { let m = M { }; println(\"ok\"); }\n",
+                "k",
+                "@form(hashmap) key `Row.k` is a `Bool`",
+            ),
+            (
+                "type Shape = enum { Dot, Circle(Int) };\ntype Msg { x: Shape; n: Int = 0; }\n\
+                 topic Ev { payload: Msg; subject: \"ev.x\"; }\n\
+                 locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
+                 fn main() { let s = Sub { }; }\n",
+                "subscribe Ev as on_ev;",
+                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `x` is an enum with payloads (`Shape`)",
+            ),
+            (
+                "type Msg { x: (Int, Int); n: Int = 0; }\n\
+                 topic Ev { payload: Msg; subject: \"ev.x\"; }\n\
+                 locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
+                 fn main() { let s = Sub { }; }\n",
+                "subscribe Ev as on_ev;",
+                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `x` is a tuple",
+            ),
+        ],
+        "place",
+    );
+    for (i, src) in [
+        "type Fee = enum { Flat(Decimal<2>), Waived };\nfn main() { let f = Fee::Flat(1.25d); println(\"ok\"); }\n",
+        "fn main() { let d = 60s; match d { 1min -> { println(\"m\"); }, _ -> { println(\"o\"); }, } }\n",
+        "type Color = enum { Red, Green };\ntype W { xs: bounded[Color; 2]; }\n\
+         fn main() { let mut w = W { }; push(w.xs, Color::Green) or { }; println(count(w.xs)); }\n",
+        "type OrderId = distinct Int;\nfn id<G>(x: G) -> G { return x; }\nfn main() { let o = id(OrderId(7)); println(Int(o)); }\n",
+        "type Color = enum { Red, Green };\n\
+         locus Q { params { x: Color = Color::Red; } fn put(v: Color) { self.x = v; } }\n\
+         fn main() { let q = Q { }; q.put(Color::Green); println(\"ok\"); }\n",
+        "type Oops { why: String = \"\"; }\n\
+         fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+         fn main() { parse(\"bad\") or { println(err.why); }; parse(\"bad\") or 0; }\n",
+        "type Status = enum { Up, Down };\ntype Msg { key: Status = Status::Up; n: Int = 0; }\n\
+         topic Ev { payload: Msg; subject: \"ev.x\"; keyed_by key; }\n\
+         locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
+         main locus App { params { s: Sub = Sub { }; } bus { publish Ev; } run() { Ev <- Msg { key: Status::Down }; } }\n\
+         fn main() { App { }; }\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_place_ok_{i}"));
+    }
+}
+
+/// A program's type named like a builtin error type stands in for the
+/// builtin wherever lowering builds one, and the stdlib's own bodies,
+/// merged into every program, build them: `std::cli`'s `parse_int`
+/// reaches `ParseError`, `std::crypto` `CryptoError`, a `bounded` push
+/// `CapacityError`, a closure `ClosureViolation`. The check gated the
+/// shape rule on the program's own reach, so `type ParseError { code:
+/// Int; }` in a program calling no parser checked clean and the build
+/// refused it (an `IndexError`, a `KeyError` or a `CapacityError`
+/// panicked lowering). The stdlib's reach counts now; a type of the
+/// builtin's shape builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_builtin_error_name_of_another_shape_is_refused_by_the_check_not_the_build() {
+    let shadow = |name: &str| format!("type {name} {{ code: Int; }}\nfn main() {{ let x = {name} {{ code: 1 }}; println(x.code); }}\n");
+    let cases: Vec<(String, String, String)> = ["ParseError", "CryptoError", "IndexError", "KeyError", "CapacityError", "ClosureViolation"]
+        .iter()
+        .map(|n| (shadow(n), format!("type {n} {{ code: Int; }}"), format!("user-declared `type {n}` shadows the stdlib's `{n}`")))
+        .collect();
+    let cases: Vec<(&str, &str, &str)> = cases.iter().map(|(s, a, h)| (s.as_str(), a.as_str(), h.as_str())).collect();
+    assert_refused_by_the_check(&cases, "builtin_error_shadow");
+    assert_built(
+        "type ParseError { kind: String; input: String; }\n\
+         fn main() { let p = ParseError { kind: \"k\", input: \"i\" }; println(p.kind); println(std::str::parse_int(\"x\") or 3); }\n",
+        "hale_cb_builtin_error_same_shape",
+    );
+    // `EmptyError` is reached by no stdlib body: a program that reaches
+    // none of its own keeps the name.
+    assert_built("type EmptyError { code: Int; }\nfn main() { let e = EmptyError { code: 1 }; println(e.code); }\n", "hale_cb_empty_error_free");
+}
+
+/// F.22 capacity slots: the method-shaped dispatch (`acquire` /
+/// `release` on a pool, `alloc` / `free` on a heap), a cell released
+/// into another slot than its own, a cell printed, a field of a
+/// primitive cell, and an `as_parent_for` whose child slot is another
+/// kind: each checked clean (a slot read typed `Unknown`, and a cell
+/// with it) and the build refused it with no location. The valid
+/// round trips, a struct cell's field read and a matching
+/// `as_parent_for` build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_capacity_slot_misuse_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus L { capacity { pool entries of Int; } birth { let p = self.entries.alloc(); } }\nfn main() { L { }; }\n",
+                "alloc",
+                "pool slot `entries`: method `alloc` is not available",
+            ),
+            (
+                "locus L { capacity { heap reg of Int; } birth { let c = self.reg.acquire(); } }\nfn main() { L { }; }\n",
+                "acquire",
+                "heap slot `reg`: method `acquire` is not available",
+            ),
+            (
+                "locus L { capacity { pool a of Int; pool b of Int; } birth { let c = self.a.acquire(); self.b.release(c); } }\n\
+                 fn main() { L { }; }\n",
+                "c",
+                "slot `b`.release: this cell came from `L.a`",
+            ),
+            (
+                "locus L { capacity { pool entries of Int; } birth { let c = self.entries.acquire(); println(\"cell=\", c); } }\n\
+                 fn main() { L { }; }\n",
+                "c",
+                "`println` cannot render a cell of `L.entries`",
+            ),
+            (
+                "locus L { capacity { pool entries of Int; } birth { let c = self.entries.acquire(); let n = c.foo; } }\n\
+                 fn main() { L { }; }\n",
+                "foo",
+                "`.foo` on a cell of `L.entries`: its cell type `Int` has no fields",
+            ),
+            (
+                "locus Kid { capacity { heap entries of Int; } }\n\
+                 locus P { capacity { pool entries of Int as_parent_for Kid; } accept(c: Kid) { } run() { Kid { }; } }\n\
+                 fn main() { P { }; }\n",
+                "Kid",
+                "capacity slot `pool entries` declared `as_parent_for Kid`, but `Kid`'s `entries` is a `heap` slot",
+            ),
+        ],
+        "capacity_slot",
+    );
+    for (i, src) in [
+        "type Row { n: Int; }\n\
+         locus L { capacity { pool rows of Row; heap ints of Int; }\n\
+         birth { let c = self.rows.acquire(); c.n = 4; let k = c.n; println(k); self.rows.release(c); \
+         let d = self.ints.alloc(); let e = d; self.ints.free(e); } }\n\
+         fn main() { L { }; }\n",
+        "locus Kid { capacity { pool entries of Int; } }\n\
+         locus P { capacity { pool entries of Int as_parent_for Kid; } accept(c: Kid) { } run() { Kid { }; } }\n\
+         fn main() { P { }; }\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_capacity_slot_ok_{i}"));
+    }
+}
+
+/// `@form(hashmap)`'s `bump(key)` increments the cell's one counter;
+/// a cell holding more than the key and one `Int` checked clean and the
+/// build refused the call ("cell `Triple` must have exactly two
+/// fields"). The counter cell builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_hashmap_bump_over_a_richer_cell_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[(
+            "type Triple { k: String; a: Int; b: Int; }\n@form(hashmap)\nlocus M { capacity { pool entries of Triple indexed_by k; } }\n\
+             fn main() { let m = M { }; m.bump(\"x\"); }\n",
+            "bump",
+            "`M.bump`: `bump(key)` increments the cell's one counter",
+        )],
+        "hashmap_bump",
+    );
+    assert_built(
+        "type Hits { k: String; n: Int; }\n@form(hashmap)\nlocus M { capacity { pool entries of Hits indexed_by k; } }\n\
+         fn main() { let m = M { }; m.bump(\"x\"); m.bump(\"x\"); println(m.len()); }\n",
+        "hale_cb_hashmap_bump_ok",
+    );
+}
+
+/// A generic declaration's `T: Numeric` bound, and a bound that is not
+/// `Numeric`: the check held neither, and the build refused the
+/// instantiation ("type arg for `T` must satisfy `Numeric` bound",
+/// "unrecognized bound `Eq`"). Refused at the type argument, at the
+/// generic fn's callee, and at the bound; a numeric argument, a
+/// parameter of an enclosing template, and an identity build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_generic_bound_is_held_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Box<T: Numeric> { value: T; }\ntype Holder { b: Box<String>; }\nfn main() { println(\"x\"); }\n",
+                "String",
+                "generic type `Box`: `T` is bounded `Numeric`, and `String` is not one of",
+            ),
+            (
+                "fn twice<T: Numeric>(x: T) -> T { return x + x; }\nfn main() { println(twice(\"ab\")); }\n",
+                "twice",
+                "generic fn `twice`: `T` is bounded `Numeric`, and this call makes it `String`",
+            ),
+            (
+                "type OrderId = distinct Int;\nfn twice<T: Numeric>(x: T) -> T { return x + x; }\n\
+                 fn main() { println(Int(twice(OrderId(3)))); }\n",
+                "twice",
+                "generic fn `twice`: `T` is bounded `Numeric`, and this call makes it `OrderId`",
+            ),
+            (
+                "type Box<T: Eq> { value: T; }\nfn main() { let b: Box<Int> = Box { value: 1 }; println(b.value); }\n",
+                "Eq",
+                "generic type `Box`: `T` is bounded by something other than `Numeric`",
+            ),
+        ],
+        "generic_bound",
+    );
+    assert_built(
+        "type Box<T: Numeric> { value: T; }\ntype Outer<U: Numeric> { b: Box<U>; }\n\
+         fn twice<T: Numeric>(x: T) -> T { return x + x; }\n\
+         fn main() { let o: Outer<Int> = Outer { b: Box { value: 1 } }; let f: Box<Float> = Box { value: 1.5 }; \
+         println(o.b.value); println(f.value); println(twice(2)); println(twice(1.25d)); }\n",
+        "hale_cb_generic_bound_ok",
+    );
+}
+
+/// A locus param's default reading `self.<param>` of a param declared
+/// after it, or its own: defaults run in declaration order, and the
+/// build refused the read ("param default reads `self.b` before it is
+/// initialized"). A read of an earlier param builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_param_default_read_before_its_param_is_set_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus L { params { a: Int = self.b; b: Int = 1; } }\nfn main() { L { }; }\n",
+                "self.b",
+                "param `a`'s default reads `self.b` before it is initialized",
+            ),
+            (
+                "locus L { params { a: Int = self.a + 1; } }\nfn main() { L { }; }\n",
+                "self.a",
+                "param `a`'s default reads `self.a`, its own value",
+            ),
+        ],
+        "param_default_order",
+    );
+    assert_built(
+        "locus L { params { a: Int = 1; b: Int = self.a + 1; } run() { println(self.b); } }\nfn main() { L { }; }\n",
+        "hale_cb_param_default_order_ok",
+    );
+}
+
+/// A perspective handle reaches the locus behind it through the
+/// contract's methods, and its type is the slot type: a call to a
+/// `fallible` perspective fn (a perspective call cannot carry a failure
+/// yet, F.42), a field stored through the handle, and a bare `P` as a
+/// type each checked clean and the build refused it ("fallible method
+/// call on non-locus value of type Perspective", "non-addressable type
+/// Perspective", "unknown type name `P` in signature"). The same holder
+/// typed `perspective(P)`, calling an infallible contract fn, builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_perspective_handle_misuse_is_refused_by_the_check_not_the_build() {
+    let named = "perspective Named { fn label() -> String; }\n\
+                 locus V1 : serves Named { params { tag: String = \"a\"; } fn label() -> String { return self.tag; } }\n";
+    let store = format!(
+        "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} fn go(s: String) {{ self.p.tag = s; }} run() {{ self.go(\"b\"); }} }}\n\
+         fn main() {{ Holder {{ }}; }}\n"
+    );
+    let store_param = format!("{named}fn rename(p: perspective(Named), s: String) {{ p.tag = s; }}\nfn main() {{ println(\"x\"); }}\n");
+    let bare = format!("{named}locus Holder {{ params {{ p: Named = V1 {{ }}; }} }}\nfn main() {{ Holder {{ }}; }}\n");
+    let fallible = "perspective Router { fn route(code: Int) -> Int fallible(ClosureViolation); }\n\
+                    locus RouterV1 : serves Router {\n\
+                    params { k: Int = 0; }\n\
+                    closure c { captures: k; epoch inline; }\n\
+                    fn route(code: Int) -> Int fallible(ClosureViolation) { if code > 5 { violate c; } return code + 100; }\n\
+                    }\n\
+                    locus Gateway {\n\
+                    params { router: perspective(Router) = RouterV1 { }; }\n\
+                    on_failure(r: RouterV1, err: ClosureViolation) { println(err.closure); }\n\
+                    run() { println(self.router.route(1) or 0); }\n\
+                    }\n\
+                    fn main() { Gateway { }; }\n";
+    assert_refused_by_the_check(
+        &[
+            (&store, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
+            (&store_param, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
+            (&bare, "Named", "`Named` is a perspective, and a perspective is held through its slot type"),
+            (fallible, "route", "`Router.route` is `fallible(ClosureViolation)`, and a perspective call cannot carry a failure yet"),
+        ],
+        "perspective_handle",
+    );
+    assert_built(
+        &format!(
+            "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} run() {{ println(self.p.label()); }} }}\n\
+             fn main() {{ Holder {{ }}; }}\n"
+        ),
+        "hale_cb_perspective_handle_ok",
+    );
+}
+
+/// A method written as a value (`apply(self.dbl, 1)`): a method is
+/// called on its locus, and a `fn(..)` value carries none, so the build
+/// refused it ("no field `dbl` on locus self"). The check refuses it at
+/// the method's name; a free fn passed the same way, and the method
+/// called, build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_method_written_as_a_value_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[(
+            "fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }\n\
+             main locus App { params { n: Int = 0; } fn dbl(v: Int) -> Int { return v * 2; } run() { self.n = apply(self.dbl, 1); } }\n\
+             fn main() { App { }; }\n",
+            "dbl",
+            "`.dbl` is a method of the locus `App`, written as a value",
+        )],
+        "method_value",
+    );
+    assert_built(
+        "fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }\nfn dbl(v: Int) -> Int { return v * 2; }\n\
+         main locus App { params { n: Int = 0; } fn twice(v: Int) -> Int { return v * 2; } run() { self.n = apply(dbl, 1) + self.twice(2); println(self.n); } }\n\
+         fn main() { App { }; }\n",
+        "hale_cb_method_value_ok",
+    );
+}
+
+/// A topic send in an `on_failure` body checked clean and the build
+/// refused it ("unknown identifier `Evt`"): the topic rewrite that turns
+/// a send into its subject walked hooks, modes and fns, and not failure
+/// handlers. It is lowered now; tests/hale/on_failure_publish_test.hl
+/// runs it.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_on_failure_send_builds() {
+    assert_built(
+        "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"cb.evt\"; }\n\
+         locus Child { params { k: Int = 0; } closure c { captures: k; epoch inline; } fn poke() { violate c; } }\n\
+         locus Parent { params { c: Child = Child { }; } bus { publish Evt; } on_failure(c: Child, err: ClosureViolation) { Evt <- T { n: 1 }; } run() { self.c.poke(); } }\n\
+         fn main() { Parent { }; }\n",
+        "hale_cb_on_failure_send",
+    );
+}
+
+/// The converse divergence: a `match` of scale-less Decimal arms flowing
+/// into a `Decimal<S>` was refused by the check ("`Decimal` is not
+/// `Decimal<2>`") where an `if` of the same arms took the place's scale.
+/// The arms adopt it now, and the program builds;
+/// tests/hale/decimal_match_scale_test.hl runs it.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_decimal_match_takes_its_places_scale() {
+    assert_built(
+        "fn main() { let n = 1; let y: Decimal<2> = match n { 1 -> 1.25d, _ -> { 0.5d }, }; println(y); }\n",
+        "hale_cb_decimal_match",
+    );
+}
+
+/// A `std::` path read as a value checked clean and the build refused it
+/// ("unresolved path `std::math::abs`"), with no location. A stdlib fn
+/// with a Hale body is merged into the program under its rename, so its
+/// path lowers as that fn's pointer, the way a program's own fn's name
+/// does: `apply(std::url::encode, s)` builds and runs. A builtin the
+/// stdlib answers at a call has no fn behind it; the check refuses it
+/// at the path and names a wrapper.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_stdlib_fn_value_lowers_or_is_refused_by_the_check() {
+    let bodied = "fn apply(f: fn(String) -> String, s: String) -> String { return f(s); }\n\
+                  fn main() { println(apply(std::url::encode, \"a b&c\")); let g = std::url::decode; println(g(\"a%20b\")); }\n";
+    assert_eq!(build_and_run_probe(bodied, "stdlib_fn_value"), Ok("a%20b%26c\na b\n".to_string()), "{}", bodied);
+    assert_refused_by_the_check(
+        &[
+            (
+                "fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }\nfn main() { println(apply(std::math::abs, 0 - 3)); }\n",
+                "std::math::abs",
+                "`std::math::abs` is not a fn value: the stdlib answers it at a call",
+            ),
+            (
+                "fn apply(f: fn(String) -> String, s: String) -> String { return f(s); }\nfn main() { println(apply(std::str::upper, \"x\")); }\n",
+                "std::str::upper",
+                "`std::str::upper` is not a fn value: the stdlib answers it at a call",
+            ),
+        ],
+        "stdlib_fn_value",
+    );
+}
+
+/// A `fallible` fn read as a value, the stdlib's (`std::hex::decode`) or
+/// a program's own: a fn value's call reads a plain result, and the
+/// fallible ABI returns the failure beside the value (an `i1` and two
+/// out-slots), so the built call wrote through an indeterminate pointer
+/// (a SIGSEGV natively, a signature mismatch on wasm32) after the check
+/// accepted it. The check refuses each at the name and names a wrapper
+/// that handles the error; the wrappers, passed instead, build and run,
+/// and so does an infallible stdlib fn's value. (An imported seed's:
+/// hale-cli's `check_build_refusals`.)
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fallible_fn_read_as_a_value_is_refused_by_the_check_not_the_build() {
+    let user = "type Oops { why: String = \"\"; }\n\
+                fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+                fn apply(f: fn(String) -> Int, s: String) -> Int { return f(s); }\n";
+    let by_value = format!("{user}fn main() {{ println(apply(parse, \"ok\")); }}\n");
+    let by_let = format!("{user}fn main() {{ let g = parse; println(g(\"ok\")); }}\n");
+    let hex = "fn apply(f: fn(String) -> Bytes, s: String) -> Bytes { return f(s); }\n";
+    let hex_value = format!("{hex}fn main() {{ println(len(apply(std::hex::decode, \"61\"))); }}\n");
+    let hex_let = format!("{hex}fn main() {{ let f = std::hex::decode; println(len(f(\"61\"))); }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&hex_value, "std::hex::decode", "`std::hex::decode` is `fallible"),
+            (&hex_let, "std::hex::decode", "`std::hex::decode` is `fallible"),
+            (&by_value, "parse", "`parse` is `fallible(Oops)`, and a fn value has no error channel"),
+            (&by_let, "parse", "`parse` is `fallible(Oops)`, and a fn value has no error channel"),
+        ],
+        "fallible_fn_value",
+    );
+    let wrapped = format!(
+        "{user}{hex}\
+         fn parse_or(a0: String) -> Int {{ return parse(a0) or 0; }}\n\
+         fn decode_or(a0: String) -> Bytes {{ return std::hex::decode(a0) or b\"\"; }}\n\
+         fn apply_s(f: fn(String) -> String, s: String) -> String {{ return f(s); }}\n\
+         fn main() {{ println(apply(parse_or, \"ok\")); println(len(apply(decode_or, \"6162\"))); println(apply_s(std::url::encode, \"a b\")); }}\n"
+    )
+    .replace("fn apply(f: fn(String) -> Bytes", "fn apply_b(f: fn(String) -> Bytes")
+    .replace("len(apply(decode_or", "len(apply_b(decode_or");
+    assert_eq!(build_and_run_probe(&wrapped, "fallible_fn_wrapped"), Ok("7\n2\na%20b\n".to_string()), "{}", wrapped);
+}
+
+/// A codegen refusal names things as the author wrote them. Lowering
+/// works over the merged program, where an imported seed's locus is
+/// `__lib_<alias>_…` and a Hale-source stdlib one `__Std…`, names that
+/// appear nowhere in the author's source; `build_resolved` renders its
+/// errors through the table the check renders its diagnostics through.
+/// Built with the harness, which lowers without the check, so these are
+/// lowering's own messages: an imported locus prints `lib::Kid`, a
+/// stdlib one `std::bytes::BytesBuilder`.
+#[test]
+fn a_codegen_refusal_names_imported_and_stdlib_declarations_as_written() {
+    let dir = harness::unique_bin("hale_cb_demangled_seed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib/kid.hl"), "locus Kid { params { n: Int = 1; } fn size() -> Int { return self.n; } }\n").unwrap();
+    std::fs::write(
+        dir.join("main.hl"),
+        "import \"./lib\" as lib;\n\nlocus L { params { k: lib::Kid = lib::Kid { }; } fn f() { self.k.nope(); } }\n\nfn main() { L { }; }\n",
+    )
+    .unwrap();
+    let imported = build_opts::build_seed_dir(&dir.join("main.hl"), &dir.join("bin"), &build_opts::options())
+        .expect_err("lowering refuses an unknown method")
+        .to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(imported.contains("locus `lib::Kid` has no method `nope`") && !imported.contains("__lib_"), "{imported}");
+    let stdlib = build_opts::build_source(
+        "locus L { params { b: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 4 }; } fn f() { self.b.nope(); } }\n\
+         fn main() { L { }; }\n",
+        &harness::unique_bin("hale_cb_demangled_std"),
+        &build_opts::options(),
+    )
+    .expect_err("lowering refuses an unknown method")
+    .to_string();
+    assert!(stdlib.contains("locus `std::bytes::BytesBuilder` has no method `nope`") && !stdlib.contains("__Std"), "{stdlib}");
+}
+
+/// GH #1566 follow-up: a param with no type ascription whose default is
+/// an array or a tuple literal checked clean and was refused by the build
+/// ("non-literal default requires a type ascription"). The build types
+/// it by its literal now: an array of one type's literals, a tuple of
+/// literals, a locus or record literal.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_unascribed_composite_default_is_typed_by_its_literal() {
+    let src = "locus C { params { name: String = \"c\"; } }\n\
+               locus P { params { cs = [C { name: \"a\" }, C { name: \"b\" }]; t = (C { }, 1); n = [1, 2, 3]; c = C { }; } }\n\
+               main locus App { params { q: P = P { }; } run() { println(len(self.q.n)); } }\n\
+               fn main() { App { }; }\n";
+    assert_eq!(sweep_verdict(src, "hale_cb_unascribed_composite"), Verdict::Built, "{src}");
+}
+
+/// GH #1566 follow-up: a call through a fn value returning a locus hands
+/// its caller a fresh instance to own (a binding's, a holder's, or the
+/// frame's). So only a fn that builds every instance it returns may be
+/// taken as a value: one that may hand back an instance it was given
+/// (`id`) is refused at the name, as a fallible fn is. A builder taken
+/// as a value builds, runs, and its instance is torn down once by
+/// whoever holds the call's result — it was nobody's before, a leak.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_locus_returning_fn_value_must_build_what_it_returns() {
+    let lib = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+               fn id(w: W) -> W { return w; }\n\
+               fn apply(f: fn(W) -> W, w: W) -> W { return f(w); }\n";
+    let by_value = format!("{lib}fn main() {{ let w = W {{ }}; let v = apply(id, w); }}\n");
+    let by_let = format!("{lib}fn main() {{ let g = id; let w = W {{ }}; let v = g(w); }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&by_value, "id", "`id` may hand back a `W` it did not build"),
+            (&by_let, "id", "`id` may hand back a `W` it did not build"),
+        ],
+        "unfresh_fn_value",
+    );
+    let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                 fn mk(n: String) -> W { return W { name: n }; }\n\
+                 fn make(f: fn(String) -> W, n: String) -> W { return f(n); }\n\
+                 fn main() {\n\
+                     let a = make(mk, \"a\");\n\
+                     let g: fn(String) -> W = mk;\n\
+                     let b = g(\"b\");\n\
+                     println(a.name, b.name);\n\
+                 }\n";
+    assert_eq!(build_and_run_probe(built, "fresh_fn_value"), Ok("ab\nbye b\nbye a\n".to_string()), "{built}");
+}
+
+/// GH #1569: a fn value returning a locus is a fresh factory however the
+/// binding holding it was bound — only a fresh factory may be taken as a
+/// value at all — and a call through one is owned as a factory call is.
+/// One a top-level fn's call hands back (`let f = pick(); f()`) checked
+/// clean and failed the build with "no required `ownership` row"; so did
+/// one bound from an `if` or a method's call, by a tuple pattern, or as a
+/// loop variable. Each builds, and runs.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_from_a_call_is_a_fresh_factory() {
+    let lib = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+               fn mkw() -> W { return W { name: \"made\" }; }\n\
+               fn pick() -> fn() -> W { return mkw; }\n";
+    let picked = format!(
+        "{lib}fn main() {{\n\
+             let f = pick();\n\
+             let w = f();\n\
+             f();\n\
+             let g: fn() -> W = if true {{ mkw }} else {{ pick() }};\n\
+             let v = g();\n\
+             println(w.name, v.name);\n\
+         }}\n"
+    );
+    assert_eq!(
+        build_and_run_probe(&picked, "fn_value_from_call"),
+        Ok("bye made\nmademade\nbye made\nbye made\n".to_string()),
+        "{picked}"
+    );
+    let shapes = [
+        ("by_if", format!("{lib}fn main() {{ let f = if true {{ mkw }} else {{ mkw }}; let w = f(); println(w.name); }}\n")),
+        (
+            "by_method",
+            format!(
+                "{lib}main locus App {{ fn pk() -> fn() -> W {{ return mkw; }} run() {{ let f = self.pk(); let w = f(); println(w.name); }} }}\n\
+                 fn main() {{ App {{ }}; }}\n"
+            ),
+        ),
+        ("by_tuple", format!("{lib}fn main() {{ let (f, n) = (mkw, 1); let w = f(); println(w.name); }}\n")),
+        (
+            "by_loop",
+            format!("{lib}fn main() {{ let fs: [fn() -> W; 2] = [mkw, mkw]; for f in fs {{ let w = f(); println(w.name); }} }}\n"),
+        ),
+        (
+            "by_param",
+            format!("{lib}fn each(fs: [fn() -> W; 2]) {{ for f in fs {{ let h: fn() -> W = f; h(); }} }}\nfn main() {{ each([mkw, mkw]); }}\n"),
+        ),
+    ];
+    for (tag, src) in shapes {
+        assert!(build_and_run_probe(&src, tag).is_ok_and(|out| out.contains("bye made")), "{tag}:\n{src}");
+    }
+}
+
+/// GH #1569: the fresh-factory rule holds wherever a fn's name is read as
+/// a value. A record field's default (`f: fn(W) -> W = id`) escaped it,
+/// since the walk types a default only at a literal that leaves it; and a
+/// record field whose fn type names a locus cannot be laid out at all, so
+/// it is refused at its type, whatever its default. And a
+/// fn handing back a tuple or an array of loci is a value only when it
+/// builds every locus part (`fn pass(w: W) -> (W, Int) { return (w, 1);
+/// }` hands one back it was given), or hands back a call of a fn that
+/// does, transitively (`mk3` of `mk2` is one; `fwd` of `pass` is not).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_is_a_fresh_factory_at_every_position() {
+    // (a record field's default escaped the rule; such a field is now
+    // refused at its type, whose signature names a locus a `type` cannot
+    // lay out: it checked clean and failed the build, even with a fresh
+    // factory as its default)
+    let field = "locus W { params { name: String = \"w\"; } }\n\
+                 fn mkw() -> W { return W { }; }\n\
+                 type R { f: fn() -> W = mkw; n: Int = 1; }\n\
+                 fn main() { let r = R { }; println(r.n); }\n";
+    let aggregate = "locus W { params { name: String = \"w\"; } }\n\
+                     fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
+                     fn apply(f: fn(W) -> (W, Int), w: W) -> (W, Int) { return f(w); }\n\
+                     fn main() { let w = W { }; let t = apply(pass, w); }\n";
+    let forwarded = "locus W { params { name: String = \"w\"; } }\n\
+                     fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
+                     fn fwd(w: W) -> (W, Int) { return pass(w); }\n\
+                     fn main() { let g = fwd; }\n";
+    // through type aliases, transitively, in a field and in a variant
+    let aliased = "locus W { params { name: String = \"w\"; } }\n\
+                   fn mkw() -> W { return W { }; }\n\
+                   type Maker = fn() -> W;\n\
+                   type Maker2 = Maker;\n\
+                   type T { f: Maker2 = mkw; n: Int = 1; }\n\
+                   fn main() { let t = T { }; println(t.n); }\n";
+    let variant = "locus W { params { name: String = \"w\"; } }\n\
+                   type Maker = fn() -> W;\n\
+                   type E = enum { A(Maker), B };\n\
+                   fn main() { println(1); }\n";
+    // a forwarder to a fn that may hand back what it was given
+    let id_forwarder = "locus W { params { name: String = \"w\"; } }\n\
+                        fn id(w: W) -> W { return w; }\n\
+                        fn fwd(w: W) -> W { return id(w); }\n\
+                        fn main() { let f = fwd; }\n";
+    assert_refused_by_the_check(
+        &[
+            (field, "fn() -> W", "`type R`: field `f` is a fn value whose signature names the locus `W`"),
+            (aliased, "Maker2", "`type T`: field `f` is a fn value whose signature names the locus `W`"),
+            (variant, "Maker", "`type E`: variant `A` is a fn value whose signature names the locus `W`"),
+            (id_forwarder, "fwd", "`fwd` may hand back a `W` it did not build"),
+            (aggregate, "pass", "`pass` may hand back a `W` it did not build"),
+            (forwarded, "fwd", "`fwd` may hand back a `W` it did not build"),
+        ],
+        "unfresh_everywhere",
+    );
+    // a fn handing back a fresh builder's call is one, through any number
+    // of them
+    let chained = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                   fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
+                   fn mk3(n: String) -> (W, Int) { return mk2(n); }\n\
+                   fn mk4(n: String) -> (W, Int) { return mk3(n); }\n\
+                   fn main() { let g = mk3; let b = g(\"b\"); g(\"c\"); let h = mk4; let d = h(\"d\"); println(b.0.name, d.0.name); }\n";
+    assert_eq!(build_and_run_probe(chained, "fresh_forwarder_fn_value"), Ok("bye c\nbd\nbye d\nbye b\n".to_string()), "{chained}");
+    let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                 fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
+                 fn apply(f: fn(String) -> (W, Int), n: String) -> (W, Int) { return f(n); }\n\
+                 fn main() { let t = apply(mk2, \"a\"); println(t.0.name, t.1); }\n";
+    assert_eq!(build_and_run_probe(built, "fresh_aggregate_fn_value"), Ok("a1\nbye a\n".to_string()), "{built}");
 }

@@ -33,9 +33,22 @@ topic Offers { payload: Offer; subject: "wf.offer"; keyed_by scope; }
 
 // Every transition has a proposal id (its entity here); the proposer acts
 // on the answer to its one outstanding proposal, once.
-type Proposal { scope: String = ""; key: String = ""; proposal_id: String = ""; kind: String = ""; entity: String = ""; }
+type Proposal {
+    scope: String = "";
+    key: String = "";
+    proposal_id: String = "";
+    kind: String = "";
+    entity: String = "";
+}
 topic Proposals { payload: Proposal; subject: "wf.proposal"; keyed_by scope; }
-type Ack { scope: String = ""; key: String = ""; proposal_id: String = ""; ok: Bool = false; revision: Int = 0; why: String = ""; }
+type Ack {
+    scope: String = "";
+    key: String = "";
+    proposal_id: String = "";
+    ok: Bool = false;
+    revision: Int = 0;
+    why: String = "";
+}
 topic Acks { payload: Ack; subject: "wf.ack"; keyed_by key; }
 
 type Req { key: String = ""; stage: Int = 0; }
@@ -72,19 +85,37 @@ locus Committer {
             let from = seen + len(p.proposal_id) + 2;
             let rest = self.committed[from..len(self.committed)];
             let at = std::str::parse_int(rest[0..std::str::index_of(rest, "\n")]) or 0;
-            Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: true, revision: at };
+            Acks <- Ack {
+                scope: self.scope,
+                key: p.key,
+                proposal_id: p.proposal_id,
+                ok: true,
+                revision: at,
+            };
             return;
         }
         // a deterministic journal: it refuses what the test marks
         if std::str::contains(p.entity, "refuse") {
             self.refused = self.refused + 1;
-            Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: false, why: "the journal refused " + p.entity };
+            Acks <- Ack {
+                scope: self.scope,
+                key: p.key,
+                proposal_id: p.proposal_id,
+                ok: false,
+                why: "the journal refused " + p.entity,
+            };
             return;
         }
         self.rows = self.rows + p.kind + " " + p.entity + "\n";
         self.revision = self.revision + 1;
         self.committed = self.committed + p.proposal_id + "=" + to_string(self.revision) + "\n";
-        Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: true, revision: self.revision };
+        Acks <- Ack {
+            scope: self.scope,
+            key: p.key,
+            proposal_id: p.proposal_id,
+            ok: true,
+            revision: self.revision,
+        };
     }
 }
 
@@ -117,7 +148,9 @@ locus Responder {
             let line = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
             let sp = std::str::index_of(line, " ");
-            if line[0..sp] == f.key { stage = std::str::parse_int(line[(sp + 1)..len(line)]) or - 1; }
+            if line[0..sp] == f.key {
+                stage = std::str::parse_int(line[(sp + 1)..len(line)]) or - 1;
+            }
         }
         if stage < 0 { return; }
         let mut i = 0;
@@ -131,7 +164,12 @@ locus Responder {
 // ---- the resident execution loci -----------------------------------------
 
 locus Inner {
-    params { scope: String = ""; key: String = ""; settled: Bool = false; outstanding: String = ""; }
+    params {
+        scope: String = "";
+        key: String = "";
+        settled: Bool = false;
+        outstanding: String = "";
+    }
     bus {
         subscribe Acks as on_ack where key == self.key;
         subscribe Replies as on_reply where key == self.key;
@@ -144,10 +182,21 @@ locus Inner {
     run() {
         // propose, and return: the Inner waits as a resident
         self.outstanding = self.key + "/s0";
-        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "dispatch", entity: self.outstanding };
+        Proposals <- Proposal {
+            scope: self.scope,
+            key: self.key,
+            proposal_id: self.outstanding,
+            kind: "dispatch",
+            entity: self.outstanding,
+        };
     }
     fn on_ack(a: Ack) {
-        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        if a.scope != self.scope
+            || a.proposal_id != self.outstanding
+            || len(self.outstanding) == 0
+        {
+            return;
+        }
         self.outstanding = "";
         if !a.ok {
             Completions <- Done { key: self.key, disposition: "refused" };
@@ -193,11 +242,22 @@ locus Waiter {
     run() { self.propose("/s0"); }
     fn propose(stage: String) {
         self.outstanding = self.key + stage;
-        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "dispatch", entity: self.outstanding };
+        Proposals <- Proposal {
+            scope: self.scope,
+            key: self.key,
+            proposal_id: self.outstanding,
+            kind: "dispatch",
+            entity: self.outstanding,
+        };
     }
     fn on_ack(a: Ack) {
         // only the answer to the one outstanding proposal, and only once
-        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        if a.scope != self.scope
+            || a.proposal_id != self.outstanding
+            || len(self.outstanding) == 0
+        {
+            return;
+        }
         self.outstanding = "";
         if !a.ok {
             // an append refusal: nothing is dispatched
@@ -250,7 +310,13 @@ locus Manager {
     fn on_offer(o: Offer) {
         self.offers = self.offers + 1;
         // born in a handler; outlives this handler and its own run()
-        Waiter { scope: self.scope, key: o.key, nested: o.nested || o.delegate, delegate: o.delegate, child_key: o.key + ".c" };
+        Waiter {
+            scope: self.scope,
+            key: o.key,
+            nested: o.nested || o.delegate,
+            delegate: o.delegate,
+            child_key: o.key + ".c",
+        };
     }
 }
 
@@ -302,7 +368,9 @@ main locus App {
         while len(rest) > 0 {
             let sp = std::str::index_of(rest, " ");
             let item = rest[0..sp];
-            if std::str::starts_with(item, prefix) && std::str::ends_with(item, suffix) { n = n + 1; }
+            if std::str::starts_with(item, prefix) && std::str::ends_with(item, suffix) {
+                n = n + 1;
+            }
             rest = rest[(sp + 1)..len(rest)];
         }
         return n;
@@ -347,26 +415,71 @@ main locus App {
         // 1. an immediate reply: born, committed, requested, answered, gone
         Offers <- Offer { scope: "main", key: "k-now" };
         self.until_life("k-now:dissolved", 1);
-        std::test::assert_eq_int(self.count(self.done, "k-now:done"), 1, "the immediate case completes once: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "k-now:born"), 1, "born once: " + self.lives);
-        std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved"), 1, "and reclaimed on completion: " + self.lives);
-        std::test::assert(std::str::contains(self.committer.rows, "dispatch k-now/s0\n"), "the dispatch was committed before the request: " + self.committer.rows);
+        std::test::assert_eq_int(
+            self.count(self.done, "k-now:done"),
+            1,
+            "the immediate case completes once: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "k-now:born"),
+            1,
+            "born once: " + self.lives,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "k-now:dissolved"),
+            1,
+            "and reclaimed on completion: " + self.lives,
+        );
+        std::test::assert(
+            std::str::contains(self.committer.rows, "dispatch k-now/s0\n"),
+            "the dispatch was committed before the request: " + self.committer.rows,
+        );
 
         // 2. a delayed reply: the Waiter outlives its handler and its run()
         Offers <- Offer { scope: "main", key: "h-late" };
         self.settle();
-        std::test::assert_eq_int(self.count(self.responder.requests, "h-late:0"), 1, "the request went out once: " + self.responder.requests);
-        std::test::assert_eq_int(self.count(self.done, "h-late:done"), 0, "nothing is done while the reply is held");
+        std::test::assert_eq_int(
+            self.count(self.responder.requests, "h-late:0"),
+            1,
+            "the request went out once: " + self.responder.requests,
+        );
+        std::test::assert_eq_int(
+            self.count(self.done, "h-late:done"),
+            0,
+            "nothing is done while the reply is held",
+        );
         std::test::assert_eq_int(self.count(self.lives, "h-late:born"), 1, "born");
-        std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 0, "and still alive after its handler and run() returned: " + self.lives);
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-late:dissolved"),
+            0,
+            "and still alive after its handler and run() returned: " + self.lives,
+        );
         // a replayed commit answer while the work is pending dispatches nothing
-        Acks <- Ack { scope: "main", key: "h-late", proposal_id: "h-late/s0", ok: true, revision: 2 };
+        Acks <- Ack {
+            scope: "main",
+            key: "h-late",
+            proposal_id: "h-late/s0",
+            ok: true,
+            revision: 2,
+        };
         self.settle();
-        std::test::assert_eq_int(self.count(self.responder.requests, "h-late:0"), 1, "a replayed answer does not dispatch again: " + self.responder.requests);
+        std::test::assert_eq_int(
+            self.count(self.responder.requests, "h-late:0"),
+            1,
+            "a replayed answer does not dispatch again: " + self.responder.requests,
+        );
         Flushes <- Flush { key: "h-late" };
         self.until_done("h-late:done", 1);
-        std::test::assert_eq_int(self.count(self.done, "h-late:done"), 1, "the delayed reply reached it and it completed: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 1, "then it was reclaimed: " + self.lives);
+        std::test::assert_eq_int(
+            self.count(self.done, "h-late:done"),
+            1,
+            "the delayed reply reached it and it completed: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-late:dissolved"),
+            1,
+            "then it was reclaimed: " + self.lives,
+        );
 
         // 3. a duplicate terminal reply cannot advance it twice
         Offers <- Offer { scope: "main", key: "h-dup" };
@@ -374,32 +487,82 @@ main locus App {
         Flushes <- Flush { key: "h-dup", times: 3 };
         self.until_done("h-dup:done", 1);
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-dup:done"), 1, "three replies, one completion: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "h-dup:dissolved"), 1, "reclaimed once: " + self.lives);
+        std::test::assert_eq_int(
+            self.count(self.done, "h-dup:done"),
+            1,
+            "three replies, one completion: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-dup:dissolved"),
+            1,
+            "reclaimed once: " + self.lives,
+        );
         // a reply after it is gone reaches nobody
         Flushes <- Flush { key: "h-dup" };
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-dup:done"), 1, "a reply after completion changes nothing");
+        std::test::assert_eq_int(
+            self.count(self.done, "h-dup:done"),
+            1,
+            "a reply after completion changes nothing",
+        );
 
         // 4. nested work: stage 0, then a resident Inner, then stage 1
         Offers <- Offer { scope: "main", key: "h-nest", nested: true };
         self.settle();
         Flushes <- Flush { key: "h-nest" };
         self.until_life("h-nest.c:born", 1);
-        std::test::assert_eq_int(self.count(self.lives, "h-nest.c:born"), 1, "the nested child was born from the reply handler: " + self.lives);
-        std::test::assert_eq_int(self.count(self.done, "h-nest:done"), 0, "the parent waits for its nested child");
-        std::test::assert_eq_int(self.count(self.responder.requests, "h-nest:1"), 0, "and does not start stage 1 before it: " + self.responder.requests);
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-nest.c:born"),
+            1,
+            "the nested child was born from the reply handler: " + self.lives,
+        );
+        std::test::assert_eq_int(
+            self.count(self.done, "h-nest:done"),
+            0,
+            "the parent waits for its nested child",
+        );
+        std::test::assert_eq_int(
+            self.count(self.responder.requests, "h-nest:1"),
+            0,
+            "and does not start stage 1 before it: " + self.responder.requests,
+        );
         Flushes <- Flush { key: "h-nest.c" };
         self.until_done("h-nest.c:done", 1);
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-nest.c:done"), 1, "the nested child completed: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "h-nest.c:dissolved"), 1, "and was reclaimed: " + self.lives);
-        std::test::assert_eq_int(self.count(self.responder.requests, "h-nest:1"), 1, "stage 1 was requested after the child, once: " + self.responder.requests);
-        std::test::assert(std::str::contains(self.committer.rows, "dispatch h-nest/s0\ndispatch h-nest.c/s0\ndispatch h-nest/s1\n"), "each dispatch was committed, in order: " + self.committer.rows);
+        std::test::assert_eq_int(
+            self.count(self.done, "h-nest.c:done"),
+            1,
+            "the nested child completed: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-nest.c:dissolved"),
+            1,
+            "and was reclaimed: " + self.lives,
+        );
+        std::test::assert_eq_int(
+            self.count(self.responder.requests, "h-nest:1"),
+            1,
+            "stage 1 was requested after the child, once: " + self.responder.requests,
+        );
+        std::test::assert(
+            std::str::contains(
+                self.committer.rows,
+                "dispatch h-nest/s0\ndispatch h-nest.c/s0\ndispatch h-nest/s1\n",
+            ),
+            "each dispatch was committed, in order: " + self.committer.rows,
+        );
         Flushes <- Flush { key: "h-nest" };
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-nest:done"), 1, "stage 1's reply completed the parent once: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "h-nest:dissolved"), 1, "and it was reclaimed: " + self.lives);
+        std::test::assert_eq_int(
+            self.count(self.done, "h-nest:done"),
+            1,
+            "stage 1's reply completed the parent once: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-nest:dissolved"),
+            1,
+            "and it was reclaimed: " + self.lives,
+        );
 
         // 4b. delegated nested work: the child is created and owned by the
         // Manager, correlated to its parent by key, and outlives nothing it
@@ -408,36 +571,88 @@ main locus App {
         self.settle();
         Flushes <- Flush { key: "h-deleg" };
         self.until_life("h-deleg.c:born", 1);
-        std::test::assert_eq_int(self.count(self.lives, "h-deleg.c:born"), 1, "the delegated child was born, by the Manager: " + self.lives);
-        std::test::assert_eq_int(self.count(self.done, "h-deleg:done"), 0, "the parent waits for it");
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-deleg.c:born"),
+            1,
+            "the delegated child was born, by the Manager: " + self.lives,
+        );
+        std::test::assert_eq_int(
+            self.count(self.done, "h-deleg:done"),
+            0,
+            "the parent waits for it",
+        );
         Flushes <- Flush { key: "h-deleg.c" };
         self.until_done("h-deleg.c:done", 1);
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-deleg.c:done"), 1, "the delegated child completed: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "h-deleg.c:dissolved"), 1, "and was reclaimed");
-        std::test::assert_eq_int(self.count(self.responder.requests, "h-deleg:1"), 1, "the parent's stage 1 followed it, once: " + self.responder.requests);
+        std::test::assert_eq_int(
+            self.count(self.done, "h-deleg.c:done"),
+            1,
+            "the delegated child completed: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-deleg.c:dissolved"),
+            1,
+            "and was reclaimed",
+        );
+        std::test::assert_eq_int(
+            self.count(self.responder.requests, "h-deleg:1"),
+            1,
+            "the parent's stage 1 followed it, once: " + self.responder.requests,
+        );
         Flushes <- Flush { key: "h-deleg" };
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-deleg:done"), 1, "and completed the parent once: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "h-deleg:dissolved"), 1, "which was reclaimed");
+        std::test::assert_eq_int(
+            self.count(self.done, "h-deleg:done"),
+            1,
+            "and completed the parent once: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-deleg:dissolved"),
+            1,
+            "which was reclaimed",
+        );
 
         // 5. an append refusal: no request is dispatched
         Offers <- Offer { scope: "main", key: "k-refuse" };
         self.until_done("k-refuse:refused", 1);
         std::test::assert_eq_int(self.committer.refused, 1, "the journal refused the transition");
-        std::test::assert_eq_int(self.count(self.responder.requests, "k-refuse:0"), 0, "and nothing was dispatched: " + self.responder.requests);
-        std::test::assert_eq_int(self.count(self.done, "k-refuse:refused"), 1, "the Waiter reported the refusal once: " + self.done);
-        std::test::assert_eq_int(self.count(self.lives, "k-refuse:dissolved"), 1, "and was reclaimed: " + self.lives);
+        std::test::assert_eq_int(
+            self.count(self.responder.requests, "k-refuse:0"),
+            0,
+            "and nothing was dispatched: " + self.responder.requests,
+        );
+        std::test::assert_eq_int(
+            self.count(self.done, "k-refuse:refused"),
+            1,
+            "the Waiter reported the refusal once: " + self.done,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "k-refuse:dissolved"),
+            1,
+            "and was reclaimed: " + self.lives,
+        );
 
         // 6. parent shutdown reclaims a Waiter that is still waiting
         Session { };
         self.until_life("h-short:dissolved", 1);
-        std::test::assert_eq_int(self.count(self.lives, "h-short:born"), 1, "the session's Waiter was born: " + self.lives);
-        std::test::assert_eq_int(self.count(self.lives, "h-short:dissolved"), 1, "and reclaimed when its manager dissolved: " + self.lives);
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-short:born"),
+            1,
+            "the session's Waiter was born: " + self.lives,
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-short:dissolved"),
+            1,
+            "and reclaimed when its manager dissolved: " + self.lives,
+        );
         std::test::assert_eq_int(self.count(self.done, "h-short:done"), 0, "without completing");
         Flushes <- Flush { key: "h-short" };
         self.settle();
-        std::test::assert_eq_int(self.count(self.done, "h-short:done"), 0, "its late reply reaches nobody");
+        std::test::assert_eq_int(
+            self.count(self.done, "h-short:done"),
+            0,
+            "its late reply reaches nobody",
+        );
 
         // 7. volume: forty immediate and forty delayed Waiters, all reclaimed
         let mut i = 0;
@@ -447,21 +662,53 @@ main locus App {
             i = i + 1;
         }
         self.settle();
-        std::test::assert_eq_int(self.count_prefix(self.lives, "h-many-", ":dissolved"), 0, "forty delayed Waiters all still wait");
+        std::test::assert_eq_int(
+            self.count_prefix(self.lives, "h-many-", ":dissolved"),
+            0,
+            "forty delayed Waiters all still wait",
+        );
         i = 0;
         while i < 40 {
             Flushes <- Flush { key: "h-many-" + to_string(i) };
             i = i + 1;
         }
         self.until_prefix(self.lives, "h-many-", ":dissolved", 40);
-        std::test::assert_eq_int(self.count_prefix(self.lives, "k-many-", ":born"), 40, "forty immediate Waiters born");
-        std::test::assert_eq_int(self.count_prefix(self.lives, "k-many-", ":dissolved"), 40, "and forty reclaimed");
-        std::test::assert_eq_int(self.count_prefix(self.done, "h-many-", ":done"), 40, "forty delayed replies completed forty Waiters, once each");
-        std::test::assert_eq_int(self.count_prefix(self.lives, "h-many-", ":dissolved"), 40, "and all forty were reclaimed");
+        std::test::assert_eq_int(
+            self.count_prefix(self.lives, "k-many-", ":born"),
+            40,
+            "forty immediate Waiters born",
+        );
+        std::test::assert_eq_int(
+            self.count_prefix(self.lives, "k-many-", ":dissolved"),
+            40,
+            "and forty reclaimed",
+        );
+        std::test::assert_eq_int(
+            self.count_prefix(self.done, "h-many-", ":done"),
+            40,
+            "forty delayed replies completed forty Waiters, once each",
+        );
+        std::test::assert_eq_int(
+            self.count_prefix(self.lives, "h-many-", ":dissolved"),
+            40,
+            "and all forty were reclaimed",
+        );
 
         // 8. nothing leaked: every Waiter born here and finished is gone
-        std::test::assert_eq_int(self.manager.offers, 87, "eighty-seven offers reached the main manager, the delegated child's among them");
-        std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved") + self.count(self.lives, "h-dup:dissolved") + self.count(self.lives, "k-now:dissolved") + self.count(self.lives, "h-nest:dissolved") + self.count(self.lives, "h-nest.c:dissolved") + self.count(self.lives, "k-refuse:dissolved"), 6, "six residents finished and six were reclaimed");
+        std::test::assert_eq_int(
+            self.manager.offers,
+            87,
+            "eighty-seven offers reached the main manager, the delegated child's among them",
+        );
+        std::test::assert_eq_int(
+            self.count(self.lives, "h-late:dissolved") + self.count(self.lives, "h-dup:dissolved")
+                + self.count(self.lives, "k-now:dissolved")
+                + self.count(self.lives, "h-nest:dissolved")
+                + self.count(self.lives, "h-nest.c:dissolved")
+                + self.count(self.lives, "k-refuse:dissolved"),
+            6,
+            "six residents finished and six were reclaimed",
+        );
     }
 }
 

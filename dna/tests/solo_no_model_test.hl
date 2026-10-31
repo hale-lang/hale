@@ -1,0 +1,353 @@
+// dna/tests/solo_no_model_test.hl — the solo path: an organism with no
+// model works, through the head's rows (phase 4).
+//
+// The organism is grafted from this file's habitat with discovery off: its
+// models catalog is empty (no `model.category` row, no seat, no key), and
+// its leader has no model that answers. Its body runs (`hale dna dev`) and
+// its head (the composed API child the project head starts, trusted
+// local) serves the face's surface; the
+// fixture calls the head's rows on its socket as the face calls them over
+// HTTP. Every read a face screen makes answers. An ask (`Commands::
+// create_task`) is planned by no one: the leader's call is refused, so it is
+// a person's job, handed unassigned, never the editor's. A judgment is a
+// leg's only while a model is mapped: here it is a person's case too. The
+// person takes each (`Commands::take_task`), reports it done as text
+// (`Commands::complete_task`), and its execution settles. Past the host's
+// relay and the leg lease's reopen, nothing has moved to a leg: no attempt
+// was ever an agent's or the editor's, no leg claimed one, no Mutation was
+// made. Without docker compose nothing here is exercised.
+
+import "../core" as dna;
+import "../api" as api;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`: no model key, discovery off, a fixture's trusted-local
+// head. Memory and the nerves are whatever the habitat it was grafted from
+// runs on: its own allocations, or the operator's servers the suite names
+// (HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_NATS_URL_OWNER), which the organism's
+// body reaches as the habitat's other tenants do, so those stay set.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The composed head, the habitat's API child, built out of the tree.
+fn head_binary() -> String {
+    if std::env::var_exists("HALE_NATIVE_HEAD_API")
+        && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API"))
+    {
+        return std::env::var("HALE_NATIVE_HEAD_API");
+    }
+    let out = dna::scratch_root("solo-head") + "/practice_review";
+    let built = dna::run_tool(
+        toolchain() + "\nbuild\n" + source() + "/dna/api/practice_review\n-o\n" + out,
+    );
+    std::test::assert_eq_int(built.code, 0, "the head builds: " + built.stderr);
+    return out;
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// Whether `log` comes to say `text` within `secs`.
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+fn ok_value(r: dna::RunResult) -> Bool {
+    return r.code == 0
+        && (
+            std::str::contains(r.stdout, "\"ok\":true")
+                || std::str::contains(r.stdout, "\"ok\": true")
+        );
+}
+
+// The lines of `rows` whose kind is `kind`.
+@bounded_by(rows)
+fn rows_of(rows: String, kind: String) -> String {
+    let mut out = "";
+    let mut rest = rows;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") == kind { out = out + line + "\n"; }
+    }
+    return out;
+}
+
+// The organism as the fixture reaches it: its head's rows on the socket,
+// and its Ledger.
+locus Org {
+    params {
+        app: String = "";
+        socket: String = "";
+        failed: String = "";
+    }
+    // Whether each row of `members` (space-separated) answers a read of
+    // `{limit}`; the first that does not, and what it said, in `failed`.
+    @bounded_by(members)
+    fn reads_answer(members: String) -> Bool {
+        let mut rest = members;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let member = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            let r = self.call(member, "{\"limit\":200}");
+            if !ok_value(r) {
+                self.failed = member + ": " + r.stdout + r.stderr;
+                return false;
+            }
+        }
+        return true;
+    }
+    // One row of the head's surface: the value it answered (exit 0), or the
+    // outcome it printed.
+    fn call(member: String, payload: String) -> dna::RunResult {
+        return in_dir(
+            self.app,
+            toolchain() + "\napi\ncall\nunix:" + self.socket + "\n" + member + "\n--json\n"
+                + payload,
+        );
+    }
+    // The organism's Ledger, one JSON row a line.
+    fn ledger() -> String { return in_dir(self.app, toolchain() + "\ndna\nledger\nrows").stdout; }
+    // The entity of the first `task.handed` row not in `skip`
+    // (space-separated), within `secs`; "" when none came.
+    fn handed_case(skip: String, secs: Int) -> String {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            let found = first_entity(rows_of(self.ledger(), "task.handed"), skip);
+            if len(found) > 0 { return found; }
+            std::time::sleep(1s);
+        }
+        return "";
+    }
+    // Whether a `kind` row for `entity` lands within `secs`.
+    fn landed(kind: String, entity: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            let rows = rows_of(self.ledger(), kind);
+            if std::str::contains(rows, "\"entity\": \"" + entity + "\"")
+                || std::str::contains(rows, "\"entity\":\"" + entity + "\"")
+            {
+                return true;
+            }
+            std::time::sleep(1s);
+        }
+        return false;
+    }
+}
+
+// The entity of the first row of `rows` not in `skip`, "" when none.
+@bounded_by(rows)
+fn first_entity(rows: String, skip: String) -> String {
+    let mut rest = rows;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let entity = std::json::find_string_field(line, "entity");
+        if len(entity) > 0 && !dna::word_in(entity, skip) { return entity; }
+    }
+    return "";
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("solo_no_model_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "solo_no_model_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("solo-no-model");
+    dna::reap_on_exit(scratch);
+    let made = dna::grafted(scratch, "solo\n--no-library");
+    std::test::assert_eq_int(made.code, 0, "the organism is grafted: " + made.stdout + made.stderr);
+    let app = scratch + "/solo";
+    let committed = in_dir(
+        app,
+        "sh\n-c\ngit config user.name solo && git config user.email solo@dna && git add -A && git commit -q -m 'the organization'",
+    );
+    std::test::assert_eq_int(committed.code, 0, "the scaffold committed: " + committed.stderr);
+    let mapped = in_dir(app, toolchain() + "\ndna\nrecord-rows\n.");
+    std::test::assert(
+        mapped.code == 0 && !std::str::contains(mapped.stdout, "model.category"),
+        "the models catalog is empty: no category is mapped",
+    );
+
+    // ---- the body and the head
+    let body_log = app + "/.hale/dev.log";
+    let body = in_dir(
+        app,
+        "sh\n-c\nnohup timeout --foreground 1500 \"$0\" dna dev . --no-iris >.hale/dev.log 2>&1 </dev/null & echo $!\n"
+            + toolchain(),
+    );
+    std::test::assert(len(dna::trim_nl(body.stdout)) > 0, "dev started");
+    std::test::assert(
+        logged(body_log, "the organization reads its facts from the nerves", 600),
+        "the body runs: " + text_of(body_log),
+    );
+    // the head: the habitat's API child, its policies as the project head
+    // writes them for a trusted-local person
+    let person = api::local_person(app);
+    let identity = dna::MemoryRecord { repo: app }.identity();
+    std::test::assert(
+        len(person) > 0 && len(identity) > 0,
+        "the record maps this account to a person",
+    );
+    let policies = app + "/.hale/dna/face";
+    let made_dir = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$1\"\nsh\n" + policies);
+    std::test::assert_eq_int(made_dir.code, 0, "the policy directory: " + made_dir.stderr);
+    std::io::fs::write_file(
+        policies + "/authority.json",
+        "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + identity
+            + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"" + person
+            + "\",\"authority\":\"board\",\"practice_propose\":true,\"review_verdict\":true,\"recover\":true}]}\n",
+    ) or discard;
+    std::io::fs::write_file(
+        policies + "/task-policy.json",
+        "{\"format\":\"dna.task-authority/1\",\"application_id\":\"" + identity + "\",\"owner\":\""
+            + person + "\",\"members\":[\"" + person
+            + "\"],\"grants\":[{\"mode\":\"local\",\"name\":\""
+            + person + "\",\"reassign\":true,\"recover\":true,\"retire\":true}]}\n",
+    ) or discard;
+    let head_log = app + "/.hale/head.log";
+    let socket = scratch + "/head.sock";
+    let head = in_dir(
+        app,
+        "sh\n-c\nHALE_DNA_COMMAND_POLICY=\"$2/authority.json\" HALE_DNA_TASK_POLICY=\"$2/task-policy.json\" HALE_DNA_RPC_SOCKET=\"$3\" HALE_DNA_API_PORTS=\"$4\" nohup timeout --foreground 1500 \"$1\" \"$PWD\" 0 >.hale/head.log 2>&1 </dev/null & echo $!\nsh\n"
+            + head_binary() + "\n" + policies + "\n" + socket + "\n" + app + "/.hale/api.ports",
+    );
+    std::test::assert(len(dna::trim_nl(head.stdout)) > 0, "the head started");
+    let org = Org { app: app, socket: socket };
+    let mut index = org.call("Commands::index", "{\"limit\":200}");
+    let deadline = std::time::now() + dna::wait_secs(120);
+    while !ok_value(index) && std::time::now() <= deadline {
+        std::time::sleep(2s);
+        index = org.call("Commands::index", "{\"limit\":200}");
+    }
+    std::test::assert(
+        ok_value(index),
+        "the head's index answers (the face's index and organisms screens): " + index.stdout
+            + index.stderr + "\n" + text_of(head_log),
+    );
+
+    // ---- every read a face screen makes answers, with no model
+    std::test::assert(
+        org.reads_answer(
+            "Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::uis",
+        ),
+        "every read a face screen makes answers: " + org.failed,
+    );
+
+    // ---- an ask, planned by no one: a person's job, handed unassigned
+    let record_head = dna::RecordJournal { repo: app }.head();
+    let asked = org.call(
+        "Commands::create_task",
+        "{\"request_id\":\"solo-ask\",\"record_head\":\"" + record_head
+            + "\",\"outcome\":\"write the release notes\",\"to\":\"org\"}",
+    );
+    std::test::assert(
+        asked.code == 0 && std::str::contains(asked.stdout, "succeeded"),
+        "the ask is recorded (at " + record_head + "): " + asked.stdout + asked.stderr,
+    );
+    let first = org.handed_case("", 600);
+    std::test::assert(
+        len(first) > 0,
+        "the ask is handed to a person: " + org.ledger() + "\n" + text_of(body_log),
+    );
+    let taken = org.call("Commands::take_task", "{\"task_id\":\"" + first + "\"}");
+    std::test::assert(ok_value(taken), "the person takes it: " + taken.stdout + taken.stderr);
+    let done = org.call(
+        "Commands::complete_task",
+        "{\"task_id\":\"" + first + "\",\"text\":\"the notes are in NOTES.md\"}",
+    );
+    std::test::assert(ok_value(done), "and reports it done as text: " + done.stdout + done.stderr);
+    let done_rows = rows_of(org.ledger(), "task.done");
+    std::test::assert(
+        std::str::contains(done_rows, "the notes are in NOTES.md"),
+        "the work is in the record as text: " + done_rows,
+    );
+    // the case is `<task>.s<i>.<key>`: its root is the ask's execution
+    let dot = std::str::index_of(first, ".s");
+    let root = if dot > 0 { first[0..dot] } else { first };
+    std::test::assert(
+        org.landed("workflow.settled", root, 300),
+        "the ask's execution settles once its person reports it done: " + root + "\n"
+            + rows_of(org.ledger(), "workflow.settled"),
+    );
+
+    // ---- a judgment: a leg's only while a model is mapped, a person's here
+    let head2 = dna::RecordJournal { repo: app }.head();
+    let judged = org.call(
+        "Commands::create_task",
+        "{\"request_id\":\"solo-judge\",\"record_head\":\"" + head2
+            + "\",\"outcome\":\"is the release ready\",\"to\":\"org\",\"kind\":\"judgment\"}",
+    );
+    std::test::assert(
+        judged.code == 0 && std::str::contains(judged.stdout, "succeeded"),
+        "the judgment is recorded: " + judged.stdout + judged.stderr,
+    );
+    let second = org.handed_case(first, 600);
+    std::test::assert(
+        len(second) > 0,
+        "the judgment is handed to a person, not left for a leg: " + org.ledger(),
+    );
+    let done2 = org.call(
+        "Commands::complete_task",
+        "{\"task_id\":\"" + second + "\",\"text\":\"ready: the notes and the tag agree\"}",
+    );
+    std::test::assert(
+        ok_value(done2),
+        "the judgment is reported done: " + done2.stdout + done2.stderr,
+    );
+
+    // ---- past the relay's re-offer: nothing moved to a leg, nothing to the editor
+    std::time::sleep(dna::wait_secs(45) * 1s);
+    let all = org.ledger();
+    std::test::assert(
+        len(rows_of(all, "attempt.claimed")) == 0,
+        "no leg claimed an attempt: " + rows_of(all, "attempt.claimed"),
+    );
+    let admitted = rows_of(all, "attempt.admitted");
+    std::test::assert(
+        !std::str::contains(admitted, "agent") && !std::str::contains(admitted, "\\\"edit\\\""),
+        "no attempt was an agent's or the editor's: " + admitted,
+    );
+    let record = in_dir(app, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        !std::str::contains(record, "mutation.requested")
+            && !std::str::contains(record, "mutation.proposed"),
+        "no Mutation was made",
+    );
+    let stopped = dna::run_tool(
+        "sh\n-c\nkill $1 $2 2>/dev/null; true\nsh\n" + dna::trim_nl(body.stdout) + "\n"
+            + dna::trim_nl(head.stdout),
+    );
+    dna::scratch_done(scratch);
+}

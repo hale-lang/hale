@@ -1,0 +1,352 @@
+// The api's surface: every operation of ../spec/openapi.yaml that has a
+// real handler, one row each, with the shapes it takes and answers.
+//
+// The rows are the contract the program states about itself. The wire is
+// the contract's own REST shape, which no surface transport renders, so a
+// thin router (endpoints.hl) matches method and path, decodes the body
+// into a row's request (wire.hl), calls the row's handler on its receiver
+// and encodes the answer. The operations still answered by a canned body
+// have no row yet; each gets one as it is made real.
+//
+// A list is a `bounded` field of the row. Where the contract has a shape
+// the type does not say yet (a list that may be `null`, a map, an enum),
+// the type says it with a field the codec does carry (`Restriction.any`,
+// a `String` for an enum, -1 for a `null` count) and the
+// router writes the contract's form; api/gaps.json lists each place.
+//
+// The shapes of the first rows are below; each later resource keeps its
+// shapes beside its receiver and its wire (limits.hl, accounts.hl,
+// nodes.hl, changes.hl, inference.hl, fleet.hl).
+
+// The store, its rows and the shapes they share with the surface: a seed of
+// its own, which the brain reads too.
+import "../store" as st;
+
+/// A caller holding a project key (the caller plane).
+role caller;
+/// An administrator (the admin plane). Admin authentication is middleware
+/// that comes later; until then the api listens on loopback and every
+/// admin request holds it.
+role admin;
+/// A node presenting its enrollment token (the node plane).
+role node;
+
+api Voice {
+    // health
+    rpc Probes::liveness;
+    rpc Probes::readiness;
+
+    // caller plane: the catalog as a key sees it
+    rpc Models::list requires: [caller];
+    rpc Models::get requires: [caller];
+
+    // admin plane: the catalog
+    rpc Catalog::list requires: [admin];
+    rpc Catalog::create requires: [admin];
+    rpc Catalog::get requires: [admin];
+    rpc Catalog::update requires: [admin];
+    rpc Catalog::remove requires: [admin];
+
+    // admin plane: projects
+    rpc Projects::list requires: [admin];
+    rpc Projects::create requires: [admin];
+    rpc Projects::get requires: [admin];
+    rpc Projects::update requires: [admin];
+    rpc Projects::archive requires: [admin];
+
+    // admin plane: keys
+    rpc Keys::list requires: [admin];
+    rpc Keys::create requires: [admin];
+    rpc Keys::get requires: [admin];
+    rpc Keys::update requires: [admin];
+    rpc Keys::revoke requires: [admin];
+
+    // caller plane: what a key may do, and inference
+    rpc Models::capabilities requires: [caller];
+    rpc Inference::respond requires: [caller];
+    rpc Inference::chat requires: [caller];
+
+    // admin plane: budgets and limits
+    rpc Projects::budget requires: [admin];
+    rpc Projects::set_budget requires: [admin];
+    rpc Projects::limits requires: [admin];
+    rpc Projects::set_limits requires: [admin];
+
+    // admin plane: accounts
+    rpc Accounts::list requires: [admin];
+    rpc Accounts::create requires: [admin];
+    rpc Accounts::get requires: [admin];
+    rpc Accounts::update requires: [admin];
+    rpc Accounts::archive requires: [admin];
+
+    // admin plane: nodes and seats
+    rpc Nodes::list requires: [admin];
+    rpc Nodes::create requires: [admin];
+    rpc Nodes::get requires: [admin];
+    rpc Nodes::update requires: [admin];
+    rpc Nodes::revoke requires: [admin];
+    rpc Nodes::rotate_token requires: [admin];
+    rpc Seats::list requires: [admin];
+    rpc Seats::create requires: [admin];
+    rpc Seats::get requires: [admin];
+    rpc Seats::update requires: [admin];
+    rpc Seats::remove requires: [admin];
+
+    // admin plane: the change log
+    rpc Changes::list requires: [admin];
+
+    // node plane
+    rpc NodePlane::register requires: [node];
+    rpc NodePlane::assignment requires: [node];
+    rpc NodePlane::heartbeat requires: [node];
+    rpc NodePlane::seat_states requires: [node];
+    rpc NodePlane::capabilities requires: [node];
+    rpc NodePlane::local requires: [node];
+    rpc NodePlane::quota requires: [node];
+    rpc NodePlane::going_away requires: [node];
+}
+
+/// The contract's error envelope, with the HTTP status it goes out with.
+/// `kind` is the envelope's `type`.
+type ApiError {
+    status: Int = 500;
+    kind: String = "server_error";
+    code: ErrorCode;
+    message: String = "";
+    // the request field at fault, `null` for none
+    has_param: Bool = false;
+    param: String = "";
+    has_voice: Bool = false;
+    voice: ErrorVoice = ErrorVoice { };
+    // seconds the caller waits before asking again (`Retry-After`), 0 for
+    // none: a header, not a field of the envelope
+    retry_after: Int = 0;
+}
+
+/// An error's `voice` object: the id of the request (or of the incident,
+/// for a store failure) and the attempts of one that reached seats.
+/// Nothing is refused by a limit or a budget until requests are counted,
+/// so `limit` and `budget` are not set yet.
+type ErrorVoice {
+    request_id: String = "";
+    has_limit: Bool = false;
+    limit: st::Limit = st::Limit { scope: st::LimitScope::project };
+    has_budget: Bool = false;
+    budget: Budget = Budget { };
+    attempts: bounded[Attempt; 8];
+}
+
+// ---- health ----------------------------------------------------------
+
+/// One dependency's state, in `Health.checks`.
+type Check { name: String = ""; status: HealthStatus; }
+
+/// `Health`. `checks` is each dependency's state on readiness, a map of
+/// values (`{"store": "ok"}`); liveness has none.
+type Health {
+    status: HealthStatus;
+    version: String = "";
+    checks: bounded[Check; 8] indexed_by name -> status;
+}
+
+// ---- the catalog -----------------------------------------------------
+
+/// Which model: the `{model}` of the path.
+type ModelRef { model: String; }
+
+/// `CatalogModelCreate`. A count of 0 is not set; no `price` (or `null`)
+/// is free; with no `kind` it is `local`.
+type CatalogModelCreate {
+    id: String;
+    owned_by: String = "local";
+    has_kind: Bool = false;
+    kind: ModelKind = ModelKind::local;
+    context_length: Int = 0;
+    max_output_tokens: Int = 0;
+    has_price: Bool = false;
+    price: st::ModelPrice = st::ModelPrice { };
+}
+
+/// `CatalogModelUpdate`, for the model the path names: only the fields
+/// whose `set_` flag is true change.
+type CatalogModelUpdate {
+    model: String;
+    has_owned_by: Bool = false;
+    owned_by: String = "";
+    has_kind: Bool = false;
+    kind: ModelKind = ModelKind::local;
+    has_context_length: Bool = false;
+    context_length: Int = 0;
+    has_max_output_tokens: Bool = false;
+    max_output_tokens: Int = 0;
+    // a three-way field: left out (kept), null (cleared) or a value
+    has_price: Bool = false;
+    price: st::ModelPrice = st::ModelPrice { };
+    clear_price: Bool = false;
+}
+
+/// `CatalogModel`: the admin plane's view.
+type CatalogModel {
+    id: String = "";
+    owned_by: String = "local";
+    kind: ModelKind;
+    context_length: Int = 0;
+    max_output_tokens: Int = 0;
+    has_price: Bool = false;
+    price: st::ModelPrice = st::ModelPrice { };
+    // `<node>/<seat>` of each seat that serves it
+    seats: bounded[String; 32];
+    available: Bool = false;
+    created_at: Time = `1970-01-01T00:00:00Z`;
+}
+
+type CatalogList { data: bounded[CatalogModel; 256]; }
+
+/// `Model`: the caller plane's view of a catalog model.
+type Model {
+    id: String = "";
+    created: Int = 0;
+    owned_by: String = "local";
+    kind: String = "local";
+    context_length: Int = 0;
+    max_output_tokens: Int = 0;
+    // data classes some eligible seat may carry
+    data_classes: bounded[String; 32];
+    has_price: Bool = false;
+    price: st::ModelPrice = st::ModelPrice { };
+    available: Bool = false;
+}
+
+type ModelList { data: bounded[Model; 256]; }
+
+// ---- projects --------------------------------------------------------
+
+type ProjectRef { project: String; }
+
+type ProjectQuery { include_archived: Bool = false; }
+
+/// `ProjectCreate`. `models` and `accounts` left out or `null` are no
+/// restriction, `budget` no budget.
+type ProjectCreate {
+    id: String;
+    name: String;
+    owners: bounded[String; 32];
+    // empty is the default, `[internal]`
+    data_classes: bounded[String; 32];
+    has_models: Bool = false;
+    models: bounded[String; 32];
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    has_budget: Bool = false;
+    budget: BudgetInput = BudgetInput { allowance_micros: 0, period: st::Period::month };
+    limits: bounded[st::Limit; 16];
+}
+
+/// `ProjectUpdate`, for the project the path names.
+type ProjectUpdate {
+    project: String;
+    has_name: Bool = false;
+    name: String = "";
+    has_owners: Bool = false;
+    owners: bounded[String; 32];
+    has_data_classes: Bool = false;
+    data_classes: bounded[String; 32];
+    // three-way fields: left out (kept), null (no restriction) or a list
+    has_models: Bool = false;
+    models: bounded[String; 32];
+    clear_models: Bool = false;
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    clear_accounts: Bool = false;
+}
+
+/// `Project`. `models` and `accounts` are `null`, no restriction, when
+/// their flags are false.
+type Project {
+    id: String = "";
+    name: String = "";
+    status: Lifecycle;
+    owners: bounded[String; 32];
+    data_classes: bounded[String; 32];
+    has_models: Bool = false;
+    models: bounded[String; 32];
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    has_budget: Bool = false;
+    budget: Budget = Budget { };
+    limits: bounded[st::Limit; 16];
+    key_count: Int = 0;
+    has_position: Bool = false;
+    position: String = "";
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    has_archived_at: Bool = false;
+    archived_at: Time = `1970-01-01T00:00:00Z`;
+}
+
+type ProjectList { data: bounded[Project; 64]; }
+
+// ---- keys ------------------------------------------------------------
+
+type KeyRef { project: String; key: String; }
+
+/// `KeyCreate` under the project the path names.
+type KeyCreate {
+    project: String;
+    name: String;
+    has_models: Bool = false;
+    models: bounded[String; 32];
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    limits: bounded[st::Limit; 16];
+    has_expires_at: Bool = false;
+    expires_at: Time = `1970-01-01T00:00:00Z`;
+}
+
+/// `KeyUpdate`, for the key the path names.
+type KeyUpdate {
+    project: String;
+    key: String;
+    has_name: Bool = false;
+    name: String = "";
+    // three-way fields: left out (kept), null (no restriction, no
+    // expiry) or a value
+    has_models: Bool = false;
+    models: bounded[String; 32];
+    clear_models: Bool = false;
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    clear_accounts: Bool = false;
+    has_limits: Bool = false;
+    limits: bounded[st::Limit; 16];
+    has_expires_at: Bool = false;
+    expires_at: Time = `1970-01-01T00:00:00Z`;
+    clear_expires_at: Bool = false;
+}
+
+/// `Key`, and `KeyWithSecret` when `secret` is set (only the answer to
+/// its creation). A time whose flag is false is `null`.
+type Key {
+    id: String = "";
+    project: String = "";
+    name: String = "";
+    prefix: String = "";
+    has_models: Bool = false;
+    models: bounded[String; 32];
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    limits: bounded[st::Limit; 16];
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    // no principal yet: admin authentication is off
+    has_created_by: Bool = false;
+    created_by: String = "";
+    has_expires_at: Bool = false;
+    expires_at: Time = `1970-01-01T00:00:00Z`;
+    has_last_used_at: Bool = false;
+    last_used_at: Time = `1970-01-01T00:00:00Z`;
+    status: KeyStatus;
+    has_revoked_at: Bool = false;
+    revoked_at: Time = `1970-01-01T00:00:00Z`;
+    secret: String = "";
+}
+
+type KeyList { data: bounded[Key; 64]; }

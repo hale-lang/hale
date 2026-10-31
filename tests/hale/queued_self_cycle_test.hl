@@ -44,15 +44,38 @@ fn main() {
     std::io::fs::write_file(src, echo_source()) or discard;
 
     let checked = std::process::run(hale + "\ncheck\n" + src)
-    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "check failed to start" };
+    or std::process::ProcessOutput {
+        code: -9,
+        signal: 0,
+        stdout: "",
+        stderr: "check failed to start",
+    };
     let said = checked.stdout + checked.stderr;
     std::test::assert_eq_int(checked.code, 0, "the check accepts the queued cycle: " + said);
-    std::test::assert(std::str::contains(said, "in locus `Echo`: a cell can re-trigger its own publish, spinning the cooperative queue"), "the cycle is the queue's warning: " + said);
-    std::test::assert(!std::str::contains(said, "re-entrant"), "and not the synchronous error: " + said);
+    std::test::assert(
+        std::str::contains(
+            said,
+            "in locus `Echo`: a cell can re-trigger its own publish, spinning the cooperative queue",
+        ),
+        "the cycle is the queue's warning: " + said,
+    );
+    std::test::assert(
+        !std::str::contains(said, "re-entrant"),
+        "and not the synchronous error: " + said,
+    );
 
     let ran = std::process::run(hale + "\nrun\n" + src)
-    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed to start" };
-    std::test::assert_eq_str(ran.stdout, "seen 0\nseen 1\n", "two cells, then terminate: " + ran.stderr);
+    or std::process::ProcessOutput {
+        code: -9,
+        signal: 0,
+        stdout: "",
+        stderr: "run failed to start",
+    };
+    std::test::assert_eq_str(
+        ran.stdout,
+        "seen 0\nseen 1\n",
+        "two cells, then terminate: " + ran.stderr,
+    );
 
     let _gone = std::process::run("rm\n-f\n" + src + "\n" + marker)
     or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "" };

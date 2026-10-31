@@ -12,24 +12,78 @@ main locus App {
     params { k: dna::Knowledge = dna::Knowledge { }; }
     run() {
         // declared knowledge, provenance kept
-        let r1 = self.k.declare(dna::Idea { id: "i1", kind: "practice", text: "review before apply", author: "app", provenance: "declared" });
-        let r2 = self.k.declare(dna::Idea { id: "i2", kind: "idea", text: "checkout fails under load", author: "app/support", provenance: "observed" });
+        let r1 = self.k.declare(
+            dna::Idea {
+                id: "i1",
+                kind: "practice",
+                text: "review before apply",
+                author: "app",
+                provenance: "declared",
+            },
+        );
+        let r2 = self.k.declare(
+            dna::Idea {
+                id: "i2",
+                kind: "idea",
+                text: "checkout fails under load",
+                author: "app/support",
+                provenance: "observed",
+            },
+        );
         std::test::assert_eq_int(r2, 2, "each acceptance is a revision");
-        std::test::assert_eq_str(self.k.find("i2").provenance, "observed", "provenance is kept, not flattened");
+        std::test::assert_eq_str(
+            self.k.find("i2").provenance,
+            "observed",
+            "provenance is kept, not flattened",
+        );
 
         // binding direction is the classification
-        std::test::assert_eq_str(self.k.bind("i1", "app/support", "app"), "goal", "parent-authored, bound to child = goal");
-        std::test::assert_eq_str(self.k.bind("i2", "app", "app/support"), "concern", "child-authored, bound to parent = concern");
-        std::test::assert_eq_str(self.k.bind("i2", "app/support", "app/support"), "initiative", "self-authored, bound locally = initiative");
-        std::test::assert_eq_str(self.k.bind("i2", "app/billing", "app/support"), "lateral", "sibling binding refused");
+        std::test::assert_eq_str(
+            self.k.bind("i1", "app/support", "app"),
+            "goal",
+            "parent-authored, bound to child = goal",
+        );
+        std::test::assert_eq_str(
+            self.k.bind("i2", "app", "app/support"),
+            "concern",
+            "child-authored, bound to parent = concern",
+        );
+        std::test::assert_eq_str(
+            self.k.bind("i2", "app/support", "app/support"),
+            "initiative",
+            "self-authored, bound locally = initiative",
+        );
+        std::test::assert_eq_str(
+            self.k.bind("i2", "app/billing", "app/support"),
+            "lateral",
+            "sibling binding refused",
+        );
         std::test::assert_eq_int(self.k.refused_lateral, 1, "refusal counted");
-        std::test::assert_eq_str(self.k.bind("i1", "language:hale", "app"), "goal", "a node is bound from above, never laterally");
-        std::test::assert_eq_str(dna::classify_binding("language:hale", "language:hale"), "initiative", "the same id is local");
+        std::test::assert_eq_str(
+            self.k.bind("i1", "language:hale", "app"),
+            "goal",
+            "a node is bound from above, never laterally",
+        );
+        std::test::assert_eq_str(
+            dna::classify_binding("language:hale", "language:hale"),
+            "initiative",
+            "the same id is local",
+        );
 
         // proposals do not write; distillation does, and not by the author
-        let p = self.k.propose(dna::Idea { id: "i3", kind: "idea", text: "retry the payment gateway once", author: "app/support/attempt-7" });
+        let p = self.k.propose(
+            dna::Idea {
+                id: "i3",
+                kind: "idea",
+                text: "retry the payment gateway once",
+                author: "app/support/attempt-7",
+            },
+        );
         std::test::assert_eq_int(self.k.accepted_count(), 2, "a proposal is not knowledge yet");
-        std::test::assert(!self.k.distill(p, "app/support/attempt-7", "approve"), "the proposer cannot ratify");
+        std::test::assert(
+            !self.k.distill(p, "app/support/attempt-7", "approve"),
+            "the proposer cannot ratify",
+        );
         std::test::assert(!self.k.distill(p, "app", "reject"), "a rejection commits nothing");
         std::test::assert_eq_int(self.k.accepted_count(), 2, "still two");
         std::test::assert(self.k.distill(p, "app", "approve"), "an independent reviewer ratifies");
@@ -43,16 +97,28 @@ main locus App {
         let c3 = self.k.bind("i3", "app/support", "app");
         std::test::assert_eq_str(c3, "goal", "i3 bound as a goal");
         let full = self.k.context_for("app/support/intake", 10, "internal");
-        std::test::assert_eq_int(full.included_n, 3, "goals flow down to the descendant: i1, i2 (initiative on support), i3: " + full.included);
+        std::test::assert_eq_int(
+            full.included_n,
+            3,
+            "goals flow down to the descendant: i1, i2 (initiative on support), i3: "
+                + full.included,
+        );
         std::test::assert_eq_int(full.omitted_n, 0, "nothing omitted at budget 10");
         std::test::assert_eq_int(full.revision, 3, "package names the knowledge revision");
         std::test::assert_eq_int(len(full.digest), 64, "package is content-addressed");
         let small = self.k.context_for("app/support/intake", 1, "internal");
         std::test::assert_eq_int(small.included_n, 1, "budget respected");
         std::test::assert_eq_int(small.omitted_n, 2, "the package states what it omitted");
-        std::test::assert(small.digest != full.digest, "a different projection has a different digest");
+        std::test::assert(
+            small.digest != full.digest,
+            "a different projection has a different digest",
+        );
         let again = self.k.context_for("app/support/intake", 10, "internal");
-        std::test::assert_eq_str(again.digest, full.digest, "same revision, same projection, same digest");
+        std::test::assert_eq_str(
+            again.digest,
+            full.digest,
+            "same revision, same projection, same digest",
+        );
     }
 }
 

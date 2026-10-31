@@ -147,6 +147,17 @@ fn resolve<'a>(doc: &'a Value, schema: &'a Value) -> &'a Value {
     cur
 }
 
+/// The value schema of an optional field (`{"anyOf": [<schema>, {"type":
+/// "null"}]}`, spec/api.md § Codecs), if `schema` is one.
+fn nullable_inner(schema: &Value) -> Option<&Value> {
+    let any = schema.get("anyOf").and_then(Value::as_array)?;
+    let is_null = |s: &Value| s.get("type").and_then(Value::as_str) == Some("null");
+    if !any.iter().any(is_null) {
+        return None;
+    }
+    any.iter().find(|s| !is_null(s))
+}
+
 /// The name a `$ref` schema carries, if it is one.
 fn ref_name(schema: &Value) -> Option<&str> {
     schema.get("$ref").and_then(Value::as_str).and_then(|r| r.rsplit('/').next())
@@ -157,6 +168,15 @@ fn ref_name(schema: &Value) -> Option<&str> {
 fn type_label(doc: &Value, schema: &Value) -> String {
     if let Some(n) = ref_name(schema) {
         return n.to_string();
+    }
+    if let Some(inner) = nullable_inner(schema) {
+        return format!("{} or null", type_label(doc, inner));
+    }
+    // an enum: by its name (spec/api.md § Codecs)
+    if schema.get("enum").is_some() || schema.get("oneOf").is_some() {
+        if let Some(t) = schema.get("x-hale-type").and_then(Value::as_str) {
+            return t.to_string();
+        }
     }
     let base = match schema.get("type").and_then(Value::as_str) {
         Some("integer") => "Int".to_string(),
@@ -171,7 +191,11 @@ fn type_label(doc: &Value, schema: &Value) -> String {
                 _ => format!("[{item}]"),
             }
         }
-        Some("object") => "{record}".to_string(),
+        Some("object") => match (schema.get("x-hale-key").and_then(Value::as_str), schema.get("x-hale-value").and_then(Value::as_str)) {
+            (Some(k), Some(v)) => format!("{{map by {k} of {v}}}"),
+            (Some(k), None) => format!("{{map by {k}}}"),
+            (None, _) => "{record}".to_string(),
+        },
         _ => "JSON".to_string(),
     };
     match (schema.get("x-hale-type").and_then(Value::as_str), schema.get("x-hale-unit").and_then(Value::as_str)) {
@@ -356,7 +380,7 @@ pub(crate) fn run_describe(rest: &[String]) -> ExitCode {
 /// name there is, and an own flag of that name made it unsettable from a flag.
 const OWN_FLAGS: [&str; 5] = ["json", "bearer", "request-id", "digest", "raw"];
 
-const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--request-id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port";
+const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--request-id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port\n  member: Locus::fn, or 'METHOD /path' for a route of an http::Rest listener (the flags are its query)";
 
 /// A schema in full, compact, for a message that names a field.
 fn schema_text(schema: &Value) -> String {
@@ -408,6 +432,25 @@ fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> 
 /// all fit the item type; a quantity or a distinct integer fits by its count. A schema
 /// with no `type` constrains nothing.
 fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(), String> {
+    // an optional field takes `null` (its absence) or a value of its type
+    if let Some(inner) = nullable_inner(schema) {
+        return if v.is_null() { Ok(()) } else { check_value(doc, path, inner, v) };
+    }
+    // an enum's variant: a name it lists, or an object one of its forms admits
+    if let Some(any) = schema.get("oneOf").and_then(Value::as_array) {
+        return if any.iter().any(|f| check_value(doc, path, f, v).is_ok()) {
+            Ok(())
+        } else {
+            Err(format!("`{path}` is `{v}`, no variant of {}", type_label(doc, schema)))
+        };
+    }
+    if let Some(names) = schema.get("enum").and_then(Value::as_array) {
+        return if names.iter().any(|n| n == v) {
+            Ok(())
+        } else {
+            Err(format!("`{path}` is `{v}`, no variant of {}", type_label(doc, schema)))
+        };
+    }
     let resolved = resolve(doc, schema);
     let misfit = |what: &str| format!("`{path}` is `{v}`, {what}; expected {}", type_label(doc, schema));
     match resolved.get("type").and_then(Value::as_str) {
@@ -428,6 +471,15 @@ fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(),
                 Some(item) => items.iter().enumerate().try_for_each(|(i, x)| check_value(doc, &format!("{path}[{i}]"), item, x)),
                 None => Ok(()),
             }
+        }
+        // a wire map: every value fits the value schema, no more than its bound
+        Some("object") if resolved.get("additionalProperties").is_some_and(Value::is_object) => {
+            let Some(obj) = v.as_object() else { return Err(misfit("not an object")) };
+            if let Some(hi) = resolved.get("maxProperties").and_then(Value::as_u64).filter(|hi| obj.len() as u64 > *hi) {
+                return Err(misfit(&format!("{} entries, more than the {hi} the map holds", obj.len())));
+            }
+            let value = &resolved["additionalProperties"];
+            obj.iter().try_for_each(|(k, x)| check_value(doc, &format!("{path}.{k}"), value, x))
         }
         Some("object") => {
             let Some(obj) = v.as_object() else { return Err(misfit("not a record")) };
@@ -581,6 +633,38 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
     };
     let token = bearer_of(token);
 
+    // A route of an `http::Rest` listener is called by its method and path
+    // (`'GET /orders/5'`): no description is read, the flags are the query
+    // and a `--json` payload the body of a method that takes one.
+    if let Some((method, path)) = member.split_once(' ').filter(|(m, p)| matches!(*m, "GET" | "POST" | "PUT" | "PATCH" | "DELETE") && p.starts_with('/')) {
+        let Endpoint::Http(hp) = &ep else {
+            return usage_error("call", "a route (`METHOD /path`) is called on an http:// endpoint");
+        };
+        if given_payload.is_some() && matches!(method, "GET" | "DELETE") {
+            return usage_error("call", &format!("{method} takes no body: give the request's fields as flags, they are the query"));
+        }
+        let mut target = path.to_string();
+        for (i, (k, v)) in flags.iter().enumerate() {
+            target.push(if i == 0 && !path.contains('?') { '?' } else { '&' });
+            target.push_str(&percent_encode(&k.replace('-', "_")));
+            target.push('=');
+            target.push_str(&percent_encode(v.as_deref().unwrap_or("true")));
+        }
+        let mut headers = bearer(token.as_deref());
+        if let Some(d) = &digest {
+            headers.push(("Hale-Surface-Digest", d.to_string()));
+        }
+        let body = given_payload.as_ref().map(Value::to_string);
+        let reply = match http_request(hp, method, &target, &headers, body.as_deref()).and_then(outcome_of_http) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("hale api call: transport failure: {e}");
+                return ExitCode::from(EXIT_TRANSPORT);
+            }
+        };
+        return report(&reply, raw);
+    }
+
     // The description is read once, before the payload is built: it types the
     // flags and names the digest the call is held to.
     let doc = match fetch(&ep, token.as_deref()) {
@@ -626,6 +710,11 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TRANSPORT);
         }
     };
+    report(&reply, raw)
+}
+
+/// Print an outcome as the verb does and exit by it.
+fn report(reply: &crate::api_client::Reply, raw: bool) -> ExitCode {
     if raw {
         println!("{}", reply.raw.trim());
     }
@@ -638,7 +727,12 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
         }
         k => {
             if !raw {
-                eprintln!("{}", reply.raw.trim());
+                // a classed handler error names its class (spec/api.md §
+                // Error classes)
+                match (&reply.class, k) {
+                    (Some(c), Kind::HandlerError) => eprintln!("handler error ({c}): {}", reply.raw.trim()),
+                    _ => eprintln!("{}", reply.raw.trim()),
+                }
             }
             ExitCode::from(match k {
                 Kind::HandlerError => EXIT_HANDLER,
@@ -648,6 +742,7 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {

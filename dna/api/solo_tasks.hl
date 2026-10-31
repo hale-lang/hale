@@ -1,0 +1,179 @@
+// dna/api/solo_tasks.hl — a person takes a handed Task and reports it done,
+// as rows of the head's surface (phase 4, the solo path).
+//
+// With no model mapped the organism's work is a person's: an ask the leader
+// could not plan is handed, unassigned, and a leg's Work is a case. Two rows
+// of `HeadCommands` let the person do it from the face, as the CLI's `hale
+// dna task reassign` and `task done` do:
+//
+//   - `Commands::take_task` (`{task_id}`): a handed Task that names no
+//     assignee becomes the caller's, a `task.reassigned` row from "" to them;
+//     one already theirs answers ok and writes nothing;
+//   - `Commands::complete_task` (`{task_id, text}`): the caller reports a
+//     handed Task theirs (or unassigned) done, a `task.done` row whose body is
+//     `by <who>: <text>`, the work as text. A Task whose acceptance practice
+//     requires evidence is refused (`evidence_required`): a note never
+//     verifies anything (`hale dna task done --evidence` links it).
+//
+// Each row is the Ledger's and in the caller's name, written under the
+// head's role at the revision the decision was read at (a move another
+// writer landed since is `stale`, to read again). Memory's insert function
+// is the second gate: it refuses a completion by anyone but the assignee.
+// The organism's assembly reads the completion as the outcome of the
+// attempt the case was admitted for, and the Work settles done.
+import "../core" as dna;
+import "../operations" as ops;
+
+type TaskTake { task_id: String = ""; }
+
+type TaskDone {
+    task_id: String = "";
+    text: String = "";
+}
+
+type TaskAct {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    task_id: String = "";
+    state: String = "";
+    assignee: String = "";
+}
+
+fn task_act_refused(id: String, code: String, why: String) -> TaskAct {
+    return TaskAct { task_id: id, code: code, why: why };
+}
+
+// A Task as the record and its Ledger hold it now, and the Ledger's revision
+// that reading was taken at.
+type SoloTask {
+    ok: Bool = false;
+    code: String = "";
+    row: ops::TaskRow = ops::TaskRow { };
+    ledger_at: Int = -1;
+}
+
+fn solo_read(root: String, id: String) -> SoloTask {
+    let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+    if !ledger.ready() { return SoloTask { code: "task_source_unavailable" }; }
+    let record = dna::RecordJournal { repo: root };
+    let moved = record.refresh();
+    let read = ledger.refresh();
+    let at = ledger.revision();
+    let j = dna::RoutedJournal { record: record, ledger: ledger };
+    let p = ops::TaskProjection {
+        j: j,
+        visibility: ops::Queries { j: j, routed: true },
+        routed: true,
+    };
+    if !p.load() { return SoloTask { code: p.code }; }
+    let t = p.task_of(id);
+    if len(t.id) == 0 { return SoloTask { code: "not_found" }; }
+    return SoloTask { ok: true, row: t, ledger_at: at };
+}
+
+// One Ledger row in `who`'s name at `at`: "" once it lands, else why not.
+fn solo_write(
+    root: String,
+    at: Int,
+    kind: String,
+    id: String,
+    body: String,
+    who: String
+) -> String {
+    let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+    let r = ledger.write(at, kind, id, body, who, "");
+    if r.ok { return ""; }
+    return if r.error == "stale_revision" || r.error == "stale" {
+        "stale"
+    } else {
+        ledger.last_error()
+    };
+}
+
+fn solo_take(root: String, id: String, who: String) -> TaskAct {
+    if len(id) == 0 || len(id) > 256 { return task_act_refused(id, "invalid_task", "which Task?"); }
+    let s = solo_read(root, id);
+    if !s.ok { return task_act_refused(id, s.code, "the Task could not be read"); }
+    let t = s.row;
+    if t.state != "handed" {
+        return task_act_refused(
+            id,
+            "not_handed",
+            "the Task is " + t.state + ", not a person's to take",
+        );
+    }
+    if t.assignee == who {
+        return TaskAct { ok: true, task_id: id, state: t.state, assignee: who };
+    }
+    if len(t.assignee) > 0 {
+        return task_act_refused(
+            id,
+            "assigned",
+            "the Task is " + t.assignee
+                + "'s; reassigning it is the Board's (Commands::reassign_task)",
+        );
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("from", "");
+    b.string_field("to", who);
+    b.string_field("by", who);
+    b.end_object();
+    let wrote = solo_write(root, s.ledger_at, "task.reassigned", id, b.result(), who);
+    if len(wrote) > 0 {
+        return task_act_refused(
+            id,
+            if wrote == "stale" { "stale" } else { "record_refused" },
+            if wrote == "stale" { "the Task moved; read it again" } else { wrote },
+        );
+    }
+    return TaskAct { ok: true, task_id: id, state: "handed", assignee: who };
+}
+
+fn solo_done(root: String, id: String, text: String, who: String) -> TaskAct {
+    if len(id) == 0 || len(id) > 256 { return task_act_refused(id, "invalid_task", "which Task?"); }
+    let note = std::str::trim(text);
+    if len(note) == 0 || len(note) > 8192 {
+        return task_act_refused(id, "invalid_text", "the work, as text: 1 to 8192 bytes");
+    }
+    let s = solo_read(root, id);
+    if !s.ok { return task_act_refused(id, s.code, "the Task could not be read"); }
+    let t = s.row;
+    if t.state != "handed" {
+        return task_act_refused(
+            id,
+            "not_handed",
+            "the Task is " + t.state + ", not handed to a person: nothing to report done",
+        );
+    }
+    if len(t.assignee) > 0 && t.assignee != who {
+        return task_act_refused(
+            id,
+            "assigned",
+            "the Task is " + t.assignee + "'s, not " + who + "'s",
+        );
+    }
+    let refusal = dna::completion_refusal(who, t.evidence_required, "", "", "");
+    if len(refusal) > 0 {
+        return task_act_refused(
+            id,
+            if refusal == "evidence required" { "evidence_required" } else { "refused" },
+            if refusal == "evidence required" {
+                "the Task's acceptance practice requires evidence: `hale dna task done " + id
+                    + " --evidence <digest>` links it"
+            } else {
+                refusal
+            },
+        );
+    }
+    let wrote = solo_write(root, s.ledger_at, "task.done", id, "by " + who + ": " + note, who);
+    if len(wrote) > 0 {
+        return task_act_refused(
+            id,
+            if wrote == "stale" { "stale" } else { "record_refused" },
+            if wrote == "stale" { "the Task moved; read it again" } else { wrote },
+        );
+    }
+    return TaskAct { ok: true, task_id: id, state: "done", assignee: who };
+}

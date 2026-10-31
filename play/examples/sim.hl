@@ -20,7 +20,15 @@
             self.countdown = 40;
             self.player_no = self.player_no + 1;
             self.queued = self.queued + 1;
-            println("player ", self.player_no, " joined  (", self.queued, "/", self.target, " queued)");
+            println(
+                "player ",
+                self.player_no,
+                " joined  (",
+                self.queued,
+                "/",
+                self.target,
+                " queued)",
+            );
             if self.queued >= self.target {
                 self.matches = self.matches + 1;
                 println(">> match #", self.matches, " starting with ", self.target, " players!");

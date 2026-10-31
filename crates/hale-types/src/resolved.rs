@@ -177,6 +177,15 @@ pub struct LoweringView {
     /// before the snapshot sets it) is refused by lowering (a required
     /// row).
     pub lifecycle: Option<crate::lifecycle::LifecyclePlan>,
+    /// The owned-view column (`crate::view_bindings`, the `owned_views`
+    /// family, GH #1554): the snapshot's, computed once over the checker's
+    /// types for the checked programs and the stdlib's analysis copy, here
+    /// re-keyed onto `merged` through the correspondence. Lowering binds
+    /// an owned copy, and copies on write, exactly where it says. The
+    /// snapshot's view carries it; a view without it (as
+    /// [`resolve_rewritten`] returns it, before the snapshot sets it) is
+    /// refused by lowering (a required row).
+    pub owned_views: Option<crate::view_bindings::OwnedViews>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
     /// program the view was resolved from: its entry, the `main locus`
     /// lowering deploys, which every comparison lowering makes against
@@ -298,6 +307,12 @@ impl LoweringView {
     /// bare program.
     pub fn lifecycle(&self) -> Option<&crate::lifecycle::LifecyclePlan> {
         self.lifecycle.as_ref()
+    }
+
+    /// The owned-view column lowering reads which bindings, operands and
+    /// writes copy from. `None` for a view resolved from a bare program.
+    pub fn owned_views(&self) -> Option<&crate::view_bindings::OwnedViews> {
+        self.owned_views.as_ref()
     }
 
     /// The entry row lowering reads which `main locus` it deploys and
@@ -680,6 +695,7 @@ pub fn resolve_rewritten(
         route_anchors,
         cells: crate::capability::LoweringCells::of(class),
         lifecycle: None,
+        owned_views: None,
         entry: None,
     })
 }

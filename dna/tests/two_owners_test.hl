@@ -25,7 +25,13 @@ import "../core/pond/realtime/nats" as nats;
 // (GH #986): each owner's facts are its organization's alone, so neither
 // organization pulls, and refuses, what the other's host published.
 fn owner_reading(url: String, org: String, owner: String, secs: Int) -> String {
-    let c = nats::NatsClient { url: url, user: "spine", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") }, name: "two-owners-probe", timeout: 2s };
+    let c = nats::NatsClient {
+        url: url,
+        user: dna::nerves_user(org, "spine"),
+        credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") },
+        name: "two-owners-probe",
+        timeout: 2s,
+    };
     if !c.open() { return "the nerves: " + c.last_error; }
     let deadline = std::time::now() + dna::wait_secs(secs);
     let mut why = "";
@@ -34,7 +40,16 @@ fn owner_reading(url: String, org: String, owner: String, secs: Int) -> String {
     let filter = org + "." + owner + ".dna.>";
     while std::time::now() <= deadline {
         let info = nats::js_call(c, consumer, "") or "";
-        if len(info) > 0 && std::json::find_int_field(info, "num_waiting") > 0 && std::json::find_string_field(std::json::find_string_field(info, "config"), "filter_subject") == filter { c.close(); return ""; }
+        if len(info) > 0
+            && std::json::find_int_field(info, "num_waiting") > 0
+            && std::json::find_string_field(
+                std::json::find_string_field(info, "config"),
+                "filter_subject",
+            ) == filter
+        {
+            c.close();
+            return "";
+        }
         why = if len(info) == 0 { c.last_error } else { info };
         std::time::sleep(250ms);
     }
@@ -48,13 +63,19 @@ fn toolchain() -> String {
 }
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
 }
 
 // `argv` in `dir` with memory's head role named (GH #985): every verb
 // that reads the ledger or requests a write of it, from any clone.
 fn as_head(dir: String, head_dsn: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + dir + "\n" + head_dsn + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+            + dir + "\n" + head_dsn + "\n" + argv,
+    );
 }
 
 // The value of `NAME=` on its own line of `text`.
@@ -106,6 +127,23 @@ fn ledger(app: String, head_dsn: String) -> String {
 const POLLS: Int = 240;
 const BOOT: Int = 600;
 
+// Whether `sql` (a table and its WHERE) counts one row in the record's
+// memory within `secs`, read as the owner: the projection the spine writes.
+fn chart_holds(dsn: String, record: String, sql: String, secs: Int) -> Bool {
+    let c = dna::pq_conn(dna::parse_dsn(dsn));
+    if !c.open().ok { return false; }
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    let query = "SELECT count(*) FROM " + dna::schema_for(record) + "." + sql;
+    let mut ok = false;
+    while !ok && std::time::now() <= deadline {
+        let r = c.query_one(query);
+        ok = r.ok && dna::trim_nl(r.data) == "1";
+        if !ok { std::time::sleep(200ms); }
+    }
+    c.close();
+    return ok;
+}
+
 fn wait_row(app: String, head_dsn: String, needle: String, tries: Int) -> String {
     let limit = tries * dna::wait_scale();
     let mut n = 0;
@@ -126,7 +164,10 @@ fn wait_record(app: String, kind: String, needle: String, tries: Int) -> String 
     let limit = tries * dna::wait_scale();
     let mut n = 0;
     while n < limit {
-        let j = dna::GitJournal { repo: app };
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: app },
+            ledger: dna::MemoryLedger { repo: app },
+        };
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
@@ -182,17 +223,26 @@ main locus App {
         leases: dna::PqLeaseStore = dna::PqLeaseStore { };
     }
     // The node that adopts the ledger: `hale dna dev` with the owner's DSN
-    // and the owners' keys (dev migrates memory, a head role per owner,
-    // and the nerves' stream, and hands the host the spine's roles), which
-    // a shared record not yet on the ledger needs.
+    // and the owners' keys (dev migrates nothing, GH #1653: it hands the
+    // host the spine's roles of memory `memory migrate` moved, a head role
+    // per owner, and of the stream birth created), which a shared record
+    // not yet on the ledger needs.
     fn start_dev(dir: String, owner: String) -> String {
-        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
+        let started = in_dir(
+            dir,
+            "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
+                + toolchain() + "\n" + owner,
+        );
         return dna::trim_nl(started.stdout);
     }
     // A body over the shared record, on the ledger: `hale dna run` with the
     // spine's DSN, and the nerves' spine URL and organization (GH #986).
     fn start_body(dir: String, spine_dsn: String, nats_spine: String, nats_org: String) -> String {
-        let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" HALE_DNA_NATS_ORG=\"$4\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna run . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine_dsn + "\n" + nats_spine + "\n" + nats_org);
+        let started = in_dir(
+            dir,
+            "sh\n-c\nHALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NATS_URL_SPINE=\"$3\" HALE_DNA_NATS_ORG=\"$4\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna run . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
+                + toolchain() + "\n" + spine_dsn + "\n" + nats_spine + "\n" + nats_org,
+        );
         return dna::trim_nl(started.stdout);
     }
     // A body is up once its organization runs: the pid file is written and
@@ -202,7 +252,9 @@ main locus App {
         let limit = tries * dna::wait_scale();
         let mut n = 0;
         while n < limit {
-            if alive(dna::trim_nl(std::io::fs::read_file(dir + "/.hale/dna/org.pid") or "")) { return true; }
+            if alive(dna::trim_nl(std::io::fs::read_file(dir + "/.hale/dna/org.pid") or "")) {
+                return true;
+            }
             std::time::sleep(500ms);
             n = n + 1;
         }
@@ -240,14 +292,24 @@ main locus App {
     run() {
         let scratch = dna::scratch_root("two-owners");
         dna::reap_on_exit(scratch);
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
         if len(owner) == 0 {
-            eprintln("two_owners_test: no HALE_DNA_MEMORY_DSN_OWNER; the bodies have no memory to hold their leases or admit requests, so nothing was exercised");
+            eprintln(
+                "two_owners_test: no HALE_DNA_MEMORY_DSN_OWNER; the bodies have no memory to hold their leases or admit requests, so nothing was exercised",
+            );
             dna::scratch_done(scratch);
             return;
         }
         // the organizations hear what the record asks over the nerves (GH #986)
-        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") {
+            std::env::var("HALE_DNA_NATS_URL_OWNER")
+        } else {
+            ""
+        };
         if len(nats_owner) == 0 {
             eprintln("two_owners_test: not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
             dna::scratch_done(scratch);
@@ -255,14 +317,22 @@ main locus App {
         }
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nshared");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nshared"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/shared";
         self.configure(app, "alice", "acme", "ka");
         std::io::fs::write_file(app + "/dna/org/models.hl", CATALOG) or discard;
         // GH #1123: the owners are the graph's — organizations holding
         // positions, members holding organizations — rows in the record
-        let seats = dna::GitJournal { repo: app };
+        std::test::assert_eq_str(
+            dna::memory_fixture(app),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let seats = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: app },
+            ledger: dna::MemoryLedger { repo: app },
+        };
         let pairs = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:acme carol\norganization:north bob\n";
         let mut rest = pairs;
         while len(rest) > 0 {
@@ -270,147 +340,375 @@ main locus App {
             let line = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
             let sp = std::str::index_of(line, " ");
-            std::test::assert_eq_str(ops::graph_seat(seats, line[0..sp], line[(sp + 1)..len(line)]), "", "seated " + line);
+            std::test::assert_eq_str(
+                ops::graph_seat(seats, line[0..sp], line[(sp + 1)..len(line)]),
+                "",
+                "seated " + line,
+            );
         }
         let checked = in_dir(app, toolchain() + "\ncheck\n--matrix\n.");
-        std::test::assert_eq_int(checked.code, 0, "the shared organization checks: " + checked.stdout + checked.stderr);
+        std::test::assert_eq_int(
+            checked.code,
+            0,
+            "the shared organization checks: " + checked.stdout + checked.stderr,
+        );
         let a1 = in_dir(app, "git\nadd\n-A");
         let a2 = in_dir(app, "git\ncommit\n-q\n-m\nthe shared organization");
         let a3 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
-        let a4 = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        let a4 = in_dir(app, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(a4.code, 0, "pushed: " + a4.stderr);
-        let record = dna::GitJournal { repo: app }.genesis();
-        let migrated = in_dir(app, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" exec \"$1\" dna memory migrate\nsh\n" + toolchain() + "\n" + owner);
+        let record = dna::RecordJournal { repo: app }.genesis();
+        let migrated = in_dir(
+            app,
+            "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" exec \"$1\" dna memory migrate\nsh\n"
+                + toolchain() + "\n" + owner,
+        );
         let head_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         let spine_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_SPINE");
         // GH #1026: each owner's heads write the ledger as that owner's role
         let acme_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_ACME");
         let north_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_NORTH");
-        std::test::assert(migrated.code == 0 && std::str::starts_with(head_dsn, "postgres") && std::str::starts_with(spine_dsn, "postgres") && std::str::starts_with(acme_dsn, "postgres") && std::str::starts_with(north_dsn, "postgres"), "memory migrated for the record, a head role per owner: " + migrated.stdout + migrated.stderr);
-        let nerves = in_dir(app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        std::test::assert(
+            migrated.code == 0
+                && std::str::starts_with(head_dsn, "postgres")
+                && std::str::starts_with(spine_dsn, "postgres")
+                && std::str::starts_with(acme_dsn, "postgres")
+                && std::str::starts_with(north_dsn, "postgres"),
+            "memory migrated for the record, a head role per owner: " + migrated.stdout
+                + migrated.stderr,
+        );
+        let nerves = in_dir(
+            app,
+            "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n"
+                + toolchain() + "\n" + nats_owner,
+        );
         let nats_spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
         let nats_org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
-        std::test::assert(nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0, "the nerves' stream is in place for the record: " + nerves.stdout + nerves.stderr);
-        self.leases = dna::PqLeaseStore { conn: dna::pq_conn(dna::parse_dsn(head_dsn)), record_id: record };
-        std::test::assert(self.leases.open(), "a head reads the leases: " + self.leases.last_error());
-        // ---- the ledger adopted: a shared record's controllers coordinate
-        // through it, so `hale dna dev` is a node that adopts it; the bodies
-        // then run on it
-        let pid_0 = self.start_dev(app, owner);
-        std::test::assert(self.body_up(app, BOOT), "the adopting node came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
-        let adopted = as_head(app, head_dsn, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
-        std::test::assert(len(wait_record(app, "ledger.adopted", "checkpoint", POLLS)) > 0, "a node adopts the ledger on its tick: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
-        let k0 = dna::run_tool("kill\n" + pid_0);
-        std::test::assert(self.wait_gone(pid_0, POLLS), "the adopting node stops");
-        let rest0 = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + app);
-        let pushed = in_dir(app, toolchain() + "\ndna\nsync");
-        std::test::assert_eq_int(pushed.code, 0, "the adopted record is at the remote: " + pushed.stdout + pushed.stderr);
+        std::test::assert(
+            nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0,
+            "the nerves' stream is in place for the record: " + nerves.stdout + nerves.stderr,
+        );
+        self.leases = dna::PqLeaseStore {
+            conn: dna::pq_conn(dna::parse_dsn(head_dsn)),
+            record_id: record,
+        };
+        std::test::assert(
+            self.leases.open(),
+            "a head reads the leases: " + self.leases.last_error(),
+        );
+        // ---- the ledger: a shared record's controllers coordinate through
+        // it, and the record has it from its first row (GH #1590)
         // ---- acme's body beside clone A, north's beside clone B
         let pid_a = self.start_body(app, spine_dsn, nats_spine, nats_org);
-        std::test::assert(self.body_up(app, BOOT), "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        std::test::assert(
+            self.body_up(app, BOOT),
+            "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""),
+        );
         let other = scratch + "/north";
-        let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        let cl = dna::clone_repo(bare, other);
         std::test::assert_eq_int(cl.code, 0, "north clones the record: " + cl.stderr);
         self.configure(other, "bob", "north", "kb");
-        let synced = as_head(other, head_dsn, toolchain() + "\ndna\nsync");
-        std::test::assert_eq_int(synced.code, 0, "north's clone has the record: " + synced.stdout + synced.stderr);
+        std::test::assert_eq_str(
+            dna::memory_fixture(other),
+            "",
+            "north's clone reaches the record's memory (GH #1590)",
+        );
+        // the fixture's migration for the clone names no owners, and a
+        // migration rewrites who each role writes as (GH #1026): the shared
+        // record's owners are named again, as its owner migrates it
+        let remigrated = in_dir(
+            app,
+            "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" exec \"$1\" dna memory migrate\nsh\n"
+                + toolchain() + "\n" + owner,
+        );
+        std::test::assert_eq_int(
+            remigrated.code,
+            0,
+            "the shared record's owners named again: " + remigrated.stdout + remigrated.stderr,
+        );
         let pid_b = self.start_body(other, spine_dsn, nats_spine, nats_org);
-        std::test::assert(self.body_up(other, BOOT), "north's body came up beside acme's: " + (std::io::fs::read_file(other + "/.hale/body.log") or ""));
+        std::test::assert(
+            self.body_up(other, BOOT),
+            "north's body came up beside acme's: "
+                + (std::io::fs::read_file(other + "/.hale/body.log") or ""),
+        );
         // a body starts its organization and takes its lease in its own
         // order: each lease is waited for, not read the moment the
         // organization runs
         let la = self.wait_lease("owner/acme", true, POLLS);
         let lb = self.wait_lease("owner/north", true, POLLS);
-        std::test::assert(la.present && std::str::contains(la.holder, "shared"), "acme's lease is held, by its clone: " + dna::stored_lease_json(la));
-        std::test::assert(lb.present && std::str::contains(lb.holder, "north"), "north's lease is held, by its clone: " + dna::stored_lease_json(lb));
-        std::test::assert(!self.leases.current("body").present, "no lease is the one body's: " + dna::stored_lease_json(self.leases.current("body")));
+        std::test::assert(
+            la.present && std::str::contains(la.holder, "shared"),
+            "acme's lease is held, by its clone: " + dna::stored_lease_json(la),
+        );
+        std::test::assert(
+            lb.present && std::str::contains(lb.holder, "north"),
+            "north's lease is held, by its clone: " + dna::stored_lease_json(lb),
+        );
+        std::test::assert(
+            !self.leases.current("body").present,
+            "no lease is the one body's: " + dna::stored_lease_json(self.leases.current("body")),
+        );
         // each owner's organization reads its own facts, through its own
         // durable, filtered to its owner's space
         let acme_reads = owner_reading(nats_spine, nats_org, "acme", 60);
-        std::test::assert_eq_str(acme_reads, "", "acme's organization reads through spine_acme, filtered to acme's facts");
+        std::test::assert_eq_str(
+            acme_reads,
+            "",
+            "acme's organization reads through spine_acme, filtered to acme's facts",
+        );
         let north_reads = owner_reading(nats_spine, nats_org, "north", 60);
-        std::test::assert_eq_str(north_reads, "", "north's organization reads through spine_north, filtered to north's facts");
+        std::test::assert_eq_str(
+            north_reads,
+            "",
+            "north's organization reads through spine_north, filtered to north's facts",
+        );
         // a body's own rows are written as `host` under the spine's role: the
         // row names its writer, so a head writing as `host` is told apart
         let claimed_row = wait_row(app, head_dsn, "\"kind\": \"body.claimed\"", POLLS);
-        std::test::assert(std::str::contains(claimed_row, "\"author\": \"host\"") && std::str::contains(claimed_row, "\"writer\": \"" + dna::spine_role(record) + "\""), "the body's row as host names the spine's role as its writer: " + claimed_row);
+        std::test::assert(
+            std::str::contains(claimed_row, "\"author\": \"host\"")
+                && std::str::contains(
+                    claimed_row,
+                    "\"writer\": \"" + dna::spine_role(record) + "\"",
+                ),
+            "the body's row as host names the spine's role as its writer: " + claimed_row,
+        );
         let epoch_a = la.token;
+        // memory's insert function admits a head's row in a member's name once
+        // the spine has projected the graph's memberships (GH #1123): waited
+        // for, as a head's first ask after a body starts would be refused
+        std::test::assert(
+            chart_holds(owner, record, "org_members WHERE person = 'alice' AND owner = 'acme'", 300)
+                && chart_holds(
+                    owner,
+                    record,
+                    "org_members WHERE person = 'bob' AND owner = 'north'",
+                    300,
+                ),
+            "the bodies project the graph's memberships into memory",
+        );
         // ---- acme's body writes under its epoch: an ask for its own position lands
-        let asked = as_head(app, acme_dsn, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nchase the late invoice");
-        std::test::assert_eq_int(asked.code, 0, "alice asks acme's body: " + asked.stdout + asked.stderr);
+        let asked = as_head(
+            app,
+            acme_dsn,
+            toolchain()
+                + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nchase the late invoice",
+        );
+        std::test::assert_eq_int(
+            asked.code,
+            0,
+            "alice asks acme's body: " + asked.stdout + asked.stderr,
+        );
         let offered = wait_row(app, head_dsn, "\"kind\": \"intent.offered\"", POLLS);
-        std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "the body's write landed under its lease: " + ledger(app, head_dsn));
+        std::test::assert(
+            std::str::contains(offered, "chase the late invoice (from alice)"),
+            "the body's write landed under its lease: " + ledger(app, head_dsn),
+        );
         // ---- the plan names bob, north's member: a transfer, not a hand-off
         let transfer = wait_row(app, head_dsn, "\"kind\": \"task.transfer_requested\"", POLLS);
-        std::test::assert(std::json::find_string_field(row_body(transfer), "to") == "north" && std::json::find_string_field(row_body(transfer), "assignee") == "bob" && std::json::find_string_field(row_body(transfer), "owner") == "acme", "acme's body offers the job to north for bob: " + transfer);
+        std::test::assert(
+            std::json::find_string_field(row_body(transfer), "to") == "north"
+                && std::json::find_string_field(row_body(transfer), "assignee") == "bob"
+                && std::json::find_string_field(row_body(transfer), "owner") == "acme",
+            "acme's body offers the job to north for bob: " + transfer,
+        );
         let tid = std::json::find_string_field(transfer, "entity");
-        std::test::assert(std::str::starts_with(tid, "acme:t"), "the task is acme's, in acme's namespace: " + tid);
-        std::test::assert_eq_str(row_with(ledger(app, head_dsn), "\"kind\": \"task.handed\""), "", "and nothing is handed yet");
-        let not_theirs = as_head(app, acme_dsn, toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nalice");
-        std::test::assert(not_theirs.code != 0 && std::str::contains(not_theirs.stdout + not_theirs.stderr, "only north's accepts"), "acme's member cannot accept for north: " + not_theirs.stdout + not_theirs.stderr);
-        let accepted = as_head(other, north_dsn, toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nbob\n--note\nwe take it");
-        std::test::assert(accepted.code == 0 && std::str::contains(accepted.stdout, "accepted for north by bob"), "north's member accepts: " + accepted.stdout + accepted.stderr);
+        std::test::assert(
+            std::str::starts_with(tid, "acme:t"),
+            "the task is acme's, in acme's namespace: " + tid,
+        );
+        std::test::assert_eq_str(
+            row_with(ledger(app, head_dsn), "\"kind\": \"task.handed\""),
+            "",
+            "and nothing is handed yet",
+        );
+        let not_theirs = as_head(
+            app,
+            acme_dsn,
+            toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nalice",
+        );
+        std::test::assert(
+            not_theirs.code != 0
+                && std::str::contains(
+                    not_theirs.stdout + not_theirs.stderr,
+                    "only north's accepts",
+                ),
+            "acme's member cannot accept for north: " + not_theirs.stdout + not_theirs.stderr,
+        );
+        let accepted = as_head(
+            other,
+            north_dsn,
+            toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nbob\n--note\nwe take it",
+        );
+        std::test::assert(
+            accepted.code == 0 && std::str::contains(accepted.stdout, "accepted for north by bob"),
+            "north's member accepts: " + accepted.stdout + accepted.stderr,
+        );
         let handed = wait_row(app, head_dsn, "\"kind\": \"task.handed\"", POLLS);
-        std::test::assert(std::json::find_string_field(row_body(handed), "transferred_from") == "acme" && std::json::find_string_field(row_body(handed), "assignee") == "bob" && std::json::find_string_field(row_body(handed), "by") == "north" && std::json::find_string_field(row_body(handed), "accepted_by") == "bob", "north's body hands it to bob in its own name: " + handed);
+        std::test::assert(
+            std::json::find_string_field(row_body(handed), "transferred_from") == "acme"
+                && std::json::find_string_field(row_body(handed), "assignee") == "bob"
+                && std::json::find_string_field(row_body(handed), "by") == "north"
+                && std::json::find_string_field(row_body(handed), "accepted_by") == "bob",
+            "north's body hands it to bob in its own name: " + handed,
+        );
         // ---- two bodies, both active, no coordinator (GH #1026): the record
         // holds exactly one admission per request — one offer, one
         // admission, one claim to plan it — and no spine lease at all
         let all0 = ledger(app, head_dsn);
         let ask_id = std::json::find_string_field(offered, "entity");
         std::test::assert(len(ask_id) > 0, "the ask has an id: " + offered);
-        std::test::assert_eq_int(count_rows(all0, "\"kind\": \"intent.offered\", \"entity\": \"" + ask_id + "\""), 1, "the ask is offered once: " + all0);
-        std::test::assert_eq_int(count_rows(all0, "\"kind\": \"workflow.admitted\""), 1, "and admitted once, with two nodes running: " + all0);
-        std::test::assert_eq_int(count_rows(all0, "\"kind\": \"claim.taken\", \"entity\": \"plan/" + ask_id + "\""), 1, "one node claimed it to plan it: " + all0);
-        std::test::assert_eq_str(wait_record(app, "spine.taken", "holder", 1), "", "no node takes a spine lease");
-        std::test::assert(!std::io::fs::file_exists(app + "/.hale/dna/spine.json") && !std::io::fs::file_exists(other + "/.hale/dna/spine.json"), "and neither writes a spine's state");
-        let done = as_head(other, north_dsn, toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nbob\n--note\npaid");
-        std::test::assert(done.code == 0 && std::str::contains(done.stdout, "done by bob"), "bob closes it from north's clone: " + done.stdout + done.stderr);
-        std::test::assert(std::str::contains(wait_row(app, head_dsn, "\"kind\": \"task.done\"", POLLS), "\"author\": \"bob\""), "in bob's name, in the one ledger: " + ledger(app, head_dsn));
+        std::test::assert_eq_int(
+            count_rows(all0, "\"kind\": \"intent.offered\", \"entity\": \"" + ask_id + "\""),
+            1,
+            "the ask is offered once: " + all0,
+        );
+        std::test::assert_eq_int(
+            count_rows(all0, "\"kind\": \"workflow.admitted\""),
+            1,
+            "and admitted once, with two nodes running: " + all0,
+        );
+        std::test::assert_eq_int(
+            count_rows(all0, "\"kind\": \"claim.taken\", \"entity\": \"plan/" + ask_id + "\""),
+            1,
+            "one node claimed it to plan it: " + all0,
+        );
+        std::test::assert_eq_str(
+            wait_record(app, "spine.taken", "holder", 1),
+            "",
+            "no node takes a spine lease",
+        );
+        std::test::assert(
+            !std::io::fs::file_exists(app + "/.hale/dna/spine.json")
+                && !std::io::fs::file_exists(other + "/.hale/dna/spine.json"),
+            "and neither writes a spine's state",
+        );
+        let done = as_head(
+            other,
+            north_dsn,
+            toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nbob\n--note\npaid",
+        );
+        std::test::assert(
+            done.code == 0 && std::str::contains(done.stdout, "done by bob"),
+            "bob closes it from north's clone: " + done.stdout + done.stderr,
+        );
+        std::test::assert(
+            std::str::contains(
+                wait_row(app, head_dsn, "\"kind\": \"task.done\"", POLLS),
+                "\"author\": \"bob\"",
+            ),
+            "in bob's name, in the one ledger: " + ledger(app, head_dsn),
+        );
         // one ledger, whichever node wrote what: each fact once
         let all = ledger(app, head_dsn);
-        std::test::assert(count_rows(all, "\"kind\": \"task.transfer_accepted\"") == 1 && count_rows(all, "\"kind\": \"task.handed\"") == 1 && count_rows(all, "\"kind\": \"task.done\"") == 1, "each step of the transfer is one row: " + all);
+        std::test::assert(
+            count_rows(all, "\"kind\": \"task.transfer_accepted\"") == 1
+                && count_rows(all, "\"kind\": \"task.handed\"") == 1
+                && count_rows(all, "\"kind\": \"task.done\"") == 1,
+            "each step of the transfer is one row: " + all,
+        );
         // ---- a forced claim of acme's lease from a third clone of acme's:
         // the epoch rises, the old body stops, north's does not
         let third = scratch + "/acme-2";
-        let cl2 = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + third);
+        let cl2 = dna::clone_repo(bare, third);
         self.configure(third, "carol", "acme", "ka");
         let s2 = as_head(third, head_dsn, toolchain() + "\ndna\nsync");
-        let claimed = as_head(third, acme_dsn, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ncarol");
-        std::test::assert(claimed.code == 0 && std::str::contains(claimed.stdout, "was taken by carol"), "acme's lease is taken from its body: " + claimed.stdout + claimed.stderr);
-        std::test::assert(self.wait_gone(pid_a, POLLS), "acme's body stops itself once its lease is gone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        let claimed = as_head(
+            third,
+            acme_dsn,
+            toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ncarol",
+        );
+        std::test::assert(
+            claimed.code == 0 && std::str::contains(claimed.stdout, "was taken by carol"),
+            "acme's lease is taken from its body: " + claimed.stdout + claimed.stderr,
+        );
+        std::test::assert(
+            self.wait_gone(pid_a, POLLS),
+            "acme's body stops itself once its lease is gone: "
+                + (std::io::fs::read_file(app + "/.hale/body.log") or ""),
+        );
         std::test::assert(alive(pid_b), "north's body is untouched");
         // the release is the claim's own step, not the stopped body's: waited
         // for rather than read the moment that body is gone
         let la2 = self.wait_lease("owner/acme", false, POLLS);
-        std::test::assert(!la2.present, "acme's lease is released for the next body: " + dna::stored_lease_json(la2));
+        std::test::assert(
+            !la2.present,
+            "acme's lease is released for the next body: " + dna::stored_lease_json(la2),
+        );
         // the stopped body's epoch writes nothing any more: the ledger as its
         // organism held it, under its lease at its epoch (the fixture holds
         // only the owner's DSN, so it opens memory with that)
-        let old = dna::MemoryLedger { repo: app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER", lease: "owner/acme", token: epoch_a };
+        let old = dna::MemoryLedger {
+            repo: app,
+            dsn_env: "HALE_DNA_MEMORY_DSN_OWNER",
+            lease: "owner/acme",
+            token: epoch_a,
+        };
         let stale = old.append(old.revision(), "task.born", "t-stale", "late");
-        std::test::assert(!stale.ok && std::str::contains(old.last_error(), "fenced"), "a write at the old epoch is fenced: " + stale.error + " " + old.last_error());
-        std::test::assert(!std::str::contains(ledger(app, head_dsn), "t-stale"), "and nothing landed for it");
+        std::test::assert(
+            !stale.ok && std::str::contains(old.last_error(), "fenced"),
+            "a write at the old epoch is fenced: " + stale.error + " " + old.last_error(),
+        );
+        std::test::assert(
+            !std::str::contains(ledger(app, head_dsn), "t-stale"),
+            "and nothing landed for it",
+        );
         // ---- north's head cannot act in acme's member's name, whatever it
         // claims: the store refuses it, and the head says so at once (GH #1026)
-        let borrowed = as_head(other, north_dsn, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nsomething in alice's name");
-        std::test::assert(borrowed.code != 0 && std::str::contains(borrowed.stdout + borrowed.stderr, "does not write as alice"), "north's role does not write as alice, and the head says why: " + borrowed.stdout + borrowed.stderr);
-        std::test::assert(!std::str::contains(ledger(app, head_dsn), "something in alice's name"), "nothing landed for it");
+        let borrowed = as_head(
+            other,
+            north_dsn,
+            toolchain()
+                + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/books\n--as\nalice\nsomething in alice's name",
+        );
+        std::test::assert(
+            borrowed.code != 0
+                && std::str::contains(borrowed.stdout + borrowed.stderr, "does not write as alice"),
+            "north's role does not write as alice, and the head says why: " + borrowed.stdout
+                + borrowed.stderr,
+        );
+        std::test::assert(
+            !std::str::contains(ledger(app, head_dsn), "something in alice's name"),
+            "nothing landed for it",
+        );
         // ---- north's body still writes
-        let asked_b = as_head(other, north_dsn, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/collections\n--as\nbob\ncall the agency");
-        std::test::assert_eq_int(asked_b.code, 0, "bob asks north's body: " + asked_b.stdout + asked_b.stderr);
+        let asked_b = as_head(
+            other,
+            north_dsn,
+            toolchain()
+                + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/collections\n--as\nbob\ncall the agency",
+        );
+        std::test::assert_eq_int(
+            asked_b.code,
+            0,
+            "bob asks north's body: " + asked_b.stdout + asked_b.stderr,
+        );
         let offered_b = wait_row(app, head_dsn, "call the agency (from bob)", POLLS);
-        std::test::assert(len(offered_b) > 0, "north's body still writes under its own lease: " + ledger(app, head_dsn));
+        std::test::assert(
+            len(offered_b) > 0,
+            "north's body still writes under its own lease: " + ledger(app, head_dsn),
+        );
         // ---- down
         let k1 = dna::run_tool("kill\n" + pid_b);
         std::test::assert(self.wait_gone(pid_b, POLLS), "north's body stops");
-        let rest = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do cd \"$d\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; done; true\nsh\n" + app + "\n" + other);
+        let rest = dna::run_tool(
+            "sh\n-c\nfor d in \"$1\" \"$2\"; do cd \"$d\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; done; true\nsh\n"
+                + app + "\n" + other,
+        );
         self.leases.conn.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, record), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, record),
+            "",
+            "this run's schema and roles dropped",
+        );
         // and its stream on the nerves, which the node's `dev` or the
         // fixture's migration made (GH #986)
         let nerves_gone = in_dir(app, toolchain() + "\ndna\nnerves\ndrop\n.");
-        std::test::assert(nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"), "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr);
+        std::test::assert(
+            nerves_gone.code == 0 || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER"),
+            "this run's stream dropped: " + nerves_gone.stdout + nerves_gone.stderr,
+        );
         dna::scratch_done(scratch);
     }
 }

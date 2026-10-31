@@ -11,22 +11,69 @@ const DIGEST: String = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 // Records the request it was handed and admits nothing.
 locus MappingProbe {
-    params { supports: Bool = true; submits: Int = 0; received: api::CommandRequest = api::CommandRequest { }; context: api::CommandContext = api::CommandContext { }; }
-    fn supported(operation: String, version: String) -> Bool { return self.supports && version == "1"; }
+    params {
+        supports: Bool = true;
+        submits: Int = 0;
+        received: api::CommandRequest = api::CommandRequest { };
+        context: api::CommandContext = api::CommandContext { };
+    }
+    fn supported(operation: String, version: String) -> Bool {
+        return self.supports && version == "1";
+    }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         self.submits = self.submits + 1; self.received = command; self.context = context;
         return api::CommandResult { code: "commands_unavailable" };
     }
-    fn lookup(context: api::CommandContext, request_id: String) -> api::CommandResult { return api::CommandResult { code: "command_not_found" }; }
+    fn lookup(context: api::CommandContext, request_id: String) -> api::CommandResult {
+        return api::CommandResult { code: "command_not_found" };
+    }
 }
 locus OrganizationMappingCases {
-    params { root: String = ""; identity: String = ""; probe: MappingProbe; commands: api::CommandAdmission; }
-    fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
-    fn repeat(text: String, count: Int) -> String { let out = std::bytes::BytesBuilder { }; let mut i = 0; while i < count { out.append_str(text); i = i + 1; } return std::str::from_bytes(out.snapshot() or raise); }
-    fn proposal(text: String, rationale: String) -> api::OrganizationProposal {
-        return api::OrganizationProposal { request_id: "source-request", source_head: COMMIT, module_digest: DIGEST, dependency_source: "local_vendor_snapshot", dependency_digest: DIGEST, record_head: "record/original", source_text: text, rationale: rationale };
+    params {
+        root: String = "";
+        identity: String = "";
+        probe: MappingProbe;
+        commands: api::CommandAdmission;
     }
-    fn native_context() -> ops::GovernanceContext { return ops::GovernanceContext { application_id: self.identity, principal_mode: "local", principal_name: "alice" }; }
+    fn caller() -> std::api::Context {
+        return std::api::Context {
+            caller: std::api::Principal {
+                mode: "unix",
+                name: "uid:1000",
+                uid: 1000,
+                gid: 1000,
+                pid: 1,
+            },
+        };
+    }
+    fn repeat(text: String, count: Int) -> String {
+        let out = std::bytes::BytesBuilder { };
+        let mut i = 0;
+        while i < count {
+            out.append_str(text);
+            i = i + 1;
+        }
+        return std::str::from_bytes(out.snapshot() or raise);
+    }
+    fn proposal(text: String, rationale: String) -> api::OrganizationProposal {
+        return api::OrganizationProposal {
+            request_id: "source-request",
+            source_head: COMMIT,
+            module_digest: DIGEST,
+            dependency_source: "local_vendor_snapshot",
+            dependency_digest: DIGEST,
+            record_head: "record/original",
+            source_text: text,
+            rationale: rationale,
+        };
+    }
+    fn native_context() -> ops::GovernanceContext {
+        return ops::GovernanceContext {
+            application_id: self.identity,
+            principal_mode: "local",
+            principal_name: "alice",
+        };
+    }
     // Refused by the operations' own codec, before the provider sees it.
     fn rejected(p: api::OrganizationProposal, label: String) {
         let before = self.probe.submits;
@@ -37,81 +84,235 @@ locus OrganizationMappingCases {
     fn mapping() {
         let text = "// exact é 🧭\r\n// control \x01\nmain locus Org { }\n";
         let rationale = "  why é\r\n\x01  ";
-        let reply = self.commands.propose_organization(self.proposal(text, rationale), self.caller());
-        std::test::assert_eq_str(reply.code, "commands_unavailable", "the provider's answer comes back as the reply");
+        let reply = self.commands.propose_organization(
+            self.proposal(text, rationale),
+            self.caller(),
+        );
+        std::test::assert_eq_str(
+            reply.code,
+            "commands_unavailable",
+            "the provider's answer comes back as the reply",
+        );
         std::test::assert_eq_int(self.probe.submits, 1, "one dispatch");
         let got = self.probe.received;
         std::test::assert(got.valid, "the head hands over an admissible request");
-        std::test::assert(got.expected_principal_mode == "local" && got.expected_principal_name == "alice", "the principal is the mapped person, from the head");
-        std::test::assert(self.probe.context.principal_name == "alice" && self.probe.context.root == self.root && self.probe.context.source.identity == self.identity, "the provider's context is this record and caller");
+        std::test::assert(
+            got.expected_principal_mode == "local" && got.expected_principal_name == "alice",
+            "the principal is the mapped person, from the head",
+        );
+        std::test::assert(
+            self.probe.context.principal_name == "alice"
+                && self.probe.context.root == self.root
+                && self.probe.context.source.identity == self.identity,
+            "the provider's context is this record and caller",
+        );
         let native = api::native_of(got);
         let expected = ops::GovernanceCommand {
-            request_id: "source-request", operation: "dna.organization.propose", operation_version: "1", application_id: self.identity, position_id: "org",
-            target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: DIGEST, source_head: COMMIT,
-            dependency_source: "local_vendor_snapshot", dependency_digest: DIGEST, record_head: "record/original", source_text: text, rationale: rationale
+            request_id: "source-request",
+            operation: "dna.organization.propose",
+            operation_version: "1",
+            application_id: self.identity,
+            position_id: "org",
+            target_kind: "dna.organization.module",
+            target_id: "dna/org/main.hl",
+            subject_digest: DIGEST,
+            source_head: COMMIT,
+            dependency_source: "local_vendor_snapshot",
+            dependency_digest: DIGEST,
+            record_head: "record/original",
+            source_text: text,
+            rationale: rationale
         };
         let codec = ops::OrganizationCommandCodec { };
         let canonical = codec.canonical(self.native_context(), native);
-        std::test::assert(len(canonical) > 0, "the mapped command satisfies the native Organization codec");
-        std::test::assert_eq_str(canonical, codec.canonical(self.native_context(), expected), "the proposal maps to exactly the operations' command");
-        std::test::assert(native.text == "" && native.expected_review_state == "" && native.verdict == "" && native.comment == "", "inactive Practice/Review fields remain empty");
-        std::test::assert(native.performer == "" && native.attempt_id == "" && native.token == 0 && native.hat_watermark == -1, "inactive attempt fields remain empty");
+        std::test::assert(
+            len(canonical) > 0,
+            "the mapped command satisfies the native Organization codec",
+        );
+        std::test::assert_eq_str(
+            canonical,
+            codec.canonical(self.native_context(), expected),
+            "the proposal maps to exactly the operations' command",
+        );
+        std::test::assert(
+            native.text == ""
+                && native.expected_review_state == ""
+                && native.verdict == ""
+                && native.comment == "",
+            "inactive Practice/Review fields remain empty",
+        );
+        std::test::assert(
+            native.performer == ""
+                && native.attempt_id == ""
+                && native.token == 0
+                && native.hat_watermark == -1,
+            "inactive attempt fields remain empty",
+        );
         let restored = codec.decode(self.native_context(), canonical);
-        std::test::assert_eq_str(restored.source_text, text, "literal Unicode, CRLF and non-NUL control source");
-        std::test::assert_eq_str(restored.rationale, rationale, "rationale is neither trimmed nor normalized");
+        std::test::assert_eq_str(
+            restored.source_text,
+            text,
+            "literal Unicode, CRLF and non-NUL control source",
+        );
+        std::test::assert_eq_str(
+            restored.rationale,
+            rationale,
+            "rationale is neither trimmed nor normalized",
+        );
         let maximum = self.repeat("a", 16378) + "é🧭";
         std::test::assert_eq_int(len(maximum), 16384, "maximum measured as UTF-8 bytes");
         let before = self.probe.submits;
-        let largest = self.commands.propose_organization(self.proposal(maximum, self.repeat("r", 2048)), self.caller());
-        std::test::assert_eq_int(self.probe.submits, before + 1, "16KiB source plus 2048-byte rationale is admissible");
-        let mut p = self.proposal(text, rationale); p.source_head = "not-a-commit"; self.rejected(p, "native source commit syntax");
-        p = self.proposal(text, rationale); p.module_digest = "not-a-digest"; self.rejected(p, "native module digest syntax");
-        p = self.proposal(text, rationale); p.dependency_digest = "not-a-digest"; self.rejected(p, "native dependency digest syntax");
-        p = self.proposal(text, rationale); p.dependency_source = "live"; self.rejected(p, "unknown dependency source");
-        p = self.proposal(text, rationale); p.record_head = ""; self.rejected(p, "the Record precondition is required");
-        p = self.proposal(text, rationale); p.request_id = ""; self.rejected(p, "the request identity is required");
-        p = self.proposal(text, rationale); p.request_id = self.repeat("k", 129); self.rejected(p, "129-byte request identity");
+        let largest = self.commands.propose_organization(
+            self.proposal(maximum, self.repeat("r", 2048)),
+            self.caller(),
+        );
+        std::test::assert_eq_int(
+            self.probe.submits,
+            before + 1,
+            "16KiB source plus 2048-byte rationale is admissible",
+        );
+        let mut p = self.proposal(text, rationale);
+        p.source_head = "not-a-commit";
+        self.rejected(p, "native source commit syntax");
+        p = self.proposal(text, rationale);
+        p.module_digest = "not-a-digest";
+        self.rejected(p, "native module digest syntax");
+        p = self.proposal(text, rationale);
+        p.dependency_digest = "not-a-digest";
+        self.rejected(p, "native dependency digest syntax");
+        p = self.proposal(text, rationale);
+        p.dependency_source = "live";
+        self.rejected(p, "unknown dependency source");
+        p = self.proposal(text, rationale);
+        p.record_head = "";
+        self.rejected(p, "the Record precondition is required");
+        p = self.proposal(text, rationale);
+        p.request_id = "";
+        self.rejected(p, "the request identity is required");
+        p = self.proposal(text, rationale);
+        p.request_id = self.repeat("k", 129);
+        self.rejected(p, "129-byte request identity");
         self.rejected(self.proposal("", "why"), "empty source refused");
         self.rejected(self.proposal("source", ""), "empty rationale refused");
         self.rejected(self.proposal(maximum + "a", "why"), "16385 decoded source bytes refused");
-        self.rejected(self.proposal("source", self.repeat("r", 2049)), "2049-byte rationale refused");
+        self.rejected(
+            self.proposal("source", self.repeat("r", 2049)),
+            "2049-byte rationale refused",
+        );
         self.probe.supports = false;
-        let unsupported = self.commands.propose_organization(self.proposal(text, rationale), self.caller());
-        std::test::assert_eq_str(unsupported.code, "commands_unsupported", "an unsupported operation never dispatches");
+        let unsupported = self.commands.propose_organization(
+            self.proposal(text, rationale),
+            self.caller(),
+        );
+        std::test::assert_eq_str(
+            unsupported.code,
+            "commands_unsupported",
+            "an unsupported operation never dispatches",
+        );
         std::test::assert_eq_int(self.probe.submits, before + 1, "no dispatch when unsupported");
         self.probe.supports = true;
     }
     // Practice and Review keep their historical canonical bytes: the
     // Organization branch stays empty.
     fn compatibility() {
-        let practice = self.commands.propose(api::PracticeProposal { request_id: "old-key", subject_digest: "opaque/practice", text: "exact", rationale: "why" }, self.caller());
+        let practice = self.commands.propose(
+            api::PracticeProposal {
+                request_id: "old-key",
+                subject_digest: "opaque/practice",
+                text: "exact",
+                rationale: "why",
+            },
+            self.caller(),
+        );
         let pc = api::native_of(self.probe.received);
-        let review = self.commands.verdict(api::ReviewDecision { request_id: "old-key", review_id: "opaque/review", subject_digest: "opaque/candidate", verdict: "reject", comment: "" }, self.caller());
+        let review = self.commands.verdict(
+            api::ReviewDecision {
+                request_id: "old-key",
+                review_id: "opaque/review",
+                subject_digest: "opaque/candidate",
+                verdict: "reject",
+                comment: "",
+            },
+            self.caller(),
+        );
         let rc = api::native_of(self.probe.received);
-        std::test::assert(pc.source_text == "" && pc.source_head == "" && pc.dependency_source == "" && pc.dependency_digest == "" && pc.record_head == "", "Practice mapping has empty source branch");
-        std::test::assert(rc.source_text == "" && rc.source_head == "" && rc.dependency_source == "" && rc.dependency_digest == "" && rc.record_head == "", "Review mapping has empty source branch");
+        std::test::assert(
+            pc.source_text == ""
+                && pc.source_head == ""
+                && pc.dependency_source == ""
+                && pc.dependency_digest == ""
+                && pc.record_head == "",
+            "Practice mapping has empty source branch",
+        );
+        std::test::assert(
+            rc.source_text == ""
+                && rc.source_head == ""
+                && rc.dependency_source == ""
+                && rc.dependency_digest == ""
+                && rc.record_head == "",
+            "Review mapping has empty source branch",
+        );
         let codec = ops::GovernanceCommandCodec { };
-        let prefix = "{\"format\":\"dna.governance-command/1\",\"application_id\":\"" + self.identity + "\",\"principal_mode\":\"local\",\"principal_name\":\"alice\",\"request_id\":\"old-key\",\"operation\":";
-        let expected_p = prefix + "\"dna.practice.propose\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_kind\":\"dna.practice\",\"target_id\":\"opaque/practice\",\"subject_digest\":\"opaque/practice\",\"text\":\"exact\",\"rationale\":\"why\",\"expected_review_state\":\"\",\"verdict\":\"\",\"comment\":\"\"}";
-        let expected_r = prefix + "\"dna.review.verdict\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_kind\":\"dna.review\",\"target_id\":\"opaque/review\",\"subject_digest\":\"opaque/candidate\",\"text\":\"\",\"rationale\":\"\",\"expected_review_state\":\"pending\",\"verdict\":\"reject\",\"comment\":\"\"}";
-        std::test::assert_eq_str(codec.canonical(self.native_context(), pc), expected_p, "historical Practice canonical bytes unchanged");
-        std::test::assert_eq_str(codec.canonical(self.native_context(), rc), expected_r, "historical Review canonical bytes unchanged");
+        let prefix = "{\"format\":\"dna.governance-command/1\",\"application_id\":\""
+            + self.identity
+            + "\",\"principal_mode\":\"local\",\"principal_name\":\"alice\",\"request_id\":\"old-key\",\"operation\":";
+        let expected_p = prefix
+            + "\"dna.practice.propose\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_kind\":\"dna.practice\",\"target_id\":\"opaque/practice\",\"subject_digest\":\"opaque/practice\",\"text\":\"exact\",\"rationale\":\"why\",\"expected_review_state\":\"\",\"verdict\":\"\",\"comment\":\"\"}";
+        let expected_r = prefix
+            + "\"dna.review.verdict\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_kind\":\"dna.review\",\"target_id\":\"opaque/review\",\"subject_digest\":\"opaque/candidate\",\"text\":\"\",\"rationale\":\"\",\"expected_review_state\":\"pending\",\"verdict\":\"reject\",\"comment\":\"\"}";
+        std::test::assert_eq_str(
+            codec.canonical(self.native_context(), pc),
+            expected_p,
+            "historical Practice canonical bytes unchanged",
+        );
+        std::test::assert_eq_str(
+            codec.canonical(self.native_context(), rc),
+            expected_r,
+            "historical Review canonical bytes unchanged",
+        );
     }
 }
 fn main() {
     if std::env::var("HALE_COMMAND_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool(
+            "env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n"
+                + std::env::arg_or(0, ""),
+        );
         print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-org-mapping.XXXXXX");
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let root = dna::trim_nl(made.stdout);
-    let record = dna::GitRecord { repo: root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
-    std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+    let record = dna::MemoryRecord { repo: root };
+    std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    std::test::assert(
+        record.append(
+            "journal",
+            record.head("journal").id,
+            dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" },
+            false,
+            "",
+        ).ok,
+        "fresh application identity",
+    );
     let probe = MappingProbe { };
-    let commands = api::CommandAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: probe };
-    let cases = OrganizationMappingCases { root: root, identity: record.identity(), probe: probe, commands: commands };
+    let commands = api::CommandAdmission {
+        root: root,
+        roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" },
+        provider: probe,
+    };
+    let cases = OrganizationMappingCases {
+        root: root,
+        identity: record.identity(),
+        probe: probe,
+        commands: commands,
+    };
     cases.mapping(); cases.compatibility();
     let swept = dna::run_tool("rm\n-rf\n" + root);
 }

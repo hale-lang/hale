@@ -1,0 +1,121 @@
+// dna/tests/law_in_force_test.hl — GH #1591: a law in force is checked.
+//
+// The Board has ratified `standard/logs-are-structured` as law. The
+// verification of a Hale heart then adopts `std::law::Standard` into the
+// check from outside, writing nothing into the heart: a heart with a bare
+// `println` on a served path is refused, naming the clause, and its twin
+// that logs through its logger passes. Without the law in force the same
+// heart checks clean.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+const BARE: String = "api Desk {
+    rpc Counter::bump;
+}
+
+locus Counter {
+    params { log: std::log::Logger = std::log::Logger { name: \"counter\" }; }
+    fn bump(n: Int) -> Int {
+        println(\"bumped \", n);
+        return n + 1;
+    }
+}
+
+main locus App {
+    params {
+        counter: Counter = Counter { };
+        f: std::api::test::Rpc = std::api::test::Rpc { };
+        h: api::Exposure = api::serve(Desk, self.f, as: \"desk\", receivers: { Counter: self.counter }, bound: 8, on_full: refuse);
+    }
+}
+";
+
+fn logged() -> String {
+    return std::str::replace(BARE, "println(\"bumped \", n);", "self.log.info(\"bumped\");");
+}
+
+main locus App {
+    params {
+        journal: dna::Journal = dna::MemJournal { };
+        v: dna::HaleVerification = dna::HaleVerification { };
+    }
+    run() {
+        let root = dna::scratch_root("law-in-force");
+        std::io::fs::mkdir(root + "/wt") or discard;
+        let receipts = dna::FileReceipts { dir: root + "/evidence" };
+        self.v = dna::HaleVerification {
+            hale_bin: toolchain(),
+            receipts: receipts,
+            scratch: root + "/scratch",
+        };
+        std::io::fs::write_file(root + "/wt/main.hl", BARE) or discard;
+
+        // no law in force: the bare line is nobody's business
+        let free = self.v.verify(
+            self.journal,
+            dna::Mutation { id: "m0", worktree: root + "/wt", candidate_commit: "cand0" },
+            "",
+        );
+        std::test::assert(
+            free.evidence.check_clean,
+            "no law in force: the heart checks clean: " + free.steps,
+        );
+
+        // the Board ratifies the practice as law
+        let doc = "{\"kind\": \"practice\", \"name\": \"standard/logs-are-structured\", \"text\": \"logs are structured\", \"law\": true}";
+        let digest = "sha256:" + receipts.store(doc);
+        let p = self.journal.append(
+            self.journal.revision(),
+            "knowledge.proposed",
+            digest,
+            "{\"kind\": \"practice\", \"name\": \"standard/logs-are-structured\"}",
+        );
+        let r = self.journal.append(
+            self.journal.revision(),
+            "knowledge.ratified",
+            digest,
+            "{\"decided_by\": \"board\"}",
+        );
+
+        let bare = self.v.verify(
+            self.journal,
+            dna::Mutation { id: "m1", worktree: root + "/wt", candidate_commit: "cand1" },
+            "",
+        );
+        std::test::assert(!bare.evidence.check_clean, "the bare println is refused: " + bare.steps);
+        let mut said = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "evidence.check" && e.entity == "cand1" {
+                said = receipts.read(std::json::find_string_field(e.body, "output_digest"));
+            }
+            i = i + 1;
+        }
+        std::test::assert(
+            std::str::contains(said, "logs_structured"),
+            "the refusal names the clause: " + said,
+        );
+        std::test::assert(
+            std::str::contains(bare.steps, "check=1"),
+            "the check failed: " + bare.steps,
+        );
+
+        std::io::fs::write_file(root + "/wt/main.hl", logged()) or discard;
+        let twin = self.v.verify(
+            self.journal,
+            dna::Mutation { id: "m2", worktree: root + "/wt", candidate_commit: "cand2" },
+            "",
+        );
+        std::test::assert(twin.evidence.check_clean, "the logged twin passes: " + twin.steps);
+        let src = std::io::fs::read_file(root + "/wt/main.hl") or "";
+        std::test::assert(!std::str::contains(src, "adopt"), "nothing is written into the heart");
+        dna::scratch_done(root);
+    }
+}
+fn main() { App { }; }

@@ -518,6 +518,12 @@ pub fn lower_claims_over(
                     group: group_ref(recs, &group.name, group.span),
                 }
             }
+            ClaimForm::RequireSeparateDomains { left, right } => {
+                ClaimIr::RequireSeparateDomains {
+                    left: group_ref(recs, &left.name, left.span),
+                    right: group_ref(recs, &right.name, right.span),
+                }
+            }
             ClaimForm::RequireAttributed { class_name } => {
                 ClaimIr::RequireAttributed {
                     class: class_ref_named(

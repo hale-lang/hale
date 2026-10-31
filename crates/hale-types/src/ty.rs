@@ -127,6 +127,16 @@ impl Ty {
     }
 }
 
+/// Is a fixed array of `p` laid out inline in the record that holds it
+/// (its `[N x T]` bytes the record's own), rather than as a pointer to
+/// a block of its own? The one rule lowering lays a record field out by
+/// (`array_inline_spec`) and the owned-view pass reads a write into the
+/// field by (`view_bindings`: a write into an inline array copies
+/// nothing).
+pub fn inline_array_scalar(p: PrimType) -> bool {
+    matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration)
+}
+
 pub fn prim_name(p: PrimType) -> &'static str {
     match p {
         PrimType::Int => "Int",

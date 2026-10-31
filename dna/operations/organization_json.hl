@@ -15,10 +15,24 @@ locus OrganizationJson {
         while i < size {
             let c = std::str::byte_at_unchecked(text, i);
             if c < 128 { i = i + 1; continue; }
-            let n = if c >= 194 && c <= 223 { 2 } else if c >= 224 && c <= 239 { 3 } else if c >= 240 && c <= 244 { 4 } else { 0 };
+            let n = if c >= 194 && c <= 223 {
+                2
+            } else if c >= 224 && c <= 239 {
+                3
+            } else if c >= 240 && c <= 244 {
+                4
+            } else {
+                0
+            };
             if n == 0 || i + n > size { return false; }
             let second = std::str::byte_at_unchecked(text, i + 1);
-            if (c == 224 && second < 160) || (c == 237 && second > 159) || (c == 240 && second < 144) || (c == 244 && second > 143) { return false; }
+            if (c == 224 && second < 160)
+                || (c == 237 && second > 159)
+                || (c == 240 && second < 144)
+                || (c == 244 && second > 143)
+            {
+                return false;
+            }
             let mut k = 1;
             while k < n {
                 let part = std::str::byte_at_unchecked(text, i + k);
@@ -29,7 +43,9 @@ locus OrganizationJson {
         }
         return true;
     }
-    fn hex(c: Int) -> Bool { return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102); }
+    fn hex(c: Int) -> Bool {
+        return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+    }
     fn hex_value(c: Int) -> Int {
         if c >= 48 && c <= 57 { return c - 48; }
         if c >= 65 && c <= 70 { return c - 55; }
@@ -76,7 +92,12 @@ locus OrganizationJson {
                     // an admissible value. Low surrogates require a high one.
                     if cp == 0 || (cp >= 56320 && cp <= 57343) { return -1; }
                     if cp >= 55296 && cp <= 56319 {
-                        if p + 10 >= size || std::str::byte_at_unchecked(text, p + 5) != 92 || std::str::byte_at_unchecked(text, p + 6) != 117 { return -1; }
+                        if p + 10 >= size
+                            || std::str::byte_at_unchecked(text, p + 5) != 92
+                            || std::str::byte_at_unchecked(text, p + 6) != 117
+                        {
+                            return -1;
+                        }
                         h = p + 7;
                         while h <= p + 10 {
                             if !self.hex(std::str::byte_at_unchecked(text, h)) { return -1; }
@@ -87,7 +108,17 @@ locus OrganizationJson {
                         p = p + 6;
                     }
                     p = p + 4;
-                } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102 && e != 110 && e != 114 && e != 116 { return -1; }
+                } else if e != 34
+                    && e != 92
+                    && e != 47
+                    && e != 98
+                    && e != 102
+                    && e != 110
+                    && e != 114
+                    && e != 116
+                {
+                    return -1;
+                }
             }
             p = p + 1;
         }
@@ -116,9 +147,21 @@ locus OrganizationJson {
             }
             if p == begin { return -1; }
         }
-        if p < size && (std::str::byte_at_unchecked(text, p) == 101 || std::str::byte_at_unchecked(text, p) == 69) {
+        if p < size
+            && (
+                std::str::byte_at_unchecked(text, p) == 101
+                    || std::str::byte_at_unchecked(text, p) == 69
+            )
+        {
             p = p + 1;
-            if p < size && (std::str::byte_at_unchecked(text, p) == 43 || std::str::byte_at_unchecked(text, p) == 45) { p = p + 1; }
+            if p < size
+                && (
+                    std::str::byte_at_unchecked(text, p) == 43
+                        || std::str::byte_at_unchecked(text, p) == 45
+                )
+            {
+                p = p + 1;
+            }
             let begin = p;
             while p < size {
                 let c = std::str::byte_at_unchecked(text, p);
@@ -140,7 +183,12 @@ locus OrganizationJson {
         if start + width > size { return -1; }
         let mut i = 0;
         while i < width {
-            if std::str::byte_at_unchecked(text, start + i) != std::str::byte_at_unchecked(word, i) { return -1; }
+            if std::str::byte_at_unchecked(
+                text,
+                start + i,
+            ) != std::str::byte_at_unchecked(word, i) {
+                return -1;
+            }
             i = i + 1;
         }
         return start + width;
@@ -161,7 +209,12 @@ locus OrganizationJson {
                     let k = self.string_end(text, p, size);
                     if k < 0 { return -1; }
                     let key = self.key(text, p + 1, k - 1);
-                    if std::str::contains(key, "\\") || std::str::contains(key, "|") || std::str::contains(keys, "|" + key + "|") { return -1; }
+                    if std::str::contains(key, "\\")
+                        || std::str::contains(key, "|")
+                        || std::str::contains(keys, "|" + key + "|")
+                    {
+                        return -1;
+                    }
                     keys = keys + key + "|";
                     p = self.space(text, k, size);
                     if p >= size || std::str::byte_at_unchecked(text, p) != 58 { return -1; }

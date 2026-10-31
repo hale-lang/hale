@@ -15,7 +15,7 @@ use crate::shared::source::Disk;
 use crate::shared::workspace::find_workspace_root;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
-use crate::shared::diag::render_located;
+use crate::shared::diag::render_authors;
 use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
 /// Verdict for one `*_test.hl` file.
 pub(crate) struct TestOutcome {
@@ -108,12 +108,12 @@ pub(crate) fn compile_test_binary(
     // how to evaluate. Errors fail the test; warnings are not printed.
     let diags = match snap.demand_check() {
         Ok(c) => &c.diags,
-        Err(b) => return Err(render_blocked(b, file_bases, sources)),
+        Err(b) => return Err(render_blocked(b, snap.demangler(), file_bases, sources)),
     };
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
         for d in diags.iter().filter(|d| d.is_error()) {
-            msg.push_str(&render_located(d, file_bases, sources));
+            msg.push_str(&render_authors(d, snap.demangler(), file_bases, sources));
             msg.push('\n');
         }
         return Err(msg.trim_end().to_string());
@@ -131,7 +131,8 @@ pub(crate) fn compile_test_binary(
     let mut h = DefaultHasher::new();
     h.write(entry.display().to_string().as_bytes());
     let bin = scratch.path(&format!("test_{}_{:016x}", nonce, h.finish()));
-    let view = snap.demand_lowering().map_err(|b| render_blocked(b, file_bases, sources))?;
+    let view = snap.demand_lowering().map_err(|b| render_blocked(b, snap.demangler(), file_bases, sources))?;
+    options.site_sources = Some(crate::shared::options::site_sources(file_bases, sources));
     if let Err(e) = hale_codegen::build_resolved(view, &bin, &options) {
         // GH #848: the per-fixture failure message is the located
         // rendering `build` prints, so a test that will not compile
@@ -247,7 +248,7 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
     let uid = unsafe { libc::getuid() };
     #[cfg(not(unix))]
     let uid = 0;
-    let root = std::env::temp_dir().join(format!("hale-test-vaults-{uid}"));
+    let root = test_vault_root();
     let _ = std::fs::create_dir(&root);
     let meta = std::fs::symlink_metadata(&root).map_err(|e| format!("test vault root {}: {e}", root.display()))?;
     #[cfg(unix)]
@@ -262,7 +263,7 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
     #[cfg(not(unix))]
     let _ = meta;
     if n == 0 {
-        sweep_dead_test_vaults(&root);
+        let _ = sweep_dead_test_vaults(&root);
     }
     let dir = root.join(format!("{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
@@ -276,25 +277,145 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// The root every test vault sits under, this user's alone:
+/// `<tmp>/hale-test-vaults-<uid>`. `hale test`'s vaults and the Rust
+/// tests' (`support/vault.rs`) share it.
+pub(crate) fn test_vault_root() -> PathBuf {
+    #[cfg(unix)]
+    let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0;
+    std::env::temp_dir().join(format!("hale-test-vaults-{uid}"))
+}
+
 /// Remove each `<pid>` / `<pid>-<n>` vault under `root` whose process
 /// no longer runs. The Rust tests' `support/vault.rs` keeps its vaults
 /// under the same root, one per test module and process, and sweeps them
-/// the same way.
-pub(crate) fn sweep_dead_test_vaults(root: &Path) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(pid) = name.split('-').next().unwrap_or("").parse::<i32>() else { continue };
-        #[cfg(unix)]
-        let gone = pid > 0
-            && unsafe { libc::kill(pid, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        #[cfg(not(unix))]
-        let gone = false;
-        if gone {
-            let _ = std::fs::remove_dir_all(e.path());
+/// through this one (`hale habitat sweep --test-vaults`). GH #1653: a
+/// vault's habitat comes down first, and a vault whose habitat does not
+/// is kept, its projects named in it, for the next sweep to retry. A
+/// habitat whose vault is already gone (a toolchain before GH #1653
+/// removes a gone process's vault without taking its habitat down, and
+/// they share the root) is found by its compose working directory, under
+/// a gone process's vault, and taken down by its project's name. `Err`
+/// names what was kept.
+pub(crate) fn sweep_dead_test_vaults(root: &Path) -> Result<(), String> {
+    let listed = crate::dna::habitat::compose_projects_listed()?;
+    sweep_dead_test_vaults_with(root, &listed, &|pid| process_gone(pid), &mut |dir| {
+        if dir.exists() {
+            habitat_down(dir)
+        } else {
+            crate::dna::habitat::down_under(dir)
+        }
+    })
+}
+
+/// Whether no process has `pid`.
+fn process_gone(pid: i32) -> bool {
+    #[cfg(unix)]
+    return pid > 0 && unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    #[cfg(not(unix))]
+    return false;
+}
+
+/// The sweep over `root`, with docker's `listed` compose projects
+/// (`<project>|<working dir>` lines), `gone` telling a gone process's pid
+/// and `down` taking a vault's habitat down.
+fn sweep_dead_test_vaults_with(root: &Path, listed: &str, gone: &dyn Fn(i32) -> bool, down: &mut dyn FnMut(&Path) -> Result<(), String>) -> Result<(), String> {
+    let pid_of = |name: &str| name.split('-').next().unwrap_or("").parse::<i32>().ok();
+    let mut vaults: Vec<PathBuf> = std::fs::read_dir(root)
+        .map(|entries| entries.flatten().filter(|e| pid_of(&e.file_name().to_string_lossy()).is_some_and(gone)).map(|e| e.path()).collect())
+        .unwrap_or_default();
+    // the habitats whose vault went before they came down
+    let under = format!("{}/", root.display());
+    for (_, wd) in listed.lines().filter_map(|l| l.split_once('|')) {
+        let Some(rest) = wd.strip_prefix(&under) else { continue };
+        let name = rest.split('/').next().unwrap_or("");
+        let vault = root.join(name);
+        if !name.is_empty() && pid_of(name).is_some_and(gone) && !vaults.contains(&vault) {
+            vaults.push(vault);
         }
     }
+    vaults.sort();
+    let mut kept = Vec::new();
+    for vault in vaults {
+        match down(&vault) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&vault);
+            }
+            Err(why) => kept.push(format!("{} is kept for the next sweep: {why}", vault.display())),
+        }
+    }
+    if kept.is_empty() { Ok(()) } else { Err(kept.join("\n")) }
+}
+
+/// The local habitat a test file's programs run under (GH #1653): its
+/// `XDG_DATA_HOME`, inside the file's vault directory, so an organism a
+/// fixture births or migrates is a tenant of the file's own habitat and
+/// never of the developer's, and it comes down with the vault.
+pub(crate) fn test_habitat_data(vault: &Path) -> PathBuf {
+    vault.join("data")
+}
+
+/// Take down every compose project run from under `dir` (a test file's
+/// habitat lives there), as `hale habitat sweep` does: the one teardown
+/// the CLI tests' reap and `scripts/compose-down-under.sh` share, which
+/// names the projects under `dir` until they are confirmed gone and never
+/// touches the developer's habitat. `Err` names what survived, and the
+/// caller keeps `dir`.
+pub(crate) fn habitat_down(dir: &Path) -> Result<(), String> {
+    // a file whose programs started nothing in docker has nothing to ask
+    if !test_habitat_data(dir).exists() && !dir.join(crate::dna::habitat::COMPOSE_FILE).exists() {
+        return Ok(());
+    }
+    crate::dna::habitat::down_under(dir)
+}
+
+/// The habitat toolchain image built once from the checkout for `hale test`
+/// when a fixture brings a habitat's body and face up (`habitat\nup`).
+fn test_habitat_image(f: &Path) -> Option<String> {
+    if let Ok(tag) = std::env::var("HALE_HABITAT_IMAGE") {
+        let tag = tag.trim().to_string();
+        if !tag.is_empty() {
+            return Some(tag);
+        }
+    }
+    let needs_image = std::fs::read_to_string(f)
+        .is_ok_and(|t| t.contains("habitat\nup") || t.contains("habitat up"));
+    if !needs_image {
+        return None;
+    }
+    static IMAGE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IMAGE
+        .get_or_init(|| {
+            let has_compose = std::process::Command::new("docker")
+                .args(["compose", "version"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !has_compose {
+                return None;
+            }
+            let root = find_workspace_root(f)?;
+            if !root.join("Dockerfile").is_file() {
+                return None;
+            }
+            let me = std::env::current_exe().ok()?;
+            let out = std::process::Command::new(me)
+                .args(["habitat", "image", "build"])
+                .arg(&root)
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+        })
+        .clone()
 }
 
 /// Compile and run one `_test.hl` file and judge it by the
@@ -314,9 +435,12 @@ pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
                     cmd.env("HALE_BIN", me);
                 }
             }
+            if let Some(img) = test_habitat_image(f) {
+                cmd.env("HALE_HABITAT_IMAGE", img);
+            }
             // Each test file runs with a vault of its own, made empty for
             // the run and removed after it: a test that provisions a secret,
-            // or a fixture that runs `hale dna init` (which draws the
+            // or a fixture that runs `hale habitat graft` (which draws the
             // organism's), never writes into the developer's vault, and no
             // test reaches a real vault (`HALE_VAULT_ADDR`). Everything the
             // test starts inherits it.
@@ -334,12 +458,25 @@ pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
                 }
             };
             cmd.env("HALE_VAULT_DIR", &vault).env_remove("HALE_VAULT_ADDR");
+            // GH #1653: and its own local habitat, beside the vault: a
+            // fixture's organisms are never tenants of the developer's
+            cmd.env("XDG_DATA_HOME", test_habitat_data(&vault));
+            // and named outright, never the caller's: a `HALE_DNA_HABITAT`
+            // the developer exported would otherwise win over XDG_DATA_HOME
+            // (a slice's habitat is handed over as HALE_DNA_TEST_HABITAT,
+            // and a fixture names it on the graft it makes)
+            cmd.env("HALE_DNA_HABITAT", test_habitat_data(&vault).join("hale/habitat/local"));
             let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
             if std::env::var("HALE_TEST_KEEP_VAULT").is_ok_and(|v| v == "1") {
-                eprintln!("hale test: {}'s vault is kept at {}", f.display(), vault.display());
+                eprintln!("hale test: {}'s vault and habitat are kept at {}", f.display(), vault.display());
             } else {
-                let _ = std::fs::remove_dir_all(&vault);
+                match habitat_down(&vault) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_dir_all(&vault);
+                    }
+                    Err(why) => eprintln!("hale test: {}: {why}; {} is kept for the next run's sweep", f.display(), vault.display()),
+                }
             }
             match output {
                 Ok(out) => {
@@ -573,5 +710,63 @@ pub(crate) fn run_test(args: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    }
+}
+
+#[cfg(test)]
+mod habitat_sweep_tests {
+    use super::*;
+
+    /// GH #1653: a gone process's vault whose habitat did not come down is
+    /// kept for the next sweep, and goes once it does.
+    #[test]
+    fn a_vault_whose_habitat_survives_is_kept_for_the_next_sweep() {
+        let root = std::env::temp_dir().join(format!("hale_vault_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // no process has this pid: the vault is a gone one's
+        let vault = root.join("2147483646-0");
+        std::fs::create_dir_all(vault.join("data")).unwrap();
+        let gone = |pid: i32| pid == 2147483646;
+        assert!(sweep_dead_test_vaults_with(&root, "", &gone, &mut |_| Err("compose project p still has volumes after its teardown".into())).is_err());
+        assert!(vault.exists(), "kept while its habitat survives");
+        let mut asked = Vec::new();
+        let swept = sweep_dead_test_vaults_with(&root, "", &gone, &mut |d| {
+            asked.push(d.to_path_buf());
+            Ok(())
+        });
+        assert!(swept.is_ok());
+        assert_eq!(asked, vec![vault.clone()], "retried by the next sweep");
+        assert!(!vault.exists(), "and removed once it came down");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// GH #1653: a habitat whose vault was removed before it came down (by
+    /// a toolchain that did not take it down first) is found by its
+    /// compose working directory under a gone process's vault, and only
+    /// then: a live process's, or one outside the root, is left alone.
+    #[test]
+    fn a_habitat_whose_vault_is_gone_is_found_by_its_working_directory() {
+        let root = std::env::temp_dir().join(format!("hale_vault_orphans_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let r = root.display();
+        let listed = format!(
+            "hale-habitat-local-aaaa|{r}/2147483646-dna_projects.dna_new.vault/data/hale/habitat/local/allocations/e1e8\n\
+             hale-habitat-local-aaaa|{r}/2147483646-dna_projects.dna_new.vault/data/hale/habitat/local/allocations/f2f9\n\
+             hale-habitat-local-bbbb|{r}/2147483645-0/data/hale/habitat/local/allocations/0000\n\
+             hale-habitat-local-cccc|/elsewhere/2147483646-0/data\n\
+             hale-habitat-local-dddd|{r}/not-a-pid/data\n"
+        );
+        let gone = |pid: i32| pid == 2147483646;
+        let mut asked = Vec::new();
+        let swept = sweep_dead_test_vaults_with(&root, &listed, &gone, &mut |d| {
+            asked.push(d.to_path_buf());
+            std::fs::create_dir_all(d).unwrap();
+            Ok(())
+        });
+        assert!(swept.is_ok());
+        assert_eq!(asked, vec![root.join("2147483646-dna_projects.dna_new.vault")], "the gone process's habitat, once");
+        assert!(!root.join("2147483646-dna_projects.dna_new.vault").exists(), "and nothing of it is left");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -312,3 +312,278 @@ fn set_truncate_drop_front_idiom() {
     assert!(out.contains("oob idx=99"), "got: {:?}", out);
     assert!(out.contains("t0=0"), "got: {:?}", out);
 }
+
+/// A whole assignment of a locus's bounded field from a record built in
+/// a method, its Strings computed there: the field's elements are
+/// anchored in the locus's arena, not the method's scratch, so they are
+/// whole after the method returns and its scratch is freed. Under
+/// AddressSanitizer (with the chunk pool off, which an ASan build
+/// defaults), a slot left in the scratch is a use-after-free at the
+/// read. A record local's field and a nested record field of the
+/// locus's are the other two places.
+#[test]
+fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
+    let src = r#"
+        type R { xs: bounded[String; 2]; }
+        type Row { name: String = ""; xs: bounded[String; 2]; }
+        locus L {
+            params { xs: bounded[String; 2]; row: Row = Row { }; }
+            fn put(k: Int) {
+                let mut r = R { };
+                push(r.xs, "first " + to_string(k)) or raise;
+                push(r.xs, std::str::upper("second ") + to_string(k)) or raise;
+                self.xs = r.xs;
+                let mut local = Row { name: "l" };
+                local.xs = r.xs;
+                self.row.xs = local.xs;
+            }
+            fn read() -> String {
+                return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + (at(self.row.xs, 1) or "");
+            }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            while k < 50 {
+                l.put(k);
+                k = k + 1;
+            }
+            println(l.read());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_whole_assign_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
+}
+
+/// A bounded local is a view of the place it was bound from, and the
+/// elements a `push` or a `set` stores through it are anchored where that
+/// place lives: a locus's own field (`let mut dest = self.xs`), a child's
+/// (`let d = self.child.xs`), an alias of a view (`let e = d`), and an
+/// inner block's view of another place shadowing an outer one. Each used
+/// to anchor in the method's scratch, which its return frees under the
+/// field. Under AddressSanitizer (chunk recycling off, as an ASan build
+/// defaults), a slot left there is a use-after-free at the read after the
+/// methods returned.
+#[test]
+fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
+    let src = r#"
+        locus Child {
+            params { xs: bounded[String; 4]; }
+            fn first() -> String { return at(self.xs, 0) or ""; }
+        }
+        locus L {
+            params { child: Child = Child { }; xs: bounded[String; 4]; ys: bounded[String; 4]; }
+            fn put(k: Int) {
+                let mut dest = self.xs;
+                clear(dest);
+                push(dest, "first " + to_string(k)) or raise;
+                push(dest, std::str::upper("second ") + to_string(k)) or raise;
+                set(dest, 0, "set " + to_string(k)) or raise;
+                let d = self.child.xs;
+                clear(d);
+                push(d, "child " + to_string(k)) or raise;
+                let e = d;
+                set(e, 0, "alias " + to_string(k)) or raise;
+                let v = self.ys;
+                if k > 0 {
+                    let v = self.child.xs;
+                    push(v, "inner " + to_string(k)) or discard;
+                }
+                clear(v);
+                push(v, "outer " + to_string(k)) or raise;
+            }
+            fn read() -> String {
+                return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + self.child.first() + "|" + (at(self.ys, 0) or "");
+            }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            while k < 50 {
+                l.put(k);
+                k = k + 1;
+            }
+            println(l.read());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_view_anchor_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "set 49|SECOND 49|alias 49|outer 49\n");
+}
+
+/// GH #1608 review: a bounded place is evaluated once. A view bound from an
+/// indexed place (`let v = self.slots[self.next()].xs;`) calls the index's
+/// method once, and the arena the view's elements anchor in is the owner
+/// that same evaluation reached: the IR holds one call of `next`, and the
+/// element pushed through the view reads whole after the method returned.
+#[test]
+fn an_indexed_bounded_place_is_evaluated_once() {
+    let src = r#"
+        locus Slot { params { xs: bounded[String; 4]; } fn first() -> String { return at(self.xs, 0) or ""; } }
+        locus Store {
+            params { slots: [Slot; 2] = [Slot { }, Slot { }]; calls: Int = 0; }
+            fn next() -> Int { self.calls = self.calls + 1; return 0; }
+            fn view(k: Int) {
+                let v = self.slots[self.next()].xs;
+                clear(v);
+                push(v, "viewed " + to_string(k)) or raise;
+            }
+        }
+        fn main() {
+            let s = Store { };
+            s.view(1);
+            s.view(2);
+            println(s.calls);
+            println(s.slots[0].first());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_indexed_once");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\nviewed 2\n");
+
+    let ir_bin = harness::unique_bin("bounded_indexed_once_ir");
+    let ir = harness::build_source_ir_text(src, &ir_bin).expect("ir");
+    let _ = std::fs::remove_file(&ir_bin);
+    for f in ["Store.view"] {
+        let body = ir_fn_body(&ir, f).unwrap_or_else(|| panic!("no `{f}` in the IR"));
+        let calls = body.lines().filter(|l| l.contains("call") && l.contains("Store.next")).count();
+        assert_eq!(calls, 1, "`{f}` calls `next` once:\n{body}");
+    }
+}
+
+/// The body of the IR function whose name contains `name`.
+fn ir_fn_body(ir: &str, name: &str) -> Option<String> {
+    let start = ir.lines().position(|l| l.starts_with("define") && l.contains(&format!("@\"{name}\"")) || l.starts_with("define") && l.contains(&format!("@{name}(")))?;
+    let lines: Vec<&str> = ir.lines().skip(start).collect();
+    let end = lines.iter().position(|l| *l == "}")?;
+    Some(lines[..=end].join("\n"))
+}
+
+/// GH #1608 follow-up: the shape the check gives in place of an element
+/// stored through a parameter's place: a free fn fills a record of the
+/// calling frame, and the method stores it whole into its field, which
+/// anchors the elements in the locus's arena. Under AddressSanitizer
+/// (chunk recycling off) the field reads whole after the methods returned.
+/// The refused member shape is refused by the build too.
+#[test]
+fn a_record_filled_by_a_free_fn_and_stored_whole_outlives_its_method_under_asan() {
+    let src = r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row, k: Int) {
+            clear(r.xs);
+            push(r.xs, "free fn " + to_string(k)) or raise;
+            push(r.xs, std::str::upper("second ") + to_string(k)) or raise;
+        }
+        locus L {
+            params { row: Row = Row { }; }
+            fn put(k: Int) {
+                let mut mine = Row { };
+                fill(mine, k);
+                self.row = mine;
+            }
+            fn read() -> String { return (at(self.row.xs, 0) or "") + "|" + (at(self.row.xs, 1) or ""); }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            while k < 50 {
+                l.put(k);
+                k = k + 1;
+            }
+            println(l.read());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_param_place_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "free fn 49|SECOND 49\n");
+
+    let refused = r#"
+        type Row { xs: bounded[String; 4]; }
+        locus L {
+            params { row: Row = Row { }; }
+            fn through(r: Row, k: Int) { push(r.xs, "m" + to_string(k)) or raise; }
+            fn put(k: Int) { self.through(self.row, k); }
+        }
+        fn main() { let l = L { }; l.put(1); }
+    "#;
+    let bin = harness::unique_bin("bounded_param_place_refused");
+    let err = build_opts::build_source(refused, &bin, &build_opts::options()).expect_err("the member shape is refused");
+    let _ = std::fs::remove_file(&bin);
+    assert!(format!("{err:?}").contains("under the member parameter `r`"), "{err:?}");
+}
+
+/// Review of #1612: the member-parameter backstop follows the binding, so a
+/// `let` that shadows the parameter's name binds a fresh record of the
+/// method's own, which builds and runs.
+#[test]
+fn a_local_shadowing_a_member_parameter_is_its_own_binding() {
+    let src = r#"
+        type Row { xs: bounded[String; 4]; }
+        locus L {
+            fn put(r: Row) -> Int {
+                let r = Row { };
+                push(r.xs, "fresh" + to_string(1)) or raise;
+                return count(r.xs);
+            }
+        }
+        fn main() { let l = L { }; println(l.put(Row { })); }
+    "#;
+    assert_eq!(build_and_run("bounded_member_param_shadow", src), "1\n");
+}
+
+/// A `bounded` returned inside a record (a fn cannot return one by value,
+/// the check refuses that): the String elements the callee pushed are read
+/// whole, and grown, after it returned, under AddressSanitizer (chunk
+/// recycling off, as an ASan build defaults).
+#[test]
+fn a_bounded_returned_in_a_record_outlives_its_fn_under_asan() {
+    let src = r#"
+        type Names { items: bounded[String; 4]; }
+        fn names(k: Int) -> Names {
+            let mut n = Names { };
+            push(n.items, "a" + to_string(k)) or discard;
+            push(n.items, std::str::upper("b") + to_string(k)) or discard;
+            return n;
+        }
+        fn main() {
+            let mut k = 0;
+            let mut last = "";
+            while k < 50 {
+                let mut n = names(k);
+                push(n.items, "c" + to_string(k)) or discard;
+                last = (at(n.items, 0) or "") + "|" + (at(n.items, 1) or "") + "|" + (at(n.items, 2) or "") + "|" + to_string(count(n.items));
+                k = k + 1;
+            }
+            println(last);
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_record_return_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a49|B49|c49|3\n");
+}

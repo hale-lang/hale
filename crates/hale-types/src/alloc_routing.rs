@@ -612,21 +612,29 @@ struct ScratchPaths<'a> {
     imports: &'a BTreeMap<Vec<String>, String>,
 }
 
-impl ScratchPaths<'_> {
-    fn call_ok(&self, q: &hale_syntax::ast::QualifiedName, set: &BTreeSet<String>) -> bool {
-        let segs: Vec<String> = q.segments.iter().map(|s| s.name.clone()).collect();
-        if let Some(target) = self.imports.get(&segs) {
-            return set.contains(target);
+impl<'a> ScratchPaths<'a> {
+    /// The fn of the class a call by `q` needs (`Ok(Some)`), or whether
+    /// the call is in the class whatever the class holds (`Ok(None)` for
+    /// a runtime primitive of a pure namespace, `Err` for anything else).
+    fn call_needs(&self, q: &hale_syntax::ast::QualifiedName) -> Result<Option<&'a str>, ()> {
+        let segs = &q.segments;
+        if !self.imports.is_empty() {
+            let spelled: Vec<String> = segs.iter().map(|s| s.name.clone()).collect();
+            if let Some(target) = self.imports.get(&spelled) {
+                return Ok(Some(target.as_str()));
+            }
         }
         if let Some((_, target)) = hale_stdlib::PATH_RENAMES
             .iter()
-            .find(|(p, _)| p.len() == segs.len() && p.iter().zip(&segs).all(|(a, b)| a == b))
+            .find(|(p, _)| p.len() == segs.len() && p.iter().zip(segs).all(|(a, b)| *a == b.name))
         {
-            return set.contains(*target);
+            return Ok(Some(target));
         }
-        segs.len() >= 3
-            && segs[0] == "std"
-            && SCRATCH_LOCAL_STD_NAMESPACES.contains(&segs[1].as_str())
+        if segs.len() >= 3 && segs[0].name == "std" && SCRATCH_LOCAL_STD_NAMESPACES.contains(&segs[1].name.as_str()) {
+            Ok(None)
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -658,20 +666,31 @@ pub(crate) fn scratch_local_free_fns<'a>(
             _ => None,
         })
         .collect();
+    // A body is in the class under a set of names when its shape is and
+    // every fn of the class it calls is in the set: one walk per body
+    // reads both, and the fixpoint runs over the names alone.
+    let shapes: Vec<(&str, Option<Vec<&str>>)> = fns
+        .iter()
+        .map(|f| {
+            let mut needs = Vec::new();
+            let shaped = scratch_local_block(&f.body, &mut needs, &paths);
+            (f.name.name.as_str(), shaped.then_some(needs))
+        })
+        .collect();
     let mut set: BTreeSet<String> =
         fns.iter().map(|f| f.name.name.clone()).collect();
     loop {
-        let demote: Vec<String> = fns
+        let demote: Vec<&str> = shapes
             .iter()
-            .filter(|f| set.contains(&f.name.name))
-            .filter(|f| !scratch_local_block(&f.body, &set, &paths))
-            .map(|f| f.name.name.clone())
+            .filter(|(name, _)| set.contains(*name))
+            .filter(|(_, needs)| needs.as_ref().map_or(true, |n| !n.iter().all(|c| set.contains(*c))))
+            .map(|(name, _)| *name)
             .collect();
         if demote.is_empty() {
             return set;
         }
         for n in demote {
-            set.remove(&n);
+            set.remove(n);
         }
     }
 }
@@ -687,74 +706,76 @@ pub fn scratch_local_derivations_on_this_thread() -> u64 {
     SCRATCH_LOCAL_DERIVATIONS.with(|n| n.get())
 }
 
-fn scratch_local_block(b: &Block, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
-    b.stmts.iter().all(|s| scratch_local_stmt(s, set, paths))
-        && b.tail.as_deref().map_or(true, |e| scratch_local_expr(e, set, paths))
+/// Whether `b` has the class's shape, with the fns of the class it calls
+/// pushed onto `needs`.
+fn scratch_local_block<'a>(b: &'a Block, needs: &mut Vec<&'a str>, paths: &ScratchPaths<'a>) -> bool {
+    b.stmts.iter().all(|s| scratch_local_stmt(s, needs, paths))
+        && b.tail.as_deref().map_or(true, |e| scratch_local_expr(e, needs, paths))
 }
 
-fn scratch_local_if(i: &IfStmt, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
-    scratch_local_expr(&i.cond, set, paths)
-        && scratch_local_block(&i.then_block, set, paths)
+fn scratch_local_if<'a>(i: &'a IfStmt, needs: &mut Vec<&'a str>, paths: &ScratchPaths<'a>) -> bool {
+    scratch_local_expr(&i.cond, needs, paths)
+        && scratch_local_block(&i.then_block, needs, paths)
         && match i.else_block.as_deref() {
             None => true,
-            Some(ElseBranch::Else(b)) => scratch_local_block(b, set, paths),
-            Some(ElseBranch::ElseIf(inner)) => scratch_local_if(inner, set, paths),
+            Some(ElseBranch::Else(b)) => scratch_local_block(b, needs, paths),
+            Some(ElseBranch::ElseIf(inner)) => scratch_local_if(inner, needs, paths),
         }
 }
 
-fn scratch_local_stmt(s: &Stmt, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
+fn scratch_local_stmt<'a>(s: &'a Stmt, needs: &mut Vec<&'a str>, paths: &ScratchPaths<'a>) -> bool {
     match s {
-        Stmt::Let { value, .. } => scratch_local_expr(value, set, paths),
+        Stmt::Let { value, .. } => scratch_local_expr(value, needs, paths),
         Stmt::Assign { target, value, .. } => {
             target.head.name != "self"
                 && target.tail.is_empty()
-                && scratch_local_expr(value, set, paths)
+                && scratch_local_expr(value, needs, paths)
         }
         Stmt::Return(e, _) => {
-            e.as_ref().map_or(true, |e| scratch_local_expr(e, set, paths))
+            e.as_ref().map_or(true, |e| scratch_local_expr(e, needs, paths))
         }
-        Stmt::Expr(e) => scratch_local_expr(e, set, paths),
-        Stmt::If(i) => scratch_local_if(i, set, paths),
+        Stmt::Expr(e) => scratch_local_expr(e, needs, paths),
+        Stmt::If(i) => scratch_local_if(i, needs, paths),
         Stmt::While { cond, body, .. } => {
-            scratch_local_expr(cond, set, paths) && scratch_local_block(body, set, paths)
+            scratch_local_expr(cond, needs, paths) && scratch_local_block(body, needs, paths)
         }
         Stmt::For { iter, body, .. } => {
             matches!(iter, Expr::Range { .. })
-                && scratch_local_expr(iter, set, paths)
-                && scratch_local_block(body, set, paths)
+                && scratch_local_expr(iter, needs, paths)
+                && scratch_local_block(body, needs, paths)
         }
-        Stmt::Block(b) => scratch_local_block(b, set, paths),
+        Stmt::Block(b) => scratch_local_block(b, needs, paths),
         Stmt::Break(_) | Stmt::Continue(_) => true,
         _ => false,
     }
 }
 
-fn scratch_local_expr(e: &Expr, set: &BTreeSet<String>, paths: &ScratchPaths) -> bool {
+fn scratch_local_expr<'a>(e: &'a Expr, needs: &mut Vec<&'a str>, paths: &ScratchPaths<'a>) -> bool {
     match e {
         Expr::Literal(_, _) | Expr::Ident(_) => true,
         Expr::Field { receiver, .. } => {
             !matches!(receiver.as_ref(), Expr::KwSelf(_))
-                && scratch_local_expr(receiver, set, paths)
+                && scratch_local_expr(receiver, needs, paths)
         }
         Expr::Index { receiver, index, .. } => {
-            scratch_local_expr(receiver, set, paths) && scratch_local_expr(index, set, paths)
+            scratch_local_expr(receiver, needs, paths) && scratch_local_expr(index, needs, paths)
         }
         Expr::Range { lo, hi, .. } => {
-            scratch_local_expr(lo, set, paths) && scratch_local_expr(hi, set, paths)
+            scratch_local_expr(lo, needs, paths) && scratch_local_expr(hi, needs, paths)
         }
-        Expr::Unary { operand, .. } => scratch_local_expr(operand, set, paths),
+        Expr::Unary { operand, .. } => scratch_local_expr(operand, needs, paths),
         Expr::Binary { left, right, .. } => {
-            scratch_local_expr(left, set, paths) && scratch_local_expr(right, set, paths)
+            scratch_local_expr(left, needs, paths) && scratch_local_expr(right, needs, paths)
         }
         Expr::Tuple(parts, _) if parts.len() <= 1 => {
-            parts.iter().all(|p| scratch_local_expr(p, set, paths))
+            parts.iter().all(|p| scratch_local_expr(p, needs, paths))
         }
-        Expr::If(i) => scratch_local_if(i, set, paths),
-        Expr::Block(b) => scratch_local_block(b, set, paths),
+        Expr::If(i) => scratch_local_if(i, needs, paths),
+        Expr::Block(b) => scratch_local_block(b, needs, paths),
         Expr::Or { inner, disposition, .. } => {
-            scratch_local_expr(inner, set, paths)
+            scratch_local_expr(inner, needs, paths)
                 && match disposition {
-                    OrDisposition::Substitute(sub) => scratch_local_expr(sub, set, paths),
+                    OrDisposition::Substitute(sub) => scratch_local_expr(sub, needs, paths),
                     OrDisposition::Discard(_) => true,
                     _ => false,
                 }
@@ -762,13 +783,21 @@ fn scratch_local_expr(e: &Expr, set: &BTreeSet<String>, paths: &ScratchPaths) ->
         Expr::Call { callee, args, .. } => {
             let callee_ok = match callee.as_ref() {
                 Expr::Ident(id) => {
-                    set.contains(&id.name)
-                        || SCRATCH_LOCAL_BUILTINS.contains(&id.name.as_str())
+                    if !SCRATCH_LOCAL_BUILTINS.contains(&id.name.as_str()) {
+                        needs.push(&id.name);
+                    }
+                    true
                 }
-                Expr::Path(q) => paths.call_ok(q, set),
+                Expr::Path(q) => match paths.call_needs(q) {
+                    Ok(need) => {
+                        needs.extend(need);
+                        true
+                    }
+                    Err(()) => false,
+                },
                 _ => false,
             };
-            callee_ok && args.iter().all(|a| scratch_local_expr(a, set, paths))
+            callee_ok && args.iter().all(|a| scratch_local_expr(a, needs, paths))
         }
         _ => false,
     }
@@ -1246,6 +1275,9 @@ fn stmt_definitely_non_allocating(
 ///     dissolve) — never an arena. They are what `BytesBuilder`'s
 ///     `append*` methods wrap, so a method that calls one and
 ///     violates on failure drops its per-call scratch.
+///   - `std::crypto::__sha256_update` absorbs into the `Sha256`
+///     locus's malloc'd context (freed at its dissolve) and answers
+///     a status, so `Sha256.update` keeps no per-call scratch either.
 ///
 /// A wrong entry does not dangle — an elided body's allocations
 /// route to the caller's arena rather than being freed at return —
@@ -1266,6 +1298,7 @@ const NONALLOC_STDLIB_PATHS: &[&[&str]] = &[
     &["std", "bytes", "builder", "__len"],
     &["std", "bytes", "builder", "__shift_front"],
     &["std", "bytes", "builder", "__xor_mask_into"],
+    &["std", "crypto", "__sha256_update"],
 ];
 
 fn path_call_is_nonalloc(q: &hale_syntax::ast::QualifiedName) -> bool {

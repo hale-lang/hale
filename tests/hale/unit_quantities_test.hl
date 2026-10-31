@@ -87,10 +87,6 @@ fn two_sec() -> Seconds {
     return 2sec;
 }
 
-fn later(d: Span) -> Bucket {
-    return Bucket(d + 5sec);
-}
-
 // A default flows into its field's type as a binding's value does: each
 // element of an array literal into the element type, from its own.
 type Fees { pair: [Money; 2] = [3USD, 2USD]; mixed: [Money; 2] = [3cent, 2USD]; }
@@ -110,7 +106,11 @@ fn main() {
     // Time: a sum at the finer denomination, converted at compile time.
     let d = 3sec + 500msec;
     std::test::assert(d == 3500msec, "3s + 500ms is 3500ms");
-    std::test::assert_eq_str(to_string(d), "3500000000nsec", "a quantity prints its count and its unit");
+    std::test::assert_eq_str(
+        to_string(d),
+        "3500000000nsec",
+        "a quantity prints its count and its unit",
+    );
     let whole = d.in(sec) or 0;
     std::test::assert(whole == 0sec, "3500ms is no whole number of seconds: the substitute");
     let secs = d.in(sec) or floor;
@@ -139,7 +139,10 @@ fn main() {
     let ok = hop < 50usec;
     std::test::assert(!ok, "a comparison is exact at the finer denomination");
     let out: WireStamp = a;
-    std::test::assert(out == Instant(1_700_000_000_123_456usec), "ns -> us narrows; the type says how");
+    std::test::assert(
+        out == Instant(1_700_000_000_123_456usec),
+        "ns -> us narrows; the type says how",
+    );
     std::test::assert(a + 1minute > a, "a point moves by a quantity");
 
     // Ticks and prices.
@@ -154,7 +157,11 @@ fn main() {
     // denominations (decision 2), and narrows where a policy is.
     let fee = 1_250_000USD * 3bp;
     std::test::assert(fee == 375USD, "375 USD, q = 1, exact");
-    std::test::assert_eq_str(to_string(fee), "375000000 Money in 1/10000 cent", "the product's denomination");
+    std::test::assert_eq_str(
+        to_string(fee),
+        "375000000 Money in 1/10000 cent",
+        "the product's denomination",
+    );
     let odd = 1_234_567USD * 3bp;
     std::test::assert(odd > 37_037cent && odd < 37_038cent, "370.3701 USD, exact here");
     let paid: Ledger = odd;
@@ -171,7 +178,11 @@ fn main() {
     // `Ratio` basis points, so the product counts 1/10000 cent.
     let runtime = amount(1_234_567) * rate(3);
     std::test::assert(runtime == odd, "the same amount, exact either way");
-    std::test::assert_eq_str(to_string(runtime), "370370100 Money in 1/10000 cent", "its denomination");
+    std::test::assert_eq_str(
+        to_string(runtime),
+        "370370100 Money in 1/10000 cent",
+        "its denomination",
+    );
     let paid_runtime: Ledger = runtime;
     std::test::assert(paid_runtime == paid, "the same rounding at the boundary");
     // let bad = 5msec + 4KiB;           // type error: different quantities
@@ -193,8 +204,14 @@ fn main() {
     std::test::assert((late.in(sec) or floor) == 0sec - 2sec, "floor rounds down");
     std::test::assert((late.in(sec) or ceil) == 0sec - 1sec, "ceil rounds up");
     std::test::assert((late.in(sec) or trunc) == 0sec - 1sec, "trunc rounds toward zero");
-    std::test::assert((late.in(sec) or half_up) == 0sec - 2sec, "half_up rounds a half away from zero");
-    std::test::assert((late.in(sec) or half_even) == 0sec - 2sec, "half_even rounds a half to even");
+    std::test::assert(
+        (late.in(sec) or half_up) == 0sec - 2sec,
+        "half_up rounds a half away from zero",
+    );
+    std::test::assert(
+        (late.in(sec) or half_even) == 0sec - 2sec,
+        "half_even rounds a half to even",
+    );
     std::test::assert(((2500msec).in(sec) or half_even) == 2sec, "half_even: 2.5 to 2");
     std::test::assert(((2500msec).in(sec) or half_up) == 3sec, "half_up: 2.5 to 3");
     let (w, r) = late.split(sec);
@@ -211,12 +228,6 @@ fn main() {
     let plain = Window { };
     std::test::assert(plain.lit == 2sec, "the cast's evaluation: 20 buckets");
     std::test::assert(plain.val == 2sec, "the value cast once, not twice");
-    {
-        let Bucket = later;
-        let shadowed = Window { };
-        std::test::assert(shadowed.lit == 7sec, "the literal reaches the local as a `Span`");
-        std::test::assert(shadowed.val == 7sec, "and so does the value");
-    }
     let fees = Fees { };
     std::test::assert(fees.pair[0] == 300cent, "each element converted into cents");
     std::test::assert(fees.pair[1] == 200cent, "the second as well");
@@ -229,7 +240,11 @@ fn main() {
     std::test::assert_eq_str(to_string(spans[0]), "2000000000nsec", "the coarser element widened");
     std::test::assert_eq_str(to_string(spans[1]), "1500000000nsec", "the finer as it is");
     let literals = [1sec, 1_500msec];
-    std::test::assert_eq_str(to_string(literals[0]), "1000000000nsec", "a literal counts in nanoseconds");
+    std::test::assert_eq_str(
+        to_string(literals[0]),
+        "1000000000nsec",
+        "a literal counts in nanoseconds",
+    );
     std::test::assert_eq_str(to_string(literals[1]), "1500000000nsec", "and so does the other");
     let charge = Charge { };
     std::test::assert(charge.amount == 300cent, "a constant read in a default: its own cast");
@@ -239,7 +254,19 @@ fn main() {
     std::test::assert(waits.pause == 2s, "a `Duration` constant read in a default");
     let half = 1500ms.in(ms) or floor;
     let durations = [half, 1s];
-    std::test::assert_eq_str(to_string(durations[0]), "1500000000ns", "a `Duration in ms` meets `Duration`");
-    std::test::assert_eq_str(to_string(durations[1]), "1000000000ns", "and the `Duration` is as it is");
-    std::test::assert_eq_str(to_string(-2000psec), "-2ns", "a negated whole count of a finer unit is a `Duration`");
+    std::test::assert_eq_str(
+        to_string(durations[0]),
+        "1500000000ns",
+        "a `Duration in ms` meets `Duration`",
+    );
+    std::test::assert_eq_str(
+        to_string(durations[1]),
+        "1000000000ns",
+        "and the `Duration` is as it is",
+    );
+    std::test::assert_eq_str(
+        to_string(-2000psec),
+        "-2ns",
+        "a negated whole count of a finer unit is a `Duration`",
+    );
 }

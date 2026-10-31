@@ -1,7 +1,8 @@
 # The face
 
-The face is the DNA organism's people surface, served by the head
-(`dna/api/project_service`): a browser surface for ordinary Hale
+The face is the DNA organism's people surface, served by the standard
+face (`dna/face/standard`) in front of the head (`dna/api/project_service`,
+which serves surfaces only): a browser surface for ordinary Hale
 application controls, plus DNA organization, workflow definitions,
 Knowledge, practices and reviews. It has no
 runtime observer: inspecting a running Hale binary is `hale iris`'s job.
@@ -47,7 +48,7 @@ this API and removes its temporary build. The application's existing body and
 services retain their lifecycles. The launcher never initializes or commits the
 project, adopts its Ledger, starts infrastructure or fetches dependencies.
 
-For a fresh project, create it with `hale dna new /absolute/path/to/project` and
+For a fresh project, create it with `hale habitat graft /absolute/path/to/project` and
 commit the generated source before inspecting Organization. Organization reads
 use committed source and existing vendored dependencies; they exclude local
 uncommitted edits. Launching the face itself does not require a running body or a

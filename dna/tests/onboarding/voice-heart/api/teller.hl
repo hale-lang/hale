@@ -1,0 +1,180 @@
+// The teller: the one locus that tells the organization about voice's
+// requests (events.hl), pinned on a thread of its own so that no answer
+// ever waits on the organization's nerves. A request that ended hands its
+// usage over (`UsageToTell`) and goes on; the teller queues it, at most
+// `capacity` events, and tells them in order, one at a time: it dials the
+// server within `timeout`, keeps the connection, publishes each event onto
+// the organization's stream under its id (so a retry is not stored twice)
+// and waits for the stream's acknowledgement, again within `timeout`.
+//
+// A publish that does not land keeps its event at the head of the queue
+// and is tried again after a back-off (50 ms doubling to 5 s), the
+// connection dropped and dialled again. When the queue is full the oldest
+// event is dropped for the newest and counted, and the running total of
+// drops is logged at most once a second while they go on, and once more
+// within a second of the last, so a usage loss is never silent and the
+// log always ends on the true count. (The teller stops only with the
+// process, by its signal: see `run`.) With no organization (`url` ""), nothing is queued and
+// nothing is dialled.
+
+import "../lib/pond/realtime/nats" as nats;
+
+/// The events not told yet, as a ring over at most `Teller.capacity` slots.
+@form(vec)
+locus UsageRing { capacity { heap rows of UsageEvent; } }
+
+locus Teller {
+    params {
+        // the organization's nerves: the application's server, its user,
+        // the vault entry of that user's password (revealed on CONNECT
+        // alone), and the organization's token
+        url: String = "";
+        user: String = "";
+        vault: String = "";
+        org: String = "";
+        capacity: Int = 1024;
+        timeout: Duration = 2s;
+        ring: UsageRing = UsageRing { };
+        // the oldest event's slot, and how many are queued
+        head: Int = 0;
+        queued: Int = 0;
+        told: Int = 0;
+        dropped: Int = 0;
+        // the drops the log has counted, and when it last did
+        dropped_said: Int = 0;
+        dropped_said_ns: Int = 0;
+        client: nats::NatsClient = nats::NatsClient { };
+        credential: std::secret::Credential = std::secret::Credential { };
+        connected: Bool = false;
+        retry_at_ns: Int = 0;
+        backoff_ms: Int = 0;
+        // the trouble last logged, "" when telling works
+        trouble: String = "";
+    }
+    bus { subscribe UsageToTell as on_usage; }
+
+    birth() {
+        self.client.url = self.url;
+        self.client.user = self.user;
+        self.client.name = "voice-api";
+        self.client.timeout = self.timeout;
+        self.credential = std::secret::Credential { vault: self.vault };
+    }
+
+    /// An event to tell: queued, the oldest dropped when the queue is full.
+    @unbounded
+    fn on_usage(e: UsageEvent) {
+        if len(self.url) == 0 { return; }
+        if self.queued >= self.capacity {
+            self.head = (self.head + 1) % self.capacity;
+            self.queued = self.queued - 1;
+            self.dropped = self.dropped + 1;
+            self.say_drops(std::time::monotonic_ns());
+        }
+        let slot = (self.head + self.queued) % self.capacity;
+        if slot < self.ring.len() { self.ring.set(slot, e) or discard; } else { self.ring.push(e); }
+        self.queued = self.queued + 1;
+    }
+
+    // The loop does not watch `self.draining`: a program that reads it
+    // waits out the drain's whole grace on a signal, since the api's HTTP
+    // server does not end on it (FRICTION.md). The process ends by the
+    // signal, and events not told yet go with it.
+    run() {
+        while true {
+            let now = std::time::monotonic_ns();
+            self.say_drops(now);
+            if self.queued > 0 && now >= self.retry_at_ns {
+                self.tell_one(now);
+            } else {
+                // between events the bus hands new ones over here
+                std::time::sleep(20ms);
+            }
+        }
+    }
+
+    /// The running total of drops, logged when it has grown, at most once
+    /// a second.
+    fn say_drops(now: Int) {
+        if self.dropped == self.dropped_said || now - self.dropped_said_ns < 1000000000 { return; }
+        log_warn(
+            "usage events dropped: the organization's nerves are not taking them",
+            fields2(
+                std::log::kv("dropped_total", to_string(self.dropped)),
+                std::log::kv("queued", to_string(self.queued)),
+            ),
+        );
+        self.dropped_said = self.dropped;
+        self.dropped_said_ns = now;
+    }
+
+    /// The oldest event, told: dropped from the queue once the stream has
+    /// it, kept for the next try otherwise.
+    fn tell_one(now: Int) {
+        let e = self.ring.get(self.head) or UsageEvent {
+            id: "",
+            created_at: `1970-01-01T00:00:00Z`,
+            project: "",
+            key: "",
+            requested_model: "",
+            served_model: "",
+            endpoint: "",
+            status: "",
+            data_class: "",
+            seat: "",
+            account: "",
+            price_micros: 0,
+            currency: "",
+            wall_ms: 0,
+        };
+        if !self.connected {
+            if !self.client.open_as(self.credential) {
+                self.failed(now, "could not connect: " + self.client.last_error);
+                return;
+            }
+            self.connected = true;
+        }
+        let ack = nats::js_publish_id(
+            self.client,
+            self.org + "." + USAGE_SUBJECT,
+            e.id,
+            std::bytes::from_string(UsageEvent::api_encode(e)),
+        ) or nats::PubAck { seq: -1 };
+        if ack.seq < 0 {
+            self.client.close();
+            self.connected = false;
+            self.failed(now, "the stream did not take an event: " + self.client.last_error);
+            return;
+        }
+        self.head = (self.head + 1) % self.capacity;
+        self.queued = self.queued - 1;
+        self.told = self.told + 1;
+        self.backoff_ms = 0;
+        if len(self.trouble) > 0 {
+            log_info(
+                "usage events are told again",
+                fields2(
+                    std::log::kv("queued", to_string(self.queued)),
+                    std::log::kv("dropped_total", to_string(self.dropped)),
+                ),
+            );
+            self.trouble = "";
+        }
+    }
+
+    fn failed(now: Int, why: String) {
+        self.backoff_ms = if self.backoff_ms == 0 { 50 } else { self.backoff_ms * 2 };
+        if self.backoff_ms > 5000 { self.backoff_ms = 5000; }
+        self.retry_at_ns = now + self.backoff_ms * 1000000;
+        if why != self.trouble {
+            log_warn(
+                "usage events are not told: " + why,
+                fields2(
+                    std::log::kv("queued", to_string(self.queued)),
+                    std::log::kv("retry_ms", to_string(self.backoff_ms)),
+                ),
+            );
+            self.trouble = why;
+        }
+    }
+}

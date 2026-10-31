@@ -5,9 +5,9 @@
 // assembled by semantic capability: `Journal` (ordered append with an
 // expected revision, idempotency, durable identity), `Coordination`
 // (leases with fencing tokens), and a rebuildable `RetrievalIndex`.
-// Two implementations of each: in-memory (tests), and the record's git
-// chain `refs/dna/journal` (GH #566 F1; record.hl) — one commit per
-// event, git's DAG as the chain — using only stdlib and subprocesses.
+// Two implementations of each: in-process (tests), and the record in
+// memory (GH #1590; memory_record.hl) — one chain of rows, each naming
+// the digest of the one before it.
 
 type Event {
     seq: Int = 0;
@@ -77,7 +77,9 @@ fn hex(b: Bytes) -> String {
 }
 
 fn event_digest(prev: String, kind: String, entity: String, body: String) -> String {
-    return hex(std::crypto::sha256(std::bytes::from_string(prev + "|" + kind + "|" + entity + "|" + body)));
+    return hex(
+        std::crypto::sha256(std::bytes::from_string(prev + "|" + kind + "|" + entity + "|" + body)),
+    );
 }
 
 @form(vec)
@@ -95,7 +97,9 @@ locus MemJournal {
     fn revision() -> Int { return self.rows.len(); }
     fn refresh() -> Bool { return false; }
     // In memory every append is already exact.
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.append(expected, kind, entity, body);
+    }
     fn head() -> String {
         if self.rows.len() == 0 { return "genesis"; }
         let e = self.rows.get(self.rows.len() - 1) or Event { };
@@ -105,12 +109,25 @@ locus MemJournal {
     // revision cannot both advance the same entity from the same state.
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         let prev = self.head();
-        self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: event_digest(prev, kind, entity, body) });
+        self.rows.push(
+            Event {
+                seq: rev,
+                kind: kind,
+                entity: entity,
+                body: body,
+                prev: prev,
+                digest: event_digest(prev, kind, entity, body),
+            },
+        );
         return AppendResult { ok: true, revision: rev + 1 };
     }
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return append_rows(self, expected, rows);
+    }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
 }
@@ -128,8 +145,8 @@ fn chain_ok(rows: EventRows) -> Bool {
     return true;
 }
 
-// The git-backed `GitJournal`, `GitReceipts` and `GitLeases` live in
-// record.hl, over the `Record` interface (GH #646 stage 0).
+// The record kept in memory (`RecordJournal`, `MemoryReceipts`, the leases in
+// `MemoryLeases`) lives in memory_record.hl and memory_spine.hl (GH #1590).
 
 fn ref_safe(key: String) -> String {
     let mut out = "";
@@ -149,6 +166,9 @@ interface Receipts {
     fn read(digest: String) -> String; // "" when absent
     // Remove a body (GH #606 redaction); true when it is gone.
     fn erase(digest: String) -> Bool;
+    // Whether a redaction erased the body under `digest` (a store that
+    // keeps no tombstone answers false).
+    fn redacted(digest: String) -> Bool;
     fn kind() -> String;
 }
 
@@ -156,6 +176,7 @@ interface Receipts {
 locus FileReceipts {
     params { dir: String = ".hale/dna/evidence"; stored: Int = 0; }
     fn kind() -> String { return "file"; }
+    fn redacted(digest: String) -> Bool { return false; }
     fn store(text: String) -> String {
         let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
         std::io::fs::mkdir(self.dir) or discard;
@@ -163,7 +184,9 @@ locus FileReceipts {
         self.stored = self.stored + 1;
         return digest;
     }
-    fn read(digest: String) -> String { return std::io::fs::read_file(self.dir + "/" + digest + ".txt") or ""; }
+    fn read(digest: String) -> String {
+        return std::io::fs::read_file(self.dir + "/" + digest + ".txt") or "";
+    }
     fn erase(digest: String) -> Bool {
         std::io::fs::unlink(self.dir + "/" + digest + ".txt") or discard;
         return len(self.read(digest)) == 0;
@@ -202,7 +225,13 @@ locus MemLeases {
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
         let cur = self.rows.get(key) or Lease { };
         if cur.present && cur.expires > now && cur.holder != holder {
-            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+            return Lease {
+                key: key,
+                holder: cur.holder,
+                token: 0,
+                expires: cur.expires,
+                present: false,
+            };
         }
         let t = self.next_token;
         self.next_token = self.next_token + 1;
@@ -216,7 +245,9 @@ locus MemLeases {
         let cur = self.rows.get(key) or Lease { };
         if !cur.present { return false; }
         if cur.token != token { return false; }
-        self.rows.set(Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false });
+        self.rows.set(
+            Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false },
+        );
         return true;
     }
     fn holder_of(key: String) -> String {
@@ -260,8 +291,8 @@ fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
 // it is the ownership as of that revision, and an exact append at that
 // revision validates ownership atomically with the write: a takeover is
 // a row, it moves the revision, and a stale holder's exact append fails
-// and is decided again. The cell leases above (`MemLeases`,
-// `GitLeases`) stay for what they hold; a committer whose every write
+// and is decided again. The cell leases above (`MemLeases`, and
+// memory's `MemoryLeases`) stay for what they hold; a committer whose every write
 // must be fenced holds its lease here.
 
 fn lease_row(token: Int, holder: String, expires: Int) -> String {
@@ -286,7 +317,13 @@ fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
         if e.entity == key && e.kind == "lease.taken" {
             let token = std::json::find_int_field(e.body, "token");
             if token > l.token {
-                l = Lease { key: key, holder: std::json::find_string_field(e.body, "holder"), token: token, expires: std::json::find_int_field(e.body, "expires"), present: true };
+                l = Lease {
+                    key: key,
+                    holder: std::json::find_string_field(e.body, "holder"),
+                    token: token,
+                    expires: std::json::find_int_field(e.body, "expires"),
+                    present: true,
+                };
             }
         }
         i = i + 1;
@@ -295,7 +332,10 @@ fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
     i = 0;
     while i < rev {
         let e = j.read(i);
-        if e.entity == key && std::json::find_int_field(e.body, "token") == l.token && std::json::find_string_field(e.body, "holder") == l.holder {
+        if e.entity == key
+            && std::json::find_int_field(e.body, "token") == l.token
+            && std::json::find_string_field(e.body, "holder") == l.holder
+        {
             if e.kind == "lease.renewed" {
                 let expires = std::json::find_int_field(e.body, "expires");
                 if expires > l.expires { l.expires = expires; }
@@ -327,12 +367,28 @@ fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Le
         let rev = j.revision();
         let cur = lease_at(j, key, rev);
         if cur.present && cur.expires > now && cur.holder != holder {
-            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+            return Lease {
+                key: key,
+                holder: cur.holder,
+                token: 0,
+                expires: cur.expires,
+                present: false,
+            };
         }
         let token = cur.token + 1;
         let w = j.append_exact(rev, "lease.taken", key, lease_row(token, holder, now + ttl));
-        if w.ok { return Lease { key: key, holder: holder, token: token, expires: now + ttl, present: true }; }
-        if w.error != "stale_revision" && w.error != "claimed" { return Lease { key: key, holder: cur.holder, present: false }; }
+        if w.ok {
+            return Lease {
+                key: key,
+                holder: holder,
+                token: token,
+                expires: now + ttl,
+                present: true,
+            };
+        }
+        if w.error != "stale_revision" && w.error != "claimed" {
+            return Lease { key: key, holder: cur.holder, present: false };
+        }
     }
     return Lease { key: key, present: false };
 }

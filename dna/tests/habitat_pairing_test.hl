@@ -1,0 +1,475 @@
+// dna/tests/habitat_pairing_test.hl — an agent pairs with a person on the
+// habitat over MCP (phase 4).
+//
+// The head serves `HeadCommands` over `mcp::Rpc` beside its socket and its
+// commands port, under the same bearer source and the same roles. The stub
+// provider serves in this process; a record is grafted from the test's
+// habitat and taken under OIDC, ada seated at the Board and bob at a position
+// that is not it. The composed head (the habitat's API child) starts on it
+// and reports the MCP port it got. `hale mcp --app`, the bridge an agent's
+// host runs, connects under ada's ID token: the tools are the rows ada may
+// call, a read answers the habitat's hosts, and an act (`add_host`, the
+// Board's) lands as a row in ada's name. The host is a machine of the
+// fixture's own, an sshd in a container on the loopback, as
+// habitat_hosts_test's is: added, it answers with its host key and is
+// `pending-key` until the habitat's key is authorized there, which this
+// fixture does not need. bob's act is refused at the row, over MCP exactly
+// as over the commands port the face's session reaches, and nothing lands.
+// Without docker compose nothing here is exercised. The brief (`Commands::brief`, and `hale habitat brief` on
+// the head's socket) answers the live state: the host, the allocation with
+// its pulse, the organism, the sapling and the revision waiting for the
+// Board; a canary secret planted in the vault never appears in it.
+
+import "../core" as dna;
+import "../api" as api;
+import "../operations" as ops;
+import "../oidc" as oidc;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The composed head, the habitat's API child, built out of the tree.
+fn head_binary() -> String {
+    if std::env::var_exists("HALE_NATIVE_HEAD_API")
+        && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API"))
+    {
+        return std::env::var("HALE_NATIVE_HEAD_API");
+    }
+    let out = dna::scratch_root("pairing-head") + "/practice_review";
+    let built = dna::run_tool(
+        toolchain() + "\nbuild\n" + source() + "/dna/api/practice_review\n-o\n" + out,
+    );
+    std::test::assert_eq_int(built.code, 0, "the head builds: " + built.stderr);
+    return out;
+}
+
+// One session of `hale mcp --app` against the head's MCP port under
+// `bearer`: the JSON-RPC `lines` in, one answer a line out.
+fn mcp(port: Int, bearer: String, lines: String, scratch: String) -> String {
+    let input = scratch + "/mcp.in";
+    std::io::fs::write_file(input, lines) or discard;
+    let r = dna::run_tool_timeout(
+        120,
+        "sh\n-c\nHALE_API_TOKEN=\"$3\" exec \"$1\" mcp --app \"$2\" <\"$4\"\nsh\n" + toolchain()
+            + "\nmcp://127.0.0.1:" + to_string(port) + "\n" + bearer + "\n" + input,
+    );
+    std::io::fs::unlink(input) or discard;
+    return r.stdout + r.stderr;
+}
+
+fn call_line(id: Int, tool: String, arguments: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + to_string(id)
+        + ",\"method\":\"tools/call\",\"params\":{\"name\":\"" + tool + "\",\"arguments\":"
+        + arguments + "}}\n";
+}
+
+const OPEN_SESSION: String = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
+
+// One call on the head's commands port, as the face's session reaches it:
+// `POST /call/<member>` under a bearer.
+fn post(
+    commands: String,
+    member: String,
+    payload: String,
+    bearer: String,
+    scratch: String
+) -> dna::RunResult {
+    let body = scratch + "/call.body";
+    std::io::fs::write_file(body, payload) or discard;
+    let r = dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer " + bearer
+            + "\n--data-binary\n@" + body + "\n" + commands + "call/" + member,
+    );
+    std::io::fs::unlink(body) or discard;
+    return r;
+}
+
+fn last_of(s: String, c: String) -> Int {
+    let mut i = len(s) - 1;
+    while i >= 0 { if s[i..(i + 1)] == c { return i; } i = i - 1; }
+    return -1;
+}
+
+fn status_of(r: dna::RunResult) -> String {
+    let t = dna::trim_nl(r.stdout);
+    let nl = last_of(t, "\n");
+    return if nl < 0 { t } else { t[(nl + 1)..len(t)] };
+}
+
+// The rows of `kind` in `repo`'s record and who wrote each, one
+// `<entity> by <author>` a line.
+@bounded_by(repo)
+fn written(repo: String, kind: String) -> String {
+    let j = dna::RecordJournal { repo: repo };
+    let moved = j.refresh();
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind { out = out + e.entity + " by " + j.author_of(i) + "\n"; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The machine: habitat_hosts_test's sshd, the same image.
+fn sshd_files(dir: String) {
+    std::io::fs::write_file(
+        dir + "/Dockerfile",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/docker.sh",
+        "#!/bin/sh\nif [ -z \"$DOCKER_API_VERSION\" ]; then\n  max=\"$(/usr/bin/docker version 2>&1 | sed -n 's/.*Maximum supported API version is \\([0-9.]*\\).*/\\1/p' | head -n 1)\"\n  [ -n \"$max\" ] && export DOCKER_API_VERSION=\"$max\"\nfi\nexec /usr/bin/docker \"$@\"\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/entry.sh",
+        "set -e\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nDOCKER_GID=\"$(stat -c %g /var/run/docker.sock 2>/dev/null || echo \"${DOCKER_GID:-0}\")\"\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+    ) or discard;
+}
+
+fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: String) -> String {
+    return "services:\n  sshd:\n    build: .\n    image: hale-dna-test-sshd:1\n    environment:\n      HOST_UID: \""
+        + uid + "\"\n      HOST_HOME: \"" + home + "\"\n      DOCKER_GID: \"" + gid
+        + "\"\n    ports: [\"127.0.0.1:" + to_string(port) + ":22\"]\n    volumes:\n      - \""
+        + socket + ":/var/run/docker.sock\"\n      - \"" + home + ":" + home + "\"\n";
+}
+
+main locus App {
+    params {
+        issuer: String = "";
+        head: std::process::Child = std::process::Child { };
+        server: std::http::Server = std::http::Server { port: 1, handler: oidc::StubIssuer { } };
+    }
+    placement { server: cooperative(pool = io); }
+    dissolve() { if self.head.pid > 0 { std::process::kill(self.head) or discard; } }
+    fn log(repo: String) -> String {
+        return std::io::fs::read_file(repo + "/.hale/head.log") or "";
+    }
+    // the waits below grow by a line per probe, until the deadline
+    @bounded_by(deadline)
+    run() {
+        if dna::run_tool("docker\ncompose\nversion").code != 0 {
+            eprintln("habitat_pairing_test: not exercised (docker compose is not on PATH)");
+            return;
+        }
+        let endpoint = dna::trim_nl(
+            dna::run_tool("docker\ncontext\ninspect\n--format\n{{.Endpoints.docker.Host}}").stdout,
+        );
+        if !std::str::starts_with(endpoint, "unix://") {
+            eprintln(
+                "habitat_pairing_test: not exercised (the docker daemon is not on a unix socket)",
+            );
+            return;
+        }
+        let docker_socket = if std::io::fs::file_exists("/proc/version") {
+            endpoint[7..len(endpoint)]
+        } else {
+            "/var/run/docker.sock"
+        };
+        let scratch = dna::scratch_root("habitat-pairing");
+        dna::reap_on_exit(scratch);
+
+        // ---- the machine the Board's act adds: an sshd on the loopback
+        let ssh_port = dna::free_port(1);
+        let sshd = scratch + "/sshd";
+        let home = scratch + "/home";
+        std::io::fs::mkdir(sshd) or discard;
+        std::io::fs::mkdir(home) or discard;
+        sshd_files(sshd);
+        let uid = dna::trim_nl(dna::run_tool("id\n-u").stdout);
+        let gid = dna::trim_nl(dna::run_tool("stat\n-c\n%g\n" + docker_socket).stdout);
+        std::io::fs::write_file(
+            sshd + "/compose.yaml",
+            sshd_compose(ssh_port, home, docker_socket, uid, gid),
+        ) or discard;
+        let compose = "docker\ncompose\n-p\ndna-pairing-" + to_string(std::process::pid())
+            + "\n--project-directory\n" + sshd;
+        let sshd_up = dna::run_tool_timeout(600, compose + "\nup\n-d\n--build");
+        std::test::assert_eq_int(sshd_up.code, 0, "the machine's sshd is up: " + sshd_up.stderr);
+        let mut answered = false;
+        let mut tries = 0;
+        while !answered && tries < 60 {
+            answered = len(dna::ssh_host_key("localhost", ssh_port)) > 0;
+            if !answered { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(answered, "the machine answers SSH on " + to_string(ssh_port));
+
+        let made = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec env HALE_DNA_HABITAT=\"$3\" \"$2\" habitat graft app\nsh\n"
+                + scratch + "\n" + toolchain() + "\n" + dna::test_habitat(),
+        );
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
+        let repo = scratch + "/app";
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory");
+        let identity = dna::MemoryRecord { repo: repo }.identity();
+
+        // ---- under OIDC: ada at the Board, bob at a position that is not
+        // it; this account is ada on the socket
+        let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member ada-sub=ada && git config --local --add dna.oidc.member bob-sub=bob && git config --local dna.oidc.key \"$3\" && git config --local --replace-all dna.unix.member \"uid:$4=ada\"\nsh\n"
+            + repo + "\n" + self.issuer + "\n" + oidc::STUB_SPKI + "\n"
+            + to_string(std::process::uid());
+        std::test::assert_eq_int(dna::run_tool(cfg).code, 0, "the record's OIDC configuration");
+        let as_ada = dna::RecordJournal { repo: repo, author: "ada" };
+        std::test::assert(
+            as_ada.append(as_ada.revision(), "note.kept", "n-ada", "ada was here").ok,
+            "ada is a person the record knows",
+        );
+        let as_bob = dna::RecordJournal { repo: repo, author: "bob" };
+        std::test::assert(
+            as_bob.append(as_bob.revision(), "note.kept", "n-bob", "bob was here").ok,
+            "and so is bob",
+        );
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: repo },
+            ledger: dna::MemoryLedger { repo: repo },
+        };
+        let board = ops::GraphEdge { kind: "holds" };
+        board.member("position", "position:board");
+        board.member("holder", "ada");
+        let agent = ops::GraphEdge { kind: "holds" };
+        agent.member("position", "position:agent");
+        agent.member("holder", "bob");
+        std::test::assert(
+            j.append(j.revision(), "graph.edge", board.id(), board.body()).ok
+                && j.append(j.revision(), "graph.edge", agent.id(), agent.body()).ok,
+            "ada holds the Board, bob position:agent",
+        );
+
+        // ---- the habitat's live state, as its acts write it
+        let state = dna::RecordJournal { repo: repo, author: "habitat" };
+        let rows = state.append(
+            state.revision(),
+            "habitat.host",
+            "box-1",
+            "{\"name\":\"box-1\",\"provider\":\"ssh\",\"offers\":\"docker compose\"}",
+        ).ok
+            && state.append(
+                state.revision(),
+                "habitat.allocated",
+                "voice/model",
+                "{\"organism\":\"voice\",\"role\":\"model\",\"provider\":\"ssh\",\"host\":\"box-1\",\"service\":\"\",\"address\":\"\",\"vault\":\"habitat-canary\"}",
+            ).ok
+            && state.append(
+                state.revision(),
+                "habitat.grafted",
+                "voice",
+                "{\"name\":\"voice\",\"face\":\"\",\"head\":\"\"}",
+            ).ok
+            && state.append(
+                state.revision(),
+                "habitat.sapling",
+                "voice",
+                "{\"purpose\":\"a model gateway\",\"repo\":\"https://example.invalid/voice\",\"revision\":\"rev-one\",\"digest\":\"sha256:aa\",\"nursery\":\"toolchain\",\"packs\":[]}",
+            ).ok
+            && state.append(
+                state.revision(),
+                "habitat.sapling.proposed",
+                "voice",
+                "{\"revision\":\"rev-two\",\"digest\":\"sha256:bb\"}",
+            ).ok;
+        std::test::assert(rows, "the habitat's rows are written");
+        // a canary in the vault, under the slot the allocation names
+        let canary = "canary-" + to_string(std::process::pid()) + "-"
+            + to_string(std::time::now());
+        let planted = dna::run_tool(
+            "sh\n-c\numask 077 && mkdir -p \"$1\" && printf %s \"$2\" >\"$1/habitat-canary\"\nsh\n"
+                + std::secret::vault_local_dir() + "\n" + canary,
+        );
+        std::test::assert_eq_int(planted.code, 0, "the canary is planted: " + planted.stderr);
+        std::io::fs::write_file(
+            repo + "/.hale/dna/authority.json",
+            "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + identity
+                + "\",\"grants\":[{\"mode\":\"oidc\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}",
+        ) or discard;
+
+        // ---- the head: every port the system's, reported
+        let ports = repo + "/.hale/api.ports";
+        let socket = scratch + "/head.sock";
+        let argv = "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API_PORTS=\"$1/.hale/api.ports\" HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" HALE_DNA_RPC_SOCKET=\"$4\" && unset HALE_DNA_COMMANDS_PORT HALE_DNA_TRUSTED_LOCAL HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n"
+            + repo + "\n" + head_binary() + "\n0\n" + socket;
+        let child = std::process::spawn(argv) or std::process::Child { };
+        self.head = std::process::Child {
+            argv: argv,
+            pid: child.pid,
+            stdin_fd: child.stdin_fd,
+            stdout_fd: child.stdout_fd,
+            stderr_fd: child.stderr_fd,
+        };
+        child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
+        let watched = dna::run_tool(
+            "sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n"
+                + to_string(std::process::pid()) + "\n" + to_string(self.head.pid),
+        );
+        let deadline = std::time::now() + dna::wait_secs(60);
+        let mut commands_port = 0;
+        let mut mcp_port = 0;
+        let mut announced = false;
+        while !announced && std::time::now() < deadline {
+            commands_port = api::port_in(ports, "commands");
+            mcp_port = api::port_in(ports, "mcp");
+            announced = mcp_port > 0
+                && std::str::contains(
+                    self.log(repo),
+                    "hale dna api: mcp mcp://127.0.0.1:" + to_string(mcp_port),
+                );
+            if !announced {
+                let exited = std::process::try_wait(self.head) or - 1;
+                std::test::assert_eq_int(
+                    exited,
+                        -2,
+                    "the head exited before it listened: " + self.log(repo),
+                );
+                std::time::sleep(200ms);
+            }
+        }
+        std::test::assert(
+            announced && commands_port > 0,
+            "the head reports and announces its MCP port beside its commands port: "
+                + self.log(repo),
+        );
+        let commands = "http://127.0.0.1:" + to_string(commands_port) + "/";
+        let ada = oidc::stub_id_token(self.issuer, "dna-local", "ada-sub", "", 600);
+        let bob = oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600);
+        let add_host = "{\"name\":\"localhost\",\"user\":\"hale\",\"port\":" + to_string(ssh_port)
+            + "}";
+
+        // ---- ada, over MCP: the tools are her rows; a read, then the Board's act
+        let session = mcp(
+            mcp_port,
+            ada,
+            OPEN_SESSION + call_line(3, "Commands__hosts", "{\"limit\":50}")
+                + call_line(4, "Commands__add_host", add_host),
+            scratch,
+        );
+        std::test::assert(
+            std::str::contains(session, "\"protocolVersion\"")
+                && std::str::contains(session, "\"name\":\"Commands__hosts\"")
+                && std::str::contains(session, "\"name\":\"Commands__add_host\"")
+                && std::str::contains(session, "\"name\":\"Commands__brief\""),
+            "ada's tools are the head's rows, the Board's among them: " + session + "\n"
+                + self.log(repo),
+        );
+        std::test::assert(
+            std::str::contains(session, "box-1"),
+            "the read answers the habitat's hosts: " + session,
+        );
+        std::test::assert(
+            (
+                std::str::contains(session, "\\\"ok\\\":true")
+                    || std::str::contains(session, "\"ok\":true")
+            )
+                && std::str::contains(session, "pending-key"),
+            "the act is admitted: the machine is a host, pending its key: " + session,
+        );
+        std::test::assert_eq_str(
+            written(repo, "habitat.host"),
+            "box-1 by habitat\nlocalhost by ada\n",
+            "the act is a row in ada's name",
+        );
+
+        // ---- bob, over MCP and over the commands port: refused at the row
+        let bobs = mcp(
+            mcp_port,
+            bob,
+            OPEN_SESSION + call_line(3, "Commands__add_host", add_host),
+            scratch,
+        );
+        std::test::assert(
+            std::str::contains(bobs, "\"name\":\"Commands__brief\"")
+                && !std::str::contains(bobs, "\"name\":\"Commands__add_host\""),
+            "bob's tools are his rows: no Board act among them: " + bobs,
+        );
+        std::test::assert(
+            std::str::contains(bobs, "-32005")
+                && std::str::contains(bobs, "unauthorized")
+                && std::str::contains(bobs, "owner"),
+            "bob's act is refused unauthorized, naming the role it requires: " + bobs,
+        );
+        let faced = post(
+            commands,
+            "Commands::add_host",
+            add_host,
+            bob,
+            scratch,
+        );
+        std::test::assert(
+            status_of(faced) == "403"
+                && std::str::contains(faced.stdout, "\"kind\":\"unauthorized\"")
+                && std::str::contains(faced.stdout, "\"requires\":[\"owner\"]"),
+            "and so it is where the face's session reaches: " + faced.stdout,
+        );
+        std::test::assert_eq_str(
+            written(repo, "habitat.host"),
+            "box-1 by habitat\nlocalhost by ada\n",
+            "nothing of bob's lands",
+        );
+
+        // ---- the brief: the live state, and no secret
+        let asked = mcp(
+            mcp_port,
+            ada,
+            OPEN_SESSION + call_line(3, "Commands__brief", "{}"),
+            scratch,
+        );
+        let printed = dna::run_tool(
+            "sh\n-c\nHALE_DNA_RPC_SOCKET=\"$2\" exec \"$1\" habitat brief\nsh\n" + toolchain()
+                + "\n" + socket,
+        );
+        std::test::assert_eq_int(
+            printed.code,
+            0,
+            "hale habitat brief answers: " + printed.stdout + printed.stderr,
+        );
+        let brief = printed.stdout;
+        std::test::assert(
+            std::str::contains(brief, "pairing with ada")
+                && std::str::contains(brief, "position:board")
+                && std::str::contains(brief, "box-1")
+                && std::str::contains(brief, "voice/model: model of voice on box-1")
+                && std::str::contains(brief, "- voice: ")
+                && std::str::contains(brief, "voice at rev-one")
+                && std::str::contains(brief, "revision rev-two filed"),
+            "the brief has the hosts, the allocation with its pulse, the organism, the sapling and what waits for the Board: "
+                + brief,
+        );
+        std::test::assert(
+            std::str::contains(asked, "box-1") && std::str::contains(asked, "rev-two"),
+            "an MCP client asks the same row: " + asked,
+        );
+        std::test::assert(
+            !std::str::contains(brief, canary) && !std::str::contains(asked, canary),
+            "no vault value is in the brief",
+        );
+
+        if self.head.pid > 0 { std::process::kill(self.head) or discard; }
+        self.head.pid = -1;
+        dna::run_tool(compose + "\ndown\n-v");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() {
+    let port = dna::free_port(81);
+    let url = "http://127.0.0.1:" + to_string(port);
+    App {
+        issuer: url,
+        server: std::http::Server {
+            host: "127.0.0.1",
+            port: port,
+            handler: oidc::StubIssuer { base: url, secret: "habitat-pairing-test-secret" },
+        },
+    };
+}

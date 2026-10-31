@@ -18,7 +18,7 @@
 // The environment a part is told its port in; 0 serves nothing.
 const SENSES_PORT_ENV: String = "HALE_DNA_SENSES_PORT";
 // What each part serves on when its environment names no port: the
-// ports the seed's store scrapes (dna/senses.yml, written by `init`).
+// ports the organism's senses' store scrapes (its allocation's senses.yml in the local habitat).
 const SENSES_PORT_SPINE: Int = 9464;
 const SENSES_PORT_NODE: Int = 9465;
 const SENSES_PORT_HEAD: Int = 9466;
@@ -26,7 +26,9 @@ const SENSES_PORT_HEAD: Int = 9466;
 // The port `part` serves its readings on: the environment's, else the
 // seed's for that part.
 fn senses_port_of(part: String) -> Int {
-    if std::env::var_exists(SENSES_PORT_ENV) { return std::str::parse_int(std::env::var(SENSES_PORT_ENV)) or 0; }
+    if std::env::var_exists(SENSES_PORT_ENV) {
+        return std::str::parse_int(std::env::var(SENSES_PORT_ENV)) or 0;
+    }
     if part == "spine" { return SENSES_PORT_SPINE; }
     if part == "node" { return SENSES_PORT_NODE; }
     if part == "head" { return SENSES_PORT_HEAD; }
@@ -56,16 +58,28 @@ locus Senses {
         registry: std::metrics::Registry = std::metrics::Registry { namespace: "dna" };
     }
     on_failure(s: std::http::Server, err: ClosureViolation) {
-        eprintln("dna senses: the ", self.part, " cannot serve its readings on port ", to_string(self.port), "; it runs unread");
+        eprintln(
+            "dna senses: the ",
+            self.part,
+            " cannot serve its readings on port ",
+            to_string(self.port),
+            "; it runs unread",
+        );
     }
     run() {
         if self.port <= 0 { return; }
-        std::http::Server { host: senses_host(), port: self.port, handler: std::metrics::Endpoint { registry: self.registry } };
+        std::http::Server {
+            host: senses_host(),
+            port: self.port,
+            handler: std::metrics::Endpoint { registry: self.registry },
+        };
     }
 }
 
 // The labels every series of `part` starts from.
-fn part_labels(part: String) -> std::metrics::Labels { return std::metrics::labels_one("part", part); }
+fn part_labels(part: String) -> std::metrics::Labels {
+    return std::metrics::labels_one("part", part);
+}
 
 // Seconds since the epoch, as a gauge holds them: a part's pulse.
 fn senses_now() -> Float { return std::math::int_to_float(std::time::now()); }

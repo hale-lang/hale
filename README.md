@@ -24,7 +24,8 @@
   <a href="https://hale-lang.org/playground">Playground</a> ·
   <a href="https://hale-lang.org/packages">Packages</a> ·
   <a href="https://hale-lang.org/features">Features</a> ·
-  <a href="https://hale-lang.org/glossary">Glossary</a>
+  <a href="https://hale-lang.org/glossary">Glossary</a> ·
+  <a href="https://discord.gg/qRasZt5gAq">Discord</a>
 </p>
 
 Hale is a compiled, general-purpose language. Every piece of state has one
@@ -102,7 +103,7 @@ further out — composing certified artifacts rather than source-level loci.
 | **service** | `topic`, `bus`, `placement` | bus topology, causal reach, dependency sets |
 | **application** | `main locus` + `claims` | named law over the assembled graph, answered with a countermodel |
 | **environment** | `constitution` × entrypoint | one authored claimset, proven in every world that adopts it |
-| **fleet** | a plan: instances + routes | law across separately compiled binaries, signed and attested |
+| **fleet** | a fleet seed: instances, bindings, claims | law across separately compiled binaries, signed |
 
 Each closure emits evidence the next one composes, and the direction of
 uncertainty is fixed at every scale: it may add a path, never erase one.
@@ -363,32 +364,42 @@ can never replace one, so weakening isn't rejected, it's unexpressible.
 and `hale check --matrix` proves every (entrypoint × environment) pair: where an entrypoint listed in *no* environment is an error, not a skip.
 
 One scale further out, a **fleet** is a deployed arrangement of separately
-compiled binaries. Each application emits a byte-reproducible topology
-artifact; a plan names the deployed instances and the routes between them;
-`hale fleet check` composes the artifacts, never merged source, and proves
-law no single binary can state:
+compiled binaries. A fleet seed declares one as a `fleet locus`: its
+instances (other seeds' mains), where each runs by default, the topics that
+wire them and the law across them. `hale fleet check` cuts each instance's
+byte-reproducible topology artifact from its seed, derives the routes, and
+composes the artifacts, never merged source, to prove law no single binary
+can state:
+
+```hale
+fleet locus Prod {
+    params { prober: pr::Prober; oms: om::Oms; gw: g::Gateway; }
+    bindings { t::OrderIntent: unix("/run/intent.sock"); t::OrderRequest: unix("/run/orders.sock"); }
+    claims { orders_pass_oms: forbid reaches(prober, gw) avoiding oms; }
+}
+```
 
 ```sh
-hale check apps/oms --dump-topology=artifacts/oms.json
-hale fleet check prod.plan.json --trust ops.pub.pem
+hale fleet check fleets/prod --trust ops.pub.pem
 ```
 
 ```text
 fleet claim `orders_pass_oms` violated — witness:
   prober-0::Probe::submit  [prober/main.hl]
-  -(route `bypass`)->
+  -(route `t::OrderRequest`)->
   gw-0::Gateway::on_order  [gw/main.hl]
 ```
 
 Both components check clean alone; only the deployment is wrong. Matching
-topic declarations connect nothing, **only an explicit route creates a
+topic declarations connect nothing, **only a fleet's binding creates a
 fleet edge**, because an unbound topic is in-process by default, and
 merging source would invent edges no deployment has.
 
-Signing carries the certificate the rest of the way. `hale fleet
-keygen | sign | attest` produce ES256 signatures over an artifact's exact
-bytes and pin each instance's binary digest; declaring trust roots is
-strict, so an unsigned component is refused rather than admitted. It
+Signing carries the certificate the rest of the way. `hale fleet keygen |
+sign` produce ES256 signatures over the fleet's deployment rows (each
+instance's seed, host and component shape, the routes, the claims), which
+re-derive byte for byte from the source; declaring trust roots is strict,
+so unsigned or changed rows are refused rather than admitted. It
 certifies provenance and integrity, never behavior, but it means the
 fleet that runs is the fleet that was certified.
 

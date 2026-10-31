@@ -42,7 +42,12 @@ fn orphan_in_session(mark: String, dir: String) -> String {
     // access tty; job control turned off"), leaving the tool in its
     // leader's group (GH #1062, the machines it could not run on).
     let inner = "exec </dev/null >/dev/null 2>&1; echo $$ > \"$1\"; env HALE_DNA_BODY=\"$3\" perl -e 'setpgrp(0, 0) or die \"setpgrp: $!\\n\"; exec @ARGV or die \"exec: $!\\n\"' \"$4\" \"$2\" & exit 0";
-    let started = dna::run_tool(dna::in_new_session("sh\n-c\n" + inner + "\nsh\n" + dir + "/leader.pid\n" + dir + "/orphan.pid\n" + mark + "\n" + tool));
+    let started = dna::run_tool(
+        dna::in_new_session(
+            "sh\n-c\n" + inner + "\nsh\n" + dir + "/leader.pid\n" + dir + "/orphan.pid\n" + mark
+                + "\n" + tool,
+        ),
+    );
     let mut tries = 0;
     while tries < 200 {
         let leader = dna::trim_nl(std::io::fs::read_file(dir + "/leader.pid") or "");
@@ -88,12 +93,25 @@ main locus App {
         // the mark is one body's: another body's does not match it, and no
         // mark is a prefix of another
         let mine = dna::body_mark("riley@srv:/srv/books", 7, 4242);
-        std::test::assert_eq_str(mine, "riley@srv:/srv/books#7#4242#", "holder, token and host pid");
-        std::test::assert(mine != dna::body_mark("riley@srv:/srv/books", 7, 42), "a host pid that starts the same is another body");
-        std::test::assert(mine != dna::body_mark("riley@srv:/srv/books", 71, 4242), "so is a token that starts the same");
+        std::test::assert_eq_str(
+            mine,
+            "riley@srv:/srv/books#7#4242#",
+            "holder, token and host pid",
+        );
+        std::test::assert(
+            mine != dna::body_mark("riley@srv:/srv/books", 7, 42),
+            "a host pid that starts the same is another body",
+        );
+        std::test::assert(
+            mine != dna::body_mark("riley@srv:/srv/books", 71, 4242),
+            "so is a token that starts the same",
+        );
 
         let scan = dna::body_scan();
-        std::test::assert(scan == "proc" || scan == "ps" || scan == "", "a scan is /proc, ps -E, or nothing: " + scan);
+        std::test::assert(
+            scan == "proc" || scan == "ps" || scan == "",
+            "a scan is /proc, ps -E, or nothing: " + scan,
+        );
 
         // a tool of this body's, already orphaned, in a group of its own
         let mark = dna::body_mark("fixture@here", 1, std::process::pid());
@@ -101,28 +119,59 @@ main locus App {
         let leader = field(got, 0);
         let orphan = field(got, 1);
         std::test::assert(alive(orphan), "the tool runs: " + got);
-        std::test::assert(dna::trim_nl(dna::run_tool("ps\n-o\nppid=\n-p\n" + orphan).stdout) != leader, "and is its dead leader's child no longer");
-        std::test::assert(dna::trim_nl(dna::run_tool("ps\n-o\npgid=\n-p\n" + orphan).stdout) != leader, "and leads a process group of its own (the fixture gives it one with perl's setpgrp: is perl on PATH?)");
+        std::test::assert(
+            dna::trim_nl(dna::run_tool("ps\n-o\nppid=\n-p\n" + orphan).stdout) != leader,
+            "and is its dead leader's child no longer",
+        );
+        std::test::assert(
+            dna::trim_nl(dna::run_tool("ps\n-o\npgid=\n-p\n" + orphan).stdout) != leader,
+            "and leads a process group of its own (the fixture gives it one with perl's setpgrp: is perl on PATH?)",
+        );
 
         // the session: found on every platform, and stopped by it
         let members = dna::session_members(leader);
-        std::test::assert(std::str::contains("\n" + members + "\n", "\n" + orphan + "\n"), "the orphaned tool is in the session its leader began: found [" + members + "], wanted " + orphan);
-        std::test::assert(!std::str::contains("\n" + dna::session_members(to_string(std::process::pid())) + "\n", "\n" + orphan + "\n"), "and in no other");
+        std::test::assert(
+            std::str::contains("\n" + members + "\n", "\n" + orphan + "\n"),
+            "the orphaned tool is in the session its leader began: found [" + members + "], wanted "
+                + orphan,
+        );
+        std::test::assert(
+            !std::str::contains(
+                "\n" + dna::session_members(to_string(std::process::pid())) + "\n",
+                "\n" + orphan + "\n",
+            ),
+            "and in no other",
+        );
         std::test::assert_eq_str(dna::session_members(""), "", "no leader finds nothing");
 
         // the mark, where this machine discloses environments
         if len(scan) == 0 {
-            std::test::assert_eq_str(dna::marked(mark), "", "a machine with no scan finds nothing by mark");
+            std::test::assert_eq_str(
+                dna::marked(mark),
+                "",
+                "a machine with no scan finds nothing by mark",
+            );
         } else {
             let found = dna::marked(mark);
-            std::test::assert(std::str::contains("\n" + found + "\n", "\n" + orphan + "\n"), "the orphaned tool is found by its mark (" + scan + "): found [" + found + "], wanted " + orphan);
-            std::test::assert_eq_str(dna::marked(dna::body_mark("nobody@nowhere", 1, 1)), "", "another body's mark finds nothing");
+            std::test::assert(
+                std::str::contains("\n" + found + "\n", "\n" + orphan + "\n"),
+                "the orphaned tool is found by its mark (" + scan + "): found [" + found
+                    + "], wanted " + orphan,
+            );
+            std::test::assert_eq_str(
+                dna::marked(dna::body_mark("nobody@nowhere", 1, 1)),
+                "",
+                "another body's mark finds nothing",
+            );
             std::test::assert_eq_str(dna::marked(""), "", "no mark finds nothing");
         }
 
         let k = dna::run_tool("kill\n-KILL\n" + dna::session_members(leader));
         std::test::assert(stopped(orphan), "and is stopped by its session");
-        std::test::assert(session_empties(leader), "nothing of that session is left: [" + dna::session_members(leader) + "]");
+        std::test::assert(
+            session_empties(leader),
+            "nothing of that session is left: [" + dna::session_members(leader) + "]",
+        );
 
         dna::scratch_done(scratch);
     }

@@ -290,6 +290,8 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             SelectorForm::Named { display, .. } => display.clone(),
             SelectorForm::SeedGlob { display, .. } => display.clone(),
             SelectorForm::Role { display, .. } => display.clone(),
+            SelectorForm::StdModule { display, .. } => display.clone(),
+            SelectorForm::Program => hale_syntax::ast::PROGRAM_GROUP.to_string(),
         };
         group_rows
             .entry(g.display.clone())
@@ -807,6 +809,9 @@ pub fn judge_all(
     for j in crate::judgment::judge_endpoints(table, model, source_bases) {
         judged.insert(j.ordinal, j);
     }
+    for j in crate::placement_claim::judge(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
     for j in crate::judgment::judge_bound(table, model, source_bases) {
         judged.insert(j.ordinal, j);
     }
@@ -1186,6 +1191,7 @@ pub fn family_adequacy(
         F::Reachability,
         F::Boundary,
         F::Endpoint,
+        F::Placement,
         F::Bound,
         F::Certificate,
         // Change 5f: a migrated family ships with its adequacy

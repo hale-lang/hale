@@ -17,19 +17,31 @@ import "../core" as dna;
 import "../operations" as ops;
 
 // The answer when there is nothing to read: the query's empty shape.
-fn show_empty(what: String) -> String { return if what == "org" { "[]" } else { "{\"processes\": [], \"meets\": [], \"runs\": []}" }; }
+fn show_empty(what: String) -> String {
+    return if what == "org" { "[]" } else { "{\"processes\": [], \"meets\": [], \"runs\": []}" };
+}
 
 // The positions whose mandate the record proposes and the Board has not
 // decided, `\n`-wrapped: a proposal of kind `mandate` is pending until a
 // ratification, a refusal or a retirement names its digest.
-fn mandates_pending(record: dna::GitJournal) -> String {
+fn mandates_pending(record: dna::RecordJournal) -> String {
     let mut asked = ""; // `<digest>\t<target>` per proposal
     let mut decided = "\n";
     let mut i = 0;
     while i < record.revision() {
         let e = record.read(i);
-        if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "mandate" { asked = asked + e.entity + "\t" + std::json::find_string_field(e.body, "target") + "\n"; }
-        if e.kind == "knowledge.ratified" || e.kind == "knowledge.declined" || e.kind == "knowledge.refused" || e.kind == "knowledge.retired" { decided = decided + e.entity + "\n"; }
+        if e.kind == "knowledge.proposed"
+            && std::json::find_string_field(e.body, "kind") == "mandate"
+        {
+            asked = asked + e.entity + "\t" + std::json::find_string_field(e.body, "target") + "\n";
+        }
+        if e.kind == "knowledge.ratified"
+            || e.kind == "knowledge.declined"
+            || e.kind == "knowledge.refused"
+            || e.kind == "knowledge.retired"
+        {
+            decided = decided + e.entity + "\n";
+        }
         i = i + 1;
     }
     let mut out = "\n";
@@ -39,45 +51,112 @@ fn mandates_pending(record: dna::GitJournal) -> String {
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let tab = std::str::index_of(line, "\t");
-        if !std::str::contains(decided, "\n" + line[0..tab] + "\n") { out = out + line[(tab + 1)..len(line)] + "\n"; }
+        if !std::str::contains(decided, "\n" + line[0..tab] + "\n") {
+            out = out + line[(tab + 1)..len(line)] + "\n";
+        }
     }
     return out;
 }
 
-fn show_answer(what: String, json: Bool, data: String, rows: Int, projected: Int, valid: Bool, pending: String) -> Answer {
-    if !json { return answer(if what == "org" { ops::show_org(data, pending) } else { ops::show_processes(data) }); }
-    return answer("{\"perspective\": \"" + what + "\", \"record_rows\": " + to_string(rows) + ", \"projected_rows\": " + to_string(projected) + ", \"stamp_valid\": " + (if valid { "true" } else { "false" }) + ", \"graph\": " + data + "}\n");
+fn show_answer(
+    what: String,
+    json: Bool,
+    data: String,
+    rows: Int,
+    projected: Int,
+    valid: Bool,
+    pending: String
+) -> Answer {
+    if !json {
+        return answer(
+            if what == "org" { ops::show_org(data, pending) } else { ops::show_processes(data) },
+        );
+    }
+    return answer(
+        "{\"perspective\": \"" + what + "\", \"record_rows\": " + to_string(rows)
+            + ", \"projected_rows\": " + to_string(projected) + ", \"stamp_valid\": "
+            + (if valid { "true" } else { "false" }) + ", \"graph\": " + data + "}\n",
+    );
 }
 
 fn show_verb(root: String, what: String, json: Bool) -> Answer {
-    if what != "org" && what != "processes" { return fail("usage: hale dna show org | processes [--json] [project]"); }
-    let record = dna::GitJournal { repo: root };
+    if what != "org" && what != "processes" {
+        return fail("usage: hale dna show org | processes [--json] [project]");
+    }
+    let record = dna::RecordJournal { repo: root, dsn_env: dna::HEAD_DSN_ENV };
     let rows = record.revision();
-    // a record with no rows has no graph, and no memory scoped to it yet
+    // a project with no record has no graph, and no memory scoped to it
+    // yet; a record this clone cannot open is said, not shown empty
     if rows == 0 {
-        eprintln("hale dna show: the record has no rows: `hale dna init` seeds it, and `hale dna sync` fetches one another clone holds");
+        // a pinned record has its first row wherever it is kept: none read
+        // is a memory that is not the record's, or none at all
+        if len(dna::record_scope(root)) > 0 {
+            let why = if record.ensure_open() {
+                "the memory reached here holds none of it"
+            } else {
+                record.last_error()
+            };
+            return fail(
+                "hale dna show " + what
+                    + ": the record is memory's, and no memory is named that holds it (" + why
+                    + "); `hale habitat migrate <organism>` migrates the organism's memory and keeps the head's DSN",
+            );
+        }
+        eprintln("hale dna show: the record has no rows: `hale habitat graft` seeds it");
         return show_answer(what, json, show_empty(what), 0, 0, true, "\n");
     }
-    let env = dna::HEAD_DSN_ENV;
+    let env = dna::memory_source(root, dna::HEAD_DSN_ENV);
     if !dna::dsn_set(env) {
-        return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it, and a running spine (`hale dna dev`) projects the record into it");
+        return fail(
+            "hale dna show " + what + ": the graph is memory's, and no memory is named (" + env
+                + "); `hale habitat migrate` migrates the organism's memory and keeps its head's DSN, and a running spine (`hale dna dev`) projects the record into it",
+        );
     }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
-    if !store.reopen() { return fail("hale dna show " + what + ": memory is not open: " + store.last_error()); }
+    if !store.reopen() {
+        return fail("hale dna show " + what + ": memory is not open: " + store.last_error());
+    }
     // the stamp before the graph: rows the spine lands between the two
     // reads can only make the graph newer than the stamp says, never older
     let basis = store.projection_basis();
     let data = store.graph_perspective(what);
-    if len(data) == 0 { return fail("hale dna show " + what + ": memory did not answer: " + store.last_error()); }
-    if !basis.ok {
-        eprintln("hale dna show: memory's projection stamp vouches for nothing (", store.last_error(), "); `hale dna memory migrate` with the owner's DSN resets it, and the spine projects the record again");
-    } else if basis.watermark < rows {
-        eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the graph as of row ", to_string(basis.watermark));
-    } else if basis.watermark > rows {
-        eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " rows, more than this clone's record holds (", to_string(rows), "); this clone is behind its remote: `hale dna sync`");
+    if len(data) == 0 {
+        return fail("hale dna show " + what + ": memory did not answer: " + store.last_error());
     }
-    return show_answer(what, json, data, rows, if basis.ok { basis.watermark } else { 0 }, basis.ok, mandates_pending(record));
+    if !basis.ok {
+        eprintln(
+            "hale dna show: memory's projection stamp vouches for nothing (",
+            store.last_error(),
+            "); `hale habitat migrate <organism>` resets it, and the spine projects the record again",
+        );
+    } else if basis.watermark < rows {
+        eprintln(
+            "hale dna show: memory has projected ",
+            to_string(basis.watermark),
+            " of the record's ",
+            to_string(rows),
+            " rows; this is the graph as of row ",
+            to_string(basis.watermark),
+        );
+    } else if basis.watermark > rows {
+        eprintln(
+            "hale dna show: memory has projected ",
+            to_string(basis.watermark),
+            " rows, more than this clone's record holds (",
+            to_string(rows),
+            "); this clone is behind its remote: `hale dna sync`",
+        );
+    }
+    return show_answer(
+        what,
+        json,
+        data,
+        rows,
+        if basis.ok { basis.watermark } else { 0 },
+        basis.ok,
+        mandates_pending(record),
+    );
 }
 
 // ---- hale dna route [--json] (<path>… | --diff <range>) (GH #1087) ----------
@@ -121,8 +200,28 @@ fn route_text(lines: String, shown: Bool) -> String {
         let tab = std::str::index_of(line, "\t");
         let a = if tab < 0 { line } else { line[0..tab] };
         // a node by its whole name (`api/reviewer`, `ci/api`), its kind dropped
-        let name = if shown && std::str::index_of(a, ":") > 0 { a[(std::str::index_of(a, ":") + 1)..len(a)] } else { a };
-        out = out + "  " + name + (if tab < 0 { "" } else { std::str::repeat(" ", if std::str::cp_count(name) < 22 { 22 - std::str::cp_count(name) } else { 1 }) + line[(tab + 1)..len(line)] }) + "\n";
+        let name = if shown && std::str::index_of(a, ":") > 0 {
+            a[(std::str::index_of(a, ":") + 1)..len(a)]
+        } else {
+            a
+        };
+        out = out + "  " + name
+            + (
+                if tab < 0 {
+                    ""
+                } else {
+                    std::str::repeat(
+                        " ",
+                        if std::str::cp_count(name) < 22 {
+                            22 - std::str::cp_count(name)
+                        } else {
+                            1
+                        },
+                    )
+                        + line[(tab + 1)..len(line)]
+                }
+            )
+            + "\n";
     }
     return out;
 }
@@ -143,18 +242,38 @@ fn route_verb(root: String, args: Args) -> Answer {
     }
     let mut i = 0;
     while len(word(args, i)) > 0 { paths = paths + word(args, i) + "\n"; i = i + 1; }
-    if len(dna::trim_nl(paths)) == 0 { return fail("usage: hale dna route [--json] (<path>… | --diff <range>)"); }
-    let env = dna::HEAD_DSN_ENV;
-    if !dna::dsn_set(env) { return fail("route: the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it"); }
+    if len(dna::trim_nl(paths)) == 0 {
+        return fail("usage: hale dna route [--json] (<path>… | --diff <range>)");
+    }
+    let env = dna::memory_source(root, dna::HEAD_DSN_ENV);
+    if !dna::dsn_set(env) {
+        return fail(
+            "route: the graph is memory's, and no memory is named (" + env
+                + "); `hale habitat migrate <organism>` keeps the head's DSN",
+        );
+    }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
     if !store.reopen() { return fail("route: memory is not open: " + store.last_error()); }
     let basis = store.projection_basis();
     let data = store.graph_perspective("routing");
     if len(data) == 0 { return fail("route: memory did not answer: " + store.last_error()); }
-    let rows = dna::GitJournal { repo: root }.revision();
-    if basis.ok && basis.watermark < rows { eprintln("hale dna route: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the route as of row ", to_string(basis.watermark)); }
-    let r = dna::graph_route(data, paths, dna::route_law(dna::route_bound(data), dna::GitReceipts { repo: root }));
+    let rows = dna::RecordJournal { repo: root, dsn_env: dna::HEAD_DSN_ENV }.revision();
+    if basis.ok && basis.watermark < rows {
+        eprintln(
+            "hale dna route: memory has projected ",
+            to_string(basis.watermark),
+            " of the record's ",
+            to_string(rows),
+            " rows; this is the route as of row ",
+            to_string(basis.watermark),
+        );
+    }
+    let r = dna::graph_route(
+        data,
+        paths,
+        dna::route_law(dna::route_bound(data), dna::MemoryReceipts { repo: root }),
+    );
     // each signer with who holds it
     let mut signers = "";
     let mut rest = r.signers;
@@ -164,15 +283,31 @@ fn route_verb(root: String, args: Args) -> Answer {
         rest = rest[(nl + 1)..len(rest)];
         let tab = std::str::index_of(line, "\t");
         let held = dna::route_holders(data, line[0..tab]);
-        signers = signers + line[0..tab] + "\t" + (if len(held) > 0 { "[" + held + "] " } else { "" }) + line[(tab + 1)..len(line)] + "\n";
+        signers = signers + line[0..tab] + "\t"
+            + (if len(held) > 0 { "[" + held + "] " } else { "" }) + line[(tab + 1)..len(line)]
+            + "\n";
     }
     if json {
-        return answer("{\"signers\": " + route_json_list(signers, "position", "because") + ", \"evidence\": " + route_json_list(r.evidence, "", "") + ", \"unsigned\": " + route_json_list(r.unsigned, "node", "because") + ", \"fallback\": " + route_json_list(r.fallback, "path", "because") + ", \"fallback_to\": " + dna::record_json_quote(ROUTE_FALLBACK) + "}\n");
+        return answer(
+            "{\"signers\": " + route_json_list(signers, "position", "because") + ", \"evidence\": "
+                + route_json_list(r.evidence, "", "") + ", \"unsigned\": "
+                + route_json_list(r.unsigned, "node", "because") + ", \"fallback\": "
+                + route_json_list(r.fallback, "path", "because") + ", \"fallback_to\": "
+                + dna::record_json_quote(ROUTE_FALLBACK) + "}\n",
+        );
     }
     let mut out = "";
     if len(signers) > 0 { out = out + "signed by\n" + route_text(signers, true); }
-    out = out + "against\n" + (if len(r.evidence) > 0 { route_text(r.evidence, true) } else { "  no gate guards it\n" });
-    if len(r.unsigned) > 0 { out = out + "reviewed by no position\n" + route_text(r.unsigned, true); }
-    if len(r.fallback) > 0 { out = out + "left to the fallback, " + ROUTE_FALLBACK + "\n" + route_text(r.fallback, false); }
+    out = out + "against\n"
+        + (
+            if len(r.evidence) > 0 { route_text(r.evidence, true) } else { "  no gate guards it\n" }
+        );
+    if len(r.unsigned) > 0 {
+        out = out + "reviewed by no position\n" + route_text(r.unsigned, true);
+    }
+    if len(r.fallback) > 0 {
+        out = out + "left to the fallback, " + ROUTE_FALLBACK + "\n"
+            + route_text(r.fallback, false);
+    }
     return answer(out);
 }

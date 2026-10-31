@@ -1,33 +1,85 @@
-# Strings & text
+# Strings & Text
 
-> Building and inspecting text.
+`String` in Hale is an immutable UTF-8 byte sequence, while `Bytes` holds arbitrary binary data (including null bytes). For text processing, Hale provides string interpolation (`f"..."`), multi-line raw block strings (`"""`), `BytesBuilder` for linear-time buffer construction, and `ByteView` for zero-rescan parsing.
 
-## Joining
+```hale
+fn main() {
+    let user = "alice";
+    let score = 98.456;
+    println(f"user={std::str::upper(user)} score={score:.1}");
 
-The `+` operator concatenates strings, and `println` /
-f-strings join for you:
+    let v = std::str::bytes_view("id=42&role=admin");
+    let amp = std::str::find(v, "&", 0);
+    println("first pair: ", std::str::slice(v, 0, amp));
+}
+```
+
+## `std::str`, `std::bytes`, and `std::regex` Reference
+
+| Function / Type | Signature | Description |
+|---|---|---|
+| `len(s)` | `(String \| Bytes) -> Int` | Builtin: byte length of `s` |
+| `to_string(x)` | `(T) -> String` | Builtin: formats scalar or printable composite `x` as `String` |
+| `std::str::upper(s)` / `lower(s)` | `(String) -> String` | ASCII case conversion |
+| `std::str::trim(s)` | `(String) -> String` | Strips leading and trailing ASCII whitespace |
+| `std::str::replace(s, old, new)` | `(String, String, String) -> String` | Replaces all occurrences of `old` with `new` |
+| `std::str::contains(s, sub)` | `(String, String) -> Bool` | True if `s` contains `sub` (also available as builtin `contains`) |
+| `std::str::starts_with(s, pre)` / `ends_with(s, suf)` | `(String, String) -> Bool` | Prefix / suffix test (`starts_with` is also a builtin) |
+| `std::str::substring(s, start, len)` | `(String, Int, Int) -> String` | Extracts `len` bytes starting at byte offset `start` |
+| `std::str::index_of(s, sub)` / `index_of_from(s, sub, pos)` | `(String, String, ...) -> Int` | Byte offset of first match, or `-1` if absent |
+| `std::str::split_into(s, sep, out)` | `(String, String, VecLocus) -> ()` | Splits `s` by `sep` into a caller-owned `@form(vec)` of `String` |
+| `std::str::join(items, sep)` | `(VecLocus, String) -> String` | Joins elements of a `@form(vec)` of `String` with `sep` |
+| `std::str::bytes_view(s)` | `(String) -> ByteView` | Measures `s` once (`v.n` bytes) for `O(1)` indexed scanning |
+| `std::str::byte_at(v, i)` | `(ByteView, Int) -> Int` | Returns byte `0..255` at `i`, or `-1` if `i` is out of bounds |
+| `std::str::slice(v, lo, hi)` | `(ByteView, Int, Int) -> String` | Copies `v[lo..hi]` as a `String` (clamped to `0..v.n`) |
+| `std::str::find(v, sub, start)` | `(ByteView, String, Int) -> Int` | Finds `sub` in `v` starting at `start` without re-measuring `s` |
+| `std::str::cp_count(s)` | `(String) -> Int` | UTF-8 code point count, or `-1` on invalid UTF-8 |
+| `std::str::cp_at(s, i)` / `cp_size(s, i)` | `(String, Int) -> Int` | Code point value or byte width (`1..4`) at byte offset `i` (`-1` if invalid) |
+| `std::str::view_cp_at(v, i)` / `view_cp_size(v, i)` | `(ByteView, Int) -> Int` | `O(1)` code point value or byte width at offset `i` on a `ByteView` |
+| `std::str::parse_int(s)` / `parse_float(s)` / `parse_decimal(s)` | `(String) -> T fallible(ParseError)` | Parses text into `Int`, `Float`, or `Decimal<S>` |
+| `std::str::can_parse_int(s)` | `(String) -> Bool` | Non-failing check for valid integer syntax |
+| `std::str::from_bytes(b)` / `std::bytes::from_string(s)` | `(Bytes) -> String` / `(String) -> Bytes` | Converts between `Bytes` and `String` |
+| `std::bytes::at(b, i)` | `(Bytes, Int) -> Int fallible(IndexError)` | Reads single byte (`0..255`) at index `i` |
+| `std::bytes::BytesBuilder` | `locus { initial_cap: Int }` | Growable buffer (`append_str(s)`, `snapshot() -> Bytes fallible(...)`) |
+| `std::regex::matches(pat, s)` / `find(pat, s)` / `valid(pat)` | `(String, ...) -> Bool \| Int` | Linear-time regular expression matching, byte search (`-1` on miss), and validation |
+
+## Concatenation and `BytesBuilder`
+
+Use `+` to join a fixed number of strings, and `to_string(x)` to convert numbers, booleans, or durations into strings:
 
 ```hale,fragment
 let first = "alice";
 let last  = "smith";
-
 let full  = first + " " + last;
-let hi    = f"hello, {first}";
-println("full name: ", full);
+let label = "n=" + to_string(42);
 ```
 
-`to_string(x)` converts a number, bool, duration, etc. into its
-text form when you need a `String` specifically:
+### Building Strings in a Loop (`BytesBuilder`)
 
-```hale,fragment
-let n = 42;
-let label = "n=" + to_string(n);
+Do not accumulate strings with `out = out + chunk` inside a loop. Because `out + chunk` allocates a new string and copies the prefix on every iteration while old prefixes remain in the function's arena until return, loop concatenation uses `O(n²)` time and memory.
+
+Instead, append into a single `std::bytes::BytesBuilder` (or use `std::str::join` when you already have a collection of strings):
+
+```hale
+fn page(n: Int) -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: 4096 };
+    let mut i = 0;
+    while i < n {
+        if i > 0 { b.append_str(", "); }
+        b.append_str("{\"id\": " + to_string(i) + "}");
+        i = i + 1;
+    }
+    return "[" + std::str::from_bytes(b.snapshot() or b"") + "]";
+}
+
+fn main() {
+    println(page(3));   // [{"id": 0}, {"id": 1}, {"id": 2}]
+}
 ```
 
-## f-strings
+## F-Strings (`f"..."`)
 
-An `f` before the quote turns `{...}` into interpolation. What
-goes inside is a whole expression, not just a name:
+Prefix a string literal with `f` to interpolate arbitrary Hale expressions inside `{...}`:
 
 ```hale,fragment
 let name = "alice";
@@ -36,22 +88,14 @@ let n    = 3;
 println(f"hello, {name}");
 println(f"{n} items, {n * 2} halves");
 println(f"upper: {std::str::upper(name)}");
+println(f"literal {{braces}}, interpolated {n}");
 ```
 
-A plain `"..."` string leaves braces alone, so `"x={x}"` prints
-the braces. That is the one mistake worth knowing about, and the
-compiler warns when the braces name something in scope. Write
-`{{` and `}}` for literal braces inside an f-string:
+Plain `"..."` strings do not interpolate; writing `"x={x}"` leaves the braces literal and emits a compiler warning if `x` is in scope. Escape literal braces in an f-string with `{{` and `}}`.
 
-```hale,fragment
-let x = 1;
-println(f"literal {{x}}, interpolated {x}");   // literal {x}, interpolated 1
-```
+### Printing Whole Values
 
-### Printing whole values
-
-Interpolation renders structs, tuples and arrays, recursively —
-which is usually what you want mid-debugging:
+Both `println` and f-string `{...}` interpolation recursively format structs, tuples, and arrays of printable elements:
 
 ```hale
 type Point   { x: Int; y: Int; }
@@ -64,237 +108,196 @@ fn main() {
 }
 ```
 
-Strings *inside* a rendered value are quoted, so a value
-containing a comma still reads as one value. A string on its own
-is not quoted — `f"{name}"` is just `alice`.
+Strings nested inside a composite value are printed with quotes (`"t-1"`), while a standalone string (`f"{name}"`) is printed unquoted.
 
-Two things deliberately do not render: a **locus** (it is flow,
-not shape — and rendering one would leak the state a `@sealed`
-locus exists to confine) and **`Bytes`** (pick a rendering:
-hex, length, or a text decode). Reach for a field instead.
+Two types cannot be formatted directly:
+1. **Loci:** A locus is a stateful component (which may be `@sealed` to confine secrets), not a value record. Format specific fields instead.
+2. **`Bytes`:** Raw binary buffers have no single canonical text form; explicitly decode them with `std::str::from_bytes(b)`, format their `len(b)`, or encode them as hex.
 
-### Format specs
+### Format Specs
 
-An interpolation can say *how* to render, after a `:`:
+Add `:[[fill]align][width][.precision][kind]` after an interpolated expression to control alignment, padding, precision, or base:
 
-```hale,fragment
-let n     = 42;
-let name  = "alice";
-let ratio = 3.14159;
+| Spec | Example (`n = 42`, `name = "alice"`, `r = 3.14159`) | Output | Meaning |
+|---|---|---|---|
+| `:width` | `f"[{n:6}]"` | `[    42]` | Minimum byte width (numbers right-align; strings left-align) |
+| `:<width` / `:^width` / `:>width` | `f"[{n:<6}]"` | `[42    ]` | Explicit left (`<`), center (`^`), or right (`>`) alignment |
+| `:fill>width` | `f"[{n:0>6}]"` | `[000042]` | Custom single-byte fill character (`0`) with alignment |
+| `:.precision` | `f"{r:.2}"` | `3.14` | Fractional digits for `Float` and `Decimal` |
+| `:x` | `f"{n:x}"` | `2a` | Lowercase hexadecimal formatting for `Int` |
 
-println(f"[{n:6}]");        // [    42]   numbers pad left
-println(f"[{name:6}]");     // [alice ]   text pads right
-println(f"[{n:<6}]");       // [42    ]   `<` `^` `>` override
-println(f"[{n:0>6}]");      // [000042]   a fill character
-println(f"{ratio:.2}");     // 3.14       precision (Float/Decimal)
-println(f"{n:x}");          // 2a         hexadecimal
-```
+Width specifications count bytes and **never truncate**: a value wider than `width` prints all of its characters rather than silently dropping digits.
 
-The full form is `[[fill]align][width][.precision][kind]`. Width
-counts bytes and never truncates — a value too wide for its
-column keeps all of its digits and pushes the column, because a
-silently shortened number in a log is worse than a ragged table.
+## Block Strings
 
-## Length and inspection
+Write multi-line raw text (SQL queries, JSON fixtures, embedded source code) as a **block string** opened by `"""` at the end of a line and closed by `"""` on its own line:
 
-`len(s)` is a builtin — the byte length of the string:
-
-```hale,fragment
-let s = "hello";
-println(len(s));          // 5
-```
-
-Most text operations live in `std::str`, called as plain
-functions:
-
-```hale,fragment
-let i   = std::str::index_of("hello world", "world");   // 6
-let sub = std::str::substring("hello world", 0, 5);     // "hello"
-let up  = std::str::upper("hi");                          // "HI"
-let t   = std::str::trim("  spaced  ");                   // "spaced"
-let r   = std::str::replace("a-b-c", "-", "+");          // "a+b+c"
-```
-
-To find every occurrence, search on from just past the last hit.
-`index_of_from` takes the byte offset to start at and still answers
-an index into the whole string (or `-1`):
-
-```hale,fragment
-let s = "a=1&b=2&c=3";
-let mut at = std::str::index_of_from(s, "&", 0);       // 3
-while at >= 0 {
-    at = std::str::index_of_from(s, "&", at + 1);      // 7, then -1
+```hale
+fn main() {
+    let query = """
+        SELECT id, name
+          FROM people
+         WHERE id = 1
+        """;
+    println(query);
 }
 ```
 
-Hale has no per-character method syntax (`s.charAt(i)`); you
-slice with a range or use the `std::str` helpers. Slicing a
-string by byte range:
+Block strings obey four lexical rules (`spec/tokens.md` § Block strings):
+1. **Closing-delimiter indentation stripping:** Leading whitespace matching the indentation of the closing `"""` is stripped from every content line. Lines indented further than the closing `"""` preserve their relative indentation; any line indented less than the closing `"""` is a compile error.
+2. **Raw content (no escapes or interpolation):** Backslashes (`\n`, `\"`) and braces (`{`) are literal characters. Join with `+` if you need to splice runtime values.
+3. **Boundary newlines excluded:** The newline immediately following the opening `"""` and the newline immediately preceding the closing `"""` are not included in the string. Add a blank line before the closing `"""` if you want a trailing newline.
+4. **Extended fences (`""""`):** If a line inside the block string starts with `"""`, open and close the block string with four or more quotes (`""""`). `hale fmt` re-indents block strings alongside surrounding code without changing their contents.
+
+## Slicing, Scanning, and `ByteView`
+
+### Basic Slicing and Search
+
+You can slice a `String` by byte range with `s[lo..hi]` and search short strings with `std::str::index_of`:
 
 ```hale,fragment
-let s = "hello";
-let h = s[0..1];          // "h"
+let s = "hello world";
+let h = s[0..5];                                  // "hello"
+let i = std::str::index_of(s, "world");           // 6
 ```
 
-## Walking a big string a byte at a time
+### Walking Large Strings with `ByteView`
 
-Slicing one byte at a time is fine for a short line and a trap
-for a large one. A `String` doesn't store its length, so `len(s)`
-counts bytes until the terminator, and a slice like
-`s[i..(i + 1)]` counts them *again* to clamp its range before
-copying one byte out. Written as a loop, that is work proportional
-to the input on every single iteration:
+A `String` in Hale is a null-terminated byte pointer without an inline length header. Calling `len(s)`, slicing `s[i..(i + 1)]`, or calling `std::str::index_of_from(s, "\n", start)` inside a loop scans for the null terminator on every iteration, turning a linear scan into an `O(n²)` bottleneck on megabyte-scale inputs.
 
-```hale,fragment
-// DON'T: quadratic. 1 MiB of input takes about 13 seconds.
-let mut i = 0;
-while i < len(s) {
-    let c = s[i..(i + 1)];
-    i = i + 1;
+To scan or tokenize a string in `O(n)` time, construct a `std::str::ByteView` **once** before the loop:
+
+```hale
+fn count_lines(all: String) -> Int {
+    let v = std::str::bytes_view(all);
+    let mut k = 0;
+    let mut nl = std::str::find(v, "\n", 0);
+    while nl >= 0 {
+        k = k + 1;
+        nl = std::str::find(v, "\n", nl + 1);
+    }
+    return k;
+}
+
+fn main() {
+    println(count_lines("a\nb\n\nc\n"));   // 4
 }
 ```
 
-For scanning — parsing a format, finding delimiters, validating a
-payload — use a **byte view**. It measures the string once, keeps
-the length in a field, and checks every read against it:
+`std::str::bytes_view(s)` measures the string once and stores its byte length in `v.n`:
+- **`std::str::byte_at(v, i)`** reads a single byte (`0..255`) in `O(1)` time and returns `-1` for any index outside `0..v.n`.
+- **`std::str::slice(v, lo, hi)`** copies `v[lo..hi]` in `O(hi - lo)` time and clamps out-of-range bounds to `0..v.n`.
+- **`std::str::find(v, needle, start)`** searches from byte offset `start` using `v.n` without re-measuring the string.
 
-```hale,fragment
-let v = std::str::bytes_view(line);
-let mut fields = 1;
-let mut i = 0;
-while i < v.n {
-    let c = std::str::byte_at(v, i);   // the byte, 0..255
-    if c == 44 { fields = fields + 1; }  // 44 is ','
-    i = i + 1;
+```hale
+fn line_end(v: std::str::ByteView, start: Int) -> Int {
+    let mut i = start;
+    while i < v.n {
+        if std::str::byte_at(v, i) == 10 { return i; }   // 10 is '\n'
+        i = i + 1;
+    }
+    return v.n;
+}
+
+fn count_nonempty_rows(all: String) -> Int {
+    let v = std::str::bytes_view(all);
+    let mut rows = 0;
+    let mut start = 0;
+    while start < v.n {
+        let nl = line_end(v, start);
+        let line = std::str::slice(v, start, nl);
+        start = nl + 1;
+        if len(line) > 0 { rows = rows + 1; }
+    }
+    return rows;
+}
+
+fn main() {
+    println(count_nonempty_rows("a\nb\n\nc"));   // 3
 }
 ```
 
-Same 1 MiB input, same loop: about 29 microseconds instead of 13
-seconds. Three things to know:
+> [!WARNING]
+> **View Lifetimes (`ByteView`, `StringView`, `BytesView`):** Views borrow their underlying buffer without copying. When reading `StringView` or `BytesView` spans from a socket, file, or parser buffer, the view is valid **only** until the next `recv` or buffer overwrite. Call `std::str::clone` (or `std::str::slice`) to copy data into an owned `String` if it must outlive the current activation. Accessing a stale view triggers a runtime panic guard.
 
-- **`byte_at` refuses rather than misbehaving.** Any index outside
-  `0..v.n` — including one past the end, which is how a scan
-  discovers it has finished — answers `-1`. A truncated message
-  cannot make it read something that isn't there.
-- **`std::str::slice(v, lo, hi)` cuts tokens out cheaply**, and
-  clamps: `slice(v, 3, 999999)` gives you what is actually there,
-  which matters when the `999999` came from the input. It costs
-  what the token is long, not what the input is long.
-- **Build the view once, outside the loop.** Constructing it walks
-  the string (that is the point — once instead of per byte), so a
-  view built per iteration buys nothing.
+## Splitting, Joining, and Parsing
 
-These are *bytes*, not characters: `v.n` is a byte count, and a
-multi-byte character like `é` is two reads. For delimiters,
-digits and punctuation that is exactly right — in UTF-8 no
-multi-byte character can contain a byte that looks like an ASCII
-one. When you care about characters, see [Text that isn't
-ASCII](#text-that-isnt-ascii) below.
+### Splitting and Joining
 
-## Parsing numbers
+Because collections in Hale are loci rather than garbage-collected values, `std::str::split_into` writes into a `@form(vec)` locus that you supply:
 
-Turning text into a number can fail — the text might not be a
-number. So the parse functions are *fallible*, and the next
-chapter ([When a call can fail](./fallible.md)) is exactly about
-how you handle that. The shape, previewed:
-
-```hale,fragment
-let n = std::str::parse_int("42") or 0;     // 42, or 0 if it wasn't
-```
-
-There are also non-failing predicates to check first
-(`std::str::can_parse_int`) when you'd rather branch than
-recover.
-
-## Bytes
-
-Text is `String`; raw binary is `Bytes`. They're different types
-because they have different rules — a `String` is valid UTF-8, a
-`Bytes` is any sequence of octets, including embedded zeros.
-
-```hale,fragment
-let b = std::bytes::from_string("hello");   // String  -> Bytes
-let s = std::str::from_bytes(b);            // Bytes   -> String
-let byte0 = std::bytes::at(b, 0) or 0;       // a single byte (fallible)
-```
-
-You'll work with `Bytes` directly when you read from a socket or
-a file and need to frame messages yourself — that's a topic for
-[wire formats](../everyday/files.md) and the systems tier. At
-this level, just know the two types are distinct and you convert
-explicitly between them.
-
-## Splitting, joining, searching
-
-```hale,fragment
-std::str::contains(line, "=")       // Bool
-std::str::starts_with(line, "#")
-std::str::ends_with(path, ".hl")
-```
-
-Splitting writes into a collection you supply rather than returning a
-new one:
-
-```hale,fragment
+```hale
 @form(vec)
-locus Fields { capacity { heap items of String; } }
+locus Fields {
+    capacity { heap items of String; }
+}
 
-let f = Fields { };
-std::str::split_into("a,b,c", ",", f);
-println(std::str::join(f, " | "));      // a | b | c
+fn main() {
+    let f = Fields { };
+    std::str::split_into("a,b,c", ",", f);
+    println(std::str::join(f, " | "));      // a | b | c
+}
 ```
 
-The asymmetry is deliberate, and it's worth understanding rather than
-memorising. `join` returns a `String` because a String is already a
-value. `split` cannot return a list, because Hale has no list *value*
-to return — collections are loci you own. So you hand it the storage.
+- **Reusable storage:** A message handler can keep a single `Fields` locus in its `params` and call `f.clear()` before each `split_into` call for zero steady-state allocations.
+- **Preserves empty fields:** `"a,,b,"` splits into 4 elements (`"a"`, `""`, `"b"`, `""`), preserving column alignment in CSV/TSV data.
 
-That turns out to be the better shape anyway: you own the allocation,
-so it's counted against your budget instead of hidden inside a return
-value, and a handler that splits a line per message can reuse one
-collection instead of allocating a fresh one every time.
+### Parsing Numbers and Binary `Bytes`
 
-Empty fields survive: `"a,,b,"` splits into four, not two. Losing them
-silently would drop a column from a CSV row and you would never see it
-happen.
-
-## Text that isn't ASCII
-
-`String` is bytes. When you need characters, ask for code points
-explicitly:
+Number parsers return `fallible(ParseError)` and must be addressed with `or` (covered in [When a Call Can Fail](./fallible.md)):
 
 ```hale,fragment
-std::str::cp_count("héllo")     // 5, though the string is 6 bytes
-std::str::cp_at("日本語", 0)     // 26085
-std::str::cp_size("héllo", 1)   // 2 — 'é' is two bytes
+let n = std::str::parse_int("42") or 0;
+let ok = std::str::can_parse_int("42");        // true (non-failing check)
 ```
 
-Invalid UTF-8 gives you `-1`, as does a byte offset that lands in the
-middle of a character. It does not quietly hand back a replacement
-character, because then you could not tell a corrupted string from one
-that genuinely contains that character.
-
-Normalization, case folding beyond ASCII, and grapheme clusters are
-not provided. Each is a large commitment with its own tables, and a
-`to_upper` that works for English and mangles Turkish is worse than
-one that isn't there.
-
-## Patterns
+Use `b"..."` literals and `std::bytes` when working with raw binary payloads:
 
 ```hale,fragment
-std::regex::matches("h.llo", "hello")   // true — a full match
-std::regex::find("l+", "hello")         // 2 — leftmost byte offset
-std::regex::valid("a(")                 // false
+let raw: Bytes = b"\x00\x01\xff";
+let b = std::bytes::from_string("hello");      // String -> Bytes
+let s = std::str::from_bytes(b);               // Bytes  -> String
+let byte0 = std::bytes::at(b, 0) or 0;         // 104 ('h')
 ```
 
-Literals, `.`, `*`, `+`, `?`, `|`, grouping, and character classes
-(`[a-z]`, `[^a-z]`). No backreferences and no lookahead — those need a
-backtracking engine, and a backtracking match has no upper bound on
-how long it can take. In a language where you can write
-`@budget(alloc_per_call = 0)` on a handler, a pattern that might take
-exponential time is not something you can be allowed to put there.
+## Text That Isn't ASCII (UTF-8 Code Points)
 
-Check `valid` on any pattern you didn't write yourself. Without it, a
-typo looks exactly like "no matches".
+`len(s)` and string slices operate on UTF-8 byte offsets. Because UTF-8 is self-synchronizing—no multi-byte code point ever contains a byte in the ASCII range `0..127`—byte scanning is always safe for ASCII delimiters, digits, and punctuation.
 
-Next: the failure model — [When a call can fail](./fallible.md).
+When you need Unicode code points, use `cp_count`, `cp_at`, `cp_size`, or their `O(1)` `ByteView` counterparts `view_cp_at` and `view_cp_size`:
+
+```hale
+fn count_code_points(s: String) -> Int {
+    let v = std::str::bytes_view(s);
+    let mut i = 0;
+    let mut k = 0;
+    while i < v.n {
+        let w = std::str::view_cp_size(v, i);
+        if w < 0 { return -1; }
+        i = i + w;
+        k = k + 1;
+    }
+    return k;
+}
+
+fn main() {
+    println(count_code_points("héllo"));       // 5 (6 UTF-8 bytes)
+    println(std::str::cp_at("日本語", 0));      // 26085
+}
+```
+
+All code-point functions return `-1` if the input contains invalid UTF-8, if the byte offset lands in the middle of a multi-byte character, or if the offset is out of range (they never silently substitute `U+FFFD`). Unicode normalization, locale-dependent case folding, and grapheme cluster segmentation are not included in `std::str`.
+
+## Regular Expressions (`std::regex`)
+
+`std::regex` provides a non-backtracking, linear-time regular expression engine:
+
+```hale,fragment
+let full   = std::regex::matches("h.llo", "hello");   // true (anchored full match)
+let offset = std::regex::find("l+", "hello");         // 2 (leftmost byte offset, or -1)
+let is_ok  = std::regex::valid("a(");                 // false
+```
+
+Supported syntax includes literals, `.`, `*`, `+`, `?`, alternation `|`, grouping `(...)`, and character classes (`[a-z]`, `[^a-z]`). Backreferences and lookahead are omitted so that every match executes in guaranteed `O(n)` time and zero heap allocations on hot paths. Call `std::regex::valid(pat)` first whenever `pat` comes from external configuration or user input.
+
+Next: [When a Call Can Fail](./fallible.md).

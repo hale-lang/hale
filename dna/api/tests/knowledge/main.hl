@@ -16,12 +16,30 @@ fn seed(root: String, count: Int) {
     std::test::assert(count >= 0 && count <= 50, "bounded knowledge fixture size");
     let f = fixtures::Fixture { root: root, port: 1 };
     let target = "org/support/équipe";
-    let predecessor = f.knowledge("Earlier support goal", "Earlier accepted knowledge", "org", "", true);
+    let predecessor = f.knowledge(
+        "Earlier support goal",
+        "Earlier accepted knowledge",
+        "org",
+        "",
+        true,
+    );
     let name = "Support knowledge — équipe <goal>";
     let text = "Première ligne — ✓\n第二行 / preserve\n<img src=x onerror=\"window.__injected=true\">";
     let current = f.knowledge(name, text, target, predecessor, true);
-    let proposed = f.knowledge("Proposed knowledge", "Still proposed, not accepted", "org/finance", "", false);
-    let hidden = f.knowledge("Protected knowledge title", "Protected knowledge body", target, "", true);
+    let proposed = f.knowledge(
+        "Proposed knowledge",
+        "Still proposed, not accepted",
+        "org/finance",
+        "",
+        false,
+    );
+    let hidden = f.knowledge(
+        "Protected knowledge title",
+        "Protected knowledge body",
+        target,
+        "",
+        true,
+    );
     f.append("receipt.classified", hidden, "{\"class\":\"confidential\"}");
     let b = std::json::Builder { };
     b.begin_object();
@@ -36,7 +54,13 @@ fn seed(root: String, count: Int) {
     b.begin_array_field("neighbors");
     let mut i = 0;
     while i < count {
-        let id = f.knowledge("Knowledge " + to_string(i), "Recorded knowledge " + to_string(i), "org/finance", "", true);
+        let id = f.knowledge(
+            "Knowledge " + to_string(i),
+            "Recorded knowledge " + to_string(i),
+            "org/finance",
+            "",
+            true,
+        );
         b.begin_object(); b.string_field("id", id); b.end_object();
         i = i + 1;
     }
@@ -51,27 +75,66 @@ fn spine_file(root: String) -> String { return root + "/memory.spine"; }
 
 // One tick of the spine's projection over the record as it stands.
 fn tick(root: String, spine: dna::Dsn) {
-    let j = dna::GitJournal { repo: root, author: "spine" };
-    let tail = ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: j.genesis() }, j: j, receipts: dna::GitReceipts { repo: root } };
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let j = dna::RecordJournal { repo: root, author: "spine" };
+    let tail = ops::MemoryProjection {
+        root: root,
+        dsn_env: "",
+        store: dna::Pq { conn: dna::pq_conn(spine), record_id: j.genesis() },
+        j: j,
+        receipts: dna::MemoryReceipts { repo: root },
+    };
     let applied = tail.apply();
     tail.store.close();
-    std::test::assert(len(applied.error) == 0, "native knowledge fixture projection: " + applied.error);
+    std::test::assert(
+        len(applied.error) == 0,
+        "native knowledge fixture projection: " + applied.error,
+    );
 }
 
 fn owner() -> String {
-    let dsn = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-    std::test::assert(len(dsn) > 0, "the Knowledge fixture needs memory: set HALE_DNA_MEMORY_DSN_OWNER");
+    let dsn = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+        std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+    } else {
+        ""
+    };
+    std::test::assert(
+        len(dsn) > 0,
+        "the Knowledge fixture needs memory: set HALE_DNA_MEMORY_DSN_OWNER",
+    );
     return dsn;
 }
 
 fn mutate(root: String, action: String) {
-    let j = dna::GitJournal { repo: root };
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    // a classification and a redaction are the Ledger's rows (GH #1590):
+    // the record and its Ledger, read and written as one
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: dna::MemoryLedger { repo: root, dsn_env: dna::fixture_spine(root) },
+    };
     let document = std::io::fs::read_file(root + "/fixture.json") or "";
-    let id = std::json::find_string_field(document, if action == "protect-predecessor" { "predecessor" } else { "knowledge" });
+    let id = std::json::find_string_field(
+        document,
+        if action == "protect-predecessor" { "predecessor" } else { "knowledge" },
+    );
     let result = if action == "protect" || action == "protect-predecessor" {
         j.append(j.revision(), "receipt.classified", id, "{\"class\":\"confidential\"}")
     } else if action == "redact" {
-        j.append(j.revision(), "receipt.redacted", id, "{\"by\":\"browser-fixture\",\"why\":\"retention\",\"policy\":\"test\"}")
+        j.append(
+            j.revision(),
+            "receipt.redacted",
+            id,
+            "{\"by\":\"browser-fixture\",\"why\":\"retention\",\"policy\":\"test\"}",
+        )
     } else {
         j.append(j.revision(), "browser.fixture", "refresh", "another writer advanced the Record")
     };
@@ -81,7 +144,12 @@ fn mutate(root: String, action: String) {
 }
 
 fn project(root: String) {
-    let j = dna::GitJournal { repo: root };
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let j = dna::RecordJournal { repo: root };
     let id = j.genesis();
     std::test::assert(len(id) > 0, "a seeded record to project");
     let spine = dna::migrated(owner(), id);
@@ -95,14 +163,38 @@ fn project(root: String) {
     let hidden = std::json::find_string_field(document, "hidden");
     let store = dna::Pq { conn: dna::pq_conn(spine), record_id: id };
     std::test::assert(store.open(), "the spine opens the record's memory: " + store.last_error());
-    std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: predecessor, rel: "supports <stored relationship>" }), "native outgoing edge");
-    std::test::assert(store.link(dna::KnowledgeEdge { from: predecessor, to: current, rel: "informs" }), "native incoming edge");
-    std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: hidden, rel: "protected-endpoint relationship" }), "native protected edge");
+    std::test::assert(
+        store.link(
+            dna::KnowledgeEdge {
+                from: current,
+                to: predecessor,
+                rel: "supports <stored relationship>",
+            },
+        ),
+        "native outgoing edge",
+    );
+    std::test::assert(
+        store.link(dna::KnowledgeEdge { from: predecessor, to: current, rel: "informs" }),
+        "native incoming edge",
+    );
+    std::test::assert(
+        store.link(
+            dna::KnowledgeEdge {
+                from: current,
+                to: hidden,
+                rel: "protected-endpoint relationship",
+            },
+        ),
+        "native protected edge",
+    );
     let mut it = std::json::array_first(std::json::find_field_raw(document, "neighbors"));
     while !it.done {
         let id = std::json::find_string_field(it.element, "id");
         std::test::assert(len(id) == 71, "native neighbor receipt identity");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: current, to: id, rel: "related" }), "native fixture edge");
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: current, to: id, rel: "related" }),
+            "native fixture edge",
+        );
         it = std::json::array_next(it);
     }
     store.close();
@@ -113,7 +205,12 @@ fn project(root: String) {
 
 // The record's schema and both of its roles, gone again.
 fn drop(root: String) {
-    let j = dna::GitJournal { repo: root };
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let j = dna::RecordJournal { repo: root };
     let id = j.genesis();
     std::test::assert(len(id) > 0, "a seeded record to drop");
     std::test::assert_eq_str(dna::unmigrate(owner(), id), "", "the record's memory is dropped");
@@ -124,10 +221,25 @@ fn drop(root: String) {
 fn main() {
     let root = std::env::arg_or(1, "");
     let action = std::env::arg_or(2, "");
-    std::test::assert(std::str::starts_with(root, "/tmp/hale-face-browser."), "owned browser fixture root");
+    std::test::assert(
+        std::str::starts_with(root, "/tmp/hale-face-browser."),
+        "owned browser fixture root",
+    );
     if action == "seed" { seed(root, std::str::parse_int(std::env::arg_or(3, "3")) or 3); }
-    else if action == "advance" || action == "protect" || action == "protect-predecessor" || action == "redact" { mutate(root, action); }
+    else if action == "advance"
+        || action == "protect"
+        || action == "protect-predecessor"
+        || action == "redact"
+    {
+        mutate(root, action);
+    }
     else if action == "project" { project(root); }
     else if action == "drop" { drop(root); }
-    else { std::test::assert(false, "unknown action `" + action + "`: seed | project | advance | protect | protect-predecessor | redact | drop"); }
+    else {
+        std::test::assert(
+            false,
+            "unknown action `" + action
+                + "`: seed | project | advance | protect | protect-predecessor | redact | drop",
+        );
+    }
 }

@@ -14,7 +14,7 @@ source_only = true
 entrypoints = ["dna/org"]
 
 [fleets]
-production = "fleet.plan.json"
+production = "fleet"
 
 [dna]
 fleet = "production"

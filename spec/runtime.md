@@ -225,7 +225,11 @@ the model: runtime is automatic; stdlib is explicit.
   `epoll_wait(-1)` (the condvar broadcast can't), so the worker
   returns from the drain and the join completes instead of
   hanging. The parked coros are then *abandoned* — their stacks
-  freed without resuming them — because a forever-loop `run()`
+  freed without resuming them, and a bus handler's delivery released
+  with them (its payload buffer and the per-delivery region its
+  strings were deserialized into, which has no parent arena to reclaim
+  it; GH #1565: a served call parked in its handler at the drain leaked
+  both) — because a forever-loop `run()`
   (`while true { accept }`) cannot be cooperatively unwound
   without the loop checking `self.draining` (a future
   refinement), and the process is exiting anyway. Per-child
@@ -779,6 +783,70 @@ Cross-binary flows (unix / shm_ring with their own reader
 threads) land in `g_bus_queue` and benefit from the sleep-folded
 drain above.
 
+#### Cross-pool backstop (GH #1566)
+
+F.31 (spec/types.md § "Single-threaded-method invariant (F.31)") is
+checked statically where the checker's walk follows a handle; the
+runtime enforces it at every other site. Each locus instance carries
+the domain it was built on (`__domain`, from the thread-local
+`lotus_domain_now`: main's token, a cooperative pool's worker's pool,
+a pinned locus's own thread; a pinned or pool-placed root takes its
+own thread's at its init there). Each also carries its first holder
+(`__adopted`: 0 none yet, else the holder's address; 1 for a placed
+root and what a `bindings { }` entry builds, held from the start): the
+first field that holds an instance nothing held — a literal's param, an
+element of an array param, a store, a field of interface type (through
+the adoption fn its vtable carries) — makes it that holder's and moves
+it onto the domain the holder runs on, and with it, transitively,
+everything it is the first holder of (`__xpool_adopt_<L>`,
+`__xpool_restamp_<L>`); a later holder shares it and leaves its domain
+alone. At a store into a locus's field from
+outside its methods whose slot is no inline scalar, and at a method
+call on a locus reached any way but down `self` — or down `self`
+through a field some literal or store fills with anything but a value
+it builds right there (`Routes { w: w }`, `h.w = x`), which the
+checker's per-instance answer does not cover — the compiled code compares the receiver's
+`__domain` with `lotus_domain_now`: one load and a compare, the
+mismatch side cold. A mismatch where both domains
+are known is a violation: `lotus_cross_pool_check_failed` prints the
+site (`file:line:col`; a build handed no source table prints none),
+the store or call, and both pools —
+
+    main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus (spec/types.md § "Single-threaded-method invariant (F.31)")
+
+— on stderr and exits 1, like the runtime's other violations, before
+the store or the call runs. A thread that runs no locus code has no
+domain (0) and is not checked; neither is a receiver whose form
+synchronizes cross-domain access (`sync = serialized | striped |
+lockfree`), or a local bound to a locus literal the running code built
+and never rebound. Code the runtime runs off its instance's domain on
+purpose runs as that domain: every locus's `drain()` and `dissolve()`
+set `lotus_domain_now` to the instance's `__domain` for their duration
+(a pool-placed root's run on main after its pool joined), and an
+`on_failure` handler reaches its failed child's domain for its duration,
+for the child and what it owns only (`lotus_domain_also_enter`: the
+child is stopped while its owner's handler runs, so its subtree is as
+safe as its slot; the report asks the child's compiled
+`__xpool_owns_<L>` whether the receiver is in it, so another instance
+running on that domain is still a violation). A violation inside the
+stdlib, which has no location of its own, is reported at the program's
+last call into a stdlib locus's method on that thread, which compiled
+code leaves in the thread-local `lotus_xpool_user_site`. What a `bindings { }` entry
+builds — an adapter, a transport, a codec — belongs to no one domain:
+the runtime calls an adapter's `send` from every publishing thread
+through a function pointer, by design, so it and what its params build
+carry domain 0, and its own thread takes none. wasm32 has one thread
+and no check. A call through an interface is checked on the locus behind it:
+its vtable carries that locus's `__domain` offset after the methods,
+then its adoption fn.
+The site's location comes from the line table `hale build` emits, or,
+for `hale run` and `hale test`, from the source table they hand the
+build (`BuildOptions::site_sources`) without DWARF. No user turns the
+check off: `BuildOptions::no_xpool_backstop` is a test-harness option
+only (no variable or flag sets it), for the fixtures that drive the
+off-domain failure delivery through an escape the checker does not
+follow; it is part of the build identity.
+
 #### Long-running cooperative children: placement closes Item D
 
 Pre-F.31, declaring a long-running cooperative child as a
@@ -1136,7 +1204,11 @@ instantiating function's scope does. So every
 lifecycle body of a locus nested under a pinned one runs on the
 pinned thread, the domain it is placed in, and a yield inside
 one (`std::time::sleep`, an `await`) drains the pinned locus's
-mailbox, as a yield on main drains main's queue. The
+mailbox, as a yield on main drains main's queue. (An accept on main
+waits on main's queue as well as on its listener, and delivers a cell
+another thread enqueues for a subscriber on main when it arrives: a
+pinned locus's `std::log` line to a sink on main is written while main
+serves, not at the next connection; 2026-10-19, downstream handoff.) The
 instantiating thread waits until the params are initialized
 (`lotus_pinned_start_await_ready`), so nothing observes the tree
 before it is built. While it waits it services its own mailbox
@@ -1430,6 +1502,32 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   transport is in the runtime itself (substrate-guaranteed
   atomic delivery via SOCK_SEQPACKET) and doesn't go through
   the Adapter interface.
+
+**The registration table holds what is live.** Every subscription a
+locus declares is one registration in the runtime's table, from the
+locus's birth to its dissolve. A dissolved subscriber's registrations
+go to later registrations: on the same subject when the compiler
+dispatches that subject statically (its per-subject list stays the
+subject's), any other when it does not. So a server whose connections
+each subscribe keeps a table the size of its most connections at once,
+not of every connection it served. A
+dispatch walk reads a registration, its subject match included, between
+two reads of its version and skips one that is being rewritten, as it
+skips one registered after the walk began; a cell queued for the
+dissolved subscriber is dropped by its incarnation (§ "Lifecycle
+obligations") and never reaches the registration's next owner, and a
+bounded subscriber's cells in flight are counted for the incarnation
+each cell belongs to, so the next owner is never charged for them.
+`LOTUS_BUS_TEST_WALK_STALL_US` and `LOTUS_BUS_TEST_ACCT_STALL_US` hold a
+walk inside its window, and an enqueue between finding a bounded
+registration and charging it, for the race tests
+(`bus_registry_reuse_races.rs`); never set them in production. While a reservation is open (#1534) a
+registration appends instead, so the claims it compares keep their
+registration order, and a reservation's placeholder or claimant is never
+reused. What is not reclaimed: a String-keyed registration's copy of its
+key, which a walk may still be comparing, is kept until the process
+tears down, one key string per such subscriber. `LOTUS_BUS_TABLE_STATS=1`
+prints the table's size at teardown.
 
 **One publisher's order (2026-10-12).** Each thread delivers in-process
 cells through one queue of its own: `main` through the program-wide
@@ -2297,7 +2395,19 @@ its `KNOWN_OPEN` table, which is empty today.
   waits). Nor does a consumer that a producer is blocked on,
   since that producer may be a readiness step posting parked
   cells, or wait on one. Either still parks behind every earlier
-  cell, so order holds. A pinned subscriber transfers that
+  cell, so order holds. A subscriber readied on its own consumer's thread while other
+  threads run (main's queue on main, its pool's ring on the pool's
+  worker, its mailbox on its pinned thread) has its parked cells
+  posted and its window closed in one step: that thread's post to
+  its own queue never waits, so posting them in rounds, each taking
+  what a producer parked during the last, never ended while the
+  producer kept publishing: main's queue, or a worker's overflow
+  list behind its full ring, took the whole flood, and a pinned
+  thread's readiness, draining its mailbox between rounds, did not
+  return until the flood did. A publisher that arrives during that
+  step posts behind the parked cells, under the queue's own bound
+  (main's drain-liveness bound, a ring's blocking post)
+  (`bus_backpressure.rs`). A pinned subscriber transfers that
   exemption to its thread before birth; its mailbox stays current
   so already-born nested subscribers can continue receiving. The closed-world optimization that turns a send
   into a direct call (`spec/semantics.md` § "Topic declarations →
@@ -2327,11 +2437,24 @@ its `KNOWN_OPEN` table, which is empty today.
   subject — the root's, a cooperative node's, an anchor's (it registers
   on the instantiating thread), a node's an anchor's params build in
   the init its own thread or its pool's worker runs while the
-  instantiating thread waits (the init reads the scope through its
-  argument block), a keyed subscription's, its key applied — then
+  instantiating thread waits, an anchor among them included, whose own
+  params are built in an init of that init, at any depth (each init
+  reads the scope through its argument block, from the function that
+  starts it; #1555), each of a replicated field's (`replicas = K`) K
+  instances, an anchor apiece, a keyed subscription's, its key applied
+  (`where key == replica` claims its own replica's shard) — then
   claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
-  readiness delivers it after its `birth()`. The last expected claim
+  readiness delivers it after its `birth()`. A wildcard (`**`)
+  subscription is reserved under its own pattern: the placeholder
+  registers the pattern, so it holds every publish whose subject the
+  pattern matches, as the subscription itself would take it, a
+  computed subject sent under a publisher's declared pattern included,
+  and the claimant's bound is over all of them, as its queue's is. It
+  is reserved where a node's declared publish, a subject or a pattern,
+  can name a subject the pattern matches. A subscriber of a concrete
+  subject the pattern also covers claims from that subject's own
+  reservation, so each claimant takes each cell once (#1555). The last expected claim
   closes the reservation, and the root's `birth()` closes what is left
   (`lotus_bus_reserve_end`); so does any exit that leaves the
   construction part-way (an initializer's propagated failure: the scope
@@ -2358,12 +2481,7 @@ its `KNOWN_OPEN` table, which is empty today.
   not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: an anchor nested in another anchor's params
-  builds its own params in an init of that init, and a subscriber there
-  claims nothing, so what an earlier part of the tree published before
-  it registered reaches no subscription of it; nor does a replicated
-  field's (`replicas = K`) instance. Not yet true
-  in two further cases (inventory rows C51
+  reads. Not yet true in two cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
   no window, and what is published to it during its `birth()` is
@@ -2595,6 +2713,8 @@ its `KNOWN_OPEN` table, which is empty today.
   complete: a pinned or pool-placed child's `while !self.draining`
   loop no longer holds the process once `main`'s `run()` has returned.
   A `run()` that does not watch it keeps running, as under a signal.
+  Unlike a signal's drain it stops no listener: a server keeps
+  accepting until a signal (`spec/semantics.md` § Drain cascade).
   The tree drain is the flag's second bit, so a signal's drain is
   neither masked nor ended by it; it ends with the main locus's
   teardown (`lotus_tree_drain_end`), so a main locus built afterwards
@@ -4330,8 +4450,131 @@ build.
 | `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from: every source of the identity-covered crates, the lock file and the ts-shim manifest (statted on each invocation, read only when one is newer than the binary), and the `dna/` tree it embeds (statted the same way, digested only when a file or its directory is newer than the binary or the file count is not the embedded set's). | off |
 | `HALE_STALE_DNA_ROOT` | none | The tree the stale-DNA check compares the embedded DNA against; the regression test's way to hand it a tree it may edit. | the workspace the binary was built from |
 | `HALE_TEST_JOBS` | none | How many workers `hale test` runs when `-j` is not given. | one per available core |
-| `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`) after its run and prints where, instead of removing it. | remove |
+| `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`), and the local habitat beside it (GH #1653), after its run and prints where, instead of removing them. | remove |
 | `HALE_WARM_SKIP_IRIS` | none | `scripts/warm-dna-cache.sh` skips building the observer (`1`), for jobs that never run `hale iris`. | off |
+
+## Runtime diagnostics are records
+
+A diagnostic the runtime writes on a served path is a record in the
+format `std::log`'s sinks write (`spec/stdlib.md` § `std::log`): the
+time (RFC 3339 UTC), a level, a logger naming the runtime's part
+(`lotus.tcp`, `lotus.unix`, `lotus.udp`, `lotus.tls`, `lotus.bus`,
+`lotus.drain`), a message and named fields, in the format
+`HALE_LOG_FORMAT` names, one line on stderr, written whole:
+
+```text
+time=2026-10-19T07:31:08Z level=error logger=lotus.tcp msg="accept failed" op="lotus_tcp_accept_one: accept" errno=9 error="Bad file descriptor"
+```
+
+A failed system call carries `op` (the call and step it used to print
+as `fn: step`), `errno` and `error` (its `strerror`); a TLS failure
+carries OpenSSL's error queue as one `ssl_error` field, where it was
+printed line by line; the drain's grace report carries `signal`,
+`grace_ms` and `waiting_on`. The covered paths are the TCP, Unix and
+UDP sockets, the bus transports and their configuration, TLS, and the
+drain. The runtime's renderer (`lotus_diag_render`) and the Hale
+sinks' (`log.hl`'s `__log_render`) are held to the same bytes by a
+test that renders one event both ways in every format
+(`runtime_records`). Out-of-memory aborts, `violation:` lines, the
+structural-failure and panic lines, and the opt-in debugging counters
+(`LOTUS_BUS_*`, `LOTUS_ARENA_*`) keep their text. (GH #1592, S2.)
+
+## Observe backends
+
+A `std::observe::Scrape` param of the main locus (`spec/semantics.md`
+§ "Observe backends") serves the Prometheus text exposition
+(`text/plain; version=0.0.4`) at its `path` on its own listener. A scrape renders a snapshot of one process-wide series
+table, sorted by family (namespace, then name), each family's
+`# TYPE` line once, its series in the order they registered:
+
+- **Every live `std::metrics::Registry`.** A Registry registers at
+  birth and leaves at dissolve; each handle (`Counter`, `Gauge`,
+  `Histogram`) registers its series when a factory makes it and writes
+  every update to the table as well as to the Registry's own map. The
+  table is the runtime's (`lotus_observe_*`, one lock), so a scrape on
+  the backend's thread never reaches into a locus another thread may be
+  dissolving. A series renders through `std::metrics`'s own renderers,
+  so it reads as `Registry.render()` writes it. A series id carries a
+  generation: a handle that outlives its Registry writes nothing.
+- **The runtime's own, under the `hale` namespace:**
+  `hale_process_resident_memory_bytes` (a gauge: `/proc/self/statm` on
+  Linux, the task's `MACH_TASK_BASIC_INFO` resident size on macOS),
+  `hale_process_cpu_seconds_total` (a counter: the user and system CPU
+  time `getrusage(RUSAGE_SELF)` reports), `hale_process_start_time_seconds`
+  (a gauge: the unix time the process started, taken as the runtime is
+  loaded, so `time() - hale_process_start_time_seconds` is its uptime),
+  `hale_draining` (0 or 1),
+  `hale_loci_live`, `hale_restarts_total`, `hale_failures_total` (a
+  failure delivered to a handler), per cooperative pool
+  `hale_pool_queue_depth{pool}` and `hale_pool_parked_coroutines{pool}`,
+  and per program topic `hale_topic_published_total{topic}`,
+  `hale_topic_delivered_total{topic}` and
+  `hale_topic_published_bytes_total{topic}` (the runtime's own
+  `__`-prefixed plumbing topics are left out).
+
+**Counters-only mode.** The topic and locus counts are the observation
+probes' (§ "Native observation emission"). A program holding a
+scrape defines `lotus_observe_metrics` (codegen emits it), and the
+runtime, reading it in the constructor that resolves `lotus_obs_live`,
+runs the probes into a private segment: the same layout in the
+process's own memory, with no rings, no shared-memory segment, no
+registration file and no heartbeat thread, so nothing can attach and
+nothing is emitted. `LOTUS_OBS=1` still asks for the observable
+segment, which carries the same counts. A program that holds no
+scrape defines nothing, and its probes stay behind the one dormant
+branch they always were.
+
+**A program that observes nothing pays nothing.** Three things keep
+`fn main() { }` the binary it was before observe (the same `.text` and
+the same instruction count, measured on #1667):
+
+- the backends' own source (`observe.hl`, `hale_stdlib::OBSERVE_SOURCE`)
+  is appended only to a program whose main locus holds a backend
+  param, as the TCP substrate joins only a program that names it;
+- what `std::metrics` gains for the table (a Registry's birth and
+  dissolve, a handle's series id, the renderer it shares with the scrape)
+  lowers to constants in such a program, and the build's internalize and
+  dead-code pass drops whatever of `metrics.hl` it does not call, as it
+  drops any unused stdlib declaration;
+- the runtime's observe support (the series table, the event ring,
+  the counters-only segment, the pools' parked counts) is compiled under
+  `LOTUS_OBSERVE`, which the build passes only for a program that
+  defines `lotus_observe_metrics` or `lotus_observe_events`, so every
+  other program links the runtime object it linked before
+  (`observe_metrics::a_program_that_observes_nothing_links_none_of_it`).
+
+**Lifecycle events (GH #1592, S4).** A `std::observe::Otlp` param of
+the main locus sends the runtime's lifecycle events to an OpenTelemetry
+collector as OTLP/HTTP JSON log records (`POST <endpoint>`,
+`application/json`): `locus.birth` and `locus.dissolve` (attributes
+`hale.locus`, `hale.instance`, `hale.parent`), `locus.restart`, and
+`locus.failure` (severity `WARN`, with `hale.closure`), each stamped
+with its wall time, under one resource (`service.name`,
+`hale.model_hash`, `hale.entity_id_digest`, and
+`OTEL_RESOURCE_ATTRIBUTES`'s). The first export opens with a
+`hale.start` record carrying the build's identity. A program holding one
+defines `lotus_observe_events` (codegen emits it), and only then do the
+birth and dissolve probes and the restart and failure notes write to the
+runtime's event ring (`lotus_observe_event`; a program holding either backend defines both flags, 0 or 1, since the runtime references both), which runs the probes in
+counters-only mode as a scrape does. The ring holds 4096 events and is
+never waited on: an event that finds it full is dropped and counted.
+The backend drains it from wherever `placement` puts it (`pinned` for a
+thread of its own), a batch every `interval`, each send bounded by
+`timeout_ms` in all (a `std::http::Client` with that total deadline and
+no retry; a `max_batch` below 1 is 1); a batch the collector does not take in time is dropped and
+counted too, and the count is `hale_otlp_dropped_total` on the page of a
+scrape the program also holds. What the backend's own coroutine (not its worker's other loci) does to
+send (a builder, a connection) is not an event. Its `run()` ends with the
+tree's drain or a signal's, after one last flush; events after that, at
+the very end of teardown, are not sent. A program that holds no `Otlp`
+emits no event call and leaves the ring empty
+(`observe_events::a_program_without_events_fills_no_ring`).
+
+A program that holds no scrape lowers `std::observe`'s calls to
+constants (an id of `-1`, `0`, `""`), so a Registry there registers
+nothing and an update writes only its own map
+(`observe_metrics::a_registry_without_observe_registers_nothing`
+holds the IR to it). On wasm32 the table is inert. (GH #1592, S3.)
 
 ## Diagnostic + tuning env vars
 
@@ -4349,6 +4592,9 @@ its behavior as described in this document.
 | `LOTUS_GLIBC_ARENA_MAX=<N>` | unset (glibc's own) | Calls `mallopt(M_ARENA_MAX, <N>)` at startup. Caps glibc's per-thread malloc arena count. `1` forces a single arena (max contention, min virtual-address fragmentation); higher `<N>` trades contention for parallelism. Useful belt-and-suspenders against the per-thread arena heap-segment proliferation glibc default tuning can produce on long-running daemons. Unset keeps glibc's default. |
 | `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | 64 MiB | Overrides the lazy-global bus payload arena's byte cap (default 64 MiB). When the cap fires, `lotus_arena_alloc` returns NULL and the existing alloc-fail paths (`empty_global` / `alloc_failed` violation) surface degraded service rather than OOM-killing the process. |
 | `LOTUS_DRAIN_GRACE_MS=<ms>` | 5000 | How long a SIGINT / SIGTERM drain may take before the runtime re-raises the signal with its default action, ending the process by it (default 5000). Only in a program that reads `self.draining`; see `semantics.md` § "Drain cascade (whole-process)" (GH #1039). |
+| `LOTUS_BUS_TABLE_STATS=1` | off | At teardown, prints `[bus_table] entries=N free=F` to stderr: the registration table's size and how many of its entries a dissolved subscriber left free for a later registration (§ "Bus message router"). A server whose connections each subscribe holds `entries` near its most connections at once. |
+| `LOTUS_BUS_TEST_WALK_STALL_US=N` | off | Test hook: a bus table walk pauses N µs inside an entry's version window, so a test can reuse that entry under it (`bus_registry_reuse_races`). Never set it in production. |
+| `LOTUS_BUS_TEST_ACCT_STALL_US=N` | off | Test hook: an enqueue pauses N µs between reading a subscriber's incarnation and charging its in-flight count, so a test can reuse the entry under it (`bus_registry_reuse_races`). Never set it in production. |
 | `LOTUS_BUS_CALL_ARENA_STATS=1` | off | At exit, prints `[bus call arenas] opened=N live_bytes=L peak_bytes=P` to stderr: how many per-call arenas adapter `send`s and keyed adapter deliveries opened, the chunk bytes still held (0 unless a call is in flight), and the most held at once. The call arenas are not residency targets, so this is how a test sees them (GH #1038). |
 | `LOTUS_ARENA_RESIDENCY=1` | off | Registers every top-level arena (locus `__arena`s, `g_bus_payload_arena`, the program-wide global) into a side-table at creation time with a 24-frame construction backtrace. `std::process::dump_arena_residency()` walks the live set and emits one line per arena to stderr — bytes / chunks / parent / label, sorted by bytes desc — with the construction backtrace. Subregions (method scratch) are skipped; they destroy at method exit and don't accumulate residency. Atexit also dumps, but post-dissolve fires after all loci tear down — useful only for the global arena's final state. Long-running daemons should call `dump_arena_residency` from a heartbeat / checkpoint tick so locus arenas are sampled while still alive. |
 | `LOTUS_CHUNK_POOL_PREFILL=<N>` | 32 | Per-thread chunk-pool pre-fill on first touch. Default 32 (= 2 MiB resident per scheduler thread). Set 0 to disable. Bumps the pool's steady-state floor so brief bursts don't drain to zero and miss into malloc; the trade-off is per-thread resident memory. |
@@ -4356,7 +4602,7 @@ its behavior as described in this document.
 | `LOTUS_LTO=1` | off (build time) | Read at *build time*. Opt-in full-LTO native build: the Hale module is emitted as bitcode and the lotus runtime TUs compile with `-flto`, so the `clang -flto -O3 -fuse-ld=lld` link inlines the runtime hot paths (arena / string / shm_ring) across the TU boundary into the Hale callers. A few percent on allocation/coordination-heavy code, neutral on vectorized loops (host tuning preserved via per-function `target-features`). Off by default — ~3–4× slower link, requires `lld`. Native non-sanitizer only; `--wrap` shims survive (lld resolves them before LTO codegen). See *Native codegen defaults* above. |
 | `LOTUS_BUS_LOG_UNMATCHED=1` | off | Surfaces silent no-key-match drops in `lotus_bus_local_dispatch_keyed` (Phase 3 routing keys). When set, each publish that matches no `where key == ...` subscriber for the topic emits a single stderr line citing subject, key, and the per-topic subscriber counts (specific vs unkeyed). Off by default — the silent-drop is correct for `on_unmatched: swallow` topics in steady state, but during bring-up the lack of any signal is load-bearing on debug cycles. Implied by `LOTUS_BUS_LOG_DROP=1`. |
 | `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | off | Surfaces silent drops in the udp:// reader thread when (a) no deserializer is registered for the inbound subject, or (b) the deserializer returns `<= 0` (size mismatch, bounded-read failure). Emits one stderr line per drop naming the subject, the payload size, and (when applicable) the deserializer's return value. Off by default; the silent-skip on cross-routed multicast noise is the correct steady-state behavior. Same env-gated pattern as `LOTUS_BUS_LOG_UNMATCHED` for keyed-dispatch misses. Implied by `LOTUS_BUS_LOG_DROP=1`. |
-| `LOTUS_BUS_QUEUE_CAP=<N>` | 8192 | Caps the cooperative bus dispatch queue, each per-pinned-locus mailbox, and each cooperative pool's queue at `N` cells (default 8192; floor 64; rounded up to a power of two; read once). **v0.9.0 footprint change:** the pinned mailbox and cooperative-pool queues are now lock-free MPSC rings (Vyukov bounded ring + signal-only-when-parked wake), and a fixed-size lock-free ring **pre-allocates its cap up front** rather than growing to it — so each pinned subscriber mailbox and each cooperative pool now costs ~4.3 MB resident at the default cap (vs the prior grow-as-needed). With the typical handful of pinned loci / pools this is a few-to-low-tens of MB; **lower `LOTUS_BUS_QUEUE_CAP` for pinned-/pool-heavy programs** to shrink it (the rings honor it identically). When a producer hits the cap it *back-pressures* instead of growing without bound (GH #125) — every message is still delivered. The mechanism: a **single-threaded** producer on the cooperative queue **inline-drains** it to free space; a **cross-thread** producer to a full ring **blocks** (a fenced producers-waiting handshake) until the single consumer drains a slot; a handler self-publishing to its own full ring spills to a consumer-thread-local overflow list (it can't block on itself). The cross-*cooperative*-pool *shared* queue path (multiple drainers, no single consumer) is the remaining non-lock-free path — a follow-on. Lower the cap to tighten the bound / footprint; raise it to reduce drain bursts at the cost of resident memory. |
+| `LOTUS_BUS_QUEUE_CAP=<N>` | 8192 | Caps the cooperative bus dispatch queue, each per-pinned-locus mailbox, and each cooperative pool's queue at `N` cells (default 8192; floor 64; rounded up to a power of two; read once). **v0.9.0 footprint change:** the pinned mailbox and cooperative-pool queues are now lock-free MPSC rings (Vyukov bounded ring + signal-only-when-parked wake), and a fixed-size lock-free ring **pre-allocates its cap up front** rather than growing to it — so each pinned subscriber mailbox and each cooperative pool now costs ~4.3 MB resident at the default cap (vs the prior grow-as-needed). With the typical handful of pinned loci / pools this is a few-to-low-tens of MB; **lower `LOTUS_BUS_QUEUE_CAP` for pinned-/pool-heavy programs** to shrink it (the rings honor it identically). When a producer hits the cap it *back-pressures* instead of growing without bound (GH #125) — every message is still delivered. The mechanism: a **single-threaded** producer on the cooperative queue **inline-drains** it to free space; a **cross-thread** producer to a full ring (a pool's or a pinned mailbox) **waits while its consumer drains** (a fenced producers-waiting handshake, and the drain-liveness rule below): the consumer bumps a heartbeat at every cell it takes, and a producer that sees none for 20 ms takes the consumer for blocked (a socket read, an `@ffi` call, a long handler, a run() with no park point, any of which may be waiting on that very producer) and puts its cell in the ring's **spill**, a locked list the consumer takes after the ring and before its own overflow list; the spill's bound grows by one ring per 20 ms window, a window shared by every producer waiting, and that headroom is the stall's only: once the consumer takes from the spill again its bound shrinks to what the spill holds, and is one ring again once that is below it. While the spill holds cells every cross-thread post goes behind them, so one publisher's order holds (`bus_backpressure.rs`); a handler self-publishing to its own full ring spills to a consumer-thread-local overflow list (it can't block on itself). Main's cooperative queue, multithreaded, is still a mutex-guarded array, but it has one consumer (only main runs its handlers), so a **cross-thread** producer to it at the cap **waits while main drains**: back-pressure applies while the owner drains, and a producer never waits on an owner that is not draining. Main bumps a drain heartbeat at every drain and every cell it pops; a producer at the bound re-reads it every millisecond, and when it has not moved for 20 ms it takes main for blocked (a socket read, an `@ffi` call, a long handler, a spin with no drain point, any of which may be waiting on that very producer) and goes on, raising the bound by one cap. The window is the queue's: a raise starts it again for every producer waiting, so while main drains nothing the queue grows by at most a cap per 20 ms however many producers wait (a pool flooding a main subscriber while main spins: ~220 MB/s, where the unbounded path grew by gigabytes a second); the headroom is the stall's only: once main takes cells again the bound shrinks to what is queued, and is the cap again once that is below it, so producers wait until main is back under the cap. The runtime's own blocking waits on main (posting to a full ring, waiting for a run from inside a handler, a failure delivery, a join, a readiness cap, an ingress quiesce, a blocking shm claim) let the producer go at once, and so does main's teardown (from the pools' and pinned threads' joins on). Main's own posts to its queue never wait (`bus_backpressure.rs`). Lower the cap to tighten the bound / footprint; raise it to reduce drain bursts at the cost of resident memory. |
 | `LOTUS_UNIX_STREAM=1` | off (`SOCK_SEQPACKET` on Linux) | GH #231: forces the unix bus transport into framed `SOCK_STREAM` mode on Linux (the Darwin default — macOS has no AF_UNIX `SOCK_SEQPACKET`). Wire format per message: `[u64 LE payload len][u64 LE seq][payload]`; the seq is per-connection monotonic from 1, reset per accepted peer, and the receiver counts gaps (`seq_gaps` counter — GH #236's loss-computability primitive). Set for EVERY process on a socket: framed and SEQPACKET ends don't interoperate (a mismatch trips the 8 MB length sanity cap with a diagnostic naming the likely cause). Primary use: Linux CI/test coverage of the macOS code path. |
 | `LOTUS_BUS_COUNTERS_DUMP=1` | off | GH #236 (observability groundwork): prints one stderr line per remote binding at teardown — `[bus counters] subject=... kind=... role=... sent= delivered= bytes_sent= bytes_delivered= send_failures= dropped_lost= waits= rearms= reconnects=`. The counters are plain relaxed atomics bumped at the transport choke points (fanout send, serve-loop dispatch, re-arm, reconnect) and exist as the substrate for the iris observer; the dump is the operator/test surface until an in-process consumer ships. `dropped_lost` counts publishes made while a connect binding was in the lost/reconnecting window (GH #233 — drops the publish contract makes deliberate and visible). `waits` counts publishes that parked in `or wait` through that window instead (GH #255 phase 1). `buffered_early` / `dropped_early` (GH #468) count boot-window wire messages buffered before any matching subscriber registration existed, and the subset dropped (buffer eviction at the 64-msg/1 MiB per-binding cap, a deserialize failure at flush, or a subject that never gained a subscriber by teardown). Socket-buffer occupancy is intentionally not a counter: it's a poll-time `SIOCOUTQ` query against the live fd. |
 | `LOTUS_BUS_LOG_DROP=1` | off | Broad superset for diagnosing "publish appears to succeed but handler doesn't fire" symptoms. Implies `LOTUS_BUS_LOG_UNMATCHED` + `LOTUS_BUS_LOG_DESERIALIZE_DROP` AND covers additional silent-drop sites the narrower vars miss: `lotus_bus_dispatch`'s serialize-fn-returns-<=0 case, the local-fanout (`lotus_bus_dispatch_wire` + `lotus_bus_local_dispatch`) zero-matching-subscribers case, per-entry deserialize-returns-<=0 on the local-fanout path, and the no-post-target case (mailbox / coop_pool / global queue all NULL on a matched entry). Each line names the call site, subject, and relevant size / index info so a bus-heavy repro can identify exactly which silent-skip is firing. Reach for this first when investigating bus-drop friction; the narrower vars stay supported for their specific bring-up scenarios. |
@@ -4369,6 +4615,7 @@ its behavior as described in this document.
 | `LOTUS_BUS_UDP_RCVBUF=<N>` | the kernel's | `SO_RCVBUF`, in bytes, for the udp bus readers. Ignored unless a positive `int`. |
 | `LOTUS_BUS_TEST_BOOT_HOLD_MS=<ms>` | 0 | Test only: stretches the boot-registration window of a listening binding (see `LOTUS_BUS_QUIESCE_MS`). Never set in production. |
 | `LOTUS_BUS_TEST_READER_STALL_MS=<ms>` | 0 | Test only: stretches the window in which a binding's reader is descheduled. Never set in production. |
+| `LOTUS_BUS_TEST_RING_CLAIM_STALL_US=<us>` | 0 | Test only: the producer holding the 100th slot claim of the process's pool rings and mailboxes stalls that long between claiming its slot and publishing it, so the ring's head stays unpublished while later slots fill and spill (`bus_backpressure.rs`). Never set in production. |
 | `LOTUS_BUS_LOG_RESERVE=1` | off | #1534: one stderr line per reservation of a static tree's subscriptions as it closes — `[bus] reservation \`<subject>\` closed: parked P copied C forwarded F shed S claimants N missing M keys K` (cells held, copies its claims took, cells a later park forwarded to a claimant its publish did not reach, cells its bound shed, claims made, claims expected and never made, routing-key records kept: one per key with a retained cell, never more than a queue's worth). A development aid; the race tests read it. |
 | `LOTUS_BUS_TEST_RESERVE_STALL_US=<us>` | 0 | Test only: holds every publish into a reservation, on a thread other than the one building the tree, that many microseconds between the registrations it walked and its park, so a claim lands in between and the park forwards (`bus_static_reservation.rs`). Never set in production. |
 | `LOTUS_TEST_PINNED_START_NO_DRAIN=1` | off | Test only: disables the instantiating thread's queue drain while it waits for pinned or pool initialization. The startup request/reply negative controls use it to expose the resulting deadlock. Any non-empty value not starting with `0` enables it. Never set in production. |
@@ -4390,7 +4637,13 @@ its behavior as described in this document.
 | `LOTUS_REPLAY_AT=<n>` | unset | Stop the replayed run (SIGSTOP) at the n'th consume; `hale replay --at <n>`. |
 | `LOTUS_REPLAY_AT_CONSUMER=<id>` | unset | With `LOTUS_REPLAY_AT`, count the n'th consume of that consumer instead of the process-wide n'th; `--at <consumer-id>:<n>`. |
 | `LOTUS_REPLAY_FD=<fd>` | unset | An already-open, validated descriptor for the recording, passed by `hale replay` so no path is re-resolved between admission and replay. |
+| `LOTUS_PROBES_STALL_MS=<ms>` | 10000 | The window `/healthz` allows a queue (main's, a cooperative pool's) to hold work its consumer has not touched before it answers 503 naming the queue; read when a `std::observe::Probes` param starts the probes (spec/semantics.md § Probes). A value that is not a positive count keeps the default. |
 | `LOTUS_API_ROLES=<table>` | the `table` param of the program's `std::api::StaticRoles` | Overrides a `StaticRoles` source's table at run time (`spec/stdlib.md` § `std::api`); with no table, every `requires` refuses until this says otherwise. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=<url>` | unset | Where a `std::observe::Otlp` backend with an empty `endpoint` sends (§ Observe backends). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=<url>` | unset | Without the logs endpoint, the base an empty `endpoint` sends to, at `<url>/v1/logs`. |
+| `OTEL_SERVICE_NAME=<name>` | `hale` | The `service.name` of an `Otlp` backend whose `service` is empty. |
+| `OTEL_RESOURCE_ATTRIBUTES=<k=v,…>` | unset | More resource attributes on every export of an `Otlp` backend. |
+| `HALE_LOG_FORMAT=<format>` | `logfmt` | The record format of `std::log`'s `StdoutSink` and `FileSink` (`spec/stdlib.md` § `std::log`) and of the runtime's own diagnostics (§ Runtime diagnostics are records): `logfmt`, `json`, or `text` (the format before records); a sink's `format:` param overrides it for that sink, and an unknown name is `logfmt`. |
 | `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |
 | `HALE_VAULT_ADDR=<url>` | unset | When set, a `vault:` source resolves over the vault's HTTP API at `<url>/v1/secret/<name>` instead of the local directory. |

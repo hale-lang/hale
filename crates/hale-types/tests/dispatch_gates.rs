@@ -40,14 +40,11 @@ fn entries(dir: &str, dirs: bool) -> Vec<PathBuf> {
     out
 }
 
-/// Every directory under `dir` that holds a `main.hl`.
+/// Every directory under `dir` that holds a `main.hl` git would commit
+/// (`hale_corpus::source_files`).
 fn mains(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut es: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
-    es.sort();
-    for p in es {
-        if p.is_dir() {
-            mains(&p, out);
-        } else if p.file_name().is_some_and(|n| n == "main.hl") {
+    for p in hale_corpus::source_hl(dir) {
+        if p.file_name().is_some_and(|n| n == "main.hl") {
             out.push(p.parent().unwrap().to_path_buf());
         }
     }

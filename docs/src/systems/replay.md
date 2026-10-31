@@ -1,161 +1,71 @@
-# Record & replay
+# Deterministic Record & Replay
 
-"Reproduce the incident exactly" is worth more to someone running a
-system than any counter you can print. Hale's substrate is unusually
-close to being able to promise it: a cooperative pool is one
-consumer thread by construction, messages are copies, and every
-delivery already passes an observation probe. Record & replay is
-those ingredients combined — a flight recorder over the observation
-plane, and a `hale replay` command that re-executes what it
-captured.
-
-The claim, stated exactly: **re-run a recorded execution and get
-the same schedule and the same journaled inputs, with an explicit,
-checked coverage boundary.** What sits outside that boundary —
-live sockets, files, subprocesses — is refused by default rather
-than silently re-executed. This chapter walks the whole surface;
-the normative contract is `spec/runtime.md` § *Lossless recording
-mode*, which covers both recording and replay.
-
-## Recording a run
+Hale's flight recorder (`LOTUS_OBS_RECORD`) captures a program's message delivery schedule, wire ingress payloads, and non-deterministic standard library reads (`std::time`, `std::rand`, `std::env`). The `hale replay` command re-executes the program hermetically against that recording to reproduce bugs deterministically, verify behavior with `--diff`, or backtest modified code with `--feed`.
 
 ```sh
+# 1. Record an execution to disk
 LOTUS_OBS_RECORD=run.halerec hale run app.hl
+
+# 2. Re-execute and verify that all schedules, events, and journals match
+hale replay run.halerec app.hl --diff
 ```
 
-Recording turns the observation plane's sampler disposition into a
-flight recorder's. A live observer prefers losing records to
-stalling the observed program; a recorder makes the opposite trade,
-because a dropped record is a replay that diverges silently:
+## Recording a Run (`LOTUS_OBS_RECORD`)
 
-- a producer whose ring is full **blocks** until the in-process
-  drain catches up, instead of overwriting the oldest record;
-- a thread that cannot get a ring, a capture allocation failure, a
-  write failure, or a finalize failure **fails the run** — never a
-  silent gap;
-- the file ends with a clean-finalize trailer, and a finalized
-  recording is admitted for replay only when the *entire* artifact
-  validates — exact parse to the trailer, matching entry count.
+Set `LOTUS_OBS_RECORD=<path>` to enable lossless flight recording (see `spec/runtime.md` § *Lossless recording mode*):
 
-The recording is also **crash-durable** (a durable flight
-recorder — not a write-ahead log: the application never waits on
-the recording, so a crash can lose the last instants before it):
-frames stream to disk in order and the header identity is stamped
-eagerly, so a run that dies without teardown — the run whose
-recording you want most — leaves an artifact that is exact up to
-one torn frame at the tail. Replaying it is an explicit opt-in
-(`--allow-truncated`): the loader stops at the torn frame, says
-how much it kept, and replays that prefix; under `--diff` the
-post-crash suffix is surplus, not divergence, while anything
-inside the prefix still must match. `LOTUS_OBS_RECORD_DURABLE=1`
-is the power-loss grade: a file sync (`fdatasync` on Linux,
-`F_FULLFSYNC` on macOS) per drain sweep AND on the
-finalize trailer, plus a parent-directory sync at creation, with
-the grade recorded in the artifact header.
+| Environment Variable | Default | Behavior |
+|---|---|---|
+| `LOTUS_OBS_RECORD=<path>` | Unset | Writes a lossless `.halerec` recording to `<path>` (implies `LOTUS_OBS=1`; requires no attached observer). |
+| `LOTUS_OBS_RECORD_DURABLE=1` | Unset | Syncs each drain sweep and finalize trailer to disk (`fdatasync` on Linux, `F_FULLFSYNC` on macOS) and syncs the parent directory on file creation. |
+| `LOTUS_OBS_RECORD_ENV=full` | Withheld | Captures full `std::env` variable values in the journal. By default, only variable names, existence, and byte lengths are recorded to protect secrets. |
 
-The recording needs no observer attached and works from the first
-probe. It captures four things:
+Unlike live observation (`LOTUS_OBS=1`), which drops telemetry records rather than slowing down the application, `LOTUS_OBS_RECORD` prioritizes completeness:
+- **Lossless backpressure**: If a thread's observation ring fills, the producer blocks until the in-process drain flushes the ring to disk.
+- **Fail-loud integrity**: Any ring allocation, capture, write, or finalization error aborts the run immediately rather than writing a silently incomplete file.
+- **Crash-prefix durability**: Frames stream to disk sequentially after an eagerly stamped header. If the process crashes before writing the finalize trailer, pass `--allow-truncated` to `hale replay` to replay the intact prefix up to the torn tail frame.
 
-1. **The schedule.** Every queued delivery gets a consume record on
-   the consuming thread at handler invoke, carrying the delivery's
-   identity — (target locus, message id), where the message id is
-   deterministic per publisher thread. Per consumer, that stream
-   *is* the order the handlers ran in.
-2. **The public bus stream.** Publishes and deliveries as the iris
-   protocol already emits them, with file-side identity maps so the
-   comparator can align them across runs. Synchronous
-   direct-dispatch traffic — the devirtualized flavor most
-   intra-app traffic compiles to — is visible here.
-3. **Payloads.** One blob per publish, whichever way the publish
-   was dispatched — including the synchronous direct call, which
-   has the payload in hand at the publish site. Wire-encoded
-   payloads go in verbatim — including every message a listen
-   binding receives, captured in its wire form as an **injectable
-   ingress tape** — and raw in-process structs as *metadata only*
-   (an ABI snapshot would carry heap pointers and padding while
-   being useless for comparison).
-4. **The input journal.** Every user-facing nondeterministic read —
-   `std::time::now`, `std::time::monotonic[_ns]`,
-   `std::rand::next_int`, `std::os::getrandom`, the `std::env`
-   surface — with its exact encoded arguments, per consumer.
+> [!WARNING]
+> Because lossless recording blocks producers when observation rings fill, it alters application timing by design. Do not leave `LOTUS_OBS_RECORD` enabled in latency-critical production steady state.
 
-**Secrets:** env *values* are withheld from recordings by default —
-names, existence, and lengths are captured; the value itself
-requires `LOTUS_OBS_RECORD_ENV=full`, and the artifact header
-records which policy applied. A withheld read replays as a named
-divergence, never as a substituted value.
+### What a Recording Captures
 
-Recording changes your program's timing by design; don't leave it
-on in production.
+Every `.halerec` file records four streams:
+1. **Per-consumer delivery schedule**: Every queued handler invocation records `(target locus, message id)` on the consuming thread, capturing the exact interleaving across concurrent publishers.
+2. **Public bus events**: All publish and delivery events—including synchronous devirtualized direct-dispatch calls—with file-side identity maps for cross-run alignment.
+3. **Payloads and wire ingress tape**: Wire-encoded payloads (including all frames accepted by `unix://` and `udp://` listen bindings) are captured verbatim as an injectable ingress tape. In-process flat struct publishes are recorded as metadata only (declared byte size and publish identity).
+4. **Non-deterministic input journal**: Every call to `std::time::now`, `std::time::monotonic`, `std::time::monotonic_ns`, `std::rand::next_int`, `std::os::getrandom`, and `std::env` is journaled per consumer with its encoded arguments and return value (unless `std::env` values are withheld by default).
 
-## Replaying one
+## Replaying a Run (`hale replay`)
 
-```sh
-hale replay run.halerec app.hl            # re-execute it
-hale replay run.halerec app.hl --diff     # + compare, fail on any divergence
-hale replay run.halerec app.hl --diff --json   # ...that verdict, machine-readable
-hale replay run.halerec app.hl --at 4120  # SIGSTOP at consume #4120
-hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
-hale replay run.halerec app/              # a directory seed, as `hale run app/` ran it
-```
+`hale replay` recompiles the source program using the same pipeline as `hale run` and executes it against the recording:
 
-`hale replay` recompiles the program through the same pipeline as
-`hale run`, then admits the recording — strongest check first:
+| Command / Flag | Description |
+|---|---|
+| `hale replay run.halerec app.hl` | Re-executes `app.hl` (or a directory seed `app/`) using the recorded schedule, ingress tape, and input journal. |
+| `--diff` | Compares consume schedules, public bus events, payloads, and journals bidirectionally; exits non-zero on any divergence. |
+| `--diff --json` | Emits the `--diff` verdict and per-category coverage counts as a single JSON object. |
+| `--at <N>` / `--at <consumer>:<N>` | Sends `SIGSTOP` to the process at global consume `#N` or at `<consumer>`'s `N`th consume so you can attach `gdb` or `lldb` at the exact step. |
+| `--allow-truncated` | Admits a crash-truncated recording (missing its finalize trailer) and replays the valid prefix. Under `--diff`, post-crash execution counts as surplus rather than divergence. |
+| `--feed` | Backtesting mode: injects the recorded wire ingress tape into modified code while leaving clocks, RNG, `std::env`, and `argv` live. |
+| `--allow-unmatched-feed` | Under `--feed`, permits the run to succeed even if some recorded ingress frames were not consumed. |
+| `--allow-live-effects` | Permits replaying a program whose call graph reaches unjournaled `syscall`, `ffi`, or `unclassified` effects. |
+| `--allow-unverified-model` | Bypasses the executable identity hash check to replay against modified source code or unstamped recordings. |
+| `--dev` / `--env <name>` | Passes the build flags used when the recording was created (required to match the recorded execution identity). |
 
-- **Safety, before anything else.** Re-execution repeats real side
-  effects, so a program whose effect frontier reaches `syscall`,
-  `ffi`, or `unclassified` is refused with the residue named,
-  unless you pass `--allow-live-effects`. This is deliberately
-  coarse (a lone `sleep` trips it); over-refusing is the safe
-  direction. `bindings` blocks are *not* on the list: under replay
-  the wire is hermetic — bound transports never open, and the
-  recorded ingress is injected instead (below).
-- **Executable identity.** The recording carries a framed SHA-256
-  over the full compiler/runtime/stdlib source tree, the compiler
-  version, build options, and every application source's path,
-  length, and contents. A path is the one the topology artifact's
-  `sources` table gives the file, never an absolute one, so the
-  same tree checked out elsewhere, or run from another directory,
-  has the same identity. The build options are the ones the
-  compiling command was given — `hale run` and `hale replay` take
-  `hale build`'s option flags — so a run recorded under `hale run
-  --dev` replays under `hale replay --dev`, and a default replay
-  refuses it. The same holds for `--env`: a run recorded under
-  `--env prod` replays under `hale replay --env prod`. A binary from
-  `hale build` carries the identity `hale run` would give the same
-  program — the debug information a build adds is not part of it —
-  so you can record the binary you ship and replay it against its
-  source; a *directory* seed's recording replays against the
-  directory, as `hale run` and `hale build` take it (`hale replay
-  run.halerec app/`), every file of the seed in its identity. A structurally compatible model with a
-  changed function body is *not* the same executable — it is
-  rejected, with `--allow-unverified-model` as the explicit
-  override for unstamped or divergent-build recordings.
-- **Artifact integrity.** The child re-reads the same validated
-  file object (an inherited descriptor, no path re-resolution
-  window), snapshots the bytes into private memory, and
-  independently re-validates the whole structure.
+### Three-Stage Replay Admission
 
-During re-execution the runtime serves journaled reads back per
-consumer — refusing to serve an entry whose kind or arguments
-differ from the caller's — and re-consumes each consumer's queued
-deliveries in the recorded order, holding early arrivals in a
-per-consumer buffer. **Replay degrades, never refuses**: a read or
-delivery past the recorded history falls back live and is counted,
-and the divergence summary (journal misses, order holds, unconsumed
-or unexpected deliveries) prints at exit. Under `--diff`, *any* of
-those fails the comparison, alongside a bidirectional comparison of
-consume streams, public bus streams, payloads, and journals.
+Before executing a single instruction of the target program, `hale replay` enforces three admission checks:
 
-Two pinned publishers racing into one sink replay in exactly the
-interleaving that was recorded — that is the per-consumer order
-enforcement working, and it is pinned by tests that run the race
-repeatedly.
+1. **Live-effect safety gate**: Re-executing a program would normally repeat real external side effects. If the program's effect frontier reaches `syscall`, `ffi`, or `unclassified`, `hale replay` refuses to run and names the offending call chain unless you pass `--allow-live-effects`. (`bindings` blocks do not trigger this refusal because bound network transports are suppressed hermetically during replay.)
+2. **Executable identity verification**: The recording header stores a framed SHA-256 hash covering the compiler version, runtime/stdlib sources, build flags (`--dev`, `--env`), and the relative paths, lengths, and contents of all source files in the seed. `hale build` and `hale run` produce identical hashes (DWARF debug info is excluded), so a recording captured from a compiled production binary (`./myapp`) replays cleanly against its source directory (`hale replay run.halerec myapp/`). Any edit to a function body or mismatch in build flags is rejected unless `--allow-unverified-model` or `--feed` is passed.
+3. **Artifact integrity**: The runtime re-reads the inherited file descriptor into private memory and validates every frame and entry count up to the finalize trailer.
 
-### A match says which categories it compared
+During execution, the runtime serves journaled inputs per consumer and releases queued deliveries in the exact recorded order (holding early arrivals in a per-consumer reorder buffer). If execution runs past the recorded history, reads and deliveries fall back to live execution and increment divergence counters printed at exit.
 
-A comparison can only check what the recording observed, so a match
-reports coverage per category rather than one number:
+## Verifying Execution & Coverage (`--diff`)
+
+Passing `--diff` fails the replay if any divergence occurs and prints a per-category verification summary:
 
 ```text
 replay matches the recording (26 ring records). Compared, by category:
@@ -167,123 +77,35 @@ replay matches the recording (26 ring records). Compared, by category:
 A category reported as not exercised was NOT verified by this match.
 ```
 
-That is a real match, over a real program — a publisher and its
-subscriber in one tree on one thread. Every delivery was **direct
-dispatch**: synchronous, valid, and compared above as public bus
-events, with the ten payloads behind them. What it does *not*
-establish is a queued delivery schedule, because there was never
-one to replay. Reading it the other way is the trap this report
-exists to close: a successful `--diff` establishes exactly the
-categories it lists as compared, and nothing about the ones it
-marks not exercised.
+### Understanding Category Coverage
 
-The payload line says *what* was compared, because that depends on
-the blobs. A payload published in-process as a flat struct is
-recorded as **metadata only** — its declared size and publish
-identity — since a snapshot of its bytes would carry heap pointers
-and uninitialised padding. The comparator checks exactly those two
-things for it, so the report reads `sizes and identities; contents
-not canonicalised`, and a flipped field inside such a payload is not
-a divergence `--diff` can see today. Bytes that arrived over the
-wire are canonical and read `canonical bytes identical`; a recording
-with both counts each. A per-topic canonical encoding for in-process
-payloads is a separate, planned item.
+- **`public bus events` vs. `queued consumes`**: Intra-thread bus deliveries compile to synchronous direct calls and are verified under `public bus events`. `queued consumes` verifies cross-thread/mailbox ordering (such as two `pinned` publishers racing into a shared subscriber).
+- **`payloads` (`contents_canonicalised` vs. `metadata_only`)**: Wire frames are compared byte-for-byte (`canonical bytes identical`). In-process struct payloads are compared by size and publish identity (`sizes and identities; contents not canonicalised`) because raw struct memory contains arena pointers and padding.
+- **`async schedule steps`**: For `where async_io` pools, records and replays the worker drain's exact coroutine scheduling steps (cell starts, readiness wakes, and timed-park expiries, fast-forwarding recorded sleeps).
+- **`--diff --json`**: Emits machine-readable JSON containing `result` (`"match"` or `"diverged"`), `ring_records`, `recorded_prefix_only`, and per-category `compared`, `count`, `consumers`, `not_exercised_because`, `contents_canonicalised`, and `metadata_only` fields.
 
-Pin the publisher to its own core and the same ten publishes fill
-the queued category in — `queued consumes: 10 across 1 consumer` —
-while an `async_io` pool adds its recorded scheduling steps. A
-recording from before async schedules were recorded at all says so
-in the same place, instead of looking like an empty schedule that
-matched.
+## Hermetic Transports & Ingress Injection
 
-For tooling, `--diff --json` prints the same verdict as one JSON
-object: `result` (`match` or `diverged`), `ring_records`,
-`recorded_prefix_only`, and per category `compared`, `count`,
-`consumers`, and `not_exercised_because` — plus, for `payloads`, the
-same split as `contents_canonicalised` and `metadata_only`. Coverage
-reporting changes
-nothing about pass or fail — a divergence in any compared category
-still fails the command, and a diverged verdict carries its reason
-without per-category counts, since the comparison stopped at the
-first difference.
+During `hale replay`, native `unix://` and `udp://` transport bindings run hermetically:
+- No OS sockets are opened, bound, or connected, and outbound publishes to bound topics are suppressed on the wire (while still recorded for `--diff`).
+- One injector worker per recorded ingress source feeds the verbatim wire bytes captured during recording, paced against recorded execution progress so bounded queues experience the exact same load.
 
-## The wire is hermetic (for backends that support it)
+> [!IMPORTANT]
+> Transport hermeticity is enforced per backend capability. Bindings that do not yet implement a hermetic replay adapter—such as `shm_ring`—are rejected at both the CLI and runtime seam so a replayed process never attaches to live shared memory.
 
-A replayed server must not talk to the real world — in either
-direction. Under replay, the native `unix://` and `udp://`
-binding transports are suppressed at realization: no socket is
-created, listeners don't bind, connectors don't connect, and
-publishes to bound topics send nothing (they are still recorded
-and compared under `--diff`). In the listeners' stead, an
-injector — started at an explicit boot phase, one worker per
-recorded ingress source — re-dispatches the recording's ingress
-tape: the verbatim wire bytes each listener received, in recorded
-order, paced against recorded progress (so bounded queues shed
-nothing they didn't shed originally), each delivery carrying its
-*recorded* identity and matched by its full subject and payload
-shape. Replay a server binary with no peers, no free ports, and
-no network, and its subscribers see exactly the traffic the
-original accepted — rejected frames never re-fed, and every
-non-injected tape entry classified and counted.
+## Backtesting with Feed Mode (`--feed`)
 
-Hermeticity is a per-backend capability, not a blanket claim: a
-binding backend with no replay class — `shm_ring` today — is
-refused outright, by the CLI and again at the runtime seam, so a
-replayed process cannot touch live shared memory.
-
-## Feed mode: same recorded ingress, changed code
+When you modify handler logic or strategy code and want to test your changes against a captured production traffic tape, use `--feed`:
 
 ```sh
-hale replay run.halerec app.hl --feed
+hale replay prod-traffic.halerec app.hl --feed
 ```
 
-Backtesting is a different contract from replay: not "the same run
-again" but "the same **recorded ingress** again," against code you
-have changed — time, randomness, env, and argv stay live, which
-is why the name is precise rather than "same inputs." `--feed`
-consumes the recording as an input tape only — recorded ingress
-injected, wire hermetic — and deliberately drops the rest of
-replay: no journal serving, no order enforcement, no model
-admission (a hash mismatch prints as information; feeding a tape
-to changed code is the point). What it does **not** drop is the
-effects gate: `--feed` bypasses identity, never safety — a
-program that reaches `syscall`/`ffi`/`unclassified` still needs
-`--allow-live-effects` beside it. Record a day of production
-traffic once; run every strategy revision against it. The exit
-report classifies every tape entry (injected, rejected,
-unmatched, incompatible shape, unprocessed), and an unfed
-remainder fails the run unless you accept it explicitly with
-`--allow-unmatched-feed` — a dropped tape is a fact, never a
-silence.
+`--feed` keeps the wire hermetic and injects the recorded `bindings` ingress tape, but drops replay constraints that only apply to identical code:
+- **Bypasses model identity, schedule locking, and input journals**: Code changes are accepted, and `std::time`, `std::rand`, `std::env`, and `argv` execute live.
+- **Preserves the live-effect safety gate**: Programs reaching raw `syscall`, `ffi`, or `unclassified` effects still require `--allow-live-effects`.
+- **Audits every tape frame**: At exit, `--feed` classifies every recorded ingress frame (`injected`, `rejected`, `unmatched`, `incompatible shape`, `unprocessed`). If any frames remain unfed, the run exits non-zero unless `--allow-unmatched-feed` is specified.
 
-## The coverage boundary, honestly
+## Single-Pool Determinism Without Recording
 
-- **Per consumer, not global.** Each consumer reproduces its own
-  recorded order; cross-consumer wall-clock alignment is not a
-  replay property (and is exactly what the recording never
-  promised).
-- **The injected tape covers `bindings` ingress.** Raw user-level
-  socket reads are syscall-class live effects (the gate names
-  them), and adapter loci re-execute their own protocol logic.
-  Fleet-scale replay — multiple binaries against one composed
-  tape — is the next milestone.
-- **`where async_io` pools replay their recorded schedule.** The
-  drain's decisions — cell starts, readiness resumes, timed-park
-  expiries — are recorded as a per-worker step stream and drive the
-  replayed drain instead of the clock (recorded sleeps
-  fast-forward). What replays is the *schedule*: the data of
-  unjournaled I/O still re-executes live (and is gated).
-- **The artifact format is pre-stable** while the remaining phases
-  (fleet replay, replay-under-a-different-plan) land.
-
-## Determinism without the recorder
-
-A program whose loci all run on the main scheduler is deterministic
-by construction — same publishes, same deliveries, same order,
-given the same inputs. That is a stated guarantee
-(`spec/testing.md` § Determinism), which means a flaky single-pool
-test is never the scheduler's fault: look for a real input feeding
-the assertion, or mark the code under test
-[`@deterministic`](../effects.md) and let the compiler prove there
-isn't one. The recorder exists for everything that guarantee
-doesn't cover.
+Any Hale program whose loci run on the default single-threaded `main` cooperative pool is deterministic by construction: given the same inputs, publishes and deliveries always execute in the exact same order (`spec/testing.md` § *Determinism*). For single-pool unit tests, combine [`@deterministic`](../effects.md) with standard `hale test` assertions; reserve `LOTUS_OBS_RECORD` and `hale replay` for multi-pool concurrency, `async_io` schedules, and captured network ingress.

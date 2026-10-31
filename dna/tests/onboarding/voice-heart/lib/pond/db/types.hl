@@ -1,0 +1,72 @@
+// pond/db — backend-neutral relational store interface (types).
+//
+// The Go `database/sql` split: this seed declares the `DbDriver`
+// interface + the result shapes every driver speaks; concrete
+// drivers live in SIBLING seeds (pond/pq postgres-over-TCP,
+// pond/sqlite libsqlite3) and structurally satisfy `DbDriver`
+// (F.20 — no `impl I for L`). Apps program against the interface
+// and inject a driver into the slot, so a store swap is a
+// one-line placement change.
+//
+// **Errors travel as values, not channels.** Hale's F.20
+// interface methods can't declare `fallible(E)` (grammar:
+// `interface_method_sig` has no fallible clause), and that's
+// fine — it lands the Go `(result, error)` shape: every result
+// type carries `ok: Bool` + `err: DbError`. A driver's member fn
+// does the fallible protocol work internally (calling fallible
+// free fns with `or`), catches failure, and packs it into the
+// returned struct. Callers branch on `result.ok` / inspect
+// `result.err`.
+//
+// Column data is stringly-typed in v0 (no parametric/row-struct
+// generics in Hale): `Row.data` is tab-separated columns,
+// `Rows.csv` is newline-separated rows of tab-separated columns.
+// Consumers split + parse. Same shape pond/sqlite established.
+
+// DbError — the error value embedded in every result. `kind`
+// empty ("") means NO error (success). Vocabulary (backend-
+// neutral): "open_failed", "query_failed", "exec_failed",
+// "no_row", "constraint", "busy", "io", "protocol",
+// "unsupported". `engine_code` carries the backend-native code
+// (SQLITE_* result code, or a postgres SQLSTATE mapped to int)
+// for callers who branch on engine state. `detail` is the
+// human-readable explanation for logs.
+type DbError {
+    kind: String = "";
+    engine_code: Int = 0;
+    detail: String = "";
+}
+
+// Status — open()/close()-style result: did it work + why not.
+type Status {
+    ok: Bool = false;
+    err: DbError = DbError { };
+}
+
+// ExecResult — non-query (INSERT/UPDATE/DELETE/DDL) result.
+// `last_insert_rowid` is sqlite-ish; postgres leaves it 0 (use
+// RETURNING + query_one for generated keys there).
+type ExecResult {
+    ok: Bool = false;
+    err: DbError = DbError { };
+    rows_affected: Int = 0;
+    last_insert_rowid: Int = 0;
+}
+
+// Row — single-row SELECT result. `data` is tab-separated
+// columns. `ok=false` with `err.kind="no_row"` when the query
+// returned zero rows (callers don't get a silent empty string).
+type Row {
+    ok: Bool = false;
+    err: DbError = DbError { };
+    data: String = "";
+}
+
+// Rows — multi-row SELECT result. `csv` is newline-separated
+// rows, each tab-separated columns; `n` is the row count.
+type Rows {
+    ok: Bool = false;
+    err: DbError = DbError { };
+    csv: String = "";
+    n: Int = 0;
+}

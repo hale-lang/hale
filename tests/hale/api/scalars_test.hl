@@ -53,13 +53,24 @@ main locus Desk {
     params {
         sink: Sink = Sink { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
+        h: api::Exposure = api::serve(
+            Scalars,
+            self.f,
+            as: "scalars",
+            receivers: { Sink: self.sink },
+            bound: 8,
+            on_full: refuse
+        );
     }
 
     fn refused(id: Int, member: String, body: String, what: String) {
         let before = self.sink.entered;
         self.f.call_as_peer(id, member, body, 1000);
         std::test::assert_eq_str(self.f.await_outcome(id, 2000), "refusal:malformed", what);
-        std::test::assert(std::str::contains(self.f.line(id), "wrong_type"), what + ": by its reason");
+        std::test::assert(
+            std::str::contains(self.f.line(id), "wrong_type"),
+            what + ": by its reason",
+        );
         std::time::sleep(5ms);
         std::test::assert_eq_int(self.sink.entered, before, what + ": the handler never ran");
     }
@@ -68,13 +79,14 @@ main locus Desk {
         let before = self.sink.entered;
         self.f.call_as_peer(id, member, body, 1000);
         std::test::assert_eq_str(self.f.await_outcome(id, 2000), "result", what);
-        std::test::assert(std::str::contains(self.f.line(id), "\"value\":" + value + ","), what + ": its value");
+        std::test::assert(
+            std::str::contains(self.f.line(id), "\"value\":" + value + ","),
+            what + ": its value",
+        );
         std::test::assert_eq_int(self.sink.entered, before + 1, what + ": the handler ran once");
     }
 
     run() {
-        let h = api::serve(Scalars, self.f, as: "scalars", receivers: { Sink: self.sink }, bound: 8, on_full: refuse);
-
         // ---- the wrong kind is refused before the handler ----
         self.refused(1, "Sink::flag", "123", "a number to a Bool");
         self.refused(2, "Sink::flag", "\"true\"", "a string to a Bool");

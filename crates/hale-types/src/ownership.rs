@@ -63,6 +63,8 @@
 //! | a locus / interface / perspective param field's initialiser | [`Owner::Field`] |
 //! | the same field initialised from a NAME | [`Owner::Borrowed`] |
 //! | a `placement { }`'d field, a `bindings { }` transport | [`Owner::Placement`] |
+//! | an argument a callee hands back unchanged (`id(W { })`) | the call's owner |
+//! | an argument a fresh factory keeps in the instance it returns (`mk(W { })`), that instance held by a field, a placement or a binding | [`Owner::Field`] of the call, its field |
 //! | everything else — receiver, argument, operand, index, condition, bare statement | [`Owner::FrameTemp`] |
 //!
 //! A decision that passes THROUGH a delegating node — an `or`, a
@@ -326,6 +328,32 @@ pub struct OwnerTable {
     /// (the `NodeId` on the statement), so its lookup is one search
     /// with no detour through the snapshot for the seed.
     bindings: BTreeMap<u32, (SiteId, BindingFacts)>,
+    /// GH #1566 follow-up: a call of a fn that hands back one of its
+    /// arguments unchanged (`id(W { })`), by the call: that argument's
+    /// position. The argument is the call's value, and the site that
+    /// owns the call's value owns it.
+    passes: BTreeMap<ExprId, usize>,
+    /// GH #1566 follow-up: a call of a fresh factory that keeps an
+    /// argument it was handed in a field of the instance it builds and
+    /// returns (`mk(W { })`, `fn mk(w: W) -> R { return R { w: w }; }`),
+    /// by the call: those fields. The argument is that field's child,
+    /// its owned bit set on the instance the call returns.
+    kept: BTreeMap<ExprId, Vec<String>>,
+    /// GH #1569: a call of a fn handing back a tuple or an array of loci
+    /// (`ParamFlow::parts`), by the call: which parts the call's owner
+    /// owns — the holder of the aggregate (a field: its elements'
+    /// children; a binding or the frame: reclaimed with the frame). A part
+    /// handed in as an argument the frame already owns is the frame's.
+    aggregates: BTreeMap<ExprId, Vec<bool>>,
+    /// GH #1569: the calls through a fn value the table decided (only a
+    /// fresh factory may be one): when it hands back a tuple or an array,
+    /// every locus part of it is the call's owner's.
+    fn_value_calls: BTreeSet<ExprId>,
+    /// GH #1569: an argument a literal part of that aggregate keeps (and
+    /// no part is itself): by the call, (part, field) — the last part
+    /// keeping it, torn down after every other part that keeps it reads
+    /// it, owns it, its owned bit set at the call.
+    aggregate_kept: BTreeMap<ExprId, Vec<(usize, String)>>,
 }
 
 /// What a `let` needs to know about its own binding before it lowers
@@ -377,6 +405,36 @@ impl OwnerTable {
     /// after the pass ran.
     pub fn id_of(&self, e: &Expr) -> Option<ExprId> {
         node_id(e).filter(|n| !n.is_none()).map(|n| ExprId(n.0))
+    }
+
+    /// GH #1566 follow-up: the fields of the instance a factory call
+    /// returns that hold, as owned children, arguments the call was
+    /// handed (`OwnerTable::kept`).
+    /// GH #1569: the parts of the aggregate a call hands back that its
+    /// owner owns (`OwnerTable::aggregates`), by position.
+    pub fn aggregate_kept(&self, call: &Expr) -> &[(usize, String)] {
+        self.id_of(call).and_then(|id| self.aggregate_kept.get(&id)).map_or(&[], |v| v.as_slice())
+    }
+
+    /// Whether the owner of the aggregate `call` hands back owns its part
+    /// `k` (`OwnerTable::aggregates`; a call through a fn value owns every
+    /// locus part); `None` for a call the table decided no parts of.
+    pub fn aggregate_part_owned(&self, call: &Expr, k: usize) -> Option<bool> {
+        let id = self.id_of(call)?;
+        if let Some(m) = self.aggregates.get(&id) {
+            return Some(m.get(k).copied().unwrap_or(false));
+        }
+        self.fn_value_calls.contains(&id).then_some(true)
+    }
+
+    /// Whether the table decided the parts of the aggregate `call` may
+    /// hand back (a call through a fn value may return one).
+    pub fn is_aggregate_call(&self, call: &Expr) -> bool {
+        self.id_of(call).is_some_and(|id| self.aggregates.contains_key(&id) || self.fn_value_calls.contains(&id))
+    }
+
+    pub fn kept_fields(&self, call: &Expr) -> &[String] {
+        self.id_of(call).and_then(|id| self.kept.get(&id)).map_or(&[], |v| v.as_slice())
     }
 
     /// The row for this node, if the pass decided one.
@@ -453,6 +511,11 @@ impl OwnerTable {
     /// initialiser has to reach the leaf to find the row at all.
     pub fn leaf_entry_of(&self, e: &Expr) -> Option<&Entry> {
         match e {
+            // a call that hands back an argument: that argument's row
+            Expr::Call { args, .. } if self.id_of(e).and_then(|id| self.passes.get(&id)).is_some() => {
+                let k = self.id_of(e).and_then(|id| self.passes.get(&id)).copied().expect("checked");
+                args.get(k).and_then(|a| self.leaf_entry_of(a))
+            }
             Expr::Struct { .. } | Expr::Call { .. } => self.entry_of(e),
             Expr::Or { inner, .. } => self.leaf_entry_of(inner),
             Expr::If(_) | Expr::Match(_) | Expr::Block(_) => {
@@ -460,8 +523,9 @@ impl OwnerTable {
                 return_arms(e, &mut arms);
                 arms.first().and_then(|a| self.leaf_entry_of(a))
             }
+            // (a tuple's first part with a row: `(W { }, 1)`, GH #1569)
             Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
-                parts.first().and_then(|p| self.leaf_entry_of(p))
+                parts.iter().find_map(|p| self.leaf_entry_of(p))
             }
             _ => None,
         }
@@ -1592,6 +1656,20 @@ struct Resolver<'s> {
     accepting: Option<BTreeSet<String>>,
     /// The EXTENDED proven-fresh factory set: fn name -> locus.
     fresh: BTreeMap<String, String>,
+    /// What each free fn does with its locus arguments (`ParamFlow`).
+    flows: BTreeMap<String, ParamFlow>,
+    /// GH #1566 follow-up: the bindings of the frame being walked that
+    /// hold a fn value returning a locus, by name, the locus: a call
+    /// through one hands back a fresh instance (only a fresh factory may
+    /// be taken as a value), owned as a factory call's.
+    fn_vals: BTreeMap<String, String>,
+    /// GH #1569: the bindings of the frame being walked declared as a fn
+    /// value that returns no locus (`f: fn(Int) -> Int`): a call through
+    /// one builds nothing the table decides.
+    fn_nonlocus: BTreeSet<String>,
+    /// GH #1569: the free fns declared to return a fn value, by name, the
+    /// declared return type.
+    fn_value_rets: BTreeMap<String, TypeExpr>,
     table: OwnerTable,
     next_slot: u32,
     /// The reclaim-scope stack; the last entry is the innermost.
@@ -1704,7 +1782,12 @@ pub fn resolve_owners(
         import_renames,
     );
 
+    let flows = param_flows(&program.items);
     let mut r = Resolver {
+        fn_vals: BTreeMap::new(),
+        fn_nonlocus: BTreeSet::new(),
+        fn_value_rets: fn_value_returns(&program.items),
+        flows,
         ids,
         renames: import_renames.to_vec(),
         loci,
@@ -1719,6 +1802,11 @@ pub fn resolve_owners(
             scope_kinds: Vec::new(),
             fresh,
             bindings: BTreeMap::new(),
+            passes: BTreeMap::new(),
+            kept: BTreeMap::new(),
+            aggregates: BTreeMap::new(),
+            fn_value_calls: BTreeSet::new(),
+            aggregate_kept: BTreeMap::new(),
         },
         next_slot: 0,
         scopes: Vec::new(),
@@ -1901,8 +1989,24 @@ fn param_field_kind(
         v.push(qname_joined(path));
         v
     };
+    // GH #1566 follow-up: an array or tuple of a locus type holds its
+    // elements as the owner's children, as a locus-typed field holds
+    // its one (an element of an interface or a perspective type has no
+    // recorded teardown of its own, and stays a value)
+    fn of_loci(t: &TypeExpr, is_locus: &dyn Fn(&QualifiedName) -> bool) -> bool {
+        match t {
+            TypeExpr::Named { path, generic_args, .. } => generic_args.is_empty() && is_locus(path),
+            TypeExpr::Array { elem, .. } => of_loci(elem, is_locus),
+            // GH #1569: a tuple with a locus part holds it, beside parts
+            // of other types (`(W, Int)`)
+            TypeExpr::Tuple(ts, _) => ts.iter().any(|t| matches!(t, TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() && is_locus(path))),
+            _ => false,
+        }
+    }
+    let is_locus = |path: &QualifiedName| names(path).iter().any(|n| loci.contains(n));
     if let Some(t) = ty {
         return match t {
+            TypeExpr::Array { .. } | TypeExpr::Tuple(..) if of_loci(t, &is_locus) => FieldKind::Holder,
             TypeExpr::Perspective { .. } => FieldKind::Holder,
             TypeExpr::Named { path, .. } => {
                 // `std::http::RouteHandler` is declared as
@@ -1930,6 +2034,17 @@ fn param_field_kind(
             } else {
                 FieldKind::Value
             }
+        }
+        // an array or a tuple of locus literals: typed by them, as a
+        // declared one (codegen's `default_literal_type`)
+        ParamInit::Value(Expr::Array(parts, _))
+            if !parts.is_empty()
+                && parts.iter().all(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) =>
+        {
+            FieldKind::Holder
+        }
+        ParamInit::Value(Expr::Tuple(parts, _)) if parts.iter().any(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) => {
+            FieldKind::Holder
         }
         _ => FieldKind::Value,
     }
@@ -1984,6 +2099,401 @@ fn qname_joined(q: &QualifiedName) -> String {
 /// reach the caller: a carrier contributes its arm TAILS, an `or`
 /// contributes its ok value and its substitute, and a diverging
 /// disposition contributes nothing.
+/// GH #1566 follow-up: what a free fn does with its locus arguments,
+/// read from its body's syntax. `returns`: every value it hands back is
+/// the same parameter, unchanged (`fn id(w: W) -> W { return w; }`).
+/// `holds`: it hands back a locus literal (or a `let` bound to one)
+/// whose field is a parameter (`return R { w: w };`), by the parameter's
+/// position, the field. A parameter named anywhere else in the body is
+/// in neither: the fn may keep it somewhere the caller cannot see.
+#[derive(Clone, Debug, Default)]
+struct ParamFlow {
+    returns: Option<usize>,
+    holds: BTreeMap<usize, String>,
+    /// It hands back one tuple or array literal (`return (H { w: w },
+    /// w);`): what each part is — a literal it builds, a parameter named
+    /// nowhere but inside that literal, or something else.
+    parts: Option<Vec<PartFlow>>,
+    /// The parameters a literal part keeps in a field (`(H { w: w }, ..)`):
+    /// (part, parameter, field), the parameter named nowhere but inside
+    /// the returned aggregate.
+    part_holds: Vec<(usize, usize, String)>,
+    /// GH #1569: it hands back, from every `return`, what one call hands
+    /// back: a call through a parameter holding a fn value (every locus
+    /// part of an aggregate one returns is fresh: only a fresh factory may
+    /// be a fn value), or a call of the fn named (whose parts it passes on).
+    returns_call_of: Option<CallOf>,
+}
+
+/// What a fn hands back by handing back a call's result
+/// (`ParamFlow::returns_call_of`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CallOf {
+    FnParam,
+    Fn(String),
+}
+
+/// A part of an aggregate a fn hands back (`ParamFlow::parts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartFlow {
+    /// A literal the fn builds there.
+    Fresh,
+    /// The parameter at this position, named nowhere but inside the
+    /// returned aggregate.
+    Param(usize),
+    /// GH #1569: a value that is no locus whatever its type (a literal,
+    /// arithmetic, a range): the part the table decides nothing for.
+    Value,
+    Other,
+}
+
+/// GH #1569: an expression whose value is no locus whatever its type: a
+/// literal, arithmetic, a reduction, a range.
+fn is_plain_value(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Literal(..)
+            | Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Sum(..)
+            | Expr::Prod(..)
+            | Expr::Approx { .. }
+            | Expr::Range { .. }
+    )
+}
+
+/// GH #1569: whether `f`, declared to return a tuple or an array holding
+/// loci, builds every locus part of every aggregate it returns: one
+/// returned literal whose locus parts (`is_locus` on each part's declared
+/// type) are each a literal it builds there. A fn value hands its caller
+/// what it returns to own, so only such a fn may be taken as one.
+pub fn aggregate_builds_its_loci<'f>(
+    f: &'f FnDecl,
+    is_locus: &dyn Fn(&TypeExpr) -> bool,
+    fn_named: &dyn Fn(&str) -> Option<&'f FnDecl>,
+) -> bool {
+    builds_its_loci(f, is_locus, fn_named, &mut BTreeSet::new())
+}
+
+/// `aggregate_builds_its_loci`, through the named fns whose call `f`
+/// hands back (each a fresh builder by the same summary).
+fn builds_its_loci<'f>(
+    f: &'f FnDecl,
+    is_locus: &dyn Fn(&TypeExpr) -> bool,
+    fn_named: &dyn Fn(&str) -> Option<&'f FnDecl>,
+    seen: &mut BTreeSet<String>,
+) -> bool {
+    // a fn reached again on its own chain: assumed fresh (a greatest
+    // fixpoint; a cycle with no way out returns nothing)
+    if !seen.insert(f.name.name.clone()) {
+        return true;
+    }
+    let flow = param_flow(f);
+    // what a fn value it was handed builds, or what a named fn builds
+    let through = |seen: &mut BTreeSet<String>| match &flow.returns_call_of {
+        Some(CallOf::FnParam) => true,
+        Some(CallOf::Fn(m)) => fn_named(m).is_some_and(|g| builds_its_loci(g, is_locus, fn_named, seen)),
+        None => false,
+    };
+    match &f.ret {
+        Some(TypeExpr::Tuple(ts, _)) => {
+            let positions: Vec<bool> = ts.iter().map(is_locus).collect();
+            if !positions.iter().any(|b| *b) {
+                return true;
+            }
+            match &flow.parts {
+                Some(ps) => ps.len() == positions.len() && ps.iter().zip(&positions).all(|(p, l)| !*l || *p == PartFlow::Fresh),
+                None => through(seen),
+            }
+        }
+        Some(TypeExpr::Array { elem, .. }) if is_locus(elem) => match &flow.parts {
+            Some(ps) => ps.iter().all(|p| *p == PartFlow::Fresh),
+            None => through(seen),
+        },
+        _ => true,
+    }
+}
+
+/// The free fns declared to return a fn value (`fn pick() -> fn() -> W`),
+/// by name, with that return type.
+fn fn_value_returns(items: &[TopDecl]) -> BTreeMap<String, TypeExpr> {
+    let mut out = BTreeMap::new();
+    fn go(items: &[TopDecl], out: &mut BTreeMap<String, TypeExpr>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) => {
+                    if let Some(t @ TypeExpr::Function { .. }) = &f.ret {
+                        out.insert(f.name.name.clone(), t.clone());
+                    }
+                }
+                TopDecl::Module(m) => go(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    go(items, &mut out);
+    out
+}
+
+fn param_flows(items: &[TopDecl]) -> BTreeMap<String, ParamFlow> {
+    let mut out = BTreeMap::new();
+    fn go(items: &[TopDecl], out: &mut BTreeMap<String, ParamFlow>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) => {
+                    let flow = param_flow(f);
+                    if flow.returns.is_some() || !flow.holds.is_empty() || flow.parts.is_some() || flow.returns_call_of.is_some() {
+                        out.insert(f.name.name.clone(), flow);
+                    }
+                }
+                TopDecl::Module(m) => go(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    go(items, &mut out);
+    out
+}
+
+fn param_flow(f: &FnDecl) -> ParamFlow {
+    // the values the body hands back
+    let mut rets: Vec<&Expr> = Vec::new();
+    fn stmts<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(e), _) => return_arms(e, out),
+                Stmt::If(i) => {
+                    stmts(&i.then_block, out);
+                    let mut e = i.else_block.as_deref();
+                    while let Some(eb) = e {
+                        match eb {
+                            ElseBranch::Else(b) => {
+                                stmts(b, out);
+                                e = None;
+                            }
+                            ElseBranch::ElseIf(n) => {
+                                stmts(&n.then_block, out);
+                                e = n.else_block.as_deref();
+                            }
+                        }
+                    }
+                }
+                Stmt::Block(b) => stmts(b, out),
+                _ => {}
+            }
+        }
+    }
+    stmts(&f.body, &mut rets);
+    if let Some(t) = &f.body.tail {
+        return_arms(t, &mut rets);
+    }
+    if rets.is_empty() {
+        return ParamFlow::default();
+    }
+    // how many times the body names `n` as a value or writes through it
+    let named = |n: &str| block_name_uses(&f.body, n);
+    let param = |n: &str| f.params.iter().position(|p| p.name.name == n);
+    let mut flow = ParamFlow::default();
+    // every value the same parameter, named nowhere else
+    let idents: Vec<Option<usize>> = rets
+        .iter()
+        .map(|r| match r {
+            Expr::Ident(i) => param(&i.name),
+            _ => None,
+        })
+        .collect();
+    if let Some(Some(k)) = idents.first() {
+        if idents.iter().all(|x| *x == Some(*k)) && named(&f.params[*k].name.name) == rets.len() {
+            flow.returns = Some(*k);
+        }
+    }
+    // every return one call's result: a call through a fn-typed
+    // parameter, or of one fn (GH #1569)
+    let call_of = |r: &Expr| -> Option<CallOf> {
+        let Expr::Call { callee, .. } = r else { return None };
+        let Expr::Ident(i) = callee.as_ref() else { return None };
+        match f.params.iter().find(|p| p.name.name == i.name) {
+            // (one whose fn type may return a locus or an aggregate)
+            Some(p) => matches!(
+                &p.ty,
+                TypeExpr::Function { ret: Some(r), .. }
+                    if matches!(r.as_ref(), TypeExpr::Named { .. } | TypeExpr::Tuple(..) | TypeExpr::Array { .. })
+            )
+            .then_some(CallOf::FnParam),
+            None => Some(CallOf::Fn(i.name.clone())),
+        }
+    };
+    if let Some(first) = rets.first().and_then(|r| call_of(r)) {
+        if rets.iter().all(|r| call_of(r).as_ref() == Some(&first)) {
+            flow.returns_call_of = Some(first);
+        }
+    }
+    // one returned tuple or array literal: each part
+    if let [agg @ (Expr::Tuple(xs, _) | Expr::Array(xs, _))] = rets.as_slice() {
+        let parts: Vec<PartFlow> = xs
+            .iter()
+            .map(|x| match x {
+                Expr::Struct { .. } => PartFlow::Fresh,
+                Expr::Ident(i) => match param(&i.name) {
+                    Some(k) if expr_name_uses(agg, &i.name) == named(&i.name) => PartFlow::Param(k),
+                    _ => PartFlow::Other,
+                },
+                x if is_plain_value(x) => PartFlow::Value,
+                _ => PartFlow::Other,
+            })
+            .collect();
+        if parts.iter().any(|p| matches!(p, PartFlow::Fresh | PartFlow::Param(_))) && parts.iter().all(|p| *p != PartFlow::Other) {
+            flow.parts = Some(parts);
+            for (k, x) in xs.iter().enumerate() {
+                let Expr::Struct { inits, .. } = x else { continue };
+                for init in inits {
+                    if let Expr::Ident(i) = &init.value {
+                        if let Some(p) = param(&i.name) {
+                            if expr_name_uses(agg, &i.name) == named(&i.name) {
+                                flow.part_holds.push((k, p, init.name.name.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // one returned literal (or a `let` bound to one) holding parameters
+    if rets.len() == 1 {
+        let lit: Option<&Expr> = match rets[0] {
+            Expr::Struct { .. } => Some(rets[0]),
+            Expr::Ident(i) => f.body.stmts.iter().find_map(|s| match s {
+                Stmt::Let { name, value: v @ Expr::Struct { .. }, .. } if name.name == i.name && named(&i.name) == 1 => Some(v),
+                _ => None,
+            }),
+            _ => None,
+        };
+        // a parameter kept in a field of the literal, or of a literal it
+        // holds (`K { a: H { w: w }, b: H { w: w } }`): the last field
+        // keeping it, as a path from the returned instance (`b.w`); the
+        // parameter named nowhere but inside the literal
+        fn walk(e: &Expr, path: &mut Vec<String>, out: &mut Vec<(String, String)>) {
+            let Expr::Struct { inits, .. } = e else { return };
+            for init in inits {
+                path.push(init.name.name.clone());
+                match &init.value {
+                    Expr::Ident(i) => out.push((i.name.clone(), path.join("."))),
+                    v @ Expr::Struct { .. } => walk(v, path, out),
+                    _ => {}
+                }
+                path.pop();
+            }
+        }
+        if let Some(lit) = lit {
+            let mut found = Vec::new();
+            walk(lit, &mut Vec::new(), &mut found);
+            for (name, path) in found {
+                if let Some(k) = param(&name) {
+                    if expr_name_uses(lit, &name) == named(&name) {
+                        flow.holds.insert(k, path);
+                    }
+                }
+            }
+        }
+    }
+    flow
+}
+
+/// How many times `b` names `name` as a value, or at the head of a store
+/// or a rebinding.
+fn block_name_uses(b: &Block, name: &str) -> usize {
+    b.stmts.iter().map(|s| stmt_name_uses(s, name)).sum::<usize>()
+        + b.tail.as_deref().map_or(0, |t| expr_name_uses(t, name))
+}
+
+fn if_name_uses(i: &IfStmt, name: &str) -> usize {
+    expr_name_uses(&i.cond, name)
+        + block_name_uses(&i.then_block, name)
+        + match i.else_block.as_deref() {
+            None => 0,
+            Some(ElseBranch::Else(b)) => block_name_uses(b, name),
+            Some(ElseBranch::ElseIf(n)) => if_name_uses(n, name),
+        }
+}
+
+fn match_name_uses(m: &MatchStmt, name: &str) -> usize {
+    expr_name_uses(&m.scrutinee, name)
+        + m.arms
+            .iter()
+            .map(|a| {
+                a.guard.as_ref().map_or(0, |g| expr_name_uses(g, name))
+                    + match &a.body {
+                        MatchArmBody::Expr(e) => expr_name_uses(e, name),
+                        MatchArmBody::Block(b) => block_name_uses(b, name),
+                    }
+            })
+            .sum::<usize>()
+}
+
+fn stmt_name_uses(s: &Stmt, name: &str) -> usize {
+    match s {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } | Stmt::Expr(value) => {
+            expr_name_uses(value, name)
+        }
+        Stmt::Assign { target, value, .. } => {
+            usize::from(target.head.name == name)
+                + target
+                    .tail
+                    .iter()
+                    .map(|seg| match seg {
+                        LValueSeg::Index(ix) => expr_name_uses(ix, name),
+                        LValueSeg::Field(_) => 0,
+                    })
+                    .sum::<usize>()
+                + expr_name_uses(value, name)
+        }
+        Stmt::If(i) => if_name_uses(i, name),
+        Stmt::Match(m) => match_name_uses(m, name),
+        Stmt::For { iter, body, .. } => expr_name_uses(iter, name) + block_name_uses(body, name),
+        Stmt::While { cond, body, .. } => expr_name_uses(cond, name) + block_name_uses(body, name),
+        Stmt::Return(v, _) => v.as_ref().map_or(0, |e| expr_name_uses(e, name)),
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => 0,
+        Stmt::Block(b) => block_name_uses(b, name),
+        Stmt::Recovery { args, .. } => args.iter().map(|a| expr_name_uses(a, name)).sum(),
+        Stmt::Violate { payload, .. } => payload.as_ref().map_or(0, |e| expr_name_uses(e, name)),
+        Stmt::Send { subject, value, .. } => expr_name_uses(subject, name) + expr_name_uses(value, name),
+        Stmt::ShmWrite { max, body, .. } => expr_name_uses(max, name) + block_name_uses(body, name),
+    }
+}
+
+fn expr_name_uses(e: &Expr, name: &str) -> usize {
+    match e {
+        Expr::Ident(i) => usize::from(i.name == name),
+        Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => 0,
+        Expr::Binary { left, right, .. } | Expr::Range { lo: left, hi: right, .. } => {
+            expr_name_uses(left, name) + expr_name_uses(right, name)
+        }
+        Expr::Unary { operand, .. } => expr_name_uses(operand, name),
+        Expr::Call { callee, args, .. } => {
+            expr_name_uses(callee, name) + args.iter().map(|a| expr_name_uses(a, name)).sum::<usize>()
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => expr_name_uses(receiver, name),
+        Expr::Index { receiver, index, .. } => expr_name_uses(receiver, name) + expr_name_uses(index, name),
+        Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().map(|x| expr_name_uses(x, name)).sum(),
+        Expr::Struct { inits, .. } => inits.iter().map(|i| expr_name_uses(&i.value, name)).sum(),
+        Expr::Block(b) => block_name_uses(b, name),
+        Expr::If(i) => if_name_uses(i, name),
+        Expr::Match(m) => match_name_uses(m, name),
+        Expr::Sum(x, _) | Expr::Prod(x, _) => expr_name_uses(x, name),
+        Expr::Approx { left, right, tolerance, .. } => {
+            expr_name_uses(left, name) + expr_name_uses(right, name) + expr_name_uses(tolerance, name)
+        }
+        Expr::ArrayRepeat { val, .. } => expr_name_uses(val, name),
+        Expr::Or { inner, disposition, .. } => {
+            expr_name_uses(inner, name)
+                + match disposition {
+                    OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) => expr_name_uses(x, name),
+                    OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => 0,
+                }
+        }
+    }
+}
+
 fn return_arms<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
     match e {
         Expr::If(i) => if_arms(i, out),
@@ -2450,9 +2960,32 @@ pub fn fresh_factories(
             if rets.is_empty() {
                 continue;
             }
+            // GH #1566 follow-up: a parameter of a fn type returning the
+            // locus is a factory of it — a fn may be taken as a value
+            // only if it is one (the check's rule) — so a call through
+            // it hands back a fresh instance, constructing nothing this
+            // walk can name
+            let through_value = FactoryRow { locus: l.clone(), products: Vec::new(), fresh: Some(Fresh { returned_binding: None }) };
+            let value_params: BTreeSet<String> = f
+                .params
+                .iter()
+                .filter(|p| match &p.ty {
+                    TypeExpr::Function { ret: Some(r), .. } => match r.as_ref() {
+                        TypeExpr::Named { path, .. } => resolve(&qname(path), import_renames).as_deref() == Some(l.as_str()),
+                        _ => false,
+                    },
+                    _ => false,
+                })
+                .map(|p| p.name.name.clone())
+                .collect();
             // A factory of the same locus the fixpoint already
             // accepted, by the name a callee spells.
             let known = |callee: &Expr| {
+                if let Expr::Ident(i) = callee {
+                    if value_params.contains(&i.name) {
+                        return Some(&through_value);
+                    }
+                }
                 callee_name(callee, import_renames)
                     .and_then(|c| out.get(&c))
                     .filter(|row| row.locus == l)
@@ -2525,6 +3058,7 @@ pub fn fresh_factories(
                 };
                 let bound = match &binding.2 {
                     Freshness::Literal(p) => Some(vec![p.clone()]),
+                    Freshness::CallTo(c) if value_params.contains(c) => Some(Vec::new()),
                     Freshness::CallTo(c) => {
                         out.get(c).filter(|row| row.locus == l).map(|row| {
                             callees_fresh &= row.fresh.is_some();
@@ -2547,6 +3081,100 @@ pub fn fresh_factories(
         if !added {
             break;
         }
+    }
+    // GH #1569: the fixpoint above admits a fn once every factory it
+    // hands back is admitted, so fns handing back each other's calls
+    // (`cyc1` builds at its base case, else returns `cyc2(..)`, which
+    // returns `cyc1(..)`) never were. Their freshness is the GREATEST
+    // fixpoint: every fn whose every return is a literal of its locus,
+    // a call through a fn-typed parameter, or a call of a fresh factory
+    // of it is assumed fresh, and any returning a call of something else
+    // is removed until none is. Every path that returns builds a fresh
+    // instance; a cycle with no way out returns nothing.
+    type Candidate = (String, Vec<(String, Vec<String>)>, Vec<String>);
+    let mut cand: BTreeMap<String, Candidate> = BTreeMap::new();
+    for item in programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)) {
+        let TopDecl::Fn(f) = item else { continue };
+        if out.contains_key(&f.name.name) {
+            continue;
+        }
+        let Some(l) = ret_locus_name(f, import_renames) else { continue };
+        let mut rets = Vec::new();
+        let mut lets = Vec::new();
+        collect(&f.body, &mut rets, &mut lets, &l, import_renames);
+        if rets.is_empty() {
+            continue;
+        }
+        let value_param = |n: &str| {
+            f.params.iter().any(|p| {
+                p.name.name == n
+                    && matches!(&p.ty, TypeExpr::Function { ret: Some(r), .. }
+                        if matches!(r.as_ref(), TypeExpr::Named { path, .. } if resolve(&qname(path), import_renames).as_deref() == Some(l.as_str())))
+            })
+        };
+        let (mut products, mut callees, mut ok) = (Vec::new(), Vec::new(), true);
+        for r in &rets {
+            match r {
+                Expr::Struct { path, inits, .. } if resolve(&qname(path), import_renames).as_deref() == Some(l.as_str()) => {
+                    products.push(product(&l, inits));
+                }
+                Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Ident(i) if value_param(&i.name)) => {}
+                Expr::Call { callee, .. } => match callee_name(callee, import_renames) {
+                    Some(n) => callees.push(n),
+                    None => ok = false,
+                },
+                _ => ok = false,
+            }
+        }
+        if ok {
+            cand.insert(f.name.name.clone(), (l, products, callees));
+        }
+    }
+    loop {
+        let gone: Vec<String> = cand
+            .iter()
+            .filter(|(_, (l, _, cs))| {
+                !cs.iter().all(|c| {
+                    out.get(c).is_some_and(|row| row.locus == *l && row.fresh.is_some())
+                        || cand.get(c).is_some_and(|(cl, _, _)| cl == l)
+                })
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        if gone.is_empty() {
+            break;
+        }
+        for n in gone {
+            cand.remove(&n);
+        }
+    }
+    // what each constructs, through the calls it hands back
+    let mut products: BTreeMap<String, Vec<(String, Vec<String>)>> =
+        cand.iter().map(|(n, (_, p, _))| (n.clone(), p.clone())).collect();
+    loop {
+        let mut grew = false;
+        for (n, (_, _, cs)) in &cand {
+            let mut acc = products[n].clone();
+            for c in cs {
+                match out.get(c) {
+                    Some(row) => acc.extend(row.products.iter().cloned()),
+                    None => acc.extend(products.get(c).cloned().unwrap_or_default()),
+                }
+            }
+            acc.sort();
+            acc.dedup();
+            if acc.len() != products[n].len() {
+                products.insert(n.clone(), acc);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for (n, (l, _, _)) in cand {
+        let products = products.remove(&n).unwrap_or_default();
+        out.insert(n, FactoryRow { locus: l, products, fresh: Some(Fresh { returned_binding: None }) });
     }
     out
 }
@@ -3054,10 +3682,109 @@ impl Resolver<'_> {
         None
     }
 
-    fn fresh_call_locus(&self, e: &Expr) -> Option<String> {
+    /// The arguments a literal part of the aggregate a call hands back
+    /// keeps, by position: the last part keeping it, and the field.
+    fn aggregate_holds(&self, e: &Expr) -> BTreeMap<usize, (usize, String)> {
+        let Expr::Call { callee, .. } = e else { return BTreeMap::new() };
+        let Some(n) = callee_fn_name(callee, &self.renames) else { return BTreeMap::new() };
+        let mut out = BTreeMap::new();
+        if let Some(f) = self.flows.get(&n) {
+            for (k, p, field) in &f.part_holds {
+                out.insert(*p, (*k, field.clone()));
+            }
+        }
+        out
+    }
+
+    /// The parts of the aggregate a call hands back (`ParamFlow::parts`).
+    fn aggregate_flow(&self, e: &Expr) -> Option<Vec<PartFlow>> {
+        let Expr::Call { callee, .. } = e else { return None };
+        let mut n = callee_fn_name(callee, &self.renames)?;
+        // (through fns that hand back another fn's call, GH #1569)
+        for _ in 0..16 {
+            let f = self.flows.get(&n)?;
+            if let Some(parts) = &f.parts {
+                return Some(parts.clone());
+            }
+            match &f.returns_call_of {
+                Some(CallOf::Fn(m)) => n = m.clone(),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// GH #1569: whether every locus part of the aggregate the call `e`
+    /// may hand back is fresh: a call through a fn value, or of a fn
+    /// handing back one (through fns that hand back another fn's call).
+    fn aggregate_all_fresh(&self, e: &Expr) -> bool {
+        if self.is_fn_value_call(e) {
+            return true;
+        }
+        let Expr::Call { callee, .. } = e else { return false };
+        let Some(mut n) = callee_fn_name(callee, &self.renames) else { return false };
+        for _ in 0..16 {
+            let Some(f) = self.flows.get(&n) else { return false };
+            if f.parts.is_some() {
+                return false;
+            }
+            match &f.returns_call_of {
+                Some(CallOf::FnParam) => return true,
+                Some(CallOf::Fn(m)) => n = m.clone(),
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// The position of the argument a call hands back unchanged
+    /// (`ParamFlow::returns`).
+    fn passed_arg(&self, e: &Expr) -> Option<usize> {
         let Expr::Call { callee, .. } = e else { return None };
         let n = callee_fn_name(callee, &self.renames)?;
-        self.fresh.get(&n).cloned()
+        self.flows.get(&n).and_then(|f| f.returns)
+    }
+
+    /// The fields a fresh factory call keeps arguments in, by position
+    /// (`ParamFlow::holds`).
+    fn kept_args(&self, e: &Expr) -> BTreeMap<usize, String> {
+        let Expr::Call { callee, .. } = e else { return BTreeMap::new() };
+        let Some(n) = callee_fn_name(callee, &self.renames) else { return BTreeMap::new() };
+        if !self.fresh.contains_key(&n) {
+            return BTreeMap::new();
+        }
+        self.flows.get(&n).map(|f| f.holds.clone()).unwrap_or_default()
+    }
+
+    /// GH #1569: a call through a binding holding a fn value.
+    fn is_fn_value_call(&self, e: &Expr) -> bool {
+        let Expr::Call { callee, .. } = e else { return false };
+        let Expr::Ident(i) = callee.as_ref() else { return false };
+        self.fn_vals.contains_key(&i.name) || (self.ids.declaration_of(i.id).is_some() && !self.fn_nonlocus.contains(&i.name))
+    }
+
+    fn fresh_call_locus(&self, e: &Expr) -> Option<String> {
+        let Expr::Call { callee, .. } = e else { return None };
+        if let Expr::Ident(i) = callee.as_ref() {
+            if let Some(l) = self.fn_vals.get(&i.name) {
+                return Some(l.clone());
+            }
+            // GH #1569: a call through any other local binding — a loop
+            // variable, a tuple pattern's name, a `let` of an `if` or a
+            // method's call — is a call through a fn value, and only a
+            // fresh factory may be one: when it returns a locus, the
+            // instance is fresh, owned as a factory call's. The row
+            // names the binding; one declared to return no locus has none.
+            if self.ids.declaration_of(i.id).is_some() && !self.fn_nonlocus.contains(&i.name) {
+                return Some(i.name.clone());
+            }
+        }
+        let n = callee_fn_name(callee, &self.renames)?;
+        if let Some(l) = self.fresh.get(&n) {
+            return Some(l.clone());
+        }
+        // GH #1569: one handing back what a fn value it was handed builds
+        self.aggregate_all_fresh(e).then(|| n.clone())
     }
 
     /// Is this expression one the table hands an owner to?
@@ -3066,7 +3793,11 @@ impl Resolver<'_> {
             Expr::Struct { path, .. } => {
                 self.locus_of_literal(path).is_some()
             }
-            Expr::Call { .. } => self.fresh_call_locus(e).is_some(),
+            Expr::Call { args, .. } => {
+                self.fresh_call_locus(e).is_some()
+                    || self.passed_arg(e).is_some_and(|k| args.get(k).is_some_and(|a| self.is_locus_producing(a)))
+                    || self.aggregate_flow(e).is_some_and(|ps| ps.iter().any(|p| *p == PartFlow::Fresh))
+            }
             Expr::Or { inner, disposition, .. } => {
                 if !self.is_locus_producing(inner) {
                     return false;
@@ -3084,9 +3815,15 @@ impl Resolver<'_> {
                 !arms.is_empty()
                     && arms.iter().all(|a| self.is_locus_producing(a))
             }
-            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+            Expr::Array(parts, _) => {
                 !parts.is_empty()
                     && parts.iter().all(|p| self.is_locus_producing(p))
+            }
+            // GH #1569: a tuple's parts of other types are plain values
+            // (`(W { }, 5)`)
+            Expr::Tuple(parts, _) => {
+                parts.iter().any(|p| self.is_locus_producing(p))
+                    && parts.iter().all(|p| self.is_locus_producing(p) || is_plain_value(p))
             }
             _ => false,
         }
@@ -3170,6 +3907,9 @@ impl Resolver<'_> {
                 let span = e.span();
                 if let Some(lname) = lname {
                     let id = self.minted_id(e);
+                    if self.aggregate_all_fresh(e) && !matches!(d, Decision::Caller) {
+                        self.table.fn_value_calls.insert(id);
+                    }
                     let owner = self.owner_from(&d);
                     self.record(
                         id,
@@ -3188,8 +3928,60 @@ impl Resolver<'_> {
                     unreachable!("matched a call above")
                 };
                 self.walk_callee(callee);
-                for a in args.iter() {
-                    self.assign(a, Decision::FrameTemp, "argument");
+                // GH #1566 follow-up: an argument the callee hands back
+                // is the call's value, owned where the call's is; one a
+                // fresh factory keeps in the instance it returns is that
+                // instance's field's child — when the instance outlives
+                // this frame's temporaries (a field, a placement, a
+                // binding); a returned call keeps today's temporary.
+                let passed = self.passed_arg(e);
+                // GH #1569: a call handing back a tuple or an array of
+                // loci: its owner owns the parts it builds, and, when the
+                // aggregate outlives this frame's temporaries (a field, a
+                // placement), the parts it was handed as literals too
+                let aggregate = self.aggregate_flow(e);
+                let holds_parts = matches!(d, Decision::Field { .. } | Decision::Placement(_));
+                if let Some(parts) = &aggregate {
+                    let call_id = self.minted_id(e);
+                    let mask: Vec<bool> = parts
+                        .iter()
+                        .map(|p| match p {
+                            PartFlow::Fresh => true,
+                            PartFlow::Param(k) => holds_parts && args.get(*k).is_some_and(|a| self.is_locus_producing(a)),
+                            PartFlow::Value | PartFlow::Other => false,
+                        })
+                        .collect();
+                    if !matches!(d, Decision::Caller) && mask.iter().any(|b| *b) {
+                        let owner = self.owner_from(&d);
+                        self.record(call_id, owner, Produced::FactoryCall, "(aggregate)".to_string(), position, e.span());
+                        self.table.aggregates.insert(call_id, mask);
+                    }
+                }
+                let kept = match &d {
+                    Decision::Field { .. } | Decision::Placement(_) | Decision::Binding(_) => self.kept_args(e),
+                    Decision::FrameTemp | Decision::Caller => BTreeMap::new(),
+                };
+                let call_id = self.minted_id(e);
+                for (k, a) in args.iter().enumerate() {
+                    let part_of = aggregate.as_ref().is_some_and(|ps| ps.iter().any(|p| *p == PartFlow::Param(k)));
+                    let held_by_part = if aggregate.is_some() { self.aggregate_holds(e).remove(&k) } else { None };
+                    if part_of && holds_parts && self.is_locus_producing(a) {
+                        self.assign(a, d.clone(), "argument handed back in an aggregate");
+                    } else if let Some((part, field)) = held_by_part.filter(|_| holds_parts && self.is_locus_producing(a)) {
+                        self.table.aggregate_kept.entry(call_id).or_default().push((part, field));
+                        self.assign(a, d.clone(), "argument kept by a part of the aggregate");
+                    } else if passed == Some(k) && self.is_locus_producing(a) {
+                        self.table.passes.insert(call_id, k);
+                        // (a binding names the call, as it names a
+                        // carrier's join: the argument is then the
+                        // frame's, as an arm is)
+                        self.assign(a, d.through_delegate(), "argument handed back");
+                    } else if let Some(field) = kept.get(&k).filter(|_| self.is_locus_producing(a)) {
+                        self.table.kept.entry(call_id).or_default().push(field.clone());
+                        self.assign(a, Decision::Field { owner: call_id, field: field.clone() }, "argument kept by the result");
+                    } else {
+                        self.assign(a, Decision::FrameTemp, "argument");
+                    }
                 }
             }
             Expr::Or { inner, disposition, span: _ } => {
@@ -3415,13 +4207,29 @@ impl Resolver<'_> {
 
     fn walk_stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Let { name, value, id, .. } => {
+            Stmt::Let { name, value, id, ty, .. } => {
                 let d = if self.returned.let_is_returned(self.ids.site_id(*id), &name.name) {
                     Decision::Caller
                 } else {
                     Decision::Binding(self.slot_for(&name.name))
                 };
                 self.assign(value, d, "`let` RHS");
+                // a binding of a fn value returning a locus (`let f: fn(W)
+                // -> R = mk;`, or of a fresh factory's name)
+                let held = ty.as_ref().and_then(|t| self.fn_value_locus(t)).or_else(|| self.fn_value_held(value));
+                match held {
+                    Some(l) => {
+                        self.fn_vals.insert(name.name.clone(), l);
+                    }
+                    None => {
+                        self.fn_vals.remove(&name.name);
+                    }
+                }
+                if ty.as_ref().is_some_and(|t| matches!(t, TypeExpr::Function { .. }) && self.fn_value_locus(t).is_none()) {
+                    self.fn_nonlocus.insert(name.name.clone());
+                } else {
+                    self.fn_nonlocus.remove(&name.name);
+                }
             }
             Stmt::LetTuple { names, value, .. } => {
                 let slot = match names.first() {
@@ -3666,7 +4474,8 @@ impl Resolver<'_> {
                 | TopDecl::Claims(_)
                 | TopDecl::Constitution(_)
                 | TopDecl::Unit(_)
-                | TopDecl::Api(_) => {}
+                | TopDecl::Api(_)
+                | TopDecl::Fleet(_) => {}
             }
         }
     }
@@ -3707,6 +4516,15 @@ impl Resolver<'_> {
     fn walk_fn(&mut self, f: &FnDecl, prefix: &str, what: &str) {
         let decl = format!("{} {}{}", what, prefix, f.name.name);
         let saved = self.open_body_frame(&decl, &f.body);
+        let saved_vals = std::mem::take(&mut self.fn_vals);
+        let saved_nonlocus = std::mem::take(&mut self.fn_nonlocus);
+        for p in f.params.iter() {
+            if let Some(l) = self.fn_value_locus(&p.ty) {
+                self.fn_vals.insert(p.name.name.clone(), l);
+            } else if matches!(p.ty, TypeExpr::Function { .. }) {
+                self.fn_nonlocus.insert(p.name.name.clone());
+            }
+        }
         for p in f.params.iter() {
             if let Some(d) = &p.default {
                 self.assign(d, Decision::FrameTemp, "param default");
@@ -3716,7 +4534,34 @@ impl Resolver<'_> {
             &f.body,
             Some((Decision::Caller, "fn body tail")),
         );
+        self.fn_vals = saved_vals;
+        self.fn_nonlocus = saved_nonlocus;
         self.close_frame(saved);
+    }
+
+    /// The locus a fn value `e` returns when called, for a value spelled
+    /// as a binding holding one, a fresh factory's name, or (GH #1569) a
+    /// call of a fn declared to return a fn value returning a locus
+    /// (`fn pick() -> fn() -> W`): whatever that call hands back was
+    /// named as a value somewhere, which the check allows of a fresh
+    /// factory only.
+    fn fn_value_held(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Ident(i) if self.fn_vals.contains_key(&i.name) => self.fn_vals.get(&i.name).cloned(),
+            Expr::Ident(i) => self.fresh.get(&i.name).cloned(),
+            Expr::Call { callee, .. } => {
+                let n = callee_fn_name(callee, &self.renames)?;
+                self.fn_value_rets.get(&n).and_then(|t| self.fn_value_locus(t))
+            }
+            _ => None,
+        }
+    }
+
+    /// The locus a fn type returns (`fn(W) -> Routes`), when it names one.
+    fn fn_value_locus(&self, t: &TypeExpr) -> Option<String> {
+        let TypeExpr::Function { ret: Some(r), .. } = t else { return None };
+        let TypeExpr::Named { path, .. } = r.as_ref() else { return None };
+        self.locus_of_literal(path)
     }
 
     fn walk_param_defaults(&mut self, params: &[Param], decl: &str) {
@@ -3957,7 +4802,8 @@ impl Resolver<'_> {
                 | LocusMember::Capacity(_)
                 | LocusMember::Placement(_)
                 | LocusMember::Topology(_)
-                | LocusMember::Claims(_) => {}
+                | LocusMember::Claims(_)
+                | LocusMember::Seam(_) => {}
             }
         }
         self.accepting = saved_accepting;

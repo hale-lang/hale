@@ -95,7 +95,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
+    flat_decls, AssignOp, Block, ElseBranch, Expr, IfStmt, LValue, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
     OrDisposition, ParamInit, Pattern, PerspectiveMember, PinAffinity, PlacementConstraint, PlacementSpec, Program,
     RecoveryModifier, Stmt, StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
@@ -105,6 +105,7 @@ use crate::resolve::TopScope;
 use crate::snapshot::{Site, Snapshot};
 use crate::symbol::Bundle;
 use crate::ty::Ty;
+use crate::typed_bodies::TypingRecord;
 
 // ------------------------------------------------------------ identity
 
@@ -218,6 +219,9 @@ pub struct DeclRef {
     pub args: Vec<Ty>,
     /// The name lowering keys on (`__StdIoTcpListener`, `Cache_Int_String`).
     pub lowered: String,
+    /// The declaration's own name (`Cache` for `Cache_Int_String`): what a
+    /// site written in the template's body names it by.
+    pub template: String,
 }
 
 impl PartialEq for DeclRef {
@@ -644,6 +648,30 @@ impl PlacementTable {
     /// unlinked held row holds (K-9: that template may be the held row's
     /// source, whose instance runs in the holder's domain). A declaration
     /// nothing builds has no entry.
+    /// [`PlacementTable::domains_by_type`], with each generic
+    /// declaration's monomorphs also joined under the declaration's own
+    /// name (`Sub` beside `Sub_Int`): a site written in the template's
+    /// body names its locus by that name, and its instances run wherever
+    /// any monomorph's does (GH #1566 follow-up).
+    pub fn domains_by_template(&self) -> BTreeMap<String, TypeDomains> {
+        let mut out = self.domains_by_type();
+        let templates: BTreeMap<&str, &str> = self
+            .instances
+            .values()
+            .filter_map(|r| r.realizes.as_ref())
+            .chain(self.dynamic.iter().filter_map(|s| s.realizes.as_ref()))
+            .filter(|d| d.template != d.lowered)
+            .map(|d| (d.lowered.as_str(), d.template.as_str()))
+            .collect();
+        for (lowered, template) in templates {
+            let Some(mono) = out.get(lowered).cloned() else { continue };
+            let e = out.entry(template.to_string()).or_default();
+            e.known.extend(mono.known);
+            e.unknown |= mono.unknown;
+        }
+        out
+    }
+
     pub fn domains_by_type(&self) -> BTreeMap<String, TypeDomains> {
         let handed_off = self.handed_off();
         let unlinked: BTreeSet<&str> = self
@@ -934,7 +962,7 @@ impl TypeDomains {
 /// ordinary producer then reads that copy's entry and source sites.
 /// Snapshot consumers pass their table directly.
 pub fn bundle_placement(bundle: &Bundle<'_>, top: &TopScope) -> PlacementTable {
-    crate::with_identities(bundle, |minted| derive_placement(minted, top, &crate::entry::entry_row(minted)))
+    crate::with_identities(bundle, |minted| derive_placement(minted, top, &crate::entry::entry_row(minted), None))
 }
 
 // ----------------------------------------------------- the producer
@@ -943,17 +971,32 @@ pub fn bundle_placement(bundle: &Bundle<'_>, top: &TopScope) -> PlacementTable {
 /// programs and the stdlib analysis copy, seeded from the entry row's
 /// root. `bundle` must be minted (its identities hold the
 /// programs' sites); a bundle nothing minted names no site and gets an
-/// empty table.
-pub fn derive_placement(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow) -> PlacementTable {
-    build(bundle, top, entry)
+/// empty table. `typing`, the checker's walk over the same programs where
+/// the caller has one, types the places plain assignments store literals
+/// into: a generic locus literal assigned to a place declared as one of its
+/// instantiations takes that instantiation's arguments, as one under a
+/// `let` ascription takes its ascription's. Without it the literal is
+/// `UnresolvedArguments`.
+pub fn derive_placement(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    entry: &EntryRow,
+    typing: Option<&TypingRecord>,
+) -> PlacementTable {
+    build(bundle, top, entry, typing)
 }
 
-fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> PlacementTable {
+fn build<'a>(
+    bundle: &'a Bundle<'a>,
+    top: &'a TopScope,
+    entry: &EntryRow,
+    typing: Option<&'a TypingRecord>,
+) -> PlacementTable {
     let stdlib = match (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
         (Some(p), Some(ids)) => Some((p, ids)),
         _ => None,
     };
-    let decls = Decls::of(bundle, stdlib);
+    let decls = Decls::of(bundle, stdlib, typing);
     let scopes = Scopes::of(bundle, stdlib, &decls);
     let mut b = Builder {
         decls: &decls,
@@ -1015,10 +1058,25 @@ struct Decls<'a> {
     renames: BTreeMap<String, String>,
     /// Every free fn, by universe and name.
     fns: BTreeSet<(SiteUniverse, String)>,
+    /// Every bare name read as a value with no binding in scope of it
+    /// (`crate::fn_values`), by universe, name and where it is read: a
+    /// fn's name read there is the fn passed as a value. A local, a
+    /// parameter or a pattern binder of the same name is the binding,
+    /// not the fn (F.40: a name is bound once).
+    value_reads: BTreeSet<(SiteUniverse, String, usize, usize)>,
+    /// The checker's walk, where the caller has one: the types of
+    /// assignment places and the monomorphs they name.
+    typing: Option<&'a TypingRecord>,
+    /// Each user generic type's and locus's name, by its node.
+    templates: BTreeMap<u32, &'a str>,
 }
 
 impl<'a> Decls<'a> {
-    fn of(bundle: &Bundle<'a>, stdlib: Option<(&'a Program, &'a Snapshot)>) -> Decls<'a> {
+    fn of(
+        bundle: &Bundle<'a>,
+        stdlib: Option<(&'a Program, &'a Snapshot)>,
+        typing: Option<&'a TypingRecord>,
+    ) -> Decls<'a> {
         let mut d = Decls {
             user: Vec::new(),
             stdlib: Vec::new(),
@@ -1030,20 +1088,38 @@ impl<'a> Decls<'a> {
             types: BTreeSet::new(),
             renames: bundle.import_renames.iter().map(|(segs, m)| (segs.join("::"), m.clone())).collect(),
             fns: BTreeSet::new(),
+            value_reads: BTreeSet::new(),
+            typing,
+            templates: BTreeMap::new(),
         };
         for program in bundle.programs.values() {
             d.collect(&program.items, &bundle.snapshot, SiteUniverse::User, &mut Vec::new());
+            d.collect_value_reads(&program.items, SiteUniverse::User);
         }
         if let Some((program, ids)) = stdlib {
             d.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, &mut Vec::new());
+            d.collect_value_reads(&program.items, SiteUniverse::StdlibAnalysis);
         }
         d
+    }
+
+    fn collect_value_reads(&mut self, items: &[TopDecl], universe: SiteUniverse) {
+        let mut sites = Vec::new();
+        crate::fn_values::value_name_sites(items, &mut sites);
+        for (name, span) in sites {
+            if let crate::fn_values::ValueName::Ident(n) = name {
+                self.value_reads.insert((universe, n, span.start.as_usize(), span.end.as_usize()));
+            }
+        }
     }
 
     fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, module: &mut Vec<String>) {
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
+                    if universe == SiteUniverse::User && !l.generics.is_empty() {
+                        self.templates.insert(l.id.0, l.name.name.as_str());
+                    }
                     let Some(id) = ids.site_id(l.id) else { continue };
                     let entry = DeclEntry { decl: l, site: SiteRef { universe, id }, module: module.clone() };
                     match universe {
@@ -1058,6 +1134,10 @@ impl<'a> Decls<'a> {
                     }
                 }
                 TopDecl::Type(t) => match &t.body {
+                    _ if universe == SiteUniverse::User && !t.generics.is_empty() => {
+                        self.templates.insert(t.id.0, t.name.name.as_str());
+                        self.types.insert(t.name.name.as_str());
+                    }
                     TypeDeclBody::Alias(te) if t.generics.is_empty() => {
                         let aliases = match universe {
                             SiteUniverse::User => &mut self.user_aliases,
@@ -1086,6 +1166,49 @@ impl<'a> Decls<'a> {
                 _ => {}
             }
         }
+    }
+
+    /// The declared type of a plain assignment's place, as the checker's
+    /// walk typed it: the last segment's type (the head's, for a bare
+    /// local), a monomorph written back as the instantiation it names.
+    /// `None` with no walk, or a type the placement cannot write.
+    fn placed(&self, target: &LValue) -> Option<TypeExpr> {
+        let typing = self.typing?;
+        let tables = || typing.views.values().flatten();
+        let ty = match target.tail.last() {
+            Some(LValueSeg::Field(f)) => tables().map(|v| v.place(f)).find(|t| !matches!(t, Ty::Unknown)),
+            Some(LValueSeg::Index(ix)) => tables().map(|v| v.place(ix)).find(|t| !matches!(t, Ty::Unknown)),
+            None => tables().map(|v| v.place(&target.head)).find(|t| !matches!(t, Ty::Unknown)),
+        }?;
+        self.type_expr(ty)
+    }
+
+    /// `ty` as a type expression the placement reads: a monomorph as its
+    /// template's name over its arguments, each written back the same way.
+    fn type_expr(&self, ty: &Ty) -> Option<TypeExpr> {
+        let span = hale_syntax::Span::new(0, 0);
+        let named = |name: &str, generic_args| TypeExpr::Named {
+            path: hale_syntax::ast::QualifiedName { segments: vec![hale_syntax::ast::Ident::new(name.to_string(), span)], span },
+            generic_args,
+            span,
+        };
+        Some(match ty {
+            Ty::Prim(p) => TypeExpr::Primitive(*p, span),
+            Ty::Named(n) => match self.typing.and_then(|t| t.monomorphs.named(n)) {
+                Some(m) => {
+                    let template = self.templates.get(&m.template.0)?;
+                    named(template, m.args.iter().map(|a| self.type_expr(a)).collect::<Option<Vec<_>>>()?)
+                }
+                None => named(n, Vec::new()),
+            },
+            Ty::Tuple(parts) => TypeExpr::Tuple(parts.iter().map(|p| self.type_expr(p)).collect::<Option<Vec<_>>>()?, span),
+            Ty::Array(elem, n) => TypeExpr::Array {
+                elem: Box::new(self.type_expr(elem)?),
+                size: n.map(|n| Expr::Literal(hale_syntax::ast::Literal::Int(n as i64), span)),
+                span,
+            },
+            _ => return None,
+        })
     }
 
     fn entry(&self, universe: SiteUniverse, i: usize) -> &DeclEntry<'a> {
@@ -1117,8 +1240,9 @@ impl<'a> Decls<'a> {
         }
         match segs {
             [] => Named::Unknown,
-            // The TCP substrate is appended to the program that names it
-            // (`rpc_expand::inject_tcp_serve`), so its loci are declared
+            // The TCP substrate and the observe backends are appended to
+            // the program that names them (`rpc_expand::inject_tcp_serve`,
+            // `inject_observe`), so their loci are declared
             // among the program's own: a std path to one of them
             // (`std::http::Server`) names the program's declaration. (The
             // api runtime's loci are reached through the names its pass
@@ -1126,7 +1250,7 @@ impl<'a> Decls<'a> {
             // the substrate.)
             ["std", ..] => match crate::ownership::stdlib_mangled_for_path(segs) {
                 Some(mangled) => match self.stdlib_named(mangled).or_else(|| {
-                    self.user_named(mangled).filter(|e| crate::rpc_expand::is_tcp_serve_pos(e.decl.span.start.0))
+                    self.user_named(mangled).filter(|e| crate::rpc_expand::is_appended_stdlib_pos(e.decl.span.start.0))
                 }) {
                     Some(e) => Named::Locus(e),
                     None if self.contracts.contains(mangled) => Named::Contract,
@@ -1191,7 +1315,7 @@ impl<'a> LocusIndex<'a> {
             (Some(p), Some(ids)) => Some((p, ids)),
             _ => None,
         };
-        LocusIndex { decls: Decls::of(bundle, stdlib) }
+        LocusIndex { decls: Decls::of(bundle, stdlib, None) }
     }
 
     /// The declaration at `site`.
@@ -1249,6 +1373,38 @@ fn substitute(ty: &TypeExpr, subst: &BTreeMap<String, TypeExpr>) -> TypeExpr {
 /// The literals an initializer chooses among: the literal itself, or
 /// the literal arm of each branch of an `if` / `match` (and a block's
 /// tail). `None` when any arm is something else (a call, a name).
+/// GH #1566 follow-up: the slots a param's initializer fills, each with
+/// its init and declared type: the param itself, or, for an array or a
+/// tuple whose every element is a locus literal (as written, or as its
+/// declared type says), one per element — `cs.0`, `t.1` (a replica's index is `[k]`) — each a field
+/// step of its own.
+fn element_slots<'a>(field: &str, init: Option<&'a Expr>, declared: Option<TypeExpr>) -> Vec<(String, Option<&'a Expr>, Option<TypeExpr>)> {
+    let literal = |e: &Expr| matches!(e, Expr::Struct { .. });
+    match (init, &declared) {
+        (Some(Expr::Array(parts, _)), Some(TypeExpr::Array { .. }) | None)
+            if !parts.is_empty() && parts.iter().all(literal) && declared.as_ref().is_none_or(|_| matches!(elem_of(&declared), Some(TypeExpr::Named { .. }))) =>
+        {
+            let elem = elem_of(&declared).cloned();
+            parts.iter().enumerate().map(|(k, e)| (format!("{field}.{k}"), Some(e), elem.clone())).collect()
+        }
+        (Some(Expr::Tuple(parts, _)), Some(TypeExpr::Tuple(ts, _))) if !parts.is_empty() && parts.iter().all(literal) && ts.len() == parts.len() => {
+            parts.iter().zip(ts).enumerate().map(|(k, (e, t))| (format!("{field}.{k}"), Some(e), Some(t.clone()))).collect()
+        }
+        (Some(Expr::Tuple(parts, _)), None) if !parts.is_empty() && parts.iter().all(literal) => {
+            parts.iter().enumerate().map(|(k, e)| (format!("{field}.{k}"), Some(e), None)).collect()
+        }
+        _ => vec![(field.to_string(), init, declared)],
+    }
+}
+
+/// An array type's element type.
+fn elem_of(t: &Option<TypeExpr>) -> Option<&TypeExpr> {
+    match t {
+        Some(TypeExpr::Array { elem, .. }) => Some(elem),
+        _ => None,
+    }
+}
+
 fn alternatives(e: &Expr) -> Option<Vec<&Expr>> {
     fn block<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) -> Option<()> {
         if !b.stmts.is_empty() {
@@ -1411,16 +1567,16 @@ impl<'d, 'a> Builder<'d, 'a> {
     fn decl_ref(&self, e: &DeclEntry<'a>, declared: Option<&TypeExpr>, from: SiteUniverse) -> (DeclRef, bool) {
         let name = e.decl.name.name.clone();
         if e.decl.generics.is_empty() {
-            return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, true);
+            return (DeclRef { site: e.site, args: Vec::new(), template: name.clone(), lowered: name }, true);
         }
         let args = match self.type_args(e, declared, from) {
             Some(args) => args,
-            None => return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, false),
+            None => return (DeclRef { site: e.site, args: Vec::new(), template: name.clone(), lowered: name }, false),
         };
         let lowered = crate::mangle::mangle_generic_name(&name, &args);
         let tys: Vec<_> = args.iter().map(|a| crate::resolve::resolve_type_expr(a, &self.top.names)).collect();
         let known = lowered.is_ok() && tys.iter().all(|t| !matches!(t, crate::ty::Ty::Unknown));
-        (DeclRef { site: e.site, args: tys, lowered: lowered.unwrap_or(name) }, known)
+        (DeclRef { site: e.site, args: tys, template: name.clone(), lowered: lowered.unwrap_or(name) }, known)
     }
 
     fn hole(&mut self, at: HoleAt, kind: HoleKind) {
@@ -1447,11 +1603,11 @@ impl<'d, 'a> Builder<'d, 'a> {
                 _ => {}
             }
         }
-        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets, Option<&'a TypeExpr>)> = Vec::new();
+        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets, Option<&TypeExpr>)> = Vec::new();
         for s in &scopes.scopes {
             for lit in &s.literals {
                 if lit.decl == Some(site) && s.universe == SiteUniverse::User {
-                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets, lit.declared));
+                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets, lit.declared()));
                 }
             }
         }
@@ -1471,7 +1627,7 @@ impl<'d, 'a> Builder<'d, 'a> {
             })
             .collect();
         expanded.sort_by_key(|e| e.literal);
-        let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
+        let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone(), template: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
             realizes: realizes.clone(),
@@ -1485,7 +1641,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         // A root no literal builds is the entry's implicit template, from
         // the declaration's defaults; its top's literal is the entry's
         // site, as an adapter's is its binding entry's.
-        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>, Option<&'a TypeExpr>)> = if constructions.is_empty() {
+        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>, Option<&TypeExpr>)> = if constructions.is_empty() {
             let entry_site = scopes.entry_fn().unwrap_or(site);
             vec![(Origin::Entry(entry_site), entry_site, &[], None, None)]
         } else {
@@ -1549,7 +1705,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 if let Some(d) = realized {
                     let owner = Owner { key: &key, domain, guarded: false };
                     let mut stack = vec![d.site];
-                    self.fields(d, inits, &BTreeMap::new(), &owner, None, None, &mut stack);
+                    self.fields(d, inits, &BTreeMap::new(), &owner, None, None, None, &mut stack);
                 }
             }
         }
@@ -1593,7 +1749,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         let mut stack = vec![decl.site];
         let subst = decl.decl.generics.iter().map(|g| g.name.name.clone())
             .zip(self.type_args(decl, declared, literal.universe).unwrap_or_default()).collect();
-        self.fields(decl, inits, &subst, &owner, root, lets, &mut stack);
+        self.fields(decl, inits, &subst, &owner, root, lets, None, &mut stack);
     }
 
     /// The templates the entry builds besides the root: each locus
@@ -1611,7 +1767,7 @@ impl<'d, 'a> Builder<'d, 'a> {
             let Some(d) = lit.decl.and_then(|d| scopes.decl_entry(self.decls, d)) else { continue };
             self.static_literals.insert(lit.site);
             let key = InstanceKey { origin: Origin::Construction(lit.site), path: Vec::new(), replica: None };
-            self.top(&key, d, lit.declared, lit.site, lit.inits, None, Some(&main.lets));
+            self.top(&key, d, lit.declared(), lit.site, lit.inits, None, Some(&main.lets));
             self.table.entry_literals.push(Construction { literal: lit.site, bound: scopes.bound(main, lit.in_loop) });
         }
     }
@@ -1710,6 +1866,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         owner: &Owner<'_>,
         root: Option<&RootEntries<'a>>,
         lets: Option<&Lets>,
+        scope: Option<&InstanceKey>,
         stack: &mut Vec<SiteRef>,
     ) {
         if stack.len() > 64 {
@@ -1719,13 +1876,18 @@ impl<'d, 'a> Builder<'d, 'a> {
         for m in &decl.decl.members {
             let LocusMember::Params(pb) = m else { continue };
             for p in &pb.params {
-                let field = p.name.name.as_str();
-                let written_here = inits.iter().find(|i| i.name.name == field).map(|i| &i.value);
-                let init: Option<&'a Expr> = written_here.or(match &p.init {
+                let param_field = p.name.name.as_str();
+                let written_here = inits.iter().find(|i| i.name.name == param_field).map(|i| &i.value);
+                let param_init: Option<&'a Expr> = written_here.or(match &p.init {
                     ParamInit::Value(e) => Some(e),
                     ParamInit::Inferred => None,
                 });
-                let declared: Option<TypeExpr> = p.ty.as_ref().map(|t| substitute(t, subst));
+                let param_declared: Option<TypeExpr> = p.ty.as_ref().map(|t| substitute(t, subst));
+                // GH #1566 follow-up: an array or a tuple of locus literals
+                // holds each element as the owner's child: a row per
+                // element (`cs.0`, `t.1`), as a locus-typed field's one
+                for (slot, init, declared) in element_slots(param_field, param_init, param_declared) {
+                let field = slot.as_str();
                 let declared_named = match &declared {
                     Some(TypeExpr::Named { path, .. }) => self.decls.resolve(&segments(path), universe),
                     _ => Named::NotALocus,
@@ -1733,6 +1895,65 @@ impl<'d, 'a> Builder<'d, 'a> {
                 let declared_is_slot = matches!(declared_named, Named::Locus(_) | Named::Contract);
                 let alts = init.and_then(alternatives);
                 let reused = if alts.is_none() { init.and_then(reused_source) } else { None };
+                // The instance `self` names where this field's initializer is
+                // written: the caller's scope for one its literal writes, this
+                // owner for its declaration's default.
+                let field_scope: Option<InstanceKey> =
+                    if written_here.is_some() { scope.cloned() } else { Some(owner.key.clone()) };
+                // A contract-typed slot handed `self.<f>`, where `f` is an
+                // instance its scope built by a literal (`principals:
+                // self.creds`, a client's or a transport's source), is a
+                // reference to that instance: its row realizes what the
+                // source's does, in the source's domain, so a call through
+                // it is judged against where that instance runs, and it is
+                // no hole. A source the table holds no literal-built row for
+                // (a field that is itself held) stays a held instance.
+                if matches!(declared_named, Named::Contract) {
+                    if let (Some(f), Some(sc)) =
+                        (reused.as_deref().and_then(|r| r.strip_prefix("self.")), field_scope.as_ref())
+                    {
+                        let linked = (!f.contains('.'))
+                            .then(|| {
+                                self.table.instances.iter().find(|(k, r)| {
+                                    k.origin == sc.origin
+                                        && k.replica == sc.replica
+                                        && k.path.len() == sc.path.len() + 1
+                                        && k.path.starts_with(&sc.path)
+                                        && k.path.last().is_some_and(|st| st.field == f)
+                                        && r.literal.is_some()
+                                        && r.realizes.is_some()
+                                })
+                            })
+                            .flatten()
+                            .map(|(k, r)| (k.clone(), r.clone()));
+                        if let Some((src_key, src)) = linked {
+                            if !self.table.holes.iter().any(|h| h.at == HoleAt::Instance(src_key.clone())) {
+                                let mut path = owner.key.path.clone();
+                                path.push(Step { field: field.to_string(), alternative: None });
+                                let key = InstanceKey { origin: owner.key.origin, path, replica: owner.key.replica };
+                                let owner_relative = if src.domain == owner.domain {
+                                    OwnerRelative::SameAsOwner
+                                } else {
+                                    OwnerRelative::OffOwner
+                                };
+                                self.table.instances.insert(
+                                    key,
+                                    InstanceRow {
+                                        realizes: src.realizes,
+                                        literal: None,
+                                        owner: Some(owner.key.clone()),
+                                        domain: src.domain,
+                                        decided_by: Decision::Inherited { from: src_key },
+                                        owner_relative,
+                                        guarded: owner.guarded,
+                                        built_by: None,
+                                    },
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
                 // The literal a held instance was built from: a local of
                 // the template's scope bound to one.
                 let source = match (&reused, written_here, lets) {
@@ -1900,9 +2121,10 @@ impl<'d, 'a> Builder<'d, 'a> {
                         stack.push(d.site);
                         let next = Owner { key: &key, domain, guarded };
                         let lets_below = if written_here.is_some() { lets } else { None };
-                        self.fields(d, lit_inits, &below, &next, None, lets_below, stack);
+                        self.fields(d, lit_inits, &below, &next, None, lets_below, field_scope.as_ref(), stack);
                         stack.pop();
                     }
+                }
                 }
             }
         }
@@ -2132,7 +2354,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                     continue;
                 }
                 let resolved = l.decl.and_then(|d| scopes.decl_entry(self.decls, d))
-                    .map(|e| self.decl_ref(e, l.declared, s.universe));
+                    .map(|e| self.decl_ref(e, l.declared(), s.universe));
                 if resolved.as_ref().is_some_and(|(_, known)| !known) {
                     self.hole(HoleAt::Dynamic(l.site), HoleKind::UnresolvedArguments);
                 }
@@ -2181,8 +2403,19 @@ struct Literal<'a> {
     inits: &'a [StructInit],
     /// The type of this whole literal, never an enclosing record's type.
     declared: Option<&'a TypeExpr>,
+    /// The declared type of the place a plain assignment stores it into,
+    /// as the checker's walk typed the place ([`Decls::placed`]).
+    placed: Option<TypeExpr>,
     in_loop: bool,
     written: String,
+}
+
+impl Literal<'_> {
+    /// What declares this literal's type: its `let` ascription, its
+    /// param's or field's type, or the place it is assigned to.
+    fn declared(&self) -> Option<&TypeExpr> {
+        self.declared.or(self.placed.as_ref())
+    }
 }
 
 /// A locus literal written where no scope's bodies reach.
@@ -2263,7 +2496,45 @@ impl<'a> Scopes<'a> {
             s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls, true);
         }
         if let Some((program, ids)) = stdlib {
-            s.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, decls, true);
+            // The stdlib's bodies the programs can reach (`stdlib_reach`):
+            // a body outside the reach is no callee of theirs and builds
+            // none of their instances. The reach's rules are where it
+            // starts, not what it rests on: a reached body that calls or
+            // names a stdlib fn outside it widens it, and the copy's scopes
+            // are collected again.
+            let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+            let mut reach = crate::stdlib_reach::StdlibReach::of(&programs);
+            let item_of: BTreeMap<&str, usize> = program
+                .items
+                .iter()
+                .enumerate()
+                .flat_map(|(i, item)| {
+                    hale_syntax::ast::flat_decls(std::slice::from_ref(item)).filter_map(move |d| match d {
+                        TopDecl::Fn(f) => Some((f.name.name.as_str(), i)),
+                        _ => None,
+                    })
+                })
+                .collect();
+            let user_scopes = s.scopes.len();
+            let user_elsewhere = s.elsewhere.len();
+            loop {
+                for i in reach.items() {
+                    s.collect(std::slice::from_ref(&program.items[i]), ids, SiteUniverse::StdlibAnalysis, decls, true);
+                }
+                let beyond: BTreeSet<usize> = s.scopes[user_scopes..]
+                    .iter()
+                    .flat_map(|sc| sc.calls.iter().map(|(c, _)| c).chain(sc.escapes.iter()))
+                    .filter_map(|c| item_of.get(c.as_str()).copied())
+                    .filter(|i| !reach.contains(*i))
+                    .collect();
+                if beyond.is_empty() || !reach.widen(beyond) {
+                    break;
+                }
+                s.scopes.truncate(user_scopes);
+                s.elsewhere.truncate(user_elsewhere);
+                s.fns.retain(|(u, _), _| *u == SiteUniverse::User);
+                s.loci.retain(|site, _| site.universe == SiteUniverse::User);
+            }
         }
         let mut callers: BTreeMap<(SiteUniverse, &str), Vec<(usize, bool)>> = BTreeMap::new();
         for (j, caller) in s.scopes.iter().enumerate() {
@@ -2398,7 +2669,7 @@ impl<'a> Scopes<'a> {
                     let is_main = top && universe == SiteUniverse::User && fd.name.name == "main";
                     self.fns.entry((universe, fd.name.name.clone())).or_insert(self.scopes.len());
                     let mut scope = w.finish(ScopeKind::Fn { name: fd.name.name.clone(), site, is_main });
-                    scope.appended = crate::rpc_expand::is_tcp_serve_pos(fd.name.span.start.0);
+                    scope.appended = crate::rpc_expand::is_appended_stdlib_pos(fd.name.span.start.0);
                     self.scopes.push(scope);
                 }
                 TopDecl::Locus(l) => {
@@ -2434,7 +2705,7 @@ impl<'a> Scopes<'a> {
                     }
                     self.loci.insert(decl, self.scopes.len());
                     let mut scope = w.finish(ScopeKind::Locus { decl });
-                    scope.appended = crate::rpc_expand::is_tcp_serve_pos(l.name.span.start.0);
+                    scope.appended = crate::rpc_expand::is_appended_stdlib_pos(l.name.span.start.0);
                     self.scopes.push(scope);
                 }
                 TopDecl::Module(m) => self.collect(&m.items, ids, universe, decls, false),
@@ -2694,8 +2965,16 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                 }
                 self.expr(value);
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign { target, op, value, .. } => {
+                let start = self.literals.len();
                 self.expr(value);
+                if matches!(op, AssignOp::Eq)
+                    && matches!(value, Expr::Struct { .. } | Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..))
+                {
+                    if let Some(ty) = self.decls.placed(target) {
+                        self.place_into(start, value, &ty);
+                    }
+                }
                 for seg in &target.tail {
                     if let LValueSeg::Index(ix) = seg {
                         self.expr(ix);
@@ -2753,7 +3032,55 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         }
     }
 
+    /// The place's declared type `ty` handed down to the literals of the
+    /// value stored there, from `start` in this walk's literals: a generic
+    /// locus literal takes the instantiation `ty` names, and an array or
+    /// tuple literal's elements each the element type's.
+    fn place_into(&mut self, start: usize, value: &Expr, ty: &TypeExpr) {
+        match (value, ty) {
+            (Expr::Struct { id, .. }, TypeExpr::Named { generic_args, .. }) if !generic_args.is_empty() => {
+                let site = self.ids.site_id(*id);
+                if let Some(literal) = self.literals[start..].iter_mut().find(|l| Some(l.site.id) == site) {
+                    literal.placed = Some(ty.clone());
+                }
+            }
+            (Expr::Array(parts, _), TypeExpr::Array { elem, .. }) => {
+                for p in parts {
+                    self.place_into(start, p, elem);
+                }
+            }
+            (Expr::ArrayRepeat { val, .. }, TypeExpr::Array { elem, .. }) => self.place_into(start, val, elem),
+            (Expr::Tuple(parts, _), TypeExpr::Tuple(tys, _)) if parts.len() == tys.len() => {
+                for (p, t) in parts.iter().zip(tys) {
+                    self.place_into(start, p, t);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn typed_expr(&mut self, e: &'a Expr, declared: Option<&'a TypeExpr>) {
+        // An array or tuple literal under a declared array or tuple type:
+        // each element under the element type, as a literal under its own.
+        match (declared, e) {
+            (Some(TypeExpr::Array { elem, .. }), Expr::Array(parts, _)) => {
+                for p in parts {
+                    self.typed_expr(p, Some(elem));
+                }
+                return;
+            }
+            (Some(TypeExpr::Array { elem, .. }), Expr::ArrayRepeat { val, .. }) => {
+                self.typed_expr(val, Some(elem));
+                return;
+            }
+            (Some(TypeExpr::Tuple(tys, _)), Expr::Tuple(parts, _)) if tys.len() == parts.len() => {
+                for (p, t) in parts.iter().zip(tys) {
+                    self.typed_expr(p, Some(t));
+                }
+                return;
+            }
+            _ => {}
+        }
         fn depends_on(ty: &TypeExpr, parameters: &BTreeSet<String>) -> bool {
             match ty {
                 TypeExpr::Named { path, generic_args, .. } => {
@@ -2787,8 +3114,9 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     fn expr(&mut self, e: &'a Expr) {
         match e {
             Expr::Ident(i) => {
-                // A name that is a free fn, read as a value.
-                if self.decls_has_fn(&i.name) {
+                // A free fn's name read as a value, where no binding in
+                // scope spells it.
+                if self.decls_has_fn(&i.name) && self.reads_fn_value(i) {
                     self.escapes.insert(i.name.clone());
                 }
             }
@@ -2837,6 +3165,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                             unknown,
                             inits,
                             declared: None,
+                            placed: None,
                             in_loop: self.loop_depth > 0,
                             written: written(&segs),
                         });
@@ -2881,6 +3210,10 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 
     fn decls_has_fn(&self, name: &str) -> bool {
         self.decls.fns.contains(&(self.universe, name.to_string()))
+    }
+
+    fn reads_fn_value(&self, i: &hale_syntax::ast::Ident) -> bool {
+        self.decls.value_reads.contains(&(self.universe, i.name.clone(), i.span.start.as_usize(), i.span.end.as_usize()))
     }
 }
 

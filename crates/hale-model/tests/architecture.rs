@@ -1548,6 +1548,65 @@ fn claim_ref_name_disagreement_is_rejected() {
     let _ = &mut m;
 }
 
+/// Placement laws carry and validate BOTH operands; changing either
+/// changes the semantic identity of the law table.
+#[test]
+fn separation_law_validates_both_groups_and_serializes_its_operands() {
+    use hale_model::{
+        ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+        GroupId, GroupRef, JudgmentFamily, NameRef, RelationSet,
+    };
+    let mut model = tiny_model();
+    for name in ["workers", "ingress"] {
+        model.entities.groups.push(Group {
+            name: name.to_string(),
+            display: format!("lib::{name}"),
+            may_be_empty: false,
+            provenance: ProvenanceId(0),
+        });
+    }
+    let group = |index: usize| GroupRef {
+        group: Some(GroupId(index as u32)),
+        name: NameRef {
+            raw: model.entities.groups[index].name.clone(),
+            display: model.entities.groups[index].display.clone(),
+        },
+        provenance: ProvenanceId(0),
+    };
+    let mut table = ClaimIrTable::default();
+    table.provenance.records.push(Provenance::Synthetic {
+        origin: "placement claim test".to_string(),
+    });
+    table.rows.push(ClaimRow {
+        ordinal: 0,
+        name: "apart".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::RequireSeparateDomains { left: group(0), right: group(1) },
+        provenance: ProvenanceId(0),
+    });
+    table.validate(&model).expect("both references agree");
+    let row = &table.rows[0];
+    assert_eq!(row.family(), JudgmentFamily::Placement);
+    assert_eq!(JudgmentFamily::from_word("placement"), Some(row.family()));
+    assert_eq!(row.family().required_relations(), RelationSet::OWNS
+        .union(RelationSet::PLACED).union(RelationSet::CARDINALITY));
+    assert_eq!(row.claims_form().as_deref(),
+        Some("require separate_domains(all lib::workers, all lib::ingress)"));
+    assert_eq!(row.law_payload_json(&model.entities, &table.provenance),
+        "{\"kind\": \"require_separate_domains\", \"left\": {\"name\": \"workers\", \"display\": \"lib::workers\", \"resolved\": true}, \"right\": {\"name\": \"ingress\", \"display\": \"lib::ingress\", \"resolved\": true}}");
+    let digest = table.semantic_digest();
+    for change_left in [true, false] {
+        let mut changed = table.clone();
+        let ClaimIr::RequireSeparateDomains { left, right } = &mut changed.rows[0].law else {
+            unreachable!()
+        };
+        let operand = if change_left { left } else { right };
+        operand.name.raw = "different".to_string();
+        assert_ne!(changed.semantic_digest(), digest);
+        assert!(matches!(changed.validate(&model), Err(ClaimIrError::NameDisagreement { .. })));
+    }
+}
+
 /// Round 19: BusSelector candidate sets are DERIVED data — validate
 /// recomputes them with the canonical matching rule and requires
 /// exact equality. An unrelated candidate (widens) and an omitted
@@ -1783,6 +1842,7 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
         let mut m = tiny_model();
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
+                entry_bus: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: None,
@@ -1790,6 +1850,7 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
                 entry_group: None,
                 entry_provenance: ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "interior".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),

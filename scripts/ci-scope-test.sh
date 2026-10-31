@@ -12,47 +12,60 @@ git add -A && git commit -qm base
 base=$(git rev-parse HEAD)
 fail=0
 
-# case_ <name> <expected prose> <expected dna> <expected assets> <paths...>
+# case_ <name> <expected prose> <expected dna> <expected cli> <expected assets> <paths...>
 case_() {
-  local name=$1 ep=$2 ed=$3 ea=$4; shift 4
+  local name=$1 ep=$2 ed=$3 ec=$4 ea=$5; shift 5
   git checkout -q "$base" && git checkout -q -B "t-$name"
   for f in "$@"; do mkdir -p "$(dirname "$f")"; echo "$RANDOM" >> "$f"; done
   git add -A && git commit -qm "$name"
   got=$(bash "$here/ci-scope.sh" "$base" HEAD 2>/dev/null | tr '\n' ' ')
-  want="prose=$ep dna=$ed assets=$ea "
+  want="prose=$ep dna=$ed cli=$ec assets=$ea "
   if [ "$got" = "$want" ]; then echo "ok   $name: $got"; else echo "FAIL $name: got '$got' want '$want'"; fail=1; fi
 }
 
-case_ docs-only   true  false false docs/a.md README.md
-case_ unreleased  true  false false unreleased/1.md
-case_ tests-only  false false false crates/hale-codegen/tests/t.rs
-case_ stdlib-edit false true  false crates/hale-stdlib/hl/s.hl
-case_ dna-edit    false true  false dna/a.hl
-case_ workflow    false true  false .github/workflows/tests.yml
-case_ dna-suite   false true  false crates/hale-cli/tests/dna_native_suite.rs
+case_ docs-only   true  false false false docs/a.md README.md
+case_ unreleased  true  false false false unreleased/1.md
+case_ tests-only  false false false false crates/hale-codegen/tests/t.rs
+case_ stdlib-edit false false false false crates/hale-stdlib/hl/s.hl
+case_ codegen-src  false false false false crates/hale-codegen/src/x.rs
+case_ cargo-lock  false false true  false Cargo.lock
+case_ dna-edit    false true true  false dna/a.hl
+case_ workflow    false true true  false .github/workflows/tests.yml
+case_ dna-suite   false true true  false crates/hale-cli/tests/dna_native_suite.rs
 
-case_ nextest-cfg false true  false .config/nextest.toml
-case_ ts-fixture  false true  false crates/hale-cli/tests/fixtures/ts-client/run.mjs
-case_ script      false true  false scripts/other.sh
-case_ contract    false true  false tests/api-contract/program.hl
-case_ replay      false true  false tests/hale/api/client/replay/main.hl
-case_ hale-test   false false false tests/hale/other_test.hl
+case_ nextest-cfg false true true  false .config/nextest.toml
+case_ ts-fixture  false true true  false crates/hale-cli/tests/fixtures/ts-client/run.mjs
+case_ script      false true true  false scripts/other.sh
+case_ contract    false true true  false tests/api-contract/program.hl
+case_ replay      false true true  false tests/hale/api/client/replay/main.hl
+case_ dna-host    false true  true  false crates/hale-cli/src/dna.rs
+case_ dna-host-dir false true true  false crates/hale-cli/src/dna/verbs.rs
+case_ iris-crate  false true  true  false crates/hale-iris/src/lib.rs
+case_ dna-crate   false true  true  false crates/hale-dna/build.rs
+case_ fleet-src   false true  true  false crates/hale-cli/src/fleet_model.rs
+case_ dna-cli-test false true true  false crates/hale-cli/tests/dna_orgs.rs
+case_ api-gen     false true  true  false crates/hale-cli/src/api_gen/ts_client.rs
+case_ cli-src     false false true  false crates/hale-cli/src/main.rs
+case_ lsp-src     false false true  false crates/hale-lsp/src/lib.rs
+case_ cli-test    false false true  false crates/hale-cli/tests/tooling.rs
+case_ hale-test   false false true  false tests/hale/other_test.hl
 
 # README art: assets/ and the root README skip every test job
-case_ art-only    false false true  assets/readme/banner.png assets/readme/banner.html
-case_ art-readme  false false true  assets/readme/banner.png README.md
-case_ readme-only true  false true  README.md
-case_ art-and-doc false false false assets/readme/banner.png docs/a.md
-case_ art-and-code false true false assets/readme/banner.png crates/hale-stdlib/hl/s.hl
+case_ art-only    false false false true  assets/readme/banner.png assets/readme/banner.html
+case_ art-readme  false false false true  assets/readme/banner.png README.md
+case_ readme-only true  false false true  README.md
+case_ art-and-doc false false false false assets/readme/banner.png docs/a.md
+case_ art-and-code false false false false assets/readme/banner.png crates/hale-stdlib/hl/s.hl
+case_ art-and-dna false true  true  false assets/readme/banner.png dna/a.hl
 
 # a rename out of dna/ removes a source the fixtures import: both sides count
 git checkout -q "$base" && git checkout -q -B t-rename
 mkdir -p experiments && git mv dna/a.hl experiments/a.hl && git commit -qm rename
 got=$(bash "$here/ci-scope.sh" "$base" HEAD 2>/dev/null | tr '\n' ' ')
-if [ "$got" = "prose=false dna=true assets=false " ]; then echo "ok   rename-out-of-dna: $got"; else echo "FAIL rename-out-of-dna: got '$got'"; fail=1; fi
+if [ "$got" = "prose=false dna=true cli=true assets=false " ]; then echo "ok   rename-out-of-dna: $got"; else echo "FAIL rename-out-of-dna: got '$got'"; fail=1; fi
 
 got=$(bash "$here/ci-scope.sh" "" HEAD 2>/dev/null | tr '\n' ' ')
-if [ "$got" = "prose=false dna=true assets=false " ]; then echo "ok   no-base: $got"; else echo "FAIL no-base: $got"; fail=1; fi
+if [ "$got" = "prose=false dna=true cli=true assets=false " ]; then echo "ok   no-base: $got"; else echo "FAIL no-base: $got"; fail=1; fi
 got=$(bash "$here/ci-scope.sh" "$base" "$base" 2>/dev/null | tr '\n' ' ')
-if [ "$got" = "prose=false dna=true assets=false " ]; then echo "ok   empty: $got"; else echo "FAIL empty: $got"; fail=1; fi
+if [ "$got" = "prose=false dna=true cli=true assets=false " ]; then echo "ok   empty: $got"; else echo "FAIL empty: $got"; fail=1; fi
 exit $fail

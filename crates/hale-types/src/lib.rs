@@ -23,6 +23,7 @@
 pub mod alloc_routing;
 pub mod arrangement;
 pub mod alloc_summary;
+pub mod iteration_reclaim;
 pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
@@ -37,6 +38,7 @@ pub mod effect_classes;
 pub mod effect_rows;
 pub mod effects;
 pub mod entry;
+pub mod fleet;
 pub mod evidence;
 pub mod frontier;
 pub mod check;
@@ -56,20 +58,28 @@ pub mod model_builder;
 pub mod key_routing;
 pub mod route_coverage;
 pub mod model_query;
+mod placement_claim;
 pub mod route_loss;
+pub mod api_names;
+mod route_params_copy;
+mod param_place_writes;
 pub mod topic_identity;
 pub mod topology;
 pub mod topology_diff;
 pub mod topology_projection;
 pub mod model_graph;
 pub mod verdict;
+pub mod view_bindings;
 pub mod secret_reveal;
 pub mod stdlib_names;
 pub mod stdlib_bodies;
+pub mod stdlib_modules;
+pub mod stdlib_reach;
 pub mod stdlib_surface;
 pub mod ownership;
 pub mod ownership_graph;
 pub mod placement;
+pub mod probes;
 pub mod printable;
 pub mod purity;
 pub mod quantitative;
@@ -79,8 +89,20 @@ pub mod roles;
 pub mod hub_expand;
 pub mod proto_gen;
 pub mod surface_doc;
+pub mod observe_expand;
+pub mod rest_routes;
 pub mod rpc_expand;
+pub mod client_expand;
+pub mod repo;
+pub mod seam_expand;
 pub mod surfaces;
+pub(crate) mod listener_window;
+/// The listener window's walk over every statement and expression a
+/// program holds, for a reader outside the crate that needs the node
+/// under a position (the LSP's goto-definition).
+pub mod expr_walk {
+    pub use crate::listener_window::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
+}
 pub mod unit_graph;
 pub mod units;
 pub mod unit_values;
@@ -91,6 +113,7 @@ pub mod snapshot;
 pub mod resource_budget;
 pub mod flows;
 mod fn_values;
+mod shadowed_callees;
 pub mod sealability;
 pub mod sealed_access;
 pub mod symbol;
@@ -528,4 +551,16 @@ pub fn dump_effects_manifest(bundle: &Bundle<'_>, effects: &effect_rows::EffectR
 /// resolver mangles them with — on the fn itself or on its locus.
 fn is_merged_symbol(name: &str) -> bool {
     name.split("::").any(|seg| seg.starts_with("__lib_"))
+}
+
+/// `std::law`'s source (`hale_stdlib::LAW_SOURCE`), loaded by a snapshot
+/// only when one of its constitutions is adopted.
+pub fn stdlib_law_source() -> &'static str {
+    hale_stdlib::LAW_SOURCE
+}
+
+/// `std::law`'s constitutions: the path each is adopted under, and its
+/// declared name.
+pub fn stdlib_law_constitutions() -> &'static [(&'static str, &'static str)] {
+    hale_stdlib::LAW_CONSTITUTIONS
 }

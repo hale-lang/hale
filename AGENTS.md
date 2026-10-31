@@ -202,6 +202,10 @@ Filter these reflexes before they cost you time.
   `obj.method()` normally.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
+- **Embedded program text, SQL or JSON is a block string**: `"""`
+  ending its line, the raw text, `"""` on a line of its own; the
+  closing line's indent is stripped and nothing is escaped
+  (`spec/tokens.md` § Block strings).
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
 - **`fallible(E)` is rejected on substrate-facing surfaces:**
@@ -325,7 +329,8 @@ fighting the language instead of using it.
 5. Iterate. Before you finish, run `hale fmt <file-or-dir>` —
    canonical form is tool-defined (zero config), so your diff
    touches only the lines you actually changed. Never
-   hand-align columns; fmt collapses them.
+   hand-align columns; fmt collapses them, and breaks a line
+   wider than 100 columns by its shape.
 
 ## Hot-path memory patterns
 
@@ -504,12 +509,16 @@ per deployment target; `hale check --matrix` proves every
 
 Multi-binary law lives one tier up: `hale check <app>
 --dump-topology=<f.json>` emits a byte-reproducible artifact per
-application; a fleet plan (JSON) names deployed INSTANCES and
-explicit routes; `hale fleet check <plan>` composes the artifacts
-and proves cross-binary claims. Only an explicit route creates a
-fleet edge — matching topic declarations alone connect nothing.
-`hale fleet sign/keygen/attest` + `[fleet_trust]` pin the artifacts
-and binaries a deployment admits (strict when declared).
+application; a fleet seed's `fleet locus NAME { params placement
+bindings claims }` names deployed INSTANCES (other seeds' mains), their
+default hosts, the topics that wire them and the law across them;
+`hale fleet check <seed>` derives the routes, composes the artifacts
+and proves cross-binary claims. Only a fleet's binding creates a fleet
+edge — matching topic declarations alone connect nothing. `hale fleet
+sign/keygen` + `[fleet_trust]` pin the rows a deployment admits
+(strict when declared); `hale deploy render <seed> --placement <file>`
+renders one description per host; `hale fleet export` writes the rows
+as the old plan JSON, which nothing reads.
 
 ## Matching
 
@@ -570,6 +579,8 @@ restriction, not a style preference.
   <https://github.com/hale-lang/pond>. Vendor via
   `hale.toml` → `hale fetch`; import as
   `import "vendor/pond/<lib>" as <alias>;`.
+- Pairing with a person on a habitat (not writing `.hl`):
+  [`agents/operator.md`](./agents/operator.md).
 - Sibling repos: <https://github.com/hale-lang/examples>,
   <https://github.com/hale-lang/bench>.
 

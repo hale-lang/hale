@@ -1,0 +1,833 @@
+// The node plane (openapi.yaml, tag `node`) and the fleet as the api sees
+// it: a node registers with its enrollment token, reads its assignment,
+// and reports its seats, its heartbeat, its capabilities and its local
+// controls. The assignment is computed from the configuration; what the
+// node reported is the fleet's state (`FleetRow`, `Beat`, `SeatStateRow`),
+// never configuration, so it records no change.
+
+/// The heartbeat interval every node is told; three missed are `down`.
+const HEARTBEAT_MS: Int = 5000;
+
+/// `SeatModel`s, `Names` and the rest of a seat, as an assignment carries it.
+/// As the router and the nodes' messages carry it, its config the text the
+/// store holds, written as it is.
+type AssignedRead {
+    id: String = "";
+    engine: String = "";
+    account: String = "";
+    serves: bounded[st::SeatModel; 16];
+    data_classes: bounded[String; 32];
+    concurrency: Int = 1;
+    enabled: Bool = true;
+    // the engine's JSON object, as stored
+    config: String = "{}";
+}
+
+type AssignedReads { items: bounded[AssignedRead; 16]; }
+
+/// `Assignment`: the node's whole desired state, as the router and the
+/// nodes' messages carry it.
+type AssignmentRead { version: Int = 0; max_in_flight: Int = 1; seats: bounded[AssignedRead; 16]; }
+
+/// `AssignedSeat`, as the surface describes it: its config a
+/// `std::json::Value`.
+type AssignedSeat {
+    id: String = "";
+    engine: String = "";
+    account: String = "";
+    serves: bounded[st::SeatModel; 16];
+    data_classes: bounded[String; 32];
+    concurrency: Int = 1;
+    enabled: Bool = true;
+    config: std::json::Value = std::json::Value::null();
+}
+
+/// `Assignment`, as the surface describes it.
+type Assignment { version: Int = 0; max_in_flight: Int = 1; seats: bounded[AssignedSeat; 16]; }
+
+/// A `RegisteredRead` as the surface's typed `Registered`.
+fn registered_of_read(r: RegisteredRead) -> Registered fallible(ApiError) {
+    return Registered {
+        protocol: r.protocol,
+        heartbeat_interval_ms: r.heartbeat_interval_ms,
+        nats_url: r.nats_url,
+        nats_subject: r.nats_subject,
+        assignment: assignment_of_read(r.assignment) or raise,
+    };
+}
+
+/// An `AssignmentRead` as the surface's typed `Assignment`.
+fn assignment_of_read(r: AssignmentRead) -> Assignment fallible(ApiError) {
+    let mut out = Assignment { version: r.version, max_in_flight: r.max_in_flight };
+    for s in r.seats {
+        let mut a = AssignedSeat {
+            id: s.id,
+            engine: s.engine,
+            account: s.account,
+            concurrency: s.concurrency,
+            enabled: s.enabled,
+            config: stored_value(s.config, "seat " + s.id + "'s config") or raise,
+        };
+        a.serves = s.serves;
+        a.data_classes = s.data_classes;
+        push(out.seats, a) or discard;
+    }
+    return out;
+}
+
+/// `Engine` (protocol.yaml): one engine a node offers. Its `config_schema` is a JSON
+/// Schema, free-form; `models` is `null`, any name, when it is not set.
+type NodeEngine {
+    id: String;
+    kind: String;
+    has_description: Bool = false;
+    description: String = "";
+    has_models: Bool = false;
+    models: bounded[String; 64];
+    config_schema: std::json::Value;
+}
+
+/// `Capabilities` (protocol.yaml): what the node can run.
+type NodeCapabilities { engines: bounded[NodeEngine; 16]; max_in_flight: Int; }
+
+/// No capabilities: what a node that has not declared any holds.
+fn no_capabilities() -> NodeCapabilities {
+    return NodeCapabilities { max_in_flight: 0 };
+}
+
+/// The value of an empty JSON object.
+fn empty_object() -> std::json::Value {
+    return std::json::Value::parse("{}") or std::json::Value::null();
+}
+
+/// `Registration`. `local` is the node's own controls.
+type Registration {
+    protocol: Int = 0;
+    version: String = "";
+    capabilities: NodeCapabilities = NodeCapabilities { max_in_flight: 0 };
+    local: LocalControls = LocalControls { paused: false };
+}
+
+/// `Registered`.
+type RegisteredRead {
+    protocol: Int = 2;
+    heartbeat_interval_ms: Int = 5000;
+    nats_url: String = "";
+    nats_subject: String = "";
+    assignment: AssignmentRead = AssignmentRead { };
+}
+
+/// `Registered`, as the surface describes it.
+type Registered {
+    protocol: Int = 2;
+    heartbeat_interval_ms: Int = 5000;
+    nats_url: String = "";
+    nats_subject: String = "";
+    assignment: Assignment = Assignment { };
+}
+
+/// `SeatState`. `reason` "" is `null`.
+type SeatState {
+    id: String = "";
+    status: SeatStateStatus;
+    has_reason: Bool = false;
+    reason: String = "";
+    in_flight: Int = 0;
+}
+
+type SeatStateList { items: bounded[SeatState; 16]; }
+
+/// `SeatStates`.
+type SeatStates { assignment_version: Int = 0; seats: bounded[SeatState; 16]; }
+
+/// `Heartbeat`. `assignment_version` is the version the node has applied,
+/// -1 when it does not say.
+type Heartbeat { in_flight: Int = 0; seats: bounded[SeatState; 16]; assignment_version: Int = -1; }
+
+/// `LocalControls`: what the node's operator set on the machine.
+type LocalControls {
+    paused: Bool;
+    paused_seats: bounded[String; 32];
+    has_max_in_flight: Bool = false;
+    max_in_flight: Int = -1;
+    has_reason: Bool = false;
+    reason: String = "";
+}
+
+/// `QuotaWindow`: a limit the provider enforces on the account, as an
+/// engine last reported it.
+type QuotaWindow {
+    name: String;
+    used_percent: Float;
+    has_resets_at: Bool = false;
+    resets_at: Time = `1970-01-01T00:00:00Z`;
+    observed_at: Time;
+    has_seat: Bool = false;
+    seat: String = "";
+}
+
+type QuotaWindows { items: bounded[QuotaWindow; 16]; }
+
+/// `QuotaReport`.
+type QuotaReport { seat: String = ""; windows: bounded[QuotaWindow; 16]; }
+
+/// `Draining`.
+type Draining { reason: String = ""; }
+
+/// One engine a node declared: its id, kind, and the config fields its
+/// `config_schema` requires.
+type DeclaredEngine { id: String = ""; kind: String = ""; required: st::Names = st::Names { }; }
+
+type DeclaredEngines { items: bounded[DeclaredEngine; 16]; max_in_flight: Int = 0; }
+
+// ---- the node plane --------------------------------------------------
+
+/// The node plane's bearer: an `Authorization: Bearer vn-...` header names
+/// the node whose enrollment token it is. A rotated token names nobody; a
+/// revoked node's is refused.
+locus NodeBearer {
+    params { store: st::Store; }
+
+    fn context(authorization: String) -> std::api::Context fallible(ApiError) {
+        if len(authorization) < 7 || std::str::lower(authorization[0..7]) != "bearer " {
+            fail node_token_refused();
+        }
+        let token = std::str::trim(authorization[7..len(authorization)]);
+        let digest = secret_digest(token);
+        let nodes = self.store.nodes() or fail store_failed(err);
+        for n in nodes.rows {
+            if n.token_digest == digest {
+                if n.revoked {
+                    fail ApiError {
+                        status: 403,
+                        kind: "permission_error",
+                        code: ErrorCode::invalid_key,
+                        message: "node " + n.id + " is revoked",
+                    };
+                }
+                let who = std::api::Principal { mode: "bearer", name: n.id, via: "http" };
+                return std::api::Context { caller: who, role: "node", via: "http" };
+            }
+        }
+        fail node_token_refused();
+    }
+}
+
+fn node_token_refused() -> ApiError {
+    return ApiError {
+        status: 401,
+        kind: "authentication_error",
+        code: ErrorCode::invalid_key,
+        message: "a valid enrollment token is required: Authorization: Bearer vn-...",
+    };
+}
+
+locus NodePlane {
+    params {
+        store: st::Store;
+        link: Link;
+    }
+
+    /// `registerNode`: the node's capabilities and local controls replace
+    /// what it declared before (a restarted node takes over from its
+    /// ghost), and it gets the heartbeat interval, where NATS is and its
+    /// assignment.
+    // The surface's rows answer the typed `Registered` and `Assignment`;
+    // the REST router answers the `_read` methods', their configs as
+    // stored.
+
+    /// `registerNode`.
+    fn register(r: Registration, ctx: std::api::Context) -> Registered fallible(ApiError) {
+        return registered_of_read(self.register_read(r, ctx) or raise) or raise;
+    }
+
+    /// `getAssignment`.
+    fn assignment(ctx: std::api::Context) -> Assignment fallible(ApiError) {
+        return assignment_of_read(self.assignment_read(ctx) or raise) or raise;
+    }
+
+    fn register_read(r: Registration, ctx: std::api::Context) -> RegisteredRead fallible(ApiError) {
+        if r.protocol != 2 { fail invalid("this coordinator speaks protocol 2", "protocol"); }
+        let caps = NodeCapabilities::api_encode(r.capabilities);
+        let engines = declared_engines(caps) or raise;
+        let n = self.own(ctx) or raise;
+        let now = now_seconds();
+        self.store.put_fleet(
+            st::FleetRow {
+                node: n.id,
+                version: r.version,
+                capabilities: caps,
+                local: local_json(r.local),
+                registered_at: now,
+            },
+        ) or fail store_failed(err);
+        self.store.put_beat(n.id, now, 0) or fail store_failed(err);
+        let a = assignment_of(self.store, n) or raise;
+        let mut out = RegisteredRead {
+            heartbeat_interval_ms: HEARTBEAT_MS,
+            nats_url: self.link.place(),
+            nats_subject: self.link.root() + ".node." + n.id,
+            assignment: a,
+        };
+        if engines.max_in_flight > 0 && out.assignment.max_in_flight > engines.max_in_flight {
+            out.assignment.max_in_flight = engines.max_in_flight;
+        }
+        return out;
+    }
+
+    /// `getAssignment`.
+    fn assignment_read(ctx: std::api::Context) -> AssignmentRead fallible(ApiError) {
+        let n = self.own(ctx) or raise;
+        return assignment_of(self.store, n) or raise;
+    }
+
+    /// `nodeHeartbeat`: alive, its load, and its seats. A node that says
+    /// it applied an older assignment than the current one missed an
+    /// `assign` (core NATS delivers at most once), so it is sent again.
+    fn heartbeat(h: Heartbeat, ctx: std::api::Context) fallible(ApiError) {
+        let n = self.registered(ctx) or raise;
+        self.store.put_beat(n.id, now_seconds(), h.in_flight) or fail store_failed(err);
+        self.put_states(n.id, h.seats) or raise;
+        if h.assignment_version >= 0 && h.assignment_version < n.assignment_version {
+            tell_assignment(self.store, self.link, n.id) or raise;
+        }
+    }
+
+    /// `reportSeatStates`: the seats as the node applied an assignment.
+    fn seat_states(s: SeatStates, ctx: std::api::Context) fallible(ApiError) {
+        let n = self.registered(ctx) or raise;
+        let mut f = self.store.fleet(n.id) or fail store_failed(err);
+        if s.assignment_version > f.applied_version {
+            f.applied_version = s.assignment_version;
+            self.store.put_fleet(f) or fail store_failed(err);
+        }
+        self.store.put_beat(
+            n.id,
+            now_seconds(),
+            (self.store.beat(n.id) or st::Beat { }).in_flight,
+        ) or fail store_failed(err);
+        self.put_states(n.id, s.seats) or raise;
+        if s.assignment_version < n.assignment_version {
+            tell_assignment(self.store, self.link, n.id) or raise;
+        }
+    }
+
+    /// `reportCapabilities`: what the node offers changed.
+    fn capabilities(c: NodeCapabilities, ctx: std::api::Context) fallible(ApiError) {
+        let caps = NodeCapabilities::api_encode(c);
+        declared_engines(caps) or raise;
+        let n = self.registered(ctx) or raise;
+        let mut f = self.store.fleet(n.id) or fail store_failed(err);
+        f.capabilities = caps;
+        self.store.put_fleet(f) or fail store_failed(err);
+    }
+
+    /// `reportLocalControls`.
+    fn local(l: LocalControls, ctx: std::api::Context) fallible(ApiError) {
+        let n = self.registered(ctx) or raise;
+        let mut f = self.store.fleet(n.id) or fail store_failed(err);
+        f.local = local_json(l);
+        self.store.put_fleet(f) or fail store_failed(err);
+    }
+
+    /// `reportQuota`: the windows of the account the seat spends.
+    fn quota(q: QuotaReport, ctx: std::api::Context) fallible(ApiError) {
+        let n = self.registered(ctx) or raise;
+        let s = self.store.seat(n.id, q.seat) or fail store_failed(err);
+        if !s.present { fail not_found("no seat " + q.seat + " on node " + n.id); }
+        self.store.put_windows(s.account, windows_json(q.windows)) or fail store_failed(err);
+    }
+
+    /// `nodeDraining`: no new requests go to it until it registers again.
+    fn going_away(d: Draining, ctx: std::api::Context) fallible(ApiError) {
+        let n = self.registered(ctx) or raise;
+        let mut f = self.store.fleet(n.id) or fail store_failed(err);
+        f.draining = true;
+        self.store.put_fleet(f) or fail store_failed(err);
+    }
+
+    fn own(ctx: std::api::Context) -> st::NodeRow fallible(ApiError) {
+        let n = self.store.node(ctx.caller.name) or fail store_failed(err);
+        if !n.present || n.revoked { fail node_token_refused(); }
+        return n;
+    }
+
+    /// The node, which has registered: a report from one that has not is
+    /// refused, so it registers first.
+    fn registered(ctx: std::api::Context) -> st::NodeRow fallible(ApiError) {
+        let n = self.own(ctx) or raise;
+        let f = self.store.fleet(n.id) or fail store_failed(err);
+        if !f.present { fail invalid("node " + n.id + " has not registered", ""); }
+        return n;
+    }
+
+    /// The states of the seats configured on the node. A state for a seat
+    /// that is not (one deleted while the node still runs it, or an id the
+    /// node made up) is refused: no row is kept for it.
+    fn put_states(node: String, seats: bounded[SeatState; 16]) -> Bool fallible(ApiError) {
+        for st in seats {
+            let configured = self.store.seat(node, st.id) or fail store_failed(err);
+            if !configured.present { continue; }
+            let row = st::SeatStateRow {
+                ref: node + "/" + st.id,
+                node: node,
+                seat: st.id,
+                status: seat_state_name(st.status),
+                reason: st.reason,
+                in_flight: st.in_flight,
+            };
+            self.store.put_seat_state(row) or fail store_failed(err);
+        }
+        return true;
+    }
+}
+
+fn is_seat_status(s: String) -> Bool {
+    return s == "starting"
+        || s == "up"
+        || s == "down"
+        || s == "disabled"
+        || s == "paused"
+        || s == "refused";
+}
+
+// ---- the fleet, read ---------------------------------------------------
+
+/// The node's whole desired state: every seat configured on it, and its
+/// cap: the coordinator's, at most the node's declared one.
+fn assignment_of(store: st::Store, n: st::NodeRow) -> AssignmentRead fallible(ApiError) {
+    let f = store.fleet(n.id) or fail store_failed(err);
+    let declared = if f.present {
+        (declared_engines(f.capabilities) or DeclaredEngines { }).max_in_flight
+    } else {
+        0
+    };
+    let mut cap = if n.max_in_flight > 0 { n.max_in_flight } else { declared };
+    if declared > 0 && cap > declared { cap = declared; }
+    if cap < 1 { cap = 1; }
+    let mut out = AssignmentRead { version: n.assignment_version, max_in_flight: cap };
+    if n.revoked { return out; }
+    let seats = store.seats() or fail store_failed(err);
+    for s in seats.rows {
+        if s.node == n.id {
+            let mut a = AssignedRead {
+                id: s.id,
+                engine: s.engine,
+                account: s.account,
+                concurrency: s.concurrency,
+                enabled: s.enabled,
+                config: s.config,
+            };
+            a.serves = s.serves.items;
+            a.data_classes = s.data_classes.items;
+            push(out.seats, a) or discard;
+        }
+    }
+    return out;
+}
+
+/// `pending` until it first registers, `up` while its last sign of life
+/// is younger than three heartbeat intervals, `down` after; `revoked`.
+fn node_status(store: st::Store, n: st::NodeRow, now: Time) -> String fallible(ApiError) {
+    if n.revoked { return "revoked"; }
+    let f = store.fleet(n.id) or fail store_failed(err);
+    if !f.present { return "pending"; }
+    let b = store.beat(n.id) or fail store_failed(err);
+    if b.present && (std::time::nanos(now) - std::time::nanos(b.at)) <= 3 * HEARTBEAT_MS * 1000000 {
+        return "up";
+    }
+    return "down";
+}
+
+/// The engines a `Capabilities` object declares, and its cap.
+fn declared_engines(json: String) -> DeclaredEngines fallible(ApiError) {
+    if !std::json::valid_object(json) {
+        fail invalid("`capabilities` is an object", "capabilities");
+    }
+    if kind_of(json, "engines") != "array" {
+        fail invalid("`capabilities.engines` is a list", "capabilities");
+    }
+    let cap = count_or(json, "max_in_flight", 0) or raise;
+    if cap < 1 { fail invalid("`capabilities.max_in_flight` is at least 1", "capabilities"); }
+    let mut out = DeclaredEngines { max_in_flight: cap };
+    let mut it = std::json::array_first(std::json::find_field_raw(json, "engines"));
+    while !it.done {
+        let e = std::str::trim(it.element);
+        if !std::json::valid_object(e) { fail invalid("an engine is an object", "capabilities"); }
+        let mut d = DeclaredEngine {
+            id: required_string(e, "id") or raise,
+            kind: required_string(e, "kind") or raise,
+        };
+        let schema = std::json::find_field_raw(e, "config_schema");
+        if kind_of(schema, "required") == "array" {
+            d.required = names_of(
+                std::json::find_field_raw(schema, "required"),
+                "required",
+            ) or raise;
+        }
+        push(out.items, d) or fail invalid("a node declares at most 16 engines", "capabilities");
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn check_local(json: String) -> Bool fallible(ApiError) {
+    if !std::json::valid_object(json) { fail invalid("`local` is an object", "local"); }
+    if kind_of(json, "paused") != "bool" {
+        fail invalid("`local.paused` is true or false", "local");
+    }
+    if kind_of(json, "paused_seats") != "array" {
+        fail invalid("`local.paused_seats` is a list", "local");
+    }
+    names_of(std::json::find_field_raw(json, "paused_seats"), "local") or raise;
+    let cap = kind_of(json, "max_in_flight");
+    if cap != "missing" && cap != "null" {
+        let n = nullable_count(json, "max_in_flight") or fail invalid(
+            "`local.max_in_flight` is a whole number of at least 0, or null",
+            "local"
+        );
+        if n < 0 {
+            fail invalid("`local.max_in_flight` is a whole number of at least 0, or null", "local");
+        }
+    }
+    return true;
+}
+
+/// Local controls, checked.
+fn read_local(json: String) -> LocalControls fallible(ApiError) {
+    check_local(json) or raise;
+    let mut l = LocalControls { paused: std::json::find_bool_field(json, "paused") };
+    let held = names_of(std::json::find_field_raw(json, "paused_seats"), "local") or raise;
+    l.paused_seats = held.items;
+    let cap = kind_of(json, "max_in_flight");
+    if cap != "missing" && cap != "null" {
+        l.has_max_in_flight = true;
+        l.max_in_flight = nullable_count(json, "max_in_flight") or raise;
+    }
+    if kind_of(json, "reason") == "string" {
+        l.has_reason = true;
+        l.reason = std::json::find_string_field(json, "reason");
+    }
+    return l;
+}
+
+/// The local controls a fleet row holds, as voice wrote them.
+fn local_of(json: String) -> LocalControls {
+    return read_local(json) or LocalControls { paused: false };
+}
+
+fn local_json(l: LocalControls) -> String {
+    return "{\"paused\": " + jbool(l.paused) + ", \"paused_seats\": " + st::jnames(l.paused_seats)
+        + ", \"max_in_flight\": " + jcount_or_null(l.has_max_in_flight, l.max_in_flight)
+        + ", \"reason\": " + jstring_or_null(l.has_reason, l.reason) + "}";
+}
+
+/// True when the node's local controls hold `seat` (or the whole node).
+fn locally_paused(local: String, seat: String) -> Bool {
+    if len(local) == 0 { return false; }
+    if std::json::find_bool_field(local, "paused") { return true; }
+    let held = names_of(
+        std::json::find_field_raw(local, "paused_seats"),
+        "paused_seats",
+    ) or st::Names { };
+    return has_name(held.items, seat);
+}
+
+/// The node's effective cap: the smallest of its declared, the
+/// coordinator's and its local cap; -1 until it first registers.
+fn effective_cap(store: st::Store, n: st::NodeRow) -> Int fallible(ApiError) {
+    let f = store.fleet(n.id) or fail store_failed(err);
+    if !f.present { return -1; }
+    let mut cap = (declared_engines(f.capabilities) or DeclaredEngines { }).max_in_flight;
+    if n.max_in_flight > 0 && n.max_in_flight < cap { cap = n.max_in_flight; }
+    if kind_of(f.local, "max_in_flight") == "number" {
+        let local = std::json::find_int_field(f.local, "max_in_flight");
+        if local < cap { cap = local; }
+    }
+    return cap;
+}
+
+// ---- the wire ----------------------------------------------------------
+
+fn seat_state_list(body: String, name: String) -> SeatStateList fallible(ApiError) {
+    if kind_of(body, name) != "array" { fail invalid("`" + name + "` is a required list", name); }
+    let mut out = SeatStateList { };
+    let mut it = std::json::array_first(std::json::find_field_raw(body, name));
+    while !it.done {
+        let e = std::str::trim(it.element);
+        if !std::json::valid_object(e) { fail invalid("a seat state is an object", name); }
+        let status = required_string(e, "status") or raise;
+        if !is_seat_status(status) {
+            fail invalid(
+                "a seat's status is starting, up, down, disabled, paused or refused",
+                name
+            );
+        }
+        let st = SeatState {
+            id: required_string(e, "id") or raise,
+            status: seat_state_of(status),
+            has_reason: kind_of(e, "reason") == "string",
+            reason: nullable_string(e, "reason") or raise,
+            in_flight: required_amount(e, "in_flight") or raise
+        };
+        push(out.items, st) or fail invalid("at most 16 seat states", name);
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn read_registration(body: String) -> Registration fallible(ApiError) {
+    object_body(body) or raise;
+    if kind_of(body, "protocol") != "number" { fail invalid("`protocol` is required", "protocol"); }
+    if kind_of(body, "capabilities") != "object" {
+        fail invalid("`capabilities` is a required object", "capabilities");
+    }
+    if kind_of(body, "local") != "object" { fail invalid("`local` is a required object", "local"); }
+    let local = read_local(std::str::trim(std::json::find_field_raw(body, "local"))) or raise;
+    return Registration {
+        protocol: std::json::find_int_field(body, "protocol"),
+        version: required_string(body, "version") or raise,
+        capabilities: node_capabilities(
+            std::str::trim(std::json::find_field_raw(body, "capabilities")),
+        ) or raise,
+        local: local
+    };
+}
+
+fn read_heartbeat(body: String) -> Heartbeat fallible(ApiError) {
+    object_body(body) or raise;
+    let applied = if kind_of(body, "assignment_version") == "missing" {
+            -1
+    } else {
+        required_amount(body, "assignment_version") or raise
+    };
+    let seats = seat_state_list(body, "seats") or raise;
+    let mut h = Heartbeat {
+        in_flight: required_amount(body, "in_flight") or raise,
+        assignment_version: applied,
+    };
+    h.seats = seats.items;
+    return h;
+}
+
+fn read_seat_states(body: String) -> SeatStates fallible(ApiError) {
+    object_body(body) or raise;
+    let seats = seat_state_list(body, "seats") or raise;
+    let mut s = SeatStates {
+        assignment_version: required_amount(body, "assignment_version") or raise,
+    };
+    s.seats = seats.items;
+    return s;
+}
+
+fn read_node_capabilities(body: String) -> NodeCapabilities fallible(ApiError) {
+    object_body(body) or raise;
+    return node_capabilities(std::str::trim(body)) or raise;
+}
+
+/// A node's `Capabilities`, its engines required (a bounded list is never
+/// required by the codec), each engine's `config_schema` kept as written.
+fn node_capabilities(json: String) -> NodeCapabilities fallible(ApiError) {
+    if kind_of(json, "engines") != "array" {
+        fail invalid("`capabilities.engines` is a list", "capabilities");
+    }
+    // each engine says what it is and the JSON Schema of its seats' config
+    // (protocol.yaml, `Engine`): named, so a node's operator sees which
+    let mut it = std::json::array_first(std::json::find_field_raw(json, "engines"));
+    let mut i = 0;
+    while !it.done {
+        let e = std::str::trim(it.element);
+        let id = std::json::find_string_field(e, "id");
+        let named = if len(id) > 0 { "engine " + id } else { "engine " + to_string(i + 1) };
+        if kind_of(e, "config_schema") == "missing" {
+            fail invalid(
+                named
+                    + " declares no `config_schema`: every engine gives the JSON Schema of its seats' config",
+                "capabilities"
+            );
+        }
+        if kind_of(e, "config_schema") != "object" {
+            fail invalid(named + "'s `config_schema` is a JSON Schema object", "capabilities");
+        }
+        if len(std::json::find_field_raw(e, "config_schema")) > 65536 {
+            fail invalid(
+                named + "'s `config_schema` is over 64 KiB, the most a JSON value holds",
+                "capabilities"
+            );
+        }
+        it = std::json::array_next(it);
+        i = i + 1;
+    }
+    return NodeCapabilities::api_decode(json) or fail invalid(
+        "the node's capabilities: `" + err.field + "` is " + capabilities_problem_of(err.kind),
+        "capabilities"
+    );
+}
+
+/// A codec refusal in plain words.
+fn capabilities_problem_of(kind: String) -> String {
+    if kind == "missing_field" { return "missing"; }
+    if kind == "wrong_type" { return "of the wrong type"; }
+    if kind == "too_long" { return "too long"; }
+    return kind;
+}
+
+fn read_quota(body: String) -> QuotaReport fallible(ApiError) {
+    object_body(body) or raise;
+    if kind_of(body, "windows") != "array" {
+        fail invalid("`windows` is a required list", "windows");
+    }
+    let mut out = QuotaReport { seat: required_string(body, "seat") or raise };
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "windows"));
+    while !it.done {
+        let w = read_window(std::str::trim(it.element)) or raise;
+        push(out.windows, w) or fail invalid("at most 16 quota windows", "windows");
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+/// One `QuotaWindow`, checked.
+fn read_window(w: String) -> QuotaWindow fallible(ApiError) {
+    check_window(w) or raise;
+    let resets = kind_of(w, "resets_at") == "string";
+    let seat = kind_of(w, "seat") == "string";
+    return QuotaWindow {
+        name: std::json::find_string_field(w, "name"),
+        used_percent: std::str::parse_float(
+            std::str::trim(std::json::find_field_raw(w, "used_percent")),
+        ) or 0.0,
+        has_resets_at: resets,
+        resets_at: if resets {
+            rfc3339(std::json::find_string_field(w, "resets_at")) or `1970-01-01T00:00:00Z`
+        } else {
+            `1970-01-01T00:00:00Z`
+        },
+        observed_at: rfc3339(
+            std::json::find_string_field(w, "observed_at"),
+        ) or `1970-01-01T00:00:00Z`,
+        has_seat: seat,
+        seat: if seat { std::json::find_string_field(w, "seat") } else { "" }
+    };
+}
+
+/// The windows an account's row holds, as voice wrote them.
+fn windows_of(json: String) -> QuotaWindows {
+    let mut out = QuotaWindows { };
+    let mut it = std::json::array_first(json);
+    while !it.done {
+        let w = read_window(std::str::trim(it.element)) or QuotaWindow {
+            name: "",
+            used_percent: 0.0,
+            observed_at: `1970-01-01T00:00:00Z`,
+        };
+        if len(w.name) > 0 { push(out.items, w) or discard; }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn windows_json(ws: bounded[QuotaWindow; 16]) -> String {
+    let out = st::JsonList { };
+    for w in ws {
+        out.add(
+            "{\"name\": " + jq(w.name) + ", \"used_percent\": " + to_string(w.used_percent)
+                + ", \"resets_at\": " + jtime_or_null(w.has_resets_at, w.resets_at)
+                + ", \"observed_at\": " + jtime(w.observed_at)
+                + (if w.has_seat { ", \"seat\": " + jq(w.seat) } else { "" }) + "}");
+    }
+    return "[" + out.text() + "]";
+}
+
+/// One `QuotaWindow`, as the admin plane will show it: a `name`, a
+/// `used_percent` from 0 to 100 and an `observed_at`, with `resets_at` a
+/// time or null and `seat` text when they are set.
+fn check_window(w: String) -> Bool fallible(ApiError) {
+    if !std::json::valid_object(w) { fail invalid("a quota window is an object", "windows"); }
+    if kind_of(w, "name") != "string" || len(std::json::find_string_field(w, "name")) == 0 {
+        fail invalid("a quota window has a `name`", "windows");
+    }
+    let used = std::str::parse_float(
+        std::str::trim(std::json::find_field_raw(w, "used_percent")),
+    ) or
+        - 1.0;
+    if kind_of(w, "used_percent") != "number" || used < 0.0 || used > 100.0 {
+        fail invalid("a quota window's `used_percent` is a number from 0 to 100", "windows");
+    }
+    if kind_of(w, "observed_at") != "string" {
+        fail invalid("a quota window has an `observed_at` time", "windows");
+    }
+    rfc3339(std::json::find_string_field(w, "observed_at")) or fail invalid(
+        "a quota window's `observed_at` is an RFC 3339 time",
+        "windows"
+    );
+    let resets = kind_of(w, "resets_at");
+    if resets != "missing" && resets != "null" {
+        if resets != "string" {
+            fail invalid("a quota window's `resets_at` is a time or null", "windows");
+        }
+        rfc3339(std::json::find_string_field(w, "resets_at")) or fail invalid(
+            "a quota window's `resets_at` is an RFC 3339 time",
+            "windows"
+        );
+    }
+    let seat = kind_of(w, "seat");
+    if seat != "missing" && seat != "string" {
+        fail invalid("a quota window's `seat` is a seat id", "windows");
+    }
+    return true;
+}
+
+fn read_draining(body: String) -> Draining fallible(ApiError) {
+    if len(std::str::trim(body)) == 0 { return Draining { }; }
+    object_body(body) or raise;
+    return Draining { reason: string_or(body, "reason", "") or raise };
+}
+
+fn assigned_seat_json(s: AssignedRead) -> String {
+    return "{\"id\": " + jq(s.id) + ", \"engine\": " + jq(s.engine) + ", \"account\": "
+        + jq(s.account) + ", \"serves\": " + st::serves_json(s.serves)
+        + ", \"data_classes\": " + st::jnames(s.data_classes) + ", \"concurrency\": "
+        + to_string(s.concurrency) + ", \"enabled\": " + jbool(s.enabled)
+        + ", \"config\": " + s.config + "}";
+}
+
+fn assignment_json(a: AssignmentRead) -> String {
+    let seats_list = st::JsonList { };
+    for s in a.seats {
+        seats_list.add(assigned_seat_json(s));
+    }
+    let seats = seats_list.text();
+    return "{\"version\": " + to_string(a.version) + ", \"max_in_flight\": "
+        + to_string(a.max_in_flight) + ", \"seats\": [" + seats + "]}";
+}
+
+fn registered_json(r: RegisteredRead) -> String {
+    return registered_head(r) + "}, \"assignment\": " + assignment_json(r.assignment) + "}";
+}
+
+/// A registration's answer up to the end of its `nats` object's subject.
+fn registered_head(r: RegisteredRead) -> String {
+    return "{\"protocol\": " + to_string(r.protocol) + ", \"heartbeat_interval_ms\": "
+        + to_string(r.heartbeat_interval_ms) + ", \"nats\": {\"url\": " + jq(r.nats_url)
+        + ", \"subject\": " + jq(r.nats_subject);
+}
+
+/// What the coordinator publishes on `voice.node.<id>.assign`.
+fn assign_message(a: AssignmentRead) -> String {
+    return "{\"type\": \"assign\", \"assignment\": " + assignment_json(a) + "}";
+}
+
+/// The node's new assignment, to it over the link, once it has
+/// registered. Core NATS delivers it at most once: a node that misses it
+/// reads its assignment when it next connects to NATS, and says the
+/// version it applied in every heartbeat, which sends it again when it is
+/// behind.
+fn tell_assignment(store: st::Store, link: Link, node: String) fallible(ApiError) {
+    let n = store.node(node) or fail store_failed(err);
+    if !n.present || n.revoked { return; }
+    let f = store.fleet(node) or fail store_failed(err);
+    if !f.present { return; }
+    let a = assignment_of(store, n) or raise;
+    link.assign(node, assign_message(a));
+}

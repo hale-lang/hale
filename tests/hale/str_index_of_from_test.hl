@@ -19,10 +19,22 @@ fn main() {
     std::test::assert_eq_int(std::str::index_of_from(s, "&", 3), 3, "a hit at the start offset");
     std::test::assert_eq_int(std::str::index_of_from(s, "&", 4), 7, "the next one, indexed into s");
     std::test::assert_eq_int(std::str::index_of_from(s, "&", 8), -1, "none after the last");
-    std::test::assert_eq_int(std::str::index_of_from(s, "a=", 1), -1, "a needle before the start is not found");
+    std::test::assert_eq_int(
+        std::str::index_of_from(s, "a=", 1),
+            -1,
+        "a needle before the start is not found",
+    );
     std::test::assert_eq_int(std::str::index_of_from(s, "&", -5), 3, "a negative start is 0");
-    std::test::assert_eq_int(std::str::index_of_from(s, "&", 99), -1, "a start past the end finds nothing");
-    std::test::assert_eq_int(std::str::index_of_from(s, "", 4), 4, "an empty needle is found at the start");
+    std::test::assert_eq_int(
+        std::str::index_of_from(s, "&", 99),
+            -1,
+        "a start past the end finds nothing",
+    );
+    std::test::assert_eq_int(
+        std::str::index_of_from(s, "", 4),
+        4,
+        "an empty needle is found at the start",
+    );
     std::test::assert_eq_int(std::str::index_of_from(s, "", 11), 11, "an empty needle at the end");
     std::test::assert_eq_int(std::str::index_of_from(s, "", 12), -1, "and not past it");
     std::test::assert_eq_int(count_of("abababa", "aba"), 2, "a scan steps past each hit");

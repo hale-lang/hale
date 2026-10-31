@@ -1,0 +1,240 @@
+// dna/host/placement.hl — the habitat's placement, through its providers
+// (phase 4).
+//
+// `hale habitat up` runs `habitat-place` on the habitat's genome once its
+// record is up: the `compose` provider produces the host `local` with what
+// it offers, the `local` profile's preset gives each role its provider,
+// and the habitat's head and face are allocated and placed on that host.
+// Each is a row of the habitat's record, written only when the record
+// does not already say it: `habitat.host <name>`, `habitat.policy <role>`
+// and `habitat.allocated <key>/<role>` (the memory and nerves allocations
+// are the provisioning acts' own rows, which name the provider and the
+// host the same way). `habitat-apply` is a tenant's allocations brought
+// back by the same provider at `up`.
+
+import "../core" as dna;
+
+// The latest body the record holds for `kind` and `entity`, "" for none.
+@bounded_by(j)
+fn latest_body(j: dna::Journal, kind: String, entity: String) -> String {
+    let mut body = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { body = e.body; }
+        i = i + 1;
+    }
+    return body;
+}
+
+// One row as the record's seed takes it: a JSON object on its own line.
+fn row_line(kind: String, entity: String, body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.end_object();
+    return b.result() + "\n";
+}
+
+fn policy_body(role: String, provider: String, profile: String, backends: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("role", role);
+    b.string_field("provider", provider);
+    b.string_field("profile", profile);
+    b.string_field("backends", backends);
+    b.end_object();
+    return b.result();
+}
+
+fn allocation_body(organism: String, a: dna::Allocation) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("organism", organism);
+    b.string_field("role", a.role);
+    b.string_field("service", a.service);
+    b.string_field("project", a.project);
+    b.string_field("provider", a.provider);
+    b.string_field("host", a.host);
+    b.string_field("address", a.address);
+    b.begin_array_field("vault");
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
+// An allocation of a role no compose service holds (a forge, an
+// identity): its provider, its host ("" for none) and address, and the
+// vault slot it holds by name (never a value).
+fn role_body(
+    organism: String,
+    role: String,
+    provider: String,
+    host: String,
+    address: String,
+    key_vault: String
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("organism", organism);
+    b.string_field("role", role);
+    b.string_field("service", "");
+    b.string_field("provider", provider);
+    b.string_field("host", host);
+    b.string_field("address", address);
+    b.string_field("repo", "");
+    b.string_field("key_vault", key_vault);
+    b.begin_array_field("vault");
+    if len(key_vault) > 0 { b.string_value(key_vault); }
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
+// `habitat-place <backends>` on the habitat's genome: what was recorded, a
+// line each.
+fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> Answer {
+    let key = dna::allocation_key(root);
+    if len(key) == 0 { return fail("habitat-place: the habitat has no record identity yet"); }
+    if backends != "own" && backends != "operator" {
+        return fail("habitat-place: the backends are `own` or `operator`");
+    }
+    let j = dna::RecordJournal { repo: root, author: "habitat" };
+    let moved = j.refresh();
+    let provider = dna::ComposeProvider { };
+    let mut rows = "";
+    let mut out = "";
+
+    // the host the provider produces, with what it offers
+    let host = provider.offers("local");
+    let hb = dna::host_row_body(host);
+    if latest_body(j, "habitat.host", host.name) != hb {
+        rows = rows + row_line("habitat.host", host.name, hb);
+    }
+    out = out + "host    " + dna::host_label(host.name) + " (" + host.provider + "; offers "
+        + (if len(host.offers) > 0 { host.offers } else { "nothing" }) + ")\n";
+
+    // the policy: the `local` profile's preset, a provider per role
+    let mut policy = "";
+    let mut roles = dna::HABITAT_ROLES + " ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        let role = roles[0..sp];
+        roles = roles[(sp + 1)..len(roles)];
+        let p = dna::profile_provider("local", backends, role);
+        if len(p) == 0 { continue; }
+        let pb = policy_body(role, p, "local", backends);
+        if latest_body(j, "habitat.policy", role) != pb {
+            rows = rows + row_line("habitat.policy", role, pb);
+        }
+        policy = policy + (if len(policy) > 0 { ", " } else { "" }) + role + " " + p;
+    }
+    out = out + "policy  local profile: " + policy + "\n";
+
+    // the habitat's own head and face, placed on the host
+    let organism = dna::record_scope(root);
+    let mut placed = "";
+    let mut own = "head face ";
+    while len(own) > 0 {
+        let sp = std::str::index_of(own, " ");
+        let role = own[0..sp];
+        own = own[(sp + 1)..len(own)];
+        let mut a = provider.allocate(role, key);
+        if len(a.why) > 0 { return fail("habitat-place: " + a.why); }
+        a.address = habitat_address(root, role);
+        let p = provider.place(a, host);
+        if !p.placed { return fail("habitat-place: the habitat's " + role + ": " + p.why); }
+        let ab = allocation_body(organism, p);
+        if latest_body(j, "habitat.allocated", key + "/" + role) != ab {
+            rows = rows + row_line("habitat.allocated", key + "/" + role, ab);
+        }
+        placed = placed + (if len(placed) > 0 { ", " } else { "" }) + role;
+    }
+    out = out + "placed  the habitat's " + placed + " on " + dna::host_label(host.name)
+        + " (compose)\n";
+
+    // its forge and its identity, roles it allocates as it allocates its
+    // memory: the forge the policy names until the Board allocates another
+    // (never overwritten here), the identity its own sign-in at its address;
+    // both recorded once, when absent, so a resumed `up` leaves them as born.
+    // The local profile's forge is the habitat's own Forgejo, brought up at
+    // every `up` as memory and the nerves are (phase 4 ruling)
+    let forge_key = key + "/forge";
+    let fp = dna::profile_provider("local", backends, "forge");
+    let recorded = len(latest_body(j, "habitat.allocated", forge_key)) > 0;
+    let runs = if recorded { dna::forge_allocated(root).provider } else { fp };
+    if runs == "forgejo" {
+        let why = forgejo_up();
+        if len(why) > 0 { return fail("habitat-place: the habitat's forge: " + why); }
+    }
+    if !recorded {
+        let forgejo = fp == "forgejo";
+        let address = if forgejo { dna::forgejo_address() } else { "" };
+        let slot = if forgejo { dna::FORGEJO_ADMIN_VAULT } else { "" };
+        rows = rows
+            + row_line(
+                "habitat.allocated",
+                forge_key,
+                role_body(organism, "forge", fp, if forgejo { "local" } else { "" }, address, slot),
+            );
+        let kept = dna::forge_cache(
+            key,
+            dna::ForgeAllocation { provider: fp, address: address, key_vault: slot },
+        );
+    }
+    let issuer = oidc_issuer(root);
+    let ib = role_body(
+        organism,
+        "identity",
+        dna::profile_provider("local", backends, "identity"),
+        "local",
+        issuer,
+        "",
+    );
+    if len(latest_body(j, "habitat.allocated", key + "/identity")) == 0 {
+        rows = rows + row_line("habitat.allocated", key + "/identity", ib);
+    }
+    let f = dna::forge_allocated(root);
+    out = out + "roles   the habitat's forge (" + f.provider
+        + (if len(f.address) > 0 { " at " + f.address } else { "" })
+        + (if len(f.key_vault) > 0 {
+            "; its administrator in the vault slot " + f.key_vault
+        } else {
+            ""
+        })
+        + ") and identity (oidc-stub at " + issuer + ")\n";
+    if len(rows) > 0 && append_lines(root, rows, memory) < 0 {
+        return fail("habitat-place: the habitat's record refused the rows");
+    }
+    return answer(out);
+}
+
+// `habitat-apply <dir>`: a tenant's allocations kept at `dir`
+// (`allocations/<key>`) brought up, each role where it is placed, by that
+// host's provider (dna/core/placement.hl).
+fn habitat_apply_verb(dir: String) -> Answer {
+    if len(dir) == 0 { return fail("habitat-apply: the allocations' directory"); }
+    let mut at = len(dir);
+    while at > 0 && dir[(at - 1)..at] != "/" { at = at - 1; }
+    let key = dir[at..len(dir)];
+    let mut said = "";
+    let mut roles = "memory nerves senses ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        let role = roles[0..sp];
+        roles = roles[(sp + 1)..len(roles)];
+        // a part the habitat's own server holds for it (its record a schema
+        // of the habitat's memory, its organization an account of the
+        // habitat's nerves) has no server of its own to bring up
+        if (role == "memory" || role == "nerves") && dna::part_held_by_habitat(key, role) {
+            said = said + role + " on the habitat's own\n";
+            continue;
+        }
+        let applied = dna::placed_apply(key, role);
+        if !applied.ok { return fail(role + ": " + applied.why); }
+        said = said + role + " up on " + dna::placed_on(key, role).host + "\n";
+    }
+    return answer(said);
+}

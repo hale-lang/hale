@@ -15,7 +15,7 @@ document tells you what's *meaningfully* valid.
 | `Decimal<S>`, `Decimal` | i128 | Fixed point: an i128 mantissa at the scale `S` (`mantissa × 10^-S`), `S` an integer literal from 0 to 18 that is **part of the type**; plain `Decimal` is `Decimal<9>`, the same type (2026-10-12, [§ Decimal<S>](#decimals--the-scale-is-part-of-the-type)). Every scale is the one 16-byte, 16-aligned layout. Distinct from `Float` at the type level; suffix `d` on literals (`1.50d`). A literal holds no more places than the scale of the place it flows into (a check error at the literal otherwise, never a truncation); `+ - %` are exact, `*` and `/` truncate toward zero at the scale; two scales never mix, and `d.rescale(T)` converts. Real arbitrary-precision deferred. |
 | `String` | ptr (NUL-terminated) | UTF-8 bytes, C-style NUL-terminated. Single-pointer ABI to fit return-by-value through the m49 calling convention. Embedded NUL truncates — use `Bytes` for binary content. Allocated in the caller's arena (or the lazy global payload arena for stdlib returns whose lifetime needs to outlive the call). |
 | `Bool` | i1 | `true` / `false` |
-| `Time` | i64 | Nanoseconds since the Unix epoch, UTC (GH #607, 2026-09-14). A literal is ISO-8601 between backticks — `` `2026-05-08T12:00:00Z` ``, an optional fraction of one to nine digits, an optional `Z`; an offset such as `+01:00` is a compile error, never read as UTC — and is parsed at check time. Declared by the stdlib (`type Time = point Duration;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a point over `Duration` with no `origin:`, so the unit dialect's algebra of points is its arithmetic: `Time ± Duration → Time`, `Duration + Time → Time`, `Time − Time → Duration`; anything else with a `Time` operand is refused, naming both. Orders and compares as an instant. `to_string` / `println` render ISO-8601, the fraction only when it is not zero. Before the epoch is negative, not an error. It holds `1677-09-21T00:12:43.145224192Z` through `2262-04-11T23:47:16.854775807Z`: a literal past either end is a check error at the literal, `parse_time` of one is its `ParseError`, and `time_from_unix` or `Time ± Duration` past either end is a runtime violation (spec/stdlib.md `std::time`), never a wrapped instant. On the wire and in a struct it is the same 8 bytes as `Int`; over FFI it is `i64`. `std::time::current()` reads the wall clock as one; `iso8601`, `parse_time`, `unix`, `nanos`, `from_nanos`, `time_from_unix` convert. Was a string-shaped placeholder until v0.20.0. |
+| `Time` | i64 | Nanoseconds since the Unix epoch, UTC (GH #607, 2026-09-14). A literal is ISO-8601 between backticks — `` `2026-05-08T12:00:00Z` ``, an optional fraction of one to nine digits, an optional `Z`; an offset such as `+01:00` is a compile error, never read as UTC, and so is a day past its month's length (`2099-02-30`, `2100-02-29`), never rolled into the next month — and is parsed at check time. Declared by the stdlib (`type Time = point Duration;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a point over `Duration` with no `origin:`, so the unit dialect's algebra of points is its arithmetic: `Time ± Duration → Time`, `Duration + Time → Time`, `Time − Time → Duration`; anything else with a `Time` operand is refused, naming both. Orders and compares as an instant. `to_string` / `println` render ISO-8601, the fraction only when it is not zero. Before the epoch is negative, not an error. It holds `1677-09-21T00:12:43.145224192Z` through `2262-04-11T23:47:16.854775807Z`: a literal past either end is a check error at the literal, `parse_time` of one is its `ParseError`, and `time_from_unix` or `Time ± Duration` past either end is a runtime violation (spec/stdlib.md `std::time`), never a wrapped instant. On the wire and in a struct it is the same 8 bytes as `Int`; over FFI it is `i64`. `std::time::current()` reads the wall clock as one; `iso8601`, `parse_time`, `unix`, `nanos`, `from_nanos`, `time_from_unix` convert. Was a string-shaped placeholder until v0.20.0. |
 | `Duration` | i64 | Nanoseconds. Declared by the stdlib (`type Duration = quantity Int in ns;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a quantity of the time catalogue (`ns us ms s min h day`), whose literals are its units' (`5s`, `100ms`, `2min`, `1day`), each its count of nanoseconds. Arithmetic is the unit dialect's algebra of quantities: `Duration ± Duration → Duration`; scalar scale `Int * Duration` (either order) produces `Duration` (the runtime-computed-delay shape, `ms * 1ms`); `Duration / Duration → Int`, the quotient of the two counts (`1h / 1min` is 60); `Duration / Int → Duration`, the integer division for a runtime divisor, and for an integer literal other than one a narrowing whose `or` says what becomes of the remainder (`timeout / 2 or floor`, `or ceil`, `or <value>`; a bare `timeout / 2` is refused, U4's second correction); `Duration * Duration` and `%` are refused, naming both. Keeps its representation: prints its nanoseconds (`1500000000ns`), tags a topic field `u`, is its own FFI class. `d.in(u)`, `d.split(u)` and `Duration(x)` are the dialect's conversions (spec/units.md § Conversions). |
 | `Bytes` (m89) | ptr → `[i64 len][u8 data[len]]` | Binary-safe. Single-pointer ABI like String, but the underlying blob carries an explicit length prefix so embedded NUL bytes don't truncate. `len(b)` reads the prefix. Distinct from `String` at the type level; the typechecker keeps them apart. Operations: `std::io::fs::read_bytes` (m89), `Stream.send_bytes` (m89), `Stream.recv_bytes` (Phase 2g; both `fallible(IoError)` since #209), `std::bytes::at` / `std::bytes::slice` / `std::bytes::from_string` (Phase 2g), `std::str::from_bytes` for the inverse direction (Phase 2g). |
 | `BytesView` (F.30) | `lotus_view_t { src: ptr, epoch: i64 }` (16 bytes, by-value; SysV AMD64 returns in `rax`/`rdx`) | Non-owning view over a `BytesBuilder`'s buffer. Returned by `BytesBuilder.view()`. `src` is the builder pointer; `epoch` snapshots the builder's `mutation_epoch`. The underlying Bytes-shaped data pointer (`buf - 8`) is *recomputed* at read time by `lotus_bytes_view_data`, so the view itself doesn't allocate or carry the data pointer. Coerces implicitly to `Bytes` at function-argument READ positions (e.g. `std::bytes::at(view, i)`, `len(view)`, user-defined fallible-fn args, self/external/interface method args, monomorphized-generic args); codegen emits a call to `lotus_bytes_view_data` which checks the stamped epoch against the builder's live epoch, panics on mismatch (F.30b mutation-while-view-live guard), and returns the recomputed data ptr on the OK path. Rejected at `Bytes`-typed storage sites — callers wanting owned storage must `std::bytes::clone(view)` for a deep-copy into the caller's arena. Storage typed `BytesView` is allowed; a `String` / `Bytes` literal at a `BytesView`/`StringView` storage default is wrapped via `lotus_view_from_static_data` with `epoch == LOTUS_VIEW_EPOCH_STATIC = -1` — the unpack helper sees the static sentinel and returns `src` directly without an epoch check (the literal lives in the global string table at program-lifetime, so there's no source builder to check against). 2026-05-22 PM: ABI compacted from a 24-byte heap-allocated struct to this 16-byte by-value shape; no arena allocation per `view()` call. |
@@ -65,6 +65,32 @@ result NaN, and `-0.0` orders below `0.0` (`min(0.0, -0.0)` is
 `llvm.fabs`, inline on every target (`f64.min` / `f64.max` /
 `f64.abs` on `wasm32`), so none needs a libm symbol or host import.
 
+### Float text
+
+A `Float`'s text (`to_string(x)`, `println(x)`, `f"{x}"`, and what the
+api codec writes) is the shortest that reads back as the identical
+double, so `parse_float(to_string(x)) == x` for every finite `x`, a
+subnormal included: `0.1 + 0.2` is `0.30000000000000004`, `99.999995`
+is `99.999995`, `1.0 / 3.0` is `0.3333333333333333`. Of two shortest
+texts equally near the double, it is the one ending in the even digit.
+The digits are laid out as C's `%.17g` lays them: fixed point when the
+first digit's decimal exponent is from -4 to 16, so an integral value
+has no point (`100.0` is `100`, `1234567.0` is `1234567`), and
+otherwise one digit, the rest after a point, and a signed exponent of
+at least two digits (`1e+17`, `1e-05`, `2.5e-300`). Negative zero is
+`-0`, and NaN and the infinities are `nan`, `inf` and `-inf`. The text
+is the runtime's own (`lotus_fmt_float_shortest`), not the C library's,
+so a native and a `wasm32` build print the same bytes. A format spec
+(`f"{x:.2}"`) still rounds to its places.
+
+Reading a decimal back (`parse_float`, and every Float a codec reads) is
+the runtime's own exact reader too (`lotus_read_decimal_exact`): the
+nearest double to the decimal written, ties to the even one, from any
+number of digits, the same bits on every target. A text past the
+largest double (`1e400`), or a nonzero one that rounds to zero
+(`1e-400`), is refused; a subnormal (`5e-324`) reads as itself. A text
+that is no plain decimal (`inf`, `nan`) is read as before.
+
 ## Decimal<S> — the scale is part of the type
 
 A `Decimal<S>` is a fixed-point number: an i128 mantissa `m` read as
@@ -91,7 +117,8 @@ comparison operator, the other argument of `min` / `max`, an array
 literal's element type, a match's scrutinee — and is `Decimal<9>`
 where nothing gives it one (`let a = 1.5d;`). So does an expression
 built only of such values: a negated literal, an arithmetic operator
-over two of them, a block or an `if` whose every value is one, an
+over two of them, a block, an `if` or a `match` whose every value is
+one (`let y: Decimal<2> = match n { 1 -> 1.25d, _ -> 0.5d, };`), an
 `or` over a `std::str::parse_decimal` / `range_parse_decimal` call
 whose fallback is one. An array, a tuple or a `[v; N]` literal holding
 a Decimal flows into its place element by element, its shape (length,
@@ -220,11 +247,18 @@ stdlib, which keep their own representation class (the table above).
 | Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
-| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
-| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
+| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated where the literal that leaves it is written. A default reads only its constants and the module's items, never the literal's scope (§ Locus params). |
+| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A payload-free enum is stored as its tag. |
+| Set | `type Inbound = Book \| Trade;` | Untagged union: each member is a declared struct or enum and is its own discriminant. A member's value is the set's where a set is expected; `match` names a member by its type. See § "Set types". |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
+
+A variant may declare an error class before its name, `@not_found
+Missing`, one of `@not_found`, `@conflict`, `@invalid`, `@forbidden` and
+`@unavailable`; it is what a served member's handler error of that variant
+is answered with (spec/api.md § Error classes), and any other word is a
+type error.
 
 ### One name, one field (GH #1141)
 
@@ -254,8 +288,14 @@ a binding the fn hands back), its `String` and `Bytes` fields cloned,
 nested structs copied the same way, locus handles left as handles. The
 binding then follows nothing: replacing the source (`self.row = Row {
 }`) leaves `b` as it was read, and writing through the binding (`let
-mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
-a call result is fresh already and is bound as it is. Assignment
+mut c = self.row; c.n = 9;`) leaves the source untouched. A literal is
+fresh already and is bound as it is; so is a call's result, unless the
+callee may hand back a place's value (§ A local bound from a place is
+yours). A value read
+from a form's cell (`m.get(k) or d`) is the reader's in the same way:
+writing into it never changes the cell, though the compiler keeps its
+nested parts shared with the cell until a write could show
+(`spec/forms.md` § Reading a cell). Assignment
 reads the same way (GH #992): `b = <place>` on a struct local, and
 `arr[i] = <place>` or `b.inner = <place>` under one, store a copy.
 And a write through a local never reaches another (GH #993): a copy
@@ -267,6 +307,208 @@ for structs the single-owner rule `spec/memory.md` states for
 view of the storage, and an acknowledgement body read after the
 proposal field was cleared came back empty). A deliberate view has no
 spelling yet; read the field again when the current value is wanted.
+
+### Any binding of a place keeps its value
+
+A `String`, `Bytes`, tuple, array or payload-enum value bound from a
+place — `let s = self.f.s;`, `let (a, n) = self.pair;`, a bare `x =
+self.f.s`, a `match self.e { E::A(s) -> .. }` payload, the array a `for
+x in self.f.names` walks — and a place passed straight to a call
+(`self.take(self.f.s)`) keep the value they were given, whatever
+replaces the place while they are live. So does a value carried out of
+a place by another expression: a `match` arm's payload (`let held =
+match self.e { E::A(s) -> s, E::B -> "", };`), an `if` or block
+result, a tuple, array or record literal holding it, an `or`
+substitute, an enum constructor holding it. (A stdlib call's result is
+built fresh, and a method's copied out of its locus into the caller's
+arena; a call that may hand back a part of an argument or a form cell's
+read is a place's value, § A local bound from a place is yours.) The
+compiler keeps these the
+place's own pointer where it can, which costs nothing: it binds an
+owned copy only when a write that may replace the place comes between
+the binding and a use of it (or is the call it is passed to; an
+argument is passed by reference, so only a `String` or `Bytes` argument
+is copied — a record, tuple or array handed to a callee stays the
+caller's, and what the callee writes through its parameter the caller
+sees — unless a later argument's evaluation replaces its place, when it
+is copied whole: nothing is left to write through). An
+operand held while a later one is evaluated — an earlier argument of a
+call, a method's receiver, a binary operator's left side, an earlier
+field of a literal — is copied where it is evaluated when the later
+one may replace its place (`take(match self.e { E::A(s) -> s, E::B ->
+"", }, self.reset())`). Such a
+write is a store into the place's field (`self.f.s = ..`, `self.f =
+..`, through any root), a call whose callee writes it, transitively (a
+method of the locus its receiver's type names, only that locus's; a
+method through an interface or a perspective, any locus's of the name;
+a method called on the field itself, as a form's `set`), and anything
+that may run other code of the locus: a publish, `yield` and a stdlib
+call that parks on an `async_io` pool write what the program's bus
+handlers write (a publish lowered as a direct call of its one
+subscriber's handler writes what that handler writes), and a call the
+checker did not resolve — through a fn value (a local, a parameter, a
+field of fn type), of a name no declaration answers to, on a receiver it
+could not type — and a recovery statement may write anything. Every one
+of these questions is answered over the types the checker resolved (the
+ones it checks the program against: an alias, an imported seed's
+`lib::Kid`, a qualified name and a fn-typed alias are what they name,
+whatever the spelling), never over a spelling resolved again; where the
+checker has no type for a value or no callee for a call, the binding is
+an owned copy. A field
+of a record the frame holds itself is never replaced under a binding of
+it (a write through a local root replaces the field's pointer); a field
+read through a handle is — a value whose type is a locus, an interface
+or a perspective, however it is spelled (an alias, an imported seed's
+`lib::Kid`, a binding's declared type). A write
+inside a loop reaches a use anywhere in the loop when the variable was
+declared before the loop — a local declared outside and rebound inside
+(`held = self.f.s;` then a replacing call, read on the next iteration)
+included. Before this a String local held across a method that
+replaced its field read the block the replace retired, reused by the
+next allocation (`spec/memory.md` rules 6 and 7), and a same-length
+store into the field changed the local in place.
+
+### A local bound from a place is yours
+
+Writing into a local bound from a place never changes the place, and
+writing into the place never changes the local (ruling of 2026-10-13).
+The local is any binding: a `let` or `let mut`, a bare `=`, a tuple
+`let`'s element, a `match` payload, a `for` element of an array, and a
+part of a local assigned from a place (`h.arr = r.arr;`, `xs[0] = m.get(k)
+or d;`); the place is a field (of `self`, a child, a record local, a
+parameter), an element, a local, a parameter, or a value carried out of
+one (a `match` or `if` result, a literal holding it, the result of a
+call that may hand it back). A call may hand back a place's value when
+its callee returns a part of a parameter (`fn get_in(r: R) -> In {
+return r.arr[0]; }` returns the caller's block uncopied), a form cell's
+read (`fn read() -> Rec { return self.m.get(1) or Rec { }; }`), or what
+a callee that does returns — transitively, by which parameter. A callee
+the compiler cannot identify (a call through a fn value, a name nothing
+declares) may hand back a part of any argument its declared result type
+can be, hold or share a record, enum, array or tuple with (a `Response`
+handed back by `fn(Context) -> Response` is no part of the `Context`),
+and anything where that type is unknown; through a fn value that may be
+a method read as a value, also whatever that method's receiver holds. A
+result declared a
+primitive or a handle never is one; a result fresh at its top level that
+holds such a value in a field (a returned struct literal around `r.arr[0]`)
+copies only when a write goes below that field. A free fn returning a
+field read through a handle parameter (`fn arr_of(k: K) -> [In; 2] {
+return k.r.arr; }`) hands back that locus's storage, a place's value; a
+locus's method returning its own fields hands back a copy. A place's
+value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
+h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
+never share a block. A cell's read handed back through a call keeps
+its kind: passed straight to a callee that writes through it, it is
+copied where it is evaluated. A write into it is an assignment
+at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
+may write through its parameter.
+
+```hale,fragment
+let mut a = self.r.names;
+a[0] = "x";                          // self.r.names is unchanged
+match self.r.e { P::A(i) -> { i.k = 1; }, P::B -> { }, }   // so is the payload
+for x in self.r.cells { x.k = 1; }   // and every element
+let held = r.names;
+r.names[0] = "y";                    // held[0] is what it was
+```
+
+How the compiler keeps this is its business, and it keeps reads free:
+the binding stays the place's own block until a write into it, which
+copies the whole value into the frame first (copy on write, a flag per
+local set at each binding, so one copy serves every later write; a `for`
+element is copied at its first write in each iteration). A struct `let`
+or `=` of a place is a copy already (§ A struct binding is a copy); a
+struct literal holding a place's value copies only the field written
+below (`let mut l = R { a: self.a }; l.a[0] = x;` copies `a`). A local
+handed to a call that may write through its parameter is bound as a
+copy, and so is a binding live across a write into the local's or
+parameter's value it was read from. Three shapes are not copies:
+
+- the get-modify-store of a self field, `let mut v = self.f; v.x[i] =
+  y; self.f = v;` — every binding of `v` reads that field, the store of
+  `v` back into it follows the write on every path, nothing that may
+  read the field (a read of it, a call of the program's, a publish or
+  `yield`) comes between, no other binding views it, and `v` is not
+  used after. The store keeps the block the field already holds
+  (`spec/memory.md` rule 6), so the write lands where the store would
+  have put it;
+- a parameter: an argument is passed by reference, and a callee that
+  writes through its parameter (`fn bump(r: R) { r.a[0] = 1; }`) writes
+  the caller's value;
+- a `@form(vec)` walk, `for x in v.items`, which visits the vec's cells
+  in place (`spec/forms.md`), and a value that is a locus handle.
+
+Each copy is a site of the allocation survey (`place-copy (<reason>)`:
+`copy: written local bound from a place`, `copy: a local bound from a
+place is passed to a call that may write through its parameter`, `copy:
+what the local was read from is written while it is live`), so it
+counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
+the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+A store's own copy is one too: `copy: a place's value stored into a
+part of a parameter` (`h.arr = r.arr`), and `copy: a value stored into
+a locus's field from outside its methods` (§ A store into a locus's
+field is the locus's own), unless the slot or the value is an inline
+scalar. The latter is store-latest, as a method's `self.f = v` is: a
+`@hot` fn's error and a budget's count, never a loop's or a handler's
+warning. A field of `self` handed to a call that may write through
+that parameter (`poke(self.source)`) is written there, as a store into
+it is, so a local or a literal's part viewing it is copied first. A call
+through a parameter declared a fn returning a primitive (`cb: fn(Int)
+-> Int`) hands back a primitive, as a declared fn of that signature
+does.
+A `bounded[T; N]` local is not a first-class value and is not copied:
+a bounded intrinsic on one bound from a field still writes the field,
+and the element a `push` or a `set` stores through it is anchored where
+that field lives (the holding locus's arena, for `let mut dest =
+self.xs` or a child's field), as on the field itself; until 2026-10-17
+it went to the current arena, so a method's view of `self.xs` left the
+field holding Strings its scratch freed at return.
+Before this rule the write landed in the place's block: `let mut a =
+self.r.names; a[0] = x;` changed the field.
+
+## Set types
+
+A set type (GH #1530, 2026-10-17) is an untagged union: `type Inbound =
+Book | Trade | Unknown;`. Each member is a struct or an enum the program
+declares, and the member's type is the discriminant, so nothing is named
+twice: no variant names a type that is already a name. A primitive, a
+list, a tuple or a function type is no member (a parse error: declare a
+struct that holds the value), nor is an alias of one; a set is no member
+of a set (name its members instead); a member is named once, and two
+members may not share the last segment of their names (`a::Book` and
+`b::Book`), since a pattern names a member by that alone.
+
+A member's value is the set's wherever a set is expected: a return from
+a fn returning the set, an argument to a parameter of it, a `let` of its
+type, an assignment to a place of it and a field of it. Two sets may
+share a member; the place's type says which set the value becomes. The
+arms of an `if` or a `match` whose values are different members are not
+joined into a set: give each arm the set's type (a fn returning it).
+
+`match` names each member by its type alone, binding the member's value:
+
+```hale
+fn handle(m: Inbound) -> Outbound {
+    return match m {
+        Book(b) -> answer(b),
+        Trade(t) -> fill(t),
+        Unknown(u) -> reject(u.raw),
+    };
+}
+```
+
+A name that is no member of the scrutinee's set is refused ("`Side` is
+not a member of the set `Inbound`, whose members are Book, Trade,
+Unknown"), and the match is exhaustive as an enum's is: every member, or
+a `_` arm. `Name(_)` matches a member without binding it; a bare `Name`
+is a binding, as everywhere.
+
+Underneath, a set is an enum whose variants are its members, each named
+for its type and holding one value of it, and it costs what that enum
+costs: `Inbound::Book(b)` is the same value as `b` flowing into an
+`Inbound`, and both spellings are accepted. It prints as that enum does
+(`Inbound::Book(Book { id: 7 })`).
 
 ## Type aliases
 
@@ -391,6 +633,50 @@ Locus types have:
 Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
+
+### A store into a locus's field is the locus's own
+
+A store into a locus's field from outside that locus's methods is the
+locus's own store, exactly as a method of it storing `self.f = v` (GH
+#1561). Such a store goes through a handle parameter (`fn put(l: L, s:
+String) { l.name = s; }`), a handle local (`let l = L { }; l.name =
+s;`), a child reached through a handle or through `self` (`h.loc.name =
+s`, `self.loc.name = s` in the parent's method), or an element of an
+array of loci (`ls[i].r.arr = r.arr`). The locus that owns the field is
+the last one on the store's path: `loc` in `h.loc.name`, the element in
+`ls[i].r.arr`.
+
+- **Owned.** The value is copied into the owning locus's storage
+  (`spec/memory.md` rules 6 and 7) whatever spelled it: a place, an
+  `if`, a `match`, a block, an `or`, a call, a concatenation. The locus
+  and the caller never share a block afterwards, in either direction. A
+  write into the locus (`self.r.arr[0].k = 9`, a same-length `self.name
+  = "ZZZ"`) never reaches the caller's value, and a write into the
+  caller's value never reaches the locus. The copy lives as long as the
+  locus that owns the field, whatever happens to the handle's root (a
+  child stored into through its parent outlives the parent).
+- **Retired.** The value the store replaces is retired, and the store
+  ends the way a method call on that locus does, at an activation
+  boundary that makes the locus's retired blocks reusable. A free fn
+  that stores a fresh `String` into a long-lived locus 200 000 times
+  stays at the same floor as the method form: 4.7 MB of resident memory
+  for both.
+- **One pool.** A store into the field of a locus that runs on another
+  pool is refused at check, as the cross-pool method call is (§
+  Single-threaded-method invariant (F.31)). A store into an inline
+  scalar slot (a number, a `Bool`, a `Time`, a payload-free enum) is
+  one plain store with no arena work, and is not refused, as a
+  cross-pool field read is not.
+- **A child replaced.** A locus-typed field given a fresh locus literal
+  (`h.loc = L { … }`) is the owner's lifecycle reassign (§
+  Reassigning a locus-typed field is a lifecycle transition): the old
+  child is reclaimed, the new one built as the owner's field.
+
+A store below a record held in a locus's field (`l.r.arr = v`, `l.c.s =
+s`) is the same store, owned by that locus. The parameter-part rule (§
+A local bound from a place is yours: `h.arr = r.arr` copies) is about a
+record the caller holds, not a locus, and adds no copy to a store
+through a handle: the store's copy into the locus is the only one.
 
 ### `type` is a top-level declaration
 
@@ -522,9 +808,13 @@ typecheck and codegen.
 | LLVM repr | `ptr` — a typed pointer to T's struct layout |
 | Element type | The boxed inner type carries T from the slot's `of T` declaration; `Cell<Int>` and `Cell<Float>` typecheck distinctly. |
 | Validity surface | Round-trip only: a value can flow through `let`-bindings, get re-supplied to `release` / `free`, and live inside the locus body. |
-| Forbidden ops | println, arithmetic, comparison, fn-return-boundary crossing. Each rejects with a focused build-time diagnostic. |
-| Field access (v1.x-2) | Struct cells support `cell.field` reads and `cell.field = v` writes; lowers to struct GEP + load/store. Primitive cells (`Cell<Int>` etc.) reject field access with a focused diagnostic. |
-| Slot-of-origin tracking (v1.x-5) | `Cell<T>` carries both T AND the originating `(locus, slot)` pair. Releasing a cell into a different slot than it came from is a hard error at codegen, with a diagnostic naming the originating slot. |
+| Forbidden ops | println, arithmetic, comparison, fn-return-boundary crossing. Printing a cell (`println`, `print`, `to_string`, an f-string) is a type error at the cell; the others reject with a focused build-time diagnostic. |
+| Field access (v1.x-2) | Struct cells support `cell.field` reads and `cell.field = v` writes; lowers to struct GEP + load/store, and a read types as the record's field. Primitive cells (`Cell<Int>` etc.) have no fields: `c.foo` is a type error at the field name. |
+| Slot-of-origin tracking (v1.x-5) | `Cell<T>` carries both T AND the originating `(locus, slot)` pair. Releasing a cell into a different slot than it came from is a type error at the cell, naming the originating slot. |
+
+The checker follows a cell from the slot call that makes it
+(`self.entries.acquire()`) through the `let` bindings that hold it;
+those are the cells its rules see.
 
 ## Perspective types
 
@@ -869,6 +1159,15 @@ For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's
 state is the locus's mutable bundle.
 
+**An assignment target names declared fields only.** Each field of a
+place's path (`self.x`, `self.j.rec.p.a`, `r.ps[0].b`, `h.repo` through a
+handle) is resolved as a read of it is: a field the record or the
+locus's `params` does not declare is refused at the field with the read
+path's diagnostic ("no field \`record\` on \`Inner\`", with a near name
+when there is one), and the value is held to the field's type. Until
+2026-10-17 such a target checked clean and only the build refused it
+("no field \`record\` on \`self.j\`").
+
 **Reassigning a locus-typed field is a lifecycle transition.**
 A field that holds a child locus (`params { conn: WsClient =
 WsClient { … }; }`) can be whole-value reassigned from a member
@@ -886,7 +1185,13 @@ reconfigure," prefer **in-place mutation** (`self.conn.url = …`),
 which keeps the locus's identity and resources and is cheaper.
 v1 limitation: the reassigned instance inherits the owner's pool;
 reassigning a field with an explicit non-default `placement` does
-not re-apply that placement.
+not re-apply that placement. The same holds from outside the owner
+(`h.loc = L { … }` in a free fn, `hs[i].loc = L { … }`, GH #1561):
+the store is the owner's, so the old child is reclaimed and the new
+one is built as the owner's field, exactly as the owner's own
+`self.loc = L { … }`. A field initializer of that literal may not
+read `self` in another locus's method (it would read the owner);
+bind the value to a local first.
 
 ## k_max as a typing rule
 
@@ -944,11 +1249,52 @@ own `bounded[T; N]` **shadows** the intrinsic for that receiver type
 `f.get(i)` is unaffected: method position is not the free-fn
 namespace.
 
+The element type is one a slot holds inline or by a pointer it
+anchors: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`, `Duration`,
+`Time`, an identity, a range or a quantity), an enum without payloads
+(its tag), `String`, `Bytes` or a struct. `hale check` refuses any
+other at the annotation, naming it: a tuple, an array, another
+`bounded`, an enum with payloads (a pointer to its cell, which the
+slots' anchoring does not walk) or an interface ("\`bounded[Shape;
+N]\`: \`Shape\` is an enum with payloads, which a bounded buffer cannot
+hold inline … wrap the element in a struct"). Until 2026-10-13 the
+check admitted them and the build refused the element type with no
+file or line, and a payload-free enum, which lowers as a `Bool` does,
+was refused too.
+
 Semantics:
-- Fields auto-initialize EMPTY. Literal init and whole-field
-  assignment are rejected — the intrinsics are the only mutation
-  surface. Whole-STRUCT copies carry elements + count by
-  construction (the storage is inline).
+- Fields auto-initialize EMPTY. Literal init is rejected — the
+  intrinsics build a bounded value. Whole-STRUCT copies carry
+  elements + count by construction (the storage is inline).
+- A fn, a locus method or an interface method does not return a
+  `bounded` (written, or through an alias): the check refuses the
+  declaration ("\`names\` returns a \`bounded[String; 4]\`, and
+  bounded[T; N] cannot be returned by value — it lives inline in its
+  containing type …"), where the build refused it with no file or line
+  until 2026-10-18. A record holding the `bounded` returns it.
+- Its live count is `count(x)`; `len` does not apply to a `bounded`
+  (written or through an alias), and the check refuses it, pointing at
+  `count` ("\`len\` does not apply to a \`bounded[String; 4]\`: a
+  \`bounded\`'s live count is \`count(x)\`"), where the build refused it
+  with no file or line until 2026-10-18.
+- A bounded place (a field, a locus param) is
+  assigned whole only from a value of its own type, `bounded[T; N]`
+  with the same `T` and `N`: `row.models = req.models` copies the
+  count and the live slots, and each pointer-shaped element is
+  anchored in the place's owner's arena, as `push` anchors the one it
+  adds (the holding locus's arena, else the current one). It is a
+  copy: a later intrinsic on either side does not reach the other.
+  Any other value (an array literal, another element type or
+  capacity) is refused at the assignment ("a \`bounded[String; 4]\` is
+  assigned whole only from another \`bounded[String; 4]\` …"). A bounded
+  local is not assigned whole: it is a view of the place it was bound
+  from, and the assignment would anchor the elements in the frame rather
+  than where that place lives (a locus's field would hold blocks its
+  method's scratch frees), so the check refuses it and names the place
+  to assign instead.
+  Until 2026-10-17 every whole assignment was refused, with no
+  ruling behind it but a lowering that had none, so a copy between
+  two records' fields was a `push` loop.
 - Scalar elements (Int/Float/Bool/Decimal/Duration) are flat under
   `zero_copy` and travel the bus as raw bytes. A `Time` element is the
   i64 a `Duration` is and lowers inline the same way; it is not flat
@@ -957,6 +1303,33 @@ Semantics:
   elements (String/Bytes/struct) work in-process — push/set
   arena-anchor the element into the receiver's owning arena — but
   are rejected in cross-process bus payloads (post-v1 polish).
+- A pointer-shaped element `push`ed or `set` into a bounded place under
+  a **parameter** is kept in the frame that runs the call: a free fn
+  allocates in its caller's arena (a fn that takes a record is never
+  scratch-local), a locus member in its own scratch. So a locus member
+  doing it is refused at the intrinsic ("`push` of a \`String\` element
+  into a bounded place under a parameter of a locus member …"), and a
+  free fn doing it, directly or through a fn it hands the place to, is
+  refused at a call that hands it a place the frame does not own: one
+  under `self` or a bounded local viewing one ("\`fill\` stores
+  pointer-shaped elements … this argument is a place in this locus's
+  arena …"). A call through a function value is the fn the value's
+  binding names (`let f = fill;`, a tuple `let`'s element of a tuple
+  literal); a binding the body assigns (`f = other;`), a parameter of fn
+  type or a computed callee names no one fn, and such a call is refused
+  for any argument holding such a place. Names are bindings, not
+  spellings: an inner `let f` names nothing after its block, and
+  `let r = r;` is an owned copy, not the parameter. A generic fn is
+  read as any other, its type parameters taken as any type (fail closed): a
+  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`, or a local view
+  of it, `let dst = r.xs`) may be such a place, so `fill(self.row)` is
+  refused; a type parameter is the fn's own, whatever global type shares
+  its name. A record of the
+  frame's own, a copy of one, and a scalar element are sound; the shape that works for a locus's field is to fill
+  a local and store it whole (`self.row = mine`), which anchors the
+  elements in the locus's arena. The stdlib's `std::http::is_route`
+  writes its captures into `ctx.params` this way, so a context a locus
+  holds is refused as its argument (2026-10-17: it was a use-after-free).
 - Drop-front/FIFO is the shift-left idiom: `set` live slots down,
   then `truncate`.
 - `CapacityError { cap: Int; count: Int }` and the shared
@@ -965,6 +1338,23 @@ Semantics:
   construction. `@form(vec)` remains the unbounded, locus-owned
   collection: unbounded data lives on a locus; bounded data can
   live in a type.
+- **A wire map** (2026-10-17): `checks: bounded[Check; 16] indexed_by
+  name;` keys the list by its elements' `name`. It is the same bounded
+  list in the program (iterated, pushed, read by index); only the api
+  codecs read the clause, which carry it as an object keyed by `name`
+  (spec/api.md § Codecs). The clause has the `@form(hashmap)` slot
+  clause's spelling and rules: the field is a `bounded[T; N]`, `T` a
+  user-declared struct, and the named field a `String` field of it; any
+  other shape is refused at the clause (`` `indexed_by` on
+  `Health.checks`: key `Check.n` is a `Int`: a wire map's key is a
+  `String` ... ``). Nothing keeps the keys distinct in the program; a
+  duplicate key is refused when a payload is decoded, and an encoder
+  writes what the list holds. `indexed_by name -> status` (2026-10-19)
+  names the value of a map of values, each element crossing as its
+  `status` alone. The element has the key and that field and no other,
+  and the value is a scalar, a `Time` or a payload-free enum. Anything
+  else is refused at the clause (`` `indexed_by` on `Health.checks`, its
+  value `-> status`: `Check` has other fields (detail), ... ``).
 
 ## Generics
 
@@ -998,12 +1388,12 @@ locus's specialization even when construction happens inside another
 generic function or locus. Specializations discovered in these bodies
 are checked in turn.
 
-Omitted function and method defaults are typed at each invocation in
-the caller's scope. Their generic call rows retain the default's source
-site and distinguish the invocation path and the caller's specialization.
-The same default can therefore use `Int` in one caller and `String` in
-another. Lowering reads the corresponding checked row; supplied arguments
-do not evaluate the default.
+Omitted function and method defaults are typed at each invocation that
+leaves them. Their generic call rows retain the default's source site and
+distinguish the invocation path and the caller's specialization. A
+default reads only its constants and the module's items (§ Locus params),
+so every invocation types it alike. Lowering reads the corresponding
+checked row; supplied arguments do not evaluate the default.
 
 **Where the arguments come from.** A struct / locus literal spelled
 with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
@@ -1014,6 +1404,14 @@ declared type at the site. The sites that declare one are:
 - a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
+- the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
+
+An array (`[x, y]` or `[x; N]`) or tuple literal at one of these sites
+hands each element the declared element type, so its template literals
+take that type's arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,
+`let rs: [Cfg<Int>; 3] = [Cfg { n: 0 }; 3];`,
+`let t: (Cfg<Int>, String) = (Cfg { n: 1 }, "a");`, and a param default
+of array type (`params { cfgs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }]; }`).
 
 At a `let` ascription, a transparent alias of the whole instantiation
 supplies the same arguments: `type IntBox = Box<Int>;` permits
@@ -1022,8 +1420,17 @@ through their import aliases before specialization. Different aliases
 for one imported template retain the same declaration identity; each
 construction carries its own concrete arguments and child layouts.
 
-Anywhere else — an un-annotated `let`, a literal in statement
-position — the arguments cannot be recovered, and the literal is a
+The literal's fields are then typed as the instantiation's: a field
+whose declared type mentions a parameter holds a value of the type the
+arguments make of it, so with `b: Box<Int>`, `b = Box { value: "x" };`
+is a type error at `"x"` (`type `Box`: field `value` expects `Int`, got
+`String``), wherever the literal stands. An `Int` widens into such a
+`Float` field of a data type, as into any data literal's (F.23), never
+into a locus param's.
+
+Anywhere else — an un-annotated `let` (of the literal, or of an array
+or tuple literal holding it), a literal in statement position — the
+arguments cannot be recovered, and the literal is a
 type error naming the template and the annotation to write. There
 is no inference from a literal's field values back to the
 parameters.
@@ -1046,15 +1453,25 @@ type Stack<T> { items: [T]; }
 locus Cache<K, V> { params { cap: Int = 1; } }
 ```
 
-The constraint syntax `<T: Constraint>` admits:
+### Generic bounds
 
-- `ProjectionClass` (built-in any-of-three; F.2)
-- A specific projection class: `Rich`, `Chunked`, `Recognition`
-- Concrete types: `<T: int>` is illegal (use the type directly);
-  `<T: SomeStruct>` is also illegal (no trait system in v0)
+The constraint syntax `<T: Bound>` admits one bound, `Numeric`:
+the argument is `Int`, `Float`, a `Decimal` or a `Duration`
+(`type Box<T: Numeric> { value: T; }`, `fn twice<T: Numeric>(x: T)
+-> T`). `hale check` holds it where the template is instantiated —
+at the argument of a type annotation (`Box<String>`), and at the
+callee of a generic fn call whose arguments bind `T` to another type
+(an identity or a range included: it is a named argument) — and
+refuses any other
+bound name at the declaration (`<T: Eq>`, `<T: SomeStruct>`): there
+is no trait system. An argument that is itself a type parameter of
+the enclosing template is held where that template is instantiated.
 
-V0 supports only projection-class constraints. Future versions
-may add traits.
+```
+main.hl:7:20: type error: generic type `Box`: `T` is bounded
+`Numeric`, and `String` is not one of `Int`, `Float`, `Decimal` or
+`Duration`
+```
 
 Monomorphization: the compiler emits one machine-code instance
 per concrete generic instantiation (per F.1 commitment to
@@ -1091,7 +1508,14 @@ String / Duration / Decimal / Time / Bytes / BytesView / BytesMut
 
 A non-primitive argument is a single-segment named type (a user
 `type`, or another generic instantiation, which mangles
-recursively). An array, tuple, `bounded[T; N]` or function type as
+recursively). An identity or a range (spec/units.md) is one too, and
+lowers as its `Int`. A quantity or a point declared by the program is
+not: its unit lives in the checker's rows for the places that name the
+type, and a generic body names `T`, so it would print and convert as
+the bare count. A generic fn call that would bind one is refused at
+the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
+and a generic body has no unit to print or convert one by"); the
+stdlib's `Duration` and `Time` are primitives and bind. An array, tuple, `bounded[T; N]` or function type as
 an argument is refused at lowering; a qualified path is rewritten
 to a single segment by the import renames before the mangler sees
 it, which is why the checker's rule above is confined to
@@ -1121,7 +1545,49 @@ not supported in v0; explicit is preferred for the `inferred`-vs-
 Three init shapes:
 
 - `name: T = expr;` — default. Used when the caller omits the
-  field; evaluated in the caller's scope at instantiation time.
+  field; evaluated where the locus is built, at instantiation time.
+  **A default reads only its own fields and constants**, never the
+  scope of the literal or call that leaves it. That holds for every
+  default: a locus's param, a record type's field, a fn's, method's or
+  hook's param. Each name a default reads must be one of these:
+  - a module-level item: a constant, a free fn (as a call or a value), a
+    type, a variant, a locus;
+  - a builtin, or a primitive's conversion (`Time(3ns)`);
+  - a qualified path (no local is qualified);
+  - a name the default binds itself (a block's `let`, a `match` arm's
+    binding, an `or` handler's `err`), where that binding is in scope:
+    after its `let` and within its block, within its arm or handler. A
+    read in a `let`'s own initializer, or after the block that bound it,
+    is not the default's. The checker answers each of these, typing the
+    default once where it is declared with no binding in scope, as it
+    types it wherever it is evaluated: a word after `or` is a
+    narrowing's policy (`T(x) or clamp`) only where the `or` narrows,
+    and after any other fallible (`parse_int(s) or clamp`) it is a name
+    like any other;
+  - for a locus's param only, an earlier param through `self.<param>`.
+
+  Anything else is refused where the default is written ("a default
+  reads only its own fields and constants; `a` is in the caller's
+  scope"): a caller's local, a fn value bound there, an earlier
+  parameter of the same fn. So is `self` in a record field's or a fn's,
+  method's or hook's parameter default, where it would be the
+  caller's. A default that calls a fn leaving out a parameter, or
+  builds a record leaving out a field, expands defaults held to the
+  same rule where they are declared. Where a literal or call leaves a
+  default out, a caller binding of a name the default reads (a `let K`
+  beside `const K`) would be read in its place, so the check refuses
+  that literal or call ("`K` here is the caller's binding, …"): rename
+  the binding or pass the value. A
+  default publishes nothing: a `<-` (or a `Topic.write`) written in
+  any default (a locus's param, a record type's field, a fn's,
+  method's or hook's param) is refused at the send, since the scope
+  that evaluates it holds none of the declaration's bus ("a publish in
+  a default: …; publish from a hook or a method instead"). A method
+  the default calls may publish. A record literal written in a default is held to
+  every record literal's rule: it writes each field that has no
+  default of its own, and one that leaves such a field out is refused
+  at the literal ("type `T`: missing field `f`"), in any default, by
+  the check rather than the build.
 - `name: T;` — **required**. The caller MUST supply the field at
   the locus literal site; instantiation without it is a compile
   error. Use for fields where no sensible default exists (e.g.
@@ -1216,6 +1682,86 @@ function within the locus's scope. Lifecycle methods (`birth`,
 `accept`, etc.) are not regular `fn`s — they have their own
 syntax and don't take `self` (it's implicit).
 
+A function value is a free fn's name read as a value
+(`apply(dbl, 1)`). A method is not one: it is called on its locus,
+and a `fn(A) -> B` value carries no locus, so `self.dbl` (or
+`h.dbl`, a perspective's or an interface's method) written anywhere
+but a call's callee is a type error at the method's name:
+
+```
+main.hl:3:33: type error: `.dbl` is a method of the locus `App`,
+written as a value: a method is called on its locus (`….dbl(…)`),
+and a `fn(…)` value carries none, so it is not one. Pass a free fn,
+or call the method where the value is needed
+```
+
+A `fallible(E)` fn is not a value either, a program's own, an
+imported seed's (`lib::parse`) or the stdlib's: its ABI returns the
+failure beside the value, and a `fn(…) -> T` value's call reads a
+plain result, so there is no error channel to carry it through. Its
+name read as a value is a type error at the name that names a wrapper
+handling the error:
+
+```
+main.hl:4:27: type error: `parse` is `fallible(Oops)`, and a fn value
+has no error channel: a call through it could not address the
+failure. Wrap it in a fn that handles the error, `fn parse_or(a0:
+String) -> Int { return parse(a0) or 0; }`, and pass that
+```
+
+A fn returning a locus is a value only when it builds every instance it
+returns — a fresh factory (spec/semantics.md § Dissolve timing rules): a
+call through a fn value hands its caller a fresh instance to own (a
+binding's or a holder's, else the frame's temporary), so a fn that may
+hand back one it was given (`fn id(w: W) -> W { return w; }`) is a type
+error at its name:
+
+```
+main.hl:4:42: type error: `id` may hand back a `W` it did not build (one
+it was given, or one another binding keeps), and a call through a fn
+value hands its caller a fresh `W` to own: only a fn that builds every
+`W` it returns may be taken as a value. Pass a fn that builds one, or
+call `id` directly
+```
+
+A fn that hands back what a parameter of a fn type builds (`fn via(f:
+fn() -> R) -> R { return f(); }`) builds what it returns.
+
+So every fn value returning a locus is a fresh factory, wherever it
+came from — a fn's name, a call that returns one (`let f = pick();`
+with `fn pick() -> fn() -> W`), an `if`, a loop variable over an array
+of them, a tuple pattern's name — and a call through one is owned as a
+factory call is: by the binding it is bound to, by the field or the
+caller it is handed to, else by the frame, and a discarded one at the
+statement.
+
+A fn handing back a tuple or an array with locus parts is a value
+under the same rule: only when it builds every locus part it returns
+(`fn mk2() -> (W, Int) { return (W { }, 1); }`), or hands back what a
+fn value it was handed builds, or a call of a fn that is one itself
+(`fn mk3() -> (W, Int) { return mk2(); }`, through any chain of such
+fns). The rule holds wherever a fn's name is
+read as a value. A record's field cannot hold such a fn value at all:
+a `type` holds no locus, not even in a fn type's signature, so `type R
+{ f: fn() -> W = mkw; }` is refused at `fn() -> W`, and so is a field or
+a variant typed by an alias of such a fn type (`type Maker = fn() ->
+W;`), through any chain of aliases.
+
+A `std::` fn is a value when the stdlib writes it in Hale: its body is
+merged into the program under its rename, so `apply(std::url::encode,
+s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its
+signature (a `fallible` one, `std::hex::decode`, is refused as
+above). A builtin the stdlib answers at a call (`std::math::abs`,
+`std::str::upper`) has no fn behind it, and its path in any position
+but a call's callee is a type error at the path that names a wrapper:
+
+```
+main.hl:2:27: type error: `std::str::upper` is not a fn value: the
+stdlib answers it at a call, and there is no fn behind it to pass.
+Wrap it in a fn of your own, `fn upper_of(a0: String) -> String {
+return std::str::upper(a0); }`, and pass that
+```
+
 ### Calls to bare names
 
 A call whose callee is a bare identifier must name something: a
@@ -1250,6 +1796,34 @@ a condition, a fn or method body, a lifecycle hook, a bus handler, a
 `params` default, a `const` initializer. Only a partial program a
 library caller assembles (a styleguide snippet, a test harness's
 fragment) keeps the permissive reading (dna/FRICTION.md F.18).
+
+A binding declared as a fn value shadows a top-level fn, or a builtin
+(`len`, `min`, a `bounded` intrinsic, a printer), of the same name in a
+call, as it does wherever else the name is read. A binding is declared
+as a fn value when its declaration says so: a parameter or a `let`
+written with a `fn(..)` type, a `let` (or a tuple `let`'s part) of a
+fn's name or of another such binding, a `for` over an array literal of
+fns' names, a `match` pattern's binding of a variant's value whose
+declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
+calls `zero`.
+
+A bare callee no such binding shadows names the fn or the builtin. A
+binding of a known type that is no fn leaves it so (`let max = 10;
+max(1, 2)` calls the builtin, `max` still reads 10). A binding whose
+declaration does not show it to be a fn value, while its type is one or
+is one the check cannot name (a tuple pattern's binding, a value read
+from a field or a call), would read as the callee and is not: the check
+refuses the call, and the binding is given its type, or renamed. A call
+through a value that is no fn (`let x = 3; x(2)`) is refused at the
+callee.
+
+A call the compiler writes into the user's scope (an f-string's
+`to_string` and `__fmt`, a `from_json`'s parser) is the compiler's,
+whatever binding of the name is in scope. A qualified callee
+(`lib::helper()`) names the declaration. The check and the build read
+every call one way: the desugar sequence calls a shadowing binding as a
+value before either sees the program.
 
 `hale check <file>` loads that file and what its own imports reach,
 never the other files of its directory — exactly what `hale build
@@ -1459,6 +2033,190 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    pool, the call is rejected with a diagnostic naming both
    pools and pointing at the `placement { }` entries that
    picked them.
+
+   The receiver is the field instance however the call reaches it
+   (GH #1561): below the field (`self.h.w.m()`, `self.h.ws[i].m()`
+   — a nested instance, an element included, runs in its holder's
+   pool), through a local bound to it (`let w = self.w; w.m()`) or
+   a `for` over its elements. The check is a dataflow over the body:
+   each local carries what it may be (a cross-pool instance) and what
+   it may hold (a tuple, array or record around one, a fresh locus
+   literal whose params do), joined where control flow merges, iterated
+   to a fixpoint over a loop (its condition included, at every
+   iteration), with each block's `let`s in a scope of their own (a
+   shadowed binding keeps its own rebinds) and a block's, `if`'s or
+   `match`'s value taken from its tail before its locals go out of
+   scope; a part written (`ws[0] = self.b`) joins into its container,
+   a field of `self` any member stores a handle into may be that handle
+   wherever it is read, and an operand or fallback that may be skipped
+   (`&&`, `||`, `or`) is joined with the state that skipped it. A call
+   carries its callee's writes too: a helper that writes one argument
+   into a part of another (`fn install(ws: [W; 2], w: W) { ws[0] = w;
+   }`), or a method that writes an argument into its own field, leaves
+   the caller's container or field holding that argument's handle, and
+   so does a method that writes one of its own fields into an argument
+   (that field of the receiver, per instance). A bounded-list `push` or
+   `set` stores its value into the list (no form cell can be a locus);
+   a stdlib fn may write an argument into another only when the other's
+   declared type can hold it; a call through a fn value, or one the
+   check cannot see into, may write any argument into any other; a
+   serve site (`api::serve`) writes none, its receivers being reached
+   through the bus. A
+   locus literal is one instance however many bindings copy its
+   handle: what is written into it through one (`let alias = h;
+   alias.ws[0] = self.b;`) is read through every other (`h.ws[0]`),
+   and its params' values are held by field. A method that stores
+   into, or calls a method on, a locus one of its own fields holds
+   (`fn poke() { self.ws[0].name = s; }`) is judged, on a receiver
+   that is no field of `self` (a literal, a local or a parameter
+   bound to one), on what that receiver's field may hold: `H { ws:
+   [self.b, self.a] }.poke()` is the store into `self.b` itself, as
+   is the same call on a field of `self` a member stored that
+   literal into, or through a local or helper inside the method (`let
+   w = self.ws[0]; w.name = s;`, `put(self.ws[0])`); a method of a
+   receiver whose locus type the check cannot tell (`hs[0].poke()`)
+   is judged as every method of that name. A locus a helper builds
+   and returns is one instance built at the call, holding what the
+   helper's held (`let h = make(); let alias = h;` share it), and one
+   it was handed is still that instance. A callee the check has not
+   yet summarized does nothing until it is, so the order fns are
+   declared in never changes a verdict. A
+   value whose type can hold no locus handle (a record of data, a
+   `String`) carries none: reading one copies it. A value
+   comes from a field of `self` (or below one), another
+   local, a part of one (`p.0`, `ws[1]`, `n.w`), a literal holding one,
+   or a call: a fn or method by what its body may return (a parameter
+   or a part of one, a field of `self`, or a value holding one —
+   summarized per body, transitively; a fresh record of its own carries
+   nothing, a fresh locus is the instance built at the call), a call through a fn value declared to return a locus type
+   by any instance of that type (one on another pool is enough), and a
+   stdlib call by its declared result, which carries an argument's
+   handle only when it can be or hold that argument's type, a generic
+   result included. (A method may not return a locus itself.) — and through a free fn handed it that
+   calls a method on its parameter (`fn poke(w: W) { w.m(); }`,
+   `poke(self.w)`), directly or by handing the parameter on to such
+   a fn (by name, a fixpoint over the program's free fns).
+
+   A store into a field of the receiver instance is that
+   locus's own work, as a method call on it is (§ A store into a
+   locus's field is the locus's own), and is rejected the same
+   way when the pools differ, reached the same ways: a store down
+   `self.field` (`self.w.name = s`, `self.h.ws[i].name = s`); a
+   store through a local bound to `self.field` (`let w = self.w;
+   w.name = s;`); and a call of a free fn that stores into a field
+   of the parameter it is handed `self.field` at (`put(self.w,
+   s)` with `fn put(w: W, s: String) { w.name = s; }`). The last
+   includes a fn that hands that parameter on to such a fn,
+   transitively. The diagnostic names the locus, both pools and
+   the store, and suggests a method of that locus, reached
+   through the bus. GH #1561: such a store copies the value into
+   the receiver's arena and retires what it replaces, which only
+   the receiver's own thread may do. A store whose slot is an
+   inline scalar (a number, a `Bool`, a `Time` or `Duration`, a
+   unit scalar, a payload-free enum, read from the declarations)
+   is one plain store with no arena work, and is not rejected, as a
+   cross-pool field read is not.
+
+   Not followed, known: what a handler the runtime calls through a
+   function pointer does (an `std::http::Server` handler, a serve
+   site's receivers: the site is the exposure it builds, and the
+   handler runs on the server's pool); a stdlib locus's own methods,
+   which are not summarized (a call on one may move any argument into
+   any other and into the receiver, but what it stores into or calls
+   on a locus it holds is not judged); the parameter effects of a
+   method on a receiver whose locus type the check cannot tell; and a
+   call through an interface. A locus's `params` defaults are walked
+   only for the hand-over rule below. Where the check cannot tell instances apart it
+   takes them as one: every instance one literal (or one call of a
+   helper that builds one) produces, and every free fn of one name,
+   so it may refuse a store into an instance that never holds the
+   handle another one does.
+
+   **One instance is never shared across pools** (GH #1566). A locus
+   that holds an instance in a field reaches it as its own, on its own
+   thread, so handing it an instance that runs on another pool makes
+   one instance two threads write. Such a hand-over is refused where it
+   is made: a locus literal's param, a store into a locus's field (or
+   an element or part below one), or a call of a helper that does
+   either with an argument — whenever the value may be an existing
+   instance (a field of another instance, or a value reached from one,
+   through locals, blocks, parameters, returns and aggregates) that runs
+   on another pool than the locus receiving it. A literal or store in a
+   member runs on the member's pool; one in a `params` default builds
+   for the field it fills, so `srv: std::http::Server = std::http::Server
+   { .., handler: Routes { w: self.a } }`, with `srv` placed on `io` and
+   `a` on `main`, is refused at `self.a` — and so are `Routes { w: {
+   let x = self.a; x } }`, `mk(self.a)` with `fn mk(w: W) -> Routes {
+   return Routes { w: w }; }`, and the same with a local in `mk`:
+
+   ```text
+   cross-pool alias: `W` (`self.a`) runs on `cooperative(pool = main)`; `mk(…)` hands it to `Routes`, which runs on `cooperative(pool = io)`, shares one instance across pools — build it on that side, or reach it through a method on the bus.
+   ```
+
+   A stdlib locus literal (`std::http::Server { handler: … }`) receives
+   its params the same way, and a field of `self` the placement table
+   places no instance for (a tuple or an array of loci, a field of
+   interface type) runs where its owner does: `handler: self.pr.0`, with
+   `pr: (Routes, W)` on main and the server on io, is refused. An
+   instance the code builds itself and hands over (`Routes { w: W {
+   } }`, a helper that builds and returns one) is moved, not shared, and
+   is accepted; so is a hand-over within one pool. A locus whose form
+   synchronizes access from another domain, and a stdlib locus (a
+   metrics registry, a router), may be shared: their own
+   synchronization carries the contract, and a method call on one from
+   the wrong pool is still refused as above.
+
+   The rule is checked statically where the walk follows the handle,
+   and enforced at run time at every remaining site (GH #1566,
+   spec/runtime.md § *Cross-pool backstop*): every instance records
+   the domain it was built on, and a store into a locus's field from
+   outside its methods (not an inline scalar slot) or a method call on
+   a locus reached any way but down `self` (through an interface, on
+   the locus behind it) compares the receiver's domain with the
+   running code's. A mismatch is a violation: the
+   program prints the site, the store (or the method call, `cross-pool
+   method call` with the method) and both pools, and exits 1, before
+   the store or the call touches the other pool's locus:
+
+   ```text
+   main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
+   ```
+
+   An instance is on the domain it was built on until a locus first
+   holds it in a field (a literal's param, an element of an array param,
+   a store, a field of interface type): an instance no locus held yet —
+   one the code built and handed over through locals and parameters,
+   `Web` built in `fn main` and handed through helpers to an io-placed
+   server's handler — becomes that holder's and moves onto the domain
+   it runs on, with everything it is in turn the first holder of (a
+   provider composed from locals moves with the service it holds). An
+   instance a locus already holds is shared by a later holder, not
+   moved: it keeps its domain, so whichever side is not its owner is
+   caught (the hand-over the check cannot follow, a
+   builder called through a fn value, fails at the holder's first store
+   into it). Down `self`, a receiver is checked when the path goes
+   through a field filled with anything but a value the literal or store
+   builds right there. Hale does not refuse a use of a local after the
+   hand-over, so a builder that kept it and reaches the instance from
+   its own domain afterwards is caught at run time too. A receiver
+   whose form synchronizes access from another domain, and a local
+   bound to a locus literal the running code built (never rebound, never
+   handed over), are not checked; a locus's `drain()` and `dissolve()`
+   run as its own domain wherever the runtime runs them, and an
+   `on_failure` handler reaches its failed child, and the subtree the
+   child owns, on the child's domain — not any other instance there. A
+   violation found inside the stdlib, which has no location of its own,
+   is reported at the program's last call into a stdlib locus on that
+   thread.
+
+   Two exemptions are by design. What a `bindings { }` entry builds (an
+   adapter, a transport, a codec) belongs to no one domain: the runtime
+   calls an adapter's `send` from every publishing thread through a
+   function pointer, and the adapter's own synchronization carries that
+   contract. And a stdlib locus handed a value of `self` at its literal
+   (an exposure its transport, a server its handler) is driven from the
+   pool its machinery runs on: the stdlib's own synchronization covers
+   it, so such a field is not checked down `self`.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.
@@ -1719,6 +2477,19 @@ so the position reports no type mismatch beside the law's error.
   `write_file(p, s) or { println("failed"); };` — the same as
   `or raise` / `or discard` there.
 
+  A statement `or` on a **value-bearing** fallible runs its
+  substitute the same way, for its effect: `parse(s) or { log(err);
+  };`, `parse(s) or note(err);` with a handler of any type, or
+  `parse(s) or 0;`. (Until 2026-10-13 the build refused a block with
+  no tail and a handler of another type there, which the check
+  admitted.)
+
+  The value of an `or` whose call succeeds with `()` is no value:
+  `let full = push(self.marks, t) or { };` is refused at the
+  expression, as every `()`-typed expression in a value position is
+  (spec/semantics.md § "Expressions with no value"). Write the call
+  as a statement.
+
 The `or` operator is right-associative: `a() or b() or raise`
 parses as `a() or (b() or raise)`, so each level disposes one
 fallible in turn until a non-fallible value remains.
@@ -1776,6 +2547,28 @@ The resolver injects four fallible-payload types into the top
 scope so user code can name them in `fallible(...)` markers and
 `or` substitute clauses. All are idempotent — a user-declared
 type with the same name wins.
+
+Winning means standing in for the builtin wherever lowering builds
+one under that name, and the stdlib's own code is merged into every
+program: its parsers reach `ParseError`, `std::crypto` reaches
+`CryptoError`, its `bounded` pushes `CapacityError`, its closures
+`ClosureViolation`, its `@form` loci `IndexError` and `KeyError`, in
+every program whether or not the program calls them. So a program's
+type of one of those names that lacks a field of the builtin's shape
+(by name and primitive type) is a type error at its declaration:
+
+```
+main.hl:1:1: type error: user-declared `type ParseError` shadows the
+stdlib's `ParseError` but is missing the expected `kind: String`
+field (the stdlib's own code, merged into every program, and lowering
+build `ParseError` under that name on failure). Either match the
+stdlib shape, rename your type (e.g. `MyParseError`), or use
+`std::str::ParseError` qualified where you need the stdlib's shape.
+```
+
+`EmptyError` and the other builtins the stdlib does not reach are
+refused only in a program that reaches them itself (a `@form(heap)`,
+a `std::` call failing with one).
 
 | Trigger | Type | Fields |
 |---|---|---|

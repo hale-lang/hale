@@ -1,0 +1,7 @@
+{
+  "why": "An integer where the contract says number narrows what the row accepts, and must fail.",
+  "side": "contract",
+  "set": ["components", "schemas", "Budget", "allOf", 1, "properties", "remaining_micros", "type"],
+  "value": "number",
+  "expect": "Budget.remaining_micros (narrowed to an integer)"
+}

@@ -22,5 +22,9 @@ fn main() {
     std::test::assert(c.pid > 0, "the pipeline spawned");
     let code = std::process::wait(c) or 99;
     std::test::assert_eq_int(code, 0, "the spawned pipeline exits 0");
-    std::test::assert_eq_str(std::process::read_stderr(c) or "", "status=141\n", "the spawned yes died of SIGPIPE");
+    std::test::assert_eq_str(
+        std::process::read_stderr(c) or "",
+        "status=141\n",
+        "the spawned yes died of SIGPIPE",
+    );
 }

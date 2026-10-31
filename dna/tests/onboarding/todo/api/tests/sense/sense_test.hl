@@ -37,7 +37,12 @@ fn concern_source(source: String, app: String) -> String {
             if seg == app { named = true; }
             seg = "";
         } else {
-            let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+            let ok = (c >= "a" && c <= "z")
+                || (c >= "A" && c <= "Z")
+                || (c >= "0" && c <= "9")
+                || c == "-"
+                || c == "_"
+                || c == ".";
             if !ok { return ""; }
             seg = seg + c;
         }
@@ -52,7 +57,10 @@ main locus SenseDesk {
         broker: fake::Broker = fake::Broker { port: self.port };
         mailbox: fake::Mailbox = fake::Mailbox { };
         list: todo::Todos = todo::Todos { };
-        door: std::api::test::Rpc = std::api::test::Rpc { principals: auth::Tokens { table: "ada=t-ada" }, roles: auth::Grants { table: "ada=t-ada" } };
+        door: std::api::test::Rpc = std::api::test::Rpc {
+            principals: auth::Tokens { table: "ada=t-ada" },
+            roles: auth::Grants { table: "ada=t-ada" },
+        };
         sense: fake::Sense = fake::Sense {
             nerves: nerves::Nerves {
                 url: "nats://127.0.0.1:" + to_string(self.port),
@@ -61,6 +69,7 @@ main locus SenseDesk {
                 org: "testorg"
             }
         };
+        ex: api::Exposure = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
     }
     placement { list: cooperative(pool = work) where async_io; broker: pinned; sense: pinned; }
 
@@ -69,7 +78,6 @@ main locus SenseDesk {
         std::io::fs::write_file(entry, "hunter2") or discard;
 
         // three items: overdue and open, overdue and done at once, not yet due
-        let ex = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
         let d = self.door;
         d.call(1, "Todos::add", "{\"title\":\"milk\",\"due\":\"2020-01-01T00:00:00Z\"}", "t-ada");
         std::test::assert_eq_str(d.await_outcome(1, 2000), "result", "milk is added");
@@ -87,26 +95,49 @@ main locus SenseDesk {
         }
         std::test::assert_eq_int(self.mailbox.count, 1, "the overdue item is said");
         let heard = self.mailbox.last;
-        std::test::assert(std::str::contains(heard, "PUB testorg.app.todo.concern.raised "), "on the organism's subject: " + heard);
-        std::test::assert(std::str::contains(heard, "\"user\":\"app-todo\""), "as the application's account: " + heard);
-        std::test::assert(std::str::contains(heard, "\"pass\":\"hunter2\""), "with the vault's password: " + heard);
-        std::test::assert(std::str::contains(heard, "\"id\":\"overdue-1\""), "naming the item: " + heard);
-        std::test::assert(std::str::contains(heard, "\"source\":\"todo/overdue\""), "from the attached application: " + heard);
+        std::test::assert(
+            std::str::contains(heard, "PUB testorg.app.todo.concern.raised "),
+            "on the organism's subject: " + heard,
+        );
+        std::test::assert(
+            std::str::contains(heard, "\"user\":\"app-todo\""),
+            "as the application's account: " + heard,
+        );
+        std::test::assert(
+            std::str::contains(heard, "\"pass\":\"hunter2\""),
+            "with the vault's password: " + heard,
+        );
+        std::test::assert(
+            std::str::contains(heard, "\"id\":\"overdue-1\""),
+            "naming the item: " + heard,
+        );
+        std::test::assert(
+            std::str::contains(heard, "\"source\":\"todo/overdue\""),
+            "from the attached application: " + heard,
+        );
         let source = source_of(heard);
         std::test::assert_eq_str(source, "todo/overdue", "the recorded source");
         std::test::assert_eq_str(concern_source(source, "todo"), source, "the heart admits it");
-        std::test::assert_eq_str(concern_source("app:todo", "todo"), "", "and refuses the colon spelling");
+        std::test::assert_eq_str(
+            concern_source("app:todo", "todo"),
+            "",
+            "and refuses the colon spelling",
+        );
         // the name follows the account the organism attached the application under
         std::test::assert_eq_str(nerves::app_name("app-mytodo"), "mytodo", "a clone's own name");
         std::test::assert_eq_str(nerves::app_name("app-my-todo"), "my-todo", "a dashed name");
         std::test::assert_eq_str(nerves::app_name(""), "todo", "no account, the default");
-        std::test::assert(std::str::contains(heard, "\"event\":\"todo.overdue\"") && std::str::contains(heard, "\"title\":\"milk\""), "an overdue item, with the item as payload: " + heard);
+        std::test::assert(
+            std::str::contains(heard, "\"event\":\"todo.overdue\"")
+                && std::str::contains(heard, "\"title\":\"milk\""),
+            "an overdue item, with the item as payload: " + heard,
+        );
 
         // told once: more ticks, no second message; and the others were never told
         std::time::sleep(2500ms);
         std::test::assert_eq_int(self.mailbox.count, 1, "once, though the item stays overdue");
         std::io::fs::unlink(entry) or discard;
-        ex.stop();
+        self.ex.stop();
         std::process::exit(0);
     }
 }

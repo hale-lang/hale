@@ -98,6 +98,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         self.lc_in_spine(spine, |cx| {
             cx.lc_step("Restart", Some(self_ptr), Some(locus_name), |cx| {
+                // the names are made only where the note is emitted: a
+                // program observing nothing carries neither string
+                if cx.observes_metrics() || cx.observes_events() {
+                    let locus = cx.global_string(locus_name);
+                    let none = cx.global_string("");
+                    cx.emit_observe_note(0, self_ptr, locus, none)?;
+                }
                 cx.builder
                     .build_call(restart, &[self_ptr.into()], name)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -528,6 +535,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Perspective(_)
                 | CodegenTy::Drain(_)
                 | CodegenTy::Bounded(_, _) => false,
+                // an array or a tuple of loci holds children, as a
+                // locus-typed param does
+                ty if crate::locus::dissolve::composite_loci(ty).is_some() => false,
                 CodegenTy::TypeRef(n) => self.user_types.contains_key(n),
                 _ => true,
             })

@@ -90,6 +90,7 @@ fn effects(e: EffectSet) -> String {
         (EffectSet::ENV, "env"),
         (EffectSet::ALLOC, "alloc"),
         (EffectSet::SECRET_USE, "secret_use"),
+        (EffectSet::STDIO, "stdio"),
     ];
     let known = NAMES.iter().fold(0, |acc, (s, _)| acc | s.0);
     let mut parts: Vec<String> =

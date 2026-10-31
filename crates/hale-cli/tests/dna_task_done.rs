@@ -7,6 +7,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -26,8 +32,8 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String, String)> {
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(app).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
+    // the record's rows and its Ledger's (GH #1590: a Task's are the Ledger's)
+    (record::text(app) + "\n" + &record::ledger_text(app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -66,11 +72,12 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
         eprintln!("dna_task_done: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_task_done_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_task_done_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "handed"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "handed", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("handed");
     std::fs::write(app.join("dna/org/models.hl"), PERSON_CATALOG).unwrap();
@@ -90,6 +97,7 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))

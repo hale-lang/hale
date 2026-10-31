@@ -6,10 +6,11 @@
 // before this every consumer that had to refuse malformed input wrote
 // its own validator — a downstream handoff carried four of them.
 //
-// A valid/invalid pair per production, plus the three refusals that
-// go beyond the grammar (invalid UTF-8, a lone surrogate escape,
-// `\u0000`) and the two bounds (depth 64, and `valid_object`'s
-// 512-field width bound).
+// A valid/invalid pair per production, plus the refusal that goes
+// beyond the grammar (invalid UTF-8) and the two bounds (depth 64,
+// and `valid_object`'s 64-field width bound). A lone surrogate escape
+// and `\u0000` are grammatical and accepted (they were refused until
+// 2026-10-30; `json_lone_escapes_test.hl` holds the readers to them).
 
 fn refute(got: Bool, label: String) {
     std::test::assert(!got, label);
@@ -69,13 +70,13 @@ fn main() {
     refute(std::json::valid("\"\\q\""), "unknown escape");
     refute(std::json::valid("\"\\uZZZZ\""), "four digits that are not hex");
     refute(std::json::valid("\"\\u00\""), "a truncated \\u escape");
-    refute(std::json::valid("\"\\ud83d\""), "a lone high surrogate");
-    refute(std::json::valid("\"\\udc00\""), "a lone low surrogate");
-    refute(
+    std::test::assert(std::json::valid("\"\\ud83d\""), "a lone high surrogate");
+    std::test::assert(std::json::valid("\"\\udc00\""), "a lone low surrogate");
+    std::test::assert(
         std::json::valid("\"\\ud83d\\u0041\""),
         "a high surrogate followed by a non-surrogate escape"
     );
-    refute(std::json::valid("\"\\u0000\""), "an escaped NUL");
+    std::test::assert(std::json::valid("\"\\u0000\""), "an escaped NUL");
 
     // A raw control byte must be escaped (RFC 8259 §7); the escaped
     // form of the same byte is fine, asserted above.

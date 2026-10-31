@@ -1,0 +1,198 @@
+// dna/tests/provider_test.hl — the Provider interface, in memory (phase 4).
+//
+// A provider produces hosts with what they offer, allocates a role for an
+// instance, places it on a host that offers what it needs, applies a render
+// on a host and observes an allocation: `up`, `degraded` or `down`. The
+// memory implementation does each in the process, so what is asserted here
+// is the interface's contract, never a tool on PATH. The `local` profile's
+// preset gives every role the `compose` provider; on `operator` backends the
+// servers the operator holds are the `operator`'s.
+
+import "../core" as dna;
+
+// Every role of `roles` (space-separated) allocated for `instance` and
+// placed on `host` by `p`: `<role>@<host>` for each placed, `<role>!` for
+// each refused, space-separated.
+fn place_all(p: dna::Provider, roles: String, instance: String, host: String) -> String {
+    let h = p.offers(host);
+    let mut out = "";
+    let mut rest = roles + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let role = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        let placed = p.place(p.allocate(role, instance), h);
+        out = out + (if len(out) > 0 { " " } else { "" })
+            + (if placed.placed { role + "@" + placed.host } else { role + "!" });
+    }
+    return out;
+}
+
+fn main() {
+    let p = dna::MemProvider { };
+    std::test::assert_eq_str(p.kind(), "memory", "the memory provider names itself");
+
+    // ---- hosts: produced by the provider, each with what it offers
+    let local = p.offers("local");
+    std::test::assert(
+        local.reachable && local.provider == "memory" && dna::has_word(local.offers, "compose"),
+        "the provider produces its host with its offers: " + local.offers,
+    );
+    let none = p.offers("elsewhere");
+    std::test::assert(
+        !none.reachable && len(none.why) > 0,
+        "a host it does not produce is refused",
+    );
+
+    // ---- allocation by role
+    let memory = p.allocate("memory", "0123456789ab");
+    std::test::assert(
+        memory.role == "memory" && memory.instance == "0123456789ab"
+            && memory.service == "memory-0123456789ab" && memory.needs == "compose"
+            && !memory.placed && len(memory.host) == 0,
+        "a role is allocated for an instance, on no host yet: " + memory.service,
+    );
+    std::test::assert_eq_str(
+        p.allocate("database", "0123456789ab").service,
+        "memory-0123456789ab",
+        "the heart's database is a tenant of the memory server",
+    );
+    std::test::assert(
+        len(p.allocate("cache", "0123456789ab").why) > 0,
+        "a role the habitat does not know is refused by name",
+    );
+
+    // ---- placement: on a host that offers what the allocation needs
+    let placed = p.place(memory, local);
+    std::test::assert(placed.placed && placed.host == "local", "placed on the host: " + placed.why);
+    let bare = dna::MemProvider { host_offers: "systemd-user" };
+    let refused = bare.place(bare.allocate("nerves", "0123456789ab"), bare.offers("local"));
+    std::test::assert(
+        !refused.placed && std::str::contains(refused.why, "does not offer compose"),
+        "a host that does not offer what it needs is refused: " + refused.why,
+    );
+    // an ssh host last seen ready whose probe just failed keeps its state,
+    // but is not placeable: the probe's reason is the refusal
+    let ssh = dna::SshProvider { root: "" };
+    let stale = dna::Host {
+        name: "box-a",
+        provider: "ssh",
+        offers: "compose",
+        state: "ready",
+        reachable: false,
+        why: "host-key-changed",
+    };
+    let gated = ssh.place(dna::Allocation { role: "probe", needs: "compose" }, stale);
+    std::test::assert(
+        !gated.placed && std::str::contains(gated.why, "host-key-changed"),
+        "a host whose probe failed is refused with the probe's reason: " + gated.why,
+    );
+    std::test::assert_eq_str(
+        place_all(bare, "head face nerves", "0123456789ab", "local"),
+        "head@local face@local nerves!",
+        "the head and the face need no offer; the nerves need compose",
+    );
+    std::test::assert_eq_str(
+        place_all(p, "memory nerves head face", "0123456789ab", "local"),
+        "memory@local nerves@local head@local face@local",
+        "through the interface, every role placed",
+    );
+    std::test::assert_eq_str(
+        place_all(p, "memory", "0123456789ab", "elsewhere"),
+        "memory!",
+        "never on a host the provider does not produce",
+    );
+
+    // ---- observation: down until a render is applied, then up, unless the
+    // fixture says otherwise
+    std::test::assert_eq_str(p.observe(placed).state, "down", "nothing applied: down");
+    let applied = p.apply(
+        "local",
+        dna::Render {
+            project: "p",
+            dir: "/d",
+            files: "compose.yaml",
+            services: "memory-0123456789ab",
+        },
+    );
+    std::test::assert(
+        applied.ok
+            && p.applied == 1
+            && p.last_host == "local"
+            && p.last.services == "memory-0123456789ab",
+        "a render is applied on the host and kept: " + applied.why,
+    );
+    std::test::assert_eq_str(p.observe(placed).state, "up", "applied: up");
+    let gone = p.withdraw("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(gone.ok && p.withdrawn == 1, "a render is withdrawn: " + gone.why);
+    std::test::assert_eq_str(p.observe(placed).state, "down", "withdrawn: down");
+    let back = p.apply("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(back.ok, "and applied again: " + back.why);
+    p.degraded = "0123456789ab/memory";
+    std::test::assert_eq_str(p.observe(placed).state, "degraded", "running, not well");
+    p.down = "0123456789ab/memory";
+    std::test::assert_eq_str(p.observe(placed).state, "down", "and down");
+    std::test::assert_eq_str(
+        p.observe(p.allocate("nerves", "0123456789ab")).state,
+        "down",
+        "an allocation never placed is down",
+    );
+    std::test::assert(
+        !p.apply("elsewhere", dna::Render { project: "p", dir: "/d" }).ok,
+        "never applied on a host it does not produce",
+    );
+    let stubborn = dna::MemProvider { refuse_apply: "the host refused" };
+    let no = stubborn.apply("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(!no.ok && no.why == "the host refused", "a refused apply says why");
+
+    // ---- policy: the `local` profile's preset, a provider per role
+    std::test::assert(
+        dna::profile_provider("local", "own", "memory") == "compose"
+            && dna::profile_provider("local", "own", "broker") == "compose"
+            && dna::profile_provider("local", "own", "face") == "compose",
+        "local on its own backends: compose for every role",
+    );
+    std::test::assert(
+        dna::profile_provider("local", "operator", "memory") == "operator"
+            && dna::profile_provider("local", "operator", "nerves") == "operator"
+            && dna::profile_provider("local", "operator", "database") == "operator"
+            && dna::profile_provider("local", "operator", "head") == "compose"
+            && dna::profile_provider("local", "operator", "broker") == "",
+        "on operator backends the operator's servers hold memory and nerves, and no broker",
+    );
+    std::test::assert(
+        dna::profile_provider("hosted", "own", "memory") == ""
+            && dna::profile_provider("local", "own", "cache") == "",
+        "no preset for a profile that is not built, nor a role the habitat does not know",
+    );
+
+    // what fills a role, as `docker ps` lines of `<image>|<state> <status>`
+    // say: the images once each, the state lines as `container_state` reads
+    let seen = dna::seen_containers(
+        "pgvector/pgvector:pg16|running Up 2 minutes\nnats:2.11-alpine|running Up 2 minutes\nnats:2.11-alpine|exited Exited (0)",
+    );
+    std::test::assert_eq_str(
+        seen.images,
+        "pgvector/pgvector:pg16 nats:2.11-alpine",
+        "each image once, in order",
+    );
+    std::test::assert_eq_str(
+        seen.states,
+        "running Up 2 minutes\nrunning Up 2 minutes\nexited Exited (0)",
+        "the state lines without their images",
+    );
+    // a one-shot that finished (exit 0, a migration) is done, never down
+    let st = dna::containers_state("memory", seen.states);
+    std::test::assert(
+        st.state == "up" && st.detail == "2 running, 1 finished",
+        "a finished one-shot is done: " + st.state + " (" + st.detail + ")",
+    );
+    std::test::assert_eq_str(
+        dna::containers_state(
+            "memory",
+            "running Up 2 minutes\nexited Exited (1) 5 seconds ago",
+        ).state,
+        "degraded",
+        "one that failed is not",
+    );
+}

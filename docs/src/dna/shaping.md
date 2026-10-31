@@ -1,44 +1,37 @@
-# Shaping and governing it
+# Organization Governance, Grants, and Structural Evolution
 
-The **genome** is what the organism is made of: the application's
-source, the organization under `dna/org` (its org chart, its law, its
-purpose, its catalogs), and the vendored core in `vendor/dna`. Its one
-job is to be the only place the organism's shape is written. The
-project owns it, and every change to it is a candidate someone
-reviews: the Leader inside the grant the Board wrote, the Board for
-everything else. It fails before anyone reviews: a candidate that does
-not check, or that breaks the law, is denied with the reason. It never
-holds a secret or the day's work; those are the vault's and memory's.
+The **genome** is the Git-tracked source code defining both your application and its governing organization under `dna/org/` (topology, constitutional law, purpose, charter, model routing, and workflow definitions), alongside the toolchain-managed runtime in `vendor/dna/`. Every change to the genome is verified by the compiler (`hale check --matrix .`) and evaluated as a Review candidate—decided automatically by the Leader when within its `dna::Grant`, or escalated to the human Board. Secrets and operational state never live in the genome; they live in the vault and Postgres memory.
 
-This page is how you shape it, and how the organism is governed while
-you do.
+```sh
+# 1. Ratify the project's initial purpose and seeded practice families
+hale dna review purpose approve --as alice
+hale dna review design approve --as alice
 
-## What you shape
+# 2. Preview and propose a multi-step organizational batch
+hale dna apply team.batch --dry-run
+hale dna apply team.batch --as alice
+```
 
-| file | what it says | changed by |
-|---|---|---|
-| the application (`main.hl` and its seed) | the heart: what the organism is for | a reviewed change of class `application`, `feature`, `refactor` or `docs` |
-| `dna/org/main.hl` | the org chart as a program: the substrate, the Leader, the grant, the review policy, the nerves | an `organization` change, the Board's |
-| `dna/org/law.hl` | what no position may ever do, checked by the compiler | an `organization` change, the Board's |
-| `dna/org/purpose.hl` | the declared purpose, one sentence | the first Review ratifies it |
-| `dna/org/charter.hl` | the Leader's brief | an `organization` change |
-| `dna/org/models.hl`, `dna/org/work.hl` | which model each position calls, and a leg's performers ([Legs, hands and voice](./legs.md)) | an `organization` change |
-| `dna/org/own_workflows.hl` | your own workflow definitions ([The spine](./spine.md)) | an `organization` change |
-| `vendor/dna` | the core, the toolchain's ([DNA, the building block](./dna.md)) | `hale dna upgrade`, never by hand |
+## Genome File Layout
 
-They are ordinary Hale source. Edit one by hand, and `hale check
---matrix .` checks the application and the organization, each against
-its own law ([Constitutions](../constitutions.md)). Or ask the organism
-for the change (`hale dna task create`), and it arrives as a candidate
-with its diffs and evidence for review ([One task, end to
-end](./workflow.md)). Beside the genome, the record holds
-what the Board decided about it: the purpose ratified, the practices in
-force, who holds which position.
+| File / Directory | Purpose | Required Change Class & Authority |
+| --- | --- | --- |
+| Application (`main.hl` and its seed) | The application supervised by the organism (the heart) | `application`, `feature`, `refactor`, or `docs` (Leader within grant, else Board) |
+| `dna/org/main.hl` | Organization entrypoint: `dna::Dna` substrate, `dna::Leader`, `dna::Grant`, review policy, and NATS JetStream (`nerves`) bindings | `organization` (Board) |
+| `dna/org/law.hl` | Constitutional claims (`constitution Org`) verified at compile time | `organization` / `law_touched` hard boundary (Board) |
+| `dna/org/purpose.hl` | Single-sentence project purpose read by reviewers and the Leader | Ratified by the initial `purpose` Review; amended via `organization` change |
+| `dna/org/charter.hl` | Architectural brief and planning rules for the Leader | `organization` (Board) |
+| `dna/org/models.hl`, `dna/org/work.hl` | Model backend catalog, spend budget, and leg performers ([Legs, hands and voice](./legs.md)) | `organization` (Board) |
+| `dna/org/own_workflows.hl` | Custom project workflow definitions ([The spine](./spine.md)) | `organization` (Board) |
+| `vendor/dna/` | Toolchain-owned DNA core library ([DNA, the building block](./dna.md)) | Updated exclusively by `hale dna upgrade` (never edited by hand) |
+
+You can edit genome files directly and run `hale check --matrix .` to verify both the application and `dna/org` against their respective constitutions ([Constitutions](../constitutions.md)), or request changes through `hale dna task create` so the organism prepares a verified candidate with diffs and evidence ([One task, end to end](./workflow.md)).
+
+---
 
 ## The purpose
 
-`dna/org/purpose.hl` is one sentence, and the first thing a reviewer
-sees about what the codebase is meant to be:
+`dna/org/purpose.hl` declares a single sentence stating what the codebase is meant to achieve:
 
 ```hale,fragment
 // dna/org/purpose.hl — the declared purpose (project-owned).
@@ -55,20 +48,17 @@ fn purpose() -> String {
 }
 ```
 
-`init` writes it and proposes it for the Board in the same step; `hale
-dna review` lists it first, and `hale dna review purpose approve --as
-<you>` ratifies it ([Getting started](./getting-started.md)). Make it
-true of your project before you do: the Leader reads it every time it
-thinks.
+`hale habitat graft` generates `dna/org/purpose.hl` and opens the `purpose` Review against its SHA-256 digest. Edit `PURPOSE` to match your project before ratifying it with `hale dna review purpose approve --as <you>` ([Getting started](./getting-started.md)). The Leader includes this string in its context every time it plans a task or evaluates a Review.
+
+---
 
 ## The charter
 
-`dna/org/charter.hl` is the Leader's brief, a function returning text
-like `purpose`:
+`dna/org/charter.hl` defines the Leader's architectural brief:
 
 ```hale,fragment
 // dna/org/charter.hl — the leader's brief (project-owned; generated by
-// `hale dna init`). The leader reads this, the purpose, the law and
+// `hale habitat graft`). The leader reads this, the purpose, the law and
 // the ratified design before it plans an ask and before it decides a
 // Review. Change it as you would any part of the organism: through a
 // reviewed change.
@@ -78,43 +68,27 @@ fn charter() -> String {
 }
 ```
 
-The generated text makes the Leader the organism's architect: it
-proposes and the Board decides. It tells it to say, first, what an ask
-is — whether it concerns the organism, an appendage, a product or a
-person's job, which class of change, one change or several — and that a
-plan only splits and classifies, never widens what was asked. Before it
-plans an ask and before it decides a Review, the Leader composes its
-brief in this order: `CHARTER`, `PURPOSE`, the `LAW` as the genome
-holds it, and `PRACTICES`, the package of ratified practices for `org`
-when memory has any.
+The default charter instructs the Leader to act as the organism's architect: it classifies incoming tasks (whether an ask targets the organism, an appendage, a product, or a human role; which change class applies; and whether to split it into multiple tasks) without widening the scope of what was requested. Before planning a task or deciding a Review, the Leader assembles its system brief in strict order:
+1. `CHARTER` (`dna/org/charter.hl`)
+2. `PURPOSE` (`dna/org/purpose.hl`)
+3. `LAW` (`dna/org/law.hl`)
+4. `PRACTICES` (all ratified practices bound to `org` in Postgres memory)
+
+---
 
 ## Practices
 
-A practice is a named paragraph the Board ratifies: how work is done
-here. The Leader reads the ratified ones in its brief, a reviewer cites
-them, and nothing is in force until the Board says so.
+A **practice** is a named operational rule ratified by the Board. Ratified practices are injected into the Leader's brief and worker hats (`hale dna work brief`), and cited by reviewers. Unratified proposals have no effect.
 
-`init` seeds three families as proposals, one Board Review each:
+`hale habitat graft` seeds three practice families as pending Board Reviews, alongside proposals for the repository's structural positions (`holes`):
 
-| family | practices | what it says |
-|---|---|---|
-| `design` (8, and three mandates) | `principles`, `evolution`, `structure-follows-intent`, `standard-equipment`, `signals`, `signaling`, `optimize`, `software-delivery`; `mandate-leader`, `mandate-editor`, `mandate-agent` | how an organization is shaped: minimal structure, clean cuts, growth by proposal |
-| `operating` (7) | `one-store-per-step`, `row-first`, `readings-never-act`, `legs-hold-nothing`, `deploy-settles-on-pulse`, `the-forge-decides`, `optimize-cadence` | how the organism runs: what the Leader plans within and a reviewer cites |
-| `using` (7) | `propose-review-ratify`, `change-classes`, `ask-the-leader`, `cut-structure`, `read-the-record`, `evidence-first`, `bind-knowledge` | how to work with the organism: what a proposal states, who a class signs for, what the record is for, where knowledge is bound |
+| Family | Seeded Practices & Mandates | Scope |
+| --- | --- | --- |
+| `design` (8 practices + 3 mandates) | `principles`, `evolution`, `structure-follows-intent`, `standard-equipment`, `signals`, `signaling`, `optimize`, `software-delivery`; `mandate-leader`, `mandate-editor`, `mandate-agent` | Organizational architecture: minimal structure, clean boundaries, and evidence-driven growth |
+| `operating` (7 practices) | `one-store-per-step`, `row-first`, `readings-never-act`, `legs-hold-nothing`, `deploy-settles-on-pulse`, `the-forge-decides`, `optimize-cadence` | Runtime execution invariants and the daily `optimize-walk` schedule |
+| `using` (7 practices) | `propose-review-ratify`, `change-classes`, `ask-the-leader`, `cut-structure`, `read-the-record`, `evidence-first`, `bind-knowledge` | Operator and contributor workflow conventions (seeded even when grafting with `--no-library`) |
 
-A **mandate** is a practice with a position to be bound to: what that
-position decides, what it may not, what it cites, how it writes and what
-it escalates, with the authority defaults derived from the law's change
-classes (the charter refines them). The three in `design` are the
-Leader's, the editor's and the agent's; `init` on a repository proposes
-one more with every position it proposes, in a repository or an
-application (`mandate/<position>`, listed
-under `holes` right after its position). Ratified, a mandate is bound to
-the position's node, so whoever holds the position reads it in their
-hat. It is knowledge about a position, not a grant.
-
-The first two operating practices are the two rules of
-[the organism](./index.md). `hale dna review` groups them:
+A **mandate** (`mandate-<role>` or `mandate/<position>`) is a practice bound to a specific position node in the graph. It defines what that position may decide, what it is forbidden from doing, what contracts or axioms it cites, and what it must escalate. When `hale habitat graft` proposes positions under `holes`, each position Review is immediately followed by its mandate Review; once ratified, the mandate appears in the hat of every worker claiming work as that position.
 
 ```text
 $ hale dna review
@@ -129,75 +103,39 @@ $ hale dna review
   operating — 7 seeded practice(s), each its own Review:
       k:33be310ddba8 — ratify the operating practice `operating/one-store-per-step`: a workflow step writes to exactly one store, by that store's one writer,…
       …
-      decide one with `hale dna review <id> …`, or all pending with `hale dna review operating approve|reject`
   using — 7 seeded practice(s), each its own Review:
       k:8c1f6a4e2d70 — ratify the using practice `using/propose-review-ratify`: nothing is in force until the Board says so. A change to the organi…
       …
-      decide one with `hale dna review <id> …`, or all pending with `hale dna review using approve|reject`
   holes — 6 hole(s) the repository leaves, each its own Review:
       k:d51a712f169e — ratify the position `board` under the purpose: it ratifies what this organization becomes
       …
-      decide one with `hale dna review <id> …`, or all pending with `hale dna review holes approve|reject`
-render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
 
-`hale dna review design approve --as <you>` decides each pending one
-in turn; the record still holds one verdict per practice. One of them
-does more than advise: `operating/optimize-cadence`, once ratified,
-declares the schedule of the optimize pass, once a day, convened by
-the Leader ([Schedules](./schedules.md)). A different cadence is an
-amendment to that practice.
+Approve an entire group with `hale dna review design approve --as <you>` (which records an individual verdict for each Review in the group). Ratifying `operating/optimize-cadence` also declares the daily `optimize` schedule ([Schedules](./schedules.md)).
 
-The `using` family is kept when `init` is run with `--no-library`: the
-library is the book and the spec, which the Board ratifies a family at a
-time ([What a Work is told](./memory.md#what-a-work-is-told-and-by-which-node)),
-and these are practices, one Review each. `hale dna upgrade` proposes
-each practice of the three families whose text changed, as it does the
-design, and the new toolchain's library as new families.
+### Proposing and Amending a Practice (`hale dna practice`)
 
-### Proposing one
-
-A practice can come from anyone. When the same thing keeps going wrong,
-write down how it should go and say what prompted it:
+Anyone can propose a new practice or supersede an existing one:
 
 ```sh
 hale dna practice propose acceptance/expense-receipt \
     --text "An expense closes with its receipt.
-evidence: required" --because "three bills arrived without receipts"
+evidence: required" \
+    --because "three bills arrived without receipts"
 ```
 
-The command writes a `practice.requested` row in your name (`--as
-<who>` names another); a running node relays it, and the organization
-proposes it with a Board Review of its own. With the organization
-running here, the command waits for that answer:
+- `practice propose` writes a `practice.requested` row (`--as <who>` overrides the author). When the organism is running, it opens a Board Review and prints:
+  ```text
+  practice acceptance/expense-receipt proposed by alice as sha256:…; the Board ratifies it: `hale dna review k:… approve --authority board`
+  ```
+- **Amending a practice (`--supersedes <digest>`):** Pass the full or short SHA-256 digest (`sha256:3122d`) of an active practice. The CLI validates the target digest immediately (rejecting unknown, ambiguous, or inactive digests). When the Board ratifies the new version, the superseded version automatically transitions to `retired` (if rejected, the prior version remains `in force`).
+- **Inspecting practices:** Run `hale dna practice` to list all practices and their states (`awaiting the Board`, `in force`, `declined`, `retired`).
 
-```text
-practice acceptance/expense-receipt proposed by alice as sha256:…; the Board ratifies it: `hale dna review k:… approve --authority board`
-```
-
-Roles are authorities, not identities: the person who proposed a
-practice may ratify it with the Board's authority, and the record keeps
-who proposed and who decided. `--supersedes <digest>` names the
-version it replaces: ratifying the new one retires the old, declining
-it leaves the old in force. What an acceptance practice such as this
-one does to a person's job is on [One task, end to end](./workflow.md).
-
-`hale dna practice` lists every practice with its state (`awaiting
-the Board`, `in force`, `declined`, `retired`):
-
-```text
-$ hale dna practice
-practices: 16
-  purpose sha256:38709 [awaiting the Board (k:3870910f5de4)] refproj: keep the application correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.
-  design/principles sha256:7b594 [awaiting the Board (k:7b5940a6bf3c)] Minimal structure: add a position only when it serves the whole; …
-  …
-```
+---
 
 ## Grant and autonomy
 
-Autonomy is a **grant**: written by the Board, held by a position, never
-widened by the position. In the generated organization the position is
-the Leader, and the grant is in `dna/org/main.hl`:
+Autonomy is delegated through an explicit `dna::Grant` inside `dna/org/main.hl`—written by the Board, held by a position (such as the Leader), and never widened at runtime:
 
 ```hale,fragment
             boundary: dna::AutonomyBoundary {
@@ -207,104 +145,72 @@ the Leader, and the grant is in `dna/org/main.hl`:
             review_policy: dna::OrgPolicy { },
 ```
 
-- **`classes`** — the change classes the Leader may decide.
-- **`max_magnitude`** — a ceiling on the sum of the change's magnitude
-  vector (below). Past it, the change escalates whatever its class.
-- **`review`** — `"pre"`, `"post"`, `"sampled"` or `"audit"`. `"pre"`
-  asks for a verdict before anything is applied; the others let a
-  change with enough evidence be released, if the review policy does
-  not block its class.
+- **`classes`:** Space-separated list of change classes the Leader is permitted to decide.
+- **`max_magnitude`:** Maximum sum of the candidate's semantic magnitude vector (see below). Any candidate exceeding `max_magnitude` escalates to the Board regardless of class.
+- **`review`:** Review timing mode—`"pre"`, `"post"`, `"sampled"`, or `"audit"`. `"pre"` requires a Review verdict before applying the candidate; the other modes allow candidates with sufficient mechanical evidence to be released and applied first if permitted by `review_policy`.
 
-The grant is a constructor argument, not a runtime setting: no verb
-and no position widens it. Changing it is a change to the
-organization's own seed, `dna/org`, which an `organization` change
-edits and the Board decides.
+Because the grant is a Hale struct literal in `dna/org/main.hl`, modifying it is an `organization` change that always requires Board approval.
 
-### Change classes
+### Change Classes
 
-The Leader names a change's class when it plans the ask. When its
-answer names none, the change is an `application` change of an
-appendage, and a change to the organism itself is class `organization`
-whatever the plan called it.
+When the Leader plans an incoming task, it assigns a change class (defaulting to `application` if unspecified; any edit touching `dna/org/` is forced to `organization`, and any edit touching fleet source or `hale.toml` is forced to `topology` via `mutation.topology`):
 
-| class | what it is | decided by, under `OrgPolicy` |
-|---|---|---|
-| `docs`, `refactor`, `feature`, `application` | a change to the application | the Leader when the class is in the grant and the change is under its magnitude; else the Board |
-| `organization` | a change to `dna/org`: a position, a route, the grant | the Board |
-| `constitutional`, `process-policy` | classes the Leader's plan may name | the Board |
-| `topology` | a change to the fleet's shape; a candidate that names a plan or the manifest is re-classed `topology` (`mutation.topology`) | the Board |
+| Change Class | Target Scope | Deciding Authority under `OrgPolicy` |
+| --- | --- | --- |
+| `docs`, `refactor`, `feature`, `application` | Application source code | **Leader** if the class is in `grant.classes`, magnitude `<= max_magnitude`, and no hard boundary is crossed; otherwise **Board** |
+| `organization` | `dna/org/` (positions, routing, grants, models, workflows) | **Board** |
+| `constitutional`, `process-policy` | Constitutional or governance policy changes | **Board** |
+| `topology` | Fleet seed source or `hale.toml` manifest (`mutation.topology`) | **Board** |
 
-With the generated grant, an `application` change escalates to the
-Board. Widen it to `"refactor docs application"` in a reviewed commit
-and the Leader decides those under the magnitude too, with the record
-showing that it did.
+### Semantic Magnitude Vector and Hard Boundaries
 
-### The magnitude vector
+Every candidate is measured from its semantic diff (`hale model diff`) across ten orthogonal dimensions (`dna/core/types.hl`) rather than collapsed into a heuristic confidence score:
 
-Every candidate is measured from its semantic diff on a vector, never
-reduced to a confidence score, because a score would let evidence
-cancel a boundary it must never cancel (`dna/core/types.hl`):
+| Dimension | Condition in Semantic Diff | Weight Added to Sum | Hard Boundary? |
+| --- | --- | --- | --- |
+| `loci` | Each locus declaration added, removed, or modified | `+1` per locus | No |
+| `contract_change` | Any parent-facing contract modified | `+4` | No |
+| `effects_widened` | A locus reaches a new effect class | `+4` | **Yes** |
+| `law_touched` | A constitutional claim is added, removed, or changes outcome | `+6` | **Yes** |
+| `placement_change` | Thread/pool `placement { }` facet changed | `+2` | No |
+| `ownership_crossed` | Locus ownership hierarchy crossed | `+3` | **Yes** |
+| `state_migration` | A locus's `params` fields changed | `+3` | No |
+| `irreversible` | Locus `params` changed or a declaration was removed | `+5` | **Yes** (when combined with `external_blast`) |
+| `external_blast` | Newly reached non-intrinsic effect class | `+2` | **Yes** (when combined with `irreversible`) |
+| `novelty` | `3` until the lineage has applied its first change, then `1` | `+3` or `+1` | No |
 
-| dimension | read from the semantic diff | adds to the sum |
-|---|---|---|
-| `loci` | locus declarations the diff names | 1 each |
-| `contract_change` | a parent-facing contract moved | 4 |
-| `effects_widened` | an effect class newly reached | 4 |
-| `law_touched` | a claim added, removed, or whose result moved | 6 |
-| `placement_change` | the placement facet | 2 |
-| `ownership_crossed` | the ownership facet | 3 |
-| `state_migration` | a locus's params changed | 3 |
-| `irreversible` | params changed, or something removed | 5 |
-| `external_blast` | a newly reached effect class that is not intrinsic | 2 |
-| `novelty` | 3 until the lineage has applied anything, then 1 | its value |
+The four **hard boundaries** (`law_touched`, `effects_widened`, `ownership_crossed`, and `irreversible + external_blast`) can never be auto-released by a grant and always require Board review under `OrgPolicy`.
 
-Four are **hard boundaries** no grant covers: touching law, widening
-effects, crossing ownership, and an irreversible change with an
-external blast.
+### Evidence Scoring and `dispose()` Rules
 
-### The evidence and the disposition
+Before evaluating disposition, any candidate that fails `hale check` or violates a fleet claim is immediately denied (`mutation.deny`). Candidates in seeds without Hale source always require human review.
 
-Evidence is counted, not rated: `check_clean` 1, `verify_clean` 1,
-`tests_pass` 2, `replay_ok` 2, `rollback_rehearsed` 2, and 2 per
-independent review. Before any of it counts, a candidate that does not
-check, or breaks a claim the fleet makes, is denied (`mutation.deny`);
-a seed with no Hale source to check is reviewed by a person whatever
-the grant.
+For passing candidates, mechanical evidence points are summed:
+- `check_clean`: `+1`
+- `verify_clean`: `+1`
+- `tests_pass`: `+2`
+- `replay_ok`: `+2`
+- `rollback_rehearsed`: `+2`
+- Each independent review: `+2`
 
-Then `dispose(grant, class, magnitude, evidence)`, a pure function,
-decides:
+The pure function `dispose(grant, class, magnitude, evidence)` evaluates five rules in order:
+1. Crosses any **hard boundary** -> `review` (`mutation.review`)
+2. `class` is not listed in `grant.classes` -> `escalate` (`mutation.escalate`)
+3. `magnitude.sum > grant.max_magnitude` -> `escalate` (`mutation.escalate`)
+4. `evidence < magnitude.sum + (2 * magnitude.novelty)` -> `stage` (`mutation.stage`)
+5. `grant.review == "pre"` -> `review` (`mutation.review`); otherwise -> `release` (`mutation.release`)
 
-1. a hard boundary → **review**;
-2. the class is not in the grant → **escalate**;
-3. the sum exceeds `max_magnitude` → **escalate**;
-4. the evidence is below the sum plus twice the novelty → **stage**;
-5. `review: "pre"` → **review**; otherwise → **release**.
-
-The disposition is a row (`mutation.review`, `mutation.stage`,
-`mutation.escalate`, `mutation.release`), so a reviewer sees why they
-were asked. Every disposition opens a Review, and only a release under
-a policy that does not block its class is applied before its verdict.
-The mechanical evidence adds up to 8, and a first change in a fresh
-lineage needs at least 9: without an independent review, nothing is
-released before its lineage has applied a change.
+Because mechanical evidence totals at most `8` (`1 + 1 + 2 + 2 + 2`) and a fresh lineage has `novelty = 3` (requiring at least `sum + 6` evidence, which for any non-trivial change is `>= 9`), no candidate in a new lineage is ever auto-released before at least one change has been reviewed and applied.
 
 ### Who is asked
 
-The review policy turns a disposition into a required authority.
-`OrgPolicy` requires the Board for a change that touches law, widens
-effects or crosses ownership, for the four Board classes, and for
-anything escalated; everything else inside the grant is the Leader's,
-which answers with a model call and its reasoning in the record.
-Authorities are ranked `board`, `leader`, `supervisor`, `reviewer`, and
-a higher one satisfies a lower requirement. That authority is the
-fallback: when the positions of the graph that must sign a change are
-held, they sign it, and the Leader never decides it ([The head and the
-face](./head.md)).
+The `review_policy` maps the disposition and change metadata to a required authority rank (`board` > `leader` > `supervisor` > `reviewer`). Under `dna::OrgPolicy`, the Board is required for all hard boundaries, the four Board change classes, and any `escalate` disposition; all other Reviews within the grant are assigned to the `leader` (which evaluates the candidate via an LLM call and records its reasoning in the record).
 
-### Post-review, for what you trust
+When the Postgres memory graph defines active `reviews` edges for the touched files and those reviewer positions are held by people, those human signers take precedence and the Leader never decides the Review ([Route and signers](./head.md#signer-routing-hale-dna-route)).
 
-For small reversible refactors on a codebase with a history, swap the
-policy and loosen the grant for that class:
+### Post-Review Mode for Trusted Refactors (`dna::PostReviewRefactors`)
+
+For mature codebases where small, reversible refactors can be applied immediately and reviewed asynchronously afterward, configure `dna::PostReviewRefactors` with `review: "post"`:
 
 ```hale
 import "vendor/dna" as dna;
@@ -317,57 +223,44 @@ fn trusted_policy() -> dna::PostReviewRefactors {
 fn trusted_boundary() -> dna::AutonomyBoundary {
     return dna::AutonomyBoundary {
         child: "refproj",
-        grant: dna::Grant { child: "refproj", classes: "refactor", max_magnitude: 12, review: "post" }
+        grant: dna::Grant {
+            child: "refproj",
+            classes: "refactor",
+            max_magnitude: 12,
+            review: "post",
+        }
     };
 }
 ```
 
-Use them as `review_policy: trusted_policy()` and `boundary:
-trusted_boundary()` on `dna::Dna`. `PostReviewRefactors` blocks every
-class but `refactor`. A refactor inside the grant, past no hard
-boundary and with enough evidence, is released: applied, expressed and
-observed first, and its Review follows with the question `post-review:
-applied m4 (refactor): …?`. A `reviewer` suffices to answer it. Reject
-it and the applied candidate is rolled back.
+Pass `review_policy: trusted_policy()` and `boundary: trusted_boundary()` to `dna::Dna`. `PostReviewRefactors` blocks pre-verdict release for every class except `refactor`. A qualifying `refactor` is applied, expressed, and observed in the runtime window immediately, while opening a post-review (`post-review: applied m4 (refactor): …?`) requiring `reviewer` authority. If the reviewer rejects the Review, the organism automatically rolls the genome back to the base commit.
 
-### Grants above grants, and money
+### Grant Ceilings and Monetary Grants
 
-`dna::Dna` takes a second boundary, `ceiling`, which the generated
-organization leaves unset. With one, the Leader's grant is read
-through it at every assessment: the classes both allow, the smaller
-magnitude, the stricter review. A grant written wider than its ceiling
-is refused in the record at birth (`grant.refused`) and bound by the
-ceiling.
+- **Parent Ceiling (`ceiling`):** `dna::Dna` accepts an optional `ceiling: dna::AutonomyBoundary`. When set, the Leader's `boundary.grant` is intersected with `ceiling` on every evaluation (taking the intersection of `classes`, the minimum `max_magnitude`, and the stricter `review` mode). If a grant is configured wider than its `ceiling`, `dna::Dna` logs `grant.refused` at startup and clamps it to the ceiling.
+- **Monetary Grants:** By default, a `dna::Grant` specifies no currency and permits zero financial spend. To authorize bounded expenditure:
+  ```hale
+  import "vendor/dna" as dna;
 
-A grant can also delegate money, and names nothing by default, so a
-grant that names no currency lets nothing be spent:
+  fn books_grant() -> dna::Grant {
+      return dna::Grant {
+          child: "books", classes: "docs", max_magnitude: 4, review: "pre",
+          amounts: "USD 500.00",
+          window_amounts: "USD 2000",
+          window: "week",
+          counterparties: "suppliers",
+          routes: "operating-account",
+          expires: 1798761600
+      };
+  }
+  ```
+  `amounts` caps single-operation spend, `window_amounts` caps cumulative spend per `window`, and `expires` sets a Unix timestamp expiration (`0` for no expiration). The spine reserves funds against the grant before execution (`spend.reserved`), and `dna/org/law.hl` forbids any position from reaching a `money` effect outside the substrate.
 
-```hale
-import "vendor/dna" as dna;
-
-fn books_grant() -> dna::Grant {
-    return dna::Grant {
-        child: "books", classes: "docs", max_magnitude: 4, review: "pre",
-        amounts: "USD 500.00",
-        window_amounts: "USD 2000",
-        window: "week",
-        counterparties: "suppliers",
-        routes: "operating-account",
-        expires: 1798761600
-    };
-}
-```
-
-`amounts` is per operation, `window_amounts` per `window`, `expires`
-in unix seconds (0 never). The substrate reserves a spend against the
-grant before it is made (`grant.reserved`), and the law forbids any
-position from reaching a money effect except through it.
+---
 
 ## The law
 
-`dna/org/law.hl` is what no position may ever do, as the compiler sees
-it. The organization adopts it in its main (`claims { adopt Org; }`);
-the application keeps its own constitution:
+`dna/org/law.hl` encodes the organization's non-negotiable architectural invariants as a Hale `constitution` adopted by `dna/org/main.hl` (`claims { adopt Org; }`):
 
 ```hale,fragment
 group board = { dna::Board };
@@ -396,142 +289,80 @@ constitution Org {
 }
 ```
 
-Nothing is applied except through the substrate's gate after a settled
-Review; the editor reaches no git, no worktree gateway, no apply and no
-memory; the Leader decides and never commits; credentials stay sealed;
-money moves only through the substrate. These hold because the
-compiler checks them against the organization you actually wrote,
-following bus edges as well as calls.
+`hale check` verifies these claims statically across both direct method calls and bus topic subscriptions:
+- **Editors** (`SourceEditor`, `WorktreeTools`) can never commit to the repository, manage worktrees, apply genome mutations, or modify knowledge.
+- **The Leader** can never write to the repository or worktrees directly—its verdicts only reach `LocalGit` through the `substrate` (`dna::Dna`) gate (`avoiding substrate`).
+- **Credentials** (`CredentialSource`, `HostedCredential`) are confined inside `@sealed` loci (`require sealed(all credentials)`).
+- **Monetary effects** can only be reached through `dna::Dna`.
 
-The `avoiding substrate` clauses are what make "the Leader decides, the
-substrate acts" a checked fact. The Leader's verdict does reach a
-repository, through the bus and `dna::Dna`, and only that way. Drop the
-clause from `leader_never_commits` and the check shows the path:
+If any code change wires a forbidden handle or bus path (or if an `avoiding substrate` gate is bypassed), `hale check dna/org` fails at compile time and prints the exact call/bus witness chain:
 
 ```text
 $ hale check dna/org
 …/dna/org/law.hl:31:5: type error: claim `leader_never_commits` violated: `leader` reaches `effects(repo_write)` — witness: `dna::Leader::on_requested` -(publishes "dna::ReviewVerdict")-> `dna::Review::on_verdict` -(publishes "dna::ReviewSettled")-> `dna::Dna::on_review_settled` -> `dna::Dna::rollback_to_base` -> `dna::MutationGateway::rollback` -(dispatches dna::Repository.rollback)-> `dna::LocalGit::rollback`
-…
 ```
 
-Hand the editor a repository in `main.hl` and the build fails the same
-way, with the path as its witness, before anyone reviews anything. Add
-clauses of your own in the same block; the file asks you not to weaken
-these. A change that moves a claim is `law_touched`, a hard boundary,
-and the Board's whatever its class. The vocabulary is [Claims & the
-law](../claims.md); how an application states its own law, and how the
-two entrypoints are checked together, is
-[Constitutions](../constitutions.md).
+See [Claims & the law](../claims.md) and [Constitutions](../constitutions.md) for the full claim language.
+
+---
 
 ## Positions and `fill`
 
-The Board and the Leader are loci in `dna/org/main.hl`. The positions
-people hold — a board, a reviewer of a part, a dev, an operator — are
-nodes of the organism's graph, and who holds each is a `holds` edge,
-proposed and ratified like a practice ([Memory and the
-record](./memory.md) has the graph; `hale dna show org` reads it from
-memory). `init` proposes the positions its structure implies, for a
-repository ([DNA, the building block](./dna.md#a-repository-instead-of-one-application))
-and for an application alike: the board, the application's `dev` and
-`reviewer`, each as a proposal until the Board ratifies it with
-`hale dna review holes approve`. Before it does, there is nothing to fill:
+While `dna::Board` and `dna::Leader` are loci in `dna/org/main.hl`, organizational positions (`board`, `<part>/dev`, `<part>/reviewer`, `<deployment>/operator`) are nodes in the Postgres memory graph (`hale dna show org`), and assigning a person or firm to a seat creates a ratified `holds` edge ([Memory and the record](./memory.md)).
+
+When `hale habitat graft` initializes a project, it proposes the structural positions implied by the codebase under the `holes` Review group. Until the Board ratifies those holes (`hale dna review holes approve`), the positions do not exist in the graph and cannot be filled directly:
 
 ```text
 $ hale dna fill board alice
 hale dna: fill: `position:board` is no position or organization the record states or proposes
 ```
 
-To seat people in the holes as `init` opens them, give `init` a pack
-that fills them ([A pack at `init`](#a-pack-at-init)): one verdict then
-ratifies the holes and their holders.
+(To propose and fill initial holes in a single step at graft time, use `hale habitat graft --with <pack>`—see [A pack at the graft](#a-pack-at-the-graft).)
 
-For a position the record states or proposes, ask the organization for
-a holder:
+### Assigning a Holder (`hale dna fill`)
+
+Once a position is stated or proposed in the record, propose a holder with:
 
 ```sh
 hale dna fill <position> <holder> [project] [--as <who>]
 ```
 
-A position's node can carry **equipment**, the API roles its holder is
-fitted with (`equipment.roles`): `init` derives them from the
-description the toolchain exports for a contract (`spec/<Stem>.description.json`,
-or `hale check --api` for the surfaces and streams an application serves;
-`requires: [editor]` lands on `<app>/dev`, `requires: [reviewer]` on
-`<app>/reviewer`) and `fill` prints them (`equipment: editor`), and `hale dna show org` lists them
-with the position's mandate (`{mandate: ratified; roles: editor}`). Granting a
-token that carries them is not done by `fill`.
+- **Validation:** `<holder>` must be an active (non-retired) person known to the record or a member of an owning organization, and never a reserved system name.
+- **Equipment (`equipment.roles`):** When a position governs an API contract (`spec/<Stem>.description.json` or `hale check --api`), the graft attaches the contract's `requires` roles as position equipment (`requires: [editor]` on `<app>/dev`, `requires: [reviewer]` on `<app>/reviewer`). `hale dna fill` prints `equipment: <roles>`, and `hale dna show org` displays `{mandate: ratified; roles: editor}` (issuing an OIDC token for those roles remains the identity provider's responsibility).
+- **Ratification:** `hale dna fill` writes a `hold.requested` row, and the organization opens a Board Review under the `holds` group. Because seating a person is a governance action rather than a code change, the person who proposed the fill may also approve the Board Review (`hale dna review holds approve`).
+- **Reviewer / Developer separation:** A part's `dev` and `reviewer` positions cannot be held by the same person. In single-user local mode (`dna.trust = local`), `fill` prints a warning; on a shared record, both the CLI and Postgres memory refuse the hold (`hold.refused`).
+- **Multi-firm ownership:** On a shared record across multiple firms, `fill` also assigns position ownership to an organization and enrolls people into an organization (a position may have at most one owning organization, and a person may belong to at most one organization):
+  ```sh
+  hale dna fill org/collections organization:north   # organization:north owns position:org/collections
+  hale dna fill organization:north bob               # bob is a member of organization:north
+  ```
 
-The CLI checks first: the holder must be a person the record knows (a
-row in their name, or an organization's member) who has not retired,
-and never a name the organism writes as. The request is a
-`hold.requested` row in your name; the organization answers with a
-Board Review, listed by `hale dna review` under `holds`. Whoever holds
-the Board decides it, you included if that is you: a governance proposal
-is the one exception to the rule that a candidate's author may not
-review it, since seating someone is not reviewing your own work (a change
-to the code still needs someone other than its author, even one the
-Board must approve):
+### Opening a New Position (`hale dna position open`)
 
-```text
-proposed alice to hold position:board: the Board ratifies it as k:… (`hale dna review` lists it under `holds`)
-```
-
-A part's `reviewer` and its `dev` are never the same holder. While you
-work alone (`dna.trust = local`) that is a warning; on a shared record
-it is refused, by the CLI and again where memory takes the ratified
-hold (`hold.refused`).
-
-On a record several firms share, `fill` also says which firm owns a
-position and who belongs to a firm, both `holds` edges:
+To propose a new position and its mandatory mandate at runtime:
 
 ```sh
-hale dna fill org/collections organization:north   # north owns org/collections
-hale dna fill organization:north bob               # bob is north's member
+hale dna position open api/steward \
+    --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" \
+    --under api \
+    --text "keeps the list's api"
 ```
 
-A position has one owning organization, and a person belongs to one at
-most.
+`--mandate` is required, and `--under` must name an existing seed, work part, position, or process in the graph. The organization opens a single Board Review under `positions` that ratifies both the `position:api/steward` node and its bound mandate together.
 
+### Structural Batch Operations (`hale dna apply` and `hale dna vacate`)
 
-### Opening a position
-
-A position the graph does not state yet is opened through the
-organization, as a fill is:
-
-```sh
-hale dna position open api/steward --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --under api --text "keeps the list's api"
-```
-
-The mandate is required: what the position decides, what it may not
-do, what it cites and what it escalates. `--under` names the part it
-unfolds from; a bare name is the seed, work part, position or process
-the graph states by that name, and a name the graph does not state is
-refused. The organization proposes the position's node and its mandate
-as one Board Review, listed under `positions`:
+Instead of opening separate Reviews for every position, mandate, and holder, you can group structural mutations into a **batch file** and propose them as a single atomic Board Review (`changes` group):
 
 ```text
-proposed opening position:api/steward with its mandate: the Board ratifies it as k:… (`hale dna review` lists it under `positions`)
-```
-
-Ratifying it ratifies both. A name the graph already states, or one
-asked twice, is refused. Once it is ratified, `hale dna fill` gives it a
-holder.
-
-### Changing several things at once
-
-A team is several positions and the people who hold them. Opening and
-filling each one is a Review apiece; a **batch** proposes them all as one,
-and the Board decides it once. Write the steps in a file:
-
-```text
-# the api team
+# team.batch — the api team
 open api/dev | Decides: how the api is built. May not: sign its own changes. Cites: the contract. Escalates: to the Board.
 open api/reviewer under position:api/dev | Decides: whether a change is ready. May not: write it. Cites: the change. Escalates: to the Board.
 fill api/dev ada
 fill api/reviewer bo
 ```
 
-and read what it would do before proposing it:
+Preview the exact graph diff before proposing:
 
 ```sh
 hale dna apply team.batch --dry-run
@@ -548,186 +379,94 @@ hale dna apply team.batch --dry-run
 nothing proposed (--dry-run)
 ```
 
-A step may also take a holder out: `vacate api/dev ada`. On its own,
-`hale dna vacate api/dev ada` proposes that one step the same way; the
-position stays, and the hold goes once the Board ratifies it.
+ Run `hale dna apply team.batch` (without `--dry-run`) to propose the batch, and ratify it with `hale dna review changes approve`. If the organization graph changes before the Board decides the Review in a way that invalidates any step, approving the Review refuses the entire batch atomically.
 
-`fill * ada` fills every seat the batch leaves vacant: each position the
-organization would then state with a mandate and no holder (the batch's
-own included). It is taken after every other step, so `fill api/dev bo`
-beside it keeps that seat for bo, and the Review lists the fills it
-stands for, one a seat.
+#### Complete Batch Step Vocabulary
 
-Without `--dry-run`, `apply` proposes it as one Review, listed under
-`changes`; `hale dna review changes approve` ratifies every step of it
-together. A batch is checked whole before anything is written: a fill
-of a position nobody opens, a position opened twice, an `under` naming
-nothing, and the batch is refused with the step that is wrong. The
-order of the steps does not matter. If the organization changed before
-the Board decides, so that the batch no longer applies (one of its
-positions was opened meanwhile), approving it refuses it whole, and
-nothing of it lands: propose it again against the organization as it
-is.
+| Batch Statement | Effect on Organization Graph |
+| --- | --- |
+| `open <pos> [under <part>] \| <mandate>` | Opens `position:<pos>` and binds `<mandate>` to it. |
+| `fill <pos> <holder>` | Assigns `<holder>` to `position:<pos>`. |
+| `fill * <holder>` | Evaluated last: assigns `<holder>` to every position in the resulting graph that has a mandate and no holder. |
+| `vacate <pos> <holder>` | Removes `<holder>` from `position:<pos>` while keeping the position open (also available standalone via `hale dna vacate <pos> <holder>`). |
+| `practice <name> [for <pos>] \| <text>` | Proposes a practice (optionally bound to `<pos>`). Skips if already in force with identical text. |
+| `law <name> \| <text>` | Proposes a practice as organizational law. |
+| `idea <name> [for <pos>] \| <text>` | Proposes a knowledge node. |
+| `retire-practice <name>` | Retires an active practice. |
+| `assign <pos> reviews <target>` / `unassign …` | Adds or removes a `reviews` edge (e.g., `assign api/reviewer reviews contract:spec/todo.md`). |
+| `merge <src-pos> into <dst-pos>` | Transfers all holders and `reviews` edges from `<src-pos>` to `<dst-pos>`, then closes `<src-pos>`. |
+| `split <pos> into <pos-a> <pos-b>` | Replaces `<pos>` with `<pos-a>` and `<pos-b>`, copying the original mandate to both for subsequent amendment. |
+| `close <pos>` | Closes `<pos>` and removes its holders and `reviews` edges (`position:board` can never be closed). |
+| `expose seed:<name> as contract:<path>` | Declares that `seed:<name>` serves `contract:<path>`. |
+| `depend seed:<name> on contract:<path>` | Declares that `seed:<name>` consumes `contract:<path>`. |
+| `externalize seed:<name>` | Removes `seed:<name>` from the organism while retaining the organism's dependency on its contract. |
+| `internalize contract:<path> as seed:<name>` | Brings an external contract inside the organism as `seed:<name>`. |
 
-### Reshaping the organization
+---
 
-The same file takes the operations that change a structure that exists:
+### Nursery Packs (`hale dna pack`)
 
-```text
-assign api/reviewer reviews contract:spec/todo.md
-merge api/reviewer into api/dev          # holders and reviews carry over, then api/reviewer closes
-split api/dev into api/frontend api/backend
-close ops/oncall
-expose seed:billing as contract:spec/billing.md
-depend seed:web on contract:spec/billing.md
-externalize seed:billing                 # the part leaves; the organism depends on its contract
-internalize contract:spec/billing.md as seed:billing
-```
-
-Each is a step like `open` or `fill`, so several of them are one Review,
-and the dry run shows what they add and take out: `reviews` lines for
-what a position signs, `part` lines for the parts, `serves`, `consumes`
-and `outside` lines for who meets at a contract. A split starts both new
-positions from the old one's mandate, for the Board to amend. Closing a
-position takes its holders and reviews with it; the Board's position is
-never closed.
-
-### Packs
-
-A **pack** is a batch someone wrote once to be adopted many times, with
-blanks to fill: a dev team for a part, a small startup, a team that ships
-no code, a founder who holds every seat. Packs come from a **nursery**, a directory or a git repository
-with a `nursery.toml` index at its root; the toolchain carries one.
+A **pack** is a parameterized batch template (`<param>` placeholders and optional `? ` lines that are omitted when their parameter is unset) stored in a **nursery** (a directory or Git repository containing a root `nursery.toml` index). The Hale toolchain embeds a built-in nursery containing standard packs (`standard`, `founder`, `dev-team`, etc.).
 
 ```sh
 hale dna pack list
 hale dna pack show dev-team --set part=api
 hale dna pack apply dev-team --set part=api --set dev=ada --dry-run
 hale dna pack apply dev-team --set part=api --set dev=ada
+hale dna pack retire dev-team
 ```
 
-`show` prints the steps with the blanks filled; `apply` proposes them as
-one Review, named for the pack, like any batch. A pack may open
-positions, fill them and propose the practices its people work by
-(`practice <name> | <text>` is a batch step too). A line marked `? ` is
-left out when a blank it uses is not given, so `--set dev=ada` fills the
-dev's seat and leaving out `reviewer` leaves that seat open. Another
-nursery is named with `--from`: a directory, or a git URL with `#<rev>`
-for the revision to read. A git nursery's packs are adopted only once
-the Board trusts it: `hale dna nursery add <url>` proposes that, and
-`hale dna nursery list` shows the ones it trusts. The Review records which pack it was, its
-digest and where it came from.
+- **Builtin `standard` pack:** Proposes standard engineering practices as law (starting with structured logging via `std::log`) plus an upstream watch template for each external dependency ([Upstream watches](./senses.md#upstream-watches)).
+- **External nurseries (`--from <dir|git-url[#rev]>`):** Git nurseries must be trusted by the Board before their packs can be applied (`hale dna nursery add <url>`, inspected via `hale dna nursery list`). Every pack Review records the pack name, digest, and nursery source.
+- **Retiring a pack (`hale dna pack retire <name>`):** Opens a single Review that reverses the most recent ratified adoption of `<name>` (closing opened positions, vacating filled seats, removing added review edges, and retiring practices that are still present).
 
-`hale dna pack retire dev-team` undoes the latest adoption the Board
-ratified, as one more Review: the positions the pack opened close, the
-seats it filled and the reviews it assigned elsewhere are taken back,
-and its practices retire. Anything that has already gone is left out.
+### A pack at the graft
 
-### A pack at `init`
-
-`hale dna init --with <pack>` proposes a pack in the same breath as the
-holes `init` opens, and the pack may fill those holes:
+Because `hale habitat graft` proposes initial positions (`holes`) as pending Reviews rather than immediately ratified nodes, a normal batch cannot fill `position:board` until `holes` is approved. Passing `--with <pack>` at graft time (or `--on-holes` to `hale dna apply` / `hale dna pack apply`) plans the batch **on top of the pending hole Reviews**:
 
 ```sh
-hale dna init . --with founder --set founder=riley --as riley
-hale dna review all approve --as riley
+hale habitat graft . --with founder --set founder=alice --as alice
+hale dna review all approve --as alice
 ```
 
-The holes are proposals until the Board ratifies them, so a batch planned
-against the record alone finds no `board` to fill. `init --with` plans
-the pack **on** them instead: as though they were ratified. The batch
-names the pending Reviews it stands on, and the dry run says so:
+`hale dna review all approve` ratifies `holes` before `changes`, seating `alice` across the newly ratified positions in a single pass. If any underlying hole Review is rejected by the Board, the dependent pack Review is automatically refused as stale.
 
-```text
-+ holds position:board riley
-+ holds position:api/dev riley
-…
-5 line(s) added to the organization, 0 taken out, 19 unchanged
-planned on 10 pending Review(s) (k:c5a61bce0f4b, …): ratified after them, refused whole if any is not
-```
-
-`review all approve` decides `holes` before `changes`, so one verdict
-ratifies the holes and then the pack. A pack approved before its holes
-waits for them; if the Board declines one of them, the pack is refused
-whole as stale, and nothing of it lands. A pack that opens a position
-`init` already proposes is refused as soon as it is proposed.
-`hale dna apply <file> --on-holes` and `hale dna pack apply … --on-holes`
-plan the same way while init's holes are still pending.
-
-### From the head's API
-
-The same changes are commands of the head, for a UI or any program: every
-mutation is a head command, and the UI is a client of the generated
-surface. `Commands::open_position`, `Commands::fill` and
-`Commands::apply_batch` write the rows `position open`, `fill` and `apply`
-write, in the caller's name; `Commands::preview_batch` is the dry run, as
-data. They need a seat (any position), and the organization answers them
-as it answers the CLI. [The head](./head.md#commands-and-their-receipts)
-has the shapes.
+---
 
 ## How the organization grows
 
-The org chart grows the way the code does: by a proposal the Board
-reviews. The signal is **pressure**, something seen more than once
-([Senses and reflexes](./senses.md) has where it comes from):
+Just as application code evolves through reviewed candidates, the organization's own topology in `dna/org/main.hl` grows in response to operational signals:
 
-```sh
-hale dna pressure raise ingest "the ingest worker lags behind the queue every evening"
-hale dna pressure
-```
+1. **Persistent Pressure (`appendage_threshold = 3`):**
+   ```sh
+   hale dna pressure raise ingest "the ingest worker lags behind the queue every evening"
+   hale dna pressure
+   ```
+   When a single source raises pressure three times, the organization records `appendage.proposed` and notifies the Board ([Senses and reflexes](./senses.md)). When `initiative: true` (the default on `dna::Dna`), the organism automatically prepares an `organization` mutation adding a dedicated `dna::Leader` locus for that domain alongside the primary Leader in `dna/org/main.hl`, verifies it, records `appendage.candidate`, and submits it to the Board for review. Once applied and expressed, the observation window evaluates the declared fitness signals and records `pressure.remeasured`. (Set `initiative: false` on `dna::Dna` to log `appendage.proposed` without generating a candidate.)
+2. **Scheduled Optimize Pass (`optimize-walk`):** Once the Board ratifies `operating/optimize-cadence`, the Leader runs a daily pass over structural signals in the record and proposes at most one small organizational refinement or logs `org.reviewed` ([Schedules](./schedules.md)).
 
-When one source has raised pressure three times (the concerns family's
-`appendage_threshold`), the organization writes `appendage.proposed` —
-"an organ for `<what>` is proposed, not created" — and tells the Board.
-With `initiative` on, which is `dna::Dna`'s default, it goes one step
-further: it asks for an `organization` change to its own seed, whose
-objective is a `dna::Leader` beside the existing one in `main.hl`,
-named for what it oversees, with `models: leader_models()`. That
-candidate is verified like any other, recorded as
-`appendage.candidate`, and is the Board's to decide. Applying it asks
-the host to rebuild and restart the organization with the position in
-it, and the window then judges the new organization. Set `initiative:
-false` and the proposal stays a note for the Board.
-
-When the window judges an applied change, the record also gets
-`pressure.remeasured`: the fitness signals the proposal declared, and
-what the window saw.
-
-Growth is also walked on a cadence: the `optimize-walk` workflow, whose
-schedule the practice `operating/optimize-cadence` declares, proposes
-one small change to the organization or records that the state is
-clean ([Schedules](./schedules.md)).
+---
 
 ## Keeping the toolchain's part current
 
-After you upgrade `hale`, run:
+After upgrading the `hale` binary, update your project's vendored runtime and lockfile:
 
 ```sh
 hale dna upgrade
 ```
 
-It rewrites `vendor/dna` from the binary and re-pins `hale.lock`:
-
 ```text
 vendor/dna: <n> file(s) rewritten, <m> unchanged; hale.lock pins toolchain <version>, embedded dna <digest>. dna/ untouched.
 ```
 
-Your own files under `dna/` stay yours. What `upgrade` does touch there
-is generated, or missing:
+### What `hale dna upgrade` Updates vs. Preserves
 
-- It rewrites `dna/org/workflows.hl` to the current shape. Any
-  definitions an older one held are named, for you to move into
-  `dna/org/own_workflows.hl`.
-- It rewrites `dna/compose.yaml` and `dna/nats.conf`, and draws the
-  nerves' passwords anew into the vault and `dna/nats.secrets.conf`.
-- It creates what an older organization lacks: `models.hl`,
-  `work.hl`, `charter.hl`, `own_workflows.hl`, `dna/senses.yml`.
-- In `dna/org/main.hl` it rewrites only lines an older generator wrote
-  exactly (the loop's tick, the Board's field, the retired owners
-  field). Everything else it names as a `note`, with the line to
-  write, and leaves to you.
-- It proposes again each seeded practice whose text changed, each
-  superseding the version in force, one Board Review each. A practice
-  whose earlier replacement is still before the Board waits.
-- With `HALE_DNA_MEMORY_DSN_OWNER` set, it applies memory's schema for
-  this toolchain ([Memory and the record](./memory.md)).
+| Target | Behavior During `hale dna upgrade` |
+| --- | --- |
+| `vendor/dna/` & `hale.lock` | Re-materializes `vendor/dna/` from the current binary and updates `[dna] toolchain` in `hale.lock` and `.hale/dna/embedded.digest`. |
+| `dna/org/workflows.hl` | Rewritten to the current baseline catalog. Any custom definitions found in an older `workflows.hl` are listed so you can move them to `dna/org/own_workflows.hl`. |
+| Missing `dna/org/*.hl` files | Creates `models.hl`, `work.hl`, `charter.hl`, or `own_workflows.hl` if missing from an older project; never overwrites your existing edits in those files. |
+| `dna/org/main.hl` | Updates only exact, unmodified lines produced by an older generator (tick loop, Board field, retired owners field); prints `note:` lines for any manual additions you may want to adopt. |
+| Legacy checkout service files | Removes obsolete `dna/compose.yaml`, `dna/nats.conf`, `dna/nats.secrets.conf`, `dna/postgres.secrets`, and `dna/senses.yml` (allocations now live in the local habitat under `~/.local/share/hale/habitat/local/allocations/<id>/`) and provisions fresh NATS credentials into the vault. |
+| Seeded practices & library | Proposes superseding Board Reviews for any seeded `design`, `operating`, or `using` practice whose text changed in the new toolchain, plus new `library` families. |
+| Postgres memory schema | When `HALE_DNA_MEMORY_DSN_OWNER` is set, migrates the Postgres memory schema to the current toolchain version (`hale habitat migrate` migrates local habitat allocations). |

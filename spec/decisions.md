@@ -3769,6 +3769,63 @@ It makes the author spell around a restriction the parser does not
 need. *Admitting the words as names in declaration positions only.*
 A local named `epoch` that cannot be read back is not a name.
 
+### F.44 — A fleet is a locus kind, and its routes are derived
+
+**Problem.** A deployment of several programs was a plan JSON naming
+artifacts and routes by hand (GH #408): a second format beside the
+source, routes that restated what each program's topics and bindings
+already said, and nothing `hale check` read.
+
+**Decision.** `fleet locus NAME { params placement bindings claims }`
+declares the deployment in source, a locus KIND beside `main`. It is a
+locus kind, not a typed param, because a fleet is checked as one graph
+(the routes between its instances, the claims across them) and never
+runs itself; a param is a thing a running program holds. Its params
+are other seeds' `main` loci through the seed's imports, its placement
+a default host or replica count per instance (the habitat's allocation
+rows bind instances to hosts), its bindings the subjects that wire the
+instances. A route is derived, never written: from every instance whose
+artifact publishes a bound subject to every instance that subscribes
+it, each through its own main's binding. The seeds are composed as
+artifacts, never merged as source, so the fleet is never a super-main.
+The `deployment` family's rows are the derivation
+(spec/verification.md § Fleet composition).
+
+**Considered and rejected.** *A fleet as a typed param of a main*
+(the feature-as-param rule): a param is held by a running program, and
+a fleet has none. *Routes written in the fleet*: they restate the
+instances' own topics and bindings, and the restatement is where a
+plan and its programs drifted apart.
+
+### F.45 — The fleet seed is the one input; the plan is an export
+
+**Problem.** After F.44 a deployment had two inputs, the fleet seed and
+the plan JSON it replaced, and every consumer (composition, signing,
+the renderer, the DNA) read the plan. A fleet seed checked as a merged
+program also merged the seeds it imports, the super-main F.44 rules
+out: their world law, their constitutions and their wire subjects met
+in one check.
+
+**Decision.** A fleet seed is the only input. `hale fleet check|dump`,
+`[fleets]`, the DNA's `[dna] fleet` and `hale deploy render` take the
+seed; the plan JSON is written by `hale fleet export <seed>` for whoever
+reads one, and read by nothing. A signature covers the export's exact
+bytes. A fleet seed is never merged with the seeds it imports: its laws
+are judged over its own source and what each import declares, and each
+instance's seed is checked as its artifact is cut. Placement is the
+record's: the source declares each instance's default host (one
+instance per named host, ids `<param>-<i>`), the habitat's allocation
+rows override it per instance, and a render reads both and writes one
+description per host. The fleet's binding is the route's configuration:
+an instance whose own main does not bind the subject still joins the
+route (F.44 refused it), and one that binds it must bind it over the
+route's transport kind.
+
+**Considered and rejected.** *Keeping the plan as an input beside the
+seed*: two inputs drift, and every consumer pays for both. *Binary
+attestation*: a fleet seed names no binaries; what a host runs is the
+build of the seed, observed at runtime.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

@@ -1,0 +1,49 @@
+// tests/hale/str_find_test.hl — `std::str::find(v, sub, start)`: the
+// view's `index_of_from`, the length its `n`, so a scan pays the distance
+// to each hit and never the whole text again; and `range_index_of`, the
+// length-taking primitive it is built on.
+
+fn count_of(s: String, needle: String) -> Int {
+    let v = std::str::bytes_view(s);
+    let mut n = 0;
+    let mut at = std::str::find(v, needle, 0);
+    while at >= 0 {
+        n = n + 1;
+        at = std::str::find(v, needle, at + len(needle));
+    }
+    return n;
+}
+
+fn main() {
+    let v = std::str::bytes_view("a=1&b=2&c=3");
+    std::test::assert_eq_int(std::str::find(v, "&", 0), 3, "from 0 is index_of");
+    std::test::assert_eq_int(std::str::find(v, "&", 3), 3, "a hit at the start offset");
+    std::test::assert_eq_int(std::str::find(v, "&", 4), 7, "the next one, indexed into the text");
+    std::test::assert_eq_int(std::str::find(v, "&", 8), -1, "none after the last");
+    std::test::assert_eq_int(
+        std::str::find(v, "a=", 1),
+            -1,
+        "a needle before the start is not found",
+    );
+    std::test::assert_eq_int(std::str::find(v, "&", -5), 3, "a negative start is 0");
+    std::test::assert_eq_int(std::str::find(v, "&", 99), -1, "a start past the end finds nothing");
+    std::test::assert_eq_int(std::str::find(v, "", 4), 4, "an empty needle is found at the start");
+    std::test::assert_eq_int(std::str::find(v, "", 11), 11, "an empty needle at the end");
+    std::test::assert_eq_int(std::str::find(v, "", 12), -1, "and not past it");
+    std::test::assert_eq_int(std::str::find(v, "c=3", 0), 8, "a needle ending at the last byte");
+    std::test::assert_eq_int(std::str::find(v, "c=34", 0), -1, "a needle running past the end");
+    std::test::assert_eq_int(count_of("abababa", "aba"), 2, "a scan steps past each hit");
+    std::test::assert_eq_int(count_of("", "x"), 0, "nothing in the empty string");
+    std::test::assert_eq_int(count_of("x\ny\n\nz", "\n"), 3, "a line scan");
+    // the primitive searches only the `n` bytes it is given
+    std::test::assert_eq_int(
+        std::str::range_index_of("a=1&b=2", 3, "&", 0),
+            -1,
+        "a hit past n is not found",
+    );
+    std::test::assert_eq_int(
+        std::str::range_index_of("a=1&b=2", 4, "&", 0),
+        3,
+        "a hit inside n is",
+    );
+}

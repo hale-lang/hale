@@ -145,6 +145,9 @@ pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
     if o.no_ownership_bubble {
         fp.push_str(";no_ownership_bubble");
     }
+    if o.no_xpool_backstop {
+        fp.push_str(";no_xpool_backstop");
+    }
     if o.no_ts_shim {
         fp.push_str(";no_ts_shim");
     }
@@ -259,6 +262,7 @@ mod tests {
             ("no_bus_devirt", Box::new(|o| o.no_bus_devirt = true)),
             ("lifecycle_trace", Box::new(|o| o.lifecycle_trace = true)),
             ("no_ownership_bubble", Box::new(|o| o.no_ownership_bubble = true)),
+            ("no_xpool_backstop", Box::new(|o| o.no_xpool_backstop = true)),
             ("no_ts_shim", Box::new(|o| o.no_ts_shim = true)),
             ("ts_shim", Box::new(|o| o.ts_shim = Some(PathBuf::from("/a.a")))),
             ("zig", Box::new(|o| o.zig = Some("/opt/zig".into()))),

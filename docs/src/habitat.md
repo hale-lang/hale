@@ -1,156 +1,467 @@
-# The habitat, as designed
+# The Habitat Layer: Multi-Organism Infrastructure and Isolation
 
-> **This chapter is a design, not a description of the tree.** It collects the direction settled in two design reviews:
-> - the habitat RFC (GH #602), delivered piece by piece and continued in the organism's map (GH #990);
-> - the authority note and final direction of the compiler RFC (GH #1212).
->
-> The last section lists which pieces exist today, each with a link. Anything not in that list is not built.
+A **habitat** is the root DNA organism shipped with the Hale toolchain (`spec/habitat.md`). Its role is to provision, supervise, and place infrastructure allocations (Postgres memory, NATS JetStream nerves, Prometheus senses stores, and vault roles) for child organisms. Every project organism is born as a child of the habitat via `hale habitat graft`—the habitat itself is the only organism booted without a parent (`hale habitat up`).
 
-## A living habitat for people and software
+```sh
+# 1. Start the local habitat organism, its Compose services, and its operator UI
+#    (named at its birth; `local` when no --name is given, and kept after)
+hale habitat up --name homelab
 
-An organism has identity, responsibilities, memory, resources, procedures and a lifecycle. Its activity maintains a **habitat**: the shared records, tools, channels and practices the work runs in. The two are perspectives, not kinds of thing. One effort's organism can be the habitat of several others, and the relationships between them need not form a tree.
+# 2. Graft a new application, or a sapling from a nursery the habitat trusts
+hale habitat graft my-service
+hale habitat nursery add https://github.com/hale-lang/voice
+hale habitat graft voice
 
-The promise to a person is: start around the work you are responsible for, connect the people and services involved, and grow a system that carries work through to evidenced outcomes while it improves its own practices and software.
+# 3. Inspect all running allocations, schema versions, and host placements
+hale habitat status
+```
 
-That holds at every scale:
-- an individual contributor, for their own responsibilities inside an employer;
-- a lead for a team, or a director across teams;
-- a founder for a venture;
-- firms cooperating on one piece of work.
+> [!NOTE]
+> **Implemented Today vs. Architectural Design:** This chapter covers both the production habitat commands shipped today (`hale habitat up`, `graft`, `migrate`, `nursery`, `host`, `handover`, `brief`, `status`, `down`) and the broader multi-record architecture (`runs_under` principal projections, cross-record `extract`/`absorb`, and financial books). See [Implementation Status](#implementation-status) at the end of this page for a complete feature matrix.
 
-It must never require incorporation, control of an employer's systems, or a new accounting platform. Existing reporting and approval channels stay usable.
+---
 
-A habitat is not a new compiler primitive, a tenant or a legal entity. The org chart is one view of it among several.
+## How the Habitat Organism Works
 
-## Records are the unit of isolation
+Unlike an application organism that supervises a user-written application heart, the habitat's heart slot is empty: what it keeps alive are the infrastructure backends and bodies of its child organisms.
 
-The unit of isolation is **a repository and its record**, with the backends attached to it (memory, nerves, secrets, the senses), scoped to that record.
-- One person can take part in several records, and several people can share one.
-- A clone is a replica of a record, not a new access domain.
-- Moving or cloning a record keeps its identity and provenance.
+- **Fixed Genome and Law:** The habitat's genome is embedded in the `hale` binary with fixed positions (`placement`, `backends`, `identity`, `admission` from the `habitat` nursery pack) and the `standard` nursery pack as its law.
+- **Root Bootstrap (`hale habitat up`):** The habitat is the sole organism born without a parent. Running `hale habitat up` supports two profiles:
+  - `local` (built today): Provisions a long-lived Docker Compose project (`hale-habitat-local-<hash>`) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, and starts the habitat's backing services alongside its own `body` (`hale dna dev`) and browser `face` (`hale dna head`) as services of that Compose project (built from the embedded `Dockerfile` and `hale.pin`, or from a prebuilt local image via `--image <tag>` / `HALE_HABITAT_IMAGE` and `hale habitat image build`). By default (`--backends own`), it manages its own Postgres, NATS, Prometheus, and Forgejo containers; with `--backends operator`, it adopts the external servers named by `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER`. The `body` and `face` containers mount the host's Docker socket so the habitat can run and probe every organism's services; that socket is root on the host, so a habitat is trusted as the machine's administrator is.
+  - `local` on another machine (`hale habitat up --host <name> [--user <user>] [--port <n>]`): the same habitat on a LAN machine that has Docker and nothing else. Your own SSH login reaches it; the toolchain image is used if it is there already, else sent from your Docker, else pulled as the published image when your `hale` is a release's build, else built there once from your `hale`'s commit on GitHub (the machine's Docker needs its `buildx` plugin; the first build compiles the compiler and takes a while); `hale habitat up` runs there in that image, its face and head bound to the address `<name>` resolves to and recorded at `http://<name>:<port>`. This machine keeps only a pointer (the name, the host, the head's URL and launch token, the record's identity): `status` asks the head through it, `host`, `graft <sapling>`, `place`, `apply` and `model-map` go to the head as they do locally, `down` and `down --forget` run on the habitat's machine over SSH (the forget still confirmed by its name typed at your terminal, the pointer removed last), `graft <dir>` ships the directory there (it becomes the organism's home, the habitat's copy) and grafts it there, `hale habitat organism <name> dna <verb>` runs an organism's own verbs (`review`, `task create`, `work run`) in its directory there, and `migrate` and `handover` are refused. You sign in to the remote face from your own browser: the habitat's OIDC stub records its issuer under `http://<name>:<port>` too, and plain HTTP is accepted for exactly that name (and the loopback), no other host.
+  - `hosted` (roadmap): Connects to an existing platform's managed Postgres, NATS, Vault, and OIDC identity provider.
+- **Child Birth via `hale habitat graft`:** Every other organism is born as a child of the habitat via `hale habitat graft`. During a graft:
+  - The child's `record.genesis` row records the habitat's record identity as its parent.
+  - The habitat allocates the infrastructure roles declared in the child's `hale.toml` (`[dna] needs`: `memory` and `nerves` always, `senses` unless omitted, plus an optional tenant `database` for a Hale heart passed as `HALE_DNA_DATABASE_DSN`) and records those allocations in the habitat's own record.
+  - The habitat decides the `scope` on `application.attached` and issues per-client database, broker, and vault credentials.
+  - The habitat proposes the `standard` practices pack to the child's Board.
+  - On its own backends, the habitat gives the child a user and a repository at its own Forgejo, the local profile's forge. The forge is a gate, not a store: code goes out through it as branches and verdicts come back through it. GitHub is the allocation when a Board names it (`hale habitat forge <organism> github --repo <owner/name>`).
+- **Deployment and Reflexes:** For habitat-scoped applications, the habitat elaborates placement declarations into container manifests or Compose configurations, applies them using habitat-held credentials, monitors child readiness, capacity, metrics, and logs, and restarts or rescales child bodies via reflexes.
 
-**Sharing is deliberate publication.** Two firms keep their private records and agree on a third, shared one. Into it they publish selected facts, each carrying its origin, lineage and purpose. Syncing a whole record cannot export part of its private history, so a shared record never receives one. Sharing participants, owners or grants does not merge private context, administration or books.
+---
 
-**Visibility is enforced, not labelled.** Whoever holds a full replica can read its plaintext, and a projection that filters rows cannot hide them. Sensitive material therefore lives outside the replicated record, as protected evidence in the record's own memory, read only through a principal-checked boundary. This covers the derivatives of sensitive material too: summaries, embeddings, prompts and the context a worker is given.
+## Hosts, Placement Providers, and Saplings
 
-**Identity is bound at every entry**: the face, the API, the command line, a synced decision, a callback, resumed work. Each checks the actor, the record, the current membership or assignment, and the policy. A git author, a `--as` flag or a position in a view is attribution, not proof.
+### Hosts and Providers (`compose` and `ssh`)
 
-## Three independent choices
+In habitat commands, a **host** always refers to a physical or virtual machine where allocations can be placed. **Providers** discover hosts, allocate roles for organisms, render and apply service definitions on a target host, and observe live health (`up`, `degraded`, or `down`). Every host, allocation, and role-to-provider **policy** is stored as a row in the habitat's record and exposed on the habitat head's surface (`Commands::hosts`, `Commands::allocations`, `Commands::policy`).
 
-| axis | choices |
+| Provider / Verb | Behavior |
 | --- | --- |
-| participation | one person; a team on one record; firms cooperating through a shared record |
-| deployment | on your machine; hosted behind a domain; other admitted placements |
-| principal source | explicit local trust; a verified identity provider (OIDC) |
+| **`compose` provider (`local` profile)** | Produces the `local` host (advertising `compose`) and runs all habitat and child organism allocations (`memory-<id>`, `nerves-<id>`, `senses-<id>`, `forge`, and the habitat's `body` and `face`) as Docker Compose services on the local machine. |
+| `hale habitat host add <name> [--user <u>] [--port <n>]` | Probes a LAN machine over SSH using the habitat's vault-held SSH keypair, pins the first-seen host key in the record (refusing any subsequent host-key mismatch), and, over your own SSH login and with your sudo, makes the habitat an account of its own on `<name>` (`hale-<id>`: no sudo, in the `docker` group, which is root-equivalent on the host) holding its public key, then probes it ready. `--user <u>` puts the key in that account instead. When your login does not reach `<name>`, it prints what to do there and marks the host `pending-key`. |
+| `hale habitat host probe <name>` | Re-probes `<name>` over SSH. Once `~/.ssh/authorized_keys` is updated, transitions the host from `pending-key` to `ready` and records its capabilities (`docker compose`, `systemd-user`, OS, and CPU architecture). |
+| `hale habitat host remove <name> [--plan]` | Removes a registered host from the habitat record, planned first: on a host with allocations the plan lists each one and what stops or is deleted there, and the removal waits for the host's name typed back at a terminal (`--plan` prints the plan and exits). |
 
-Each axis is chosen independently of the others. A hosted single user with an identity provider is a normal first profile.
+### Machine Readings and Dashboards (node exporters, Grafana)
 
-## Authority is part of the graph
+The habitat reads every machine it runs on. `hale habitat up` (on this machine, or on the machine `--host` names, over your SSH login) and `hale habitat host add` (on the new host) install a Prometheus **node exporter** on `:9100`: on Linux the container `hale-node-exporter`, on macOS the release's own `node_exporter` under launchd (a LaunchAgent when you are logged in at the Mac, otherwise a LaunchDaemon, for which sudo asks once at your terminal). A container on a Mac would read the VM docker runs in, not the Mac. If an exporter already answers on `:9100`, the habitat scrapes it as it is and never touches it. `host remove` and `down --forget` take the habitat's own exporter off again.
 
-Today the compiler knows who owns a locus (the tower) and what a locus can reach (effects). It does not know on whose authority a locus runs. So "may this code reach this secret, this money, this change to the org chart" is answered at run time by whoever holds a token.
+The habitat's senses' store (its Prometheus) scrapes each machine as the job `host`, with a `host` label naming the machine. The habitat keeps the target list in step with its hosts: adding or removing a host rewrites it.
 
-The design adds one relation to the tower: `runs_under(locus, principal)`. A locus declares the principal it runs under, and a locus with no declaration inherits its owner's. The compiler closes the relation the way it closes ownership: no locus may run under a principal its owner does not hold. Principals are declared by the program, and a DNA position is the organism's instance of one. Three things follow, with no new kind of declaration:
+A **Grafana** runs behind the face at `/grafana/` (the `dashboards` link in the operator face), signed in as you through the face's own sign-in: there is no Grafana login. Its home dashboard, **Hosts**, shows whether each machine answers, its uptime, CPUs and memory, and over time CPU busy, load per core, memory used, disk used, network and disk throughput, for Linux and macOS machines alike, plus a Linux machine's CPU frequency. `up` and `status` print its address:
 
-1. **Claims cover the static half.** Reaching a secret slot becomes an effect with a principal attached. "Only a reviewer's code reaches the forge token" is then the same shape of claim as "no model-driven code reaches money except through authority" ([Claims & the law](./claims.md)), checked at build.
-2. **Backend policies are projections, not authored files.** A vault policy, a database role, a broker account's permissions and a forge team are each the reachable closure of one principal, rendered in one backend's syntax when the program is placed. Nobody writes them by hand, and a hand edit is not a change. Which backend answers a secret slot is a choice made at placement, never the program's: a file directory on your machine, a vault with a role per principal in a habitat, a cloud engine.
-3. **The run keeps the dynamic half, in the record.** Who holds a seat is an appointment row. Who is acting for that holder right now is an **attachment**: one worker process or one face session, under one seat, for a bounded time, with a scope inside the seat's closure. A credential is cut for the attachment, never for the seat. It is short-lived, narrowed to the attachment's scope, and revoked when the attachment ends. The compiler proves the ceiling, the run enforces the narrowing, and every effect is recorded against its attachment.
+```text
+grafana http://<habitat>:<port>/grafana/ (compose service grafana, behind the face's sign-in; started at its first use, stopped after 15 minutes unused)
+node    local: node_exporter 1.11.1 on :9100, a container of the habitat's (hale-node-exporter)
+```
 
-## Responsibilities grow; equipment equips them
+Grafana runs only while someone uses it. `up` creates its service without starting it; the first time you open `/grafana/`, the face starts it and shows a "starting the habitat's dashboards" page that reloads itself every few seconds until Grafana answers (if Grafana does not come up within a minute, the page says why and stops reloading; reload it to try again). Once nobody has used it for 15 minutes, the face stops it again. A dashboard left open in a browser tab refreshes itself every 30 seconds, and that counts as use. `HALE_DNA_GRAFANA=on` keeps Grafana running from `up` to `down` instead.
 
-A new responsibility is a child the organism proposes from evidence of a need and the authority admits, through the organism's existing lifecycle. There is no preinstalled department taxonomy. **Standard equipment** is libraries that give a responsibility competence:
-- research and decision briefs;
-- qualification and offers;
-- implementation and release;
-- onboarding and support flows;
-- receipt capture and reconciliation;
-- publication and experiments;
-- access and documents;
-- deployment and recovery.
+Beside each node exporter runs a container exporter (cAdvisor, the container `hale-cadvisor`; on a Mac, inside docker's VM), and Grafana's **Services** dashboard shows what runs where, whatever a machine's system: every container on every machine with the organism and part it is, its image, uptime, CPU, memory and network, and the restarts and out-of-memory kills in the window, and in the same table and graphs every service the habitat placed on a host with `organism place` (kind `systemd` or `launchd`), read from its own readings: whether it answers (one that does not shows as down), its uptime, memory and CPU. Every container the habitat runs is labelled `hale.habitat`, `hale.organism` and `hale.role` (an organism's own compose services through an override of the habitat's, never by editing its files), so the dashboard shows the habitat's containers by default, organism by organism, with **show: everything on the host** for whatever else a machine runs beside them.
 
-Installing equipment creates no department, appoints no performer and grants no authority.
+`HALE_DNA_NODE_EXPORTER=off` (both exporters) and `HALE_DNA_GRAFANA=off` leave either out of a run ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Readings).
 
-Each equipped responsibility declares:
-- the outcomes it owns, and the work it accepts;
-- its procedures, and what its performers must be able to do;
-- its mandates and budgets;
-- what it counts as acceptance, and how it is evaluated;
-- how it recovers.
+### Reflexes and Alerts
 
-A request that crosses scopes follows a declared contract. Sales cannot declare delivery accepted, and assigning a proposal to yourself does not create authority to change it.
+An organism declares what it watches for in its readings as reflexes, under `[dna.reflex.<name>]` in its manifest: a PromQL condition, how long it must hold, a severity and a summary. They render to standard Prometheus alerting rules, so the same declarations work in a habitat and in a heart you run yourself. Every habitat watches its machines' disks by default: one more than 90% full for ten minutes, or one that fills within a day at its recent rate. The operator face's **alerts** screen shows what is firing, and what is about to.
 
-## The shapes change
+### An Organism's Own Host Commands (`organism place`)
 
-A growing business does not keep the structure it started with. A sub-organization is the first to need marketing email, so it builds a gateway as part of its own software. Later another part of the company needs the same capability, and the gateway should become something both depend on, with its own interface and its own governance. Every boundary in the habitat must therefore be movable, by a named operation that is reviewed like any other change.
+An organism can declare commands of its own for the habitat to run on a host, in its manifest under `[dna.host.<name>]`. voice declares `node`, which turns a machine into a voice node: it installs what the machine needs to serve models, outside compose, and registers it with voice's api.
 
-The substrate already has the general mutations: a node or an edge added or retired, knowledge bound or unbound, a holder requested, a code change. What the user and the organization's own agents need is a vocabulary on top of them, where each name says what it means for the work and compiles to those mutations. Three rules apply to every operation:
-- **One operation is one Review.** The Board decides "extract the mail gateway", not the dozen rows that carry it out; the rows are the receipt.
-- **Each operation has a change class**, and the class decides who ratifies it, as the law's change classes do today.
-- **Each operation checks its own invariants before it is proposed**, and a refusal names what failed.
+```sh
+hale habitat organism place voice node --host gpu-1.lan --plan   # what would run, and where
+hale habitat organism place voice node --host gpu-1.lan          # sudo asks once, at your terminal
+hale habitat organism unplace voice node --host gpu-1.lan
+```
 
-The operations are layered. Each layer names a change by its own boundary and is complete without the layer above it, and an upper layer's operations are compositions of the lower layer's plus that layer's own bookkeeping.
+The habitat's own machine is the host `local`, as its rows already call it: on a laptop with no other hosts, `--host local` places the command right there, without enabling SSH to yourself or adding the laptop as a host. Every script runs on this machine with `sh`, as you (sudo asks at this terminal); through a pointer (a habitat `up --host` put on another machine) `local` is that machine, reached over the login the pointer names. Its `{id}` is `local` unless `--id` says otherwise, its `{api_url}` the address the services allocation publishes (the loopback is right for a node on the same machine), and the placement is recorded under `local`, its readings scraped at `host.docker.internal`:
 
-**The Hale program: where code runs.**
-- **Serve.** A locus subtree goes behind a transport (unix, HTTP, the nerves), with its surface as the contract. The callers' code does not change; only their bindings do.
-- **Unserve.** A served subtree goes back in-process, and its callers are rebound to direct calls.
-- **Place.** A locus moves to another pool or another program inside the same organism, and its behaviour stays the same.
+```sh
+hale habitat organism place voice node --host local --plan   # a native GPU node on this machine, outside docker
+```
 
-**The organism: what one record owns.**
-- **Open a position.** A new responsibility appears under a part, with its mandate and equipment.
-- **Fill, vacate.** A person or an organization takes a position, or leaves it.
-- **Merge positions.** Two responsibilities become one; holds and bound knowledge carry over.
-- **Split a position.** One responsibility becomes two, and its mandate and bindings are divided between them.
-- **Assign.** A position writes or reviews a part or a contract.
-- **Adopt a pack.** A family of knowledge, practices, mandates or workflows comes into force, ratified as one unit.
-- **Retire a pack.** That family leaves, and what it superseded is restored.
-- **Expose.** An internal capability gets a named contract.
-- **Depend.** A part relies on a contract, whether this organism serves it or something outside does.
-- **Externalize.** A part leaves the organism. The organism depends on its contract and no longer owns its code, positions or knowledge.
-- **Internalize.** A contract the organism depended on becomes a part it owns, with the code, positions and knowledge to back it.
+The command runs in the organism's own source at the revision the habitat pins, over your SSH login. The habitat provisions what it needs to run at all: it installs what the host lacks of hale's build prerequisites (git, curl, tar, clang, OpenSSL's and zlib's headers) with the host's package manager, and the hale release the organism declares (`[dna] toolchain = "v0.30.1"` in its `hale.toml`; else the habitat's own) into a directory of its own on the host. A declaration's `requires` (`docker`, `systemd`, `nvidia-gpu`, `apple-silicon`, `gpu`; a list, or a table by platform such as `{ linux = ["docker", "gpu"], macos = ["gpu"] }`) is checked against the host before anything is installed; `--plan` shows all of it. Its inputs are the host's `{id}` and the `{api_url}` its `api_service` publishes. A secret the seed declares with `host.<command>` among its readers (`[dna.secrets.<name>]`, [The Skin](./dna/skin.md#declared-secrets)) is read from the habitat's vault (on the habitat's machine, through a pointer), written over your SSH login's stdin into `~/.local/share/hale/hosted/<organism>.vault/` on the host (mode 700, each entry 600), handed to the command as `HALE_VAULT_DIR` and `HALE_SECRET_<NAME>` through `env` (so sudo keeps them), and removed when it ends; every run is also handed the habitat's name as `HALE_DNA_HABITAT_NAME`, and `HALE_DNA_HOST_RESERVED_BYTES`, the memory the habitat's own containers on that host may hold (the sum of their compose `mem_limit`s: on the habitat's own machine its memory, nerves, senses' store, forge and Grafana, which counts though it starts on demand; on any host the organisms' allocations applied there; `0` when it runs nothing there that declares one), which a provider's node subtracts from the memory it offers models, so a node on the habitat's own machine does not promise models what the habitat may take (`--plan` names it on its `reserve` line); a value is never on a command line or this machine's disk. `--plan` names each secret it would hand over, a family with its members' labels, and each it skips; `place` refuses while a required slot is unfilled or a required family has no member, an `optional = true` one is done without (an unset slot not handed, a family with none handed empty), and `unplace` is never refused for a missing secret. The old `operator_token` key and `{operator_token_file}` input are refused: declare the token as a drawn secret instead. When the declaration names its `service` (voice's is `voice-node-<id>`, a systemd unit on Linux and a launchd service on macOS), `place` ends by asking the host's service manager that it runs, and `unplace` that it is gone ([`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md), Host commands).
 
-**The habitat: several records.**
-- **Graft.** A sapling, a prebuilt business unit published as a template, becomes a child organization under a ceiling its parent grants and a Board its parent seats.
-- **Extract.** A part of one organism becomes a child organization that runs it. The source externalizes it, the child is born from the copied subgraph with provenance, and the source depends on its contract.
-- **Absorb.** A child organization folds back into its parent. The parent internalizes the contract, and the child retires.
-- **Re-parent.** An organization moves under a different parent. Its ceiling is re-granted and its Board re-seated.
+The habitat remembers what it placed: `place` records a `habitat.placed` row through the head once the service runs (`unplace` a `habitat.unplaced` one), and `hale habitat status` lists each placement under its host. A declaration that says where its service serves its readings watches it without polling anything:
 
-**Promoting a capability moves along two axes, one step at a time.** Where it runs is the process boundary, and serve and place move it: a heart can become two programs that the same organism still owns and governs. Who owns it is the organism boundary, and externalize moves it, usually only when someone else needs the capability or it should be governed apart. The check that only the surface and its topics cross the cut belongs to the first step, because it is a property of the code, and the compiler can make it; a cut that is not clean is refused with its crossings named.
+```toml
+[dna.host.node]
+service = "voice-node-{id}"
+readings = 9464     # the service's std::observe::Scrape port
+```
 
-**Externalize needs no habitat.** To the organism, an externalized capability is a contract it consumes and does not own. Whoever serves it, a sibling organization, a third-party provider or another team's service, is not in its record, so a plain organism can use the operation, and replacing the provider later is an ordinary contract change ([Providers are replaceable](#providers-are-replaceable)).
+`--plan` and `place` name the endpoint (`http://gpu-1.lan:9464/metrics`), which the head registers with the habitat's senses as it records the placement; every Hale program serving a `std::observe::Scrape` carries the runtime's own memory, CPU time and start time, which the **Services** dashboard charts. Removing the host, the organism or the whole habitat runs each placement's own `uninstall` first, over your SSH login (sudo asks at your terminal), and then removes the organism's checkout and the toolchain it installed there once nothing placed there uses them; a placement it cannot take off is named with the exact `unplace` that does, and the rest goes on.
 
-**Extract is a composition, seen whole only from the habitat.** The source's record shows "externalized; now depends on this contract". The child organization's record begins with "born from the source at this head". Rows are copied with their provenance, never moved, so each history stays where it happened. Absorb is the same composition in reverse.
+### Saplings and Nurseries (`hale habitat nursery` / `graft <sapling>`)
 
-**Packs and saplings are the two sizes of what can be installed.** A pack is rows inside one organism: knowledge, practices, mandates, workflow definitions. A sapling is a child organization: its starting record, its charter, its law, its positions and practices, and the program it runs, if it runs one; a unit that starts with workflows, knowledge and people grows a heart later or never. A pack is adopted by a family Review; a sapling is grafted, and the parent governs it through the ceiling it grants and the Board it seats, as it would any child organization. An upgrade of either arrives as its next version, proposed against what the host has ratified since, so local amendments are kept and each conflict is a Review of its own.
+While a **pack** is a reusable template of rows adopted inside an existing organism (positions, mandates, practices, knowledge), a **sapling** is a complete, prebuilt organism template published in a nursery and pinned by repository URL, Git revision, file tree SHA-256 digest, and default packs.
 
-## Money from the first receipt
+```sh
+hale habitat nursery list
+hale habitat nursery add https://example.com/nursery.git
+hale habitat nursery refresh
+hale habitat nursery ratify <sapling>
+hale habitat nursery add https://github.com/hale-lang/voice   # voice is its own nursery
+hale habitat graft voice --host rack-a.lan --plan              # the plan, part by part; nothing grafted
+hale habitat graft voice --host rack-a.lan                     # prints the plan and asks
+```
 
-Finance is a responsibility from the start, even when its performer is a person and it only captures.
-- **One chain of distinct steps.** Source evidence becomes observations, observations become economic events, and those become approved postings or external acknowledgements, each a separate step. A paid bill may stay unclassified, and a posted invoice may stay unpaid.
-- **One authority for each book.** It is capture only, the organism's own posting service, or an external platform that owns the book and its close.
-- **Money is exact.** Amounts are `Decimal` with an explicit currency and rounding policy, never binary floating point.
-- **Budgets keep five things apart:** the permitted budget, reserved capacity, observed usage, the booked expense and cash settlement. A reservation is not an expense, and a bill and the card payment for it are not two expenses.
+A graft plans each body part first. The organism plane (its record in memory, its nerves, its senses) reuses the habitat's, on the habitat's machine; `--own memory=rack-b.lan` gives it a server of its own on a host instead. The application plane is the organism's own: its compose services on the `--host` machine, and the database or broker it brings (`[dna] brings` in its `hale.toml`, as voice brings its own Postgres and NATS); `--reuse database` has the habitat provision one instead.
 
-No automated payment is part of the first slice.
+1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (`hale`, the one the toolchain carries, or one a trusted nursery offers, such as `voice`; `./<name>` denotes a local directory). A repository can be its own nursery: a `nursery.toml` at its root whose `[[sapling]]` says `repo = "."` (and no revision or digest) offers the repository itself, pinned at the commit the habitat reads. That is how `hale-lang/voice` is offered; the toolchain bundles no application. The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row. The `hale` sapling (the organism that works on the Hale toolchain) is a tree the toolchain itself carries, with no remote. `hale habitat graft hale` makes it the organism's own repository in the habitat and checks its digest the same way. Like every graft, it mirrors that repository to the habitat's Forgejo; nothing of an organism's own goes to GitHub unless its Board allocates GitHub later.
+2. **A genome's codebases attach at its graft:** a `[[dna.codebase]]` list in the sapling's `hale.toml` (each with `name`, `repo`, `branch`, `build`, `test`, `toolchain`) becomes `codebase.attached` rows of the grafted organism's record, once each; nothing is cloned until a leg works one. The toolchain nursery's `hale` sapling is **the hale organism**: its genome is its own small repository, and its codebases are `hale-lang/hale` and `hale-lang/voice`.
+3. **Updating sapling pins (`refresh` and `ratify`):** Running `hale habitat nursery refresh` (also run during `hale habitat up`) inspects all trusted nurseries. Newly discovered saplings are pinned automatically; if an already-pinned sapling offers a newer revision, the habitat files it for the Board without moving existing organisms. Run `hale habitat nursery ratify <sapling>` to pin the newer revision for future grafts.
+4. **Moving a grafted organism to the ratified revision (`organism upgrade`):** an organism already grafted stays where it was grafted until you move it, keeping its record, its data and its allocations:
 
-## Providers are replaceable
+   ```sh
+   hale habitat organism upgrade voice --plan   # from -> to, the migrations, the services rebuilt, the placements re-run
+   hale habitat organism upgrade voice
+   ```
 
-Models, stores, identity, communications, payments, accounting and hosting are bound through interfaces and perspectives, under the same claims and ownership rules as everything else ([Perspectives](./services/perspectives.md)). A provider's capability is kept in three separate states: implemented, available on this account, and authorized. A feature appearing at a provider never widens a grant. Replacing a provider keeps the organization's intent, authority, records and history, although mandates and pending operations may stay bound to the original service until they are reconciled.
+   The upgrade fetches the pinned revision into `<habitat>/saplings/<name>` and checks its digest exactly as a graft does (a mismatch moves nothing), checks the organism's tree out there with what its graft wrote carried (the record's pin in its `hale.toml`, the tables and `.gitignore` lines the graft added), re-materializes `vendor/dna`, runs the heart's declared migrations, re-applies its services allocation (its images built from the new tree), and records a `habitat.organism.upgraded` row. Anything else changed in that checkout is carried only when it applies cleanly at the new revision; otherwise the upgrade refuses before anything moves. Last, each host command placed for it (`organism place`) runs its `install` again at the new revision, over your SSH logins: at a terminal (sudo asks there), or printed as the `hale habitat organism place …` lines left to run. An organism already at the pinned revision is refused, naming a newer revision that waits for `ratify`. Through a pointer, everything but the placements runs on the habitat's machine.
 
-## What the tree has today
+---
 
-| piece of the design | in the tree today |
+### The Habitat's Models
+
+The default model backend of every organism the habitat grafts is the habitat's own: an organism that declares in its `hale.toml` that it provides `models` (voice does), with no person minting a key. No hosted placeholder is written at graft: an organism grafted with no model key in the vault gets no hosted backend at all (a harness on `PATH`, else the desk), and `hale dna secrets` lists no model key for it.
+
+```toml
+[dna.provides.models]
+service     = "api"                  # the compose service that serves it
+path        = "/v1/chat/completions" # the default
+models_path = "/v1/models"           # the default
+key         = "tenant-key"           # a drawn family: a member per tenant
+
+[dna.secrets.tenant-key]
+kind    = "drawn"
+family  = true
+readers = ["api"]
+```
+
+Once the provider's services are applied (a sapling grafted with `--host`), for every organism the habitat holds, the provider among them, and for the habitat itself (its own infrastructure, whose key is labelled `habitat`):
+
+- a member of `tenant-key` labelled by the organism's name (the habitat's own, `habitat`) is drawn into the vault and staged in the provider's reader vault where its services run, in place, so its running api reads it (compose hands it `HALE_VAULT_DIR`, `HALE_SECRET_TENANT_KEY` and `HALE_SECRET_TENANT_KEY_FAMILY`, the members' common prefix);
+- the value is copied into the organism's own slot, `model-HABITAT_<KEY>`;
+- the provider is asked what it serves (`GET <its link>/v1/models`, the organism's key as a bearer token; each model says whether the key may use it, `available`, and whether it returns tool calls, `capabilities.tools`: voice keeps both under each entry's `voice` object and says so with `extension = "voice"`);
+- the organism's model map is seeded in the name `hale habitat`: `think.*` to the first model served, `tools.*` and `do.*` to the first that returns tool calls (none when none does), each at the provider's `/v1/chat/completions` with the key's slot. A category a person mapped is never written over.
+
+The graft does this, and grafting the provider does it for every organism already there. When the provider serves the organism nothing yet, the graft says so in the provider's words (its `grant`, where `{organism}` stands for the organism and `{habitat}` for the habitat's name): voice's `the habitat's models (voice) serve none for <organism> yet: grant tenant-<organism> accounts in voice's admin UI (Projects), then \`hale habitat models <organism>\``, since voice gives a new tenant no accounts until its operator does; that command (`hale habitat models <organism>|--all [--plan]`) does it again once a model is placed. `hale dna secret rotate tenant-key --member <organism>` in the provider draws an organism's key anew (the habitat updates its copy), and removing an organism removes its key. A habitat holds one models provider: grafting a second is refused, naming the first. `--all` includes the habitat itself, and `hale habitat models habitat` maps it alone. A provider names what it keeps for each tenant by its label (voice's projects are `<habitat>-<label>`, the habitat's name from `HALE_DNA_HABITAT_NAME`), so no organism may be called `habitat`: grafting one (a directory or a sapling of that name) is refused.
+
+Every organism the habitat grafted has its services handed the habitat's name as `HALE_DNA_HABITAT_NAME` (what `hale habitat up --name` named it; `local` by default), wherever they run, and so does a repository body's compose when the habitat grafted it. As with its secrets, the compose file passes it to the services that read it:
+
+```yaml
+services:
+  api:
+    environment:
+      HALE_DNA_HABITAT_NAME: "${HALE_DNA_HABITAT_NAME}"
+```
+
+### Pairing an Agent with a Person (MCP)
+
+The habitat's head serves its command surface over MCP as well as over its socket and its HTTP commands port, with the same bearer and the same roles. `hale habitat status` prints the endpoint as `mcp://127.0.0.1:<port>`. An agent's host connects with the person's ID token, the bearer their face session holds:
+
+```sh
+HALE_API_TOKEN=<the person's ID token> hale mcp --app mcp://127.0.0.1:<port>
+```
+
+The agent's tools are the head's rows that person may call (`Commands__hosts`, `Commands__add_host`, …). A row they may not call is refused `unauthorized`, exactly as the face is refused, and every act is a row in their name. `hale habitat brief` (the row `Commands__brief`) is where such an agent starts: the Board's charter, the rules it works by, and the live state. [`agents/operator.md`](https://github.com/hale-lang/hale/blob/main/agents/operator.md) is the agent's own brief: the words, the rules, and which rows read, act or propose.
+
+## Walkthrough: Deploying and Querying `voice` in a Habitat
+
+This walkthrough covers taking a machine with `hale`, `docker compose`, `git`, and a browser from a cold start to streaming an LLM completion response through `voice`, grafted from its own repository as a nursery.
+
+### 1. Start the Habitat and Inspect Status
+
+```sh
+hale habitat up
+hale habitat status
+```
+
+`hale habitat up` initializes the root habitat organism (if not already initialized), starts its Postgres (`memory`), NATS JetStream (`nerves`), Prometheus (`senses`), and Forgejo (`forge`) containers alongside the habitat's `body` and `face` containers under a single Docker Compose project, registers the `local` host, and records the head's URL on the profile row and in `head.url` (override on any `hale habitat` or `hale dna` verb with `--head <url>` or `HALE_DNA_HEAD_URL`). `status` prints the genome, body status, active allocations, and operator face URL:
+
+```text
+face    http://127.0.0.1:<port>/ (up, ...)
+```
+
+### 2. Sign In to the Operator Face
+
+Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (its name, and the web UIs of every organism with their links: [Web UIs on the Home Screen](#web-uis-on-the-home-screen)), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)), with links to the organization shell and the habitat's **dashboards** (Grafana).
+
+### 3. Graft the `voice` Sapling (Local or LAN Host)
+
+Trust voice's repository as a nursery (it offers itself), then graft it onto the local machine:
+
+```sh
+hale habitat nursery add https://github.com/hale-lang/voice
+hale habitat nursery list
+hale habitat graft voice
+```
+
+`graft` fetches the pinned revision of `voice` into `<habitat>/saplings/voice`, verifies its SHA-256 tree digest, grafts it as a child organism of the habitat, and allocates its requested roles (`memory`, `nerves`, heart `database`, and `broker`).
+
+To place `voice` onto a remote LAN host over SSH instead (register the host with `host add` and `host probe` first):
+
+```sh
+# Register the LAN host; over your own SSH login it authorizes the habitat's key there and probes it:
+hale habitat host add rack-a.lan --user ops
+
+# Verify SSH connectivity and host capabilities (docker compose, OS, arch):
+hale habitat host probe rack-a.lan
+
+# Graft voice onto rack-a.lan:
+hale habitat graft voice --host rack-a.lan
+```
+
+### 4. Apply Allocations and Start `voice` Services
+
+`hale habitat apply` materializes each placed allocation on its target host via that host's provider and reports live health (`up`, `degraded`, or `down`):
+
+```sh
+# Materialize placed allocations and print health pulse:
+hale habitat apply
+```
+
+Where each allocation runs is a row the Board writes: `hale habitat place <key>/<role> <host>`. `hale habitat apply` makes it so. It takes each moved allocation down where it ran and brings it up on its new host with that host's provider, then prints what each allocation looks like now (up, degraded or down). An allocation on another machine is reached at that machine's name and the port it publishes there, so the DSN and the nerves' URL follow it.
+
+A moved memory starts empty, because nothing migrates. A memory that holds its organism's record moves only with `hale habitat apply --fresh`, and the habitat's own memory does not move at all. `hale habitat graft <sapling> --host <name>` grafts an organism straight onto a host: its memory, nerves and services run there from the start, and its record is born there.
+
+*(To move an allocation to another host before applying: `hale habitat place <key>/<role> <host>`, then `hale habitat apply`. Moving a stateful `memory` allocation across hosts requires `hale habitat apply --fresh`, which initializes a fresh store on the destination host.)*
+
+`voice`'s image downloads the released Hale toolchain itself when it is built (its `Dockerfile`), so the first `apply` needs the network and takes a few minutes; nothing is staged by hand.
+
+The operator face's **organisms** screen lists each of `voice`'s allocations with what its services publish: a link where the port is reachable from your machine (`api` opens `voice`'s console, its admin UI served at the api's `/`), and `loopback only on <host>` for a port bound to that host's loopback.
+
+#### Web UIs on the Home Screen
+
+The operator face's first screen, **habitat**, lists the web UIs across all your organisms: each organism's face (`voice face`), and each UI an organism declares in its `hale.toml`, with its label, its organism, its link and how to sign in:
+
+```toml
+[dna.ui.console]
+label   = "voice console"     # what the home screen calls it
+service = "api"               # the compose service that serves it
+path    = "/"                 # where under that service's address (default "/")
+login   = "operator-token"    # optional: a declared secret (person = "read") you sign in with
+```
+
+The link is the address the organism's services publish for that service, as the organisms screen links it, with `path` after it; a service published only on its host's loopback is shown as `loopback only on <host>`. A UI with a `login` says which command prints the secret from your machine, `hale habitat organism <organism> dna secret show <login>` (the secret must be declared under `[dna.secrets.<login>]` with `person = "read"`, [The Skin](./dna/skin.md#declared-secrets)); the value itself is never shown. The declaration is read from the organism's directory each time the screen asks, so an upgrade's is the one listed. `hale habitat graft` refuses a manifest whose UIs are refused (an unknown key, no `label` or `service`, a `path` not starting with `/`, a `login` naming no readable declared secret), and `hale dna declared-uis` prints the declaration as the toolchain reads it.
+
+`voice`'s Compose definition publishes its api (port `8080`) and its NATS (port `4222`) on the listen address of the host it is placed on (`HALE_DNA_HOST_LISTEN`), so a browser or a node on another machine reaches them at the host's name; on this machine they stay on `127.0.0.1`. Every plane of the api takes a bearer, so nothing rests on loopback: a project key on `/v1`, a node's enrollment token on `/node/v1`, and the **operator token** on `/admin/v1`. Name the api's address once (`localhost:8080` when `voice` runs on this machine, `rack-a.lan:8080` when it is placed there) and check that it answers:
+
+```sh
+api=http://rack-a.lan:8080        # or http://localhost:8080 on this machine
+curl $api/healthz
+```
+
+`voice` mints its operator token on its first start and keeps it in its Postgres; it is never in the environment or a log. Print it on the host running `voice` (use `docker compose ls` there to find the compose project name; its api container is `<project>-api-1`):
+
+```sh
+(umask 077; ssh ops@rack-a.lan docker exec <project>-api-1 voice-api admin-token > admin.token)   # created mode 600
+```
+
+The console (the api's `/`, the **organisms** screen's `api` link) asks for this token once and keeps it in the browser.
+
+### 5. Configure a Model, Project Key, and Node Seat on `voice`
+
+Configure a model (`echo-1`), billing account, project API key, and worker node seat via `voice`'s admin API (or via the console at `$api/`, which asks for the operator token). Every admin call presents the operator token, here from a header file so it is on no command line. Using the built-in `static` engine requires no external weights or GPU:
+
+```sh
+json='content-type: application/json'
+(umask 077; printf 'Authorization: Bearer %s\n' "$(cat admin.token)" > admin.h)
+curl -X POST $api/admin/v1/models   -H @admin.h -H "$json" -d '{"id": "echo-1"}'
+curl -X POST $api/admin/v1/accounts -H @admin.h -H "$json" -d '{"id": "static", "name": "Static"}'
+curl -X POST $api/admin/v1/projects -H @admin.h -H "$json" -d '{"id": "work", "name": "Work"}'
+curl -X POST $api/admin/v1/projects/work/keys -H @admin.h -H "$json" -d '{"name": "laptop"}'
+curl -X POST $api/admin/v1/nodes    -H @admin.h -H "$json" -d '{"id": "local"}'
+curl -X POST $api/admin/v1/nodes/local/seats -H @admin.h -H "$json" -d '{
+  "id": "static", "engine": "static", "account": "static",
+  "serves": [{"model": "echo-1"}], "config": {"text": "hello from voice"}}'
+```
+
+- Save the `"secret": "vk-..."` token returned by `/admin/v1/projects/work/keys`.
+- Save the `"enrollment_token": "vn-..."` returned by `/admin/v1/nodes` and start `voice`'s node container with it (use `docker compose ls` to find the compose project name):
+
+```sh
+# on the host running voice:
+VOICE_ENROLLMENT_TOKEN=vn-... docker compose -p <project> up -d node
+```
+
+*(To serve a live local LLM, replace `"engine": "static"` with an `"openai-compatible"` seat pointed at a local Ollama or vLLM endpoint.)*
+
+### 6. Point Every Organism's Model Map at `voice`
+
+voice provides the habitat's models ([The Habitat's Models](#the-habitats-models)): its graft keyed every organism the habitat holds and mapped each one's model map at it, or said that it serves none yet. Once the seat above serves `echo-1`, map them again and probe one:
+
+```sh
+hale habitat models --all
+hale habitat model-probe voice think.standard
+```
+
+A map you point elsewhere by hand is kept: `hale habitat model-map <organism> think.standard <model> --endpoint <url> --key-vault <slot>`, the key in a vault slot (`hale dna secret set <SLOT>` in the organism's directory).
+
+### 7. Send a Streaming Completion Request
+
+Query `voice`'s OpenAI-compatible `/v1/chat/completions` endpoint directly with `curl -N`:
+
+```sh
+curl -N $api/v1/chat/completions \
+  -H 'Authorization: Bearer vk-...' \
+  -H 'content-type: application/json' \
+  -d '{"model": "echo-1", "stream": true, "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+`voice` streams back Server-Sent Event chunks (`data: {...}` with `chat.completion.chunk`) terminated by `data: [DONE]`, and records usage under `GET /admin/v1/usage` (under the operator token).
+
+### Operational Notes
+
+- **Stopping and restarting:** `hale habitat status` reports any degraded or stopped allocations. `hale habitat down` stops the body, the face and every service and removes nothing; `hale habitat up` brings it back online.
+- **Forgetting a habitat:** `hale habitat down --forget` removes the habitat whole, plan first, like terraform. It prints everything it would remove, grouped: the habitat's record and memory (row count, organisms, newest row), each grafted organism (record, genome repository, Forgejo repository, allocations by host), the compose projects and volumes, the vault slots (by name, never a value), the Forgejo instance and its accounts, the hosts, and what it runs on each host over SSH, each line with its size or count and whether it is recoverable. Nothing is touched until you type the habitat's name back at a terminal; there is no `--yes`, and without a terminal it refuses. `--plan` prints the plan and exits. A forget that fails part way says what was done and what was not, and running it again plans from what remains. The habitat cannot remove the line each host's `~/.ssh/authorized_keys` took, so the CLI does, over your own SSH login, by the key's `habitat-<id>` comment; a host your login does not reach keeps it, the CLI names the line, and the next plan shows the note until a forget clears it. A host that does not answer is planned as `unreachable: left on <host>`: the habitat's side goes and what is left there is named. The services placed on the hosts are taken off first (each one's `uninstall`, then what placing installed there); through a pointer your machine does that over your login before the forget on the habitat's machine runs, and asks for the habitat's name for that step. The notes a forget keeps (`forgotten-notes.jsonl`) last only while something in them is undone: once your machine has taken a host's key line off, its note goes, and the file and the emptied habitat directory go with the last. The vault's nerves accounts go too, an application's among them under every name it was attached by. Slots a person supplied (a GitHub token, a `--key-vault` slot) are kept. If anything changes between the plan and your confirmation, the act refuses with `plan_changed` and you plan again.
+- **Removing an organism:** `hale habitat organism remove <name>` plans and confirms the same way (its record and memory, genome repository, Forgejo repository and account, allocations by host, compose services, vault slots), typed back by the organism's name; the organisms screen of the operator face offers the same.
+- **Resuming interrupted grafts:** `hale habitat graft` verifies pinned file digests before grafting and resumes cleanly from its last completed step if interrupted.
+- **Model map and graft log rows:** `model-map` and `model-probe` are the head's `Commands::set_model_map` and `Commands::probe_model`; a key is named only by its vault slot. `models` is the habitat's own act (no head row): through a pointer it runs on the habitat's machine. The face follows a graft's log through `Commands::graft_log`, which reads only the log of a graft the habitat itself started.
+- **No model:** every face screen works with the models catalog empty. Without a model, asks and leg work become handed Tasks that a person takes and reports done as text from the face; nothing waits on a model or times out into a leg ([Workflows: with no model](./dna/workflow.md#with-no-model)).
+- **SSH host key verification:** `hale habitat host probe` rejects any host whose SSH host key has changed since `host add`; a host in `pending-key` state is waiting for the habitat's public key line in `~/.ssh/authorized_keys`.
+- **Agent operator brief:** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items). It reads the record alone, never the vault.
+
+---
+
+## Running on a Small Machine
+
+A habitat fits on a laptop. Measured on a running habitat (`docker stats`), with Grafana stopped, which is how it spends most of its time:
+
+| Service | Memory |
 | --- | --- |
-| a record per repository, never rewound | yes: [Memory and the record](./dna/memory.md) |
-| deliberate publication between records | connections and handoffs of single facts with origin, lineage and purpose (`hale dna connect`, `hale dna handoff`): [Memory and the record](./dna/memory.md) |
-| protected evidence outside the replicated record | receipts filed as `customer` or `confidential` are kept in memory alone, and every read is a row (`hale dna receipt`): [Memory and the record](./dna/memory.md) |
-| deployment profiles | `hale dna new --profile local \| remote-body`, `hale dna profile`: [Getting started](./dna/getting-started.md) |
-| a verified principal source | an OIDC-signed head (`git config dna.principal oidc`): [The head and the face](./dna/head.md), [The skin](./dna/skin.md) |
-| roles per client on each backend | memory's roles, one broker account per role and per attached application, and vault slots: [The skin](./dna/skin.md) |
-| money reserved against grants | spend reserved, settled and compensated under a grant's windows: [The spine](./dna/spine.md) |
-| `runs_under`, policies rendered as projections, per-attachment credentials | **not built**: reserved as a relation for the compiler's registry (GH #1212) |
-| serving a surface over a transport, and placing a locus | `api::serve` over unix and HTTP, `hale api describe` and `call`: [API](./services/api.md); pools and programs: [Concurrency & placement](./services/concurrency.md) |
-| opening and filling a position | `hale dna position open` (its node and its mandate, one Board Review) and `hale dna fill`, each ratified by the Board: [Positions and `fill`](./dna/shaping.md) |
-| several changes as one Review, and the operations of one organism | **built**: `hale dna apply <file>` (open, fill, vacate, practice, assign, close, merge, split, expose, depend, externalize, internalize) and `hale dna vacate`, planned whole, ratified whole, refused whole when stale |
-| adopting and retiring a pack | **built**: `hale dna pack apply` from the toolchain's nursery, a directory or a git repository at a revision, recorded with its digest and source; `hale dna pack retire` undoes the latest ratified adoption; a git nursery is trusted by the Board first (`hale dna nursery add`) |
-| the habitat's operations: graft, extract, absorb, re-parent | **not built**; they span several records and come with saplings |
-| standard equipment | **not built** |
-| finance capture and books | **not built** |
+| `face` (the face, the head and its children) | about 105 MiB |
+| `forge` (Forgejo) | about 98 MiB |
+| `body` | about 91 MiB |
+| the habitat's memory (Postgres) | about 81 MiB |
+| the habitat's senses (Prometheus) | about 45 MiB |
+| `hale-cadvisor` (the container exporter) | about 20 MiB |
+| the habitat's nerves (NATS) | about 7 MiB |
+| **the habitat** | **about 450 MiB** |
+| `grafana`, while someone uses it | about 170 MiB more (capped at 384 MiB) |
+
+Before Grafana ran on demand and was trimmed, it alone held about 500 MiB, half the habitat.
+
+An organism grafted with the habitat's defaults adds no server of its own for its record or its nerves: its record is a schema on the habitat's Postgres and its organization an account on the habitat's NATS. It adds only its own services (voice's coordinator holds about 200 MiB). An organism grafted with `--own memory` or `--own nerves`, or one that needs senses of its own, adds that server: a Postgres about 80 MiB, a NATS under 10 MiB, a Prometheus about 45 MiB.
+
+**On a Mac**, the containers run inside Docker Desktop's VM, so the VM's memory is the habitat's budget. 3 GB is enough for the habitat, a few organisms and the VM's own needs (Docker Desktop → Settings → Resources → Memory). A model served by a node outside Docker (voice's `node` placed on the Mac itself, for example) uses the Mac's unified memory directly, not the VM's, so leave room for it outside the VM: on a 16 GB MacBook Air, a 3 GB VM leaves the rest for macOS and the model.
+
+Two things need more than that, once:
+
+- **Building the habitat's image.** A released `hale` pulls its own image (`ghcr.io/hale-lang/hale:<version>`), checks that it runs the same toolchain, and uses it, so nothing is built. A `hale` built from source has no published image and builds it once per toolchain commit: it compiles the compiler and then the head's seven programs in parallel, the largest of which alone peaks near 4.5 GB. For that build, raise the VM (8 GB or more) and lower it afterwards, or build the image on a larger machine and start the habitat from it with `--image <tag>` (or `HALE_HABITAT_IMAGE`).
+- **A face that has to build the head.** The image already holds the head's programs, so the face starts without compiling. A face whose image does not hold them (an image of another toolchain commit) builds them on its first start, which takes the same several GB. That is why the face and body have no memory cap: a cap below the build's peak would kill the build.
+
+---
+
+## Multi-Record Isolation, Sharing, and Identity
+
+### Records as the Unit of Isolation
+
+The fundamental unit of isolation in DNA is a **record**: an append-only chain of cryptographically signed rows stored in a dedicated Postgres schema (`dna_<record-identity>`) paired with isolated NATS JetStream, secret vault, and Prometheus senses allocations. A Git repository is the genome whose `hale.toml` (`[dna] record`) pins which record it belongs to.
+- Multiple people can collaborate on one record, and one person can participate in multiple records.
+- Every Git clone accesses the shared record in Postgres under its assigned database role (`head` or `spine`) rather than maintaining an uncoordinated local database replica.
+- Every row hashes its predecessor's digest and carries its author's signature, preserving provenance whenever rows are exported or inspected.
+
+### Deliberate Cross-Record Publication (`connect` and `handoff`)
+
+Two organizations never merge their private records or read each other's database schemas. Instead, cross-organization collaboration works through **deliberate publication**:
+- Two records establish a Board-ratified connection (`hale dna connect`), or two firms maintain private records and agree on a third shared record.
+- Selected facts (tasks or evidence receipts) are published across the connection via `hale dna handoff` as signed envelopes over NATS JetStream, carrying explicit origin, lineage, and purpose metadata.
+- Sharing a record's tasks, owners, or grants never exposes either participant's private context, internal administration, or financial books.
+
+### Enforced Visibility and Sealed Protected Evidence
+
+Because any principal with read access to `record_rows` or `ledger_rows` can read row payloads in plaintext, view-level filtering is never used for confidentiality. Sensitive payloads—along with derived artifacts such as summaries, embeddings, prompts, and worker context hats—are stored outside the row stream as **protected evidence** (`customer` or `confidential` receipts), encrypted at rest in the record's Postgres memory under `HALE_DNA_RECEIPT_KEY`, and accessed strictly through an audited, principal-checked boundary (`hale dna receipt disclose` / `show`).
+
+### Orthogonal Deployment and Trust Axes
+
+Every organism independently configures three operational axes:
+
+| Axis | Supported Options |
+| --- | --- |
+| **Participation** | Single individual; a team sharing one record; multiple firms collaborating via a shared record (`dna.owner`) |
+| **Deployment** | Local workstation (`local`); remote server body (`remote-body`); multi-node fleet (`hale node`) |
+| **Principal Source** | Explicit local UID trust (`dna.trust = local`, `dna.unix.member`); verified OpenID Connect provider (`dna.principal = oidc`) |
+
+---
+
+## Layered Structural Operations
+
+As an organization evolves, capabilities routinely move across process boundaries, ownership boundaries inside an organism, or record boundaries across a habitat. Every structural refactoring operation follows three invariants:
+1. **One operation = one Review:** The Board votes on the high-level operation (for example, extracting a service), while the resulting low-level graph rows serve as the execution receipt.
+2. **Explicit change class:** Each operation maps to a change class that determines its required ratification authority.
+3. **Pre-proposal invariant checks:** Operations validate their preconditions upfront and refuse invalid cuts with a specific diagnostic before opening a Review.
+
+| Layer | Boundary Moved | Operations |
+| --- | --- | --- |
+| **1. Hale Program** | Process & thread placement (code behavior unchanged) | **Serve** (place a locus subtree behind `unix`, `http`, or `nats` RPC via its `api` surface), **Unserve** (return a remote surface in-process), **Place** (move a locus between thread pools or binaries within the same organism). |
+| **2. Single Organism** | Responsibility & contract ownership within one record (`hale dna apply`) | **Open** (`open`), **Fill / Vacate** (`fill`, `vacate`), **Merge** (`merge`), **Split** (`split`), **Assign** (`assign`), **Adopt / Retire Pack** (`hale dna pack apply\|retire`), **Expose** (`expose`), **Depend** (`depend`), **Externalize** (`externalize`), **Internalize** (`internalize`). |
+| **3. Multi-Record Habitat** | Ownership across separate records (parent/child organisms) | **Graft** (`hale habitat graft`), **Extract** (externalize a part in the source organism and birth a child organism from the copied subgraph with provenance), **Absorb** (internalize a child organism's contract back into its parent and retire the child), **Re-parent** (move a child organism under a new parent ceiling and Board). |
+
+Note that **Externalize** requires only a single organism: once a capability is externalized (`externalize seed:<name>`), the organism depends solely on its `contract:<path>` regardless of whether that contract is served by a sibling organism, a third-party SaaS API, or another internal team.
+
+---
+
+## Authority in the Compiler Graph (`runs_under`) and Financial Books
+
+### Principal-Typed Authority (`runs_under` Design)
+
+While the compiler today tracks locus ownership (the Σ-tower) and reachable effect classes (`@effects`), the authority architecture extends the compiler graph with a `runs_under(locus, principal)` relation (where each locus inherits its parent's principal unless narrowed, and no locus may claim a principal its owner does not hold):
+
+1. **Static Principal Claims:** Secret slot accesses carry the principal they require, enabling compile-time constitutional claims such as *"only code running under the `reviewer` principal may reach `FORGE_TOKEN`"* ([Claims & the law](./claims.md)).
+2. **Generated Backend Policies:** Vault policies, Postgres roles, NATS account ACLs, and GitHub team permissions become deterministic projections of each principal's reachable closure rendered at placement time, rather than hand-edited configuration files.
+3. **Dynamic Per-Attachment Credentials:** In the record, holding a position is an appointment row (`holds`), while a live worker process or browser session acting under that seat is a time-bounded **attachment**. Short-lived credentials are minted for the specific attachment (narrowed to the attachment's scope and revoked when the attachment ends), and every runtime effect is logged against its attachment ID.
+
+### Replaceable Providers and Financial Discipline
+
+### Providers are replaceable
+
+External dependencies—LLM backends, databases, OIDC issuers, communication channels, payment rails, accounting ledgers, and compute hosts—bind through Hale interfaces and perspectives ([Perspectives](./services/perspectives.md)). Each provider capability tracks three distinct states: *implemented in code*, *available on the current account*, and *authorized by grant*. Swapping a provider preserves the organization's record, authority structure, and history.
+
+### Financial Capture and Books (Design)
+
+Financial operations follow four structural rules:
+- **Distinct pipeline stages:** Raw source receipts -> observations -> economic events -> approved ledger postings or external acknowledgements.
+- **Single book authority:** Each book is designated as capture-only, managed by the organism's own posting service, or owned by an external accounting platform.
+- **Exact decimal arithmetic:** Monetary quantities use `Decimal` with an explicit currency and rounding policy—never binary floating-point.
+- **Five separated budget states:** Permitted budget, reserved capacity (`spend.reserved`), observed usage, booked expense, and cash settlement (`spend.settled` / `spend.compensated`) are tracked separately so a reservation is never mistaken for an expense.
+
+---
+
+## Implementation Status
+
+| Capability | Status in the Repository Today |
+| --- | --- |
+| **Per-repository append-only signed record** | **Built:** [Memory and the record](./dna/memory.md) |
+| **Deliberate cross-record publication (`connect` & `handoff`)** | **Built:** `hale dna connect` and `hale dna handoff` ([Memory and the record](./dna/memory.md)) |
+| **Sealed protected evidence (`customer`, `confidential`)** | **Built:** `hale dna receipt` encrypted in Postgres memory ([Memory and the record](./dna/memory.md)) |
+| **Deployment profiles (`local`, `remote-body`)** | **Built:** `hale habitat graft --profile local\|remote-body` and `hale dna profile` ([Getting started](./dna/getting-started.md)) |
+| **Root habitat organism (`hale habitat up`, `status`, `down`)** | **Built** for the `local` profile (Docker Compose `body` and `face` services); `hosted` profile is **not built** |
+| **Habitat child birth & role allocation (`hale habitat graft`)** | **Built:** Allocates `[dna] needs` (`memory`, `nerves`, `senses`, heart `database`), links parent genesis, and proposes `standard` pack |
+| **Habitat standard & operator browser face (`/index`, `/app/`)** | **Built:** Started automatically by `hale habitat up` ([The head and the face](./dna/head.md)) |
+| **Hosts, `compose` provider, and `ssh` host registration** | **Built:** `compose` provider places on `local`; `hale habitat host add\|probe\|remove` registers LAN hosts over SSH and placing allocations on them is **built** (`hale habitat place`, `apply`, `graft --host`) |
+| **An agent pairing with a person (MCP, `hale habitat brief`)** | **Built:** the head's commands over `mcp::Rpc` under the person's bearer and roles (`hale mcp --app`, the endpoint `hale habitat status` prints), every act a row in their name; `agents/operator.md` |
+| **Saplings & nurseries (`hale habitat graft <sapling>`, `nursery`)** | **Built:** Digest-pinned `[[sapling]]` entries, `hale habitat nursery add\|refresh\|list\|ratify`; a repository as its own nursery (`repo = "."`), as `hale-lang/voice` is |
+| **Verified OIDC principal source** | **Built:** `git config dna.principal oidc` ([The head and the face](./dna/head.md), [The skin](./dna/skin.md)) |
+| **Per-client backend roles (Postgres, NATS, Vault)** | **Built:** Separate `owner`, `spine`, `head`, `reflexes`, and per-app roles ([The skin](./dna/skin.md)) |
+| **Monetary grant reservations & window enforcement** | **Built:** `spend.reserved`, `spend.settled`, `spend.compensated` ([The spine](./dna/spine.md)) |
+| **Serving API surfaces & locus placement** | **Built:** `api::serve` over Unix/HTTP ([API](./services/api.md)) and `placement { }` ([Concurrency & placement](./services/concurrency.md)) |
+| **Opening and filling positions (`position open`, `fill`, `vacate`)** | **Built:** Board-ratified graph nodes, mandates, and `holds` edges ([Positions and `fill`](./dna/shaping.md#positions-and-fill)) |
+| **Atomic structural batches (`hale dna apply`)** | **Built:** `open`, `fill`, `fill *`, `vacate`, `practice`, `law`, `idea`, `assign`, `close`, `merge`, `split`, `expose`, `depend`, `externalize`, `internalize` |
+| **Adopting and retiring nursery packs (`hale dna pack`)** | **Built:** `hale dna pack list\|show\|apply\|retire` and `hale dna nursery add\|list` |
+| **`runs_under` principal graph, projected ACLs, attachment tokens** | **Not built** (tracked in compiler registry design) |
+| **Cross-record habitat operations (`extract`, `absorb`, `re-parent`)** | **Not built** |
+| **Standard equipment libraries & financial books** | **Not built** (`standard` nursery pack is **built** and proposed at graft) |

@@ -10,28 +10,76 @@ const PREPARED: String = "// Exact équipe 🧭 <literal>\r\nmain locus Org {\n 
 
 locus SourceCandidateCases {
     fn setup(root: String) {
-        std::test::assert_eq_int(dna::run_tool("mkdir\n-p\n" + root + "/dna/org").code, 0, "isolated source directory");
+        std::test::assert_eq_int(
+            dna::run_tool("mkdir\n-p\n" + root + "/dna/org").code,
+            0,
+            "isolated source directory",
+        );
         std::io::fs::write_file(root + "/dna/org/main.hl", ORIGINAL) or raise;
         std::io::fs::write_file(root + "/.gitignore", "/.hale/\n/vendor/\n") or raise;
-        let record = dna::GitRecord { repo: root };
+        let record = dna::MemoryRecord { repo: root };
         std::test::assert_eq_int(record.git("init\n-q\n-b\nmain").code, 0, "initialize source Git");
+        std::test::assert_eq_str(
+            dna::memory_fixture(root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         std::test::assert_eq_int(record.git("add\n-A").code, 0, "track original source");
-        std::test::assert_eq_int(record.git("-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase").code, 0, "commit original source");
-        let j = dna::GitJournal { repo: root }; std::test::assert(j.append_exact(0, "application.observed", "org", "{}").ok, "Record genesis");
+        std::test::assert_eq_int(
+            record.git(
+                "-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase",
+            ).code,
+            0,
+            "commit original source",
+        );
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
+        std::test::assert(
+            j.append_exact(j.revision(), "application.observed", "org", "{}").ok,
+            "Record genesis",
+        );
     }
     fn body(root: String, id: String) {
-        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" }; let journal = dna::GitJournal { repo: root };
+        std::test::assert_eq_str(
+            dna::memory_fixture(root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" };
+        let journal = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
         let body = dna::Dna {
-            journal: journal, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs },
+            journal: journal,
+            org_source: dna::OrganizationSourceRecord {
+                facts: ops::StrictOrganizationSourceFacts { },
+                inputs: inputs,
+            },
             ownership: dna::Ownership { me_env: "" },
-            gateway: dna::MutationGateway { leases: dna::GitLeases { repo: root }, workspaces: dna::IsolatedWorktrees { repo: root, root: root + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: root } },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: root }, repo: root, scratch: root + "/.hale/dna/verification", seed: "dna/org" },
+            gateway: dna::MutationGateway {
+                leases: dna::MemoryLeases { repo: root },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: root,
+                    root: root + "/.hale/dna/worktrees",
+                },
+                repo: dna::LocalGit { repo: root },
+            },
+            verification: dna::HaleVerification {
+                receipts: dna::MemoryReceipts { repo: root },
+                repo: root,
+                scratch: root + "/.hale/dna/verification",
+                seed: "dna/org",
+            },
             review_policy: dna::OrgPolicy { }, board: dna::Board { }
         }; body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: id });
     }
     fn first(response: std::http::Response) -> String {
         std::test::assert_eq_int(response.status, 200, response.body);
-        let w = api::CommandWire { }; return std::json::array_first(w.raw(w.raw(response.body, "data"), "items")).element;
+        let w = api::CommandWire { };
+        return std::json::array_first(w.raw(w.raw(response.body, "data"), "items")).element;
     }
     fn hidden(row: String) {
         let w = api::CommandWire { };
@@ -40,96 +88,347 @@ locus SourceCandidateCases {
         std::test::assert_eq_str(w.text(row, "settled"), "", "source settlement prose masked");
         std::test::assert_eq_str(w.text(row, "author"), "", "source proposer masked");
         std::test::assert_eq_str(w.text(row, "approvers"), "", "source owner membership masked");
-        std::test::assert_eq_str(w.text(row, "organization_source_digest"), "", "source digest masked");
-        std::test::assert_eq_str(w.text(row, "organization_source_request_id"), "", "source request link masked");
+        std::test::assert_eq_str(
+            w.text(row, "organization_source_digest"),
+            "",
+            "source digest masked",
+        );
+        std::test::assert_eq_str(
+            w.text(row, "organization_source_request_id"),
+            "",
+            "source request link masked",
+        );
     }
     fn run_cases(root: String) {
         let original = ORIGINAL;
         let prepared = PREPARED;
+        std::test::assert_eq_str(
+            dna::memory_fixture(root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let module_path = "dna/org/main.hl";
-        self.setup(root); let record = dna::GitRecord { repo: root }; let app = record.identity();
+        self.setup(root);
+        let record = dna::MemoryRecord { repo: root };
+        let app = record.identity();
         let policy_wire = ops::OrganizationAuthorityPolicyCodec { };
-        let policy = policy_wire.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"organization_propose\":true,\"organization_review\":false,\"recover\":true},{\"mode\":\"local\",\"name\":\"bob\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":true,\"recover\":true}]}", app, "local");
+        let policy = policy_wire.decode(
+            "{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app
+                + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"organization_propose\":true,\"organization_review\":false,\"recover\":true},{\"mode\":\"local\",\"name\":\"bob\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":true,\"recover\":true}]}",
+            app,
+            "local",
+        );
         std::test::assert(policy.valid, "separate explicit source policy");
-        let authority = ops::FixedOrganizationAuthority { policy: policy }; let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" };
-        let service = ops::GovernanceCommands { record: record, organization_authority: authority, organization_enabled: true, organization_inputs: inputs };
-        let inspector = orgsource::OrganizationSource { root: root, allow_drafts: true }; let basis = inspector.read(); std::test::assert(basis.ok, "actual source basis");
-        let alice = ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "alice" };
-        let command = ops::GovernanceCommand { request_id: "immutable-source", operation: "dna.organization.propose", application_id: app, target_kind: "dna.organization.module", target_id: module_path, subject_digest: dna::digest_of(original), source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal").id, source_text: prepared, rationale: "Clarify the exact source." };
-        let admitted = service.submit(alice, command); std::test::assert(admitted.ok, "actual source admission: " + admitted.code);
+        let authority = ops::FixedOrganizationAuthority { policy: policy };
+        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" };
+        let service = ops::GovernanceCommands {
+            record: record,
+            organization_authority: authority,
+            organization_enabled: true,
+            organization_inputs: inputs,
+        };
+        let inspector = orgsource::OrganizationSource { root: root, allow_drafts: true };
+        let basis = inspector.read();
+        std::test::assert(basis.ok, "actual source basis");
+        let alice = ops::GovernanceContext {
+            application_id: app,
+            principal_mode: "local",
+            principal_name: "alice",
+        };
+        let command = ops::GovernanceCommand {
+            request_id: "immutable-source",
+            operation: "dna.organization.propose",
+            application_id: app,
+            target_kind: "dna.organization.module",
+            target_id: module_path,
+            subject_digest: dna::digest_of(original),
+            source_head: basis.source_head,
+            dependency_source: basis.dependency_source,
+            dependency_digest: basis.dependency_digest,
+            record_head: record.head("journal").id,
+            source_text: prepared,
+            rationale: "Clarify the exact source.",
+        };
+        let admitted = service.submit(alice, command);
+        std::test::assert(admitted.ok, "actual source admission: " + admitted.code);
         self.body(root, admitted.receipt.command_id);
-        let result = service.lookup(alice, command.request_id); std::test::assert(result.ok && result.receipt.organization.proposal_state == "created", "actual candidate and Review: " + result.code);
-        let snapshot = service.capture(); let journal = ops::GovernanceJournal { snapshot: snapshot }; let projection_view = ops::OrganizationProjection { };
-        let candidate = projection_view.candidate(journal, result.receipt.organization.mutation_id, snapshot.text); std::test::assert(candidate.ok, "exact native proof chain");
-        let reader = api::OrganizationCandidateWire { authority: authority }; let head = api::Api { root: root, local_name: "bob", organization_candidates: reader };
-        let prefix = api::API_PREFIX + "/" + app; let suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + snapshot.head;
-        let path = prefix + "/dna/reviews/candidate" + suffix; let review_path = prefix + "/dna/reviews" + suffix;
-        let response = head.handle(std::http::Request { method: "GET", path: path }); std::test::assert_eq_int(response.status, 200, response.body);
-        let w = api::CommandWire { }; let data = w.raw(response.body, "data"); let document = w.text(data, "document"); let syntax = ops::OrganizationJson { };
+        let result = service.lookup(alice, command.request_id);
+        std::test::assert(
+            result.ok && result.receipt.organization.proposal_state == "created",
+            "actual candidate and Review: " + result.code,
+        );
+        let snapshot = service.capture();
+        let journal = ops::GovernanceJournal { snapshot: snapshot };
+        let projection_view = ops::OrganizationProjection { };
+        let candidate = projection_view.candidate(
+            journal,
+            result.receipt.organization.mutation_id,
+            snapshot.text,
+        );
+        std::test::assert(candidate.ok, "exact native proof chain");
+        let reader = api::OrganizationCandidateWire { authority: authority };
+        let head = api::Api { root: root, local_name: "bob", organization_candidates: reader };
+        let prefix = api::API_PREFIX + "/" + app;
+        let suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + snapshot.head;
+        let path = prefix + "/dna/reviews/candidate" + suffix;
+        let review_path = prefix + "/dna/reviews" + suffix;
+        let response = head.handle(std::http::Request { method: "GET", path: path });
+        std::test::assert_eq_int(response.status, 200, response.body);
+        let w = api::CommandWire { };
+        let data = w.raw(response.body, "data");
+        let document = w.text(data, "document");
+        let syntax = ops::OrganizationJson { };
         std::test::assert(syntax.valid(document), "closed exact evidence JSON document");
-        std::test::assert_eq_str(w.text(data, "kind"), "organization_source_change", "source discriminator");
-        std::test::assert_eq_str(w.text(data, "candidate_commit"), candidate.candidate_commit, "Review subject is Git commit");
-        std::test::assert_eq_str(w.raw(data, "candidate_digest"), "", "source evidence is not a native Knowledge document");
-        let module_data = w.raw(document, "module"); let pin = w.raw(document, "candidate"); let verify = w.raw(document, "verification");
-        std::test::assert_eq_str(w.text(module_data, "base_text"), original, "exact original bytes from retained Git object");
-        std::test::assert_eq_str(w.text(module_data, "text"), prepared, "exact Unicode and CRLF candidate bytes");
-        std::test::assert_eq_str(w.text(module_data, "digest"), dna::digest_of(prepared), "module digest exact");
-        std::test::assert_eq_str(w.text(pin, "parent"), basis.source_head, "one exact source parent");
-        std::test::assert_eq_str(w.raw(document, "changed_files"), "[\"" + module_path + "\"]", "only fixed module changes");
+        std::test::assert_eq_str(
+            w.text(data, "kind"),
+            "organization_source_change",
+            "source discriminator",
+        );
+        std::test::assert_eq_str(
+            w.text(data, "candidate_commit"),
+            candidate.candidate_commit,
+            "Review subject is Git commit",
+        );
+        std::test::assert_eq_str(
+            w.raw(data, "candidate_digest"),
+            "",
+            "source evidence is not a native Knowledge document",
+        );
+        let module_data = w.raw(document, "module");
+        let pin = w.raw(document, "candidate");
+        let verify = w.raw(document, "verification");
+        std::test::assert_eq_str(
+            w.text(module_data, "base_text"),
+            original,
+            "exact original bytes from retained Git object",
+        );
+        std::test::assert_eq_str(
+            w.text(module_data, "text"),
+            prepared,
+            "exact Unicode and CRLF candidate bytes",
+        );
+        std::test::assert_eq_str(
+            w.text(module_data, "digest"),
+            dna::digest_of(prepared),
+            "module digest exact",
+        );
+        std::test::assert_eq_str(
+            w.text(pin, "parent"),
+            basis.source_head,
+            "one exact source parent",
+        );
+        std::test::assert_eq_str(
+            w.raw(document, "changed_files"),
+            "[\"" + module_path + "\"]",
+            "only fixed module changes",
+        );
         let semantic = w.raw(verify, "semantic_diff"); let projected = w.text(semantic, "document");
-        std::test::assert_eq_str(w.text(semantic, "digest"), dna::digest_of(projected), "returned semantic projection hash is exact");
-        std::test::assert_eq_str(w.text(semantic, "receipt_digest"), "sha256:" + ops::raw_digest(w.text(candidate.review_body, "diff_json")), "retained receipt digest is explicitly separate");
-        std::test::assert_eq_str(w.text(projected, "coverage"), "classification_summary_declarations", "semantic coverage is explicit");
-        std::test::assert_eq_str(w.text(projected, "classification"), "source-only", "actual native semantic classification");
-        std::test::assert(!std::str::contains(projected, "path") && w.raw(projected, "contracts") == "" && w.raw(projected, "effects") == "", "no raw compiler location or diagnostics escape");
-        std::test::assert(!std::str::contains(document, root) && !std::str::contains(document, "activation_state") && !std::str::contains(document, "application_state"), "read exposes neither local paths nor lifecycle claims");
+        std::test::assert_eq_str(
+            w.text(semantic, "digest"),
+            dna::digest_of(projected),
+            "returned semantic projection hash is exact",
+        );
+        std::test::assert_eq_str(
+            w.text(semantic, "receipt_digest"),
+            "sha256:" + ops::raw_digest(w.text(candidate.review_body, "diff_json")),
+            "retained receipt digest is explicitly separate",
+        );
+        std::test::assert_eq_str(
+            w.text(projected, "coverage"),
+            "classification_summary_declarations",
+            "semantic coverage is explicit",
+        );
+        std::test::assert_eq_str(
+            w.text(projected, "classification"),
+            "source-only",
+            "actual native semantic classification",
+        );
+        std::test::assert(
+            !std::str::contains(projected, "path")
+                && w.raw(projected, "contracts") == ""
+                && w.raw(projected, "effects") == "",
+            "no raw compiler location or diagnostics escape",
+        );
+        std::test::assert(
+            !std::str::contains(document, root)
+                && !std::str::contains(document, "activation_state")
+                && !std::str::contains(document, "application_state"),
+            "read exposes neither local paths nor lifecycle claims",
+        );
         let review_response = head.handle(std::http::Request { method: "GET", path: review_path });
         let row = self.first(review_response);
         let evidence_root = root;
         if evidence_root != "" {
-            std::io::fs::write_file(evidence_root + "/candidate-response.json", response.body) or raise;
-            std::io::fs::write_file(evidence_root + "/review-response.json", review_response.body) or raise;
+            std::io::fs::write_file(
+                evidence_root + "/candidate-response.json",
+                response.body,
+            ) or raise;
+            std::io::fs::write_file(
+                evidence_root + "/review-response.json",
+                review_response.body,
+            ) or raise;
             std::io::fs::write_file(evidence_root + "/candidate-document.json", document) or raise;
             std::io::fs::write_file(evidence_root + "/semantic-document.json", projected) or raise;
         }
         std::test::assert_eq_str(w.raw(row, "organization_source"), "true", "source Review tagged");
-        std::test::assert_eq_str(w.raw(row, "text_available"), "true", "independent reviewer recover grant permits read despite propose=false");
+        std::test::assert_eq_str(
+            w.raw(row, "text_available"),
+            "true",
+            "independent reviewer recover grant permits read despite propose=false",
+        );
         let denied = api::Api { root: root, local_name: "bob" };
-        std::test::assert_eq_int(denied.handle(std::http::Request { method: "GET", path: path }).status, 403, "default source authority denies");
-        self.hidden(self.first(denied.handle(std::http::Request { method: "GET", path: review_path })));
+        std::test::assert_eq_int(
+            denied.handle(std::http::Request { method: "GET", path: path }).status,
+            403,
+            "default source authority denies",
+        );
+        self.hidden(
+            self.first(denied.handle(std::http::Request { method: "GET", path: review_path })),
+        );
         let eve = api::Api { root: root, local_name: "eve", organization_candidates: reader };
-        std::test::assert_eq_int(eve.handle(std::http::Request { method: "GET", path: path }).status, 403, "unlisted actor cannot borrow source grant");
-        self.hidden(self.first(eve.handle(std::http::Request { method: "GET", path: review_path })));
+        std::test::assert_eq_int(
+            eve.handle(std::http::Request { method: "GET", path: path }).status,
+            403,
+            "unlisted actor cannot borrow source grant",
+        );
+        self.hidden(
+            self.first(eve.handle(std::http::Request { method: "GET", path: review_path })),
+        );
         // Destination edits and retired scratch are irrelevant to an immutable
         // historical read; only retained candidate/receipt objects are used.
-        std::test::assert_eq_int(record.git("worktree\nremove\n--force\n" + root + "/.hale/dna/worktrees/" + candidate.mutation_id).code, 0, "remove original owned candidate workspace");
+        std::test::assert_eq_int(
+            record.git(
+                "worktree\nremove\n--force\n" + root + "/.hale/dna/worktrees/"
+                    + candidate.mutation_id,
+            ).code,
+            0,
+            "remove original owned candidate workspace",
+        );
         std::io::fs::write_file(root + "/later.txt", "unrelated destination change\n") or raise;
-        std::test::assert_eq_int(record.git("add\nlater.txt").code, 0, "track unrelated later file");
-        std::test::assert_eq_int(record.git("-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nlater").code, 0, "move source checkout after candidate preparation");
-        std::test::assert_eq_str(head.handle(std::http::Request { method: "GET", path: path }).body, response.body, "historical evidence independent of destination checkout and workspace");
-        let object_read = reader.objects(record, journal, candidate); std::test::assert(object_read.ok && reader.unchanged(record, snapshot, object_read), "retained evidence fence");
-        let candidate_ref = record.ref_of("candidates/" + candidate.candidate_key);
-        std::test::assert_eq_int(record.git("update-ref\n" + candidate_ref + "\n" + basis.source_head).code, 0, "retained pointer mismatch fixture");
-        std::test::assert(!reader.unchanged(record, snapshot, object_read), "retained pointer movement fails final fence");
-        std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "wrong retained candidate is unavailable");
-        std::test::assert_eq_int(record.git("update-ref\n" + candidate_ref + "\n" + candidate.candidate_commit).code, 0, "restore exact retained pointer");
-        let diff_ref = record.ref_of("receipts/" + ops::raw_digest(w.text(semantic, "receipt_digest")));
-        std::test::assert_eq_int(record.git("update-ref\n-d\n" + diff_ref).code, 0, "remove retained diff fixture");
-        std::test::assert(!reader.unchanged(record, snapshot, object_read), "diff pointer loss fails final fence");
-        std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "missing native diff is not invented");
-        std::test::assert_eq_int(record.git("update-ref\n" + diff_ref + "\n" + object_read.diff_json.object).code, 0, "restore exact native diff");
-        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: candidate.request.source_digest, author: "privacy", body: "{}" }, false, "").ok, "real source visibility input");
-        std::test::assert(!reader.unchanged(record, snapshot, object_read), "new restriction changes Record fence");
-        std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 409, "old snapshot invalidated");
-        let latest = record.head("journal").id; let hidden_suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + latest;
-        let protected_read = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate" + hidden_suffix });
-        let missing = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=missing&snapshot=" + latest });
-        std::test::assert_eq_int(protected_read.status, 404, "protected source candidate hidden"); std::test::assert_eq_str(protected_read.body, missing.body, "protected and missing evidence are identical");
-        self.hidden(self.first(head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews" + hidden_suffix })));
-        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "review.requested", entity: "review:" + candidate.mutation_id, author: "malformed", body: "{\"question\":\"private duplicate question\"}" }, false, "").ok, "malformed duplicate input");
-        let hidden_duplicate = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + record.head("journal").id });
-        self.hidden(self.first(hidden_duplicate)); std::test::assert(!std::str::contains(hidden_duplicate.body, "private duplicate"), "untagged later duplicate cannot remove source masking");
-        eprintln("PASS immutable Organization candidate: real admission/Body, recovery grant, pinned objects, history, masking and races");
+        std::test::assert_eq_int(
+            record.git("add\nlater.txt").code,
+            0,
+            "track unrelated later file",
+        );
+        std::test::assert_eq_int(
+            record.git(
+                "-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nlater",
+            ).code,
+            0,
+            "move source checkout after candidate preparation",
+        );
+        std::test::assert_eq_str(
+            head.handle(std::http::Request { method: "GET", path: path }).body,
+            response.body,
+            "historical evidence independent of destination checkout and workspace",
+        );
+        let object_read = reader.objects(record, journal, candidate);
+        std::test::assert(
+            object_read.ok && reader.unchanged(record, snapshot, object_read),
+            "retained evidence fence",
+        );
+        let candidate_ref = dna::candidate_ref(candidate.candidate_key);
+        std::test::assert_eq_int(
+            record.git("update-ref\n" + candidate_ref + "\n" + basis.source_head).code,
+            0,
+            "retained pointer mismatch fixture",
+        );
+        std::test::assert(
+            !reader.unchanged(record, snapshot, object_read),
+            "retained pointer movement fails final fence",
+        );
+        std::test::assert_eq_int(
+            head.handle(std::http::Request { method: "GET", path: path }).status,
+            404,
+            "wrong retained candidate is unavailable",
+        );
+        std::test::assert_eq_int(
+            record.git("update-ref\n" + candidate_ref + "\n" + candidate.candidate_commit).code,
+            0,
+            "restore exact retained pointer",
+        );
+        // a receipt row is the Ledger's (GH #1590)
+        let privacy = dna::MemoryLedger { repo: root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        std::test::assert(
+            privacy.append(
+                privacy.revision(),
+                "receipt.withheld",
+                candidate.request.source_digest,
+                "{}",
+            ).ok,
+            "real source visibility input: " + privacy.last_error(),
+        );
+        std::test::assert(
+            !reader.unchanged(record, snapshot, object_read),
+            "new restriction changes Record fence",
+        );
+        // the record did not move (the restriction is the Ledger's row): the
+        // read at its head now hides the restricted candidate
+        std::test::assert_eq_int(
+            head.handle(std::http::Request { method: "GET", path: path }).status,
+            404,
+            "the restricted candidate is hidden",
+        );
+        let latest = record.head("journal").id;
+        let hidden_suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + latest;
+        let protected_read = head.handle(
+            std::http::Request {
+                method: "GET",
+                path: prefix + "/dna/reviews/candidate" + hidden_suffix,
+            },
+        );
+        let missing = head.handle(
+            std::http::Request {
+                method: "GET",
+                path: prefix + "/dna/reviews/candidate?id=missing&snapshot=" + latest,
+            },
+        );
+        std::test::assert_eq_int(protected_read.status, 404, "protected source candidate hidden");
+        std::test::assert_eq_str(
+            protected_read.body,
+            missing.body,
+            "protected and missing evidence are identical",
+        );
+        self.hidden(
+            self.first(
+                head.handle(
+                    std::http::Request {
+                        method: "GET",
+                        path: prefix + "/dna/reviews" + hidden_suffix,
+                    },
+                ),
+            ),
+        );
+        std::test::assert(
+            record.append(
+                "journal",
+                record.head("journal").id,
+                dna::Row {
+                    kind: "review.requested",
+                    entity: "review:" + candidate.mutation_id,
+                    author: "malformed",
+                    body: "{\"question\":\"private duplicate question\"}",
+                },
+                false,
+                "",
+            ).ok,
+            "malformed duplicate input",
+        );
+        let hidden_duplicate = head.handle(
+            std::http::Request {
+                method: "GET",
+                path: prefix + "/dna/reviews?id=" + dna::url_encode(candidate.mutation_id)
+                    + "&snapshot=" + record.head("journal").id,
+            },
+        );
+        self.hidden(self.first(hidden_duplicate));
+        std::test::assert(
+            !std::str::contains(hidden_duplicate.body, "private duplicate"),
+            "untagged later duplicate cannot remove source masking",
+        );
+        eprintln(
+            "PASS immutable Organization candidate: real admission/Body, recovery grant, pinned objects, history, masking and races",
+        );
     }
 }
 fn main() {

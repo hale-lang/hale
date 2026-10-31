@@ -11,9 +11,13 @@
 //!
 //! 1. JSON parsers: `json_gen` synthesizes `__json_parse_<T>` and
 //!    rewrites `T::from_json` (per program).
-//! 2. serve sites: `rpc_expand` turns an `api::serve` into an exposure,
+//! 2. serve sites: `client_expand` turns an `api::client` param into a
+//!    client of its surface, then `rpc_expand` turns an `api::serve` into an exposure,
 //!    its surface's rows into an adapter and its receivers' plumbing
 //!    (bundle-wide).
+//!    2b. seams: `seam_expand` turns a `seam` into the methods it means,
+//!    a closed flow the locus's `run` (bundle-wide: a hop's locus may be
+//!    another file's).
 //! 3. unit returns: `-> ()` is "no return type" on every fn-shaped
 //!    declaration.
 //! 4. construction aliases: a struct literal, variant path or
@@ -36,8 +40,12 @@
 //!    the type in one file, the accessor in another). An accessor the
 //!    pass refuses (no such field, the wrong arity) stays as written,
 //!    for the checker to report.
+//! 7. shadowed callees: a call whose bare callee names a binding in
+//!    scope and also one of the program's fns calls the binding, as a
+//!    value (`{ f }(x)`, [`crate::shadowed_callees`]), so no pass that
+//!    resolves a bare callee by name reaches the fn instead.
 //!
-//! The first two generate declarations; everything after them sees the
+//! The first two (and 2b) generate declarations; everything after them sees the
 //! generated ones too. The bundled stdlib goes through the passes that
 //! shape a declaration (3 onward, [`bundled_stdlib`]) before the
 //! resolved program appends it; it spells no `from_json` and no serve.
@@ -68,12 +76,22 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     }
     // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
     // an adapter and its receivers' plumbing (`rpc_expand`).
+    // GH #1592 S3: the main locus's observe backends as hidden params.
+    crate::observe_expand::expand(programs);
+    // A client param (`api::client(…)`) becomes a locus with a method per
+    // row (`client_expand`), before the serve expansion, whose codec pass
+    // gives the rows' types the api codecs those methods call.
+    crate::client_expand::expand(programs, seq.import_renames, seq.default_surface);
+    // GH #1530: the state classes a `@repo(T)` locus declares (`repo`).
+    crate::repo::expand(programs);
     crate::rpc_expand::expand(programs, seq.import_renames, seq.default_surface);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does
     // not parse is reported where it is appended (`resolve_rewritten`);
     // here the passes run without it.
     let stdlib = bundled_stdlib().ok();
+    // GH #1530 step 2: a seam becomes the methods it means.
+    crate::seam_expand::expand(programs, stdlib.as_slice());
     shape(programs, seq, stdlib.as_slice());
 }
 
@@ -91,6 +109,7 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
         hale_syntax::desugar::desugar_omitted_run(p);
     }
     hale_syntax::desugar::desugar_repr_accessors(programs);
+    crate::shadowed_callees::rewrite_shadowed_callees(programs, context);
 }
 
 /// The bundled stdlib, parsed once and put through the passes that

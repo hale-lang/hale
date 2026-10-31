@@ -20,14 +20,22 @@ main locus Till {
         for x in self.prices {
             let n: Int = x / 1cent;
             total = total + n;
-            std::test::assert_eq_str(to_string(x / 1cent), to_string(n), "a quotient of two quantities is the count");
+            std::test::assert_eq_str(
+                to_string(x / 1cent),
+                to_string(n),
+                "a quotient of two quantities is the count",
+            );
         }
         std::test::assert_eq_int(total, 128, "the counts of cents, summed");
         let mut seen = 0cent;
         for x in self.prices {
             seen = seen + x;
         }
-        std::test::assert_eq_str(to_string(seen), "128cent", "the loop variable is the quantity itself");
+        std::test::assert_eq_str(
+            to_string(seen),
+            "128cent",
+            "the loop variable is the quantity itself",
+        );
 
         let fixed: [Money; 2] = [3cent, 4cent];
         let mut cents = 0;

@@ -155,6 +155,10 @@
   const COMMAND_TERMINAL = new Set(["succeeded", "refused", "failed"]);
   let intervention = { scope: "", phase: "idle", draft: null, metadata: null, receipt: null, error: "", blocked: false };
   let commandGeneration = 0;
+  // the solo path's one exchange in flight, and what it last said (soloTaskPanel)
+  let soloTask = { id: "", phase: "idle", error: "" };
+  // the receipt whose Task was re-read after it: one re-read per receipt
+  let taskRereadFor = "";
   let commandController = null;
   const KNOWLEDGE_OPERATION = "dna.knowledge.edge.link";
   const KNOWLEDGE_UNLINK = "dna.knowledge.edge.unlink";
@@ -843,7 +847,12 @@
       if (previous) assert(result.receipt.command_id === previous.receipt.command_id && result.receipt.fingerprint === previous.receipt.fingerprint && (metadata.operation !== REVIEW_OPERATION || result.receipt.verdict.value === previous.receipt.verdict.value), "The recovered request identity changed.");
       intervention.receipt = result;
       intervention.phase = "result";
-      refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
+      // a reassignment is a Ledger row and the record's revision does not
+      // move, so the Task is re-read once per receipt, unless its captured
+      // history already holds the event
+      refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && taskRereadFor !== result.receipt.command_id
+        && !(state.detail?.id === metadata.target_id && state.detail.history.some(event => event.event_id === result.receipt.task.event_id));
+      if (refreshTask) taskRereadFor = result.receipt.command_id;
       refreshTask = refreshTask || metadata.operation === PERSON_OPERATION && result.receipt.person.state === "applied" && state.route.view === "tasks" && state.route.assignee === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
       ui.announcement.textContent = metadata.operation === TASK_CREATE_OPERATION ? "New task status loaded. The organism answers separately; check again to follow the ask." : metadata.operation === PERSON_OPERATION ? "Retirement status loaded. Inspect the recorded transfer and current person state." : metadata.operation === TASK_OPERATION ? "Reassignment status loaded. The Task remains responsible for its original obligation." : metadata.source_review || metadata.operation === ORGANIZATION_OPERATION ? "Request status loaded. The decision, owner quorum, source application and running result are separate facts." : "Request status loaded. Command outcome, Review settlement and adoption are separate facts.";
     } catch (error) {
@@ -1278,7 +1287,9 @@
     replaceRoute(route);
   }
   async function observeKnowledgeRemoval(loaded, receipt, token, scope, signal) {
-    if (!loaded.relationships || loaded.detailError || loaded.collection.basis.routing_version !== "0") {
+    // Every record has its Ledger (GH #1590): the basis names the Ledger's
+    // head too, so one snapshot pins both memories' visibility.
+    if (!loaded.relationships || loaded.detailError) {
       const confirmed = await knowledgeCommandRequest("GET", knowledgeCommand.metadata, null, signal);
       if (!knowledgeCommandCurrent(token, scope, signal)) throw new DOMException("Superseded graph observation", "AbortError");
       sameKnowledgeAdmission(confirmed.receipt, receipt); knowledgeCommand.result = confirmed;
@@ -1338,7 +1349,7 @@
         validSource(response.source, receipt.application_id); validKnowledge(response.data, response.source, { ...scanRoute, snapshot }, "edges", cursor);
         if (!source) { source = response.source; basis = response.data.basis; snapshot = response.data.page.snapshot; }
         assert(source.record_head === response.source.record_head && source.record_revision === response.source.record_revision && sameKnowledgeBasis(basis, response.data.basis), "The relationship sequence changed during observation."); pages++;
-        if (basis.routing_version !== "0" || source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
+        if (source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
         let match = null;
         for (const row of response.data.items) { assert(!ids.has(row.id), "The relationship sequence repeated an identity."); ids.add(row.id); if (row.id === receipt.edge_id) match = row; }
         if (match) { projection = removing ? "still_present" : match.from_id === e.from_id && match.to_id === e.to_id && match.rel === e.rel ? "observed" : "unavailable"; break; }
@@ -1471,7 +1482,7 @@
         if (!source) { source = response.source; basis = response.data.basis; snapshot = response.data.page.snapshot; }
         assert(source.record_head === response.source.record_head && source.record_revision === response.source.record_revision && sameKnowledgeBasis(basis, response.data.basis), "The binding sequence changed during observation.");
         pages++;
-        if (basis.routing_version !== "0" || source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
+        if (source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
         let match = null;
         for (const row of response.data.items) {
           assert(!ids.has(row.id), "The binding sequence repeated an identity."); ids.add(row.id);
@@ -2002,7 +2013,7 @@
   function sameDefinitionBasis(left, right) {
     return DEFINITION_BASIS_FIELDS.every((key) => left[key] === right[key]) && DEFINITION_LIMITS.every(([key]) => left.limits[key] === right.limits[key]);
   }
-  const KNOWLEDGE_BASIS_FIELDS = ["record_id", "projection_record_head", "projection_record_revision", "projection_watermark", "store_generation", "routing_version", "visibility_record_head", "visibility_record_revision", "visibility_ledger_head", "visibility_ledger_revision", "reader_scope", "target", "coverage"];
+  const KNOWLEDGE_BASIS_FIELDS = ["record_id", "projection_record_head", "projection_record_revision", "projection_watermark", "store_generation", "visibility_record_head", "visibility_record_revision", "visibility_ledger_head", "visibility_ledger_revision", "reader_scope", "target", "coverage"];
   function receiptID(value) { return typeof value === "string" && /^(sha256:)?[0-9a-f]{64}$/.test(value); }
   function validKnowledge(data, source, route, kind, cursor = "") {
     assert(data && Array.isArray(data.items) && data.page && data.basis && data.coverage);
@@ -2011,9 +2022,9 @@
     assert(page.has_more ? page.returned > 0 && typeof page.next_cursor === "string" && page.next_cursor.length > 0 && page.next_cursor !== cursor : page.next_cursor === null, "The service returned an invalid knowledge page continuation.");
     assert(!route.snapshot || page.snapshot === route.snapshot, "The knowledge read returned a different snapshot than requested.");
     assert(KNOWLEDGE_BASIS_FIELDS.filter((key) => !key.startsWith("visibility_ledger_")).every((key) => typeof basis[key] === "string"));
-    assert(["projection_record_revision", "projection_watermark", "store_generation", "routing_version", "visibility_record_revision"].every((key) => decimal(basis[key])));
+    assert(["projection_record_revision", "projection_watermark", "store_generation", "visibility_record_revision", "visibility_ledger_revision"].every((key) => decimal(basis[key])));
     assert(basis.record_id === source.record_id && basis.projection_record_head === source.record_head && basis.visibility_record_head === source.record_head && basis.projection_record_revision === source.record_revision && basis.projection_watermark === source.record_revision && basis.visibility_record_revision === source.record_revision && basis.reader_scope.length && basis.target === (route.target || "") && basis.coverage === "native_ideas_edges_bindings", "The knowledge projection and its visibility policy do not share the requested Record and context.");
-    assert(basis.routing_version === "0" ? basis.visibility_ledger_head === null && basis.visibility_ledger_revision === null : typeof basis.visibility_ledger_head === "string" && basis.visibility_ledger_head.length > 0 && decimal(basis.visibility_ledger_revision));
+    assert(typeof basis.visibility_ledger_head === "string" && basis.visibility_ledger_head.length > 0 && decimal(basis.visibility_ledger_revision));
     assert(data.coverage.bindings === "complete" && ["runs", "definitions", "practices"].every((key) => data.coverage[key] === "unavailable"));
     if (kind === "nodes") validRows(data.items, "knowledge");
     else {
@@ -2799,10 +2810,10 @@
     } else if (state.route.view === "knowledge" && state.collection?.basis) {
       const basis = state.collection.basis;
       summary.append(append(node("span"), document.createTextNode("Graph generation "), node("strong", "mono", basis.store_generation)));
-      for (const [label, value] of [["Projection head", basis.projection_record_head], ["Watermark", basis.projection_watermark], ["Graph generation", basis.store_generation], ["Visibility head", basis.visibility_record_head], ["Ledger head", basis.visibility_ledger_head === null ? "Record only" : basis.visibility_ledger_head], ["Ledger revision", basis.visibility_ledger_revision === null ? "Not applicable" : basis.visibility_ledger_revision], ["Routing version", basis.routing_version], ["Reader scope", basis.reader_scope], ["Target context", display(basis.target, "All loci")]]) append(identities, append(node("div"), node("span", "", label), node("code", "", value)));
+      for (const [label, value] of [["Projection head", basis.projection_record_head], ["Watermark", basis.projection_watermark], ["Graph generation", basis.store_generation], ["Visibility head", basis.visibility_record_head], ["Ledger head", basis.visibility_ledger_head], ["Ledger revision", basis.visibility_ledger_revision], ["Reader scope", basis.reader_scope], ["Target context", display(basis.target, "All loci")]]) append(identities, append(node("div"), node("span", "", label), node("code", "", value)));
       identities.append(node("p", "detail-note", "The projection and receipt visibility were checked together for this reader and target context."));
     } else if (state.route.view === "workflows" && state.collection?.basis) {
-      identities.append(node("p", "detail-note", "Native wf1 projection of recorded facts. This connection reads Record routing 0; runtime identity and live execution are not inferred."));
+      identities.append(node("p", "detail-note", "Native wf1 projection of recorded facts. This connection reads the Record and its Ledger; runtime identity and live execution are not inferred."));
     } else if (state.route.view === "tasks" && state.collection?.basis) {
       identities.append(node("p", "detail-note", "Task assignments and handoff requirements come from this Record snapshot. Refresh to inspect changes recorded since this read."));
     } else if (state.route.view === "organization" && state.collection?.basis) {
@@ -2848,12 +2859,15 @@
   const WORK_STATES = { bound: "Bound · not admitted", admitted: "Admitted", registered: "Registered", activated: "Activated", attempt_admitted: "Attempt outstanding", attempt_done: "Attempt done · Work unsettled", attempt_failed: "Attempt failed · Work unsettled", attempt_declined: "Attempt declined · Work unsettled", attempt_timeout: "Attempt timed out · Work unsettled", done: "Done", completed: "Completed", failed: "Failed", cancelled: "Cancelled", refused: "Refused", unclassified: "No wf1 admission" };
   function workflowBadge(value) { return badge(WORK_STATES[value] || value, ["done", "completed"].includes(value) ? "green" : ["failed", "refused", "cancelled", "attempt_failed", "attempt_timeout", "attempt_declined"].includes(value) ? "amber" : ""); }
   function validWorkflowBasis(data) {
-    assert(data.basis?.projection === "dna.workflow-projection/1" && data.basis.memory === "record" && data.basis.routing === "0" && data.basis.runtime_association === false, "The execution source does not match this reader's contract.");
+    assert(data.basis?.projection === "dna.workflow-projection/1" && data.basis.memory === "record+ledger" && data.basis.runtime_association === false, "The execution source does not match this reader's contract.");
   }
   function validTaskBasis(data, source, assignee = "") {
     const b = data.basis;
-    assert(closedObject(data, ["profile", "items", "page", "basis", ...(assignee ? ["assignee"] : [])]) && (!assignee || data.assignee === assignee && data.items.every(row => row.assignee === assignee)) && data.profile === "dna.task-administration.v1" && closedObject(b, ["projection", "memory", "routing", "record_head", "record_revision"]) && b.projection === "dna.task-administration/1" && b.memory === "record" && b.routing === "0" && b.record_head === source.record_head && b.record_revision === source.record_revision, "The Task responsibilities do not match their captured Record.");
-    for (const row of data.items) assert(Array.isArray(row.history) && row.history.every(event => decimal(event.sequence) && BigInt(event.sequence) < BigInt(source.record_revision)), "Task assignment history extends beyond the captured Record.");
+    assert(closedObject(data, ["profile", "items", "page", "basis", ...(assignee ? ["assignee"] : [])]) && (!assignee || data.assignee === assignee && data.items.every(row => row.assignee === assignee)) && data.profile === "dna.task-administration.v1" && closedObject(b, ["projection", "memory", "record_head", "record_revision", "ledger_revision"]) && b.projection === "dna.task-administration/1" && b.memory === "record+ledger" && b.record_head === source.record_head && b.record_revision === source.record_revision && decimal(b.ledger_revision), "The Task responsibilities do not match their captured Record.");
+    // a history row's sequence is its position in the record and its Ledger
+    // read as one: the record's rows, then the Ledger's
+    const read = BigInt(b.record_revision) + BigInt(b.ledger_revision);
+    for (const row of data.items) assert(Array.isArray(row.history) && row.history.every(event => decimal(event.sequence) && BigInt(event.sequence) < read), "Task assignment history extends beyond the captured Record and Ledger.");
   }
   function validPerson(value, source, person) {
     assert(closedObject(value, ["profile", "person", "state", "successor", "event_id", "subject_digest", "tasks", "transferred", "authorized", "recipients", "basis"]));
@@ -2863,7 +2877,7 @@
     const ids = new Set();
     for (const task of value.tasks) { assert(closedObject(task, ["id", "assignment_digest", "from"]) && commandID(task.id) && sourceDigest(task.assignment_digest) && task.from === person && !ids.has(task.id)); ids.add(task.id); }
     assert(Array.isArray(value.recipients) && value.recipients.length <= 64 && value.recipients.every(value => commandID(value)) && new Set(value.recipients).size === value.recipients.length && (value.authorized || value.recipients.length === 0));
-    assert(closedObject(value.basis, ["memory", "routing", "record_head", "record_revision"]) && value.basis.memory === "record" && value.basis.routing === "0" && value.basis.record_head === source.record_head && value.basis.record_revision === source.record_revision);
+    assert(closedObject(value.basis, ["memory", "record_head", "record_revision"]) && value.basis.memory === "record+ledger" && value.basis.record_head === source.record_head && value.basis.record_revision === source.record_revision);
     return value;
   }
   function preparePersonRetirement(plan, to) {
@@ -2972,7 +2986,58 @@
       if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); confirmation.append(error); }
       detail.append(confirmation);
     }
+    const solo = soloTaskPanel(item);
+    if (solo) detail.append(solo);
     return detail;
+  }
+  // The solo path: a person takes a handed Task no one holds, and reports one
+  // theirs done with the work as text (the head's `TaskTake` and `TaskDone`,
+  // Commands::take_task and ::complete_task). No model is involved; the
+  // completion is the outcome of the case the Task is.
+  function soloTaskPanel(item) {
+    const slice = commandSlice(state.capabilities) || [];
+    const me = state.capabilities?.principal?.name;
+    if (item.state !== "handed" || !commandID(me) || !state.app) return null;
+    const mine = item.assignee === me, open = !item.assignee;
+    if (!mine && !open) return null;
+    if (!(open && slice.includes("TaskTake")) && !slice.includes("TaskDone")) return null;
+    const panel = node("section", "intervention-panel task-solo"); panel.id = "task-solo";
+    panel.setAttribute("role", "group"); panel.setAttribute("aria-label", "Do this Task");
+    panel.append(node("h3", "", open ? "No one holds this Task" : "This Task is yours"));
+    const busy = soloTask.id === item.id && soloTask.phase === "sending";
+    const actions = node("div", "intervention-actions");
+    if (open && slice.includes("TaskTake")) {
+      const take = button("Take this Task", () => soloSend(item, "TaskTake", { task_id: item.id }), "button");
+      take.id = "task-take"; take.disabled = busy; actions.append(take);
+    }
+    if (slice.includes("TaskDone") && !item.evidence_required) {
+      const text = document.createElement("textarea"); text.id = "task-done-text"; text.rows = 4; text.maxLength = 8192;
+      text.setAttribute("aria-label", "What you did"); text.placeholder = "What you did, as text";
+      const done = button("Report done", () => soloSend(item, "TaskDone", { task_id: item.id, text: text.value }), "button");
+      done.id = "task-done"; done.disabled = busy;
+      panel.append(text); actions.append(done);
+    } else if (item.evidence_required) {
+      panel.append(node("p", "detail-note", "Its acceptance practice requires evidence: `hale dna task done " + item.id + " --evidence <digest>` links it."));
+    }
+    panel.append(actions);
+    if (soloTask.id === item.id && soloTask.error) { const error = node("p", "intervention-error", soloTask.error); error.setAttribute("role", "alert"); panel.append(error); }
+    return panel;
+  }
+  async function soloSend(item, call, payload) {
+    if (call === "TaskDone" && !payload.text.trim()) { soloTask = { id: item.id, phase: "idle", error: "Say what you did: the work is reported as text." }; render(); return; }
+    soloTask = { id: item.id, phase: "sending", error: "" }; render();
+    const controller = new AbortController();
+    try {
+      const { body } = await commandExchange(state.app.id, { call, payload }, controller.signal);
+      const value = body?.ok ? body.value : null;
+      if (!value || value.ok !== true) {
+        const why = body?.ok === false ? body.refusal?.reason || body.refusal?.kind : value?.why || value?.code;
+        soloTask = { id: item.id, phase: "idle", error: why || "The head did not record it." };
+      } else soloTask = { id: "", phase: "idle", error: "" };
+    } catch (error) {
+      soloTask = { id: item.id, phase: "idle", error: "The head did not answer: " + error.message };
+    }
+    refresh();
   }
   function renderTaskRecovery() {
     const metadata = intervention.metadata, result = intervention.receipt;
@@ -3044,7 +3109,7 @@
       panel.append(renderCommandStages([
         { key: "command", title: "Request", value: r.state === "succeeded" ? "Recorded" : "Unconfirmed", tone: r.state === "succeeded" ? "confirmed" : "unknown", explanation: r.state === "succeeded" ? "The service recorded this ask once, in your name, at the Record head you prepared it against." : "Keep this request identity and check its status. No replacement request is sent automatically." },
         { key: "intent", title: "Intent", value: t.intent_state === "unknown" ? "Not established" : t.intent_id + " · " + t.intent_state, tone: t.intent_state === "refused" ? "refused" : t.intent_state === "born" || t.intent_state === "offered" ? "confirmed" : t.intent_state === "requested" ? "pending" : "unknown", explanation: t.intent_state === "requested" ? "The ask is in the Record. The host beside the organism relays it; the organism's answer is a later fact." : t.intent_state === "offered" ? "The organism admitted the ask. Its Task is minted next." : t.intent_state === "refused" ? "The organism refused this ask; its reason is in the Record. This request is complete." : t.intent_state === "born" ? "The organism admitted the ask and minted its Task." : "No intent is named for an unconfirmed ask." },
-        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? (t.kind === "judgment" ? "The Task exists. Its judgment is a leg's to claim and answer; the organism admitted it without a plan." : "The Task exists. It joins the handed Tasks once the leader hands it to a person.") : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
+        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? (t.kind === "judgment" ? "The Task exists. Its judgment is a leg's to claim and answer while a model is mapped, else a person's to take from the handed Tasks; the organism admitted it without a plan." : "The Task exists. It joins the handed Tasks once the leader hands it to a person; with no model to plan it, it is handed at once, for anyone to take.") : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
       ], r));
     } else panel.append(node("p", "detail-note", intervention.phase === "submitting" ? "Recording the ask…" : intervention.phase === "recovering" ? "Checking the saved request…" : "The request outcome is not yet confirmed."));
     if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); panel.append(error); }

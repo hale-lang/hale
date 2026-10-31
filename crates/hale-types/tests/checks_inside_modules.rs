@@ -500,7 +500,7 @@ fn pool_map(src: &str) -> (hale_types::entry::EntryRow, Vec<String>) {
     bundle.snapshot = ids;
     let (top, _) = hale_types::resolve::build_top_scope(&bundle);
     let entry = hale_types::entry::entry_row(&bundle);
-    let table = hale_types::placement::derive_placement(&bundle, &top, &entry);
+    let table = hale_types::placement::derive_placement(&bundle, &top, &entry, None);
     let placed: std::collections::BTreeSet<String> =
         table.instances.values().filter_map(|r| r.realizes.as_ref().map(|d| d.lowered.clone())).collect();
     (entry, placed.into_iter().collect())

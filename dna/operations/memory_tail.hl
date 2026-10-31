@@ -29,7 +29,13 @@ type ProjectionApplied {
 }
 
 // The document a digest names, as an Idea whose id IS the digest.
-fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revision: Int) -> dna::Idea {
+fn idea_of(
+    digest: String,
+    doc: String,
+    provenance: String,
+    accepted: Bool,
+    revision: Int
+) -> dna::Idea {
     return dna::Idea {
         id: digest,
         kind: dna::native_json_string(doc, "kind"),
@@ -47,13 +53,17 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
 // projector is already past ends this pass (`yielded`), having written
 // nothing; a row whose effects fail lands nothing, and the next pass
 // begins it again. Bounded by the record.
-fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> ProjectionApplied {
+fn apply_record(
+    store: dna::KnowledgeStore,
+    j: dna::Journal,
+    receipts: dna::Receipts
+) -> ProjectionApplied {
     return apply_record_to(store, j, receipts, j.revision(), "", "local", NoAuthors { });
 }
 
 // Who wrote each row of the record (GH #1087 review, G4): the persons the
-// record knows, for the store to judge a holder by. A git record answers
-// (`GitJournal.author_of`); a projector given none knows only the owners
+// record knows, for the store to judge a holder by. The record answers
+// (`RecordJournal.author_of`); a projector given none knows only the owners
 // map's members.
 interface RowAuthors { fn author_of(i: Int) -> String; }
 locus NoAuthors { fn author_of(i: Int) -> String { return ""; } }
@@ -67,7 +77,15 @@ locus NoAuthors { fn author_of(i: Int) -> String { return ""; } }
 // row: a holder is a person the record knows. The tallies grow by the
 // rows of `j` it applies.
 @bounded_by(j)
-fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, n: Int, refused: String, trust: String, authors: RowAuthors) -> ProjectionApplied {
+fn apply_record_to(
+    store: dna::KnowledgeStore,
+    j: dna::Journal,
+    receipts: dna::Receipts,
+    n: Int,
+    refused: String,
+    trust: String,
+    authors: RowAuthors
+) -> ProjectionApplied {
     let mut out = ProjectionApplied { watermark: store.watermark() };
     let mut i = out.watermark;
     while i < n {
@@ -77,7 +95,11 @@ fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::R
         if won < 0 { out.error = store.last_error(); return out; }
         if won == 0 { out.yielded = true; return out; }
         out.rows = out.rows + 1;
-        let r = if std::str::contains("\n" + refused, "\n" + e.digest + "\n") { ProjectionApplied { } } else { apply_row(store, j, receipts, e, i, trust, authors) };
+        let r = if std::str::contains("\n" + refused, "\n" + e.digest + "\n") {
+            ProjectionApplied { }
+        } else {
+            apply_row(store, j, receipts, e, i, trust, authors)
+        };
         if len(r.error) > 0 { store.abort_row(); out.error = r.error; return out; }
         if !store.commit_row() { out.error = store.last_error(); return out; }
         out.ratified = out.ratified + r.ratified;
@@ -96,7 +118,15 @@ fn apply_record_to(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::R
 // One record row's effects on the graph, inside the row's transaction:
 // what its body names, and for a retirement the seats its person held.
 @bounded_by(e)
-fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipts, e: dna::Event, i: Int, trust: String, authors: RowAuthors) -> ProjectionApplied {
+fn apply_row(
+    store: dna::KnowledgeStore,
+    j: dna::Journal,
+    receipts: dna::Receipts,
+    e: dna::Event,
+    i: Int,
+    trust: String,
+    authors: RowAuthors
+) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
     // GH #1026: the org chart the Ledger's gate checks — a person the
     // record retired writes nothing more in memory
@@ -109,7 +139,10 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
             let nl = std::str::index_of(held + "\n", "\n");
             let position = held[0..nl];
             held = if nl + 1 >= len(held) { "" } else { held[(nl + 1)..len(held)] };
-            if len(position) > 0 && !store.retire_graph("holds:" + position + "|" + e.entity) { out.error = store.last_error(); return out; }
+            if len(position) > 0 && !store.retire_graph("holds:" + position + "|" + e.entity) {
+                out.error = store.last_error();
+                return out;
+            }
         }
     }
     // K3: the code's structure as the record observed it (init's
@@ -120,8 +153,17 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         let kind = std::json::find_string_field(e.body, "kind");
         let name = std::json::find_string_field(e.body, "name");
         let colon = std::str::index_of(e.entity, ":");
-        let named = if len(name) > 0 { name } else if colon >= 0 { e.entity[(colon + 1)..len(e.entity)] } else { e.entity };
-        if !store.put_structure(if len(kind) > 0 { kind } else { "row" }, named, i, e.body) { out.error = store.last_error(); return out; }
+        let named = if len(name) > 0 {
+            name
+        } else if colon >= 0 {
+            e.entity[(colon + 1)..len(e.entity)]
+        } else {
+            e.entity
+        };
+        if !store.put_structure(if len(kind) > 0 { kind } else { "row" }, named, i, e.body) {
+            out.error = store.last_error();
+            return out;
+        }
         out.structure = out.structure + 1;
     }
     if e.kind == "pressure.raised" || e.kind == "concern.raised" {
@@ -129,32 +171,62 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         // since GH #986: its words are a field, not the part of a sentence
         // before " x". A row from before either rule is `<what> x<n>`,
         // which carries no field to read.
-        let named = if e.kind == "concern.raised" { dna::concern_what(e.body) } else { dna::pressure_what(e.body) };
+        let named = if e.kind == "concern.raised" {
+            dna::concern_what(e.body)
+        } else {
+            dna::pressure_what(e.body)
+        };
         let x = std::str::index_of(e.body, " x");
         let what = if len(named) > 0 { named } else if x > 0 { e.body[0..x] } else { e.body };
-        if !store.put_signal(e.kind[0..(len(e.kind) - 7)], e.entity, what, i) { out.error = store.last_error(); return out; }
+        if !store.put_signal(e.kind[0..(len(e.kind) - 7)], e.entity, what, i) {
+            out.error = store.last_error();
+            return out;
+        }
         out.signals = out.signals + 1;
     }
     // GH #1085: the repository's graph, checked whole before memory
     // takes it (graph.hl) — a node or an edge by its id, the latest row
     // winning, or taken out
     if e.kind == "graph.node" || e.kind == "graph.edge" || e.kind == "graph.retired" {
-        let g = if e.kind == "graph.node" { graph_node_row(e.entity, e.body) } else if e.kind == "graph.edge" { graph_edge_row(e.entity, e.body) } else { graph_retired_row(e.entity) };
+        let g = if e.kind == "graph.node" {
+            graph_node_row(e.entity, e.body)
+        } else if e.kind == "graph.edge" {
+            graph_edge_row(e.entity, e.body)
+        } else {
+            graph_retired_row(e.entity)
+        };
         // a row memory will not take is refused as a row and passed, as a
         // refused hold is: one bad row never stops the projection
         if !g.ok { out.error = graph_row_refused(j, e.kind, e.entity, g.why, i); return out; }
         // a hold is the store's to admit, however it reached the record
-        let refused_hold = if e.kind == "graph.edge" && g.kind == "holds" { hold_refusal(store, authors, i, g.id, trust) } else { "" };
+        let refused_hold = if e.kind == "graph.edge" && g.kind == "holds" {
+            hold_refusal(store, authors, i, g.id, trust)
+        } else {
+            ""
+        };
         if len(refused_hold) > 0 { out.error = hold_refused(j, g.id, refused_hold, i); return out; }
-        let put = if e.kind == "graph.node" { store.put_graph_node(g.id, g.kind, g.name, i, e.body) } else if e.kind == "graph.edge" { store.put_graph_edge(g.id, g.kind, i, e.body, g.members) } else { store.retire_graph(g.id) };
+        let put = if e.kind == "graph.node" {
+            store.put_graph_node(g.id, g.kind, g.name, i, e.body)
+        } else if e.kind == "graph.edge" {
+            store.put_graph_edge(g.id, g.kind, i, e.body, g.members)
+        } else {
+            store.retire_graph(g.id)
+        };
         if !put { out.error = store.last_error(); return out; }
         out.graph = out.graph + 1;
     }
-    if e.kind == "knowledge.ratified" || e.kind == "knowledge.proposed" || e.kind == "knowledge.declined" {
+    if e.kind == "knowledge.ratified"
+        || e.kind == "knowledge.proposed"
+        || e.kind == "knowledge.declined"
+    {
         let digest = e.entity;
-        let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let raw = if std::str::starts_with(digest, "sha256:") {
+            digest[7..len(digest)]
+        } else {
+            digest
+        };
         let doc = receipts.read(raw);
-        if len(doc) == 0 && redacted_in(j, digest) {
+        if len(doc) == 0 && (redacted_in(j, digest) || receipts.redacted(digest)) {
             // GH #606: a redacted receipt is an idea with no body left —
             // retired, never an error that stops the whole projection
             if !store.retire(digest, i) { out.error = store.last_error(); return out; }
@@ -171,11 +243,24 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
             // a retirement proposal carries no idea of its own: its
             // effect is the `knowledge.retired` row that follows
             if dna::native_json_string(doc, "kind") != "retirement" {
-                if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
+                if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) {
+                    out.error = store.last_error();
+                    return out;
+                }
                 // a graph proposal is kept as the idea it was, bound to
                 // nothing: its effect is the graph, never a context package
                 if dna::native_json_string(doc, "kind") != "graph" {
-                    if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: dna::native_json_string(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
+                    if !store.bind(
+                        dna::KnowledgeBinding {
+                            idea: digest,
+                            target: target,
+                            author: dna::native_json_string(doc, "author"),
+                            class: class,
+                        },
+                    ) {
+                        out.error = store.last_error();
+                        return out;
+                    }
                 }
             }
             // GH #1091: a ratified hole — a proposal whose document carries
@@ -184,7 +269,15 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
                 // at the row that proposed it, not the one that ratified it:
                 // the org chart is in the order the holes were proposed,
                 // whatever order the Board takes them in
-                let g = apply_graph_rows(store, j, authors, std::json::find_field_raw(doc, "rows"), proposed_at(j, digest, i), i, trust);
+                let g = apply_graph_rows(
+                    store,
+                    j,
+                    authors,
+                    std::json::find_field_raw(doc, "rows"),
+                    proposed_at(j, digest, i),
+                    i,
+                    trust,
+                );
                 if len(g.error) > 0 { out.error = g.error; return out; }
                 out.graph = out.graph + g.graph;
             }
@@ -193,13 +286,19 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
             let have = store.idea(digest);
             // a proposal never overwrites its own ratification (replay order is the record's, but be safe)
             if !have.present || !have.idea.accepted {
-                if !store.upsert(idea_of(digest, doc, "proposed", false, i), 0) { out.error = store.last_error(); return out; }
+                if !store.upsert(idea_of(digest, doc, "proposed", false, i), 0) {
+                    out.error = store.last_error();
+                    return out;
+                }
             }
             out.proposed = out.proposed + 1;
         } else {
             let have = store.idea(digest);
             if !have.present || !have.idea.accepted {
-                if !store.upsert(idea_of(digest, doc, "declined", false, i), 0) { out.error = store.last_error(); return out; }
+                if !store.upsert(idea_of(digest, doc, "declined", false, i), 0) {
+                    out.error = store.last_error();
+                    return out;
+                }
             }
             out.declined = out.declined + 1;
         }
@@ -225,10 +324,18 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         }
         let c = fact.command;
         let edge = dna::KnowledgeEdge { from: c.from_id, to: c.to_id, rel: c.rel };
-        let applied = if e.kind == "knowledge.edge.linked" { store.link(edge) } else { store.unlink(edge) };
+        let applied = if e.kind == "knowledge.edge.linked" {
+            store.link(edge)
+        } else {
+            store.unlink(edge)
+        };
         if !applied {
             let error = store.last_error();
-            out.error = if len(error) > 0 { error } else { "knowledge edge projection failed (row " + to_string(i) + ")" };
+            out.error = if len(error) > 0 {
+                error
+            } else {
+                "knowledge edge projection failed (row " + to_string(i) + ")"
+            };
             return out;
         }
     }
@@ -237,7 +344,11 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         let effect = codec.effect_of(j, e); let r = effect.request;
         let incoming = codec.fact(j, "knowledge.binding.requested", r.request_id, e.seq);
         let admitted = outer.decode_fact(incoming);
-        if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.binding) != codec.started(r) {
+        if !effect.ok
+            || !admitted.valid
+            || admitted.context.application_id != j.read(0).digest
+            || codec.started(admitted.binding) != codec.started(r)
+        {
             out.error = "invalid knowledge binding effect (row " + to_string(i) + ")"; return out;
         }
         let basis = codec.basis(j, receipts, r, e.seq);
@@ -245,32 +356,66 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
             out.error = "invalid knowledge binding basis (row " + to_string(i) + ")"; return out;
         }
         let subject = codec.subject_at(j, receipts, r.idea_id, e.seq);
-        if !subject.ok || !subject.ratified || (e.kind == "knowledge.binding.bound" && !subject.active) {
+        if !subject.ok
+            || !subject.ratified
+            || (e.kind == "knowledge.binding.bound" && !subject.active)
+        {
             out.error = "invalid knowledge binding subject (row " + to_string(i) + ")"; return out;
         }
-        let binding = dna::KnowledgeBinding { idea: r.idea_id, target: r.target, author: r.author, class: dna::classify_binding(r.author, r.target) };
-        let applied = if e.kind == "knowledge.binding.bound" { store.bind(binding) } else { store.unbind(binding) };
-        if !applied { out.error = "knowledge binding projection failed (row " + to_string(i) + ")"; return out; }
+        let binding = dna::KnowledgeBinding {
+            idea: r.idea_id,
+            target: r.target,
+            author: r.author,
+            class: dna::classify_binding(r.author, r.target),
+        };
+        let applied = if e.kind == "knowledge.binding.bound" {
+            store.bind(binding)
+        } else {
+            store.unbind(binding)
+        };
+        if !applied {
+            out.error = "knowledge binding projection failed (row " + to_string(i) + ")";
+            return out;
+        }
     }
     if e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked" {
-        let codec = dna::KnowledgeEdgeCodec { }; let outer = KnowledgeEdgeCommandCodec { }; let direct = StrictKnowledgeDirectEdgeFacts { };
+        let codec = dna::KnowledgeEdgeCodec { };
+        let outer = KnowledgeEdgeCommandCodec { };
+        let direct = StrictKnowledgeDirectEdgeFacts { };
         let effect = codec.effect_of(j, e); let r = effect.request;
         let incoming = codec.fact(j, "knowledge.edge.requested", r.request_id, e.seq);
         let admitted = outer.decode_fact(incoming);
-        if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.edge) != codec.started(r) {
-            out.error = "invalid reviewed knowledge edge effect (row " + to_string(i) + ")"; return out;
+        if !effect.ok
+            || !admitted.valid
+            || admitted.context.application_id != j.read(0).digest
+            || codec.started(admitted.edge) != codec.started(r)
+        {
+            out.error = "invalid reviewed knowledge edge effect (row " + to_string(i) + ")";
+            return out;
         }
         let basis = codec.basis(j, receipts, direct, r, e.seq);
         if !basis.ok || basis.event_id != r.edge_basis {
-            out.error = "invalid reviewed knowledge edge basis (row " + to_string(i) + ")"; return out;
+            out.error = "invalid reviewed knowledge edge basis (row " + to_string(i) + ")";
+            return out;
         }
         let endpoints = codec.endpoints(j, receipts, r, e.seq);
-        if !endpoints.ok || !endpoints.ratified || (e.kind == "knowledge.edge.reviewed_linked" && !endpoints.active) {
-            out.error = "invalid reviewed knowledge edge endpoints (row " + to_string(i) + ")"; return out;
+        if !endpoints.ok
+            || !endpoints.ratified
+            || (e.kind == "knowledge.edge.reviewed_linked" && !endpoints.active)
+        {
+            out.error = "invalid reviewed knowledge edge endpoints (row " + to_string(i) + ")";
+            return out;
         }
         let edge = dna::KnowledgeEdge { from: r.from_id, to: r.to_id, rel: r.rel };
-        let applied = if e.kind == "knowledge.edge.reviewed_linked" { store.link(edge) } else { store.unlink(edge) };
-        if !applied { out.error = "reviewed knowledge edge projection failed (row " + to_string(i) + ")"; return out; }
+        let applied = if e.kind == "knowledge.edge.reviewed_linked" {
+            store.link(edge)
+        } else {
+            store.unlink(edge)
+        };
+        if !applied {
+            out.error = "reviewed knowledge edge projection failed (row " + to_string(i) + ")";
+            return out;
+        }
     }
     return out;
 }
@@ -293,16 +438,35 @@ fn proposed_at(j: dna::Journal, digest: String, i: Int) -> Int {
 // other seat is a warning under `dna.trust = local` and not projected under
 // any other trust.
 @bounded_by(rows)
-fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAuthors, rows: String, seq: Int, i: Int, trust: String) -> ProjectionApplied {
+fn apply_graph_rows(
+    store: dna::KnowledgeStore,
+    j: dna::Journal,
+    authors: RowAuthors,
+    rows: String,
+    seq: Int,
+    i: Int,
+    trust: String
+) -> ProjectionApplied {
     let mut out = ProjectionApplied { };
-    if !std::str::starts_with(rows, "[") { out.error = "a ratified graph proposal carries no rows (row " + to_string(i) + ")"; return out; }
+    if !std::str::starts_with(rows, "[") {
+        out.error = "a ratified graph proposal carries no rows (row " + to_string(i) + ")";
+        return out;
+    }
     let mut it = std::json::array_first(rows);
     while !it.done {
         let kind = std::json::find_string_field(it.element, "kind");
         let entity = std::json::find_string_field(it.element, "entity");
         let body = std::json::find_string_field(it.element, "body");
         // a reviewed retirement (`hale dna ingest`) takes a node or edge out
-        let g = if kind == "graph.node" { graph_node_row(entity, body) } else if kind == "graph.edge" { graph_edge_row(entity, body) } else if kind == "graph.retired" { graph_retired_row(entity) } else { graph_refused("`" + kind + "` is no graph row") };
+        let g = if kind == "graph.node" {
+            graph_node_row(entity, body)
+        } else if kind == "graph.edge" {
+            graph_edge_row(entity, body)
+        } else if kind == "graph.retired" {
+            graph_retired_row(entity)
+        } else {
+            graph_refused("`" + kind + "` is no graph row")
+        };
         if !g.ok {
             let unwritten = graph_row_refused(j, kind, entity, g.why, i);
             if len(unwritten) > 0 { out.error = unwritten; return out; }
@@ -318,7 +482,13 @@ fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAut
                 continue;
             }
         }
-        let put = if kind == "graph.node" { store.put_graph_node(g.id, g.kind, g.name, seq, body) } else if kind == "graph.edge" { store.put_graph_edge(g.id, g.kind, seq, body, g.members) } else { store.retire_graph(g.id) };
+        let put = if kind == "graph.node" {
+            store.put_graph_node(g.id, g.kind, g.name, seq, body)
+        } else if kind == "graph.edge" {
+            store.put_graph_edge(g.id, g.kind, seq, body, g.members)
+        } else {
+            store.retire_graph(g.id)
+        };
         if !put { out.error = store.last_error(); return out; }
         out.graph = out.graph + 1;
         it = std::json::array_next(it);
@@ -328,7 +498,13 @@ fn apply_graph_rows(store: dna::KnowledgeStore, j: dna::Journal, authors: RowAut
 
 // Why a ratified hold `holds:<position>|<holder>` is not projected, ""
 // when it is (a warning said on stderr under `dna.trust = local`).
-fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: String, trust: String) -> String {
+fn hold_refusal(
+    store: dna::KnowledgeStore,
+    authors: RowAuthors,
+    i: Int,
+    id: String,
+    trust: String
+) -> String {
     let bar = std::str::index_of(id, "|");
     let position = id[6..bar];
     let holder = id[(bar + 1)..len(id)];
@@ -341,7 +517,13 @@ fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: Str
             let nl = std::str::index_of(two, "\n");
             let node = if nl < 0 { two } else { two[0..nl] };
             let other = if nl < 0 { "" } else { dna::trim_nl(two[(nl + 1)..len(two)]) };
-            if node == position && std::str::starts_with(other, "organization:") && other != holder { return position + " is owned by " + other[13..len(other)] + " already; a position has one owning organization"; }
+            if node == position
+                && std::str::starts_with(other, "organization:")
+                && other != holder
+            {
+                return position + " is owned by " + other[13..len(other)]
+                    + " already; a position has one owning organization";
+            }
             it = std::json::array_next(it);
         }
         return "";
@@ -351,28 +533,52 @@ fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: Str
     // holder need not have written before, only be a person, and a
     // member of one organization
     if std::str::starts_with(position, "organization:") {
-        if !hold_person(holder) { return holder + " is a name the organism writes as, not a person"; }
+        if !hold_person(holder) {
+            return holder + " is a name the organism writes as, not a person";
+        }
         let mut held = store.graph_held_by(holder);
         while len(held) > 0 {
             let nl = std::str::index_of(held, "\n");
             let node = if nl < 0 { held } else { held[0..nl] };
             held = if nl < 0 { "" } else { held[(nl + 1)..len(held)] };
-            if std::str::starts_with(node, "organization:") && node != position { return holder + " is already a member of " + node[13..len(node)] + "; a person belongs to one organization"; }
+            if std::str::starts_with(node, "organization:") && node != position {
+                return holder + " is already a member of " + node[13..len(node)]
+                    + "; a person belongs to one organization";
+            }
         }
         return "";
     }
-    if !hold_known(store, authors, i, holder) { return holder + " is no person this record knows (no row before row " + to_string(i) + " in their name, and no organization's member)"; }
-    let sibling = if std::str::ends_with(position, "/dev") { position[0..(len(position) - 4)] + "/reviewer" } else if std::str::ends_with(position, "/reviewer") { position[0..(len(position) - 9)] + "/dev" } else { "" };
-    if len(sibling) == 0 || !std::str::contains("\n" + store.graph_held_by(holder) + "\n", "\n" + sibling + "\n") { return ""; }
-    let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
-    if trust == "local" { eprintln("hale dna: memory: warning: ", why, " — allowed under dna.trust = local"); return ""; }
+    if !hold_known(store, authors, i, holder) {
+        return holder + " is no person this record knows (no row before row " + to_string(i)
+            + " in their name, and no organization's member)";
+    }
+    let sibling = if std::str::ends_with(position, "/dev") {
+        position[0..(len(position) - 4)] + "/reviewer"
+    } else if std::str::ends_with(position, "/reviewer") {
+        position[0..(len(position) - 9)] + "/dev"
+    } else {
+        ""
+    };
+    if len(sibling) == 0
+        || !std::str::contains("\n" + store.graph_held_by(holder) + "\n", "\n" + sibling + "\n")
+    {
+        return "";
+    }
+    let why = holder + " holds " + sibling
+        + "; a process's reviewer is never the same holder as its dev";
+    if trust == "local" {
+        eprintln("hale dna: memory: warning: ", why, " — allowed under dna.trust = local");
+        return "";
+    }
     return why + " (dna.trust = " + trust + ")";
 }
 
 // Whether `holder` can be a person at all: never a name the organism
 // writes as.
 fn hold_person(holder: String) -> Bool {
-    return len(holder) > 0 && !dna::word_in(holder, "dna host spine org ledger board hale") && !std::str::starts_with(holder, "hale dna");
+    return len(holder) > 0
+        && !dna::word_in(holder, "dna host spine org ledger board hale")
+        && !std::str::starts_with(holder, "hale dna");
 }
 
 // Whether `holder` is a person the record knew before row `i` (GH #1087
@@ -427,22 +633,37 @@ fn graph_row_refused(j: dna::Journal, kind: String, entity: String, why: String,
 // the row it was at too; a race with another writer is retried, five
 // times, each a scan of the journal `j`.
 @bounded_by(j)
-fn refusal_written(j: dna::Journal, kind: String, entity: String, row: Int, body: String) -> String {
+fn refusal_written(
+    j: dna::Journal,
+    kind: String,
+    entity: String,
+    row: Int,
+    body: String
+) -> String {
     let mut tries = 0;
     while tries < 5 {
         let mut k = 0;
         while k < j.revision() {
             let e = j.read(k);
-            if e.kind == kind && e.entity == entity && (row < 0 || std::json::find_int_field(e.body, "row") == row) { return ""; }
+            if e.kind == kind
+                && e.entity == entity
+                && (row < 0 || std::json::find_int_field(e.body, "row") == row)
+            {
+                return "";
+            }
             k = k + 1;
         }
         let r = j.append(j.revision(), kind, entity, body);
         if r.ok { return ""; }
-        if r.error != "stale_revision" { return "the record did not take the " + kind + " row for " + entity + " (" + r.error + "); the projection stops here and retries it"; }
+        if r.error != "stale_revision" {
+            return "the record did not take the " + kind + " row for " + entity + " (" + r.error
+                + "); the projection stops here and retries it";
+        }
         let moved = j.refresh();
         tries = tries + 1;
     }
-    return "the record kept moving under the " + kind + " row for " + entity + "; the projection stops here and retries it";
+    return "the record kept moving under the " + kind + " row for " + entity
+        + "; the projection stops here and retries it";
 }
 
 // Whether the record redacted `digest` (GH #606).
@@ -466,8 +687,6 @@ type KnowledgeVisibilityBasis {
     record_revision: Int = 0;
     ledger_head: String = "";
     ledger_revision: Int = 0;
-    checkpoint: String = "";
-    routing: Int = 0;
     error: String = "knowledge_visibility_unavailable";
 }
 
@@ -496,7 +715,8 @@ fn knowledge_receipt_id(id: String) -> String {
 locus KnowledgeVisibility {
     params {
         record: dna::Journal = dna::MemJournal { };
-        ledger: dna::LedgerView = dna::PqLedger { };
+        // the record's Ledger: a reader handed none reads an empty one
+        ledger: dna::LedgerView = dna::EmptyLedger { };
         syntax: KnowledgePolicySyntax = NoKnowledgePolicySyntax { };
         restrictions: KnowledgeRestrictions = KnowledgeRestrictions { };
         basis: KnowledgeVisibilityBasis = KnowledgeVisibilityBasis { };
@@ -514,14 +734,26 @@ locus KnowledgeVisibility {
         let size = len(e.kind) + len(e.entity) + len(e.body);
         if size > self.max_bytes - self.scanned_bytes { return false; }
         self.scanned_bytes = self.scanned_bytes + size;
-        if e.kind != "receipt.redacted" && e.kind != "receipt.classified" && e.kind != "receipt.withheld" && e.kind != "receipt.filed" { return true; }
+        if e.kind != "receipt.redacted"
+            && e.kind != "receipt.classified"
+            && e.kind != "receipt.withheld"
+            && e.kind != "receipt.filed"
+        {
+            return true;
+        }
         let id = knowledge_receipt_id(e.entity);
         if len(id) == 0 { self.basis.error = "knowledge_visibility_unavailable"; return false; }
-        if !self.syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") { self.basis.error = "knowledge_visibility_unavailable"; return false; }
+        if !self.syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") {
+            self.basis.error = "knowledge_visibility_unavailable";
+            return false;
+        }
         let class = std::json::find_field_raw(e.body, "class");
         // Restriction is sticky within a captured view: a later public label
         // does not undo a redaction, return a withheld body or grant disclosure.
-        if e.kind == "receipt.redacted" || e.kind == "receipt.withheld" || (class != "\"public\"" && class != "\"internal\"") {
+        if e.kind == "receipt.redacted"
+            || e.kind == "receipt.withheld"
+            || (class != "\"public\"" && class != "\"internal\"")
+        {
             self.restrictions.set(KnowledgeRestriction { id: id });
         }
         return true;
@@ -534,50 +766,48 @@ locus KnowledgeVisibility {
         let moved = self.record.refresh();
         self.basis.record_head = self.record.head();
         self.basis.record_revision = self.record.revision();
-        // GitJournal's legacy refresh has no error channel and may represent a
-        // failed read as empty genesis. That cannot authorize cached graph rows.
-        if self.basis.record_revision == 0 || self.basis.record_head == "genesis" || len(self.basis.record_head) == 0 { return self.refuse("knowledge_visibility_unavailable"); }
-        if self.basis.record_revision < 0 || self.basis.record_revision > self.max_rows { return self.refuse("knowledge_read_limit"); }
+        // A refresh that failed may read as an empty genesis. That cannot
+        // authorize cached graph rows.
+        if self.basis.record_revision == 0
+            || self.basis.record_head == "genesis"
+            || len(self.basis.record_head) == 0
+        {
+            return self.refuse("knowledge_visibility_unavailable");
+        }
+        if self.basis.record_revision < 0 || self.basis.record_revision > self.max_rows {
+            return self.refuse("knowledge_read_limit");
+        }
         let mut i = 0;
         while i < self.basis.record_revision {
             let e = self.record.read(i);
             self.basis.error = "knowledge_read_limit";
             if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
             if !self.inspect(e) { return self.refuse(self.basis.error); }
-            if e.kind == "ledger.abandoned" {
-                // Abandonment destroys old dna::Ledger restrictions; switching back
-                // to Record does not establish their absence.
-                return self.refuse("knowledge_visibility_unavailable");
-            }
-            if e.kind == "ledger.adopted" {
-                if !self.syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") || std::json::find_field_raw(e.body, "routing") != to_string(dna::ROUTING_VERSION) { return self.refuse("knowledge_visibility_unavailable"); }
-                let raw_checkpoint = std::json::find_field_raw(e.body, "checkpoint");
-                if len(raw_checkpoint) < 2 || !std::str::starts_with(raw_checkpoint, "\"") { return self.refuse("knowledge_visibility_unavailable"); }
-                self.basis.routing = std::json::find_int_field(e.body, "routing");
-                self.basis.checkpoint = std::json::find_string_field(e.body, "checkpoint");
-                if self.basis.routing != dna::ROUTING_VERSION || len(self.basis.checkpoint) == 0 { return self.refuse("knowledge_visibility_unavailable"); }
-            }
             i = i + 1;
         }
         if !self.record.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
-        if self.basis.routing > 0 {
-            let refreshed = self.ledger.refresh();
-            let cut = self.ledger.checkpoint();
-            if len(self.ledger.last_error()) > 0 || !cut.adopted || cut.routing != self.basis.routing || cut.checkpoint != self.basis.checkpoint { return self.refuse("knowledge_visibility_unavailable"); }
-            self.basis.ledger_head = self.ledger.head();
-            self.basis.ledger_revision = self.ledger.revision();
-            if self.basis.ledger_revision < 0 || self.basis.ledger_revision > self.max_rows - self.basis.record_revision { return self.refuse("knowledge_read_limit"); }
-            if cut.copied < 0 || cut.copied > self.basis.ledger_revision { return self.refuse("knowledge_visibility_unavailable"); }
-            i = 0;
-            while i < self.basis.ledger_revision {
-                let e = self.ledger.read(i);
-                self.basis.error = "knowledge_read_limit";
-                if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
-                if !self.inspect(e) { return self.refuse(self.basis.error); }
-                i = i + 1;
-            }
-            if !self.ledger.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
+        // the record's Ledger, from its first row (GH #1590): its receipt
+        // rows restrict what the graph shows
+        let refreshed = self.ledger.refresh();
+        if len(self.ledger.last_error()) > 0 {
+            return self.refuse("knowledge_visibility_unavailable");
         }
+        self.basis.ledger_head = self.ledger.head();
+        self.basis.ledger_revision = self.ledger.revision();
+        if self.basis.ledger_revision < 0
+            || self.basis.ledger_revision > self.max_rows - self.basis.record_revision
+        {
+            return self.refuse("knowledge_read_limit");
+        }
+        i = 0;
+        while i < self.basis.ledger_revision {
+            let e = self.ledger.read(i);
+            self.basis.error = "knowledge_read_limit";
+            if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
+            if !self.inspect(e) { return self.refuse(self.basis.error); }
+            i = i + 1;
+        }
+        if !self.ledger.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
         self.basis.available = true;
         self.basis.error = "";
         if !self.unchanged() { return self.basis; }
@@ -593,21 +823,22 @@ locus KnowledgeVisibility {
     fn unchanged() -> Bool {
         if !self.basis.available { return false; }
         let moved = self.record.refresh();
-        if self.record.head() != self.basis.record_head || self.record.revision() != self.basis.record_revision {
+        if self.record.head() != self.basis.record_head
+            || self.record.revision() != self.basis.record_revision
+        {
             let refused = self.refuse("snapshot_changed");
             return false;
         }
-        if self.basis.routing > 0 {
-            let refreshed = self.ledger.refresh();
-            let cut = self.ledger.checkpoint();
-            if len(self.ledger.last_error()) > 0 {
-                let refused = self.refuse("knowledge_visibility_unavailable");
-                return false;
-            }
-            if !cut.adopted || cut.routing != self.basis.routing || cut.checkpoint != self.basis.checkpoint || self.ledger.head() != self.basis.ledger_head || self.ledger.revision() != self.basis.ledger_revision {
-                let refused = self.refuse("snapshot_changed");
-                return false;
-            }
+        let refreshed = self.ledger.refresh();
+        if len(self.ledger.last_error()) > 0 {
+            let refused = self.refuse("knowledge_visibility_unavailable");
+            return false;
+        }
+        if self.ledger.head() != self.basis.ledger_head
+            || self.ledger.revision() != self.basis.ledger_revision
+        {
+            let refused = self.refuse("snapshot_changed");
+            return false;
         }
         return true;
     }
@@ -625,19 +856,17 @@ locus MemoryProjection {
         root: String = ".";
         dsn_env: String = dna::SPINE_DSN_ENV;
         store: dna::Pq = dna::Pq { };
-        j: dna::GitJournal = dna::GitJournal { repo: ".", author: "spine" };
-        receipts: dna::GitReceipts = dna::GitReceipts { repo: "." };
+        j: dna::RecordJournal = dna::RecordJournal { repo: ".", author: "spine" };
+        receipts: dna::MemoryReceipts = dna::MemoryReceipts { repo: "." };
         applied: Int = 0;
         last_error: String = "";
         opened: Bool = false;
-        // GH #1026: the commit the projection stops at ("" = the record's
-        // end): the host projects only what the remote holds
-        until: String = "";
     }
     birth() {
         self.j.repo = self.root;
-        self.j.record.repo = self.root;
+        self.j.signer.repo = self.root;
         self.receipts.repo = self.root;
+        self.dsn_env = dna::memory_source(self.root, self.dsn_env);
         self.store.dsn_env = self.dsn_env;
     }
     fn ready() -> Bool { return dna::dsn_set(self.dsn_env); }
@@ -655,16 +884,25 @@ locus MemoryProjection {
         // the service by hand (the review's second round, finding 4).
         // The connection is asked on each request, and a dead one is
         // re-established here rather than reported as knowledge.
-        // The store is scoped by the record's identity, its first
-        // commit (GH #613): a record that had no rows when the store
-        // opened, and has some now, moves to its own schema here.
+        // The store is scoped by the record's identity (GH #613, #1590):
+        // a record that had no rows when the store opened, and has some
+        // now, moves to its own schema here.
         let scope = self.j.genesis();
         if self.opened && scope != self.store.record() {
-            eprintln("hale dna: memory: the record has its first row; the store is scoped to record ", scope);
+            eprintln(
+                "hale dna: memory: the record has its first row; the store is scoped to record ",
+                scope,
+            );
             self.opened = false;
         }
         if self.opened && self.store.healthy() { return true; }
-        if self.opened { eprintln("hale dna: memory: the store's connection is gone (", self.store.last_error(), "); dialling again"); }
+        if self.opened {
+            eprintln(
+                "hale dna: memory: the store's connection is gone (",
+                self.store.last_error(),
+                "); dialling again",
+            );
+        }
         self.opened = false;
         self.store.scope(scope);
         if self.store.reopen() {
@@ -675,69 +913,61 @@ locus MemoryProjection {
         self.last_error = "the store is not open: " + self.store.last_error();
         return false;
     }
-    // Tail the record: fetch is the host's job; this reads what the
-    // repository has now (another process — the organization, a CLI —
-    // may have moved the ref since the last read). Any number of
-    // projectors may tail one record at once.
+    // Tail the record: read what memory holds now (another process — the
+    // organization, a CLI — may have appended since the last read). Any
+    // number of projectors may tail one record at once.
     fn apply() -> ProjectionApplied {
         // read the record before opening the store: the scope is the
         // record's identity as loaded, and what is applied is the same
         // loaded record
         let moved = self.j.refresh();
-        self.until = "";
         return self.project(false);
-    }
-    // As `apply`, up to and including the row `head` alone — the head the
-    // record's remote holds, so a node stamps only rows it has shared (GH
-    // #1026). A head this clone does not hold projects nothing.
-    fn apply_to(head: String) -> ProjectionApplied {
-        let moved = self.j.refresh();
-        self.until = head;
-        if len(head) == 0 { return ProjectionApplied { yielded: true }; }
-        let r = self.project(false);
-        self.until = "";
-        return r;
     }
     fn projection_refused(why: String) -> ProjectionApplied {
         self.last_error = "the Knowledge projection cannot proceed over this Record: " + why;
         // Which check refused, on stderr: the fixtures dump it, and an
         // operator reading the service log sees the numbers, not a riddle.
-        eprintln("hale dna: memory: projection refused: ", why, " (record ", to_string(self.j.revision()), " head ", self.j.head(), ")");
+        eprintln(
+            "hale dna: memory: projection refused: ",
+            why,
+            " (record ",
+            to_string(self.j.revision()),
+            " head ",
+            self.j.head(),
+            ")",
+        );
         return ProjectionApplied { error: "knowledge_projection_unavailable" };
     }
-    // Where this clone's record stands to memory's stamp, by ancestry
-    // (GH #1026). The record's rows are its commits, so a stamp is a
-    // commit and every clone can place it:
-    //   `descends` — nothing is stamped, or the stamped head is this
-    //     clone's row at the stamp: the rows after it are the delta;
-    //   `behind`   — this clone's head is an ancestor of the stamped head,
-    //     or the stamped head is a commit this clone has not received:
-    //     another projector is ahead, and there is nothing here to project
-    //     until the record is received (the host receives it every tick). A
-    //     head it cannot place is never taken for a replaced chain: two
-    //     nodes that append rows before they share them would otherwise
-    //     each rebuild the other's projection until they synced;
-    //   `replaced` — neither: the chain was rebuilt beneath the projection
-    //     (a reconcile re-appends local rows, each with a new digest, GH
-    //     #603), so the graph is rebuilt from row 0. The graph is derived.
+    // Where this projector's view of the record stands to memory's stamp
+    // (GH #1026, #1590). The record is one chain in memory that only
+    // grows, and a stamp is a row of it:
+    //   `descends` — nothing is stamped, or the stamped head is this view's
+    //     row at the stamp: the rows after it are the delta;
+    //   `behind`   — the stamp is past this view (another projector read the
+    //     record later): nothing to project until this view is read again;
+    //   `replaced` — the stamped head is not the record's row at the stamp:
+    //     a projection of another record's chain, or of rows rewritten
+    //     behind memory's function. The graph is derived, and is rebuilt
+    //     from row 0.
     fn fence(basis: dna::GraphProjection, revision: Int) -> String {
         if basis.watermark == 0 { return "descends"; }
-        if basis.watermark <= revision && self.j.read(basis.watermark - 1).digest == basis.head { return "descends"; }
-        let r = self.j.record;
-        if !r.holds(basis.head) { return "behind"; }
-        if revision == 0 || r.precedes(self.j.read(revision - 1).digest, basis.head) { return "behind"; }
+        if basis.watermark <= revision && self.j.read(basis.watermark - 1).digest == basis.head {
+            return "descends";
+        }
+        if basis.watermark > revision { return "behind"; }
         return "replaced";
     }
     // The rows from `from` to `to` a reader refuses (GH #1026): their
     // digests, one per line, each said once on stderr.
     fn refused(from: Int, to: Int) -> String {
-        let trust = self.j.record.setting("trust");
+        let rec = dna::MemoryRecord { repo: self.j.repo };
+        let trust = rec.setting("trust");
         if trust != "signed" { return ""; }
         let mut out = "";
         let mut i = if from < 0 { 0 } else { from };
         while i < to {
             let e = self.j.read(i);
-            let why = dna::row_admissible(self.j.record, e, trust);
+            let why = dna::row_admissible(rec, e, trust);
             if len(why) > 0 {
                 out = out + e.digest + "\n";
                 eprintln("hale dna: memory: not projected: ", why);
@@ -746,45 +976,63 @@ locus MemoryProjection {
         }
         return out;
     }
-    // The rows this pass projects: the record's, or up to `until`.
-    fn extent() -> Int {
-        if len(self.until) == 0 { return self.j.revision(); }
-        let mut i = self.j.revision();
-        while i > 0 {
-            if self.j.read(i - 1).digest == self.until { return i; }
-            i = i - 1;
-        }
-        return -1;
-    }
     fn project(bounded: Bool) -> ProjectionApplied { return self.project_once(bounded, false); }
     fn project_once(bounded: Bool, rebuilt: Bool) -> ProjectionApplied {
         if !self.ensure_open() { return ProjectionApplied { error: self.last_error }; }
         let basis = self.store.projection_basis();
-        if !basis.ok { return self.projection_refused("memory holds no valid projection stamp (" + self.store.last_error() + "); `hale dna memory migrate` sets one"); }
+        if !basis.ok {
+            return self.projection_refused(
+                "memory holds no valid projection stamp (" + self.store.last_error()
+                    + "); `hale dna memory migrate` sets one",
+            );
+        }
         let whole = self.j.revision();
         let last = if whole > 0 { self.j.read(whole - 1).digest } else { "" };
-        if whole > 0 && last != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + last + "`"); }
-        // a shared head this clone has not taken in yet: nothing to project
-        let revision = self.extent();
-        if revision < 0 { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
+        if whole > 0 && last != self.j.head() {
+            return self.projection_refused(
+                "the record head `" + self.j.head() + "` is not its last row `" + last + "`",
+            );
+        }
+        let revision = whole;
         let place = self.fence(basis, revision);
-        if place == "behind" { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
+        if place == "behind" {
+            return ProjectionApplied { watermark: basis.watermark, yielded: true };
+        }
         if place == "replaced" {
-            eprintln("hale dna: memory: the stamped head `", basis.head, "` at row ", to_string(basis.watermark), " is neither this clone's row there nor ahead of it (record ", to_string(revision), " head ", self.j.head(), "): the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0");
-            // once per pass: a second projector over another chain moves
-            // it back on its own pass, until the reconcile ends the race
+            eprintln(
+                "hale dna: memory: the stamped head `",
+                basis.head,
+                "` at row ",
+                to_string(basis.watermark),
+                " is not the record's row there (record ",
+                to_string(revision),
+                " head ",
+                self.j.head(),
+                "); rebuilding the projection from row 0",
+            );
+            // once per pass: a projection that moves again under this one
+            // is left to the next pass
             if rebuilt { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
             if !self.store.rebuild(basis.watermark, basis.head) {
-                if len(self.store.last_error()) == 0 { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
-                return self.projection_refused("the store could not rebuild its projection: " + self.store.last_error());
+                if len(self.store.last_error()) == 0 {
+                    return ProjectionApplied { watermark: basis.watermark, yielded: true };
+                }
+                return self.projection_refused(
+                    "the store could not rebuild its projection: " + self.store.last_error(),
+                );
             }
             return self.project_once(bounded, true);
         }
         self.store.forget_error();
         let receipts = GraphReceipts { source: self.receipts };
         let refused = self.refused(basis.watermark, revision);
-        let trust = if len(self.j.record.setting("trust")) > 0 { self.j.record.setting("trust") } else { "local" };
-        let mut r = if bounded { apply_record_to(self.store, self.j, receipts, revision, refused, trust, self.j) } else { apply_record_to(self.store, self.j, self.receipts, revision, refused, trust, self.j) };
+        let set = dna::MemoryRecord { repo: self.j.repo }.setting("trust");
+        let trust = if len(set) > 0 { set } else { "local" };
+        let mut r = if bounded {
+            apply_record_to(self.store, self.j, receipts, revision, refused, trust, self.j)
+        } else {
+            apply_record_to(self.store, self.j, self.receipts, revision, refused, trust, self.j)
+        };
         if len(receipts.error) > 0 { r.error = receipts.error; }
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;
@@ -792,31 +1040,33 @@ locus MemoryProjection {
     }
 }
 
-// Projection reads pin each receipt ref to a blob and inspect its size before
-// transporting its body. A read must not trigger unlimited catch-up work before
-// the graph query's own row/byte bounds can run. This adapter never writes.
+// Projection reads are bounded before the graph query's own row/byte bounds
+// can run: each body read is counted against what the pass may read, and one
+// that is not its digest's is refused. This adapter never writes.
 locus GraphReceipts {
-    params { source: dna::GitReceipts; remaining: Int = 8388608; error: String = ""; }
-    fn kind() -> String { return "git"; }
+    params { source: dna::MemoryReceipts; remaining: Int = 8388608; error: String = ""; }
+    fn kind() -> String { return "memory"; }
     fn store(text: String) -> String { self.error = "knowledge_projection_unavailable"; return ""; }
-    fn erase(digest: String) -> Bool { self.error = "knowledge_projection_unavailable"; return false; }
+    fn erase(digest: String) -> Bool {
+        self.error = "knowledge_projection_unavailable";
+        return false;
+    }
+    fn redacted(digest: String) -> Bool { return self.source.redacted(digest); }
     fn read(digest: String) -> String {
         if len(self.error) > 0 { return ""; }
-        if len(digest) != 64 || !dna::digest_well_formed("sha256:" + digest) { self.error = "knowledge_projection_unavailable"; return ""; }
-        let record = self.source.record;
-        let object = record.git_out("rev-parse\n-q\n--verify\n" + record.ref_of("receipts/" + digest));
-        if len(object) == 0 { return ""; }
-        // cat-file with an expected type can peel a tag. Size and body must
-        // refer to the exact same blob, never a small tag over a large body.
-        let kind = record.git("cat-file\n-t\n" + object);
-        if kind.code != 0 || dna::trim_nl(kind.stdout) != "blob" { self.error = "knowledge_projection_unavailable"; return ""; }
-        let sized = record.git("cat-file\n-s\n" + object);
-        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or - 1;
-        if sized.code != 0 || size < 0 { self.error = "knowledge_projection_unavailable"; return ""; }
+        if len(digest) != 64 || !dna::digest_well_formed("sha256:" + digest) {
+            self.error = "knowledge_projection_unavailable";
+            return "";
+        }
+        let body = self.source.read(digest);
+        if len(body) == 0 { return ""; }
+        let size = len(body);
         if size > self.remaining { self.error = "knowledge_read_limit"; return ""; }
-        let body = record.git("cat-file\nblob\n" + object);
-        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + digest { self.error = "knowledge_projection_unavailable"; return ""; }
+        if dna::digest_of(body) != "sha256:" + digest {
+            self.error = "knowledge_projection_unavailable";
+            return "";
+        }
         self.remaining = self.remaining - size;
-        return body.stdout;
+        return body;
     }
 }

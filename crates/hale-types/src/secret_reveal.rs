@@ -46,7 +46,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    BinOp, Block, ElseBranch, Expr, FnDecl, IfStmt, LocusMember, MatchArmBody, MatchStmt, OrDisposition, Param,
+    BinOp, Block, ElseBranch, Expr, FnDecl, IfStmt, Literal, LocusMember, MatchArmBody, MatchStmt, OrDisposition, Param,
     ParamInit, Pattern, PerspectiveMember, Program, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::error::Diag;
@@ -68,7 +68,7 @@ const PQ_DEFERRED: &[(&str, &str, &str, &str, &str, &str)] = &[
         "ReferenceInfrastructure",
         "knowledge_database",
         "dna::ReferenceInfrastructure.knowledge_database",
-        "d4409560c6deee83",
+        "9d876c66b67462d3",
         "transport_kind",
     ),
     ("scram", "", "salted_password", "pq::salted_password", "6ba4677d29db543e", "compute_client_final"),
@@ -104,6 +104,15 @@ const REQUEST_FNS: &[&[&str]] = &[&["std", "http", "request"]];
 const REQUEST_METHODS: &[(&str, &str)] = &[("__StdHttpClient", "request")];
 const REQUEST_WIRE_FIELDS: &[&str] = &["headers", "body"];
 
+/// Loci whose `req` field is a request they put on the wire as
+/// `Client.request` does (GH #1698): a streamed body's readers send their
+/// `req` at birth, so its `headers` and `body` are the wire's — unless
+/// the literal names `deferred`, when the request waits in `req`,
+/// readable, for the opening, and a reveal there is refused (the reader
+/// takes the credential as `bearer:` instead, and the credential writes
+/// its header onto the wire itself).
+const REQUEST_LOCI: &[&str] = &["__StdHttpBodyReader", "__StdHttpSseReader"];
+
 /// Methods that compare their argument with a sealed value.
 const COMPARE_METHODS: &[(&str, &str)] = &[(CREDENTIAL, "matches")];
 
@@ -130,6 +139,11 @@ const VALUE_FNS: &[&[&str]] = &[
     &["std", "encoding", "hex", "encode"],
     &["std", "crypto", "sha256"],
     &["std", "crypto", "hmac_sha256"],
+    // percent-encoding (url.hl): a fresh String built from the
+    // argument's bytes, nothing of it kept
+    &["std", "url", "encode"],
+    &["std", "url", "decode"],
+    &["std", "url", "decode_query"],
 ];
 
 /// Stdlib fns that write into one argument, `(fn, that argument)`: a
@@ -196,6 +210,11 @@ struct World {
     fn_returns: BTreeMap<String, String>,
     /// free fns proven transparent
     transparent: BTreeSet<String>,
+    /// each free fn that is not, with the first thing in its body that
+    /// keeps it from being one ("calls `…`"), for the diagnostic
+    opaque: BTreeMap<String, String>,
+    /// the first reason the walk in progress found
+    why: std::cell::RefCell<Option<String>>,
     renames: Vec<(Vec<String>, String)>,
     /// the bundle's source map: (path, base, len), so a declaration's
     /// file is known from its span
@@ -394,7 +413,38 @@ impl World {
                 break;
             }
         }
+        // why each of the others is not: walked once more, the first
+        // refusal it meets kept
+        for (name, params, body) in &bodies {
+            if w.transparent.contains(name) || w.opaque.contains_key(name) {
+                continue;
+            }
+            *w.why.borrow_mut() = None;
+            let mut locals: Vec<(String, bool)> = params.iter().map(|p| (p.name.name.clone(), true)).collect();
+            let _ = w.block_transparent(body, &mut locals);
+            if let Some(reason) = w.why.borrow_mut().take() {
+                w.opaque.insert(name.clone(), reason);
+            }
+        }
         w
+    }
+
+    /// Not transparent, for `reason` (kept when it is the walk's first).
+    fn opaque(&self, reason: impl FnOnce() -> String) -> bool {
+        let mut why = self.why.borrow_mut();
+        if why.is_none() {
+            *why = Some(reason());
+        }
+        false
+    }
+
+    /// A callee as the user spells it, for a diagnostic.
+    fn spelled(callee: &Expr) -> String {
+        match callee {
+            Expr::Ident(id) => id.name.clone(),
+            Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+            _ => "a value".to_string(),
+        }
     }
 
     /// Whether a call to `callee` keeps nothing of its arguments. A name
@@ -442,7 +492,13 @@ impl World {
             // only a local of its own: a field, an index or a param's
             // insides are somewhere the value outlives the call
             Stmt::Assign { target, value, .. } => {
-                target.tail.is_empty() && target.head.name != "self" && self.expr_transparent(value, locals)
+                if target.head.name == "self" {
+                    return self.opaque(|| "writes `self`".to_string());
+                }
+                if !target.tail.is_empty() {
+                    return self.opaque(|| format!("writes into `{}`, which outlives the call", target.head.name));
+                }
+                self.expr_transparent(value, locals)
             }
             Stmt::Return(e, _) => e.as_ref().map(|e| self.expr_transparent(e, locals)).unwrap_or(true),
             Stmt::If(i) => self.if_transparent(i, locals),
@@ -459,7 +515,9 @@ impl World {
             Stmt::While { cond, body, .. } => self.expr_transparent(cond, locals) && self.block_transparent(body, locals),
             Stmt::Block(b) => self.block_transparent(b, locals),
             Stmt::Break(_) | Stmt::Continue(_) => true,
-            _ => false,
+            Stmt::Send { .. } => self.opaque(|| "publishes".to_string()),
+            Stmt::Fail { .. } => self.opaque(|| "raises a failure".to_string()),
+            _ => self.opaque(|| "has a statement that acts on something outside it".to_string()),
         }
     }
 
@@ -493,13 +551,27 @@ impl World {
     fn expr_transparent(&self, e: &Expr, locals: &mut Vec<(String, bool)>) -> bool {
         match e {
             Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => true,
-            Expr::KwSelf(_) => false,
+            Expr::KwSelf(_) => self.opaque(|| "reads `self`".to_string()),
             Expr::Binary { left, right, .. } => self.expr_transparent(left, locals) && self.expr_transparent(right, locals),
             Expr::Unary { operand, .. } => self.expr_transparent(operand, locals),
             Expr::Call { callee, args, .. } => {
-                !matches!(callee.as_ref(), Expr::Field { .. } | Expr::Path2 { .. })
-                    && self.call_transparent(callee, args, locals)
-                    && args.iter().all(|a| self.expr_transparent(a, locals))
+                if let Expr::Field { name, .. } | Expr::Path2 { name, .. } = callee.as_ref() {
+                    return self.opaque(|| format!("calls the method `.{}(…)`", name.name));
+                }
+                if !self.call_transparent(callee, args, locals) {
+                    let spelled = Self::spelled(callee);
+                    let out = matches!(callee.as_ref(), Expr::Path(qn)
+                        if LOCAL_OUT_FNS.iter().any(|(f, _)| f.len() == qn.segments.len()
+                            && f.iter().zip(&qn.segments).all(|(a, b)| *a == b.name)));
+                    return self.opaque(|| {
+                        if out {
+                            format!("calls `{spelled}` on a value it did not make")
+                        } else {
+                            format!("calls `{spelled}`, which may keep what it is handed")
+                        }
+                    });
+                }
+                args.iter().all(|a| self.expr_transparent(a, locals))
             }
             Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr_transparent(receiver, locals),
             Expr::Index { receiver, index, .. } => {
@@ -509,7 +581,10 @@ impl World {
             Expr::Struct { path, inits, .. } => {
                 let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
                 let is_locus = self.key_of_segs(&segs).map(|k| self.loci.contains(&k)).unwrap_or(false);
-                !is_locus && inits.iter().all(|i| self.expr_transparent(&i.value, locals))
+                if is_locus {
+                    return self.opaque(|| format!("builds the locus `{}`", segs.join("::")));
+                }
+                inits.iter().all(|i| self.expr_transparent(&i.value, locals))
             }
             Expr::Block(b) => self.block_transparent(b, locals),
             Expr::If(i) => self.if_transparent(i, locals),
@@ -1261,10 +1336,18 @@ impl<'a> Body<'a> {
                     if self.world.transparent.contains(&n) {
                         return result_flow.composed();
                     }
-                    return Flow::leaks(format!(
-                        "reaches `{}`, which is not a wire write, a comparison or a `@secret` parameter",
-                        self.world.display(&n)
-                    ));
+                    let shown = self.world.display(&n);
+                    return Flow::leaks(match self.world.opaque.get(&n) {
+                        // a fn of the program's own: say why it does not
+                        // carry the value on (spec/semantics.md § "@sealed")
+                        Some(why) => format!(
+                            "reaches `{shown}`, which is not a wire write, a comparison or a `@secret` parameter, \
+                             and does not only compute its result from its arguments: `{shown}` {why}"
+                        ),
+                        None => format!(
+                            "reaches `{shown}`, which is not a wire write, a comparison or a `@secret` parameter"
+                        ),
+                    });
                 }
                 if VALUE_BUILTINS.contains(&n.as_str()) {
                     return result_flow.composed();
@@ -1397,13 +1480,38 @@ impl<'a> Body<'a> {
             }
             Expr::Struct { path, inits, .. } => {
                 let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                // a streamed body's reader: its `req` goes on the wire
+                let reader = match segs.as_slice() {
+                    ["std", "http", r @ ("BodyReader" | "SseReader")] => Some(format!("std::http::{r}")),
+                    [one] if REQUEST_LOCI.contains(one) => Some(self.world.display(one)),
+                    _ => None,
+                };
                 let locus = self.world.key_of_segs(&segs).filter(|k| self.world.loci.contains(k));
                 let f = match locus {
                     Some(l) => Flow::leaks(format!("is stored in a `{} {{ … }}`", self.world.display(&l))),
                     None => flow.composed(),
                 };
+                // a deferred reader sends nothing at birth: its request,
+                // revealed headers and all, waits in its `req` for the
+                // opening, where the program reads it
+                let deferred = reader.is_some()
+                    && inits.iter().any(|i| {
+                        i.name.name == "deferred" && !matches!(i.value, Expr::Literal(Literal::Bool(false), _))
+                    });
                 for i in inits {
-                    self.expr(&i.value, &f);
+                    match &reader {
+                        Some(spelled) if i.name.name == "req" && deferred => self.expr(
+                            &i.value,
+                            &Flow::leaks(format!(
+                                "is the request of a deferred `{}`, which keeps it in its `req` until the \
+                                 opening sends it, readable there: a reader presents a credential as `bearer: c`, \
+                                 written onto the wire by the credential itself",
+                                spelled
+                            )),
+                        ),
+                        Some(spelled) if i.name.name == "req" => self.request_arg(spelled, &i.value),
+                        _ => self.expr(&i.value, &f),
+                    }
                 }
             }
             Expr::Block(b) => self.block(b, flow),

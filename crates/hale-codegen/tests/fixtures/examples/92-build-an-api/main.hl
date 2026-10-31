@@ -23,13 +23,26 @@ locus Shop {
 
     fn on_order(req: OrderRequest, ctx: std::api::Context) -> OrderResponse {
         if req.qty <= 0 || req.qty > self.stock.on_hand {
-            return OrderResponse { order_id: 0, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+            return OrderResponse {
+                order_id: 0,
+                on_hand: self.stock.on_hand,
+                by: ctx.caller.name,
+                via: ctx.via,
+            };
         }
         self.stock.on_hand = self.stock.on_hand - req.qty;
         self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item + " for " + ctx.caller.name + " via " + ctx.via);
+        println(
+            "order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item
+                + " for " + ctx.caller.name + " via " + ctx.via,
+        );
         Shipments <- Shipment { order_id: self.stock.orders, item: req.item, qty: req.qty };
-        return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
+        return OrderResponse {
+            order_id: self.stock.orders,
+            on_hand: self.stock.on_hand,
+            by: ctx.caller.name,
+            via: ctx.via,
+        };
     }
 
     fn on_restock(req: RestockRequest, ctx: std::api::Context) -> RestockResponse {
@@ -64,18 +77,42 @@ main locus App {
         tokens: Tokens = Tokens { };
         // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
-        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+        hub: ws::Hub = ws::Hub {
+            bind: "127.0.0.1:8796",
+            principals: self.tokens,
+            roles: self.staff,
+            as: "shipments",
+        };
+        sock: api::Exposure = api::serve(
+            Counter,
+            unix::Rpc { path: "/tmp/shop.sock", roles: self.staff },
+            as: "counter",
+            receivers: { Shop: self.shop },
+            bound: 64,
+            on_full: refuse
+        );
+        web: api::Exposure = api::serve(
+            Counter,
+            http::Rpc {
+                bind: "127.0.0.1:8794",
+                codec: json,
+                principals: self.tokens,
+                roles: self.staff,
+            },
+            as: "web",
+            receivers: { Shop: self.shop },
+            bound: 64,
+            on_full: refuse
+        );
     }
     placement { shop: cooperative(pool = work) where async_io; }
     bindings {
         Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        sock.stop();
-        web.stop();
+        self.sock.stop();
+        self.web.stop();
     }
 }
 

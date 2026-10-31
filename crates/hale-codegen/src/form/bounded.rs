@@ -446,8 +446,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         else {
             return Ok(None);
         };
-        let (_, len_ptr, data_ptr) =
-            self.bounded_storage_ptrs(&args[0], &elem, cap, scope)?;
+        // The receiver evaluated once: its storage, and the owner its
+        // elements anchor under (`Cx::bounded_place`).
+        let (storage, place_owner) = self.bounded_place(&args[0], scope)?;
+        let st = self.llvm_bounded_storage_type(&elem, cap);
+        let len_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 0, "bounded.len.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let data_ptr = self
+            .builder
+            .build_struct_gep(st, storage, 1, "bounded.data.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let i64_t = self.context.i64_type();
         let len = self
             .builder
@@ -475,8 +485,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // call. The _ptr helper same-arena-skips (String
                 // clone skip / lotus_arena_contains_ptr gate), so
                 // an already-anchored value is identity.
+                self.refuse_element_through_member_param("push", &args[0], &elem, scope)?;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
-                    let target = self.bounded_target_arena(&args[0])?;
+                    let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_cross_arena_store_deep_copy_ptr(
                         xv,
                         &elem,
@@ -709,8 +720,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(ok_bb);
                 // Pointer-shaped elements anchor into the
                 // receiver's owning arena, same as push.
+                self.refuse_element_through_member_param("set", &args[0], &elem, scope)?;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
-                    let target = self.bounded_target_arena(&args[0])?;
+                    let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_cross_arena_store_deep_copy_ptr(
                         xv,
                         &elem,
@@ -804,6 +816,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         Ok(alloc_ptr)
+    }
+
+    /// The scope key that marks a locus member's parameter: not an
+    /// identifier, so no program name meets it.
+    pub(crate) fn param_place_key(name: &str) -> String {
+        format!("#member-param:{name}")
+    }
+
+    /// The backstop of the check's refusal (`check.rs`,
+    /// `refuse_element_through_param`): a pointer-shaped element stored
+    /// into a bounded place under a locus member's parameter would be kept
+    /// in the member's scratch, which its return frees under the caller's
+    /// place.
+    fn refuse_element_through_member_param(&self, intrinsic: &str, recv: &Expr, elem: &CodegenTy, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        fn root(e: &Expr) -> Option<&str> {
+            match e {
+                Expr::Ident(i) => Some(i.name.as_str()),
+                Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => root(receiver),
+                _ => None,
+            }
+        }
+        if !Self::bounded_elem_is_ptr(elem) {
+            return Ok(());
+        }
+        match root(recv) {
+            Some(r) if Self::is_member_param(scope, r) => Err(CodegenError::UnsupportedAt(
+                format!("`{intrinsic}` of a pointer-shaped element into a bounded place under the member parameter `{r}`"),
+                recv.span(),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots
@@ -929,54 +972,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.builder.position_at_end(exit_bb);
         Ok(())
-    }
-
-    /// The arena a pushed element must be anchored into: the
-    /// receiver's owning arena. `self.*`-rooted receivers → the
-    /// locus's own arena (the struct lives there); everything else
-    /// (locals, params) → the current allocation arena (the local
-    /// struct's own arena in the common shapes).
-    fn bounded_target_arena(
-        &mut self,
-        recv: &Expr,
-    ) -> Result<PointerValue<'ctx>, CodegenError> {
-        fn rooted_at_self(e: &Expr) -> bool {
-            match e {
-                Expr::KwSelf(_) => true,
-                Expr::Field { receiver, .. } => rooted_at_self(receiver),
-                _ => false,
-            }
-        }
-        if rooted_at_self(recv) {
-            if let Some(cs) = self.current_self.clone() {
-                let ptr_t =
-                    self.context.ptr_type(inkwell::AddressSpace::default());
-                let info = self
-                    .user_loci
-                    .get(&cs.locus_name)
-                    .cloned()
-                    .expect("current_self points to a declared locus");
-                let arena_field_ptr = self
-                    .builder
-                    .build_struct_gep(
-                        info.struct_ty,
-                        cs.self_ptr,
-                        info.arena_field_idx,
-                        "bounded.self.__arena.ptr",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let arena_ptr = self
-                    .builder
-                    .build_load(
-                        ptr_t,
-                        arena_field_ptr,
-                        "bounded.self.__arena",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                return Ok(arena_ptr.into_pointer_value());
-            }
-        }
-        self.current_arena_ptr()
     }
 
 }

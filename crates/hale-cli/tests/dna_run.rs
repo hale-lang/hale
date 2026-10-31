@@ -8,6 +8,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 // The codegen suite's: what a child listens on, read from `/proc`.
@@ -69,11 +75,12 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
         eprintln!("dna_run: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_run_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_run_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrun"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgrun", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrun");
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
@@ -84,6 +91,7 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--port", "0"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)
@@ -114,8 +122,9 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
         last = s.chars().take(600).collect();
         // the diff reports loaded, the law verified, and the organism's
         // own locus tree replayed (a process attaches before its births
-        // are replayed, so wait for a type)
-        let tree_up = organism_loci(&s).map(|t| !t.is_empty()).unwrap_or(false);
+        // are replayed in birth order, so wait for the DNA's own locus, not
+        // for whichever type is replayed first)
+        let tree_up = organism_loci(&s).map(|t| t.iter().any(|t| t == "dna::Dna" || t == "dna::Metabolism")).unwrap_or(false);
         if s.contains("\"state\":\"loaded\"") && s.contains("\"digest\":\"verified\"") && tree_up {
             snap = s;
             break;
@@ -158,7 +167,9 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
     // an intent over the nerves (`hale dna task create`) lands in the
     // organism's Journal
-    let record = |app: &Path| -> String { Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() };
+    // the record's rows and its Ledger's: an ask and its Task are the
+    // Ledger's (GH #1590)
+    let record = |app: &Path| -> String { record::text(app) + &record::ledger_text(app) };
     let before = record(&app).lines().count();
     let ask = vault::hale()
         .args(["dna", "task", "create", "write", "the", "changelog"])
@@ -203,8 +214,8 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
 
 #[test]
 fn run_refuses_a_project_without_dna() {
-    let d = std::env::temp_dir().join(format!("hale_dna_run_nodna_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_run_nodna_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();

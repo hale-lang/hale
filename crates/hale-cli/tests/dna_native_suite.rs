@@ -4,6 +4,10 @@
 //! a friction log. `dna/core` is a library seed (imported by the
 //! tests); every fixture is an ordinary Hale program that exits 0.
 
+#[path = "support/reap.rs"]
+#[allow(dead_code)]
+mod reap;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -29,16 +33,16 @@ fn repo_root() -> PathBuf {
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
-/// contention (GH #795). Twenty slices of ~8 fixtures, so the
+/// contention (GH #795). Twenty-four slices of ~7 fixtures, so the
 /// round-robin (`count:`) partition over the test list spreads them
-/// evenly across five jobs
+/// evenly across six jobs
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
 /// fifteen minutes a slice had then, when graph_holes ran on the git
 /// record. One wedged fixture still ends in a named failure within the
 /// group's timeout.
-const SLICES: usize = 20;
+const SLICES: usize = 24;
 
 /// The fixtures that take minutes of a slice on CI's runners: an
 /// organization run through dozens of Board decisions (GH #995:
@@ -61,31 +65,40 @@ const SLICES: usize = 20;
 ///
 /// The ORDER of this list is the deal. Slice `i` is the test
 /// `dna_fixtures_slice_<ii>` (zero-padded, so nextest's alphabetical
-/// listing is slice order), and CI's `--partition count:N/5` deals that
-/// listing round-robin over five jobs, each of which starts its slices
+/// listing is slice order), and CI's `--partition count:N/6` deals that
+/// listing round-robin over six jobs, each of which starts its slices
 /// in listing order, two at a time. Three of the suite's other tests
-/// sort before the slices, so slice `i` runs in job `(i + 3) % 5 + 1`
-/// with every fifth slice from it: each job gets two of these ten and
-/// two of the light slices 10-19. So a heavy fixture's position picks its job
-/// and how early it starts there. They are placed so the five jobs'
-/// slice minutes come out level (610-770 s each, from the slice times
-/// of CI's runs on 2026-10-12), each job starts its two longest slices
+/// sort before the slices, so slice `i` runs in job `(i + 3) % 6 + 1`
+/// with every sixth slice from it: each job gets two of the heavy slices
+/// 0-11 and two of the light slices 12-23. GH #1653 added
+/// `habitat_up_test`, which births a habitat on its own backends, stops
+/// it, drains it and brings it back, and the sixth job with it: the job
+/// count and HEAVY move together. It then added `first_run_test`, which
+/// grafts voice onto a habitat of its own and serves it, in the last
+/// heavy slot (slice 11), in job 3, the lightest. So a heavy fixture's
+/// position picks its job and how early it starts there. They are
+/// placed so the jobs' slice minutes come out level (from the slice
+/// times of CI's merge-queue runs on 2026-10-19: 600-1220 s of slices a
+/// job, run two at a time), each job starts its two longest slices
 /// first (a job used to start `legs_test`, its longest, last and leave
-/// its other worker idle behind that tail), and the two graph
-/// fixtures, which need the host's bound to themselves, sit in
-/// different jobs (slices 0 and 6: jobs 4 and 5). Move one only with a
-/// look at those runs' per-slice times.
-const HEAVY: [&str; 10] = [
+/// its other worker idle behind that tail), and the two graph fixtures,
+/// which need the host's bound to themselves, sit in different jobs
+/// (slices 0 and 7: jobs 4 and 5; with six jobs, slice 6 is job 4
+/// again, so `graph_holds_test` moved to 7). Move one only with a look
+/// at those runs' per-slice times.
+const HEAVY: [&str; 12] = [
     "graph_holes_test.hl",
     "dogfood_voice_test.hl",
     "legs_test.hl",
     "books_slice_test.hl",
     "body_lease_start_test.hl",
     "body_claim_expired_test.hl",
-    "graph_holds_test.hl",
     "body_lease_blocked_test.hl",
+    "graph_holds_test.hl",
     "senses_reflex_test.hl",
     "receipt_retention_test.hl",
+    "habitat_up_test.hl",
+    "first_run_test.hl",
 ];
 
 fn fixture_files() -> Vec<PathBuf> {
@@ -288,12 +301,19 @@ fn keep_scratch() -> bool {
 /// `keep` is passed rather than read here so the regression below can
 /// exercise both answers without mutating this process's environment
 /// (GH #843).
-fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
+fn sweep_scratch_roots(tag: &str, keep: bool) -> Result<Vec<String>, String> {
     if keep {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    // what compose runs from under any root the slice made goes first: a
+    // fixture killed before `dna::scratch_done` left its compose project up.
+    // A teardown that did not finish removes nothing — not a root, not the
+    // registry, not the ledger — so the projects stay found for another
+    // attempt, and the slice fails saying so
+    let roots: Vec<PathBuf> = ledger_roots(tag).into_iter().map(PathBuf::from).collect();
+    reap::compose_down_all(&roots)?;
     let reg = scratch_registry(tag);
-    let Ok(entries) = std::fs::read_dir(&reg) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&reg) else { return Ok(Vec::new()) };
     let mut swept = Vec::new();
     for e in entries.flatten() {
         let Ok(root) = std::fs::read_to_string(e.path()) else { continue };
@@ -308,7 +328,7 @@ fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
     let _ = std::fs::remove_dir_all(&reg);
     let _ = std::fs::remove_dir_all(roots_ledger(tag));
     swept.sort();
-    swept
+    Ok(swept)
 }
 
 /// The slice's scratch roots, swept when the slice ends however it
@@ -327,7 +347,18 @@ struct SliceScratch {
 
 impl Drop for SliceScratch {
     fn drop(&mut self) {
-        let swept = sweep_scratch_roots(&self.tag, keep_scratch());
+        let swept = match sweep_scratch_roots(&self.tag, keep_scratch()) {
+            Ok(swept) => swept,
+            Err(why) => {
+                let said = format!("dna slice: the compose projects under its scratch roots did not come down; the roots, the registry and the ledger are kept for another attempt:\n{why}");
+                if std::thread::panicking() {
+                    eprintln!("{said}");
+                } else {
+                    panic!("{said}");
+                }
+                return;
+            }
+        };
         if !swept.is_empty() {
             eprintln!(
                 "dna slice: swept {} scratch root(s) no fixture reclaimed (HALE_DNA_KEEP_SCRATCH=1 keeps them):\n  {}",
@@ -533,13 +564,90 @@ exit 124 if $expired;
 exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);
 "#;
 
+/// The habitat toolchain image built once from the local checkout (`hale
+/// habitat image build`) and passed to every fixture through the child's
+/// `Command::env` (`HALE_HABITAT_IMAGE`), so no fixture ever builds rustc
+/// or LLVM inside docker.
+fn habitat_image() -> Option<String> {
+    static IMAGE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IMAGE
+        .get_or_init(|| {
+            if let Ok(tag) = std::env::var("HALE_HABITAT_IMAGE") {
+                let tag = tag.trim().to_string();
+                if !tag.is_empty() {
+                    return Some(tag);
+                }
+            }
+            let has_compose = Command::new("docker")
+                .args(["compose", "version"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !has_compose {
+                return None;
+            }
+            if let Some(dir) = PathBuf::from(env!("CARGO_BIN_EXE_hale")).parent() {
+                if let Ok(tag) = std::fs::read_to_string(dir.join("habitat-image.tag")) {
+                    let tag = tag.trim().to_string();
+                    if !tag.is_empty() {
+                        let archive = dir.join("habitat-image.tar.zst");
+                        let present = Command::new("docker")
+                            .args(["image", "inspect", &tag])
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !present && archive.is_file() {
+                            let _ = Command::new("sh")
+                                .arg("-c")
+                                .arg(format!("zstd -dc {:?} | docker load >/dev/null", archive.display()))
+                                .status();
+                        }
+                        if Command::new("docker")
+                            .args(["image", "inspect", &tag])
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false)
+                        {
+                            return Some(tag);
+                        }
+                    }
+                }
+            }
+            let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+                .args(["habitat", "image", "build"])
+                .arg(repo_root())
+                .output()
+                .ok()?;
+            assert!(
+                out.status.success(),
+                "hale habitat image build failed:\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+        })
+        .clone()
+}
+
 /// Run one fixture, returning what it cost or why it failed. `hale test
 /// --json` is what carries the cost: the text form reports only the
 /// pass/fail summary, and the wall time of the child here would fold
 /// the compile of every import into the first fixture that needed it.
-fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureTiming, String> {
+fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>, habitat: Option<&SliceHabitat>) -> Result<FixtureTiming, String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
     cmd.arg("test").arg("--json").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+    if let Some(img) = habitat_image() {
+        cmd.env("HALE_HABITAT_IMAGE", img);
+    }
+    // GH #1653: the slice's habitat, born once, which a fixture grafts its
+    // organisms into (`dna::test_habitat`, `dna::grafted`)
+    if let Some(h) = habitat {
+        cmd.env("HALE_DNA_TEST_HABITAT", &h.dir).env("HALE_DNA_TEST_HABITAT_VAULT", &h.vault);
+    }
     cmd.env("HALE_DNA_SOURCE", repo_root());
     cmd.env(SLICE_TAG, tag);
     // every fixture runs under a vault of its own: `hale test` makes one per
@@ -555,6 +663,12 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     // its own body with `HALE_DNA_COMPOSE=on`; each fixture that runs a
     // repository body also says `off` itself, so a run by hand is as safe.
     cmd.env("HALE_DNA_COMPOSE", "off");
+    // Nor does a fixture's habitat install the machine's node exporter or
+    // run a Grafana (a machine-wide service; an image pull): each fixture
+    // that runs a habitat says `off` itself too, and the one about them
+    // (habitat_up_test) opts in on its own `up`.
+    cmd.env("HALE_DNA_NODE_EXPORTER", "off");
+    cmd.env("HALE_DNA_GRAFANA", "off");
     // GH #795: a fixture's bounded waits are written for a quiet
     // machine, and here they are not on one — the slices run beside the
     // rest of the workspace's tests, and beside one another, with an
@@ -612,6 +726,60 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     })
 }
 
+/// GH #1653: a slice's habitat, which its fixtures graft their organisms
+/// into instead of birthing them free-standing: born once per slice, with
+/// no body, under a scratch root of the slice's (so its sweep takes it
+/// down), on the operator's backends when the slice has an owner's DSN and
+/// NATS (CI's: no compose), else its own. Its secrets are in a vault of its
+/// own, which a fixture's `dna::test_habitat` lends into the fixture's.
+struct SliceHabitat {
+    dir: PathBuf,
+    vault: PathBuf,
+}
+
+fn slice_habitat(tag: &str, dsn: Option<&str>, mine: &[&PathBuf]) -> Option<SliceHabitat> {
+    // only a slice with a fixture that grafts pays for a birth
+    let grafts = mine.iter().any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains("dna::grafted(") || t.contains("dna::test_habitat(") || t.contains("dna::in_habitat(")));
+    if !grafts {
+        return None;
+    }
+    let root = PathBuf::from(format!("/tmp/dna-slicehabitat-{}", tag.replace('/', "-")));
+    let _ = std::fs::remove_dir_all(&root);
+    // recorded as the slice's scratch root, so its sweep takes it down
+    let name = root.file_name().unwrap().to_string_lossy().to_string();
+    for reg in [scratch_registry(tag), roots_ledger(tag)] {
+        let _ = std::fs::create_dir_all(&reg);
+        let _ = std::fs::write(reg.join(&name), root.display().to_string());
+    }
+    let vault = root.join("vault");
+    std::fs::create_dir_all(&vault).expect("the slice habitat's vault");
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
+    let dir = root.join("habitat");
+    let operator = dsn.is_some() && std::env::var("HALE_DNA_NATS_URL_OWNER").is_ok_and(|v| !v.is_empty());
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
+    cmd.args(["habitat", "up", "--no-body", "--backends", if operator { "operator" } else { "own" }])
+        .current_dir(&root)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_HABITAT", &dir)
+        .env("HALE_VAULT_DIR", &vault)
+        .env_remove("HALE_VAULT_ADDR")
+        .env("HALE_DNA_DISCOVER", "off")
+        .env(SLICE_TAG, tag);
+    match dsn {
+        Some(d) if operator => {
+            cmd.env("HALE_DNA_MEMORY_DSN_OWNER", d);
+        }
+        _ => {
+            cmd.env_remove("HALE_DNA_MEMORY_DSN_OWNER").env_remove("HALE_DNA_NATS_URL_OWNER");
+        }
+    }
+    let out = cmd.output().expect("invoke hale for the slice's habitat");
+    assert!(out.status.success(), "the slice's habitat was not born:
+{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    Some(SliceHabitat { dir, vault })
+}
+
 fn run_fixture_slice(slice: usize) {
     let files = fixture_files();
     assert!(!files.is_empty(), "no DNA fixtures under dna/tests");
@@ -627,7 +795,17 @@ fn run_fixture_slice(slice: usize) {
         Some(db) => Some(db.dsn.clone()),
         None => std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok(),
     };
+    // GH #1590: the record is memory's, so a fixture without a Postgres has
+    // no record at all; the suite says so rather than letting each one fail
+    // on its own way
+    assert!(
+        dsn.as_deref().is_some_and(|d| d.starts_with("postgres")),
+        "the DNA fixtures need memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres 16 with pgvector \
+         (`docker run -d -p 5480:5432 -e POSTGRES_USER=dna -e POSTGRES_PASSWORD=dna -e POSTGRES_DB=dna pgvector/pgvector:pg16`, \
+         then postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable)"
+    );
 
+    let habitat = slice_habitat(&tag, dsn.as_deref(), &mine);
     let mut timings: Vec<FixtureTiming> = Vec::with_capacity(mine.len());
     let mut failure = None;
     for f in &mine {
@@ -637,7 +815,7 @@ fn run_fixture_slice(slice: usize) {
         let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         eprintln!("slice {slice}: {name} starting");
         let started = std::time::Instant::now();
-        let outcome = run_one_fixture(f, &tag, dsn.as_deref());
+        let outcome = run_one_fixture(f, &tag, dsn.as_deref(), habitat.as_ref());
         eprintln!(
             "slice {slice}: {name} {} after {:.1}s",
             if outcome.is_ok() { "passed" } else { "failed" },
@@ -686,6 +864,7 @@ fixture_slices! {
     dna_fixtures_slice_08 => 8, dna_fixtures_slice_09 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
     dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
     dna_fixtures_slice_16 => 16, dna_fixtures_slice_17 => 17, dna_fixtures_slice_18 => 18, dna_fixtures_slice_19 => 19,
+    dna_fixtures_slice_20 => 20, dna_fixtures_slice_21 => 21, dna_fixtures_slice_22 => 22, dna_fixtures_slice_23 => 23,
 }
 
 /// The slice's own memory database is reached by editing exactly the
@@ -840,7 +1019,7 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
     stamp(&mine, "not-a-scratch-root", &decoy);
     stamp(&mine, "traversal", &format!("{}/../e1-909-decoy-{pid}", root_of(&mine)));
 
-    let swept = sweep_scratch_roots(&mine, false);
+    let swept = sweep_scratch_roots(&mine, false).expect("the sweep");
 
     assert_eq!(swept, vec![root_of(&mine)], "the slice sweeps its own root, and only its own");
     assert!(!PathBuf::from(root_of(&mine)).exists(), "this slice's root is gone");
@@ -850,14 +1029,14 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
 
     // The keep knob, on the same registry shape: nothing removed, and
     // the registry left for the next sweep that is allowed to.
-    assert!(sweep_scratch_roots(&kept, true).is_empty(), "HALE_DNA_KEEP_SCRATCH sweeps nothing");
+    assert!(sweep_scratch_roots(&kept, true).expect("the sweep").is_empty(), "HALE_DNA_KEEP_SCRATCH sweeps nothing");
     assert!(PathBuf::from(root_of(&kept)).exists(), "the kept root is still there to look at");
     assert!(scratch_registry(&kept).exists(), "with its registry entry");
 
     // The stranger's own slice does sweep it — which is also this
     // test's cleanup.
-    assert_eq!(sweep_scratch_roots(&stranger, false), vec![root_of(&stranger)], "the slice that stamped it is the one that sweeps it");
-    assert_eq!(sweep_scratch_roots(&kept, false), vec![root_of(&kept)]);
+    assert_eq!(sweep_scratch_roots(&stranger, false).expect("the sweep"), vec![root_of(&stranger)], "the slice that stamped it is the one that sweeps it");
+    assert_eq!(sweep_scratch_roots(&kept, false).expect("the sweep"), vec![root_of(&kept)]);
     let _ = std::fs::remove_dir_all(&decoy);
 }
 
@@ -868,7 +1047,7 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
 /// or marked `@bounded_by(<input>)` with what bounds it, or `@unbounded`
 /// with an issue while it is not yet understood (docs/src/dna/standard.md).
 ///
-/// One test, not one per target: CI's `--partition count:N/4` deals this
+/// One test, not one per target: CI's `--partition count:N/6` deals this
 /// binary's alphabetical test list round-robin, and a test sorted before
 /// `dna_fixtures_slice_00` moves every slice to another part.
 #[test]
@@ -928,6 +1107,7 @@ fn dna_fixture_set_is_complete() {
         names,
         vec![
             "acceptance_binding_test.hl",
+            "acceptance_homelab_test.hl",
             "anthropic_messages_test.hl",
             "apply_test.hl",
             "assembly_test.hl",
@@ -944,10 +1124,13 @@ fn dna_fixture_set_is_complete() {
             "build_fingerprint_location_test.hl",
             "build_seed_out_of_tree_test.hl",
             "claims_test.hl",
+            "codebase_attach_test.hl",
+            "codebase_go_test.hl",
             "command_relay_trust_test.hl",
             "compose_projects_test.hl",
             "concern_identity_test.hl",
             "concern_restart_test.hl",
+            "declared_secrets_test.hl",
             "deployment_test.hl",
             "dogfood_voice_test.hl",
             "edge_projection_test.hl",
@@ -957,6 +1140,13 @@ fn dna_fixture_set_is_complete() {
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
             "extensions_test.hl",
+            "face_grafana_on_demand_test.hl",
+            "faces_named_page_test.hl",
+            "faces_named_start_test.hl",
+            "faces_named_test.hl",
+            "first_run_test.hl",
+            "fleet_topology_test.hl",
+            "forge_forgejo_test.hl",
             "forge_gates_test.hl",
             "genome_pull_test.hl",
             "grant_layering_test.hl",
@@ -965,10 +1155,24 @@ fn dna_fixture_set_is_complete() {
             "graph_holes_edges_test.hl",
             "graph_holes_test.hl",
             "graph_ingest_refusals_test.hl",
+            "graph_ingest_runs_shape_test.hl",
             "graph_ingest_test.hl",
             "graph_model_test.hl",
             "graph_route_test.hl",
             "graph_show_test.hl",
+            "habitat_compose_block_test.hl",
+            "habitat_face_test.hl",
+            "habitat_forget_test.hl",
+                        "habitat_graft_test.hl",
+            "habitat_hale_organism_test.hl",
+            "habitat_hosts_test.hl",
+            "habitat_operator_face_test.hl",
+            "habitat_operator_test.hl",
+            "habitat_pairing_test.hl",
+            "habitat_placement_test.hl",
+            "habitat_saplings_test.hl",
+            "habitat_up_host_test.hl",
+            "habitat_up_test.hl",
             "handed_task_test.hl",
             "handoff_test.hl",
             "hands_test.hl",
@@ -981,6 +1185,7 @@ fn dna_fixture_set_is_complete() {
             "idle_body_cpu_test.hl",
             "ingest_test.hl",
             "init_with_test.hl",
+            "integration_task_test.hl",
             "journal_contention_test.hl",
             "journal_incremental_test.hl",
             "journal_test.hl",
@@ -993,6 +1198,7 @@ fn dna_fixture_set_is_complete() {
             "knowledge_node_relay_test.hl",
             "knowledge_store_test.hl",
             "knowledge_test.hl",
+            "law_in_force_test.hl",
             "lease_epoch_test.hl",
             "ledger_test.hl",
             "leg_candidate_test.hl",
@@ -1000,6 +1206,7 @@ fn dna_fixture_set_is_complete() {
             "library_family_batch_test.hl",
             "library_family_test.hl",
             "model_map_cli_test.hl",
+            "model_map_route_test.hl",
             "model_map_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",
@@ -1021,16 +1228,19 @@ fn dna_fixture_set_is_complete() {
             "practice_command_recovery_test.hl",
             "practice_lifecycle_test.hl",
             "practice_test.hl",
+            "practices_read_test.hl",
             "principal_test.hl",
             "projection_fence_test.hl",
             "projectors_test.hl",
             "prompt_receipt_test.hl",
+            "provider_test.hl",
+            "published_config_test.hl",
             "reap_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
-            "record_batch_stream_test.hl",
             "record_batch_test.hl",
             "record_identity_test.hl",
+            "record_memory_test.hl",
             "record_roles_test.hl",
             "record_test.hl",
             "recorded_model_test.hl",
@@ -1046,17 +1256,19 @@ fn dna_fixture_set_is_complete() {
             "scenario_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",
+            "sdlc_exit_test.hl",
             "senses_reflex_test.hl",
+            "solo_no_model_test.hl",
             "status_chain_race_test.hl",
             "structure_test.hl",
             "supersession_test.hl",
             "support_test.hl",
-            "sync_head_read_test.hl",
             "task_decide_test.hl",
             "task_evidence_test.hl",
             "tool_loop_test.hl",
             "two_owners_test.hl",
             "ui_assets_test.hl",
+            "upstream_watched_test.hl",
             "usage_test.hl",
             "verification_test.hl",
             "workflow_admission_contention_test.hl",
@@ -1094,7 +1306,7 @@ fn dna_fixture_set_is_complete() {
 #[test]
 fn only_the_record_and_the_genome_spell_git() {
     let root = repo_root();
-    let allowed = ["dna/core/record.hl", "dna/core/workspace.hl", "dna/core/verification.hl", "dna/core/org.hl", "dna/host/genome.hl"];
+    let allowed = ["dna/core/record.hl", "dna/core/memory_record.hl", "dna/core/workspace.hl", "dna/core/verification.hl", "dna/core/org.hl", "dna/host/genome.hl"];
     let mut offenders = Vec::new();
     for dir in ["dna/core", "dna/host"] {
         for e in std::fs::read_dir(root.join(dir)).expect("dna dir").flatten() {
@@ -1116,6 +1328,52 @@ fn only_the_record_and_the_genome_spell_git() {
         }
     }
     assert!(offenders.is_empty(), "git is spelled outside the record's implementation and the genome's files:\n{}", offenders.join("\n"));
+}
+
+/// GH #1590: the record is memory's, and nothing reads or writes the git
+/// record an earlier toolchain kept: a clone that still holds one is
+/// refused, and re-inits a fresh record. A `refs/dna/` ref or a git record
+/// type anywhere in the organism's code, its fixtures, its acceptance
+/// programs or the face's harnesses is a reader, and fails the build,
+/// without exception (the driver's refusal of such a clone is Rust, outside
+/// these trees).
+#[test]
+fn nothing_reads_the_git_record() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+    for dir in ["dna/core", "dna/host", "dna/operations", "dna/organization_runtime", "dna/api", "dna/tests", "dna/acceptance", "dna/face/tests"] {
+        let mut stack = vec![root.join(dir)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if p.file_name().map_or(false, |n| n != "pond" && n != "node_modules") {
+                        stack.push(p);
+                    }
+                    continue;
+                }
+                if p.extension().map(|x| x != "hl" && x != "mjs").unwrap_or(true) {
+                    continue;
+                }
+                let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+                let text = std::fs::read_to_string(&p).unwrap();
+                for (i, l) in text.lines().enumerate() {
+                    let t = l.trim_start();
+                    if t.starts_with("//") {
+                        continue;
+                    }
+                    let code = t.split(" // ").next().unwrap_or(t);
+                    let reads = ["GitRecord", "GitJournal", "GitReceipts", "GitLeases"].iter().any(|n| code.contains(&format!("{n} {{")) || code.contains(&format!("::{n}")));
+                    // code may not spell the old refs or the journal's file
+                    let spells = code.contains("refs/dna/") || code.contains("journal.jsonl");
+                    if reads || spells {
+                        offenders.push(format!("{rel}:{}: {}", i + 1, t));
+                    }
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "the git record is read:\n{}", offenders.join("\n"));
 }
 
 /// C3, the assembly's split: each family carved out of `dna/core/assembly.hl`
@@ -1242,6 +1500,89 @@ fn only_the_reference_infrastructure_spells_its_tools() {
         }
     }
     assert!(offenders.is_empty(), "a tool of the body's infrastructure is spelled outside dna/host/infra.hl:\n{}", offenders.join("\n"));
+}
+
+/// Phase 4 ruling: the forge is a gate, and which forge stands in it is an
+/// allocation. No practice, workflow or standard names a forge by kind —
+/// "open a review" is the verb, and the allocation answers it. Every pack's
+/// text (the practices, positions and workflows it proposes) is read for a
+/// forge's name; a `#` line is the pack's own commentary.
+#[test]
+fn no_practice_or_workflow_names_a_forge_kind() {
+    const KINDS: [&str; 7] = ["github", "gitlab", "forgejo", "gitea", "bitbucket", "pull request", "gh pr"];
+    let root = repo_root();
+    let mut packs = Vec::new();
+    let mut dirs = vec![root.join("dna")];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).expect("dna dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "node_modules" && n != "target") {
+                    dirs.push(p);
+                }
+            } else if p.extension().is_some_and(|x| x == "pack") {
+                packs.push(p);
+            }
+        }
+    }
+    assert!(packs.iter().any(|p| p.ends_with("dna/nursery/packs/standard.pack")), "the standard pack is read: {packs:?}");
+    let mut offenders = Vec::new();
+    for p in &packs {
+        let text = std::fs::read_to_string(p).unwrap();
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with('#') {
+                continue;
+            }
+            let lower = t.to_lowercase();
+            let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+            if KINDS.iter().any(|k| if k.contains(' ') { lower.contains(k) } else { words.contains(k) }) || words.contains(&"gh") {
+                offenders.push(format!("{}:{}: {t}", p.strip_prefix(&root).unwrap_or(p).display(), i + 1));
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "a practice or workflow names a forge by kind (say the verb, `open a review`; the allocation answers it):\n{}", offenders.join("\n"));
+
+    // a leg's hands: the forge a leg's review opens at is the allocation's
+    // (`AllocatedForge`), never a kind the hands' construction names — the
+    // `Hands` default, and every `Hands { forge: … }` outside the fixtures
+    // and the project scaffold the toolchain writes
+    let kinds = ["GhForge", "GitHubForge", "ForgejoForge", "FileForge", "MemForge", "NoForge", "ForgeBridge"];
+    let mut sources: Vec<PathBuf> = Vec::new();
+    let mut dirs = vec![root.join("dna")];
+    while let Some(d) = dirs.pop() {
+        if d.ends_with("dna/tests") || d.ends_with("node_modules") {
+            continue;
+        }
+        for e in std::fs::read_dir(&d).expect("dna dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "hl") {
+                sources.push(p);
+            }
+        }
+    }
+    sources.push(root.join("crates/hale-cli/src/dna.rs"));
+    let hands = std::fs::read_to_string(root.join("dna/core/legs/hands.hl")).unwrap();
+    assert!(hands.contains("forge: ForgeHand = AllocatedForge { };"), "the Hands' forge is the allocation's (`AllocatedForge`)");
+    let mut hard = Vec::new();
+    for p in &sources {
+        let text = std::fs::read_to_string(p).unwrap_or_default();
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            let named = |rest: &str| kinds.iter().any(|k| rest.trim_start().starts_with(k));
+            let default = t.strip_prefix("forge: ForgeHand = ").is_some_and(named);
+            let built = t.split("Hands { forge: ").skip(1).any(named);
+            if default || built {
+                hard.push(format!("{}:{}: {t}", p.strip_prefix(&root).unwrap_or(p).display(), i + 1));
+            }
+        }
+    }
+    assert!(hard.is_empty(), "a leg's hands name a forge by kind (its forge is the allocation's, `AllocatedForge`):\n{}", hard.join("\n"));
 }
 
 /// GH #648: the code-review host is an implementation behind `Forge`;

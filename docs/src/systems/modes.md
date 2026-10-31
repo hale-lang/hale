@@ -1,84 +1,51 @@
-# Modes
+# Execution Modes (`bulk`, `harmonic`, `resolution`)
 
-> **Coming from Rust / C++?** Think of modes as asking the
-> compiler to emit a different execution strategy for the *same*
-> computation over the *same* state — vectorized throughput,
-> cache-tiled per-class work, or a single scalar decision —
-> without you maintaining three copies. It's the most specialized
-> feature in the language; most loci never declare one.
-
-## Three named projections of one kernel
-
-A locus can declare up to three **modes**, each a named
-projection of the same underlying computation, operating on the
-same locus state:
+A locus can declare up to three named **execution modes**—`bulk`, `harmonic`, and `resolution`—to express distinct hardware execution strategies (vectorized batch throughput, cache-tiled per-class passes, and single-element scalar evaluation) over the same underlying locus state and arena.
 
 ```hale,fragment
 locus Pricer {
-    params { /* shared state */ }
+    params { base_rate: Float = 0.05; }
 
-    mode bulk(...)       -> ... { /* vectorized over many inputs */ }
-    mode harmonic(...)   -> ... { /* per-class / cache-tiled */ }
-    mode resolution(...) -> ... { /* one decision, scalar */ }
+    mode bulk(count: Int) -> Float {
+        // Vectorized pass across a batch of inputs
+        return self.base_rate * to_float(count);
+    }
+
+    mode harmonic(bucket: Int) -> Float {
+        // Cache-tiled pass scoped to a specific class or partition
+        return self.base_rate * to_float(bucket);
+    }
+
+    mode resolution(spot: Float) -> Float {
+        // Latency-sensitive single scalar decision
+        return spot * self.base_rate;
+    }
 }
 ```
 
-You invoke a mode like a method — `self.bulk(...)`,
-`self.resolution(...)` — and declare only the subset you actually
-operate in. They map to genuinely different hardware execution
-regimes:
+## The Three Execution Regimes
 
-- **`bulk`** — vectorized throughput: the same operation across
-  many elements at once.
-- **`harmonic`** — cache-tiled, per-class projection: work
-  organized so each class's data stays resident.
-- **`resolution`** — a single scalar decision: the
-  one-input-one-answer path.
+A locus declares only the modes it actually uses and invokes them with standard method call syntax (`self.bulk(...)`, `self.harmonic(...)`, `self.resolution(...)`):
 
-Today each mode compiles exactly like a `fn` member: the name
-records which regime the body is written for, and the compiler
-does not yet emit a different lowering per regime.
+| Mode | Hardware Regime | Computation Shape | Typical Use Case |
+|---|---|---|---|
+| `mode bulk(...)` | High-throughput SIMD / vector units | Applies the same kernel across a large batch of elements in one pass. | Batch pricing, array transforms, columnar scans. |
+| `mode harmonic(...)` | Cache-resident / locality-tiled | Processes elements grouped by class or partition so per-class state stays in L1/L2 cache. | Bucketed simulations, multi-instrument order books. |
+| `mode resolution(...)` | Low-latency scalar pipeline | Evaluates a single input to produce an immediate single decision. | Per-request admission, single-order risk checks. |
 
-## They share the arena
+> [!NOTE]
+> In the current compiler release, `mode` declarations lower identically to synchronous `fn` members on the locus; the mode keyword documents the target hardware regime in the program graph without yet emitting distinct codegen passes. Because modes are substrate-facing surfaces, they cannot be declared `fallible(E)`.
 
-All three modes read and write the *same* locus state through the
-same [arena](./memory.md) — there's no duplicate allocation and
-no copy between them. A mode is an ordinary synchronous call —
-`self.bulk(...)` runs to completion like any method — so two modes
-never evaluate at once over the same fields. You get three entry
-points over one piece of state, with no second copy to keep in
-step.
+## Shared State & Arena Semantics
 
-## Why three, and no fourth
+All modes declared on a locus operate directly on the same `params` fields and [locus arena](./memory.md):
+- **Zero state duplication**: Switching between `bulk` warmup and per-event `resolution` requires no copying or synchronization between separate objects.
+- **Synchronous execution**: Like ordinary locus methods, mode calls execute synchronously to completion, so two modes on the same locus instance never interleave concurrently over `self`.
 
-The count isn't arbitrary minimalism — it's that vectorized,
-cache-tiled, and scalar are three distinct cost regimes on real
-hardware (high-throughput SIMD, locality-bound per-class, and
-latency-bound single-decision). There's no fourth regime the
-hardware rewards, so there's no fourth mode. The same commit-hard
-discipline as the [three projection
-classes](./memory.md) for memory.
+## When to Declare Modes
 
-## When you'll reach for this
-
-Rarely, and only at this tier — when a locus has a kernel
-computation that genuinely runs in more than one of those
-regimes (a numeric model evaluated both in batch and
-per-decision, say) and you want each path declared, and named for
-its regime, on the one locus that owns the state. For ordinary application and service code, you'll
-never declare a mode; the lifecycle methods and `fn` members
-cover everything.
+Most application and service loci only need lifecycle hooks (`birth`, `run`, `dissolve`) and standard `fn` methods. Reach for `mode bulk`, `mode harmonic`, and `mode resolution` only when a single stateful kernel genuinely executes in multiple hardware cost regimes over the same data.
 
 ---
 
-That's the systems tier — and the bottom of the descent. You
-started with variables and functions; you've now seen the memory
-model, the allocation disciplines, zero-copy transport, the C
-boundary, cross-process state, and hardware execution regimes.
-Every one of them is the *same locus* you met in *the basics*,
-observed at greater and greater resolution.
-
-To see why one shape holds across all four tiers — and across
-human, LLM, and machine — read [The design](../the-design.md).
-For exact rules, the [reference](../reference.md) points into the
-canonical spec.
+For the formal hypergraph specification underlying loci, projections, and modes, see [The Design](../the-design.md) and the [Language Reference](../reference.md).

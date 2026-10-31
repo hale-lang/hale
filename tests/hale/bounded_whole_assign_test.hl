@@ -1,0 +1,105 @@
+// A `bounded[T; N]` place assigned whole from another bounded value of
+// the same type copies the count and the live slots (`spec/types.md`
+// § bounded). Until 2026-10-17 the check refused every whole
+// assignment, so copying a list between two records' fields was a
+// `push` loop.
+//
+// Pinned here:
+//   - a record field from another record's field: count and slots,
+//     String and Int elements;
+//   - a copy, not a view: a push or a clear on the source after the
+//     assignment does not reach the place;
+//   - a self-assignment keeps the place;
+//   - a locus's own field (nested in a record param, and a param of
+//     its own) keeps the copy after the source's frame is gone: its
+//     String slots live in the locus's arena;
+//   - struct elements are copied.
+
+type Req {
+    models: bounded[String; 4];
+    ns: bounded[Int; 3];
+}
+
+type Row {
+    name: String = "";
+    models: bounded[String; 4];
+    ns: bounded[Int; 3];
+}
+
+type Pair {
+    a: String = "";
+    b: Int = 0;
+}
+
+type Holder { ps: bounded[Pair; 2]; }
+
+locus Store {
+    params {
+        row: Row = Row { };
+        names: bounded[String; 4];
+    }
+
+    fn take(req: Req) {
+        self.row.models = req.models;
+        self.names = req.models;
+    }
+
+    fn first() -> String {
+        return at(self.row.models, 0) or "none";
+    }
+
+    fn last_name() -> String {
+        return at(self.names, count(self.names) - 1) or "none";
+    }
+}
+
+fn fill(n: Int) -> Req {
+    let mut r = Req { };
+    let mut i = 0;
+    while i < n {
+        push(r.models, "m" + to_string(i)) or raise;
+        i = i + 1;
+    }
+    push(r.ns, 7) or raise;
+    return r;
+}
+
+fn main() {
+    let req = fill(3);
+    let mut row = Row { name: "r" };
+    row.models = req.models;
+    row.ns = req.ns;
+    std::test::assert_eq_int(count(row.models), 3, "the count is copied");
+    std::test::assert_eq_str(at(row.models, 2) or "", "m2", "a String slot is copied");
+    std::test::assert_eq_int(at(row.ns, 0) or 0, 7, "an Int slot is copied");
+
+    let mut req2 = fill(2);
+    row.models = req2.models;
+    std::test::assert_eq_int(count(row.models), 2, "a second assignment replaces the count");
+    push(req2.models, "late") or raise;
+    std::test::assert_eq_int(count(row.models), 2, "a push on the source does not reach the copy");
+    clear(req2.models);
+    std::test::assert_eq_str(
+        at(row.models, 1) or "",
+        "m1",
+        "a clear on the source does not reach the copy",
+    );
+
+    row.models = row.models;
+    std::test::assert_eq_int(count(row.models), 2, "a self-assignment keeps the place");
+
+    let s = Store { };
+    s.take(fill(4));
+    let other = fill(4);
+    std::test::assert_eq_int(count(other.models), 4, "a later frame's list");
+    std::test::assert_eq_str(s.first(), "m0", "a locus's nested field keeps its copy");
+    std::test::assert_eq_str(s.last_name(), "m3", "a locus's own param keeps its copy");
+
+    let mut h = Holder { };
+    push(h.ps, Pair { a: "x" + "y", b: 2 }) or raise;
+    let mut h2 = Holder { };
+    h2.ps = h.ps;
+    let p = at(h2.ps, 0) or Pair { };
+    std::test::assert_eq_str(p.a, "xy", "a struct element's String is copied");
+    std::test::assert_eq_int(p.b, 2, "a struct element's Int is copied");
+}

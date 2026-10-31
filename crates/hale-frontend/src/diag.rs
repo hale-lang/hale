@@ -58,6 +58,24 @@ pub fn render_located(
     // binding, so no file of the bundle owns it; say that, rather than a
     // position in whichever file happens to be listed first.
     if off >= hale_syntax::api_names::API_SYNTH_BASE {
+        // GH #1530 step 2: the methods a `seam` expanded to
+        if hale_types::seam_expand::is_seam_pos(off) {
+            return format!(
+                "{}: {} (in the methods a `seam` generated: a seam is checked as the chain of calls it writes)",
+                d.kind_str(),
+                d.message
+            );
+        }
+        if hale_types::client_expand::is_client_pos(off) {
+            return format!(
+                "{}: {} (in the client generated for an `api::client` param; spec/api.md § Calling a surface)",
+                d.kind_str(),
+                d.message
+            );
+        }
+        if let Some(note) = appended_source_note(off) {
+            return format!("{}: {} ({note})", d.kind_str(), d.message);
+        }
         return format!(
             "{}: {} (in the code generated for an `api::serve` site or a hub binding; `hale check --api` shows what it serves)",
             d.kind_str(),
@@ -66,6 +84,26 @@ pub fn render_located(
     }
     let any = sources.values().next().map(|s| s.as_str()).unwrap_or("");
     d.render(any)
+}
+
+/// Where an offset of the expansion's parse space lies when it is stdlib
+/// source the expansion appends rather than code it generated: the api
+/// runtime, the hubs, HTTP/2, gRPC and the TCP substrate are named by
+/// file, line and column (`in the stdlib's io_tcp_serve.hl:3:5`), and the
+/// topic the expansion declares for the substrate (no stdlib file holds
+/// it) by what it is. `None` for any other offset. The text and the JSON
+/// renderers both say it.
+fn appended_source_note(off: u32) -> Option<String> {
+    if let Some((file, src, local)) = hale_types::rpc_expand::runtime_source_at(off) {
+        // The nearest char boundary at or before the offset: a span is a
+        // byte offset, and a position inside a character names it.
+        let before = (0..=local.min(src.len())).rev().find_map(|i| src.get(..i)).unwrap_or("");
+        let line = before.matches('\n').count() + 1;
+        let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        return Some(format!("in the stdlib's {file}:{line}:{col}"));
+    }
+    hale_types::rpc_expand::is_tcp_serve_appended_pos(off)
+        .then(|| "in the topic `__TcpAcceptedT` the TCP substrate publishes on".to_string())
 }
 
 /// One NDJSON diagnostic line for `hale check --json`.
@@ -122,6 +160,8 @@ pub fn render_diag_json(
     }
     let message = if in_stdlib {
         format!("{} ({})", d.message, stdlib_note(d.span))
+    } else if let Some(note) = file.is_empty().then(|| appended_source_note(off)).flatten() {
+        format!("{} ({note})", d.message)
     } else {
         d.message.clone()
     };
@@ -505,4 +545,50 @@ pub fn report_import_diags(errors: &[ImportDiag]) -> ExitCode {
         eprintln!("{}", e.render());
     }
     ExitCode::from(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A finding at an offset of the TCP substrate the expansion appends
+    /// renders as the stdlib's file, line and column, in the text and in
+    /// the JSON message alike.
+    #[test]
+    fn a_finding_in_the_tcp_substrate_names_its_stdlib_line() {
+        let base = hale_types::rpc_expand::TCP_SERVE_BASE;
+        let (_, src, _) = hale_types::rpc_expand::runtime_source_at(base).expect("the substrate's window");
+        let second = src.find('\n').expect("the substrate has a second line") + 1;
+        let k = (second + 2).min(src.len() - 1);
+        let line = src[..k].matches('\n').count() + 1;
+        let col = src[..k].rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        let at = base as usize + k;
+        let d = hale_syntax::Diag::ty(hale_syntax::Span::new(at, at + 1), "a finding");
+        let note = format!("(in the stdlib's io_tcp_serve.hl:{line}:{col})");
+        let text = render_located(&d, &[], &BTreeMap::new());
+        assert_eq!(text, format!("type error: a finding {note}"));
+        let json = render_diag_json(&d, &[], &BTreeMap::new());
+        assert!(json.contains(&format!("\"message\":\"a finding {note}\"")), "{json}");
+    }
+
+    /// An offset inside a character names the character's position, and
+    /// one in the substrate's topic names that topic.
+    #[test]
+    fn a_finding_inside_a_character_or_in_the_substrate_topic() {
+        let base = hale_types::rpc_expand::TCP_SERVE_BASE;
+        let (_, src, _) = hale_types::rpc_expand::runtime_source_at(base).expect("the substrate's window");
+        let (at, ch) = src.char_indices().find(|(_, c)| c.len_utf8() > 1).expect("the substrate spells a non-ASCII character");
+        let line = src[..at].matches('\n').count() + 1;
+        let col = src[..at].rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        let inside = base as usize + at + ch.len_utf8() - 1;
+        let d = hale_syntax::Diag::ty(hale_syntax::Span::new(inside, inside + 1), "a finding");
+        let text = render_located(&d, &[], &BTreeMap::new());
+        assert_eq!(text, format!("type error: a finding (in the stdlib's io_tcp_serve.hl:{line}:{col})"));
+        let topic = hale_types::rpc_expand::TCP_TOPICS_BASE as usize + 3;
+        let d = hale_syntax::Diag::ty(hale_syntax::Span::new(topic, topic + 1), "a finding");
+        let note = "(in the topic `__TcpAcceptedT` the TCP substrate publishes on)";
+        assert_eq!(render_located(&d, &[], &BTreeMap::new()), format!("type error: a finding {note}"));
+        let json = render_diag_json(&d, &[], &BTreeMap::new());
+        assert!(json.contains(&format!("\"message\":\"a finding {}\"", note)), "{json}");
+    }
 }

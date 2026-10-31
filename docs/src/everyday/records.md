@@ -1,109 +1,113 @@
-# Records & data
+# Records & Data
 
-> **Coming from Python / Node?** Where you'd reach for a dict or
-> an object literal to pass structured data around, Hale uses a
-> named `type` — a fixed-shape record with typed fields. It's
-> closer to a TypeScript `interface` / a Python `@dataclass` than
-> to a free-form dict: the shape is declared, and the compiler
-> checks it.
-
-## Records — `type`
+Hale models structured data with nominal `type` records, tagged `enum` unions, and type-tagged set unions (`A | B | C`). Every data type is checked at compile time, copied by value with automatic copy-on-write optimization, and matched exhaustively with `match`.
 
 ```hale
-type Player {
-    id:    String;
-    name:  String;
-    score: Int;
+type Book    { id: Int; title: String; }
+type Trade   { qty: Int; px: Decimal<2>; }
+type Inbound = Book | Trade;
+
+fn describe(msg: Inbound) -> String {
+    return match msg {
+        Book(b)  -> f"book #{b.id}: {b.title}",
+        Trade(t) -> f"trade {t.qty} @ {t.px}",
+    };
+}
+
+fn main() {
+    let m: Inbound = Trade { qty: 10, px: 42.50d };
+    println(describe(m));
 }
 ```
 
-Construct with a struct literal, naming each field:
+## Data Declarations Overview
 
-```hale,fragment
-let p = Player { id: "p1", name: "Ada", score: 0 };
-println(p.name);                  // field access with .
+| Construct | Syntax Example | Description |
+|---|---|---|
+| **Record (`type`)** | `type Player { id: String; score: Int = 0; }` | Fixed-layout product type with optional field defaults |
+| **Enum (`enum`)** | `type Event = enum { Tick(Int), Halt };` | Tagged union with unit or payload-carrying variants |
+| **Set union (`\|`)** | `type Inbound = Book \| Trade \| Unknown;` | Union of existing struct/enum types where the member type is the tag |
+| **Type alias** | `type Cents = Int;` / `type IntBox = Box<Int>;` | Transparent synonym for an existing type or concrete generic instantiation |
+| **Generic record** | `type Box<T> { value: T = 0; }` | Template monomorphized per concrete type argument (`Box<Int>`) |
+| **Fixed array / slice** | `[Int; 8]` / `[Player]` | Inline fixed-length array (`[0; 8]`) or slice view |
+| **Tuple** | `let pair = (1, "one");` | Lightweight anonymous grouping |
+
+## Records (`type`)
+
+Declare a record at the top level of a file with `type Name { ... }` and construct it with a struct literal:
+
+```hale
+type Config {
+    host: String = "127.0.0.1";
+    port: Int    = 8080;
+}
+
+fn main() {
+    let c = Config { port: 9000 };    // `host` uses its default "127.0.0.1"
+    println(c.host, ":", c.port);
+}
 ```
 
-Records are pure data: you pass them by value, read their
-fields, and compare them. They carry no behavior and no
-lifecycle. Fields can have defaults, so callers can omit them:
+- **Compile-time field verification:** Unknown field names, missing required fields (fields without defaults), or mismatched field types fail compilation at the literal—including for cross-seed records constructed as `alias::Config { ... }`.
+- **Top-level only:** `type` declarations must appear at the top level outside any `locus` body.
+- **No loci inside records:** Because records are pure values with no lifecycle hooks, a `type` field (or `enum` variant) cannot hold a `locus` or a function pointer whose signature names a locus (`fn() -> Worker`). Store loci inside another locus's `params` instead. (A record field typed by an `interface` is permitted because it is a non-owning reference.)
 
-```hale,fragment
-type Config { host: String = "127.0.0.1"; port: Int = 8080; }
+## Value Copy Semantics and Mutation
 
-let c = Config { port: 9000 };    // host defaults
-```
+### Independent Value Copies and Copy-on-Write
 
-A literal is checked against the declaration: a field name that
-isn't there, or a value of the wrong type, is a compile error —
-never a silently defaulted field. That holds for a record you
-imported from another seed too, where you spell the type
-`alias::Config { ... }`.
-
-**A binding is a copy.** `let saved = self.row;` copies the record
-into the frame — its Strings and Bytes cloned, nested records copied,
-a locus handle inside it left as a handle — the way a returned record
-already was. Replace the field afterwards and `saved` still reads
-what it read; write through a `let mut copy` and the original is
-untouched. A literal or a call result is bound as it is, since it was
-already yours. Assignment is the same: `copy = saved` copies too, and
-a write through one local never shows up in another.
+Binding a record, `String`, `Bytes`, tuple, or array from a field or variable (`let saved = self.row;` or `copy = saved;`) gives the binding an independent logical copy of the value:
 
 ```hale,fragment
 let saved = self.row;
-self.row = Row { };           // saved is unchanged
+self.row = Row { };           // `saved` retains the previous value
 let mut copy = saved;
-copy.score = 9;               // saved.score is unchanged
+copy.score = 9;               // `saved.score` is unchanged
 ```
 
-Records nest, and they're what travels on the bus and in and out
-of functions. When a record starts wanting *methods*, that's the
-signal to promote it to a [locus](./locus-gently.md).
+Under the hood, the compiler avoids copying whenever no mutation can alias the read, and performs a copy on the first write into a local derived from a field, `match` payload, `for` element, or tuple.
 
-A `type` is always declared at the **top level** — beside your
-`fn`s and `locus`es, never inside a locus body. It's in scope
-everywhere in the program, including inside every locus, so a
-locus that needs a record of its own declares it just above
-itself. A `type` written inside a locus body is an error at the
-`type` keyword.
+### In-Place Read-Modify-Write Optimization
 
-A record cannot hold a **locus** either. A field (or an enum
-variant) whose type is a locus — `type Layer { w: Model; }` — is an
-error at the field: a record is copied by value and has no
-lifecycle, so it can neither own the locus nor keep it alive. Keep
-the locus in a locus: a `params` field of the locus that uses it,
-or a parameter. (A field typed by an *interface* is fine: it is a
-handle on a locus someone else owns.)
-
-## Arrays
-
-A fixed sequence of one type is an array. `[T]` is a slice (a
-view of some elements); `[T; N]` is a fixed-length array:
+To update a nested array or field inside a locus, either assign directly (`self.row.scores[0] = 9;`) or read into a local, mutate, and write it back:
 
 ```hale,fragment
-type Match { players: [Player]; }     // a slice of Players
-
-let xs = [1, 2, 3];                    // an array literal
-let zeros = [0; 8];                    // eight zeros
+let mut scores = self.row.scores;
+scores[0] = 9;                 // `self.row.scores` is unchanged until written back
+self.row.scores = scores;      // optimized to an in-place write with zero allocations
 ```
 
-For a sequence that *grows*, you want a `@form(vec)` list from
-the [previous chapter](./collections.md), not a bare array.
+When a local read from a field is mutated and written back to the same field with no intervening reads of that field, the compiler updates the field's storage in place without allocating or copying.
 
-## Tuples
+### Reference Semantics for Parameters, `@form(vec)` Iteration, and Locus Handles
 
-A quick, unnamed grouping of a few values:
+| Target | Mutation Behavior |
+|---|---|
+| **Record function parameter** (`fn bump(r: Row)`) | Passed by reference to the caller's value; `r.scores[0] = 9;` mutates the caller's record. |
+| **`@form(vec)` loop variable** (`for x in v.items`) | Visits the vec's cells in place; writing through `x` updates the stored element. |
+| **Locus field via handle** (`l.name = s;`) | Copies `s` into locus `l`'s arena and recycles the replaced value so repeated external writes never grow `l`'s arena. |
+
+A method that writes into a record parameter (`fn put(x: Bag, p: Bytes) { x.b = p; }`) writes the caller's record, so the value is kept as long as that record, never only for the call. The method may pass the record on to another writer, directly or through a block, `if` or `match`, and the same holds at every step. A record a field of `self` holds (`put_free(self.bag, p)`) is kept in the locus's arena. One call can hand a writer only one owner's records. `self.put_two(self.held, x, p)`, or `self.put(if c { self.held } else { x }, p)`, mixes the locus's record with the caller's and is rejected. Copy one side into a local record first (`let mine = Bag { b: x.b };`) and hand that, or write the held record through `self`.
+
+Such a write is not recycled when the method returns, and does not replace the old value in place the way `self.bag.b = p` does. Handing a writer `self.bag` once per message, or once per pass of a `run()` loop, keeps every value until the locus dissolves, and `hale check` reports the call as an unbounded allocation. Write the held record through `self` instead, or hand the writer a record the loop body builds.
+
+## Arrays (`[T; N]`) and Tuples
+
+Use `[T; N]` for fixed-length inline arrays, `[T]` for slice views, and `(a, b)` for small ad-hoc tuples:
 
 ```hale,fragment
-let pair = (1, "one");
+type Match { players: [Player]; }      // slice field
+
+let xs    = [1, 2, 3];                 // [Int; 3]
+let zeros = [0; 8];                    // [Int; 8] filled with 0
+let pair  = (1, "one");                // tuple
 ```
 
-Reach for a `type` once the grouping has meaning worth naming;
-tuples are for the throwaway case.
+For growable lists, use a `@form(vec)` locus or `bounded[T; N]` ([Lists & Maps](./collections.md)).
 
-## Aliases — a second name for a type
+## Type Aliases (`type Name = Target;`)
 
-`type Name = Type;` gives an existing type another name:
+A type alias introduces a transparent synonym for an existing type:
 
 ```hale
 type Cents = Int;
@@ -116,79 +120,17 @@ fn main() {
 }
 ```
 
-An alias is **transparent**: `Cents` *is* `Int`, not a new type
-wrapped around one. The two are interchangeable in both
-directions, with no conversion and no wrapper — so an alias buys
-you a name that reads better at the call site, and nothing else.
+Because `Cents` is transparent, it is completely interchangeable with `Int` (including in struct construction `RowAlias { id: 1 }` and enum patterns `LightAlias::Red`). If you need the compiler to reject mixing two integer types, use `distinct Int` ([Units, End to End](../units.md)) or a single-field struct (`type Cents { v: Int; }`).
 
-That cuts both ways. Because the alias adds no type of its own,
-it also adds no safety: nothing stops you passing a plain `Int`
-where `Cents` is expected. If you want the compiler to keep two
-integers apart, give each a record of its own (`type Cents { v:
-Int; }`).
+### Type Alias Rules
 
-Transparent includes *building* the value. With `type Row2 =
-Row;`, `Row2 { id: 1 }` builds a `Row` — the same record the
-target's own name builds, checked against the target's fields.
-The same goes for an enum: with `type Light2 = Light;`,
-`Light2::Red` is `Light::Red`, in a match arm as well as in an
-expression.
+1. **Literal construction requires a record or locus target:** If `type Cents = Int;`, writing `Cents { }` is a compile error.
+2. **No cyclic aliases:** `type A = B; type B = A;` is rejected.
+3. **Concrete generic aliases only:** Generic aliases (`type Twin<T> = Pair<T>;`) are not supported, but aliasing a concrete instantiation (`type IntBox = Box<Int>;`) is supported and supplies the type arguments for `let b: IntBox = Box { value: 1 };` (for both generic records and generic loci).
 
-Three small rules:
+## Enums (`enum`) and Exhaustive `match`
 
-* The alias has to end at a type you can build. `type Cents =
-  Int;` names a primitive, so `Cents { }` means nothing and is
-  refused — as is `[Row; 2]`, or a tuple.
-* An alias chain has to end somewhere. `type A = B; type B = A;`
-  is a type error.
-* An alias takes no type parameters of its own. `type Twin<T> =
-  Pair<T>;` is refused at the `<` with *generic type aliases are
-  not supported*; name a concrete instantiation instead (`type
-  IntPair = Pair<Int>;`), which is allowed and stays transparent.
-
-An alias of a generic instantiation can also supply a literal's type
-arguments. With `type IntBox = Box<Int>;`, write
-`let b: IntBox = Box { value: 1 };`. This works for generic loci too,
-including imported templates: a qualified annotation or an alias of
-one selects the concrete instance and its child layouts.
-
-A word on what may stand in those angle brackets. A generic record
-is compiled once per instantiation, under a name built from the
-arguments — `Pair<Int>` becomes `Pair_Int` — so each argument has
-to be something that can be spelled in a name. Any record of your
-own can, and so can every primitive but one:
-
-```text
-Int  Float  Bool  String  Duration  Decimal  Time
-Bytes  BytesView  BytesMut  StringView
-```
-
-`Uint` is the exception, because it has no representation of its
-own yet (it is recognised and lowered nowhere), so `Pair<Uint>` is
-refused at the argument with the supported list named — where you
-wrote it, not later from the backend. Use `Int`.
-
-## Enums — one of several shapes
-
-An enum is a value that is exactly one of a set of named
-variants — a tagged union / sum type:
-
-```hale
-type Light = enum { Red, Yellow, Green };
-
-fn next(l: Light) -> Light {
-    return match l {
-        Light::Red    -> Light::Green,
-        Light::Green  -> Light::Yellow,
-        Light::Yellow -> Light::Red,
-    };
-}
-```
-
-Construct a variant with `EnumName::Variant`, and use `match` to
-branch on it — exhaustively, so you can't forget a case.
-
-Variants can carry data:
+An `enum` defines a tagged union whose variants may be unit tags or carry positional payloads:
 
 ```hale
 type Event = enum {
@@ -205,71 +147,56 @@ fn handle(e: Event) {
         Event::Halt               -> println("halt"),
     }
 }
+
+fn main() {
+    handle(Event::Tick(0));
+    handle(Event::Trade(19.99d, 5));
+}
 ```
 
-The match arms *bind* the payload — `Tick(n)` pulls the integer
-out as `n`. You can also match a literal sub-pattern (`Tick(0)`)
-ahead of the general one. This is the idiomatic way to model
-"the message is one of these kinds, each with its own data" —
-and it pairs naturally with the typed bus at the next level.
+- **Construction and formatting:** Construct variants with `EnumName::Variant` (`Event::Halt`, `Event::Tick(3)`). Printing an enum outputs its declared name and payload (`Event::Tick(3)`), even when imported via a library alias.
+- **Exhaustive matching:** `match` arms can match literal sub-patterns (`Event::Tick(0)`) before variable bindings (`Event::Tick(n)`), and must cover every variant in the `enum`.
+- **`enum` vs. `fallible(E)`:** Use `enum` for domain states and sum-type messages; use `fallible(E)` ([When a Call Can Fail](../basics/fallible.md)) for functions that can fail.
 
-Printing one gives you the spelling you wrote: `println(l)` on a
-`Light` prints `Light::Red`, and a variant with a payload prints
-`Event::Tick(3)`. An enum that came from a library prints the same
-way — under the name its *declaration* uses, without the alias you
-imported it as.
+## Set Types (`A | B | C`)
 
-> Enums fill the role of `Option<T>` / `Result<T, E>` from other
-> languages when you want a closed set of outcomes as data. For
-> the "this call failed" case specifically, prefer the
-> [`fallible`](../basics/fallible.md) channel — it's the
-> purpose-built tool and the compiler enforces handling.
+When each alternative is already a standalone `type` record or `enum`, declare a **set type** using `|` instead of wrapping each record in a redundant enum variant:
 
-## Records with a type parameter
+```hale
+type Book    { id: Int; title: String; }
+type Trade   { qty: Int; px: Float; }
+type Unknown { raw: String; }
+type Inbound = Book | Trade | Unknown;
 
-A record can leave one of its field types open:
+fn decode(n: Int) -> Inbound {
+    if n == 0 { return Book { id: 7, title: "Kim" }; }
+    if n == 1 { return Trade { qty: 2, px: 1.5 }; }
+    return Unknown { raw: "?" };
+}
+
+fn describe(m: Inbound) -> String {
+    return match m {
+        Book(b)    -> "book " + b.title,
+        Trade(t)   -> "trade of " + to_string(t.qty),
+        Unknown(u) -> "unknown " + u.raw,
+    };
+}
+```
+
+- **Type-as-tag coercion:** A `Book`, `Trade`, or `Unknown` value automatically coerces to `Inbound` wherever `Inbound` is expected (return values, function arguments, typed `let` bindings, or struct fields).
+- **Target type required for mixed branches:** An unannotated `if` or `match` whose arms produce `Book` and `Trade` (`let m = if n == 0 { Book { ... } } else { Trade { ... } };`) fails typechecking because the compiler does not guess which set type joins them; annotate the binding (`let m: Inbound = ...`) or return from a function declared `-> Inbound`.
+- **Members must be declared structs or enums:** Primitive types like `Int` cannot appear directly in a set; wrap them in a struct (`type Count { n: Int; }`).
+- **Wire representation and seams:** Across JSON APIs, a set serializes as a tagged object keyed by the member's type name (`{"Trade": {"qty": 2, "px": 1.5}}`). At the service layer, a [seam](../services/seams.md) can dispatch each member of a set to a dedicated handler method and verify exhaustiveness at compile time.
+
+## Generic Records and Loci (`<T>`)
+
+Both `type` records and `locus` declarations can be parameterized by type arguments:
 
 ```hale
 type Box<T> {
     value: T = 0;
 }
-```
 
-`Box` on its own is a *template*, not a type — there is no `Box`
-to build. `Box<Int>` is the type, and the compiler makes one real
-record per set of arguments you use.
-
-The literal still spells the template name, and takes the
-arguments from whatever declares the type at that spot:
-
-```hale
-fn main() {
-    let b: Box<Int> = Box { value: 1 };   // the annotation says Int
-    println(b.value);
-}
-```
-
-A declared return type does the same job (`fn make() -> Box<Int> {
-return Box { value: 4 }; }`), as does a declared field — both at
-its default and at a literal that fills it (`Outer { inner: Box {
-value: 9 } }`).
-
-What does *not* work is leaving it to the compiler to guess:
-
-```hale,fragment
-let b = Box { value: 1 };     // error: `Box` is a generic type
-```
-
-The field value being an `Int` is not enough — nothing says `T` is
-`Int` rather than something an `Int` could become, so Hale asks you
-to write it. Getting the count wrong is an error too: `Box<Int,
-String>` reports *generic type `Box` takes 1 type argument, not 2*
-at the annotation.
-
-A **locus** can take type parameters the same way, and its
-`params` are substituted just like a record's fields:
-
-```hale
 locus Cache<K, V> {
     params {
         cap: Int = 1;
@@ -277,20 +204,16 @@ locus Cache<K, V> {
 }
 
 fn main() {
+    let b: Box<Int> = Box { value: 1 };
     let c: Cache<Int, String> = Cache { cap: 2 };
-    println(c.cap);
+    println(b.value, " ", c.cap);
 }
 ```
 
-The parameter belongs to the template. In `Box<T>`, `T` still means
-the supplied type argument even if the seed also declares a type,
-locus or alias named `T`.
+### Monomorphization and Type-Argument Rules
 
-Behind the scenes the compiler calls that instance's type
-`Cache_Int_String`, and you will see the name in a diagnostic. For
-a record you may write that name yourself — `Box_Int { value: 1 }`
-is the same type as `Box<Int>` — but for a locus it is the
-compiler's name only: build one through `Cache` with the arguments
-on the binding.
+- **Explicit type context required:** In `let b: Box<Int> = Box { value: 1 };`, the struct literal spells the template name `Box` while the concrete type argument `<Int>` comes from the surrounding type context (a `let` annotation, function return type `-> Box<Int>`, enclosing struct field, assignment target, or `[Box<Int>; 2]` array annotation). Writing `let b = Box { value: 1 };` without a type annotation is a compile error.
+- **Supported type arguments:** Any user-defined `type` record and all built-in types (`Int`, `Float`, `Bool`, `String`, `Duration`, `Decimal`, `Time`, `Bytes`, `BytesView`, `BytesMut`, `StringView`) are valid type arguments. (`Uint` has no lowered representation and is rejected; use `Int`.)
+- **Name mangling:** Each instantiation compiles to a distinct specialized type named `Template_Arg1_Arg2` (such as `Box_Int` or `Cache_Int_String`). Inside `Box<T>`, the identifier `T` always resolves to the type parameter even if the seed also declares a top-level type named `T`.
 
-Next: reading and writing the world — [Files](./files.md).
+Next: [Files](./files.md).

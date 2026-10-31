@@ -34,12 +34,15 @@ use verbs::fleet::run_fleet;
 use verbs::help::{subcommand_help, usage};
 use shared::stale::check_stale_cli;
 mod build_env;
+mod deploy;
+mod deployment;
 mod fleet;
 mod dna;
 mod iris;
 mod api_client;
 mod api_drive;
 mod api_gen;
+mod api_import;
 use hale_types::surface_doc;
 mod mcp;
 mod pkg;
@@ -89,10 +92,15 @@ fn main() -> ExitCode {
     if cmd == "iris" {
         return iris::run(&args[2..]);
     }
-    // GH #528: `hale dna init|new|upgrade …` — the DNA attached to an
-    // application as ordinary Hale source.
+    // GH #528: `hale dna …` — the DNA attached to an application as
+    // ordinary Hale source (an organism is born by `hale habitat graft`).
     if cmd == "dna" {
         return dna::run(&args[2..]);
+    }
+    // GH #1653: `hale habitat migrate [organism]` — the acts of the
+    // machine's habitat, the only ones that provision or migrate
+    if cmd == "habitat" {
+        return dna::habitat::run(&args[2..]);
     }
     // GH #566 F5: `hale node <name>` — the agent that expresses a fleet
     // plan's instances on one machine, from the record.
@@ -176,13 +184,19 @@ fn main() -> ExitCode {
         return run_doc(&rest);
     }
 
-    // GH #408: `hale fleet check|dump <plan.json>` — compose
-    // topology artifacts into one fleet model. A CLIENT of the
-    // artifact, never a second source analyzer: it reads exactly what
-    // a third party would read.
+    // GH #408: `hale fleet check|dump <fleet seed>` — derive the
+    // deployment rows and compose the instances' topology artifacts into
+    // one fleet model, never merged source.
     if cmd == "fleet" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_fleet(&rest);
+    }
+
+    // GH #1477: `hale deploy render` — the program's placement as a
+    // compose or Kubernetes description; never deploys.
+    if cmd == "deploy" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return deploy::run_deploy(&rest);
     }
 
     // GH #476 Track A: `hale topology graph <artifact>` — deterministic

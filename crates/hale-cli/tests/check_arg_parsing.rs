@@ -207,8 +207,8 @@ fn dump_topology_never_overwrites_the_target() {
 /// Every command the top-level usage lists. `--help` is the one part
 /// of the surface all of them have, so all of them answer it.
 const SUBCOMMANDS: &[&str] = &[
-    "admin", "api", "bench", "build", "call", "check", "describe", "dna", "doc",
-    "fetch", "fleet", "fmt", "init", "inputs", "iris", "lex", "lsp", "mcp",
+    "admin", "api", "bench", "build", "call", "check", "deploy", "describe", "dna", "doc",
+    "fetch", "fleet", "fmt", "habitat", "init", "inputs", "iris", "lex", "lsp", "mcp",
     "model", "node", "parse", "replay", "run", "targets", "test",
     "topology", "verify", "watch",
 ];
@@ -250,11 +250,11 @@ fn every_subcommand_answers_help() {
 /// Every `hale dna` verb `dna::run` dispatches.
 const DNA_VERBS: &[&str] = &[
     "init", "new", "upgrade", "memory", "nerves", "senses", "run", "dev",
-    "plan-of", "status", "task", "retire", "effect", "show", "route", "fill",
-    "history", "body", "secret", "secrets", "application", "schedule",
+    "fleet-of", "status", "task", "retire", "effect", "show", "route", "fill",
+    "history", "body", "secret", "secrets", "application", "codebase", "schedule",
     "receipt", "connect", "practice", "disconnect", "handoff", "profile",
     "sync", "candidates", "ledger", "board", "report", "pressure", "concern",
-    "github", "fleet", "ui", "models", "work", "definitions", "deploy",
+    "forge", "fleet", "ui", "models", "work", "definitions", "deploy",
     "rollback", "review",
 ];
 

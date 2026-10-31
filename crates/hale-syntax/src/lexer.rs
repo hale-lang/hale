@@ -392,8 +392,13 @@ impl<'a> Lexer<'a> {
             return self.lex_number(start).map(Some);
         }
 
-        // String literal
+        // String literal. A run of three or more quotes opens a block
+        // string; `""` is the empty string, as it always was.
         if b == b'"' {
+            let fence = self.bytes[self.pos..].iter().take_while(|&&c| c == b'"').count();
+            if fence >= 3 {
+                return self.lex_block_string(start, fence).map(Some);
+            }
             return self.lex_string(start).map(Some);
         }
 
@@ -756,6 +761,107 @@ impl<'a> Lexer<'a> {
                     let _ = b;
                 }
             }
+        }
+    }
+
+    /// Lex a block string (spec/tokens.md § Block strings): a fence of
+    /// `fence` (three or more) quotes alone at the end of its line, the
+    /// body's lines, and a closing line of whitespace and the same
+    /// fence. The body is raw: no escapes, no interpolation. The closing
+    /// line's whitespace is stripped from every body line, a line of
+    /// whitespace alone is an empty line, and the lines join with `\n`
+    /// (a `\r\n` in the source is one `\n`); the line breaks after the
+    /// opening fence and before the closing one are not part of the
+    /// value.
+    fn lex_block_string(&mut self, start: usize, fence: usize) -> Result<Token, Diag> {
+        let bytes = self.bytes;
+        let len = bytes.len();
+        let mut p = start + fence;
+        while matches!(bytes.get(p), Some(b' ' | b'\t')) {
+            p += 1;
+        }
+        match bytes.get(p) {
+            Some(b'\n') => p += 1,
+            Some(b'\r') if bytes.get(p + 1) == Some(&b'\n') => p += 2,
+            None => {
+                self.pos = len;
+                return Err(Diag::lex(Span::new(start, len), "unterminated block string"));
+            }
+            Some(_) => {
+                self.pos = p;
+                return Err(Diag::lex(
+                    Span::new(start, start + fence),
+                    "a block string's opening quotes end their line: its text starts on \
+                     the next line (an empty string is `\"\"`)",
+                ));
+            }
+        }
+        // Body lines as byte ranges, a trailing `\r` already dropped.
+        let mut lines: Vec<(usize, usize)> = Vec::new();
+        loop {
+            if p >= len {
+                self.pos = len;
+                return Err(Diag::lex(
+                    Span::new(start, len),
+                    format!(
+                        "unterminated block string: no line closes it with {} quotes",
+                        fence
+                    ),
+                ));
+            }
+            let line_start = p;
+            let line_end = bytes[p..].iter().position(|&c| c == b'\n').map_or(len, |i| p + i);
+            let mut q = line_start;
+            while q < line_end && matches!(bytes[q], b' ' | b'\t') {
+                q += 1;
+            }
+            let run = bytes[q..line_end].iter().take_while(|&&c| c == b'"').count();
+            if run >= fence {
+                if run > fence {
+                    self.pos = q + run;
+                    return Err(Diag::lex(
+                        Span::new(q, q + run),
+                        format!(
+                            "a block string opened with {fence} quotes closes on a line that \
+                             starts with exactly {fence}; for a line of the text that starts \
+                             with {run}, open and close the string with {} or more",
+                            run + 1
+                        ),
+                    ));
+                }
+                let strip = &self.source[line_start..q];
+                let mut value = String::new();
+                for (n, &(a, b)) in lines.iter().enumerate() {
+                    if n > 0 {
+                        value.push('\n');
+                    }
+                    let line = &self.source[a..b];
+                    if line.bytes().all(|c| c == b' ' || c == b'\t') {
+                        continue;
+                    }
+                    match line.strip_prefix(strip) {
+                        Some(rest) => value.push_str(rest),
+                        None => {
+                            self.pos = q + fence;
+                            return Err(Diag::lex(
+                                Span::new(a, b),
+                                "a block string's line starts left of its closing quotes: \
+                                 every line of the text begins with the whitespace the \
+                                 closing line begins with",
+                            ));
+                        }
+                    }
+                }
+                self.pos = q + fence;
+                return Ok(Token::new(TokenKind::StringLit(value), Span::new(start, self.pos)));
+            }
+            let body_end = if line_end > line_start && bytes[line_end - 1] == b'\r' {
+                line_end - 1
+            } else {
+                line_end
+            };
+            lines.push((line_start, body_end));
+            p = line_end + 1;
         }
     }
 
@@ -1329,5 +1435,82 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    fn block(src: &str) -> String {
+        match &kinds(src)[..] {
+            [TokenKind::StringLit(s), TokenKind::Eof] => s.clone(),
+            other => panic!("not one string: {other:?}"),
+        }
+    }
+
+    fn block_err(src: &str) -> String {
+        match lex(src) {
+            Err(d) => d[0].message.clone(),
+            Ok(t) => panic!("lexed: {t:?}"),
+        }
+    }
+
+    /// The closing line's whitespace is stripped from every line; the
+    /// line breaks after the opening fence and before the closing one
+    /// are not part of the value; deeper lines keep their surplus.
+    #[test]
+    fn block_string_strips_the_closing_indent() {
+        let src = "\"\"\"\n        fn main() {\n            println(1);\n        }\n        \"\"\"";
+        assert_eq!(block(src), "fn main() {\n    println(1);\n}");
+    }
+
+    /// A blank line before the closing fence ends the value with a
+    /// line break; whitespace-only lines are empty, whatever their width.
+    #[test]
+    fn block_string_blank_lines() {
+        assert_eq!(block("\"\"\"\n    a\n\n    \"\"\""), "a\n");
+        assert_eq!(block("\"\"\"\n    a\n  \n      \n    b\n    \"\"\""), "a\n\n\nb");
+        assert_eq!(block("\"\"\"\n\"\"\""), "");
+        assert_eq!(block("\"\"\"\n\n\n\"\"\""), "\n");
+    }
+
+    /// The body is raw: a backslash is a backslash, braces are text,
+    /// and quotes need no escape.
+    #[test]
+    fn block_string_has_no_escapes() {
+        let src = "\"\"\"\n  let s = \"a\\n{b}\\\"\";\n  \"\"\"";
+        assert_eq!(block(src), "let s = \"a\\n{b}\\\"\";");
+    }
+
+    /// A body holding a line that starts with three quotes opens with
+    /// a longer fence; mid-line quotes never close.
+    #[test]
+    fn block_string_longer_fence() {
+        let src = "\"\"\"\"\n    let s = \"\"\"\n        x\n        \"\"\";\n    \"\"\"\"";
+        assert_eq!(block(src), "let s = \"\"\"\n    x\n    \"\"\";");
+        assert_eq!(block("\"\"\"\n  say \"\"\"hi\"\"\"\n  \"\"\""), "say \"\"\"hi\"\"\"");
+    }
+
+    /// `\r\n` line ends are one `\n`; tokens follow the closing fence
+    /// on its line.
+    #[test]
+    fn block_string_crlf_and_what_follows() {
+        let ks = kinds("f(\"\"\"\r\n    a\r\n    b\r\n    \"\"\");");
+        assert_eq!(ks[2], TokenKind::StringLit("a\nb".into()));
+        assert_eq!(ks[3], TokenKind::RParen);
+        assert_eq!(ks[4], TokenKind::Semi);
+    }
+
+    /// `""` stays the empty string next to the new form.
+    #[test]
+    fn empty_string_is_not_a_fence() {
+        assert_eq!(kinds("\"\""), vec![TokenKind::StringLit(String::new()), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn block_string_refusals() {
+        assert!(block_err("\"\"\"abc\n\"\"\"").contains("opening quotes end their line"));
+        assert!(block_err("\"\"\"\n  a\n").contains("unterminated block string"));
+        assert!(block_err("\"\"\"\n  a\n    \"\"\"").contains("starts left of its closing quotes"));
+        // tabs and spaces are compared byte for byte
+        assert!(block_err("\"\"\"\n\ta\n    \"\"\"").contains("starts left of its closing quotes"));
+        let e = block_err("\"\"\"\n  a\n  \"\"\"\"");
+        assert!(e.contains("5 or more"), "{e}");
     }
 }

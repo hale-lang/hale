@@ -213,6 +213,9 @@ main locus Desk {
         audit_failed: Int = 0;
         svc_failures: Int = 0;
         poisoned_failures: Int = 0;
+        public: api::Exposure = api::serve(Public, unix::Rpc { path: std::env::var("SOCK"), roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 4, on_full: refuse);
+        partner: api::Exposure = api::serve(Public, unix::Rpc { path: std::env::var("SOCK2"), roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 4, on_full: refuse);
+        ops: api::Exposure = api::serve(Ops, self.ops_rpc, as: "ops", bound: 3, on_full: refuse);
     }
     placement {
         orders: cooperative(pool = desk) where async_io;
@@ -234,18 +237,15 @@ main locus Desk {
     }
 
     run() {
-        let public = api::serve(Public, unix::Rpc { path: std::env::var("SOCK"), roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 4, on_full: refuse);
-        let partner = api::serve(Public, unix::Rpc { path: std::env::var("SOCK2"), roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 4, on_full: refuse);
-        let ops = api::serve(Ops, self.ops_rpc, as: "ops", bound: 3, on_full: refuse);
         let trigger = std::env::var("TRIGGER");
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
         if std::env::var("MODE") != "scope_exit" {
-            ops.stop();
-            ops.stop();
-            public.stop();
-            partner.stop();
+            self.ops.stop();
+            self.ops.stop();
+            self.public.stop();
+            self.partner.stop();
             println("stops=", self.ops_rpc.stops);
         }
         println("orders_failed=", self.orders_failed, " ledger_failed=", self.ledger_failed, " audit_failed=", self.audit_failed, " svc_failures=", self.svc_failures, " poisoned_failures=", self.poisoned_failures);

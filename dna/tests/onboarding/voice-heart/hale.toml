@@ -1,0 +1,25 @@
+# hale.toml — voice as a DNA organism's heart. Voice is three programs,
+# each its own seed with its own manifest (api/, brain/, node/); this one
+# is the repository's, read when the habitat grafts it.
+#
+# [dna] needs: the roles voice needs from the habitat at graft. Memory and
+# the nerves are every organism's (its record, and the usage events it
+# tells, api/events.hl); `database` is the heart's own Postgres store
+# (store/), which the habitat provisions and hands over as
+# HALE_DNA_DATABASE_DSN, its password in the vault entry the DSN names;
+# `broker` is voice's own NATS (requests, assignments, the route table's
+# notice), handed over as HALE_DNA_BROKER_URL, _USER, _VAULT and
+# _SUBJECTS, every subject under the prefix it grants (lib/broker). The
+# senses' store is left out: voice serves no readings yet.
+#
+# [dna.migrations.database]: the habitat runs `api migrate` against
+# HALE_DNA_DATABASE_DSN at graft, at `hale habitat migrate` and at upgrade,
+# every time. The migrator keeps its own ledger (pond's migrations table),
+# so a run at the schema's head applies nothing and exits 0. The api and
+# the brain never migrate on their own.
+
+[dna]
+needs = ["memory", "nerves", "database", "broker"]
+
+[dna.migrations.database]
+command = ["api/api", "migrate", "--migrations", "store/migrations"]

@@ -26,17 +26,25 @@ export XDG_STATE_HOME=$RUN/state HALE_DNA_API=$HEAD_API HALE_DNA_ID_TOKEN=$(cat 
 cd "$APP" || exit 1
 POSITION=position:api/steward
 
-rows() { git -C "$APP" show refs/dna/journal:journal.jsonl 2>/dev/null; }
-# first <kind> [after] [needle]: the first row of a kind after row <after> whose entity or body holds <needle>
+# the record's rows, then its Ledger's after a `#ledger` line: the record is memory's, and a
+# day's work (tasks, attempts, model calls) is the Ledger's (GH #1590)
+rows() { hale dna record-rows "$APP" 2>/dev/null; echo '#ledger'; hale dna ledger rows 2>/dev/null; }
+# mark: where both memories stand now, `<record rows>:<ledger rows>`, an <after> for first and wait_for
+mark() { rows | awk '/^#ledger$/{l=1; next} {if (l) n++; else r++} END{print (r+0)":"(n+0)}'; }
+# first <kind> [after] [needle]: the first row of a kind after <after> (a mark, or a record row count)
+# whose entity or body holds <needle>
 first() { rows | python3 -c 'import sys,json
-k=sys.argv[1]; after=int(sys.argv[2]); needle=sys.argv[3]
-for i,l in enumerate(sys.stdin):
-    if i < after: continue
+k=sys.argv[1]; a=sys.argv[2].split(":"); after=[int(a[0]), int(a[1]) if len(a)>1 else 0]; needle=sys.argv[3]
+m=0; i=0
+for l in sys.stdin:
+    if l.strip()=="#ledger": m=1; i=0; continue
+    i+=1
+    if i <= after[m]: continue
     try: e=json.loads(l)
     except Exception: continue
     if e.get("kind")==k and needle in (e.get("entity","")+" "+json.dumps(e.get("body",""))): print(e.get("entity")+"\t"+json.dumps(e.get("body",""))[:400]); break' "$1" "${2:-0}" "${3:-}"; }
 wait_for() { local kind=$1 after=$2 secs=$3 needle=${4:-} t0; t0=$(date +%s); while [ $(( $(date +%s) - t0 )) -lt "$secs" ]; do hale dna sync >/dev/null 2>&1; r=$(first "$kind" "$after" "$needle"); [ -n "$r" ] && { echo "$r"; return 0; }; sleep 2; done; return 1; }
-last_rows() { rows | tail -"${1:-4}" | python3 -c 'import sys,json
+last_rows() { rows | grep -v '^#ledger$' | tail -"${1:-4}" | python3 -c 'import sys,json
 for l in sys.stdin:
     try: e=json.loads(l); print(e.get("kind"), e.get("entity"))
     except Exception: pass' | tr '\n' '|'; }
@@ -66,7 +74,7 @@ echo "# dna cycle walk $(date +%H:%M)" > "$R"
 
 # ---- 1. a position, opened through the operation layer, with its model default. A solo organization:
 # riley asks and, holding the Board since up.sh's fills, decides (a Board Review admits its asker)
-base=$(rows | wc -l)
+base=$(mark)
 out=$(timeout 120 hale dna position open api/steward --under api --text "keeps the list's api" --mandate "decides how the list's api reads; may not change the browser; cites the README's axioms; escalates a new surface to the Board" --as riley 2>&1); note "position open: $(echo "$out" | tail -1 | cut -c1-200)"
 echo "$out" | grep -q "proposed opening $POSITION" && check "1: the opening is proposed" ok || check "1: the opening is proposed" no "$(echo "$out" | tail -2 | tr '\n' ' ')"
 for _ in $(seq 1 24); do hale dna review 2>&1 | grep -q '^  positions —' && break; sleep 5; done
@@ -83,14 +91,14 @@ step "1: models category tools.standard" hale dna models category tools.standard
 hale dna models map > "$RUN/models-map.out" 2>&1; grep -q "$POSITION" "$RUN/models-map.out" && grep -q 'canned-deep' "$RUN/models-map.out" && check "1: the mapping lists the default" ok || check "1: the mapping lists the default" no "$(head -6 "$RUN/models-map.out" | tr '\n' '|')"
 
 # ---- 2. path A: the organization's own editor
-base=$(rows | wc -l)
+base=$(mark)
 out=$(timeout 120 hale dna task create --as riley slow the overdue sweep to every two seconds 2>&1 | tail -2); note "A: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
 wait_for task.born "$base" 120 > /dev/null && check "A: the ask bears a Task" ok || check "A: the ask bears a Task" no "no task.born in 120 s"
 p=$(wait_for model.called "$base" 60); echo "$p" | grep -q 'fake' && check "A: the Leader's plan came from the canned model" ok || check "A: the Leader's plan came from the canned model" no "$(echo "$p" | cut -c1-120)"
 land A "$base" api/todo.hl 'sleep(2s)'
 
 # ---- 3. path B: a leg's own tool loop, through the gateway
-base=$(rows | wc -l); calls0=$(wc -l < "$RUN/gateway.jsonl")
+base=$(mark); calls0=$(wc -l < "$RUN/gateway.jsonl")
 out=$(timeout 120 hale dna task create --as riley --to "$POSITION" "leave the steward's note on the list's api" 2>&1 | tail -2); note "B: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
 wait_for attempt.admitted "$base" 120 "$POSITION" > /dev/null && check "B: admitted as the position's Work" ok || check "B: admitted as the position's Work" no "no attempt.admitted naming $POSITION; last rows: $(last_rows)"
 out=$(timeout 600 hale dna work run --as "$POSITION" --performer model 2>&1); echo "$out" >> "$LOG"; note "B: run: $(echo "$out" | tail -1 | cut -c1-240)"
@@ -114,7 +122,7 @@ grep -q "'edit'" "$RUN/gateway-b.txt" && check "B: offered the Work's hands as t
 land B "$base" api/todo.hl "The steward's note"
 
 # ---- 4. path C: a person's session over MCP
-base=$(rows | wc -l)
+base=$(mark)
 out=$(timeout 120 hale dna task create --as riley --to "$POSITION" "leave the person's note on the list's api" 2>&1 | tail -2); note "C: ask: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
 wait_for attempt.admitted "$base" 120 "$POSITION" > /dev/null && check "C: admitted as the position's Work" ok || check "C: admitted as the position's Work" no "no attempt.admitted naming $POSITION"
 out=$(timeout 600 python3 "$HERE/mcp-session.py" "$APP" "$POSITION" "person's note" 2>>"$LOG"); echo "$out" >> "$LOG"; note "C: session: $(echo "$out" | cut -c1-300)"
@@ -122,7 +130,7 @@ echo "$out" | grep -q '"submitted": true' && check "C: the session works the han
 land C "$base" api/todo.hl "The person's note"
 
 # ---- 5. an Assessment, by a leg
-base=$(rows | wc -l); calls0=$(wc -l < "$RUN/gateway.jsonl")
+base=$(mark); calls0=$(wc -l < "$RUN/gateway.jsonl")
 out=$(timeout 120 hale dna task create --as riley --judgment "assess whether a Todos::count rpc is worth adding" 2>&1 | tail -1); note "Assessment: ask: $(echo "$out" | cut -c1-160)"
 wait_for attempt.admitted "$base" 120 > /dev/null || true
 out=$(timeout 300 hale dna work run --as position:agent --performer model 2>&1); echo "$out" >> "$LOG"; note "Assessment: run: $(echo "$out" | tail -1 | cut -c1-240)"
@@ -131,7 +139,7 @@ echo "$a" | grep -q 'worth doing' && check "Assessment: the gateway's assessment
 tail -n +"$((calls0 + 1))" "$RUN/gateway.jsonl" | grep '"scenario": "assess"' | grep -q '"record_status"' && check "Assessment: a tools Work, the record's reads offered" ok || check "Assessment: a tools Work, the record's reads offered" no "$(tail -n +"$((calls0 + 1))" "$RUN/gateway.jsonl" | head -1 | cut -c1-200)"
 
 # ---- 6. the graph read again at the later commit
-base=$(rows | wc -l)
+base=$(mark)
 out=$(timeout 300 hale dna ingest 2>&1); note "ingest: $(echo "$out" | tail -1 | cut -c1-200)"
 rid=$(echo "$out" | grep -o 'k:[0-9a-f]\{12\}' | head -1)
 echo "$out" | grep -q -E 'ingested [0-9a-f]{12}: [1-9][0-9]* added' && check "6: ingest proposes the difference" ok || check "6: ingest proposes the difference" no "$(echo "$out" | tail -2 | tr '\n' ' ')"

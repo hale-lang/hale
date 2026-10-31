@@ -30,7 +30,11 @@ locus NoPerformers {
     fn identity_of(kind: String) -> String { return ""; }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
         self.asked = self.asked + 1;
-        return WorkResult { disposition: "failed", narrative: "no work system performs for this runtime", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+        return WorkResult {
+            disposition: "failed",
+            narrative: "no work system performs for this runtime",
+            attempt_id: req.work_id + "/a" + to_string(req.attempt_no),
+        };
     }
     fn reconcile_as(kind: String, req: WorkRequest) -> Reconciliation { return Reconciliation { }; }
 }
@@ -63,7 +67,12 @@ interface Reconciler {
 // stays unresolved until a person says what happened.
 locus NoEvidence {
     fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation {
-        return Reconciliation { kind: kind, identity: identity, why: "no adapter can say whether attempt " + to_string(req.attempt_no) + " of " + req.work_id + " acted" };
+        return Reconciliation {
+            kind: kind,
+            identity: identity,
+            why: "no adapter can say whether attempt " + to_string(req.attempt_no) + " of "
+                + req.work_id + " acted",
+        };
     }
 }
 
@@ -72,7 +81,12 @@ locus NoEvidence {
 // whose effect is documented so; it speaks for that one.
 locus IdempotentReplay {
     fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation {
-        return Reconciliation { kind: kind, identity: identity, idempotent: true, why: "documented idempotent: a replay is safe" };
+        return Reconciliation {
+            kind: kind,
+            identity: identity,
+            idempotent: true,
+            why: "documented idempotent: a replay is safe",
+        };
     }
 }
 

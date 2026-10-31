@@ -29,12 +29,13 @@ fn app_source(sock: String) -> String {
         + "}\n"
         + "api Public { rpc Head::on_ask; }\n"
         + "main locus App {\n"
-        + "    params { head: Head = Head { }; }\n"
+        + "    params { head: Head = Head { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \""
+        + sock
+        + "\" }, as: \"public\", receivers: { Head: self.head }, bound: 4, on_full: refuse); }\n"
         + "    placement { head: cooperative(pool = work) where async_io; }\n"
         + "    run() {\n"
-        + "        let h = api::serve(Public, unix::Rpc { path: \"" + sock + "\" }, as: \"public\", receivers: { Head: self.head }, bound: 4, on_full: refuse);\n"
         + "        std::time::sleep(20s);\n"
-        + "        h.stop();\n"
+        + "        self.h.stop();\n"
         + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
@@ -130,17 +131,33 @@ fn main() {
     // the server's writes would-block for certain.
     let mut i = 1;
     while i <= 4 {
-        api.send("{\"call\":\"Head::on_ask\",\"payload\":{\"doublings\":12},\"id\":\"c-" + to_string(i) + "\"}");
+        api.send(
+            "{\"call\":\"Head::on_ask\",\"payload\":{\"doublings\":12},\"id\":\"c-" + to_string(i)
+                + "\"}",
+        );
         i = i + 1;
     }
     std::time::sleep(1500ms);
     let mut k = 1;
     while k <= 4 {
         let reply = api.next_line();
-        std::test::assert(std::str::starts_with(reply, "{\"request_id\":" + to_string(k) + ",\"id\":\"c-" + to_string(k) + "\","), "reply " + to_string(k) + " arrived, in order: " + reply[0..80]);
-        std::test::assert(std::str::contains(reply, "\"ok\":true"), "and it is the handler's answer");
+        std::test::assert(
+            std::str::starts_with(
+                reply,
+                "{\"request_id\":" + to_string(k) + ",\"id\":\"c-" + to_string(k) + "\",",
+            ),
+            "reply " + to_string(k) + " arrived, in order: " + reply[0..80],
+        );
+        std::test::assert(
+            std::str::contains(reply, "\"ok\":true"),
+            "and it is the handler's answer",
+        );
         let value = std::json::find_field_raw(reply, "value");
-        std::test::assert_eq_int(len(value), 65536 + len("{\"text\":\"\"}"), "the whole 64 KB value arrived");
+        std::test::assert_eq_int(
+            len(value),
+            65536 + len("{\"text\":\"\"}"),
+            "the whole 64 KB value arrived",
+        );
         std::test::assert(std::str::ends_with(reply, "}"), "the line is closed");
         k = k + 1;
     }
@@ -150,8 +167,15 @@ fn main() {
     // serializer; it crosses the bus whole now.
     api.send("{\"call\":\"Head::on_ask\",\"payload\":{\"doublings\":16},\"id\":\"c-5\"}");
     let big = api.next_line();
-    std::test::assert(std::str::starts_with(big, "{\"request_id\":5,\"id\":\"c-5\","), "the 1 MiB reply arrived: " + big[0..80]);
-    std::test::assert_eq_int(len(std::json::find_field_raw(big, "value")), 1048576 + len("{\"text\":\"\"}"), "the whole 1 MiB value arrived");
+    std::test::assert(
+        std::str::starts_with(big, "{\"request_id\":5,\"id\":\"c-5\","),
+        "the 1 MiB reply arrived: " + big[0..80],
+    );
+    std::test::assert_eq_int(
+        len(std::json::find_field_raw(big, "value")),
+        1048576 + len("{\"text\":\"\"}"),
+        "the whole 1 MiB value arrived",
+    );
     std::test::assert(std::str::ends_with(big, "}"), "the line is closed");
 
     p.stop();

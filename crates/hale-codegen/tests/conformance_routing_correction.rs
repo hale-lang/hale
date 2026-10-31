@@ -68,24 +68,26 @@ fn run(tag: &str, src: &str) -> (String, Option<i32>) {
     (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code())
 }
 
-/// Program-lifetime storage for `locus`'s literal is a payload-arena
-/// allocation named `%<locus>.self.heap`; the frame's is `%<locus>.self`,
-/// an `alloca`.
+/// Storage that outlives the frame for `locus`'s literal is a returned
+/// struct, `%<locus>.self.returned` (GH #1570: released at the end of the
+/// instance's reclaim; it was a program-lifetime payload-arena allocation,
+/// `%<locus>.self.heap`); the frame's is `%<locus>.self`, an `alloca`.
 fn assert_frame_owned(body: &str, locus: &str) {
     assert!(
         body.contains(&format!("%{locus}.self = alloca %locus.{locus}")),
         "{locus}'s literal is the frame's:\n{body}"
     );
     assert!(
-        !body.contains(&format!("%{locus}.self.heap = call ptr @lotus_bus_payload_arena_alloc")),
-        "{locus}'s literal no longer goes to the payload arena:\n{body}"
+        !body.contains(&format!("%{locus}.self.heap = call ptr @lotus_bus_payload_arena_alloc"))
+            && !body.contains(&format!("%{locus}.self.returned = call ptr @lotus_returned_struct_alloc")),
+        "{locus}'s literal no longer outlives the frame:\n{body}"
     );
 }
 
 fn assert_returned_routed(body: &str) {
     assert!(
-        body.contains("%Hi.self.heap = call ptr @lotus_bus_payload_arena_alloc"),
-        "the returned literal, which satisfies the interface, still goes to the payload arena:\n{body}"
+        body.contains("%Hi.self.returned = call ptr @lotus_returned_struct_alloc"),
+        "the returned literal, which satisfies the interface, still outlives the frame:\n{body}"
     );
 }
 

@@ -28,7 +28,7 @@ import "../core" as dna;
 // is proposed); `ratify batch by <reviewer>` decides the last batch, and
 // `expect stale` that it was refused whole because its ground moved.
 // `apply on pending {` … `}` plans the batch on the last proposal while it
-// is still pending (`batch_plan_on`, as `hale dna init --with` plans a pack
+// is still pending (`batch_plan_on`, as `hale habitat graft --with` plans a pack
 // on init's holes); `ratify ground by` / `reject ground by` decide that
 // proposal, `decide batch by` approves the batch without waiting, `expect
 // undecided` that it is not decided yet, and `await batch` waits until it
@@ -393,20 +393,31 @@ main locus App {
             rest = rest[(nl + 1)..len(rest)];
             if len(self.row_body("knowledge.ratified", d)) == 0 { return false; }
         }
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         return true;
     }
 
     // ---- the organization, read from the record (the core's reader, the
     // one a batch is planned against): `position <id>`, `mandate <id>` and
     // `holds <id> <holder>` lines
-    fn org() -> String { return dna::org_chart(self.body.journal, dna::GitReceipts { repo: self.repo }); }
+    fn org() -> String {
+        return dna::org_chart(self.body.journal, dna::MemoryReceipts { repo: self.repo });
+    }
     fn settled_all(digests: String) -> Bool {
         let mut rest = digests;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let d = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            if len(self.row_body("knowledge.ratified", d)) == 0 && len(self.row_body("knowledge.refused", d)) == 0 { return false; }
+            if len(self.row_body("knowledge.ratified", d)) == 0
+                && len(self.row_body("knowledge.refused", d)) == 0
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -417,7 +428,12 @@ main locus App {
     // The batch planned on `pending` (`<review id> <digest>` a line) as
     // though each were ratified.
     fn apply_on(text: String, pending: String) -> String {
-        let receipts = dna::GitReceipts { repo: self.repo };
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let receipts = dna::MemoryReceipts { repo: self.repo };
         let plan = dna::batch_plan_on(self.body.journal, receipts, text, pending);
         if !plan.ok { return "refused: " + plan.why; }
         self.asks = self.asks + 1;
@@ -436,11 +452,20 @@ main locus App {
             let nl = std::str::index_of(rows, "\n");
             let row = rows[0..nl];
             rows = rows[(nl + 1)..len(rows)];
-            let r = self.body.journal.append(self.body.journal.revision(), std::json::find_string_field(row, "kind"), std::json::find_string_field(row, "entity"), std::json::find_string_field(row, "body"));
+            let r = self.body.journal.append(
+                self.body.journal.revision(),
+                std::json::find_string_field(row, "kind"),
+                std::json::find_string_field(row, "entity"),
+                std::json::find_string_field(row, "body"),
+            );
             if !r.ok { return "the record refused a row of the batch"; }
         }
-        self.body.on_graph_requested(dna::GraphReviewRequest { request_id: id, review_id: filing.review_id, by: "grace" });
-        if len(self.row_body("graph.proposed", id)) == 0 { return "the organization opened no Review for the batch"; }
+        self.body.on_graph_requested(
+            dna::GraphReviewRequest { request_id: id, review_id: filing.review_id, by: "grace" },
+        );
+        if len(self.row_body("graph.proposed", id)) == 0 {
+            return "the organization opened no Review for the batch";
+        }
         self.last = filing.digest;
         self.prev_batch = self.last_batch;
         self.last_batch = filing.digest;
@@ -459,9 +484,15 @@ main locus App {
             if std::str::starts_with(line, "holds ") {
                 let tail = line[6..len(line)];
                 let pos = tail[0..std::str::index_of(tail, " ")];
-                if !std::str::contains(org, "position " + pos + "\n") { return "a hold on `" + pos + "`, which the graph does not state"; }
+                if !std::str::contains(org, "position " + pos + "\n") {
+                    return "a hold on `" + pos + "`, which the graph does not state";
+                }
             }
-            if std::str::starts_with(line, "position ") && !std::str::contains(org, "mandate " + line[9..len(line)] + "\n") { return "`" + line[9..len(line)] + "` has no ratified mandate"; }
+            if std::str::starts_with(line, "position ")
+                && !std::str::contains(org, "mandate " + line[9..len(line)] + "\n")
+            {
+                return "`" + line[9..len(line)] + "` has no ratified mandate";
+            }
         }
         return "";
     }
@@ -477,14 +508,32 @@ main locus App {
             self.asks = self.asks + 1;
             if dna::batch_field(st, 0) == "open" {
                 let id = "p" + to_string(self.asks);
-                self.body.on_position_requested(dna::PositionOpenRequest { request_id: id, position: position, text: "The position " + position[9..len(position)] + ".", mandate: dna::trim_nl(dna::batch_field(st, 3)), under: dna::batch_field(st, 2), by: "grace" });
+                self.body.on_position_requested(
+                    dna::PositionOpenRequest {
+                        request_id: id,
+                        position: position,
+                        text: "The position " + position[9..len(position)] + ".",
+                        mandate: dna::trim_nl(dna::batch_field(st, 3)),
+                        under: dna::batch_field(st, 2),
+                        by: "grace",
+                    },
+                );
                 let proposed = self.row_body("position.proposed", id);
-                if len(proposed) == 0 { return "not proposed: " + self.row_body("position.refused", id); }
+                if len(proposed) == 0 {
+                    return "not proposed: " + self.row_body("position.refused", id);
+                }
                 self.last = std::json::find_string_field(proposed, "digest");
                 return "";
             }
             let id = "h" + to_string(self.asks);
-            self.body.on_hold_requested(dna::HoldRequest { request_id: id, position: position, holder: dna::trim_nl(dna::batch_field(st, 2)), by: "grace" });
+            self.body.on_hold_requested(
+                dna::HoldRequest {
+                    request_id: id,
+                    position: position,
+                    holder: dna::trim_nl(dna::batch_field(st, 2)),
+                    by: "grace",
+                },
+            );
             let proposed = self.row_body("hold.proposed", id);
             if len(proposed) == 0 { return "not proposed: " + self.row_body("hold.refused", id); }
             self.last = std::json::find_string_field(proposed, "digest");
@@ -494,15 +543,29 @@ main locus App {
             // a fixture's node, appended as the repository's graph states one
             let id = std::str::trim(line[6..len(line)]);
             let colon = std::str::index_of(id, ":");
-            let r = self.body.journal.append(self.body.journal.revision(), "graph.node", id, "{\"kind\": \"" + id[0..colon] + "\", \"name\": \"" + id[(colon + 1)..len(id)] + "\"}");
+            let r = self.body.journal.append(
+                self.body.journal.revision(),
+                "graph.node",
+                id,
+                "{\"kind\": \"" + id[0..colon] + "\", \"name\": \"" + id[(colon + 1)..len(id)]
+                    + "\"}",
+            );
             return if r.ok { "" } else { "the record refused the node" };
         }
-        let first = if std::str::index_of(line, " ") > 0 { line[0..std::str::index_of(line, " ")] } else { line };
+        let first = if std::str::index_of(line, " ") > 0 {
+            line[0..std::str::index_of(line, " ")]
+        } else {
+            line
+        };
         if dna::dna_batch_verb(first) { return self.apply(line + "\n"); }
         if line == "retire-pack" {
             // the last batch adopted, undone as one batch, as `hale dna pack
             // retire` undoes a pack
-            let inverse = dna::batch_inverse(self.body.journal, dna::GitReceipts { repo: self.repo }, self.last_steps);
+            let inverse = dna::batch_inverse(
+                self.body.journal,
+                dna::MemoryReceipts { repo: self.repo },
+                self.last_steps,
+            );
             if len(inverse) == 0 { return "nothing to retire"; }
             return self.apply(inverse);
         }
@@ -522,7 +585,13 @@ main locus App {
         if std::str::starts_with(line, "ratify batch by ") {
             if len(self.last_batch) == 0 { return "no batch to ratify"; }
             let reviewer = std::str::trim(line[16..len(line)]);
-            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.last_batch), subject_digest: self.last_batch, verdict: "approve", reviewer: reviewer, authority: "board" };
+            dna::ReviewVerdict <- dna::Verdict {
+                review_id: dna::knowledge_review_id(self.last_batch),
+                subject_digest: self.last_batch,
+                verdict: "approve",
+                reviewer: reviewer,
+                authority: "board",
+            };
             let wanted = self.members(self.last_batch);
             let mut tries = 0;
             while tries < 400 * dna::wait_scale() && !self.settled_all(wanted) {
@@ -532,12 +601,24 @@ main locus App {
             }
             return if self.settled_all(wanted) { "" } else { "not settled within the deadline" };
         }
-        if std::str::starts_with(line, "ratify ground by ") || std::str::starts_with(line, "reject ground by ") {
+        if std::str::starts_with(line, "ratify ground by ")
+            || std::str::starts_with(line, "reject ground by ")
+        {
             if len(self.ground) == 0 { return "no ground"; }
             let verdict = if std::str::starts_with(line, "ratify") { "approve" } else { "reject" };
             let reviewer = std::str::trim(line[17..len(line)]);
-            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.ground), subject_digest: self.ground, verdict: verdict, reviewer: reviewer, authority: "board" };
-            let landed = if verdict == "approve" { "knowledge.ratified" } else { "knowledge.declined" };
+            dna::ReviewVerdict <- dna::Verdict {
+                review_id: dna::knowledge_review_id(self.ground),
+                subject_digest: self.ground,
+                verdict: verdict,
+                reviewer: reviewer,
+                authority: "board",
+            };
+            let landed = if verdict == "approve" {
+                "knowledge.ratified"
+            } else {
+                "knowledge.declined"
+            };
             let wanted = self.members(self.ground);
             let mut tries = 0;
             while tries < 400 * dna::wait_scale() && !self.rows_for(landed, wanted) {
@@ -545,19 +626,39 @@ main locus App {
                 let moved = self.body.journal.refresh();
                 tries = tries + 1;
             }
-            return if self.rows_for(landed, wanted) { "" } else { "the ground was not decided within the deadline" };
+            return if self.rows_for(landed, wanted) {
+                ""
+            } else {
+                "the ground was not decided within the deadline"
+            };
         }
         if std::str::starts_with(line, "decide batch by ") {
             if len(self.last_batch) == 0 { return "no batch to decide"; }
-            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.last_batch), subject_digest: self.last_batch, verdict: "approve", reviewer: std::str::trim(line[16..len(line)]), authority: "board" };
+            dna::ReviewVerdict <- dna::Verdict {
+                review_id: dna::knowledge_review_id(self.last_batch),
+                subject_digest: self.last_batch,
+                verdict: "approve",
+                reviewer: std::str::trim(line[16..len(line)]),
+                authority: "board",
+            };
             // the verdict settles; the batch's ratification is what waits
             let mut tries = 0;
-            while tries < 400 * dna::wait_scale() && len(self.row_body("review.settled", dna::knowledge_review_id(self.last_batch))) == 0 {
+            while tries < 400 * dna::wait_scale()
+                && len(
+                    self.row_body("review.settled", dna::knowledge_review_id(self.last_batch)),
+                ) == 0
+            {
                 std::time::sleep(25ms);
                 let moved = self.body.journal.refresh();
                 tries = tries + 1;
             }
-            return if len(self.row_body("review.settled", dna::knowledge_review_id(self.last_batch))) > 0 { "" } else { "the verdict did not settle within the deadline" };
+            return if len(
+                self.row_body("review.settled", dna::knowledge_review_id(self.last_batch)),
+            ) > 0 {
+                ""
+            } else {
+                "the verdict did not settle within the deadline"
+            };
         }
         if line == "expect undecided" {
             // given a moment, and a tick, to decide what it should not
@@ -573,7 +674,11 @@ main locus App {
                 let nl = std::str::index_of(rest, "\n");
                 let d = rest[0..nl];
                 rest = rest[(nl + 1)..len(rest)];
-                if len(self.row_body("knowledge.ratified", d)) > 0 || len(self.row_body("knowledge.refused", d)) > 0 { return "a member was decided before its ground: " + d; }
+                if len(self.row_body("knowledge.ratified", d)) > 0
+                    || len(self.row_body("knowledge.refused", d)) > 0
+                {
+                    return "a member was decided before its ground: " + d;
+                }
             }
             return "";
         }
@@ -587,7 +692,11 @@ main locus App {
                 let moved = self.body.journal.refresh();
                 tries = tries + 1;
             }
-            return if self.ratified_all(wanted) { "" } else { "the batch was not ratified within the deadline" };
+            return if self.ratified_all(wanted) {
+                ""
+            } else {
+                "the batch was not ratified within the deadline"
+            };
         }
         if line == "expect stale" {
             if len(self.last_batch) == 0 { return "no batch"; }
@@ -596,15 +705,29 @@ main locus App {
                 let nl = std::str::index_of(rest, "\n");
                 let d = rest[0..nl];
                 rest = rest[(nl + 1)..len(rest)];
-                if len(self.row_body("knowledge.ratified", d)) > 0 { return "a member of the stale batch was ratified: " + d; }
-                if !std::str::contains(self.row_body("knowledge.refused", d), "the batch is stale") { return "a member was not refused as stale: " + d + " " + self.row_body("knowledge.refused", d); }
+                if len(self.row_body("knowledge.ratified", d)) > 0 {
+                    return "a member of the stale batch was ratified: " + d;
+                }
+                if !std::str::contains(
+                    self.row_body("knowledge.refused", d),
+                    "the batch is stale",
+                ) {
+                    return "a member was not refused as stale: " + d + " "
+                        + self.row_body("knowledge.refused", d);
+                }
             }
             return "";
         }
         if std::str::starts_with(line, "ratify by ") {
             if len(self.last) == 0 { return "nothing to ratify"; }
             let reviewer = std::str::trim(line[10..len(line)]);
-            dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(self.last), subject_digest: self.last, verdict: "approve", reviewer: reviewer, authority: "board" };
+            dna::ReviewVerdict <- dna::Verdict {
+                review_id: dna::knowledge_review_id(self.last),
+                subject_digest: self.last,
+                verdict: "approve",
+                reviewer: reviewer,
+                authority: "board",
+            };
             let wanted = self.members(self.last);
             let mut tries = 0;
             while tries < 400 * dna::wait_scale() && !self.ratified_all(wanted) {
@@ -617,25 +740,66 @@ main locus App {
         if std::str::starts_with(line, "expect ") {
             let what = std::str::trim(line[7..len(line)]);
             let org = self.org();
-            if std::str::starts_with(what, "no ") && !std::str::starts_with(what, "no-") { return if std::str::contains(org, what[3..len(what)] + "\n") { "still stated: " + what[3..len(what)] + "\nin\n" + org } else { "" }; }
-            if std::str::starts_with(what, "nursery ") || std::str::starts_with(what, "reviews ") || std::str::starts_with(what, "serves ") || std::str::starts_with(what, "consumes ") || std::str::starts_with(what, "outside ") || std::str::starts_with(what, "part ") { return if std::str::contains(org, what + "\n") { "" } else { "not stated: " + what + "\nin\n" + org }; }
-            if std::str::starts_with(what, "practice ") { return if std::str::contains(org, what + "\n") { "" } else { "not in force: " + what + "\nin\n" + org }; }
+            if std::str::starts_with(what, "no ") && !std::str::starts_with(what, "no-") {
+                return if std::str::contains(org, what[3..len(what)] + "\n") {
+                    "still stated: " + what[3..len(what)] + "\nin\n" + org
+                } else {
+                    ""
+                };
+            }
+            if std::str::starts_with(what, "nursery ")
+                || std::str::starts_with(what, "reviews ")
+                || std::str::starts_with(what, "serves ")
+                || std::str::starts_with(what, "consumes ")
+                || std::str::starts_with(what, "outside ")
+                || std::str::starts_with(what, "part ")
+            {
+                return if std::str::contains(org, what + "\n") {
+                    ""
+                } else {
+                    "not stated: " + what + "\nin\n" + org
+                };
+            }
+            if std::str::starts_with(what, "practice ") {
+                return if std::str::contains(org, what + "\n") {
+                    ""
+                } else {
+                    "not in force: " + what + "\nin\n" + org
+                };
+            }
             if std::str::starts_with(what, "no-holds ") {
                 let tail = what[9..len(what)];
                 let sp = std::str::index_of(tail, " ");
                 let held = "holds position:" + tail[0..sp] + " " + tail[(sp + 1)..len(tail)] + "\n";
                 return if std::str::contains(org, held) { "still held: " + held } else { "" };
             }
-            if std::str::starts_with(what, "no-position ") { return if std::str::contains(org, "position position:" + what[12..len(what)] + "\n") { "`" + what[12..len(what)] + "` is stated" } else { "" }; }
+            if std::str::starts_with(what, "no-position ") {
+                return if std::str::contains(
+                    org,
+                    "position position:" + what[12..len(what)] + "\n",
+                ) {
+                    "`" + what[12..len(what)] + "` is stated"
+                } else {
+                    ""
+                };
+            }
             if std::str::starts_with(what, "holds ") {
                 let tail = what[6..len(what)];
                 let sp = std::str::index_of(tail, " ");
                 let want = "holds position:" + tail[0..sp] + " " + tail[(sp + 1)..len(tail)] + "\n";
-                return if std::str::contains(org, want) { "" } else { "not held: " + want + "in\n" + org };
+                return if std::str::contains(org, want) {
+                    ""
+                } else {
+                    "not held: " + want + "in\n" + org
+                };
             }
             let sp = std::str::index_of(what, " ");
             let want = what[0..sp] + " position:" + what[(sp + 1)..len(what)] + "\n";
-            return if std::str::contains(org, want) { "" } else { "missing: " + want + "in\n" + org };
+            return if std::str::contains(org, want) {
+                ""
+            } else {
+                "missing: " + want + "in\n" + org
+            };
         }
         if std::str::starts_with(line, "refused ") {
             let why = self.step(line[8..len(line)]);
@@ -651,9 +815,23 @@ main locus App {
         std::io::fs::mkdir(self.repo + "/.hale") or discard;
         std::io::fs::mkdir(self.repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + self.repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.body = dna::Dna {
-            journal: dna::GitJournal { repo: self.repo },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: self.repo }, repo: self.repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: self.repo },
+                ledger: dna::MemoryLedger {
+                    repo: self.repo,
+                    dsn_env: dna::fixture_spine(self.repo),
+                },
+            },
+            verification: dna::HaleVerification {
+                receipts: dna::MemoryReceipts { repo: self.repo },
+                repo: self.repo,
+            },
             board: dna::Board { who: "board" }
         };
         self.last = "";
@@ -682,21 +860,40 @@ main locus App {
                 }
                 let applied = self.apply_on(block, pending);
                 if len(applied) > 0 { return line + " " + block + ": " + applied; }
-                let fdoc = dna::GitReceipts { repo: self.repo }.read(self.last_batch[7..len(self.last_batch)]);
-                if dna::native_json_string(fdoc, "planned_on") != pending { return line + ": the batch does not name its ground: " + fdoc; }
+                let fdoc = dna::MemoryReceipts { repo: self.repo }.read(
+                    self.last_batch[7..len(self.last_batch)],
+                );
+                if dna::native_json_string(fdoc, "planned_on") != pending {
+                    return line + ": the batch does not name its ground: " + fdoc;
+                }
                 let broken_p = self.broken(self.org());
                 if len(broken_p) > 0 { return "after the batch:\n" + block + broken_p; }
                 continue;
             }
             if line == "apply {" || line == "refused apply {" {
                 let close = std::str::index_of(rest, "\n}");
-                if close < 0 && !std::str::starts_with(rest, "}") { return line + ": no closing `}`"; }
-                let block = if std::str::starts_with(rest, "}") { "" } else { rest[0..(close + 1)] };
-                rest = if std::str::starts_with(rest, "}") { rest[1..len(rest)] } else { rest[(close + 2)..len(rest)] };
+                if close < 0 && !std::str::starts_with(rest, "}") {
+                    return line + ": no closing `}`";
+                }
+                let block = if std::str::starts_with(rest, "}") {
+                    ""
+                } else {
+                    rest[0..(close + 1)]
+                };
+                rest = if std::str::starts_with(rest, "}") {
+                    rest[1..len(rest)]
+                } else {
+                    rest[(close + 2)..len(rest)]
+                };
                 if std::str::starts_with(rest, "\n") { rest = rest[1..len(rest)]; }
                 let applied = self.apply(block);
-                if line == "apply {" && len(applied) > 0 { return line + " " + block + ": " + applied; }
-                if line == "refused apply {" && !std::str::starts_with(applied, "refused: ") { return "the batch was not refused before it was proposed:\n" + block + "(" + applied + ")"; }
+                if line == "apply {" && len(applied) > 0 {
+                    return line + " " + block + ": " + applied;
+                }
+                if line == "refused apply {" && !std::str::starts_with(applied, "refused: ") {
+                    return "the batch was not refused before it was proposed:\n" + block + "("
+                        + applied + ")";
+                }
                 let broken_b = self.broken(self.org());
                 if len(broken_b) > 0 { return "after the batch:\n" + block + broken_b; }
                 continue;
@@ -712,30 +909,114 @@ main locus App {
     // A scenario the known-open table names: it fails, at its operation.
     fn known_open(name: String, text: String, verb: String) {
         let got = self.scenario(name, text);
-        std::test::assert(std::str::contains(got, "not built: `" + verb + "`") && std::str::contains(KNOWN_OPEN, name + " " + verb + "\n"), "known open: `" + verb + "` is not built: " + got);
+        std::test::assert(
+            std::str::contains(got, "not built: `" + verb + "`")
+                && std::str::contains(KNOWN_OPEN, name + " " + verb + "\n"),
+            "known open: `" + verb + "` is not built: " + got,
+        );
     }
     run() {
-        std::test::assert_eq_str(self.scenario("dev-team", DEV_TEAM), "", "a small dev team is opened, filled and ratified, the invariants holding at every step");
-        std::test::assert_eq_str(self.scenario("opened-once", OPENED_ONCE), "", "a stated position is not opened twice, and none opens without a mandate");
-        std::test::assert_eq_str(self.scenario("unratified", UNRATIFIED), "", "nothing is in force until the Board ratifies it");
-        std::test::assert_eq_str(self.scenario("dev-team-batch", DEV_TEAM_BATCH), "", "the dev team proposed as one batch is ratified once, whole");
-        std::test::assert_eq_str(self.scenario("batch-refused", BATCH_REFUSED), "", "a batch that is wrong anywhere is refused before anything is proposed");
-        std::test::assert_eq_str(self.scenario("batch-stale", BATCH_STALE), "", "a batch whose ground moved is refused whole when the Board decides it");
-        std::test::assert_eq_str(self.scenario("vacated", VACATED), "", "a holder leaves through one Review; the position stays");
-        std::test::assert_eq_str(self.scenario("pack", PACK), "", "a pack's positions and practices come into force as one unit");
-        std::test::assert_eq_str(self.scenario("team-merges", TEAM_MERGES), "", "two positions become one, its holders and reviews carried over");
-        std::test::assert_eq_str(self.scenario("team-splits", TEAM_SPLITS), "", "one position becomes two");
-        std::test::assert_eq_str(self.scenario("assigned", ASSIGNED), "", "a position reviews a contract, and stops");
-        std::test::assert_eq_str(self.scenario("exposed", EXPOSED), "", "a capability exposed as a contract, and a part depending on it");
-        std::test::assert_eq_str(self.scenario("externalized", EXTERNALIZED), "", "a part externalized and internalized again");
+        std::test::assert_eq_str(
+            self.scenario("dev-team", DEV_TEAM),
+            "",
+            "a small dev team is opened, filled and ratified, the invariants holding at every step",
+        );
+        std::test::assert_eq_str(
+            self.scenario("opened-once", OPENED_ONCE),
+            "",
+            "a stated position is not opened twice, and none opens without a mandate",
+        );
+        std::test::assert_eq_str(
+            self.scenario("unratified", UNRATIFIED),
+            "",
+            "nothing is in force until the Board ratifies it",
+        );
+        std::test::assert_eq_str(
+            self.scenario("dev-team-batch", DEV_TEAM_BATCH),
+            "",
+            "the dev team proposed as one batch is ratified once, whole",
+        );
+        std::test::assert_eq_str(
+            self.scenario("batch-refused", BATCH_REFUSED),
+            "",
+            "a batch that is wrong anywhere is refused before anything is proposed",
+        );
+        std::test::assert_eq_str(
+            self.scenario("batch-stale", BATCH_STALE),
+            "",
+            "a batch whose ground moved is refused whole when the Board decides it",
+        );
+        std::test::assert_eq_str(
+            self.scenario("vacated", VACATED),
+            "",
+            "a holder leaves through one Review; the position stays",
+        );
+        std::test::assert_eq_str(
+            self.scenario("pack", PACK),
+            "",
+            "a pack's positions and practices come into force as one unit",
+        );
+        std::test::assert_eq_str(
+            self.scenario("team-merges", TEAM_MERGES),
+            "",
+            "two positions become one, its holders and reviews carried over",
+        );
+        std::test::assert_eq_str(
+            self.scenario("team-splits", TEAM_SPLITS),
+            "",
+            "one position becomes two",
+        );
+        std::test::assert_eq_str(
+            self.scenario("assigned", ASSIGNED),
+            "",
+            "a position reviews a contract, and stops",
+        );
+        std::test::assert_eq_str(
+            self.scenario("exposed", EXPOSED),
+            "",
+            "a capability exposed as a contract, and a part depending on it",
+        );
+        std::test::assert_eq_str(
+            self.scenario("externalized", EXTERNALIZED),
+            "",
+            "a part externalized and internalized again",
+        );
         // the known-open table: each fails at the operation it names
-        std::test::assert_eq_str(self.scenario("reassigned", REASSIGNED), "", "unassign then assign in one batch leaves the assignment");
-        std::test::assert_eq_str(self.scenario("effects-moved", EFFECTS_MOVED), "", "a batch whose effects moved is refused whole, the newer consumer kept");
-        std::test::assert_eq_str(self.scenario("nursery-trusted", NURSERY_TRUSTED), "", "a nursery is trusted by the Board, once");
-        std::test::assert_eq_str(self.scenario("pack-retired", PACK_RETIRED), "", "a pack retired: what it brought leaves, what was there before stays");
-        std::test::assert_eq_str(self.scenario("planned-on", PLANNED_ON), "", "a batch planned on a pending opening is ratified after it, whole");
-        std::test::assert_eq_str(self.scenario("planned-on-early", PLANNED_ON_EARLY), "", "approved before its ground, a batch waits for it");
-        std::test::assert_eq_str(self.scenario("planned-on-declined", PLANNED_ON_DECLINED), "", "a batch whose ground is declined is refused whole");
+        std::test::assert_eq_str(
+            self.scenario("reassigned", REASSIGNED),
+            "",
+            "unassign then assign in one batch leaves the assignment",
+        );
+        std::test::assert_eq_str(
+            self.scenario("effects-moved", EFFECTS_MOVED),
+            "",
+            "a batch whose effects moved is refused whole, the newer consumer kept",
+        );
+        std::test::assert_eq_str(
+            self.scenario("nursery-trusted", NURSERY_TRUSTED),
+            "",
+            "a nursery is trusted by the Board, once",
+        );
+        std::test::assert_eq_str(
+            self.scenario("pack-retired", PACK_RETIRED),
+            "",
+            "a pack retired: what it brought leaves, what was there before stays",
+        );
+        std::test::assert_eq_str(
+            self.scenario("planned-on", PLANNED_ON),
+            "",
+            "a batch planned on a pending opening is ratified after it, whole",
+        );
+        std::test::assert_eq_str(
+            self.scenario("planned-on-early", PLANNED_ON_EARLY),
+            "",
+            "approved before its ground, a batch waits for it",
+        );
+        std::test::assert_eq_str(
+            self.scenario("planned-on-declined", PLANNED_ON_DECLINED),
+            "",
+            "a batch whose ground is declined is refused whole",
+        );
     }
 }
 fn main() { App { }; }

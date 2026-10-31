@@ -1,4 +1,4 @@
-//! The `imports` integration-test binary: 14 test files of this area, kept
+//! The `imports` integration-test binary: 15 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,8 @@
 
 #[path = "binding_imported_main.rs"]
 mod binding_imported_main;
+#[path = "claims_program_group.rs"]
+mod claims_program_group;
 #[path = "diamond_import.rs"]
 mod diamond_import;
 #[path = "import_alias_must_be_declared.rs"]

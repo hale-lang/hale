@@ -5,8 +5,9 @@ import { promisify } from 'node:util';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { isolatedEnvironment, boundedNative } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { freePort } from './command-wire.mjs';
+import { recordIdentity } from './record-memory.mjs';
 
 const execute = promisify(execFile), face = fileURLToPath(new URL('../', import.meta.url));
 const launcher = path.join(face, 'start.sh');
@@ -65,7 +66,12 @@ const test = base.extend({
     const scratch = await mkdtemp('/tmp/hale-face-startup.'), root = path.join(scratch, 'fresh project $literal');
     const env = isolatedEnvironment(); env.HALE_BIN = process.env.HALE_BIN;
     if (!env.HALE_BIN || !process.env.HALE_API_BIN) throw new Error('Run through the native browser test launcher or provide HALE_BIN and HALE_API_BIN.');
-    const generated = boundedNative(env.HALE_BIN, ['dna', 'new', root], { build: true });
+    // The record is born in memory (GH #1590): in the runner's, as the
+    // owner, never in a compose database of the project's own, and dropped
+    // at the end. Only the habitat's acts hold the owner's servers.
+    const owner = memoryOwner(), drop = process.env.HALE_FACE_MEMORY_BIN;
+    if (!owner || !drop) throw new Error('The record is memory\'s: run through the native browser test launcher with HALE_DNA_MEMORY_DSN_OWNER set.');
+    const generated = boundedNative(env.HALE_BIN, graft(root), { build: true });
     const children = [], stateDirs = [], launches = [];
     const stopRecordedChildren = async () => {
       for (const dir of stateDirs) {
@@ -76,29 +82,38 @@ const test = base.extend({
         }
       }
       await sleep(500);
+      const signalled = [];
       for (const dir of stateDirs) {
         let names = [];
         try { names = await readdir(path.join(dir, 'children')); } catch { continue; }
         for (const name of names.filter(n => n.endsWith('.pid'))) {
-          try { const pid = Number((await readFile(path.join(dir, 'children', name), 'utf8')).trim()); if (pid > 0) process.kill(pid, 'SIGKILL'); } catch { }
+          try { const pid = Number((await readFile(path.join(dir, 'children', name), 'utf8')).trim()); if (pid > 0) { signalled.push(pid); process.kill(pid, 'SIGKILL'); } } catch { }
         }
       }
+      // A killed child (or the git it ran) can still be writing under the
+      // project's .git while it exits; wait, bounded, until each is gone,
+      // so the scratch removal below does not race it.
+      const gone = pid => { try { process.kill(pid, 0); return false; } catch { return true; } };
+      const until = Date.now() + 5000;
+      while (Date.now() < until && !signalled.every(gone)) await sleep(50);
     };
     try {
-      await execute(generated.command, generated.args, { env, timeout: 300000, maxBuffer: 2097152 });
+      const grafting = graftEnvironment(env);
+      ensureHabitat(env.HALE_BIN, env);
+      await execute(generated.command, generated.args, { env: grafting, timeout: 300000, maxBuffer: 2097152 });
       const git = args => execute('git', ['-C', root, ...args], { env, timeout: 5000 }).then(r => r.stdout.trim());
       // Organization inspection is explicitly committed-source inspection.
       await git(['add', '--', '.gitignore', 'hale.toml', 'hale.lock', 'main.hl', 'tests', 'dna']);
       await git(['-c', 'user.name=Face startup test', '-c', 'user.email=face@example.invalid', 'commit', '-q', '-m', 'Capture generated source']);
       const state = async () => ({ refs: await git(['show-ref']), status: await git(['status', '--porcelain']), source: await readFile(path.join(root, 'dna/org/main.hl'), 'utf8') });
       const start = async ({ build = false, drafts = false, extraEnv = {} } = {}) => {
-        const [chosenPort, apiPort, commandsPort] = await ports(3), origin = `http://127.0.0.1:${chosenPort}`;
+        const [chosenPort, apiPort, commandsPort, headPort] = await ports(4), origin = `http://127.0.0.1:${chosenPort}`;
         // The head's API child listens on its own port and outlives the head
         // by design: each launch gets a port of its own, and the teardown
         // stops every child the head recorded.
         // and its api binding's commands one of their own (GH #1135)
-        const options = [root, '--port', String(chosenPort), '--api-port', String(apiPort), '--commands-port', String(commandsPort), ...(drafts ? ['--source-drafts'] : [])];
-        const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN; delete childEnv.HALE_HEAD_BIN;
+        const options = [root, '--port', String(chosenPort), '--head-port', String(headPort), '--api-port', String(apiPort), '--commands-port', String(commandsPort), ...(drafts ? ['--source-drafts'] : [])];
+        const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN; delete childEnv.HALE_HEAD_BIN; delete childEnv.HALE_FACE_BIN;
         // The head keeps a registry and receipts under the state directory:
         // every launch here gets its own, never the operator's.
         childEnv.XDG_STATE_HOME = path.join(scratch, 'state'); childEnv.XDG_CONFIG_HOME = path.join(scratch, 'config');
@@ -107,9 +122,11 @@ const test = base.extend({
         // the API also supplies a built head when the environment names one,
         // and otherwise takes the build budget for the head it will build.
         const prebuiltHead = process.env.HALE_NATIVE_HEAD_BIN || '';
-        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) { await prebuiltHeadReady(); options.push('--head', prebuiltHead); } }
+        // the standard face stands in front of the head (the page and /app/ come from it)
+        const prebuiltFace = process.env.HALE_NATIVE_FACE_BIN || '';
+        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) { await prebuiltHeadReady(); options.push('--head', prebuiltHead); } if (prebuiltFace) options.push('--face', prebuiltFace); }
         else { childEnv.TMPDIR = path.join(scratch, 'build temporary'); await mkdir(childEnv.TMPDIR); }
-        const builds = build || !prebuiltHead;
+        const builds = build || !prebuiltHead || !prebuiltFace;
         // Bound the real compiler/API tree without holding the native build lock
         // for the HTTP process lifetime. No application body is run or observed.
         const bounded = boundedNative(launcher, options, { build: builds, lock: false });
@@ -128,7 +145,8 @@ const test = base.extend({
           try {
             const response = await fetch(origin + '/api/hale/v1/applications', { signal: AbortSignal.timeout(1000) });
             const body = await response.json();
-            if (response.ok && body.source.record_id === await git(['rev-list', '--max-parents=0', 'refs/dna/journal'])) {
+            // The record's identity is the pin in hale.toml (GH #1590).
+            if (response.ok && body.source.record_id === recordIdentity(root)) {
               // The launch token the head minted into its state directory
               // (GH #989), and the URL it printed with it.
               const token = (await readFile(path.join(childEnv.HALE_DNA_HEAD_STATE, 'head.token'), 'utf8')).trim();
@@ -151,7 +169,11 @@ const test = base.extend({
           for (const name of names.filter(n => n.endsWith('.log'))) await testInfo.attach(`${path.basename(dir)}-${name}`, { path: path.join(dir, 'children', name), contentType: 'text/plain' });
         }
       }
-      await rm(scratch, { recursive: true, force: true });
+      // A process that outlived the stops above may still be writing in
+      // the tree (ENOTEMPTY on a .git/objects directory, seen in CI): the
+      // removal retries rather than failing the case on a racing writer.
+      try { await execute(drop, [root, 'drop'], { env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner }, timeout: 15000 }); } catch { }
+      await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       // A head whose drain outlasted the runtime's grace was ended by the
       // runtime, not by its own stop; the line it printed then says which
       // pool and locus it was waiting on. That is a defect of the head,

@@ -1305,9 +1305,12 @@ pub fn unscoped_alias_uses(
                 continue;
             }
             // `api::serve(…)` is the language's serve site (spec/api.md §
-            // Serving), spelled as the surface-side docs spell it whatever
-            // alias another seed gives a library named `api`
-            if u.text == "api::serve" {
+            // Serving), and `api::Exposure` the type of the param it builds
+            // (GH #1565), spelled as the surface-side docs spell them
+            // whatever alias another seed gives a library named `api`, and
+            // `api::client(…)` and `api::Client` a client's (spec/api.md §
+            // Calling a surface)
+            if u.text == "api::serve" || u.text == "api::Exposure" || u.text == "api::client" || u.text == "api::Client" {
                 continue;
             }
             if mine.is_some_and(|a| a.contains(u.head.as_str())) {

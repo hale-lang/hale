@@ -17,7 +17,9 @@ locus Kid {
     closure fuse { captures: tag; epoch inline; }
     run() {
         let until = std::time::monotonic_ns() + 5000000000;
-        while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(gate()) && std::time::monotonic_ns() < until {
+            std::time::sleep(1ms);
+        }
         violate fuse;
     }
 }

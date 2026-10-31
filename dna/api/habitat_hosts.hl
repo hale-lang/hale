@@ -1,0 +1,363 @@
+// dna/api/habitat_hosts.hl — the habitat's hosts, added, probed and removed
+// as the head's commands (phase 4).
+//
+// Three rows of `HeadCommands`, the Board's (`owner`): `Commands::add_host`
+// adds a machine on the LAN by the name it resolves under, as an `ssh` host
+// (the habitat's keypair made into its vault the first time; the host key
+// it answers with first kept as the only one trusted; what it offers probed
+// over SSH, or `pending-key` until the habitat's key is authorized there),
+// and answers the habitat's public key and the line the host's
+// `~/.ssh/authorized_keys` takes. `Commands::probe_host` probes it again: a
+// `pending-key` host whose key is now authorized moves on to `ready`, and a
+// host that answers with another host key is refused. `Commands::remove_host`
+// removes it. A host with allocations is removed only once its plan was
+// shown and confirmed: `Commands::plan_remove_host`, a read, answers what
+// the removal would stop and delete there, allocation by allocation (one
+// auditor, dna/core/teardown.hl), and `Commands::remove_host` executes that
+// plan item by item only when its `confirm` is the host's name typed back
+// and its `digest` the digest of the plan the person saw, refusing on a
+// mismatch or when the plan changed since (`plan_changed`); a removal that fails part way says which items
+// were done and leaves the rest. Each act is a `habitat.host <name>` row of
+// the habitat's record, written when what it says changed. `hale habitat
+// host add|probe|remove` is a client of these.
+import "../core" as dna;
+
+type HostAdd {
+    name: String = "";
+    user: String = "";
+    port: Int = 22;
+}
+
+type HostNamed { name: String = ""; }
+
+// A host's removal: its name, and the name typed back to confirm the plan
+// (needed when the plan stops or deletes anything on the host).
+type HostRemove {
+    name: String = "";
+    confirm: String = "";
+    // the digest of the plan the person saw (`HostPlan.digest`): the
+    // removal refuses (`plan_changed`) when the plan is another now
+    digest: String = "";
+}
+
+// What removing a host would do: the plan (a JSON array of items, each
+// `group`, `subject`, `what`, `measure`, `recoverable`, `action`, `host`,
+// `args`, `step`), and the name to type back to confirm it ("" when the
+// plan stops and deletes nothing there).
+type HostPlan {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    plan: String = "[]";
+    confirm: String = "";
+    // what the removal binds the plan by (dna::teardown_digest)
+    digest: String = "";
+}
+
+// A host's removal as executed: the host as its row now states it, the
+// plan, and the report (each item's `what`, `action`, `state`: `done`,
+// `failed` or `left`, and `why`).
+type HostRemoval {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    host: String = "{}";
+    plan: String = "[]";
+    report: String = "[]";
+}
+
+type HostReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // the host as its row now states it
+    host: String = "{}";
+    // what `add_host` answers: the habitat's public key, and the line the
+    // host's `~/.ssh/authorized_keys` takes
+    public_key: String = "";
+    authorize: String = "";
+}
+
+fn host_refused(code: String, why: String) -> HostReply {
+    return HostReply { code: code, why: why };
+}
+
+// Whether every byte of `s` is a letter, a digit or one of `extra`.
+@bounded_by(s)
+fn host_chars(s: String, extra: String) -> Bool {
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || std::str::contains(extra, c);
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Why `name` is no host name the LAN could resolve, "" when it is one.
+fn host_name_refusal(name: String) -> String {
+    if len(name) == 0 || len(name) > 253 { return "a host is named by 1 to 253 characters"; }
+    if std::str::starts_with(name, "-")
+        || std::str::starts_with(name, ".")
+        || !host_chars(name, ".-")
+    {
+        return "`" + name + "` is not a host name (letters, digits, `.` and `-`)";
+    }
+    if name == "local" { return "`local` is this machine, the compose provider's host"; }
+    return "";
+}
+
+// The `habitat.host` row for `h`, appended in the name of `by`: "" once
+// it is, else why not. What the habitat's senses read of its machines
+// follows the rows (`host_targets_write`).
+fn host_write(root: String, h: dna::Host, by: String) -> String {
+    let j = dna::RecordJournal { repo: root, author: by };
+    let moved = j.refresh();
+    let r = j.append(j.revision(), "habitat.host", h.name, dna::host_row_body(h));
+    if r.ok { host_targets_write(root); }
+    return if r.ok { "" } else { "the habitat's record refused the host's row (" + r.error + ")" };
+}
+
+// The node exporters' port on every machine (`hale habitat up` and `host
+// add` install one there, or find one), and the container exporters'.
+const NODE_EXPORTER_PORT: Int = 9100;
+const CADVISOR_PORT: Int = 9338;
+
+// What the habitat's senses' store scrapes of its machines: its own (the
+// store's container reaches it over the host gateway) and each host it
+// added and has not removed, each labelled `host`: their node exporters
+// (`senses.d/hosts.json`) and their container exporters
+// (`senses.d/containers/targets.json`). Each file is written whole beside
+// and renamed over the last (the store reads them as they change); a
+// habitat with no allocation of its own yet has nowhere to write them.
+fn host_targets_write(root: String) {
+    let dir = dna::allocation_dir(root);
+    if len(dir) == 0 || !std::io::fs::file_exists(dir + "/senses.d") { return; }
+    host_targets_file(root, dir + "/senses.d", "hosts.json", NODE_EXPORTER_PORT);
+    if !std::io::fs::file_exists(dir + "/senses.d/containers") {
+        std::io::fs::mkdir(dir + "/senses.d/containers") or discard;
+    }
+    host_targets_file(root, dir + "/senses.d/containers", "targets.json", CADVISOR_PORT);
+    // and the services placed on them (habitat_placed.hl)
+    placement_targets_refresh(root);
+}
+
+// The machines at `port`, as one file_sd file `name` in `at`.
+fn host_targets_file(root: String, at: String, name: String, port: Int) {
+    let b = std::json::Builder { };
+    b.begin_array();
+    b.begin_object();
+    b.begin_array_field("targets");
+    b.string_value("host.docker.internal:" + to_string(port));
+    b.end_array();
+    b.begin_object_field("labels");
+    b.string_field("host", dna::host_label("local"));
+    b.end_object();
+    b.end_object();
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.host");
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let h = dna::host_of_row(e.body);
+        if h.state == "removed" || h.provider != "ssh" || len(h.address) == 0 { continue; }
+        b.begin_object();
+        b.begin_array_field("targets");
+        b.string_value(h.address + ":" + to_string(port));
+        b.end_array();
+        b.begin_object_field("labels");
+        b.string_field("host", h.name);
+        b.end_object();
+        b.end_object();
+    }
+    b.end_array();
+    let tmp = at + "/." + name + ".tmp";
+    let mut wrote = true;
+    std::io::fs::write_file(tmp, b.result() + "\n") or { wrote = false; };
+    if wrote { std::io::fs::rename(tmp, at + "/" + name) or discard; }
+}
+
+// The allocations placed on the host `name`, space-separated
+// (`<instance>/<role>`): each `habitat.allocated` entity whose latest row
+// names it.
+@bounded_by(root)
+fn host_allocations(root: String, name: String) -> String {
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.allocated");
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if std::json::find_string_field(e.body, "host") == name {
+            out = out + (if len(out) > 0 { " " } else { "" }) + e.entity;
+        }
+    }
+    return out;
+}
+
+fn host_reply(h: dna::Host, code: String, why: String) -> HostReply {
+    return HostReply { ok: len(code) == 0, code: code, why: why, host: dna::host_row_body(h) };
+}
+
+fn habitat_host_add(root: String, a: HostAdd, by: String) -> HostReply {
+    let refused = host_name_refusal(a.name);
+    if len(refused) > 0 { return host_refused("invalid_host", refused); }
+    let user = if len(a.user) > 0 { a.user } else { std::env::var("USER") };
+    if len(user) == 0
+        || len(user) > 32
+        || std::str::starts_with(user, "-")
+        || !host_chars(user, "._-")
+    {
+        return host_refused("invalid_host", "`" + user + "` is not a user name");
+    }
+    if a.port < 1 || a.port > 65535 {
+        return host_refused("invalid_host", "the port is 1 to 65535");
+    }
+    let had = dna::recorded_host(root, a.name);
+    if len(had.provider) > 0 && had.state != "removed" {
+        return host_refused(
+            "host_exists",
+            "`" + a.name + "` is a host already (" + had.state + "): `hale habitat host probe "
+                + a.name + "` checks it again",
+        );
+    }
+    let keyed = dna::habitat_key_ensure(root);
+    if len(keyed) > 0 { return host_refused("key_unavailable", keyed); }
+    // trust on first use: the host key it answers with now is the only one
+    // trusted after this
+    let host_key = dna::ssh_host_key(a.name, a.port);
+    if len(host_key) == 0 {
+        return host_refused(
+            "unreachable",
+            "no SSH server answered at " + a.name + ":" + to_string(a.port),
+        );
+    }
+    let fresh = dna::Host {
+        name: a.name,
+        provider: "ssh",
+        state: "pending-key",
+        address: a.name,
+        port: a.port,
+        user: user,
+        host_key: host_key,
+        fingerprint: dna::ssh_fingerprint(host_key),
+    };
+    let probed = dna::ssh_probe(root, fresh);
+    let h = if probed.state == "ready" || probed.state == "pending-key" { probed } else { fresh };
+    let wrote = host_write(root, h, by);
+    if len(wrote) > 0 { return host_refused("record_refused", wrote); }
+    let public = dna::habitat_public_key(root);
+    let mut r = host_reply(h, "", if h.state == "ready" { "" } else { probed.why });
+    r.public_key = public;
+    r.authorize = public;
+    return r;
+}
+
+fn habitat_host_probe(root: String, name: String, by: String) -> HostReply {
+    let h = dna::recorded_host(root, name);
+    if h.provider != "ssh" || h.state == "removed" {
+        return host_refused("not_found", "no ssh host `" + name + "` was added");
+    }
+    let probed = dna::ssh_probe(root, h);
+    if std::str::starts_with(probed.why, "host-key-changed") {
+        return host_refused("host_key_changed", probed.why);
+    }
+    if std::str::starts_with(probed.why, "unreachable") {
+        return host_reply(h, "unreachable", probed.why);
+    }
+    if dna::host_row_body(probed) != dna::host_row_body(h) {
+        let wrote = host_write(root, probed, by);
+        if len(wrote) > 0 { return host_refused("record_refused", wrote); }
+    }
+    return host_reply(probed, "", probed.why);
+}
+
+// Why `name` is no host the habitat can remove, "" when it is one.
+fn host_removal_refusal(root: String, name: String) -> HostPlan {
+    if name == "local" {
+        return HostPlan {
+            code: "not_removable",
+            why: "`local` is this machine, the compose provider's host",
+        };
+    }
+    let h = dna::recorded_host(root, name);
+    if len(h.provider) == 0 || h.state == "removed" {
+        return HostPlan { code: "not_found", why: "no host `" + name + "` was added" };
+    }
+    return HostPlan { ok: true };
+}
+
+// The plan of the host's removal, as the auditor computes it: what stops
+// and is deleted there, allocation by allocation, the record's rows about
+// it, and the authorized key line it cannot remove. A read: nothing is
+// touched.
+fn habitat_host_plan_remove(root: String, name: String) -> HostPlan {
+    let refused = host_removal_refusal(root, name);
+    if !refused.ok { return refused; }
+    let plan = "[" + dna::host_teardown_items(root, name, true, "") + "]";
+    return HostPlan {
+        ok: true,
+        plan: plan,
+        confirm: if dna::teardown_destroys(plan) { name } else { "" },
+        digest: dna::teardown_digest(plan),
+    };
+}
+
+fn habitat_host_remove(root: String, r: HostRemove, by: String) -> HostRemoval {
+    let refused = host_removal_refusal(root, r.name);
+    if !refused.ok { return HostRemoval { code: refused.code, why: refused.why }; }
+    let plan = "[" + dna::host_teardown_items(root, r.name, true, "") + "]";
+    let destroys = dna::teardown_destroys(plan);
+    // the plan executed is the plan the person saw, or nothing is
+    if (destroys || len(r.digest) > 0) && r.confirm == r.name
+        && r.digest != dna::teardown_digest(plan)
+    {
+        return HostRemoval {
+            code: "plan_changed",
+            why: "what removing " + r.name
+                + " would do changed since its plan was made; nothing was removed: plan it again (`Commands::plan_remove_host`)",
+            plan: plan,
+        };
+    }
+    if destroys && r.confirm != r.name {
+        let placed = host_allocations(root, r.name);
+        return HostRemoval {
+            code: if len(r.confirm) == 0 { "confirm_required" } else { "confirm_mismatch" },
+            why: (if len(placed) > 0 {
+                "allocations are placed on " + r.name + ": " + placed + "; "
+            } else {
+                "the habitat runs things on " + r.name + "; "
+            })
+                + (if len(r.confirm) == 0 {
+                    "removing it stops and deletes them there: its plan is `Commands::plan_remove_host`, and it is confirmed by typing the host's name"
+                } else {
+                    "`" + r.confirm + "` is not the host's name, and nothing was removed"
+                }),
+            plan: plan,
+        };
+    }
+    let report = dna::teardown_run(root, plan, by);
+    host_targets_write(root);
+    let after = dna::recorded_host(root, r.name);
+    if !dna::teardown_all_done(report) {
+        return HostRemoval {
+            code: "partly_removed",
+            why: "the removal stopped at an item that failed; the items after it were left, and removing the host again plans from what remains",
+            host: dna::host_row_body(after),
+            plan: plan,
+            report: report,
+        };
+    }
+    return HostRemoval {
+        ok: true,
+        host: dna::host_row_body(after),
+        plan: plan,
+        report: report,
+    };
+}

@@ -62,7 +62,8 @@ locus Budget {
     }
     fn exhausted(now: Int) -> Bool {
         let live = self.roll(now);
-        return self.policy.allowance_micros > 0 && self.spent_micros >= self.policy.allowance_micros;
+        return self.policy.allowance_micros > 0
+            && self.spent_micros >= self.policy.allowance_micros;
     }
     fn remaining_micros(now: Int) -> Int {
         let live = self.roll(now);
@@ -78,11 +79,18 @@ locus Budget {
     // admitted against one remainder may together pass it, by at most
     // what they were allowed.
     fn admit(ceiling_micros: Int, now: Int) -> SpendAdmission {
-        if self.exhausted(now) { return SpendAdmission { why: "budget exhausted (" + self.describe(now) + ")" }; }
+        if self.exhausted(now) {
+            return SpendAdmission { why: "budget exhausted (" + self.describe(now) + ")" };
+        }
         let ceiling = if ceiling_micros > 0 { ceiling_micros } else { -1 };
-        if self.policy.allowance_micros == 0 { return SpendAdmission { ok: true, allowance_micros: ceiling }; }
+        if self.policy.allowance_micros == 0 {
+            return SpendAdmission { ok: true, allowance_micros: ceiling };
+        }
         let left = self.remaining_micros(now);
-        return SpendAdmission { ok: true, allowance_micros: if ceiling >= 0 && ceiling < left { ceiling } else { left } };
+        return SpendAdmission {
+            ok: true,
+            allowance_micros: if ceiling >= 0 && ceiling < left { ceiling } else { left },
+        };
     }
     // True once per window: the caller journals `budget.exhausted`.
     fn announce() -> Bool {
@@ -93,9 +101,18 @@ locus Budget {
     }
     fn describe(now: Int) -> String {
         let live = self.roll(now);
-        let scope = if self.policy.window == "none" { "for the record" } else { "this " + self.policy.window };
-        if self.policy.allowance_micros == 0 { return "spent " + to_string(self.spent_micros) + " micro-dollars " + scope + " (unmetered)"; }
-        return "spent " + to_string(self.spent_micros) + " of " + to_string(self.policy.allowance_micros) + " micro-dollars " + scope + " in " + to_string(self.calls) + " call(s)";
+        let scope = if self.policy.window == "none" {
+            "for the record"
+        } else {
+            "this " + self.policy.window
+        };
+        if self.policy.allowance_micros == 0 {
+            return "spent " + to_string(self.spent_micros) + " micro-dollars " + scope
+                + " (unmetered)";
+        }
+        return "spent " + to_string(self.spent_micros) + " of "
+            + to_string(self.policy.allowance_micros) + " micro-dollars " + scope + " in "
+            + to_string(self.calls) + " call(s)";
     }
     // The counters from the record: every `model.called` row's cost at
     // its time, and whether this window's exhaustion was announced.
@@ -107,9 +124,14 @@ locus Budget {
         while i < n {
             let e = j.read(i);
             if e.kind == "model.called" {
-                self.account(std::json::find_int_field(e.body, "cost_micros"), std::json::find_int_field(e.body, "at"));
+                self.account(
+                    std::json::find_int_field(e.body, "cost_micros"),
+                    std::json::find_int_field(e.body, "at"),
+                );
             }
-            if e.kind == "budget.exhausted" && self.window_of(std::json::find_int_field(e.body, "at")) == self.window_start {
+            if e.kind == "budget.exhausted"
+                && self.window_of(std::json::find_int_field(e.body, "at")) == self.window_start
+            {
                 self.announced = true;
             }
             i = i + 1;

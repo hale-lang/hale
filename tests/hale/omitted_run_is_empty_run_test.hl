@@ -23,9 +23,21 @@ locus OwnerExplicit {
 main locus App {
     params { a: OwnerImplicit = OwnerImplicit { }; b: OwnerExplicit = OwnerExplicit { }; }
     run() {
-        std::test::assert_eq_int(self.b.seen_at_run, 1, "the child with a written empty run was released before its owner's run went on");
-        std::test::assert_eq_int(self.a.seen_at_run, 1, "and so was the child with no run at all: the same program");
-        std::test::assert_eq_int(self.a.released, self.b.released, "each owner released exactly once");
+        std::test::assert_eq_int(
+            self.b.seen_at_run,
+            1,
+            "the child with a written empty run was released before its owner's run went on",
+        );
+        std::test::assert_eq_int(
+            self.a.seen_at_run,
+            1,
+            "and so was the child with no run at all: the same program",
+        );
+        std::test::assert_eq_int(
+            self.a.released,
+            self.b.released,
+            "each owner released exactly once",
+        );
         std::test::assert_eq_int(self.a.released, 1, "once");
     }
 }

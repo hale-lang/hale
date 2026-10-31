@@ -69,7 +69,7 @@ fn witness_source() -> String {
     swap("bind: \"127.0.0.1:9000\"", "bind: std::env::var(\"HUB\")");
     swap("operator: \"uid:1000\"", "operator: std::env::var(\"OPERATOR\")");
     swap(
-        "        std::api::run_until_stopped(public);\n",
+        "        std::api::run_until_stopped(self.public);\n",
         "        while !written(std::env::var(\"TRIGGER\")) { std::time::sleep(10ms); }\n",
     );
     swap("fn main() { Desk { }; }", "fn written(path: String) -> Bool {\n    return (std::io::fs::read_file(path) or \"\") != \"\";\n}\n\nfn main() { Desk { }; }");
@@ -739,4 +739,257 @@ fn the_short_forms_are_the_api_verbs_with_two_conveniences() {
     assert_eq!(o.code, 4, "{}", o.stderr);
     let o = same(&["describe", "grpc://127.0.0.1:1"], &["api", "describe", "grpc://127.0.0.1:1"]);
     assert_eq!(o.code, 5, "{}", o.stderr);
+}
+
+/// spec/api.md § The contract digest, additive compatibility: a member's
+/// digest is its row's alone, so adding a member to a surface moves the
+/// surface's digest and leaves the old member's; a generated client names
+/// its member's digest on each call; and the exposure admits a request
+/// naming the member's digest or the surface's, and refuses the old
+/// surface's (`digest_mismatch`), which no longer describes what it serves.
+#[test]
+fn a_client_of_a_member_is_admitted_after_the_surface_gains_one() {
+    let dir = unique_dir("additive");
+    let source = |extra: bool| {
+        format!(
+            r#"type Ask {{ id: Int; }}
+api Shop {{ rpc Orders::get;{} }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: token }}; }}
+    fn refused() -> String {{ return "no such token"; }}
+}}
+locus Orders {{
+    fn get(a: Ask) -> Int {{ return a.id; }}
+    fn count(a: Ask) -> Int {{ return 1; }}
+}}
+main locus App {{
+    params {{
+        bearer: Tokens = Tokens {{ }};
+        orders: Orders = Orders {{ }};
+        web: api::Exposure = api::serve(Shop, http::Rpc {{ bind: std::env::var("BIND"), codec: json, principals: self.bearer }}, as: "web", receivers: {{ Orders: self.orders }}, bound: 8, on_full: refuse);
+    }}
+    run() {{
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {{ std::time::sleep(10ms); }}
+        self.web.stop();
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            if extra { " rpc Orders::count;" } else { "" }
+        )
+    };
+    let (v1, v2) = (dir.join("v1.hl"), dir.join("v2.hl"));
+    std::fs::write(&v1, source(false)).unwrap();
+    std::fs::write(&v2, source(true)).unwrap();
+    let inventory = |file: &Path| {
+        let out = hale().args(["check", "--api"]).arg(file).output().expect("hale check");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let inv = json_of(&String::from_utf8_lossy(&out.stdout));
+        let s = inv["surfaces"][0].clone();
+        let get = s["members"].as_array().unwrap().iter().find(|m| m["name"] == "Orders::get").unwrap()["digest"].as_str().unwrap().to_string();
+        (s["digest"].as_str().unwrap().to_string(), get)
+    };
+    let (old_surface, old_get) = inventory(&v1);
+    let (new_surface, new_get) = inventory(&v2);
+    assert_ne!(old_surface, new_surface, "a member added moves the surface's digest");
+    assert_eq!(old_get, new_get, "and leaves the other member's");
+
+    // the old surface's client names its member's digest on the call
+    let client = hale().args(["api", "client", "--surface", "Shop", "--lang", "ts"]).arg(&v1).output().expect("hale api client");
+    assert!(client.status.success(), "{}", String::from_utf8_lossy(&client.stderr));
+    let ts = String::from_utf8_lossy(&client.stdout);
+    assert!(ts.contains(&format!("apiCall(opts, \"Orders::get\", \"{old_get}\"")), "{ts}");
+
+    let bin = dir.join("shop");
+    let out = hale().arg("build").arg(&v2).arg("-o").arg(&bin).output().expect("hale build");
+    assert!(out.status.success(), "build: {}", String::from_utf8_lossy(&out.stderr));
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Running(
+        Command::new(&bin)
+            .env("BIND", format!("{BIND_HOST}:0"))
+            .env("TRIGGER", dir.join("stop"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("run the program"),
+    );
+    let port = child::tcp_port_on(&mut child.0, BIND_HOST);
+    let endpoint = format!("http://{BIND_HOST}:{port}");
+    let call = |digest: &str| run(&["api", "call", &endpoint, "Orders::get", "--bearer", "x", "--json", "{\"id\":7}", "--digest", digest]);
+    let member = call(&old_get);
+    assert_eq!((member.code, member.stdout.trim()), (0, "7"), "the member's digest is admitted: {}", member.stderr);
+    let current = call(&new_surface);
+    assert_eq!(current.code, 0, "the surface's digest is admitted: {}", current.stderr);
+    let stale = call(&old_surface);
+    assert_eq!(stale.code, 2, "the old surface's digest is refused: {} {}", stale.stdout, stale.stderr);
+    assert!(stale.stderr.contains("digest_mismatch"), "{}", stale.stderr);
+    let served = run(&["api", "describe", &endpoint, "--json", "--bearer", "x"]);
+    let doc = json_of(&served.stdout);
+    let listed = doc["members"].as_array().unwrap().iter().find(|m| m["name"] == "Orders::get").unwrap()["digest"].clone();
+    assert_eq!(listed, serde_json::json!(old_get), "the served description lists the member's digest");
+
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// spec/api.md § Error classes: the description a served program answers
+/// carries its error type's classes as the compiler's does (its members and
+/// schemas are the compiler's, byte for byte as JSON), and `hale api call`
+/// reads a classed handler error by its `Hale-Error-Class`, whatever its body:
+/// a variant named `refusal` answered 409 is the handler's error, and a
+/// digest mismatch's 409 is a refusal.
+#[test]
+fn a_classed_error_is_served_described_and_called() {
+    let dir = unique_dir("classes");
+    let file = dir.join("main.hl");
+    std::fs::write(
+        &file,
+        r#"type OrderError = enum { @not_found Missing, @conflict refusal(String), Closed };
+type Ask { id: Int; }
+api Shop { rpc Orders::get; }
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: token }; }
+    fn refused() -> String { return "no such token"; }
+}
+locus Orders {
+    fn get(a: Ask) -> Int fallible(OrderError) {
+        if a.id == 1 { fail OrderError::Missing; }
+        if a.id == 2 { fail OrderError::refusal("x"); }
+        if a.id == 3 { fail OrderError::Closed; }
+        return a.id;
+    }
+}
+main locus App {
+    params {
+        bearer: Tokens = Tokens { };
+        orders: Orders = Orders { };
+        web: api::Exposure = api::serve(Shop, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer }, as: "web", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
+    }
+    run() {
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" { std::time::sleep(10ms); }
+        self.web.stop();
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let bin = dir.join("shop");
+    let out = hale().arg("build").arg(&file).arg("-o").arg(&bin).output().expect("hale build");
+    assert!(out.status.success(), "build: {}", String::from_utf8_lossy(&out.stderr));
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Running(
+        Command::new(&bin)
+            .env("BIND", format!("{BIND_HOST}:0"))
+            .env("TRIGGER", dir.join("stop"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("run the program"),
+    );
+    let port = child::tcp_port_on(&mut child.0, BIND_HOST);
+    let endpoint = format!("http://{BIND_HOST}:{port}");
+
+    let served = run(&["api", "describe", &endpoint, "--json", "--bearer", "x"]);
+    assert_eq!(served.code, 0, "{}", served.stderr);
+    let served = json_of(&served.stdout);
+    let compiled = hale().args(["check", "--api", "--exposure", "web", "--caller", "x"]).arg(&file).output().expect("hale check");
+    assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
+    let compiled = json_of(&String::from_utf8_lossy(&compiled.stdout));
+    assert_eq!(served["members"], compiled["members"], "the served members are the compiler's");
+    assert_eq!(served["schemas"], compiled["schemas"], "the served schemas are the compiler's");
+    assert_eq!(served["members"][0]["error"]["x-hale-error-classes"], serde_json::json!({"Missing": "not_found", "refusal": "conflict"}));
+
+    let call = |id: i64, extra: &[&str]| {
+        let mut args = vec!["api", "call", &endpoint, "Orders::get", "--bearer", "x", "--json"];
+        let payload = format!("{{\"id\":{id}}}");
+        args.push(&payload);
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let missing = call(1, &[]);
+    assert_eq!(missing.code, 1, "a handler error: {} {}", missing.stdout, missing.stderr);
+    assert!(missing.stderr.contains("handler error (not_found)"), "{}", missing.stderr);
+    let named = call(2, &[]);
+    assert_eq!(named.code, 1, "a variant named refusal is the handler's error: {} {}", named.stdout, named.stderr);
+    assert!(named.stderr.contains("handler error (conflict)"), "{}", named.stderr);
+    let closed = call(3, &[]);
+    assert_eq!(closed.code, 1, "{} {}", closed.stdout, closed.stderr);
+    assert_eq!(closed.stderr.trim(), "\"Closed\"", "an unclassed one names none");
+    let mismatch = call(1, &["--digest", "fnv1a64:0000000000000000"]);
+    assert_eq!(mismatch.code, 2, "a digest mismatch is a refusal: {} {}", mismatch.stdout, mismatch.stderr);
+
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A route of an `http::Rest` listener is called by its method and path
+/// (spec/api.md § The REST transport): no description is read, the flags are
+/// the query, `--json` is the body, a 2xx is the result and the refusal of a
+/// path no route serves exits 2.
+#[test]
+fn a_route_is_called_by_its_method_and_path() {
+    use std::io::BufRead;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stand-in");
+    let port = l.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut c) = conn else { return };
+            let mut r = std::io::BufReader::new(c.try_clone().expect("clone"));
+            let mut head = String::new();
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0u8; len];
+            let _ = r.read_exact(&mut body);
+            let request_line = head.lines().next().unwrap_or("").to_string();
+            log.lock().unwrap().push(format!("{request_line} | {}", String::from_utf8_lossy(&body)));
+            let (status, reply) = if request_line.contains("/missing") {
+                ("404 Not Found", "{\"refusal\":{\"kind\":\"not_found\",\"reason\":\"no route\"}}")
+            } else if request_line.starts_with("POST") {
+                ("201 Created", "{\"id\":7}")
+            } else {
+                ("200 OK", "{\"fine\":true}")
+            };
+            let _ = write!(c, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        }
+    });
+    let ep = format!("http://127.0.0.1:{port}");
+    let get = run(&["api", "call", &ep, "GET /v1/items/5", "--limit", "3", "--exact", "--bearer", "t"]);
+    assert_eq!((get.code, get.stdout.trim()), (0, "{\"fine\":true}"), "{}", get.stderr);
+    let post = run(&["api", "call", &ep, "POST /v1/items", "--json", "{\"name\":\"x\"}"]);
+    assert_eq!((post.code, post.stdout.trim()), (0, "{\"id\":7}"), "a 201 is the result: {}", post.stderr);
+    let missing = run(&["api", "call", &ep, "GET /missing"]);
+    assert_eq!(missing.code, 2, "{}", missing.stderr);
+    assert!(missing.stderr.contains("not_found"), "{}", missing.stderr);
+    let body_on_get = run(&["api", "call", &ep, "GET /v1/items/5", "--json", "{}"]);
+    assert_eq!(body_on_get.code, 5, "{}", body_on_get.stderr);
+    let lines = seen.lock().unwrap().clone();
+    assert_eq!(lines[0], "GET /v1/items/5?limit=3&exact=true HTTP/1.1 | ", "{lines:?}");
+    assert_eq!(lines[1], "POST /v1/items HTTP/1.1 | {\"name\":\"x\"}", "{lines:?}");
+    assert_eq!(lines.len(), 3, "the GET with a body sent nothing: {lines:?}");
 }

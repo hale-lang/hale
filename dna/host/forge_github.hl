@@ -6,6 +6,9 @@
 // when `dna.github` names a repository, else `none`; `file` for
 // fixtures) and `forge_sync` in writers.hl is written against the
 // interface: the rows it appends do not know which forge answered.
+// (Phase 4: the forge is the organism's allocation, `forge_allocated`, its
+// token a vault slot the allocation names; HALE_DNA_FORGE stays the
+// fixtures' override.)
 
 import "../core" as dna;
 
@@ -22,38 +25,57 @@ import "../core" as dna;
 // `GH_TOKEN="$(cat …)"`, so the token lives only in `gh`'s own environment.
 // The script unlinks the file as soon as it has read it, and the directory
 // goes after the call.
-fn gh(args: String) -> dna::RunResult {
-    let token = std::secret::Credential { vault: "forge-token" };
+fn gh(slot: String, args: String) -> dna::RunResult {
+    let token = std::secret::Credential { vault: if len(slot) > 0 { slot } else { "forge-token" } };
     if !token.ready() {
-        return dna::RunResult { code: 1, stderr: "no forge token: the vault holds none (`hale dna secret set FORGE_TOKEN`); gh's own login is never used in its place" };
+        return dna::RunResult {
+            code: 1,
+            stderr: "no forge token: the vault holds none in the slot the forge's allocation names (`hale dna secret set FORGE_TOKEN` fills `forge-token`); gh's own login is never used in its place",
+        };
     }
     // a token is provisioned: it is the identity, or nothing runs —
     // never `gh`'s ambient login in its place
     let made = dna::run_tool("mktemp\n-d\n-t\nhale-gh-XXXXXX");
     let dir = dna::trim_nl(made.stdout);
     if made.code != 0 || len(dir) == 0 {
-        return dna::RunResult { code: 1, stderr: "the forge token is provisioned but no private directory could be made for it (mktemp -d: " + dna::trim_nl(made.stderr) + ")" };
+        return dna::RunResult {
+            code: 1,
+            stderr: "the forge token is provisioned but no private directory could be made for it (mktemp -d: "
+                + dna::trim_nl(made.stderr) + ")",
+        };
     }
     if !token.write_private(dir + "/token") {
         dna::run_tool("rm\n-rf\n" + dir);
-        return dna::RunResult { code: 1, stderr: "the forge token is provisioned but could not be written for gh: " + dir + " must be this user's own, private (0700) and outside any git work tree" };
+        return dna::RunResult {
+            code: 1,
+            stderr: "the forge token is provisioned but could not be written for gh: " + dir
+                + " must be this user's own, private (0700) and outside any git work tree",
+        };
     }
-    let result = dna::run_tool("sh\n-c\nGH_TOKEN=\"$(cat \"$1\")\"; rm -f \"$1\"; export GH_TOKEN; shift; exec gh \"$@\"\nsh\n" + dir + "/token\n" + args);
+    let result = dna::run_tool(
+        "sh\n-c\nGH_TOKEN=\"$(cat \"$1\")\"; rm -f \"$1\"; export GH_TOKEN; shift; exec gh \"$@\"\nsh\n"
+            + dir + "/token\n" + args,
+    );
     dna::run_tool("rm\n-rf\n" + dir);
     return result;
 }
 
 // GitHub: a pull request per review, its reviews as verdicts, a
-// comment at settlement. `repo` is `owner/repo` (`dna.github`), `base`
-// the branch a candidate is proposed against.
+// comment at settlement. `repo` is `owner/repo` (the forge allocation's),
+// `base` the branch a candidate is proposed against, `token_slot` the
+// vault slot of its token.
 locus GitHubForge {
-    params { repo: String = ""; base: String = "main"; }
+    params { repo: String = ""; base: String = "main"; token_slot: String = "forge-token"; }
     fn kind() -> String { return "github"; }
     fn present() -> Bool { return len(self.repo) > 0; }
     fn name() -> String { return "github " + self.repo; }
     // `candidate` is the branch the candidate was pushed to (`dna/<review>`).
     fn open_review(candidate: String, title: String, body: String) -> dna::ReviewRef {
-        let c = gh("pr\ncreate\n--repo\n" + self.repo + "\n--base\n" + self.base + "\n--head\n" + candidate + "\n--title\n" + title + "\n--body\n" + body);
+        let c = gh(
+            self.token_slot,
+            "pr\ncreate\n--repo\n" + self.repo + "\n--base\n" + self.base + "\n--head\n" + candidate
+                + "\n--title\n" + title + "\n--body\n" + body,
+        );
         if c.code != 0 { return dna::ReviewRef { why: "gh pr: " + dna::trim_nl(c.stderr) }; }
         return dna::ReviewRef { present: true, ref: dna::trim_nl(c.stdout) };
     }
@@ -63,7 +85,10 @@ locus GitHubForge {
     @bounded_by(doc)
     fn verdicts(review: String) -> String {
         let number = review_number(review);
-        let v = gh("pr\nview\n" + number + "\n--repo\n" + self.repo + "\n--json\nstate,headRefOid,reviews");
+        let v = gh(
+            self.token_slot,
+            "pr\nview\n" + number + "\n--repo\n" + self.repo + "\n--json\nstate,headRefOid,reviews",
+        );
         if v.code != 0 { return "error\t" + dna::trim_nl(v.stderr) + "\t\t\n"; }
         let doc = v.stdout;
         let head_oid = std::json::find_string_field(doc, "headRefOid");
@@ -71,12 +96,23 @@ locus GitHubForge {
         let mut it = std::json::array_first(std::json::find_field_raw(doc, "reviews"));
         while !it.done {
             let state = std::json::find_string_field(it.element, "state");
-            let outcome = if state == "APPROVED" { "approve" } else { if state == "CHANGES_REQUESTED" { "revise" } else { "" } };
+            let outcome = if state == "APPROVED" {
+                "approve"
+            } else {
+                if state == "CHANGES_REQUESTED" { "revise" } else { "" }
+            };
             if len(outcome) > 0 {
-                let login = std::json::find_string_field(std::json::find_field_raw(it.element, "author"), "login");
-                let oid_named = std::json::find_string_field(std::json::find_field_raw(it.element, "commit"), "oid");
+                let login = std::json::find_string_field(
+                    std::json::find_field_raw(it.element, "author"),
+                    "login",
+                );
+                let oid_named = std::json::find_string_field(
+                    std::json::find_field_raw(it.element, "commit"),
+                    "oid",
+                );
                 let oid = if len(oid_named) > 0 { oid_named } else { head_oid };
-                out = out + login + "\t" + outcome + "\t" + oid + "\t" + login + "@" + oid + "@" + state + "\n";
+                out = out + login + "\t" + outcome + "\t" + oid + "\t" + login + "@" + oid + "@"
+                    + state + "\n";
             }
             it = std::json::array_next(it);
         }
@@ -85,18 +121,112 @@ locus GitHubForge {
     // The check runs GitHub reports for the candidate commit — a gate is a
     // workflow's job, and its run is the job's check run.
     fn checks(review: String, sha: String) -> String {
-        let c = gh("api\n--paginate\nrepos/" + self.repo + "/commits/" + sha + "/check-runs?per_page=100\n--jq\n.check_runs[] | [.name, (.conclusion // \"\"), .head_sha, .html_url] | @tsv");
+        let c = gh(
+            self.token_slot,
+            "api\n--paginate\nrepos/" + self.repo + "/commits/" + sha
+                + "/check-runs?per_page=100\n--jq\n.check_runs[] | [.name, (.conclusion // \"\"), .head_sha, .html_url] | @tsv",
+        );
         if c.code != 0 { return "error\t" + dna::trim_nl(c.stderr) + "\t\t\n"; }
         return c.stdout;
     }
     fn comment(review: String, text: String) -> Bool {
-        let c = gh("pr\ncomment\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--body\n" + text);
+        let c = gh(
+            self.token_slot,
+            "pr\ncomment\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--body\n"
+                + text,
+        );
         return c.code == 0;
     }
     fn close_review(review: String, why: String) -> Bool {
-        let c = gh("pr\nclose\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--comment\n" + why);
+        let c = gh(
+            self.token_slot,
+            "pr\nclose\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--comment\n"
+                + why,
+        );
         return c.code == 0;
     }
+    // Phase 3: what became of a codebase's pull request.
+    fn review_state(review: String) -> String {
+        let v = gh(
+            self.token_slot,
+            "pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo
+                + "\n--json\nstate,mergeCommit",
+        );
+        if v.code != 0 { return "unknown"; }
+        let state = std::json::find_string_field(v.stdout, "state");
+        if state == "MERGED" {
+            return "merged\t"
+                + std::json::find_string_field(
+                    std::json::find_field_raw(v.stdout, "mergeCommit"),
+                    "oid",
+                );
+        }
+        if state == "CLOSED" { return "closed"; }
+        return if state == "OPEN" { "open" } else { "unknown" };
+    }
+    fn review_body(review: String) -> String {
+        let v = gh(
+            self.token_slot,
+            "pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--json\nbody",
+        );
+        return if v.code == 0 { std::json::find_string_field(v.stdout, "body") } else { "" };
+    }
+    // The pull request's comments and its reviews' words, one line each.
+    @bounded_by(doc)
+    fn review_comments(review: String) -> String {
+        let v = gh(
+            self.token_slot,
+            "pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo
+                + "\n--json\ncomments,reviews",
+        );
+        if v.code != 0 { return ""; }
+        let doc = v.stdout;
+        let mut out = "";
+        let mut it = std::json::array_first(std::json::find_field_raw(doc, "comments"));
+        while !it.done {
+            let text = std::json::find_string_field(it.element, "body");
+            if len(text) > 0 {
+                out = out
+                    + tab_line(
+                        std::json::find_string_field(
+                            std::json::find_field_raw(it.element, "author"),
+                            "login",
+                        ),
+                        std::json::find_string_field(it.element, "id"),
+                        text,
+                    );
+            }
+            it = std::json::array_next(it);
+        }
+        let mut rv = std::json::array_first(std::json::find_field_raw(doc, "reviews"));
+        while !rv.done {
+            let text = std::json::find_string_field(rv.element, "body");
+            if len(text) > 0 {
+                out = out
+                    + tab_line(
+                        std::json::find_string_field(
+                            std::json::find_field_raw(rv.element, "author"),
+                            "login",
+                        ),
+                        std::json::find_string_field(rv.element, "id"),
+                        text,
+                    );
+            }
+            rv = std::json::array_next(rv);
+        }
+        return out;
+    }
+}
+
+// A comment as the forge interface lists it: `who\tkey\ttext`, one line.
+fn tab_line(who: String, key: String, text: String) -> String {
+    return std::str::replace(who, "\t", " ") + "\t" + std::str::replace(key, "\t", " ") + "\t"
+        + std::str::replace(
+            std::str::replace(std::str::replace(text, "\r", ""), "\t", " "),
+            "\n",
+            "\\n",
+        )
+        + "\n";
 }
 
 // The number at the end of a pull request's url (or a bare number).
@@ -135,7 +265,10 @@ locus FileForge {
     fn open_review(candidate: String, title: String, body: String) -> dna::ReviewRef {
         std::io::fs::mkdir(self.dir) or discard;
         let n = to_string(self.next_number());
-        let w = write_text(self.dir + "/" + n + ".review", "title: " + title + "\ncandidate: " + candidate + "\n\n" + body) or false;
+        let w = write_text(
+            self.dir + "/" + n + ".review",
+            "title: " + title + "\ncandidate: " + candidate + "\n\n" + body,
+        ) or false;
         if !w { return dna::ReviewRef { why: "cannot write " + self.dir }; }
         return dna::ReviewRef { present: true, ref: self.dir + "/" + n };
     }
@@ -156,7 +289,8 @@ locus FileForge {
             let b = std::str::index_of(more, " ");
             let outcome = if b < 0 { more } else { more[0..b] };
             let when = if b < 0 { "" } else { more[(b + 1)..len(more)] };
-            out = out + who + "\t" + outcome + "\t" + when + "\t" + who + "@" + when + "@" + outcome + "\n";
+            out = out + who + "\t" + outcome + "\t" + when + "\t" + who + "@" + when + "@" + outcome
+                + "\n";
         }
         return out;
     }
@@ -170,7 +304,10 @@ locus FileForge {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if len(line) > 0 { out = out + std::str::replace(std::str::replace(line, " - ", "  "), " ", "\t") + "\n"; }
+            if len(line) > 0 {
+                out = out + std::str::replace(std::str::replace(line, " - ", "  "), " ", "\t")
+                    + "\n";
+            }
         }
         return out;
     }
@@ -181,21 +318,54 @@ locus FileForge {
     fn close_review(review: String, why: String) -> Bool {
         return write_text(review + ".closed", why + "\n") or false;
     }
+    // A fixture merges a review by writing the merge commit to `<n>.merged`.
+    fn review_state(review: String) -> String {
+        let merged = std::str::trim(std::io::fs::read_file(review + ".merged") or "");
+        if len(merged) > 0 { return "merged\t" + merged; }
+        if std::io::fs::file_exists(review + ".closed") { return "closed"; }
+        return if std::io::fs::file_exists(review + ".review") { "open" } else { "unknown" };
+    }
+    fn review_body(review: String) -> String {
+        let text = std::io::fs::read_file(review + ".review") or "";
+        let at = std::str::index_of(text, "\n\n");
+        return if at < 0 { "" } else { text[(at + 2)..len(text)] };
+    }
+    // A person's comments are the lines of `<n>.said`, `who text` each.
+    @bounded_by(text)
+    fn review_comments(review: String) -> String {
+        let text = std::io::fs::read_file(review + ".said") or "";
+        let mut out = "";
+        let mut rest = text;
+        let mut k = 0;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            k = k + 1;
+            let a = std::str::index_of(line, " ");
+            if a < 0 { continue; }
+            out = out + tab_line(line[0..a], "said:" + to_string(k), line[(a + 1)..len(line)]);
+        }
+        return out;
+    }
 }
 
-// The forge the host found: GitHub when `dna.github` names a repository
-// (or HALE_DNA_FORGE says so), the file forge for fixtures, none for a
-// bare remote. `github:` in `profile` says which.
+// The forge the organism is allocated (`hale habitat forge`, the head's
+// `Commands::allocate_forge`): the habitat's Forgejo, GitHub, the file forge
+// (or HALE_DNA_FORGE, the fixtures' override), or none. `profile` says which.
 fn forge_kind(root: String) -> String {
     let named = std::env::var("HALE_DNA_FORGE");
     if len(named) > 0 { return named; }
-    if len(rec(root).setting("github")) > 0 { return "github"; }
-    return "none";
+    return dna::forge_allocated(root).provider;
 }
 
 fn forge_name(root: String) -> String {
     let k = forge_kind(root);
-    if k == "github" { return "github " + rec(root).setting("github"); }
+    if k == "github" { return "github " + dna::forge_allocated(root).repo; }
+    if k == "forgejo" {
+        return "forgejo " + dna::forge_allocated(root).repo + " at "
+            + dna::forge_allocated(root).address;
+    }
     if k == "file" { return "file forge at .hale/dna/forge"; }
     return "none (a bare remote: no reviews are opened, no verdicts read from it)";
 }

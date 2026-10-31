@@ -11,7 +11,9 @@
 // read-before-dissolve new-born-1 new-ran-1 new-dissolved-1`. Before the
 // rule the old child was born and run again beside its own dissolve.
 
-fn gate(what: String) -> String { return "/tmp/hale-fd-restart-" + what + "-" + to_string(std::process::pid()); }
+fn gate(what: String) -> String {
+    return "/tmp/hale-fd-restart-" + what + "-" + to_string(std::process::pid());
+}
 
 locus Kid {
     params { tag: Int = 0; runs: Int = 0; name: String = ""; }
@@ -25,7 +27,9 @@ locus Kid {
         println("ev kid-run " + to_string(self.tag) + " " + to_string(self.runs));
         if self.tag == 0 && self.runs == 1 {
             let until = std::time::monotonic_ns() + 5000000000;
-            while !std::io::fs::file_exists(gate("start")) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+            while !std::io::fs::file_exists(gate("start")) && std::time::monotonic_ns() < until {
+                std::time::sleep(1ms);
+            }
             violate fuse;
         }
     }

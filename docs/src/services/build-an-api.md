@@ -1,25 +1,25 @@
 # Build an API
 
-This page builds one program from an empty file to a working API with
-roles: a surface served on a socket that `hale api call` drives, a handler
-that knows who called it, rows that name what only staff may do, an HTTP
-transport, a stream through a hub, and the tools that read the
-description on top. Each step adds one thing and then exercises it from
-outside the program. The concepts behind each piece are in
-[The API surface](./api.md); this page shows how they fit together.
+In Hale, you expose a service's methods as an external API by declaring an `api` surface and binding it to a transport with `api::serve`. The compiler generates request/response codecs, contract digests, and self-describing endpoints automatically, allowing CLI tools (`hale describe`, `hale call`, `hale watch`, `hale admin`, and `hale mcp`) to interact with your service without custom client code.
 
-The program is a small shop. It takes orders, ships what it has, and
-keeps a count of its stock. Every output below is what the commands
-printed, trimmed where marked `…`. The example's socket is
-`/tmp/shop.sock`, and the peer on it is uid 1000. (`hale describe` and
-`hale call` are the short forms of `hale api describe` and `hale api
-call`: a bare path is `unix:<path>`, and a bare JSON payload after the
-member is `--json`. Same output, same exit codes.)
+This tutorial builds a complete inventory and order service (`shop.hl`) step by step:
 
-## 1. The domain
+1. **Domain Logic**: Define message types, a bus topic, and a `Shop` locus.
+2. **Unix Socket Exposure**: Declare an `api` surface and serve it over `unix::Rpc`.
+3. **Read Operations**: Add a state query method with default request fields.
+4. **Caller Context**: Inspect the authenticated caller principal and transport via `std::api::Context`.
+5. **Role-Based Access Control**: Gate operations with `role` declarations and `std::api::StaticRoles`.
+6. **HTTP Exposure**: Serve the same surface over `http::Rpc` with bearer token authentication.
+7. **WebSocket Streaming**: Stream bus topics to external subscribers via `ws::Hub`.
+8. **Schema Export, MCP & Admin UI**: Generate OpenAPI/JSON Schema specs, expose MCP tools, and launch the local admin dashboard.
 
-Start with the shop itself: a payload type for each message, a topic for
-what it publishes, and a locus with the one handler that takes an order.
+For a complete reference on all API surface features, transports, and client generators, see [The API Surface](./api.md). For wire record design patterns, see [Designing API Messages](./api-messages.md).
+
+---
+
+## 1. Define the Domain Locus
+
+Start with a standalone service that processes orders, tracks inventory, and publishes shipment events to the internal bus:
 
 ```hale
 type OrderRequest { item: String; qty: Int; }
@@ -39,7 +39,9 @@ locus Shop {
         }
         self.stock.on_hand = self.stock.on_hand - req.qty;
         self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item);
+        println(
+            "order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item,
+        );
         Shipments <- Shipment { order_id: self.stock.orders, item: req.item, qty: req.qty };
         return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand };
     }
@@ -58,22 +60,14 @@ fn main() {
 }
 ```
 
-Two shapes here become the API later:
+Two parts of `Shop` will form our external API:
 
-- `on_order` **returns** an `OrderResponse`. Once the handler is a row of a
-  surface, a caller sending an `OrderRequest` gets that value back as the
-  response. An order the shop cannot fill still gets an answer,
-  `order_id: 0`. A refusal that belongs to your domain is a value you
-  return (or an error type you declare: [the chapter](./api.md#surfaces)).
-- `Shipments` is **published**. Once it is bound to a hub, a caller can
-  subscribe to it and see every shipment, so it is a stream.
+- **`Shop::on_order`** takes an `OrderRequest` and returns an `OrderResponse`. When added to an `api` surface, this method becomes a callable RPC endpoint. Domain-level rejections (such as insufficient stock returning `order_id: 0`, or a declared `fallible(E)` error type) are returned as structured responses.
+- **`Shipments`** is a published bus topic. When bound to a streaming hub in Step 7, external clients can subscribe to live `Shipment` events.
 
-`App` places the shop on a pool of its own (`work`, an `async_io` pool)
-and keeps the process up with its `run()` loop until it is told to stop.
-An `async_io` pool does not keep the process open by itself.
+Note that `App` places `shop` on an `async_io` worker pool (`work`) and runs a sleep loop on the main thread until the process drains, because an `async_io` pool does not keep the process alive by itself.
 
-The checker accepts the program. It also says that nothing can reach the
-published topic yet:
+Run `hale check` to verify the program:
 
 ```sh
 hale check shop.hl
@@ -86,12 +80,13 @@ hale check shop.hl
 ok: 1 file(s) typechecked
 ```
 
-The next step offers the handler.
+---
 
-## 2. A surface, served
+## 2. Declare and Serve a Surface over a Unix Socket
 
-A **surface** is a table of operations: one `rpc` row per handler. A
-**serve site** puts it on a transport. Add both:
+An **API surface** (`api <Name> { ... }`) is a table of `rpc` rows naming locus methods. An **exposure** (`api::Exposure`) binds a surface to a network or socket transport inside a locus's `params` block.
+
+Add the `Counter` surface and serve it on `/tmp/shop.sock` using `unix::Rpc`:
 
 ```hale,fragment
 api Counter {
@@ -99,29 +94,28 @@ api Counter {
 }
 
 main locus App {
-    params { shop: Shop = Shop { }; }
+    params {
+        shop: Shop = Shop { };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock" }, as: "counter", bound: 64, on_full: refuse);
+    }
     placement { shop: cooperative(pool = work) where async_io; }
     run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock" }, as: "counter", bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        sock.stop();
+        self.sock.stop();
     }
 }
 ```
 
-Nothing else in the source changes: the handler is an operation because
-a row says so, not because of what it subscribes. `unix::Rpc` is a Unix
-stream socket; `as:` names this exposure of the surface; `bound: 64` is
-the most requests it will hold accepted and not yet answered, and
-`on_full: refuse` the one policy for the next (a caller waiting for an
-answer cannot be shed silently). The socket is bound when the program
-boots, so a path it cannot bind stops the program with a diagnostic.
-`sock.stop()` answers what is executing, refuses what is queued, and
-closes the socket after the replies; a program that ends without it
-releases the socket too.
+Key parameters of `api::serve`:
 
-Without running anything, `hale check --api` prints what the program
-offers, from the rows:
+- **`unix::Rpc { path: "/tmp/shop.sock" }`**: Binds a Unix domain stream socket at startup. If the socket path cannot be bound, the process exits with a diagnostic.
+- **`as: "counter"`**: Assigns an exposure name within the application.
+- **`bound: 64, on_full: refuse`**: Caps in-flight (accepted but unanswered) requests at 64 and refuses additional requests when full.
+- **`self.sock.stop()`**: Completes in-flight requests, refuses queued requests as `shutting_down`, and closes the listener socket cleanly.
+
+### Inspecting the Static API Inventory
+
+Before running the program, pass `--api` to `hale check` to inspect the compiled API inventory and contract digest:
 
 ```sh
 hale check --api shop.hl
@@ -149,12 +143,11 @@ hale check --api shop.hl
 }
 ```
 
-The **digest** is the surface's contract: it moves when a member, a
-shape or a role changes, and for nothing else. A client that names it
-is refused, not run, if the program moved under it.
+The **contract digest** (`fnv1a64:3c6a301bd526600d`) hashes the surface's members, request/response/error type shapes, and role requirements. If a surface changes incompatibly, clients presenting an outdated digest are rejected with `digest_mismatch` before any handler runs.
 
-Run the program, and a client needs no code: it reads the exposure's
-description and calls what the description lists.
+### Calling the Service from the CLI
+
+Start the program in the background and query its self-description using `hale describe` (short for `hale api describe`):
 
 ```sh
 hale run shop.hl &
@@ -167,28 +160,25 @@ caller: unix uid:1000; roles: none
   Shop::on_order(item: String, qty: Int) -> OrderResponse  requires: -
 ```
 
-That is the description for the caller the socket established (the
-peer's kernel credentials, `uid:1000`): the exposure's identity, where it
-listens, who the caller is and what it holds, and a row per member it may
-call with its payload fields and result. `hale describe --json` prints the
-document as the program wrote it: the same, with the schemas, how an
-outcome is encoded, and two notes that say what a role check is and is
-not. `hale call` sends one member. Its payload is one flag per field,
-typed by the schema the description gave:
+Over a Unix socket, the exposure authenticates the caller using kernel peer credentials (`uid:1000`). Pass `--json` to `hale describe` to view the full JSON description document, including JSON Schemas and outcome encodings.
+
+Use `hale call` (short for `hale api call`) to invoke `Shop::on_order`. You can pass fields as typed CLI flags or as a raw JSON object:
 
 ```sh
 hale call /tmp/shop.sock Shop::on_order --item lamp --qty 2
+# Equivalent JSON form:
+# hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'
 ```
 
 ```text
 {"order_id":1,"on_hand":8}
 ```
 
-(`hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": 2}'`
-sends the same payload as JSON.) and the program's own output shows the handler ran:
-`order 1: 2 lamp`. The payload is decoded before the handler sees it,
-strictly: a string where an `Int` is declared is refused at the edge, and
-the handler never runs.
+The service logs `order 1: 2 lamp` to stdout and returns the encoded `OrderResponse`.
+
+### Strict Decoding and Exit Codes
+
+Payloads are strictly validated before reaching the handler. Sending a string for an `Int` field in raw JSON triggers a `malformed` refusal at the transport boundary:
 
 ```sh
 hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": "two"}'
@@ -198,17 +188,22 @@ hale call /tmp/shop.sock Shop::on_order '{"item": "lamp", "qty": "two"}'
 {"request_id":5,"id":"hale-502593","ok":false,"refusal":{"kind":"malformed","reason":"wrong_type: qty"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":502593}}
 ```
 
-(The outcome is on stderr and the exit code is 2, a refusal; a handler
-error is 1, a server error 3, a connection that broke 4, a call refused
-before it was sent 5. A script can branch on them. The typed form,
-`--qty two`, never reaches the server: it is refused at the client with
-the field's schema.) An order the shop cannot fill is not a refusal: it
-is the value `on_order` returned, `{"order_id":0,"on_hand":8}`.
+`hale call` prints non-success outcomes to stderr and returns a distinct exit code for scripting:
 
-## 3. A read
+| Exit Code | Outcome | Description |
+|---|---|---|
+| `0` | `Result` | Call succeeded; response JSON printed to stdout. |
+| `1` | `HandlerError` | Handler failed with a declared `fallible(E)` error. |
+| `2` | `Refusal` | Exposure refused the call (`malformed`, `unauthorized`, `unauthenticated`, `digest_mismatch`, `full`, `unavailable`, `shutting_down`). |
+| `3` | `ServerError` | Handler triggered a `ClosureViolation`. |
+| `4` | `Lost` | Connection broke or timed out before receiving a reply. |
+| `5` | Client rejection | Rejected locally by `hale call` before sending (e.g., flag type mismatch or member hidden by caller roles). |
 
-A read is an operation whose handler returns the value. There is no
-second kind of row: add a handler and a row.
+---
+
+## 3. Add a Read Operation
+
+Read operations use the same `rpc` syntax as write operations. Add a `stock_now` method to `Shop` with a default field value on `StockRequest`, and register it in `Counter`:
 
 ```hale,fragment
 type StockRequest { item: String = ""; }
@@ -224,6 +219,8 @@ api Counter {
 }
 ```
 
+Because every field in `StockRequest` has a default value, you can call `Shop::stock_now` with no flags (which sends `{}`):
+
 ```sh
 hale call /tmp/shop.sock Shop::stock_now
 ```
@@ -232,29 +229,25 @@ hale call /tmp/shop.sock Shop::stock_now
 {"on_hand":8,"orders":1}
 ```
 
-(A call with no payload sends `{}`, which `StockRequest` accepts because
-its one field has a default.) The answer is a copy taken on the shop's
-own pool, so it is the state at that instant, and a later write does not
-touch it. A live view is what a stream is for (step 7).
+The response is a value snapshot copied on `Shop`'s execution pool at the moment the call executes.
 
-## 4. Who is calling
+---
 
-The exposure knows who is calling, and a handler can ask. Declare a
-second parameter, `ctx: std::api::Context`; it is not part of the
-request:
+## 4. Read the Caller Context
+
+To inspect who made a request or which transport delivered it, add a trailing `ctx: std::api::Context` parameter to any RPC handler. `Context` is populated by the exposure and does not appear in the wire request schema:
 
 ```hale,fragment
 type OrderResponse { order_id: Int; on_hand: Int; by: String; via: String; }
 
 fn on_order(req: OrderRequest, ctx: std::api::Context) -> OrderResponse {
-    // ctx.caller.name is who; ctx.via is the door it came through
+    // ctx.caller.name identifies the caller; ctx.via identifies the transport
     …
     return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand, by: ctx.caller.name, via: ctx.via };
 }
 ```
 
-Over the socket the caller is the peer's kernel credentials, as the
-kernel vouches for them:
+Call `Shop::on_order` over the Unix socket:
 
 ```sh
 hale call /tmp/shop.sock Shop::on_order --item lamp --qty 2
@@ -264,25 +257,21 @@ hale call /tmp/shop.sock Shop::on_order --item lamp --qty 2
 {"order_id":1,"on_hand":8,"by":"uid:1000","via":"unix"}
 ```
 
-`--raw` prints the answer as the exposure wrote it, with the
-`request_id` it assigned, the `id` the client sent and the `caller` it
-established:
+Pass `--raw` to see the complete wire envelope returned by the exposure:
 
 ```text
 {"request_id":2,"id":"hale-502660","ok":true,"value":{"order_id":1,"on_hand":8,"by":"uid:1000","via":"unix"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":502660}}
 ```
 
-`via` says which door a call came through (`unix`, `http`, `ws`, `mcp`),
-and a call that never crossed a transport gets the local caller, so a
-handler never asks whether it was reached from outside: it reads `via`.
-`Context` and `Principal` are ordinary structs, so a test builds one.
+`ctx.via` reports the transport (`"unix"`, `"http"`, `"ws"`, `"mcp"`, or `"local"` for direct in-process calls). Both `std::api::Context` and `std::api::Principal` are plain structs that you can construct directly in unit tests.
 
-## 5. Roles
+---
 
-That the operation needs a role is part of the program, true wherever it
-runs; who holds the role here is a deployment fact. So the requirement
-is written once, on the row, and who holds it is a source the serve site
-names.
+## 5. Gate Operations with Roles
+
+Role requirements are declared in source on `api` rows, while role grants (which principals hold which roles) are supplied at deployment time via a `RoleSource`.
+
+Declare `clerk` and `manager` roles (where `manager includes clerk` grants managers all `clerk` permissions), attach `requires:` clauses to the surface rows, and wire `std::api::StaticRoles` into `unix::Rpc`:
 
 ```hale,fragment
 role clerk;
@@ -297,34 +286,23 @@ api Counter {
 main locus App {
     params {
         shop: Shop = Shop { };
-        // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
+        // Reads role grants from `table` param or LOTUS_API_ROLES at runtime (`role=member,member;…`).
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     placement { shop: cooperative(pool = work) where async_io; }
-    run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        // …
-    }
+    // …
 }
 ```
 
-A role is declared vocabulary: a name nothing declares is an error at the
-row, and `manager includes clerk` means whoever is a manager may do what
-a clerk may. `std::api::StaticRoles` is the standard library's source: a
-table `role=member,member;…`, passed as its `table` param or set at run
-time in `LOTUS_API_ROLES`. A member is `uid:<n>`, `gid:<n>`,
-`user:<name>`, `group:<name>`, `bearer:<name>` or `*` (any caller the
-exposure authenticates); `known` lists the roles the program declares so
-a table naming another is refused at start. Any locus satisfying
-`std::api::RoleSource` (`fn holds(p: std::api::Principal, r: String) ->
-Bool`) works as well, and is how a program whose positions are roles
-answers from its own record.
+`std::api::StaticRoles` parses a semicolon-separated grant table (`role=member,member;...`) from its `table` parameter or the `LOTUS_API_ROLES` environment variable. Supported member patterns are `uid:<n>`, `gid:<n>`, `user:<name>`, `group:<name>`, `bearer:<name>`, and `*` (any authenticated caller). Its `known` field lists valid roles so typos in `LOTUS_API_ROLES` fail at startup. You can also implement custom role resolution by writing any locus with `fn holds(p: std::api::Principal, r: String) -> Bool` (`std::api::RoleSource`).
 
-Started with no table, nobody holds anything, and the description
-says so: the rows this caller may not call are not listed.
+### Exercising Role Enforcement
+
+1. **No roles granted**: When started with an empty role table, `uid:1000` only sees `Shop::on_order` in the description:
 
 ```sh
-hale describe /tmp/shop.sock      # members: Shop::on_order only
+hale describe /tmp/shop.sock      # lists Shop::on_order only
 hale call /tmp/shop.sock Shop::stock_now
 ```
 
@@ -332,11 +310,9 @@ hale call /tmp/shop.sock Shop::stock_now
 hale api call: Shop::stock_now is not a member this caller sees (members: Shop::on_order); --json sends a payload as given, and the server decides
 ```
 
-(The exit code is 5: nothing was sent. `--json '{}'` sends the call
-anyway, which is how to see the server's own answer: exit 2,
-`"refusal":{"kind":"unauthorized","reason":"Shop::stock_now requires clerk","requires":["clerk"]}`.)
+`hale call` exits with code `5` without sending the request because `Shop::stock_now` is absent from the caller's description. Passing `--json '{}'` bypasses the client-side check and sends the request to the server, which rejects it with exit code `2` (`"refusal":{"kind":"unauthorized","reason":"Shop::stock_now requires clerk","requires":["clerk"]}`).
 
-Make uid 1000 a clerk and the read appears; the restock still does not:
+2. **Granting `clerk`**: Restart with `clerk=uid:1000`. Now `Shop::stock_now` succeeds, while `Shop::on_restock` remains hidden:
 
 ```sh
 LOTUS_API_ROLES='clerk=uid:1000;manager=' ./shop
@@ -349,8 +325,7 @@ $ hale call /tmp/shop.sock Shop::on_restock --qty 5
 hale api call: Shop::on_restock is not a member this caller sees (members: Shop::on_order, Shop::stock_now); --json sends a payload as given, and the server decides
 ```
 
-And as the manager, the restock is in the description and the handler
-sees the row's role in `ctx.role`:
+3. **Granting `manager`**: Because `manager includes clerk`, granting `manager=uid:1000` unlocks both `stock_now` and `on_restock`, and passes the matched role in `ctx.role`:
 
 ```sh
 LOTUS_API_ROLES='clerk=;manager=uid:1000' ./shop
@@ -361,24 +336,14 @@ hale call /tmp/shop.sock Shop::on_restock --qty 5 --raw
 {"request_id":2,"id":"hale-502313","ok":true,"value":{"on_hand":15,"by":"uid:1000","role":"manager"},"caller":{"mode":"unix","name":"uid:1000","uid":1000,"gid":1000,"pid":502313}}
 ```
 
-The client declines to send flags for what the description does not list, but the *server*
-authorizes every request: a request for the restock from a caller who
-does not hold `manager` is refused `unauthorized`, naming what the row
-requires, before the handler is touched (the refusal is the exposure's,
-which the client's own check merely spares you; `--json` skips that check). The check is a
-boundary check at the serve site; it says nothing about the program's
-own call paths, and the description says so in its `notes`.
+> [!IMPORTANT]
+> Role requirements on an `api` surface are enforced at the transport boundary when an external request arrives. They do not restrict internal method calls within your Hale program. To prove internal call-graph isolation for role handlers, use [role groups in `claims` blocks](../claims.md#role-groups).
 
-A peer the kernel cannot vouch for, or a bearer token the source names
-nobody for, is refused everything, whatever the roles: the exposure's
-whole claim is that it knows who is calling.
+---
 
-## 6. HTTP
+## 6. Serve the Surface over HTTP
 
-A caller that is not on the machine's socket reaches the same surface
-over a second serve site. A bearer token is who a caller is on HTTP: a
-locus satisfying `std::api::BearerSource` says (`principal(token)`
-answers the caller, `refused()` the reason a token naming nobody gets):
+To expose the same `Counter` surface over HTTP, define a bearer token authenticator satisfying `std::api::BearerSource` (`principal(token)` and `refused()`) and add an `http::Rpc` exposure:
 
 ```hale,fragment
 locus Tokens {
@@ -396,22 +361,18 @@ main locus App {
         shop: Shop = Shop { };
         tokens: Tokens = Tokens { };
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        web: api::Exposure = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     // …
-    run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        // …
-    }
 }
 ```
 
-The one surface is now two exposures, `counter` and `web`: one digest, two
-descriptions, and the same role source here (so `bearer:front-desk` can
-be given a role beside `uid:1000`). Each request is a `POST /call/<member>`
-whose body is the payload, under `Authorization: Bearer <token>`, with the
-digest in `Hale-Surface-Digest`; `GET /.description` answers the caller's
-document. The clients do both for you:
+`Counter` is now served on two exposures (`counter` on Unix socket and `web` on HTTP) sharing the same contract digest and `staff` role table. Over HTTP:
+
+- Calls use `POST /call/<member>` with `Authorization: Bearer <token>` and `Hale-Surface-Digest: <digest>`.
+- `GET /.description` returns the caller-filtered description document.
+- You can pass the token via `--bearer <token>` or the `HALE_API_BEARER` environment variable.
 
 ```sh
 LOTUS_API_ROLES='clerk=bearer:front-desk;manager=' ./shop
@@ -431,20 +392,11 @@ caller: bearer front-desk; roles: clerk
 hale api call: refused: {"refusal":{"kind":"unauthenticated","reason":"no such token"}}
 ```
 
-(`--bearer` names the caller; `HALE_API_BEARER` sets it for a session.
-The exit code for the last is 2. Over HTTP the status is the contract's:
-200 for a result, 422 for the handler's error, and 400, 401, 403, 409,
-429 or 503 for a refusal with its kind and reason in the body; `--raw`
-prints the body.) The handler saw the caller as `front-desk`, `via:
-"http"`, and the program printed `order 1: 1 lamp for front-desk via http`.
+---
 
-## 7. A stream
+## 7. Stream Bus Topics over a WebSocket Hub
 
-`Shipments` is published by the shop and bound to a **hub**. The binding
-row carries what a subscriber is promised: who may read it (`requires`),
-how many frames its queue holds (`bound`) and what the queue sheds when
-it is full (`on_full`, `drop_old` or `drop_new`). A subscriber that
-cannot keep up loses events, never the subscription.
+To stream the `Shipments` bus topic to external subscribers, add a `ws::Hub` parameter to `App` and bind `Shipments` to it in a `bindings { }` block:
 
 ```hale,fragment
 main locus App {
@@ -459,9 +411,12 @@ main locus App {
 }
 ```
 
-The hub is a WebSocket listener with the same two sources. Anything in the
-program that publishes `Shipments` publishes to the hub's subscribers, and
-`hale watch` subscribes:
+The binding configures:
+
+- **`requires: [clerk]`**: Only principals holding `clerk` can subscribe to `Shipments`.
+- **`bound: 64, on_full: drop_old`**: Buffers up to 64 frames per subscriber and drops the oldest queued frame if a slow subscriber falls behind (valid stream policies are `drop_old` and `drop_new`).
+
+Use `hale watch` to subscribe to live `Shipments` events while orders are placed:
 
 ```sh
 hale watch ws://127.0.0.1:8796 Shipments --token t-front-desk
@@ -473,21 +428,17 @@ hale watch ws://127.0.0.1:8796 Shipments --token t-front-desk
 {"type":"event","topic":"Shipments","seq":2,"payload":{"order_id":2,"item":"chair","qty":1}}
 ```
 
-while orders are placed through the surface. Every event offered to a
-subscription takes the next `seq`, delivered or shed, so a gap in `seq`
-is exactly the frames its queue shed. A caller who holds no `clerk` has no stream in the hub's description,
-and `hale watch` says so. (`hale describe` drives a `unix:` or `http://`
-exposure; a hub's stream rows are read by `hale watch`.)
+Every event offered to a subscription increments `seq`, whether delivered or shed. A gap in `seq` tells the client exactly how many frames its queue dropped.
 
-## 8. Tools
+---
 
-You still have not written a client. The tools below read only the
-description an exposure serves, so each caller sees the slice its roles
-allow.
+## 8. Export Specs, Serve MCP Tools, and Run the Admin UI
 
-**OpenAPI.** The forms a client is generated from are projections of a
-surface's rows, one per surface, each carrying the digest, and they come
-from the program without running it:
+Once a surface is declared, Hale's built-in tooling works directly from the surface definition or live exposure description:
+
+### OpenAPI, JSON Schema, and MCP Manifests
+
+Generate specification documents directly from source without running the binary:
 
 ```sh
 hale check --api shop.hl --surface Counter --openapi
@@ -495,30 +446,23 @@ hale check --api shop.hl --surface Counter --json-schema
 hale check --api shop.hl --surface Counter --mcp
 ```
 
-The OpenAPI document has a `POST /call/<member>` per row, the responses
-by status, the digest as the `Hale-Surface-Digest` header and each
-member's `requires` beside it.
+### Bridging to an MCP Host (`hale mcp --app`)
 
-**An MCP host.** `hale mcp --app` serves an exposure over MCP on stdio.
-Each member the caller may call becomes a tool whose input schema is the
-request's schema:
+`hale mcp --app` bridges a live Unix, HTTP, or MCP exposure to an MCP host over stdio, exposing each authorized RPC member as an MCP tool:
 
 ```sh
 claude mcp add shop -- hale mcp --app http://127.0.0.1:8794 --token t-front-desk
 ```
 
-The host's `tools/list` gets the members this caller may use:
+When the MCP host queries `tools/list`, it receives only the tools that `t-front-desk` is authorized to call:
 
 ```text
 {"id":1,"jsonrpc":"2.0","result":{"tools":[{"description":"rpc Shop::on_order of Counter. Requires no role under the exposure's role source; the server still authorizes every request.","inputSchema":{"properties":{"item":{"type":"string"},"qty":{"type":"integer"}},"required":["item","qty"],"type":"object"},"name":"Shop__on_order","x-hale-requires":[]},{"description":"rpc Shop::stock_now of Counter. Requires clerk under the exposure's role source; …","name":"Shop__stock_now","x-hale-requires":["clerk"]}]}}
 ```
 
-(A program can also serve MCP itself, with `mcp::Rpc`; `hale mcp --app
-mcp://host:port` then forwards that listener's own tools.)
+### Interactive Admin Dashboard (`hale admin`)
 
-**A dashboard.** `hale admin` serves a page on the loopback with a form
-for each member and a live tail for each stream. It prints the URL to
-open, which carries a token:
+Launch a local loopback web UI with generated request forms for every authorized RPC member and live event tails for every stream:
 
 ```sh
 hale admin /tmp/shop.sock --port 7474
@@ -528,15 +472,13 @@ hale admin /tmp/shop.sock --port 7474
 hale admin: http://127.0.0.1:7474/?token=03ea1263780059750082ce32e8900ab1  (over /tmp/shop.sock)
 ```
 
-## The whole program
+---
+
+## Complete Program
+
+The full source for `shop.hl` (tested in the compiler suite at `crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl`):
 
 ```hale,fragment
-// Build an API (docs/src/services/build-an-api.md): one program grown a
-// step at a time. A shop takes orders and answers each with a reply,
-// streams its shipments, answers a stock query, knows who is calling,
-// gates what only staff may do, and answers over HTTP as well as on its
-// socket.
-
 type OrderRequest { item: String; qty: Int; }
 type OrderResponse { order_id: Int; on_hand: Int; by: String; via: String; }
 type Shipment { order_id: Int; item: String; qty: Int; }
@@ -573,14 +515,12 @@ locus Shop {
     fn stock_now(req: StockRequest) -> Stock { return self.stock; }
 }
 
-// The shop's operations: who may call each is the row's `requires`.
 api Counter {
     rpc Shop::on_order;
     rpc Shop::stock_now requires: [clerk];
     rpc Shop::on_restock requires: [manager];
 }
 
-// Who a bearer token on the HTTP transport is (a std::api::BearerSource).
 locus Tokens {
     fn principal(token: String) -> std::api::Principal {
         if token == "t-front-desk" {
@@ -595,20 +535,19 @@ main locus App {
     params {
         shop: Shop = Shop { };
         tokens: Tokens = Tokens { };
-        // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
         hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        web: api::Exposure = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     placement { shop: cooperative(pool = work) where async_io; }
     bindings {
         Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        sock.stop();
-        web.stop();
+        self.sock.stop();
+        self.web.stop();
     }
 }
 
@@ -617,20 +556,9 @@ fn main() {
 }
 ```
 
-The compiler's example corpus builds this program on every change, as
-`crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl`.
+## Related Reference
 
-## Where each piece is specified
-
-- The surface, the serve site, the transports, the outcomes, streams and
-  the description: [`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md)
-  is the contract; [The API surface](./api.md) explains each piece on
-  its own.
-- Roles and `includes`.
-  [`spec/types.md` § Roles](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-gh-1109-1417)
-- `std::api`: `Principal`, `Context`, `RoleSource`, `BearerSource` and
-  `StaticRoles`, in [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md),
-  plus the source, `crates/hale-stdlib/hl/api.hl`.
-- The clients (`hale api describe` and `call`, with `hale describe` and
-  `hale call` their short forms; `watch`, `admin`, `mcp --app`):
-  [`spec/api.md` § The clients](https://github.com/hale-lang/hale/blob/main/spec/api.md#the-clients).
+- **API Surfaces, Transports & Clients**: [The API Surface](./api.md) and [`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md).
+- **Wire Record Design & Evolution**: [Designing API Messages](./api-messages.md).
+- **Role Declarations & Hierarchy**: [`spec/types.md` § Roles](https://github.com/hale-lang/hale/blob/main/spec/types.md#roles-gh-1109-1417).
+- **`std::api` Types & Interfaces**: [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) (`Principal`, `Context`, `RoleSource`, `BearerSource`, `StaticRoles`).

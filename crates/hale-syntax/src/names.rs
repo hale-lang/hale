@@ -189,16 +189,88 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             }
         }
         TopDecl::Api(a) => {
-            let ApiDecl { name: n, rows, span: _, origin: _ } = a;
+            let ApiDecl { name: n, rows, span: _, origin: _, source } = a;
             name(n, f);
+            if let Some(ApiSource { kind, location, span: _ }) = source {
+                name(kind, f);
+                text(location, f);
+            }
             for r in rows {
-                let RpcRow { locus, written: _, method, requires, span: _ } = r;
-                name(locus, f);
+                let RpcRow { locus, written: _, method, requires, span: _, signature, route: _ } = r;
+                // a signature row's locus is empty: it names no handler
+                if signature.is_none() {
+                    name(locus, f);
+                }
                 name(method, f);
                 names(requires, f);
+                if let Some(RpcSignature { request, response, wire }) = signature {
+                    opt_ty(request, f);
+                    opt_ty(response, f);
+                    opt_text(wire, f);
+                }
+            }
+        }
+        TopDecl::Fleet(fl) => {
+            let FleetDecl { name: n, params, placement, bindings, claims, span: _, written: _ } = fl;
+            name(n, f);
+            params_block(params, f);
+            for p in placement {
+                let FleetPlacement { instance, spec, span: _ } = p;
+                name(instance, f);
+                match spec {
+                    FleetPlacementSpec::Hosts(hs) => {
+                        for h in hs {
+                            text(h, f);
+                        }
+                    }
+                    FleetPlacementSpec::Replicas(_) => {}
+                }
+            }
+            if let Some(bb) = bindings {
+                bindings_block(bb, f);
+            }
+            if let Some(cb) = claims {
+                claims_block(cb, f);
             }
         }
     }
+}
+
+fn bindings_block<'a>(bb: &'a BindingsBlock, f: &mut Visit<'_, 'a>) {
+        let BindingsBlock { entries, hubs, span: _ } = bb;
+        for h in hubs {
+            let HubBinding { topic, instance, requires, bound: _, on_full, span: _ } = h;
+            name(topic, f);
+            name(instance, f);
+            names(requires, f);
+            opt_name(on_full, f);
+        }
+        for e in entries {
+            let BindingEntry { topic, transport, constraints: _, codec, span: _, id: _ } = e;
+            name(topic, f);
+            match transport {
+                TransportSpec::Unix { path, role: _, span: _ } => text(path, f),
+                TransportSpec::Adapter { locus: l, inits, span: _ } => {
+                    name(l, f);
+                    struct_inits(inits, f);
+                }
+                TransportSpec::ShmRing {
+                    name: n,
+                    slot_count: _,
+                    overflow: _,
+                    layout,
+                    buffer_size: _,
+                    span: _,
+                } => {
+                    f(Spelled::Name(n));
+                    opt_name(layout, f);
+                }
+            }
+            if let Some(CodecSpec { locus: l, inits, span: _ }) = codec {
+                name(l, f);
+                struct_inits(inits, f);
+            }
+        }
 }
 
 fn ring_attrs<'a>(attrs: &'a [RingAttr], f: &mut Visit<'_, 'a>) {
@@ -250,6 +322,10 @@ fn claim<'a>(c: &'a ClaimDecl, f: &mut Visit<'_, 'a>) {
         ClaimForm::RequireAttributed { class_name } => name(class_name, f),
         ClaimForm::RequireNoSilentLossTopic { topic } => topic_ref(topic, f),
         ClaimForm::RequireNoSilentLossGroup { group } => name(group, f),
+        ClaimForm::RequireSeparateDomains { left, right } => {
+            name(left, f);
+            name(right, f);
+        }
         ClaimForm::Cover { alias, group } => {
             name(alias, f);
             name(group, f);
@@ -291,11 +367,15 @@ fn locus<'a>(l: &'a LocusDecl, f: &mut Visit<'_, 'a>) {
         depends,
         supervised: _,
         sealed: _,
+        repo,
         members,
         span: _,
         id: _,
     } = l;
     name(n, f);
+    if let Some(r) = repo {
+        name(&r.ty, f);
+    }
     opt_text(display, f);
     generics(gs, f);
     names(serves, f);
@@ -403,42 +483,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
                 }
             }
         }
-        LocusMember::Bindings(bb) => {
-            let BindingsBlock { entries, hubs, span: _ } = bb;
-            for h in hubs {
-                let HubBinding { topic, instance, requires, bound: _, on_full, span: _ } = h;
-                name(topic, f);
-                name(instance, f);
-                names(requires, f);
-                opt_name(on_full, f);
-            }
-            for e in entries {
-                let BindingEntry { topic, transport, constraints: _, codec, span: _, id: _ } = e;
-                name(topic, f);
-                match transport {
-                    TransportSpec::Unix { path, role: _, span: _ } => text(path, f),
-                    TransportSpec::Adapter { locus: l, inits, span: _ } => {
-                        name(l, f);
-                        struct_inits(inits, f);
-                    }
-                    TransportSpec::ShmRing {
-                        name: n,
-                        slot_count: _,
-                        overflow: _,
-                        layout,
-                        buffer_size: _,
-                        span: _,
-                    } => {
-                        f(Spelled::Name(n));
-                        opt_name(layout, f);
-                    }
-                }
-                if let Some(CodecSpec { locus: l, inits, span: _ }) = codec {
-                    name(l, f);
-                    struct_inits(inits, f);
-                }
-            }
-        }
+        LocusMember::Bindings(bb) => bindings_block(bb, f),
         LocusMember::Placement(pb) => {
             let PlacementBlock { entries, span: _ } = pb;
             for e in entries {
@@ -470,6 +515,24 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
             name(closure_name, f);
             opt_expr(payload, f);
         }
+        LocusMember::Seam(sd) => {
+            let SeamDecl { name: n, param, ret, head, hops, on_failure, span: _ } = sd;
+            if let Some(n) = n {
+                name(n, f);
+            }
+            params(param.as_slice(), f);
+            opt_ty(ret, f);
+            expr(head, f);
+            for h in hops {
+                let SeamHop { path, span: _ } = h;
+                for seg in path {
+                    name(seg, f);
+                }
+            }
+            if let Some(SeamFailure::Violate(c)) = on_failure {
+                name(c, f);
+            }
+        }
     }
 }
 
@@ -483,7 +546,7 @@ fn pin_affinity<'a>(a: &'a PinAffinity, f: &mut Visit<'_, 'a>) {
 fn params_block<'a>(pb: &'a ParamsBlock, f: &mut Visit<'_, 'a>) {
     let ParamsBlock { params: ps, span: _ } = pb;
     for p in ps {
-        let ParamDecl { name: n, ty: t, init, span: _, id: _ } = p;
+        let ParamDecl { name: n, ty: t, init, span: _, id: _, serve: _ } = p;
         name(n, f);
         opt_ty(t, f);
         match init {
@@ -587,8 +650,10 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         TypeDeclBody::Alias(a) => ty(a, f),
         TypeDeclBody::Struct(fields) => {
             for sf in fields {
-                let StructField { name: n, ty: t, default, tag, span: _ } = sf;
+                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, span: _ } = sf;
                 name(n, f);
+                opt_name(indexed_by, f);
+                opt_name(map_value, f);
                 ty(t, f);
                 opt_expr(default, f);
                 opt_text(tag, f);
@@ -596,7 +661,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         }
         TypeDeclBody::Enum(variants) => {
             for v in variants {
-                let EnumVariant { name: n, fields, span: _ } = v;
+                let EnumVariant { name: n, fields, class: _, span: _, member: _ } = v;
                 name(n, f);
                 for t in fields {
                     ty(t, f);

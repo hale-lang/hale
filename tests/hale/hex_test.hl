@@ -6,7 +6,11 @@
 fn main() {
     // encode: two lowercase digits per byte.
     std::test::assert_eq_str(std::hex::encode(b""), "", "empty encodes to empty");
-    std::test::assert_eq_str(std::hex::encode(b"\x00\x01\x0f\x10\xab\xff"), "00010f10abff", "every nibble position");
+    std::test::assert_eq_str(
+        std::hex::encode(b"\x00\x01\x0f\x10\xab\xff"),
+        "00010f10abff",
+        "every nibble position",
+    );
     std::test::assert_eq_str(
         std::hex::encode(std::crypto::sha256(b"abc")),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",

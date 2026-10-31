@@ -60,7 +60,9 @@ locus NatsMsgLog {
 
     fn subject_at(i: Int) -> String {
         let at = self.starts.get(i) or 0;
-        return std::str::from_bytes(std::bytes::slice(self.buf.view(), at, at + (self.subj_lens.get(i) or 0)));
+        return std::str::from_bytes(
+            std::bytes::slice(self.buf.view(), at, at + (self.subj_lens.get(i) or 0)),
+        );
     }
 
     fn data_at(i: Int) -> Bytes {

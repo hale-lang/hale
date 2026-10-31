@@ -109,6 +109,14 @@ type __StdHttpResponse {
     /// sets this without stashing `req.conn_fd` leaks the fd.
     /// Takes precedence over `takeover` if both are set.
     takeover_raw: Bool = false;
+    /// A streamed body (2026-10-17): the handler sent the head and
+    /// the chunks itself, through a `std::http::BodyWriter` or
+    /// `std::http::SseWriter` on `req.conn_fd`, and returned the
+    /// writer's `end()`, which sets this. The Server then writes
+    /// only the last chunk (`0\r\n\r\n`) and closes the connection;
+    /// `status`/`content_type`/`headers`/`body` are not written
+    /// again. Set by `end()`, never by hand.
+    streamed: Bool = false;
 }
 
 // Map a numeric HTTP status to its reason phrase: the one table every
@@ -394,6 +402,182 @@ fn __write_http_response(s: std::io::tcp::Stream, resp: std::http::Response) {
     // per-connection, so discard (the conn closes at scope exit).
     s.send(header) or discard;
     s.send(resp.body) or discard;
+}
+
+// 2026-10-17 — a streamed response body: chunked transfer encoding
+// (RFC 9112 § 7.1) on the Server's response path, and Server-Sent
+// Events (the WHATWG `text/event-stream` format) as a writer over it.
+//
+// A handler opts in by building a writer on `req.conn_fd` inside
+// `handle`. The writer's birth sends the head at once (the status
+// line, Content-Type, `Transfer-Encoding: chunked`, `Connection:
+// close`, the user's headers); each `chunk` / `event` is one chunk and
+// one write(2), with no buffering in user space, so it is on the wire
+// when the call returns; the handler returns the writer's `end()`.
+// The Server sees `Response.streamed`, ends the body (the zero-length
+// last chunk) and closes the connection, as it does after every
+// response. A handler that builds no writer pays one Bool test per
+// response, and its wire bytes are unchanged.
+//
+// Wire shape:
+//   HTTP/1.1 <status> <phrase>\r\n
+//   Content-Type: <content_type>\r\n
+//   Transfer-Encoding: chunked\r\n
+//   Connection: close\r\n
+//   <headers>\r\n               (when non-empty)
+//   \r\n
+//   <hex size>\r\n<bytes>\r\n   (one per chunk / event)
+//   0\r\n\r\n                   (written by the Server on return)
+
+// `n` in lowercase hex, the chunk-size line's spelling. An Int is at
+// most 16 hex digits, which bounds the loop.
+fn __http_hex(n: Int) -> String {
+    if n <= 0 {
+        return "0";
+    }
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut v = n;
+    let mut i = 0;
+    while v > 0 && i < 16 {
+        let d = v % 16;
+        out = digits[d..(d + 1)] + out;
+        v = v / 16;
+        i = i + 1;
+    }
+    return out;
+}
+
+// The head of a streamed response: `write_response`'s fixed lines with
+// `Transfer-Encoding: chunked` in place of Content-Length.
+fn __http_stream_head(status: Int, content_type: String, headers: String) -> String {
+    let status_line = "HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\n";
+    let extra = if len(headers) > 0 {
+        headers + "\r\n"
+    } else {
+        ""
+    };
+    return status_line + "Content-Type: " + content_type + "\r\n"
+        + "Transfer-Encoding: chunked\r\n" + "Connection: close\r\n" + extra + "\r\n";
+}
+
+// One chunk's framing around `data`: its size in hex, CRLF, the bytes,
+// CRLF.
+fn __http_chunk_frame(data: String) -> String {
+    return __http_hex(len(data)) + "\r\n" + data + "\r\n";
+}
+
+/// A streamed response body in chunked transfer encoding, built in a
+/// handler on `req.conn_fd`. Birth sends the head (`status`,
+/// `content_type`, the CRLF-joined `headers`, `Transfer-Encoding:
+/// chunked`, `Connection: close`); `chunk(data)` sends one chunk in one
+/// write; the handler returns `end()`, and the Server ends the body and
+/// closes the connection. It never closes the fd: the Server owns it.
+locus __StdHttpBodyWriter {
+    params {
+        conn_fd: Int = -1;
+        status: Int = 200;
+        content_type: String = "application/octet-stream";
+        headers: String = "";
+        // a borrow of the Server's connection: the Server closes it
+        s: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: self.conn_fd, owns_fd: false };
+    }
+    birth() {
+        // a head that cannot be sent (the client is gone) fails the first
+        // chunk the same way
+        self.s.send(__http_stream_head(self.status, self.content_type, self.headers)) or discard;
+    }
+    /// Send `data` as one chunk, on the wire when the call returns. An
+    /// empty `data` sends nothing (a zero-length chunk ends a body). A
+    /// failure is the client gone: stop, and return `end()`.
+    fn chunk(data: String) -> () fallible(IoError) {
+        if len(data) == 0 {
+            return;
+        }
+        self.s.send(__http_chunk_frame(data)) or raise;
+    }
+    /// The Response a streaming handler returns: the Server writes the
+    /// last chunk and closes the connection.
+    fn end() -> std::http::Response {
+        return std::http::Response {
+            status: self.status,
+            content_type: self.content_type,
+            body: "",
+            streamed: true
+        };
+    }
+}
+
+/// One Server-Sent Event. `data` is the payload (one `data:` line per
+/// line of it); `event` its type (the client's `message` when empty);
+/// `id` the client's last-event id; `retry` the client's reconnection
+/// delay, written in whole milliseconds (`0ns`: not sent). A line break
+/// in `event` or `id` is dropped.
+type __StdHttpSseEvent {
+    data: String;
+    event: String = "";
+    id: String = "";
+    retry: Duration = 0ns;
+}
+
+// A field value that must stay on one line.
+fn __http_sse_one_line(v: String) -> String {
+    return std::str::replace(std::str::replace(v, "\r", ""), "\n", "");
+}
+
+// One event in the text/event-stream format: its fields, a `data:` line
+// per line of the payload (CRLF, CR and LF each end a line there), and
+// the blank line that dispatches it.
+fn __http_sse_frame(e: std::http::SseEvent) -> String {
+    let mut out = "";
+    if len(e.event) > 0 {
+        out = out + "event: " + __http_sse_one_line(e.event) + "\n";
+    }
+    if len(e.id) > 0 {
+        out = out + "id: " + __http_sse_one_line(e.id) + "\n";
+    }
+    let retry_ms = e.retry / 1ms;
+    if retry_ms > 0 {
+        out = out + "retry: " + to_string(retry_ms) + "\n";
+    }
+    let data = std::str::replace(std::str::replace(e.data, "\r\n", "\n"), "\r", "\n");
+    return out + "data: " + std::str::replace(data, "\n", "\ndata: ") + "\n\n";
+}
+
+// An event stream's headers: no caching of the stream, then the user's.
+fn __http_sse_headers(headers: String) -> String {
+    if len(headers) > 0 {
+        return "Cache-Control: no-cache\r\n" + headers;
+    }
+    return "Cache-Control: no-cache";
+}
+
+/// A Server-Sent Events stream (`text/event-stream`) over a
+/// `BodyWriter`, built in a handler on `req.conn_fd`. Birth sends the
+/// head (`Cache-Control: no-cache`, then the CRLF-joined `headers`);
+/// `event(e)` sends one event as one chunk in one write; the handler
+/// returns `end()`.
+locus __StdHttpSseWriter {
+    params {
+        conn_fd: Int = -1;
+        status: Int = 200;
+        headers: String = "";
+        body: std::http::BodyWriter = std::http::BodyWriter {
+            conn_fd: self.conn_fd,
+            status: self.status,
+            content_type: "text/event-stream",
+            headers: __http_sse_headers(self.headers)
+        };
+    }
+    /// Send `e`, on the wire when the call returns. A failure is the
+    /// client gone: stop, and return `end()`.
+    fn event(e: std::http::SseEvent) -> () fallible(IoError) {
+        self.body.chunk(__http_sse_frame(e)) or raise;
+    }
+    /// The Response a streaming handler returns.
+    fn end() -> std::http::Response {
+        return self.body.end();
+    }
 }
 
 // 2026-05-16 — std::http::Handler interface. The contract a

@@ -400,8 +400,22 @@ fn __std_process_spawn(argv: String) -> std::process::Child fallible(IoError) {
 /// Spawn argv under a `SpawnOptions` (cwd, environment, timeout,
 /// limits); returns the Child without waiting. `wait` / `try_wait`
 /// enforce the timeout.
-fn __std_process_spawn_with(argv: String, o: std::process::SpawnOptions) -> std::process::Child fallible(IoError) {
-    let h = std::process::__spawn_with(argv, o.cwd, o.env, o.unset_env, o.clear_env, o.timeout / 1ns, o.cpu_seconds, o.address_space, o.open_files, o.file_size) or raise;
+fn __std_process_spawn_with(
+    argv: String,
+    o: std::process::SpawnOptions
+) -> std::process::Child fallible(IoError) {
+    let h = std::process::__spawn_with(
+        argv,
+        o.cwd,
+        o.env,
+        o.unset_env,
+        o.clear_env,
+        o.timeout / 1ns,
+        o.cpu_seconds,
+        o.address_space,
+        o.open_files,
+        o.file_size,
+    ) or raise;
     return std::process::Child {
         argv: argv,
         pid: h.pid,
@@ -418,8 +432,22 @@ fn __std_process_spawn_with(argv: String, o: std::process::SpawnOptions) -> std:
 // `timed_out` with whatever it wrote before.
 /// Run argv to completion under a `SpawnOptions`; `timed_out` on the
 /// output says the timeout stopped it.
-fn __std_process_run_with(argv: String, o: std::process::SpawnOptions) -> std::process::ProcessOutput fallible(IoError) {
-    return std::process::__run_with(argv, o.cwd, o.env, o.unset_env, o.clear_env, o.timeout / 1ns, o.cpu_seconds, o.address_space, o.open_files, o.file_size) or raise;
+fn __std_process_run_with(
+    argv: String,
+    o: std::process::SpawnOptions
+) -> std::process::ProcessOutput fallible(IoError) {
+    return std::process::__run_with(
+        argv,
+        o.cwd,
+        o.env,
+        o.unset_env,
+        o.clear_env,
+        o.timeout / 1ns,
+        o.cpu_seconds,
+        o.address_space,
+        o.open_files,
+        o.file_size,
+    ) or raise;
 }
 
 // A deadline outcome back to `wait` / `try_wait`'s answer: -3 is the

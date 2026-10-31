@@ -1,0 +1,96 @@
+// The head's Task read on a record with a Ledger (every record kept in
+// memory has one from its first rows, GH #1590): a Task's rows are the
+// Ledger's, and `/dna/tasks` reads the record and its Ledger as one
+// (the basis says so). Memory is Postgres: without the owner's DSN nothing
+// here is exercised.
+import ".." as api;
+import "../../core" as dna;
+
+locus LedgerTaskReads {
+    params { repo: String = ""; }
+    fn request(query: String) -> std::http::Response {
+        let record = dna::MemoryRecord { repo: self.repo };
+        let head = api::Api { root: self.repo, local_name: "riley" };
+        return head.handle(
+            std::http::Request {
+                method: "GET",
+                path: api::API_PREFIX + "/" + record.identity() + "/dna/tasks" + query,
+            },
+        );
+    }
+    fn hand(id: String, who: String) {
+        let l = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        std::test::assert(
+            l.append(l.revision(), "task.born", id, "Keep exact\r\né 🧭 evidence").ok,
+            "born " + id + ": " + l.last_error(),
+        );
+        std::test::assert(
+            l.append(
+                l.revision(),
+                "task.handed",
+                id,
+                "{\"assignee\":\"" + who + "\",\"obligation\":\"review\",\"by\":\"leader\"}",
+            ).ok,
+            "handed " + id,
+        );
+    }
+    fn run_cases() {
+        let record = dna::MemoryRecord { repo: self.repo }; let w = api::CommandWire { };
+        self.hand("t1", "alex"); self.hand("t2", "blair");
+        let all = self.request("");
+        std::test::assert_eq_int(all.status, 200, "the Tasks read: " + all.body);
+        let data = w.raw(all.body, "data"); let basis = w.raw(data, "basis");
+        std::test::assert_eq_str(w.raw(w.raw(data, "page"), "total"), "2", "both, from the Ledger");
+        std::test::assert_eq_str(
+            w.text(basis, "memory"),
+            "record+ledger",
+            "read over both memories",
+        );
+        std::test::assert_eq_str(
+            w.raw(basis, "routing"),
+            "",
+            "and names no record-kept routing: every record has its Ledger (GH #1590)",
+        );
+        std::test::assert_eq_str(
+            w.text(basis, "record_head"),
+            record.head("journal").id,
+            "at the record's head",
+        );
+        // a history row's sequence is its position in the record and its
+        // Ledger read as one: the Ledger's rows come after the record's
+        std::test::assert_eq_str(
+            w.text(basis, "ledger_revision"),
+            "4",
+            "the Ledger's four rows read with the record",
+        );
+        let rr = std::str::parse_int(w.text(basis, "record_revision")) or - 1;
+        let one = self.request("?id=t1");
+        std::test::assert(
+            one.status == 200 && std::str::contains(one.body, "\"assignee\": \"alex\""),
+            "one Task by its id: " + one.body,
+        );
+        std::test::assert(
+            std::str::contains(one.body, "\"sequence\": \"" + to_string(rr + 1) + "\""),
+            "t1's handoff sits past the record's rows, at its Ledger position: " + one.body,
+        );
+        let mine = self.request("?assignee=blair");
+        std::test::assert(
+            mine.status == 200 && w.raw(w.raw(w.raw(mine.body, "data"), "page"), "total") == "1",
+            "and by assignee: " + mine.body,
+        );
+    }
+}
+
+fn main() {
+    if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+        eprintln("tasks_ledger_api_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+        return;
+    }
+    let root = dna::scratch_root("api-task-ledger");
+    let record = dna::MemoryRecord { repo: root };
+    std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+    std::test::assert(record.git("config\ndna.trust\nlocal").code == 0, "trusted-local");
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory");
+    let cases = LedgerTaskReads { repo: root }; cases.run_cases();
+    dna::scratch_done(root);
+}

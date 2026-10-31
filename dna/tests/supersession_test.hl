@@ -36,7 +36,13 @@ main locus App {
         return out;
     }
     fn approve(digest: String) {
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(150ms);
     }
     run() {
@@ -44,45 +50,163 @@ main locus App {
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
+            verification: dna::HaleVerification {
+                receipts: dna::MemoryReceipts { repo: repo },
+                repo: repo,
+            },
             board: dna::Board { who: "board" }
         };
         // C is active
-        let c = self.dna.propose_knowledge(dna::Idea { id: "c", kind: "practice", name: "design/principles", text: "minimal structure", author: "org/worker-supervisor" }, "org/worker-supervisor/worker");
+        let c = self.dna.propose_knowledge(
+            dna::Idea {
+                id: "c",
+                kind: "practice",
+                name: "design/principles",
+                text: "minimal structure",
+                author: "org/worker-supervisor",
+            },
+            "org/worker-supervisor/worker",
+        );
         self.approve(c);
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 1, "C ratified");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            1,
+            "C ratified",
+        );
         // two replacements of C, both pending
-        let d = self.dna.propose_knowledge(dna::Idea { id: "d", kind: "practice", name: "design/principles", text: "minimal structure, clean cuts", author: "org/worker-supervisor", supersedes: c }, "org/worker-supervisor/worker");
-        let e = self.dna.propose_knowledge(dna::Idea { id: "e", kind: "practice", name: "design/principles", text: "minimal structure, clean cuts, appropriate depth", author: "org/worker-supervisor", supersedes: c }, "org/worker-supervisor/worker");
+        let d = self.dna.propose_knowledge(
+            dna::Idea {
+                id: "d",
+                kind: "practice",
+                name: "design/principles",
+                text: "minimal structure, clean cuts",
+                author: "org/worker-supervisor",
+                supersedes: c,
+            },
+            "org/worker-supervisor/worker",
+        );
+        let e = self.dna.propose_knowledge(
+            dna::Idea {
+                id: "e",
+                kind: "practice",
+                name: "design/principles",
+                text: "minimal structure, clean cuts, appropriate depth",
+                author: "org/worker-supervisor",
+                supersedes: c,
+            },
+            "org/worker-supervisor/worker",
+        );
         // the first approved retires C
         self.approve(d);
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 2, "D ratified");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            2,
+            "D ratified",
+        );
         std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.retired"), 1, "C retired");
-        std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, c, "it was C");
+        std::test::assert_eq_str(
+            self.last(self.dna.journal, "knowledge.retired").entity,
+            c,
+            "it was C",
+        );
         // the second is refused: C is gone, and D would never be retired
         self.approve(e);
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 2, "E was not ratified");
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.retired"), 1, "and retired nothing twice");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            2,
+            "E was not ratified",
+        );
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.retired"),
+            1,
+            "and retired nothing twice",
+        );
         let refused = self.last(self.dna.journal, "knowledge.refused");
         std::test::assert_eq_str(refused.entity, e, "the refusal names E: " + refused.body);
-        std::test::assert(std::str::contains(refused.body, "\"supersedes\": \"" + c + "\"") && std::str::contains(refused.body, "\"retired_by\": \"" + d + "\"") && std::str::contains(refused.body, "already retired by"), "and says what retired its predecessor: " + refused.body);
+        std::test::assert(
+            std::str::contains(refused.body, "\"supersedes\": \"" + c + "\"")
+                && std::str::contains(refused.body, "\"retired_by\": \"" + d + "\"")
+                && std::str::contains(refused.body, "already retired by"),
+            "and says what retired its predecessor: " + refused.body,
+        );
         // the same text against the active version goes through
-        let e2 = self.dna.propose_knowledge(dna::Idea { id: "e2", kind: "practice", name: "design/principles", text: "minimal structure, clean cuts, appropriate depth", author: "org/worker-supervisor", supersedes: d }, "org/worker-supervisor/worker");
+        let e2 = self.dna.propose_knowledge(
+            dna::Idea {
+                id: "e2",
+                kind: "practice",
+                name: "design/principles",
+                text: "minimal structure, clean cuts, appropriate depth",
+                author: "org/worker-supervisor",
+                supersedes: d,
+            },
+            "org/worker-supervisor/worker",
+        );
         self.approve(e2);
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 3, "E' ratified");
-        std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, d, "and D retired: one version in force");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            3,
+            "E' ratified",
+        );
+        std::test::assert_eq_str(
+            self.last(self.dna.journal, "knowledge.retired").entity,
+            d,
+            "and D retired: one version in force",
+        );
         // GH #994: the operating family supersedes the same way, and its
         // retirements are its own — the design practice stays in force
-        let o1 = self.dna.propose_knowledge(dna::Idea { id: "o1", kind: "practice", name: "operating/row-first", text: "every live signal is a record row before it is sent", author: "org" }, "org");
+        let o1 = self.dna.propose_knowledge(
+            dna::Idea {
+                id: "o1",
+                kind: "practice",
+                name: "operating/row-first",
+                text: "every live signal is a record row before it is sent",
+                author: "org",
+            },
+            "org",
+        );
         self.approve(o1);
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 4, "O1 ratified");
-        let o2 = self.dna.propose_knowledge(dna::Idea { id: "o2", kind: "practice", name: "operating/row-first", text: "every live signal is a record row before it is sent, and consumed once by its id", author: "org", supersedes: o1 }, "org");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            4,
+            "O1 ratified",
+        );
+        let o2 = self.dna.propose_knowledge(
+            dna::Idea {
+                id: "o2",
+                kind: "practice",
+                name: "operating/row-first",
+                text: "every live signal is a record row before it is sent, and consumed once by its id",
+                author: "org",
+                supersedes: o1,
+            },
+            "org",
+        );
         self.approve(o2);
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 5, "O2 ratified");
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.retired"), 3, "one more retirement");
-        std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, o1, "and it was O1, not the design's E'");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            5,
+            "O2 ratified",
+        );
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.retired"),
+            3,
+            "one more retirement",
+        );
+        std::test::assert_eq_str(
+            self.last(self.dna.journal, "knowledge.retired").entity,
+            o1,
+            "and it was O1, not the design's E'",
+        );
         dna::scratch_done(repo);
     }
 }

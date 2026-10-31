@@ -34,6 +34,11 @@ type ModelRule {
 type ModelCategory {
     category: String = "";
     model: String = "";
+    // where the model is asked: an OpenAI-compatible chat URL (voice's, a
+    // host's), "" = the performer's own; and the vault slot of its key ("" =
+    // none), never the key
+    endpoint: String = "";
+    key_vault: String = "";
     tool_calls: Bool = false;
     input_micros_per_1k: Int = 0;
     output_micros_per_1k: Int = 0;
@@ -50,6 +55,8 @@ type ModelChoice {
     size: String = "";
     category: String = "";
     model: String = "";
+    endpoint: String = "";
+    key_vault: String = "";
     rule: String = "";
     tool_calls: Bool = false;
     why: String = "";
@@ -79,7 +86,12 @@ fn model_rule_of(j: Journal, selector: String) -> ModelRule {
     while i < j.revision() {
         let e = j.read(i);
         if e.kind == "model.rule" && e.entity == selector {
-            out = ModelRule { selector: selector, size: std::json::find_string_field(e.body, "size"), permit: std::json::find_string_field(e.body, "permit"), by: std::json::find_string_field(e.body, "by") };
+            out = ModelRule {
+                selector: selector,
+                size: std::json::find_string_field(e.body, "size"),
+                permit: std::json::find_string_field(e.body, "permit"),
+                by: std::json::find_string_field(e.body, "by"),
+            };
         }
         i = i + 1;
     }
@@ -97,8 +109,13 @@ fn model_category_of(j: Journal, category: String) -> ModelCategory {
         if e.kind == "model.category" && e.entity == category {
             out = ModelCategory {
                 category: category, model: std::json::find_string_field(e.body, "model"),
-                tool_calls: std::str::trim(std::json::find_field_raw(e.body, "tool_calls")) == "true",
-                input_micros_per_1k: std::json::find_int_field(e.body, "input_micros_per_1k"), output_micros_per_1k: std::json::find_int_field(e.body, "output_micros_per_1k"),
+                endpoint: std::json::find_string_field(e.body, "endpoint"),
+                key_vault: std::json::find_string_field(e.body, "key_vault"),
+                tool_calls: std::str::trim(
+                    std::json::find_field_raw(e.body, "tool_calls"),
+                ) == "true",
+                input_micros_per_1k: std::json::find_int_field(e.body, "input_micros_per_1k"),
+                output_micros_per_1k: std::json::find_int_field(e.body, "output_micros_per_1k"),
                 by: std::json::find_string_field(e.body, "by")
             };
         }
@@ -107,11 +124,85 @@ fn model_category_of(j: Journal, category: String) -> ModelCategory {
     return out;
 }
 
+// Whether the record maps any model at all: some category's latest
+// `model.category` row names one. With none, nothing is a leg's to perform
+// (the solo path: Work a leg would take is a person's case).
+@bounded_by(j)
+fn model_mapped(j: Journal) -> Bool {
+    let mut cleared = "\n";
+    let mut i = j.revision() - 1;
+    while i >= 0 {
+        let e = j.read(i);
+        if e.kind == "model.category" && !std::str::contains(cleared, "\n" + e.entity + "\n") {
+            if len(std::json::find_string_field(e.body, "model")) > 0 { return true; }
+            cleared = cleared + e.entity + "\n";
+        }
+        i = i - 1;
+    }
+    return false;
+}
+
+// The vault slots the map's endpoints are asked with: each category's
+// latest row that names a model and a `key_vault`, a line per slot,
+// `<slot>\t<its categories, space-separated>`, in the order a slot is
+// first named. A slot here is one the organism requires (`hale dna
+// secrets` lists it as a model key; the habitat fills `model-HABITAT_<key>`
+// with its models' key for the organism).
+@bounded_by(j)
+fn model_key_slots(j: Journal) -> String {
+    let mut latest = "\n";
+    let mut slots = "";
+    let mut i = j.revision() - 1;
+    while i >= 0 {
+        let e = j.read(i);
+        i = i - 1;
+        if e.kind != "model.category" || std::str::contains(latest, "\n" + e.entity + "\n") {
+            continue;
+        }
+        latest = latest + e.entity + "\n";
+        let slot = std::json::find_string_field(e.body, "key_vault");
+        if len(slot) == 0 || len(std::json::find_string_field(e.body, "model")) == 0 { continue; }
+        slots = slots + slot + "\t" + e.entity + "\n";
+    }
+    // one line per slot, its categories gathered
+    let mut out = "";
+    let mut rest = slots;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let t = std::str::index_of(line, "\t");
+        let slot = line[0..t];
+        if std::str::starts_with(out, slot + "\t") || std::str::contains(out, "\n" + slot + "\t") {
+            continue;
+        }
+        let mut cats = "";
+        let mut more = slots;
+        while len(more) > 0 {
+            let n2 = std::str::index_of(more, "\n");
+            let l2 = more[0..n2];
+            more = more[(n2 + 1)..len(more)];
+            if std::str::starts_with(l2, slot + "\t") {
+                cats = (if len(cats) > 0 { cats + " " } else { "" })
+                    + l2[(len(slot) + 1)..len(l2)];
+            }
+        }
+        out = out + slot + "\t" + cats + "\n";
+    }
+    return out;
+}
+
 // The model for a Work: the size its most specific rule says (a task's
 // override only inside the permitted sizes of the rule beneath it), the mode
 // its hands make, and the model the category names. A `tools` or `do` Work
 // needs a model that returns tool calls.
-fn model_resolve(j: Journal, position: String, owed: String, task_id: String, hands: String) -> ModelChoice {
+fn model_resolve(
+    j: Journal,
+    position: String,
+    owed: String,
+    task_id: String,
+    hands: String
+) -> ModelChoice {
     let mode = model_mode_of(hands);
     let mut base = model_rule_of(j, position);
     if len(base.size) == 0 { base = model_rule_of(j, "contract:" + owed); }
@@ -122,7 +213,9 @@ fn model_resolve(j: Journal, position: String, owed: String, task_id: String, ha
         // an override names the Task, or the ask it was admitted for
         // (`task create --size` writes it before the Task has an id)
         let mut over = model_rule_of(j, "task:" + task_id);
-        if len(over.size) == 0 { over = model_rule_of(j, "task:" + model_task_request(j, task_id)); }
+        if len(over.size) == 0 {
+            over = model_rule_of(j, "task:" + model_task_request(j, task_id));
+        }
         if len(over.size) > 0 && (over.size == size || word_in(over.size, base.permit)) {
             size = over.size;
             rule = over.selector;
@@ -130,9 +223,38 @@ fn model_resolve(j: Journal, position: String, owed: String, task_id: String, ha
     }
     let category = mode + "." + size;
     let c = model_category_of(j, category);
-    if len(c.model) == 0 { return ModelChoice { mode: mode, size: size, category: category, rule: rule, why: "no model fills `" + category + "`: `hale dna models category " + category + " <model>` names one" }; }
-    if mode != "think" && !c.tool_calls { return ModelChoice { mode: mode, size: size, category: category, model: c.model, rule: rule, why: "`" + c.model + "` fills `" + category + "` but returns no tool calls, which a `" + mode + "` Work needs" }; }
-    return ModelChoice { ok: true, mode: mode, size: size, category: category, model: c.model, rule: rule, tool_calls: c.tool_calls };
+    if len(c.model) == 0 {
+        return ModelChoice {
+            mode: mode,
+            size: size,
+            category: category,
+            rule: rule,
+            why: "no model fills `" + category + "`: `hale dna models category " + category
+                + " <model>` names one",
+        };
+    }
+    if mode != "think" && !c.tool_calls {
+        return ModelChoice {
+            mode: mode,
+            size: size,
+            category: category,
+            model: c.model,
+            rule: rule,
+            why: "`" + c.model + "` fills `" + category + "` but returns no tool calls, which a `"
+                + mode + "` Work needs",
+        };
+    }
+    return ModelChoice {
+        ok: true,
+        mode: mode,
+        size: size,
+        category: category,
+        model: c.model,
+        endpoint: c.endpoint,
+        key_vault: c.key_vault,
+        rule: rule,
+        tool_calls: c.tool_calls,
+    };
 }
 
 // The ask a Task was admitted for: its admission's request ("" when none).
@@ -140,7 +262,9 @@ fn model_task_request(j: Journal, task_id: String) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "workflow.admitted" && e.entity == task_id { return native_json_string(e.body, "request"); }
+        if e.kind == "workflow.admitted" && e.entity == task_id {
+            return native_json_string(e.body, "request");
+        }
         i = i + 1;
     }
     return "";
@@ -154,6 +278,8 @@ fn model_choice_json(c: ModelChoice) -> String {
     b.string_field("size", c.size);
     b.string_field("category", c.category);
     b.string_field("model", c.model);
+    if len(c.endpoint) > 0 { b.string_field("endpoint", c.endpoint); }
+    if len(c.key_vault) > 0 { b.string_field("key_vault", c.key_vault); }
     b.string_field("rule", c.rule);
     b.string_field("why", c.why);
     b.end_object();

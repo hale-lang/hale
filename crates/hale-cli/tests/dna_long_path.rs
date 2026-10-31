@@ -13,6 +13,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -33,13 +39,11 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
         eprintln!("dna_long_path: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir()
-        .join(format!("hale_dna_len_{}", std::process::id()))
-        .join("a-fairly-ordinary-checkout-directory")
-        .join("nested-inside-another-one");
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("hale_dna_len_{}", std::process::id())));
+    let scratch = scratch::Scratch::new(format!("hale_dna_len_{}", std::process::id()));
+    let d = scratch.join("a-fairly-ordinary-checkout-directory").join("nested-inside-another-one");
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orglong"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orglong", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orglong");
     // the shakeout's finding 6 was a 108-byte Unix socket address the
@@ -57,6 +61,7 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)
@@ -84,13 +89,8 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
         panic!("the organization never read its facts from the nerves at this path:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     let (ok, ask) = hale(&["dna", "task", "create", "write", "the", "changelog"], &app);
-    let record = || -> String {
-        Command::new("git")
-            .args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default()
-    };
+    // a Task is the Ledger's (GH #1590)
+    let record = || -> String { record::text(&app) + &record::ledger_text(&app) };
     let born = {
         let dl = Instant::now() + Duration::from_secs(20);
         loop {
@@ -106,5 +106,5 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     finish(&mut host);
     assert!(ok, "the ask reached the organization over the nerves: {ask}");
     assert!(born, "the organization heard it and bore a Task: {ask}");
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("hale_dna_len_{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&*scratch);
 }

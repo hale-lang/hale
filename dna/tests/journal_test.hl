@@ -5,10 +5,9 @@
 // a fencing token and a late writer is refused; an effect request is
 // committed before dispatch and survives a simulated crash/retry
 // without dispatching twice; task status is a projection; a retrieval
-// index can be deleted and rebuilt with no loss. The record — a git
-// branch — rehydrates from the ref with git's own chain, fences two
-// instances through compare-and-swap, and files receipts and leases
-// as refs.
+// index can be deleted and rebuilt with no loss. The record — memory's
+// (GH #1590) — is read the same by two handles, fences them at its tail,
+// and keeps receipts and leases beside it.
 
 import "../core" as dna;
 
@@ -32,14 +31,26 @@ main locus App {
         std::test::assert_eq_int(w2.actual, 2, "told the actual revision");
         std::test::assert(self.mem.verify_chain(), "digest chain intact");
         let e1 = self.mem.read(1);
-        std::test::assert_eq_str(e1.prev, self.mem.read(0).digest, "each event names its predecessor");
+        std::test::assert_eq_str(
+            e1.prev,
+            self.mem.read(0).digest,
+            "each event names its predecessor",
+        );
         std::test::assert_eq_int(len(e1.digest), 64, "sha256 hex digest");
 
         // ---- projections ---------------------------------------------
-        std::test::assert_eq_str(dna::task_status(self.mem, "t1"), "running", "status is rebuilt from events");
+        std::test::assert_eq_str(
+            dna::task_status(self.mem, "t1"),
+            "running",
+            "status is rebuilt from events",
+        );
         let done = self.mem.append(2, "task.done", "t1", "");
         std::test::assert(done.ok, "append");
-        std::test::assert_eq_str(dna::task_status(self.mem, "t1"), "done", "status follows the last event");
+        std::test::assert_eq_str(
+            dna::task_status(self.mem, "t1"),
+            "done",
+            "status follows the last event",
+        );
         std::test::assert_eq_str(dna::task_status(self.mem, "t9"), "unknown", "unknown id");
 
         // ---- fencing ---------------------------------------------------
@@ -50,11 +61,24 @@ main locus App {
         std::test::assert_eq_str(l2.holder, "attempt-a", "names the holder");
         // attempt-a's lease expires; attempt-b takes over with a new token
         let l3 = self.leases.acquire("work:w1", "attempt-b", 200, 50);
-        std::test::assert(l3.present && l3.token > l1.token, "re-acquired with a higher fencing token");
+        std::test::assert(
+            l3.present && l3.token > l1.token,
+            "re-acquired with a higher fencing token",
+        );
         // the late writer wakes up and tries to complete with its stale token
-        std::test::assert(!self.leases.complete("work:w1", l1.token, 210), "stale token cannot record a late success");
-        std::test::assert(self.leases.complete("work:w1", l3.token, 210), "current token completes");
-        std::test::assert_eq_str(self.leases.holder_of("work:w1"), "", "lease released on completion");
+        std::test::assert(
+            !self.leases.complete("work:w1", l1.token, 210),
+            "stale token cannot record a late success",
+        );
+        std::test::assert(
+            self.leases.complete("work:w1", l3.token, 210),
+            "current token completes",
+        );
+        std::test::assert_eq_str(
+            self.leases.holder_of("work:w1"),
+            "",
+            "lease released on completion",
+        );
 
         // ---- idempotent effects across crash/retry ---------------------
         let first = dna::effect_request(self.mem, "email:welcome:42", "send welcome to 42");
@@ -62,8 +86,14 @@ main locus App {
         // crash before the result was recorded; the retry finds the key
         let retry = dna::effect_request(self.mem, "email:welcome:42", "send welcome to 42");
         std::test::assert(!retry, "retry does NOT dispatch again");
-        std::test::assert(dna::effect_result(self.mem, "email:welcome:42", true), "result recorded once");
-        std::test::assert(!dna::effect_result(self.mem, "email:welcome:42", true), "a second result is refused");
+        std::test::assert(
+            dna::effect_result(self.mem, "email:welcome:42", true),
+            "result recorded once",
+        );
+        std::test::assert(
+            !dna::effect_result(self.mem, "email:welcome:42", true),
+            "a second result is refused",
+        );
         let st = dna::effect_status(self.mem, "email:welcome:42");
         std::test::assert(st.requested && st.done && st.ok, "ledger projection reads back");
 
@@ -73,61 +103,105 @@ main locus App {
         std::test::assert_eq_int(self.index.count("task.born"), 1, "indexed the birth");
         let fresh = dna::RetrievalIndex { };
         fresh.rebuild(self.mem);
-        std::test::assert_eq_int(fresh.indexed, self.index.indexed, "a fresh index rebuilds to the same size");
+        std::test::assert_eq_int(
+            fresh.indexed,
+            self.index.indexed,
+            "a fresh index rebuilds to the same size",
+        );
         std::test::assert_eq_int(fresh.count("task.done"), 1, "same content");
         std::test::assert(self.mem.verify_chain(), "the journal never changed");
 
-        // ---- the record: a git branch ---------------------------------
+        // ---- the record: memory's (GH #1590) ---------------------------
+        // (the record's own kinds: a task's are the Ledger's, which the
+        // record refuses)
         let repo = dna::scratch_root("record");
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "git init: " + init.stderr);
-        let g1 = dna::GitJournal { repo: repo };
-        std::test::assert_eq_int(g1.loaded, 0, "an empty repository is an empty record");
-        let r1 = g1.append(0, "task.born", "t1", "durable");
-        let r2 = g1.append(1, "task.done", "t1", "");
-        std::test::assert(r1.ok && r2.ok, "two durable appends: " + g1.last_error);
-        std::test::assert(!g1.append(1, "task.x", "t1", "").ok, "stale refused on the record too");
-        std::test::assert_eq_int(len(g1.head()), 40, "the head is a commit");
-        std::test::assert_eq_str(g1.read(1).prev, g1.read(0).digest, "the parent is the previous event");
+        let born = dna::memory_fixture(repo);
+        std::test::assert_eq_str(born, "", "the record is born in memory");
+        let g1 = dna::RecordJournal { repo: repo };
+        let at = g1.revision();
+        std::test::assert_eq_int(at, 2, "a record is born with its genesis and its key");
+        let r1 = g1.append(at, "note.kept", "t1", "durable");
+        let r2 = g1.append(at + 1, "note.done", "t1", "");
+        std::test::assert(r1.ok && r2.ok, "two durable appends: " + g1.last_error());
+        std::test::assert(
+            !g1.append(at + 1, "note.x", "t1", "").ok,
+            "stale refused on the record too",
+        );
+        std::test::assert_eq_int(len(g1.head()), 64, "the head is the last row's digest");
+        std::test::assert_eq_str(
+            g1.read(at + 1).prev,
+            g1.read(at).digest,
+            "each row names the one before it",
+        );
         let head = g1.head();
-        // a second instance (another process, in life) rehydrates the same record
-        let g2 = dna::GitJournal { repo: repo };
-        std::test::assert_eq_int(g2.loaded, 2, "rehydrated both events from the ref");
+        // a second instance (another process, in life) reads the same record
+        let g2 = dna::RecordJournal { repo: repo };
+        std::test::assert_eq_int(g2.revision(), at + 2, "the second handle reads both rows");
         std::test::assert_eq_str(g2.head(), head, "same head");
-        std::test::assert(g2.verify_chain(), "the chain is git's, and it verifies");
-        std::test::assert_eq_str(dna::task_status(g2, "t1"), "done", "projection survives restart");
-        let r3 = g2.append(2, "task.retained", "t1", "");
-        std::test::assert(r3.ok, "the rehydrated record continues the chain");
-        // g1 is now behind the ref: appending at its own tail loses the
-        // CAS, reloads, and re-appends at the new tail
-        std::test::assert(!g1.verify_chain(), "g1 sees the ref moved");
-        let r4 = g1.append(g1.revision(), "task.archived", "t1", "");
-        std::test::assert(r4.ok, "re-appended after the race: " + g1.last_error);
-        std::test::assert_eq_int(r4.revision, 4, "at the new tail");
+        std::test::assert(g2.verify_chain(), "the chain verifies");
+        let r3 = g2.append(at + 2, "note.retained", "t1", "");
+        std::test::assert(r3.ok, "the second handle continues the chain");
+        // g1 is now behind: an append at its own tail goes round at the new tail
+        let r4 = g1.append(g1.revision(), "note.archived", "t1", "");
+        std::test::assert(r4.ok, "appended after the race: " + g1.last_error());
+        std::test::assert_eq_int(r4.revision, at + 4, "at the new tail");
         std::test::assert_eq_int(g1.retries, 1, "one race lost");
-        std::test::assert_eq_int(g1.read(3).seq, 3, "seq follows the record, not the stale view");
-        std::test::assert(g2.refresh(), "g2 notices the ref moved");
-        std::test::assert_eq_int(g2.revision(), 4, "and loads the new event");
+        std::test::assert_eq_int(
+            g1.read(at + 3).seq,
+            at + 3,
+            "seq follows the record, not the stale view",
+        );
+        std::test::assert(g2.refresh(), "g2 reads the new row");
+        std::test::assert_eq_int(g2.revision(), at + 4, "and loads it");
         std::test::assert(g2.verify_chain(), "chain verifies for both");
 
-        // ---- receipts and leases through git ---------------------------
-        let rc = dna::GitReceipts { repo: repo };
+        // ---- receipts and leases in memory -------------------------------
+        let rc = dna::MemoryReceipts { repo: repo };
         let d = rc.store("check output\n");
-        std::test::assert_eq_int(len(d), 64, "a receipt is filed under its sha256");
-        std::test::assert_eq_str(rc.read(d), "check output\n", "and read back from the ref");
-        std::test::assert_eq_str(rc.store("check output\n"), d, "storing the same text again is the same receipt");
-        let gl = dna::GitLeases { repo: repo };
+        std::test::assert_eq_int(len(d), 64, "a receipt is kept under its sha256");
+        std::test::assert_eq_str(rc.read(d), "check output\n", "and read back from memory");
+        std::test::assert_eq_str(
+            rc.store("check output\n"),
+            d,
+            "storing the same text again is the same receipt",
+        );
+        let gl = dna::MemoryLeases { repo: repo };
         let m1 = gl.acquire("mutation:m1", "dna-a", 100, 50);
-        std::test::assert(m1.present && m1.token == 1, "lease acquired through a ref");
+        std::test::assert(m1.present && m1.token == 1, "lease acquired in memory");
         let m2 = gl.acquire("mutation:m1", "dna-b", 120, 50);
         std::test::assert(!m2.present && m2.holder == "dna-a", "held lease refused while live");
-        let gl2 = dna::GitLeases { repo: repo };
+        let gl2 = dna::MemoryLeases { repo: repo };
         let m3 = gl2.acquire("mutation:m1", "dna-b", 200, 50);
-        std::test::assert(m3.present && m3.token == 2, "another process re-acquires after expiry with a higher token");
-        std::test::assert(!gl.complete("mutation:m1", m1.token, 210), "the stale token cannot complete");
-        std::test::assert(dna::lease_fences(gl, "mutation:m1", m3.token, 210), "the live token fences");
+        std::test::assert(
+            m3.present && m3.token == 2,
+            "another process re-acquires after expiry with a higher token",
+        );
+        std::test::assert(
+            !gl.complete("mutation:m1", m1.token, 210),
+            "the stale token cannot complete",
+        );
+        std::test::assert(
+            dna::lease_fences(gl, "mutation:m1", m3.token, 210),
+            "the live token fences",
+        );
         std::test::assert(gl2.complete("mutation:m1", m3.token, 210), "the live token completes");
         std::test::assert_eq_str(gl.holder_of("mutation:m1"), "", "released");
+        // the clone's kept DSN is refused once anyone else may read it (GH #1590)
+        let kept = repo + "/.hale/dna/memory.env";
+        std::test::assert_eq_str(
+            dna::file_mode(kept),
+            "600",
+            "the clone keeps the head's DSN mode 600",
+        );
+        let loose = dna::run_tool("chmod\n644\n" + kept);
+        let refused = dna::RecordJournal { repo: repo };
+        std::test::assert(
+            refused.revision() == 0 && std::str::contains(refused.last_error(), "chmod 600"),
+            "a readable kept DSN is refused, naming the fix: " + refused.last_error(),
+        );
+        let tight = dna::run_tool("chmod\n600\n" + kept);
         dna::scratch_done(repo);
     }
 }

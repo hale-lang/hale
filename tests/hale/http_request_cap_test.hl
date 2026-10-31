@@ -1,0 +1,108 @@
+// tests/hale/http_request_cap_test.hl — `std::http::Server`'s request
+// cap is its `max_request_bytes` (1 MiB unless set), and a request whose
+// declared Content-Length is over it is answered with the Server's
+// `too_large` response (`413 payload too large` unless set) without its
+// body being read. It was a constant of the connection loop, with the
+// 413 fixed beside it. A server that sets neither answers as before.
+
+locus Echo {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, body: "got " + to_string(len(req.body)) };
+    }
+}
+
+// Send `request` on a fresh connection and read until the server closes.
+fn raw_exchange(port: Int, request: String) -> String {
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 {
+        return "no connection";
+    }
+    std::io::tcp::__set_recv_timeout_ns(fd, 5000000000);
+    let s = std::io::tcp::Stream { conn_fd: fd };
+    s.send(request) or discard;
+    let mut got = "";
+    let mut i = 0;
+    while i < 1000 {
+        let chunk = s.recv(4096) or "";
+        if len(chunk) == 0 {
+            break;
+        }
+        got = got + chunk;
+        i = i + 1;
+    }
+    return got;
+}
+
+fn post(port: Int, declared: Int, body: String) -> String {
+    return raw_exchange(port,
+        "POST /x HTTP/1.1\r\nHost: t\r\nContent-Length: " + to_string(declared) + "\r\n\r\n"
+            + body);
+}
+
+main locus App {
+    params {
+        small: std::http::Server = std::http::Server {
+            port: 0,
+            handler: Echo { },
+            max_request_bytes: 64,
+            too_large: std::http::Response {
+                status: 413,
+                content_type: "application/json",
+                body: "{\"error\":\"too large\"}"
+            }
+        };
+        plain: std::http::Server = std::http::Server { port: 0, handler: Echo { } };
+    }
+    placement {
+        small: cooperative(pool = io) where async_io;
+        plain: cooperative(pool = io) where async_io;
+    }
+    run() {
+        let small = std::io::tcp::__local_port(self.small.listen_fd);
+        let plain = std::io::tcp::__local_port(self.plain.listen_fd);
+        std::test::assert(small > 0 && plain > 0, "both servers are bound");
+
+        // under the cap: served
+        std::test::assert(
+            std::str::ends_with(post(small, 10, "0123456789"), "\r\n\r\ngot 10"),
+            "a request under the set cap is served");
+        // a declared body over the set cap: the Server's own answer, the
+        // headers alone and the whole request in one write alike
+        let too_large = "HTTP/1.1 413 Content Too Large\r\nContent-Type: application/json\r\nContent-Length: 21\r\nConnection: close\r\n\r\n"
+            + "{\"error\":\"too large\"}";
+        let hundred = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+        std::test::assert_eq_str(
+            post(small, 100, hundred),
+            too_large,
+            "a whole request over the set cap in one write",
+        );
+        // a request whose head and body together pass the cap, the body under it
+        std::test::assert_eq_str(
+            post(small, 40, "0123456789012345678901234567890123456789"),
+            too_large,
+            "head and body together over the set cap",
+        );
+        std::test::assert_eq_str(
+            post(small, 100, ""),
+            "HTTP/1.1 413 Content Too Large\r\nContent-Type: application/json\r\nContent-Length: 21\r\nConnection: close\r\n\r\n"
+                + "{\"error\":\"too large\"}",
+            "over the set cap: the too_large response");
+
+        // the defaults: a body of 100 bytes is served, one declared over
+        // 1 MiB is today's plain-text 413
+        std::test::assert(
+            std::str::ends_with(post(plain, 100, hundred), "\r\n\r\ngot 100"),
+            "the default cap serves what the set one refused");
+        std::test::assert_eq_str(
+            post(plain, 2000000, ""),
+            "HTTP/1.1 413 Content Too Large\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\npayload too large",
+            "over the default cap: the default 413");
+
+        std::io::tcp::stop(self.small.listener);
+        std::io::tcp::stop(self.plain.listener);
+    }
+}
+
+fn main() {
+    App { };
+}

@@ -4,8 +4,9 @@
 // Every store used to create its own tables on every open and every
 // reconnect, so every process that touched memory needed the rights to
 // change its shape. The schema is now applied once, by `migrate`, with
-// the schema owner's DSN (`hale dna memory migrate`, `hale dna upgrade`,
-// and `hale dna dev` before it starts the organism), and the processes
+// the schema owner's DSN by the habitat's acts alone (`hale habitat
+// migrate`, birth, `hale dna upgrade`, `hale dna memory migrate`; GH #1653:
+// `hale dna dev` derives and migrates nothing), and the processes
 // that run connect as a role that can read and write the tables but not
 // change them. A store's `open` checks the schema version and refuses a
 // memory at another one, naming both, the same fence the record keeps.
@@ -22,10 +23,16 @@
 // #1123): `org_members` is a view over the graph's `holds` edges — a
 // person holding an `organization` node is its member — where it was a
 // table the spine rewrote from the owners map.
-// 7 (GH #987): the routing table's `reading` family, an application's
+// 7 (GH #987): the `reading` family placed in the ledger, an application's
 // readings, which the insert function admits to the ledger. 8 (GH #988):
-// its `reflex` family, what a reflex made the body do.
-const MEMORY_SCHEMA_VERSION: Int = 8;
+// its `reflex` family, what a reflex made the body do. 9 (GH #1590): the
+// exchange's inbox, `exchange_rows`, kept through `exchange_keep` alone.
+// 10 (GH #1590): the record itself, `record_rows`, appended through
+// `record_append` alone (the prev-digest chain, a signature per row), and
+// a receipt kept unsealed beside the protected ones (`receipt_keep`); the
+// writers insert, and nothing they hold updates or deletes a row of either
+// chain.
+const MEMORY_SCHEMA_VERSION: Int = 10;
 
 type Migrated {
     ok: Bool = false;
@@ -95,8 +102,8 @@ fn owners_of_keys(keys: String) -> String {
 }
 
 // GH #989: a role's password lives in the vault under
-// `postgres-<role>`. The organism's bootstrap provisions it (`hale dna
-// init` / `upgrade`, dna/host/secrets.hl, through
+// `postgres-<role>`. The organism's bootstrap provisions it (`hale habitat
+// graft` / `hale dna upgrade`, dna/host/secrets.hl, through
 // `provision_record_roles`); an owner's head role is provisioned where the
 // owner is declared (`migrate_for`'s owners). Everything else only
 // consumes it: `role_password` is "" when the vault holds none, and
@@ -111,11 +118,17 @@ fn role_password(role: String) -> String {
 // each of `owners`' head roles): drawn where none is. "" when every one
 // has a password, else why not. The bootstrap's step, and a fixture's.
 fn provision_record_roles(record_id: String, owners: String) -> String {
-    if len(provision_role(spine_role(record_id))) == 0 { return "the spine's role password could not be provisioned in the vault"; }
-    if len(provision_role(head_role(record_id))) == 0 { return "the head's role password could not be provisioned in the vault"; }
+    if len(provision_role(spine_role(record_id))) == 0 {
+        return "the spine's role password could not be provisioned in the vault";
+    }
+    if len(provision_role(head_role(record_id))) == 0 {
+        return "the head's role password could not be provisioned in the vault";
+    }
     let mut i = 0;
     while len(nth_word(owners, i)) > 0 {
-        if len(provision_role(owner_role(record_id, nth_word(owners, i)))) == 0 { return "an owner's role password could not be provisioned in the vault"; }
+        if len(provision_role(owner_role(record_id, nth_word(owners, i)))) == 0 {
+            return "an owner's role password could not be provisioned in the vault";
+        }
         i = i + 1;
     }
     return "";
@@ -147,27 +160,45 @@ fn vault_provision_local(name: String) -> String {
     if drawn.code != 0 || len(value) != 32 { return ""; }
     if run_tool("sh\n-c\numask 077 && : > \"$1\"\nsh\n" + path).code != 0 { return ""; }
     std::io::fs::write_file(path, value) or discard;
-    return if std::secret::Credential { vault: name }.matches(std::bytes::from_string(value)) { "drawn" } else { "" };
+    return if std::secret::Credential { vault: name }.matches(std::bytes::from_string(value)) {
+        "drawn"
+    } else {
+        ""
+    };
 }
 
 // `owner` with the role in place of the owner's user, and the vault entry
 // holding the role's password in place of a password (GH #989): the DSN
 // names where the credential is, and the connection presents it.
 fn role_dsn(owner: Dsn, role: String) -> Dsn {
-    return Dsn { ok: owner.ok, user: role, vault: role_vault_name(role), host: owner.host, port: owner.port, database: owner.database, sslmode: owner.sslmode };
+    return Dsn {
+        ok: owner.ok,
+        user: role,
+        vault: role_vault_name(role),
+        host: owner.host,
+        port: owner.port,
+        database: owner.database,
+        sslmode: owner.sslmode,
+    };
 }
 
 // A DSN as text: one that names a vault entry carries no password, only
 // the entry's name (`&vault=`); an operator's carries the one it was given.
 fn dsn_text(d: Dsn) -> String {
-    if len(d.vault) > 0 { return "postgres://" + d.user + "@" + d.host + ":" + to_string(d.port) + "/" + d.database + "?sslmode=" + d.sslmode + "&vault=" + d.vault; }
-    return "postgres://" + d.user + ":" + d.password + "@" + d.host + ":" + to_string(d.port) + "/" + d.database + "?sslmode=" + d.sslmode;
+    if len(d.vault) > 0 {
+        return "postgres://" + d.user + "@" + d.host + ":" + to_string(d.port) + "/" + d.database
+            + "?sslmode=" + d.sslmode + "&vault=" + d.vault;
+    }
+    return "postgres://" + d.user + ":" + d.password + "@" + d.host + ":" + to_string(d.port) + "/"
+        + d.database + "?sslmode=" + d.sslmode;
 }
 
 fn knowledge_ddl() -> String {
     return "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
-        + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
-        + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
+        + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector("
+        + to_string(DIM) + "));"
+        + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM)
+        + ");"
         + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';"
         + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS supersedes text NOT NULL DEFAULT '';"
         + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
@@ -199,7 +230,6 @@ fn ledger_ddl() -> String {
         + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
         + "DROP INDEX IF EXISTS ledger_rows_claim;"
         + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claims ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'spend.reserved', 'task.born');"
-        + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
         + "DROP TABLE IF EXISTS ledger_mailboxes;"
         + "DO $m$ BEGIN IF to_regclass('ledger_leases') IS NOT NULL AND to_regclass('claims') IS NULL THEN ALTER TABLE ledger_leases RENAME TO claims; ALTER TABLE claims RENAME COLUMN expires TO until; END IF; END $m$;"
@@ -211,6 +241,18 @@ fn ledger_ddl() -> String {
     // that built one or the head that read one, so replay renders from
     // the recorded hat and never the live graph
         + "CREATE TABLE IF NOT EXISTS hats (digest text PRIMARY KEY, head text NOT NULL, watermark bigint NOT NULL, body text NOT NULL, kept_at timestamptz NOT NULL DEFAULT now());"
+    // GH #1590: the envelopes other records sent this one, each once by id,
+    // as they arrived (the signed line whole), never changed
+        + "CREATE TABLE IF NOT EXISTS exchange_rows (id text NOT NULL, sender text NOT NULL, signer text NOT NULL DEFAULT '', kind text NOT NULL, entity text NOT NULL, line text NOT NULL, stream_seq bigint NOT NULL, received_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (sender, id, signer));"
+    // an envelope's id is its sender's namespace, and the key that signed it
+    // is part of its identity: an envelope signed with another key never
+    // takes the place of the sender's own
+    // GH #1590: the record's rows: each one's digest extends the chain from
+    // the row before (`prev`), and carries its writer's signature over that
+    // digest ("" where the record's trust admits an unsigned row)
+        + "CREATE TABLE IF NOT EXISTS record_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, writer text NOT NULL, prev text NOT NULL, digest text NOT NULL UNIQUE, sig text NOT NULL DEFAULT '', at timestamptz NOT NULL DEFAULT now());"
+        + "CREATE TABLE IF NOT EXISTS record_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
+        + "ALTER TABLE protected_receipts ADD COLUMN IF NOT EXISTS sealed boolean NOT NULL DEFAULT true;"
         + ledger_gate_ddl();
 }
 
@@ -236,7 +278,7 @@ fn ledger_gate_ddl() -> String {
 // through `ledger_append` alone, run as the owner, and the calling role
 // is who wrote it (`session_user`; inside a definer function
 // `current_user` is the owner). It refuses, with the reason, a record kind
-// (`ledger_kind`, the routing table as data); an author the role does not
+// (`ledger_kind`, each kind's fixed placement); an author the role does not
 // hold (`memory_principals`: `*` any author and no person checks — the
 // spine's role; `@` any person — one owner's head; an owner's name — its
 // members, `org_members`; `host` — any head); a person retired
@@ -251,37 +293,52 @@ fn ledger_gate_ddl() -> String {
 // chain as `event_digest` does.
 fn ledger_functions(sch: String) -> String {
     let refuse = "RETURN json_build_object('error', 'refused', 'why', ";
-    return "CREATE OR REPLACE FUNCTION " + sch + ".ledger_kind(p_kind text) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $k$ SELECT split_part(p_kind, '.', 1) = ANY (string_to_array('" + LEDGER_FAMILIES + "', ' ')) OR p_kind = ANY (string_to_array('" + LEDGER_KINDS + "', ' ')) $k$;"
-        + "CREATE OR REPLACE FUNCTION " + sch + ".ledger_json(p_body text, p_key text) RETURNS text LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog AS $j$ BEGIN RETURN p_body::json ->> p_key; EXCEPTION WHEN others THEN RETURN NULL; END $j$;"
-        + "CREATE OR REPLACE FUNCTION " + sch + ".ledger_append(p_expected bigint, p_kind text, p_entity text, p_body text, p_author text, p_lease text, p_epoch bigint, p_request text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $a$ "
+    return "CREATE OR REPLACE FUNCTION " + sch
+        + ".ledger_kind(p_kind text) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $k$ SELECT split_part(p_kind, '.', 1) = ANY (string_to_array('"
+        + LEDGER_FAMILIES + "', ' ')) OR p_kind = ANY (string_to_array('" + LEDGER_KINDS
+        + "', ' ')) $k$;"
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".ledger_json(p_body text, p_key text) RETURNS text LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog AS $j$ BEGIN RETURN p_body::json ->> p_key; EXCEPTION WHEN others THEN RETURN NULL; END $j$;"
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".ledger_append(p_expected bigint, p_kind text, p_entity text, p_body text, p_author text, p_lease text, p_epoch bigint, p_request text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $a$ "
         + "DECLARE me text := session_user; who text := coalesce(nullif(p_author, ''), 'ledger'); anyone boolean; human boolean; n bigint; v_prev text; d text; c record; r record; o text; mine text; t text; cn text; "
         + "BEGIN "
-        + "IF NOT ledger_kind(p_kind) THEN " + refuse + "'`' || p_kind || '` is a row of the record, not the ledger: it is appended to the record')::text; END IF; "
+        + "IF NOT ledger_kind(p_kind) THEN " + refuse
+        + "'`' || p_kind || '` is a row of the record, not the ledger: it is appended to the record')::text; END IF; "
         + "IF p_request <> '' THEN SELECT revision INTO n FROM ledger_requests WHERE request_id = p_request; IF FOUND THEN RETURN json_build_object('error', '', 'seq', n - 1, 'again', true)::text; END IF; END IF; "
         + "anyone := EXISTS (SELECT 1 FROM memory_principals WHERE role = me AND principal = '*'); "
         + "human := who NOT IN ('host', 'ledger'); "
         + "IF NOT anyone AND human THEN SELECT seq INTO n FROM org_retired WHERE person = who; "
-        + "IF FOUND THEN " + refuse + "who || ' retired from this organism (person.retired at row ' || n || '); nothing is admitted in their name')::text; END IF; END IF; "
+        + "IF FOUND THEN " + refuse
+        + "who || ' retired from this organism (person.retired at row ' || n || '); nothing is admitted in their name')::text; END IF; END IF; "
         + "IF NOT anyone AND NOT EXISTS (SELECT 1 FROM memory_principals p WHERE p.role = me AND (p.principal = '@' OR p.principal = who OR who = 'host' OR EXISTS (SELECT 1 FROM org_members m WHERE m.person = who AND m.owner = p.principal))) THEN "
-        + refuse + "'the role ' || me || ' does not write as ' || who || ': a head writes as its owner''s members')::text; END IF; "
+        + refuse
+        + "'the role ' || me || ' does not write as ' || who || ': a head writes as its owner''s members')::text; END IF; "
         + "IF NOT anyone AND human THEN "
         + "IF p_kind = 'task.transfer_accepted' THEN "
         + "SELECT kind, body INTO r FROM ledger_rows WHERE entity = p_entity AND kind IN ('task.transfer_requested', 'task.transfer_accepted') ORDER BY seq DESC LIMIT 1; "
         + "o := CASE WHEN FOUND AND r.kind = 'task.transfer_requested' THEN coalesce(ledger_json(r.body, 'to'), '') ELSE '' END; "
-        + "IF o = '' THEN " + refuse + "'task ' || p_entity || ' is not offered to an owner of this record; nothing to accept')::text; END IF; "
+        + "IF o = '' THEN " + refuse
+        + "'task ' || p_entity || ' is not offered to an owner of this record; nothing to accept')::text; END IF; "
         + "SELECT owner INTO mine FROM org_members WHERE person = who; "
-        + "IF coalesce(mine, '') <> o THEN " + refuse + "'task ' || p_entity || ' is offered to ' || o || '; ' || who || ' is ' || CASE WHEN coalesce(mine, '') = '' THEN 'no owner''s' ELSE mine || '''s' END || ' member, and only ' || o || '''s accepts')::text; END IF; "
+        + "IF coalesce(mine, '') <> o THEN " + refuse
+        + "'task ' || p_entity || ' is offered to ' || o || '; ' || who || ' is ' || CASE WHEN coalesce(mine, '') = '' THEN 'no owner''s' ELSE mine || '''s' END || ' member, and only ' || o || '''s accepts')::text; END IF; "
         + "END IF; "
         + "IF p_kind IN ('task.done', 'task.failed', 'completion.linked', 'completion.excepted') THEN "
         + "SELECT a INTO t FROM (SELECT seq, CASE WHEN kind = 'task.reassigned' THEN ledger_json(body, 'to') ELSE ledger_json(body, 'assignee') END AS a FROM ledger_rows WHERE entity = p_entity AND kind IN ('task.handed', 'task.reassigned')) x WHERE coalesce(a, '') <> '' ORDER BY seq DESC LIMIT 1; "
-        + "IF coalesce(t, '') <> '' AND t <> who THEN " + refuse + "'task ' || p_entity || ' is handed to ' || t || ', not to ' || who || '; a completion is admitted in the assignee''s name')::text; END IF; "
+        + "IF coalesce(t, '') <> '' AND t <> who THEN " + refuse
+        + "'task ' || p_entity || ' is handed to ' || t || ', not to ' || who || '; a completion is admitted in the assignee''s name')::text; END IF; "
         + "END IF; "
         + "END IF; "
         + "IF p_lease <> '' THEN "
         + "SELECT * INTO c FROM claims WHERE key = p_lease; "
-        + "IF NOT FOUND OR NOT c.present THEN " + refuse + "'fenced: the lease `' || p_lease || '` is not held; a controller writes only under a lease it holds')::text; END IF; "
-        + "IF c.token <> p_epoch THEN " + refuse + "'fenced: the lease `' || p_lease || '` is ' || c.holder || '''s at epoch ' || c.token || ', not epoch ' || p_epoch || '; a controller that lost its lease writes nothing')::text; END IF; "
-        + "IF c.until <= extract(epoch FROM now())::bigint THEN " + refuse + "'fenced: the lease `' || p_lease || '` expired at ' || c.until || ' (epoch ' || p_epoch || ') and was not renewed')::text; END IF; "
+        + "IF NOT FOUND OR NOT c.present THEN " + refuse
+        + "'fenced: the lease `' || p_lease || '` is not held; a controller writes only under a lease it holds')::text; END IF; "
+        + "IF c.token <> p_epoch THEN " + refuse
+        + "'fenced: the lease `' || p_lease || '` is ' || c.holder || '''s at epoch ' || c.token || ', not epoch ' || p_epoch || '; a controller that lost its lease writes nothing')::text; END IF; "
+        + "IF c.until <= extract(epoch FROM now())::bigint THEN " + refuse
+        + "'fenced: the lease `' || p_lease || '` expired at ' || c.until || ' (epoch ' || p_epoch || ') and was not renewed')::text; END IF; "
         + "END IF; "
         + "PERFORM pg_advisory_xact_lock(hashtext('hale.ledger:' || current_schema())); "
         + "SELECT coalesce(max(seq) + 1, 0) INTO n FROM ledger_rows; "
@@ -298,7 +355,8 @@ fn ledger_functions(sch: String) -> String {
         + "IF p_request <> '' THEN INSERT INTO ledger_requests (request_id, revision) VALUES (p_request, n + 1) ON CONFLICT DO NOTHING; END IF; "
         + "RETURN json_build_object('error', '', 'seq', n, 'prev', v_prev, 'digest', d)::text; "
         + "END $a$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text) FROM PUBLIC";
+        + "REVOKE ALL ON FUNCTION " + sch
+        + ".ledger_append(bigint, text, text, text, text, text, bigint, text) FROM PUBLIC";
 }
 
 // Protected evidence is sealed, opened and erased inside memory (GH #985):
@@ -311,24 +369,125 @@ fn ledger_functions(sch: String) -> String {
 // cannot put erased bytes back).
 fn receipt_functions(sch: String) -> String {
     let fix = "hale dna memory migrate with HALE_DNA_RECEIPT_KEY";
-    return "CREATE OR REPLACE FUNCTION " + sch + ".receipt_file(p_digest text, p_class text, p_body text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ DECLARE k text; BEGIN "
+    return "CREATE OR REPLACE FUNCTION " + sch
+        + ".receipt_file(p_digest text, p_class text, p_body text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $f$ DECLARE k text; BEGIN "
         + "IF p_class NOT IN ('customer', 'confidential') THEN RAISE EXCEPTION 'class % is not protected (customer | confidential)', p_class; END IF; "
         + "IF p_digest <> 'sha256:' || encode(digest(p_body, 'sha256'), 'hex') THEN RAISE EXCEPTION 'the digest is not the body''s'; END IF; "
         + "IF EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) THEN RAISE EXCEPTION '% was redacted; a redacted body is not kept again', p_digest; END IF; "
         + "SELECT value INTO k FROM memory_keys WHERE name = 'receipt'; "
-        + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
+        + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until "
+        + fix + "'; END IF; "
         + "INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES (p_digest, p_class, armor(pgp_sym_encrypt(p_body, k, 'cipher-algo=aes256')), p_at) ON CONFLICT (digest) DO NOTHING; "
         + "RETURN true; END $f$;"
-        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_read(p_digest text) RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ DECLARE k text; r json; BEGIN "
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".receipt_read(p_digest text) RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $f$ DECLARE k text; r json; BEGIN "
         + "SELECT value INTO k FROM memory_keys WHERE name = 'receipt'; "
-        + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
-        + "SELECT row_to_json(t) INTO r FROM (SELECT class, pgp_sym_decrypt(dearmor(body), k) AS text, stored_at FROM protected_receipts WHERE digest = p_digest) t; "
+    // GH #1590: an unsealed body (public or internal) is read as it is kept
+        + "IF k IS NULL AND EXISTS (SELECT 1 FROM protected_receipts WHERE digest = p_digest AND sealed) THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until "
+        + fix + "'; END IF; "
+        + "SELECT row_to_json(t) INTO r FROM (SELECT class, CASE WHEN sealed THEN pgp_sym_decrypt(dearmor(body), k) ELSE body END AS text, stored_at FROM protected_receipts WHERE digest = p_digest) t; "
         + "RETURN r; END $f$;"
-        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_erase(p_digest text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ BEGIN "
+    // GH #1590: a public or internal body, kept unsealed beside the
+    // protected ones, under the digest of its content, once
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".receipt_keep(p_digest text, p_class text, p_body text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $f$ BEGIN "
+        + "IF p_class NOT IN ('public', 'internal') THEN RAISE EXCEPTION 'class % is kept sealed (receipt_file)', p_class; END IF; "
+        + "IF p_digest <> 'sha256:' || encode(digest(p_body, 'sha256'), 'hex') THEN RAISE EXCEPTION 'the digest is not the body''s'; END IF; "
+        + "IF EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) THEN RAISE EXCEPTION '% was redacted; a redacted body is not kept again', p_digest; END IF; "
+        + "INSERT INTO protected_receipts (digest, class, body, stored_at, sealed) VALUES (p_digest, p_class, p_body, p_at, false) ON CONFLICT (digest) DO NOTHING; "
+        + "RETURN true; END $f$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_keep(text, text, text, bigint) FROM PUBLIC;"
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".receipt_erase(p_digest text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $f$ BEGIN "
         + "DELETE FROM protected_receipts WHERE digest = p_digest; "
         + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
         + "RETURN true; END $f$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC";
+    // whether a redaction erased a body: the tombstone, read through
+    // this function alone (GH #1590: the row naming it is the Ledger's)
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".receipt_redacted(p_digest text) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = "
+        + sch
+        + ", public AS $f$ SELECT EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) $f$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch
+        + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint), " + sch
+        + ".receipt_redacted(text) FROM PUBLIC;"
+    // GH #1590: an envelope is kept once by its sender, its id and the key
+    // that signed it, and never changed: the writers insert through this
+    // function alone
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".exchange_keep(p_id text, p_sender text, p_signer text, p_kind text, p_entity text, p_line text, p_seq bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $x$ BEGIN "
+        + "INSERT INTO exchange_rows (id, sender, signer, kind, entity, line, stream_seq) VALUES (p_id, p_sender, p_signer, p_kind, p_entity, p_line, p_seq) ON CONFLICT (sender, id, signer) DO NOTHING; RETURN true; END $x$;"
+        + "REVOKE ALL ON FUNCTION " + sch
+        + ".exchange_keep(text, text, text, text, text, text, bigint) FROM PUBLIC;"
+        + record_functions(sch);
+}
+
+// GH #1590: the record's insert function, the one way a row lands. It
+// refuses a kind placed in the Ledger; appends exactly at the
+// revision a decision was read at, or at the tail for -1, and only on top
+// of the head the writer signed over (`p_prev`), so a signature always
+// names the row's own digest; extends the chain as `event_digest` does;
+// and answers a request id it has seen as it landed. Appends are
+// serialized on the schema.
+fn record_functions(sch: String) -> String {
+    let refuse = "RETURN json_build_object('error', 'refused', 'why', ";
+    return "CREATE OR REPLACE FUNCTION " + sch
+        + ".record_append(p_expected bigint, p_prev text, p_kind text, p_entity text, p_body text, p_author text, p_sig text, p_request text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $r$ "
+        + "DECLARE n bigint; v_prev text; d text; "
+        + "BEGIN "
+        + "IF ledger_kind(p_kind) THEN " + refuse
+        + "'`' || p_kind || '` is a row of the Ledger, not the record')::text; END IF; "
+        + "IF p_request <> '' THEN SELECT revision INTO n FROM record_requests WHERE request_id = p_request; IF FOUND THEN RETURN json_build_object('error', '', 'seq', n - 1, 'again', true)::text; END IF; END IF; "
+        + "PERFORM pg_advisory_xact_lock(hashtext('hale.record:' || current_schema())); "
+        + "SELECT coalesce(max(seq) + 1, 0) INTO n FROM record_rows; "
+        + "IF p_expected >= 0 AND p_expected <> n THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "SELECT digest INTO v_prev FROM record_rows WHERE seq = n - 1; "
+        + "v_prev := coalesce(v_prev, 'genesis'); "
+        + "IF p_prev <> v_prev THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "d := encode(digest(v_prev || '|' || p_kind || '|' || p_entity || '|' || p_body, 'sha256'), 'hex'); "
+        + "INSERT INTO record_rows (seq, kind, entity, body, author, writer, prev, digest, sig) VALUES (n, p_kind, p_entity, p_body, p_author, session_user, v_prev, d, p_sig); "
+        + "IF p_request <> '' THEN INSERT INTO record_requests (request_id, revision) VALUES (p_request, n + 1) ON CONFLICT DO NOTHING; END IF; "
+        + "RETURN json_build_object('error', '', 'seq', n, 'prev', v_prev, 'digest', d)::text; "
+        + "END $r$;"
+        + "REVOKE ALL ON FUNCTION " + sch
+        + ".record_append(bigint, text, text, text, text, text, text, text) FROM PUBLIC;"
+    // many rows made visible together: every row checked before any is
+    // inserted, the chain continued from `p_prev` under the same lock
+    // (`p_rows`: a JSON array of {kind, entity, body, author, sig})
+        + "CREATE OR REPLACE FUNCTION " + sch
+        + ".record_append_rows(p_expected bigint, p_prev text, p_rows text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = "
+        + sch + ", public AS $r$ "
+        + "DECLARE n bigint; first bigint; v_prev text; d text; e jsonb; "
+        + "BEGIN "
+        + "IF jsonb_typeof(p_rows::jsonb) <> 'array' OR jsonb_array_length(p_rows::jsonb) = 0 THEN "
+        + refuse + "'a batch is a non-empty array of rows')::text; END IF; "
+        + "FOR e IN SELECT * FROM jsonb_array_elements(p_rows::jsonb) LOOP "
+        + "IF ledger_kind(e->>'kind') THEN " + refuse
+        + "'`' || (e->>'kind') || '` is a row of the Ledger, not the record')::text; END IF; "
+        + "IF coalesce(e->>'kind', '') = '' THEN " + refuse
+        + "'a row of the batch has no kind')::text; END IF; "
+        + "END LOOP; "
+        + "PERFORM pg_advisory_xact_lock(hashtext('hale.record:' || current_schema())); "
+        + "SELECT coalesce(max(seq) + 1, 0) INTO n FROM record_rows; "
+        + "IF p_expected >= 0 AND p_expected <> n THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "SELECT digest INTO v_prev FROM record_rows WHERE seq = n - 1; "
+        + "v_prev := coalesce(v_prev, 'genesis'); "
+        + "IF p_prev <> v_prev THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "first := n; "
+        + "FOR e IN SELECT * FROM jsonb_array_elements(p_rows::jsonb) LOOP "
+        + "d := encode(digest(v_prev || '|' || (e->>'kind') || '|' || coalesce(e->>'entity', '') || '|' || coalesce(e->>'body', ''), 'sha256'), 'hex'); "
+        + "INSERT INTO record_rows (seq, kind, entity, body, author, writer, prev, digest, sig) VALUES (n, e->>'kind', coalesce(e->>'entity', ''), coalesce(e->>'body', ''), coalesce(e->>'author', ''), session_user, v_prev, d, coalesce(e->>'sig', '')); "
+        + "v_prev := d; n := n + 1; "
+        + "END LOOP; "
+        + "RETURN json_build_object('error', '', 'seq', n - 1, 'first', first, 'digest', v_prev)::text; "
+        + "END $r$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".record_append_rows(bigint, text, text) FROM PUBLIC";
 }
 
 // Match the public bytewise tuple order with database indexes, so
@@ -355,23 +514,35 @@ const PROJECTION_PROTOCOL: String = "4";
 fn projection_protocol() -> String {
     // the stamp's rows are locked first, watermark then head, the order a
     // projector takes them in
-    return "DO $p$ BEGIN IF coalesce((SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'), '') <> '" + PROJECTION_PROTOCOL + "' THEN "
+    return "DO $p$ BEGIN IF coalesce((SELECT value FROM knowledge_meta WHERE key = 'graph_projection_protocol'), '') <> '"
+        + PROJECTION_PROTOCOL + "' THEN "
         + "PERFORM 1 FROM knowledge_meta WHERE key = 'watermark' FOR UPDATE; PERFORM 1 FROM knowledge_meta WHERE key = 'graph_projection_head' FOR UPDATE; "
         + "INSERT INTO knowledge_meta (key, value) VALUES ('graph_generation', '0') ON CONFLICT (key) DO UPDATE SET value = ((knowledge_meta.value::bigint) + 1)::text; "
-        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals, org_retired, " + GRAPH_TABLES + "; "
+        + "TRUNCATE knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals, org_retired, "
+        + GRAPH_TABLES + "; "
         + "DELETE FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head'); "
-        + "INSERT INTO knowledge_meta (key, value) VALUES ('watermark', '0'), ('graph_projection_head', ''), ('graph_projection_protocol', '" + PROJECTION_PROTOCOL + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; "
+        + "INSERT INTO knowledge_meta (key, value) VALUES ('watermark', '0'), ('graph_projection_head', ''), ('graph_projection_protocol', '"
+        + PROJECTION_PROTOCOL + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; "
         + "END IF; END $p$";
 }
 
 fn graph_generation_ddl(sch: String) -> String {
-    return "CREATE OR REPLACE FUNCTION " + sch + ".knowledge_graph_changed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN UPDATE " + sch + ".knowledge_meta SET value = ((value::bigint) + 1)::text WHERE key = ''graph_generation''; IF NOT FOUND THEN RAISE EXCEPTION ''knowledge graph generation missing''; END IF; RETURN NULL; END';"
-        + "CREATE OR REPLACE TRIGGER knowledge_ideas_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_ideas FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-        + "CREATE OR REPLACE TRIGGER knowledge_edges_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_edges FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-        + "CREATE OR REPLACE TRIGGER knowledge_bindings_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_bindings FOR EACH ROW EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-        + "CREATE OR REPLACE TRIGGER knowledge_ideas_truncate_generation AFTER TRUNCATE ON knowledge_ideas FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-        + "CREATE OR REPLACE TRIGGER knowledge_edges_truncate_generation AFTER TRUNCATE ON knowledge_edges FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();"
-        + "CREATE OR REPLACE TRIGGER knowledge_bindings_truncate_generation AFTER TRUNCATE ON knowledge_bindings FOR EACH STATEMENT EXECUTE FUNCTION " + sch + ".knowledge_graph_changed();";
+    return "CREATE OR REPLACE FUNCTION " + sch
+        + ".knowledge_graph_changed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS 'BEGIN UPDATE "
+        + sch
+        + ".knowledge_meta SET value = ((value::bigint) + 1)::text WHERE key = ''graph_generation''; IF NOT FOUND THEN RAISE EXCEPTION ''knowledge graph generation missing''; END IF; RETURN NULL; END';"
+        + "CREATE OR REPLACE TRIGGER knowledge_ideas_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_ideas FOR EACH ROW EXECUTE FUNCTION "
+        + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_edges_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_edges FOR EACH ROW EXECUTE FUNCTION "
+        + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_bindings_generation AFTER INSERT OR UPDATE OR DELETE ON knowledge_bindings FOR EACH ROW EXECUTE FUNCTION "
+        + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_ideas_truncate_generation AFTER TRUNCATE ON knowledge_ideas FOR EACH STATEMENT EXECUTE FUNCTION "
+        + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_edges_truncate_generation AFTER TRUNCATE ON knowledge_edges FOR EACH STATEMENT EXECUTE FUNCTION "
+        + sch + ".knowledge_graph_changed();"
+        + "CREATE OR REPLACE TRIGGER knowledge_bindings_truncate_generation AFTER TRUNCATE ON knowledge_bindings FOR EACH STATEMENT EXECUTE FUNCTION "
+        + sch + ".knowledge_graph_changed();";
 }
 
 // The spine's role, created once per server and tolerating another
@@ -381,7 +552,9 @@ fn role_sql(role: String) -> String {
     // the vault's password is the role's: a role that exists takes it again
     // (a literal: a value a real vault holds may carry a quote)
     let pw = std::str::replace(role_password(role), "'", "''");
-    return "DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD '" + pw + "'; EXCEPTION WHEN duplicate_object OR unique_violation THEN ALTER ROLE " + role + " WITH LOGIN PASSWORD '" + pw + "'; END $$";
+    return "DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD '" + pw
+        + "'; EXCEPTION WHEN duplicate_object OR unique_violation THEN ALTER ROLE " + role
+        + " WITH LOGIN PASSWORD '" + pw + "'; END $$";
 }
 
 // What the spine may do in its record's schema: read and write every
@@ -390,10 +563,21 @@ fn role_sql(role: String) -> String {
 // never the table or the key. No DDL: the owner's.
 fn spine_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
-        + "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA " + sch + " TO " + role + ";"
+        + "GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA " + sch + " TO "
+        + role + ";"
         + "REVOKE ALL ON " + sch + ".memory_keys FROM " + role + ";"
         + "REVOKE ALL ON " + sch + ".memory_principals FROM " + role + ";"
-        + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM " + role + ";"
+        + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM "
+        + role + ";"
+        + "REVOKE ALL ON " + sch + ".exchange_rows FROM " + role + ";"
+        + "GRANT SELECT ON " + sch + ".exchange_rows TO " + role + ";"
+    // GH #1590: the two chains are insert-only for every writer, each
+    // through its own function alone: never a plain insert, an update or a
+    // delete
+        + "REVOKE ALL ON " + sch + ".record_rows, " + sch + ".record_requests FROM " + role + ";"
+        + "GRANT SELECT ON " + sch + ".record_rows TO " + role + ";"
+        + "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON " + sch + ".ledger_rows, " + sch
+        + ".ledger_requests FROM " + role + ";"
         + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
 }
@@ -404,14 +588,22 @@ fn spine_grants(sch: String, role: String) -> String {
 // function (GH #1026), which decides whom it may write as.
 fn head_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
-        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".claims, "
-        + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals, "
+        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch
+        + ".ledger_requests, " + sch + ".claims, "
+        + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, "
+        + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals, "
         + sch + ".graph_nodes, " + sch + ".graph_edges, " + sch + ".graph_members, "
         + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
         + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
         + "GRANT SELECT, INSERT ON " + sch + ".hats TO " + role + ";"
-        + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
-        + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text) TO " + role;
+        + "GRANT SELECT ON " + sch + ".exchange_rows, " + sch + ".record_rows TO " + role + ";"
+        + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch
+        + ".receipt_read(text), "
+        + sch + ".receipt_keep(text, text, text, bigint), " + sch + ".receipt_redacted(text), "
+        + sch + ".record_append(bigint, text, text, text, text, text, text, text), "
+        + sch + ".record_append_rows(bigint, text, text), " + sch
+        + ".ledger_append(bigint, text, text, text, text, text, bigint, text), "
+        + sch + ".exchange_keep(text, text, text, text, text, text, bigint) TO " + role;
 }
 
 // The receipt key memory seals protected evidence under, from the owner's
@@ -419,11 +611,19 @@ fn head_grants(sch: String, role: String) -> String {
 // different key later is refused — bodies sealed under the first would no
 // longer open. "" when it stands (or there is none to write), else why.
 fn receipt_key_step(c: pq::PgConn) -> String {
-    let given = if std::env::var_exists("HALE_DNA_RECEIPT_KEY") { std::env::var("HALE_DNA_RECEIPT_KEY") } else { "" };
+    let given = if std::env::var_exists("HALE_DNA_RECEIPT_KEY") {
+        std::env::var("HALE_DNA_RECEIPT_KEY")
+    } else {
+        ""
+    };
     if len(given) == 0 { return ""; }
-    if len(given) < 16 { return "HALE_DNA_RECEIPT_KEY: a short key is no key (sixteen characters at least)"; }
+    if len(given) < 16 {
+        return "HALE_DNA_RECEIPT_KEY: a short key is no key (sixteen characters at least)";
+    }
     let held = c.query_one("SELECT value FROM memory_keys WHERE name = 'receipt'");
-    if held.ok && held.data != given { return "memory already seals protected evidence under another receipt key; bodies sealed under it would no longer open, so it is not replaced"; }
+    if held.ok && held.data != given {
+        return "memory already seals protected evidence under another receipt key; bodies sealed under it would no longer open, so it is not replaced";
+    }
     if held.ok { return ""; }
     if held.err.kind != "no_row" { return "receipt key: " + held.err.kind + " " + held.err.detail; }
     let a = db::Args { };
@@ -438,7 +638,17 @@ fn receipt_key_step(c: pq::PgConn) -> String {
 // schema, the projection protocol, the spine's role and grants, and the
 // version row. Idempotent; a memory a newer toolchain migrated is refused.
 fn migrate(owner: Dsn, record_id: String) -> Migrated {
-    return migrate_for(owner, record_id, owners_of_keys(if std::env::var_exists("HALE_DNA_OWNER_KEYS") { std::env::var("HALE_DNA_OWNER_KEYS") } else { "" }));
+    return migrate_for(
+        owner,
+        record_id,
+        owners_of_keys(
+            if std::env::var_exists("HALE_DNA_OWNER_KEYS") {
+                std::env::var("HALE_DNA_OWNER_KEYS")
+            } else {
+                ""
+            },
+        ),
+    );
 }
 
 // As `migrate`, for the owners named (space-separated, "" for one owner):
@@ -448,15 +658,32 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
     if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
     // the organism's roles are provisioned by its bootstrap and only
     // consumed here; an owner's head role is declared here, and provisioned
-    if !std::secret::Credential { vault: role_vault_name(spine_role(record_id)) }.ready() || !std::secret::Credential { vault: role_vault_name(head_role(record_id)) }.ready() {
-        return Migrated { why: "the vault holds no password for this record's roles (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)" };
+    if !std::secret::Credential { vault: role_vault_name(spine_role(record_id)) }.ready()
+        || !std::secret::Credential { vault: role_vault_name(head_role(record_id)) }.ready()
+    {
+        return Migrated {
+            why: "the vault holds no password for this record's roles (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)",
+        };
     }
     let mut oi = 0;
     while len(nth_word(owners, oi)) > 0 {
-        if len(provision_role(owner_role(record_id, nth_word(owners, oi)))) == 0 { return Migrated { why: "the vault could not hold a password for the owner " + nth_word(owners, oi) + "'s role" }; }
+        if len(provision_role(owner_role(record_id, nth_word(owners, oi)))) == 0 {
+            return Migrated {
+                why: "the vault could not hold a password for the owner " + nth_word(owners, oi)
+                    + "'s role",
+            };
+        }
         oi = oi + 1;
     }
-    let c = pq::PgConn { host: owner.host, port: owner.port, user: owner.user, password: owner.password, vault: owner.vault, database: owner.database, sslmode: owner.sslmode };
+    let c = pq::PgConn {
+        host: reach_host(owner.host),
+        port: owner.port,
+        user: owner.user,
+        password: owner.password,
+        vault: owner.vault,
+        database: owner.database,
+        sslmode: owner.sslmode,
+    };
     let st = c.open();
     if !st.ok { return Migrated { why: "open: " + st.err.kind + " " + st.err.detail }; }
     let why = migrate_on(c, record_id, owners);
@@ -469,7 +696,48 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
         dsns = dsns + o + "=" + dsn_text(role_dsn(owner, owner_role(record_id, o))) + "\n";
         i = i + 1;
     }
-    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))), owner_dsns: dsns };
+    return Migrated {
+        ok: true,
+        spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))),
+        head_dsn: dsn_text(role_dsn(owner, head_role(record_id))),
+        owner_dsns: dsns,
+    };
+}
+
+// GH #1653: the roles' DSNs a migration hands back, derived without
+// touching the schema: what a command that never migrates (`dev`, `head`,
+// `show`) is given. A schema that is behind is the store's refusal when it
+// opens (`memory_fence`).
+@bounded_by(owners)
+fn derived_dsns(owner: Dsn, record_id: String) -> Migrated {
+    if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
+    if !std::secret::Credential { vault: role_vault_name(spine_role(record_id)) }.ready()
+        || !std::secret::Credential { vault: role_vault_name(head_role(record_id)) }.ready()
+    {
+        return Migrated {
+            why: "the vault holds no password for this record's roles (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)",
+        };
+    }
+    let owners = owners_of_keys(
+        if std::env::var_exists("HALE_DNA_OWNER_KEYS") {
+            std::env::var("HALE_DNA_OWNER_KEYS")
+        } else {
+            ""
+        },
+    );
+    let mut dsns = "";
+    let mut i = 0;
+    while len(nth_word(owners, i)) > 0 {
+        let o = nth_word(owners, i);
+        dsns = dsns + o + "=" + dsn_text(role_dsn(owner, owner_role(record_id, o))) + "\n";
+        i = i + 1;
+    }
+    return Migrated {
+        ok: true,
+        spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))),
+        head_dsn: dsn_text(role_dsn(owner, head_role(record_id))),
+        owner_dsns: dsns,
+    };
 }
 
 // The principals statement grows by a row per owner in `owners`.
@@ -482,9 +750,13 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
     // with a duplicate key on pg_extension_name_index while the first
     // is still creating what both wanted. Ask once more; the second
     // look finds the extension and creates nothing.
-    let mut ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    let mut ext = c.exec(
+        "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto",
+    );
     if !ext.ok && std::str::contains(ext.err.detail, "pg_extension_name_index") {
-        ext = c.exec("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto");
+        ext = c.exec(
+            "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto",
+        );
     }
     if !ext.ok { return "extensions (vector, pgcrypto): " + ext.err.kind + " " + ext.err.detail; }
     // A store from before records were namespaced lives in `public`
@@ -497,13 +769,19 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
         return "scope: this database holds a knowledge store in `public` from before stores were scoped by record; it is not migrated. Drop its tables (knowledge_meta, knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals) or the database, and the projection rebuilds from the record";
     }
     let sch = schema_for(record_id);
-    let begun = c.exec("BEGIN; SELECT pg_advisory_xact_lock(hashtext('" + sch + "')); CREATE SCHEMA IF NOT EXISTS " + sch + "; SET LOCAL search_path TO " + sch + ", public; CREATE TABLE IF NOT EXISTS memory_meta (key text PRIMARY KEY, value text NOT NULL)");
+    let begun = c.exec(
+        "BEGIN; SELECT pg_advisory_xact_lock(hashtext('" + sch + "')); CREATE SCHEMA IF NOT EXISTS "
+            + sch + "; SET LOCAL search_path TO " + sch
+            + ", public; CREATE TABLE IF NOT EXISTS memory_meta (key text PRIMARY KEY, value text NOT NULL)",
+    );
     if !begun.ok { return abort(c, "scope (schema " + sch + ")", begun.err); }
     let have = c.query_one("SELECT value FROM memory_meta WHERE key = 'schema_version'");
     if !have.ok && have.err.kind != "no_row" { return abort(c, "schema version", have.err); }
     if have.ok && (std::str::parse_int(trim_nl(have.data)) or 0) > MEMORY_SCHEMA_VERSION {
         let rb = c.exec("ROLLBACK");
-        return "memory schema " + sch + " is at version " + trim_nl(have.data) + ", newer than this toolchain's " + to_string(MEMORY_SCHEMA_VERSION) + "; it is not migrated back";
+        return "memory schema " + sch + " is at version " + trim_nl(have.data)
+            + ", newer than this toolchain's " + to_string(MEMORY_SCHEMA_VERSION)
+            + "; it is not migrated back";
     }
     let tables = c.exec(knowledge_ddl() + ledger_ddl());
     if !tables.ok { return abort(c, "migrate", tables.err); }
@@ -515,12 +793,16 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
         if !named.ok && named.err.kind != "no_row" { return abort(c, "scope", named.err); }
         if named.ok && trim_nl(named.data) != record_id {
             let rb = c.exec("ROLLBACK");
-            return "scope: schema " + sch + " belongs to record " + trim_nl(named.data) + ", not " + record_id + "; it is not migrated";
+            return "scope: schema " + sch + " belongs to record " + trim_nl(named.data) + ", not "
+                + record_id + "; it is not migrated";
         }
         if !named.ok {
             let a = db::Args { };
             a.add(record_id);
-            let claim = c.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('record', $1) ON CONFLICT (key) DO NOTHING", a);
+            let claim = c.exec_params(
+                "INSERT INTO knowledge_meta (key, value) VALUES ('record', $1) ON CONFLICT (key) DO NOTHING",
+                a,
+            );
             if !claim.ok { return abort(c, "scope", claim.err); }
         }
     }
@@ -551,7 +833,8 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
     // head's role writes as any person; over a shared record each owner's
     // head role writes as that owner's members, and the plain head role
     // reads. Rewritten whole at every migration.
-    let mut principals = "DELETE FROM memory_principals; INSERT INTO memory_principals (role, principal) VALUES ('" + role + "', '*')";
+    let mut principals = "DELETE FROM memory_principals; INSERT INTO memory_principals (role, principal) VALUES ('"
+        + role + "', '*')";
     if len(owners) == 0 { principals = principals + ", ('" + head + "', '@')"; }
     let mut k = 0;
     while len(nth_word(owners, k)) > 0 {
@@ -565,10 +848,15 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
         k = k + 1;
     }
     // the owner who applied the schema is anyone in it, as its DDL is
-    principals = principals + "; INSERT INTO memory_principals (role, principal) SELECT current_user, '*' ON CONFLICT DO NOTHING";
+    principals = principals
+        + "; INSERT INTO memory_principals (role, principal) SELECT current_user, '*' ON CONFLICT DO NOTHING";
     let seeded = c.exec(principals);
     if !seeded.ok { return abort(c, "principals", seeded.err); }
-    let versioned = c.exec("INSERT INTO memory_meta (key, value) VALUES ('schema_version', '" + to_string(MEMORY_SCHEMA_VERSION) + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; COMMIT");
+    let versioned = c.exec(
+        "INSERT INTO memory_meta (key, value) VALUES ('schema_version', '"
+            + to_string(MEMORY_SCHEMA_VERSION)
+            + "') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value; COMMIT",
+    );
     if !versioned.ok { return abort(c, "schema version", versioned.err); }
     return "";
 }
@@ -582,15 +870,22 @@ fn abort(c: pq::PgConn, what: String, e: db::DbError) -> String {
 // toolchain requires; otherwise why the store refuses it, naming both
 // versions and the command that fixes it.
 fn memory_fence(c: pq::PgConn, sch: String) -> String {
-    let fix = "run `hale dna memory migrate` with the owner's DSN in HALE_DNA_MEMORY_DSN_OWNER";
+    // GH #1653: nothing migrates as a side effect; the habitat's act does
+    let fix = "run `hale habitat migrate <organism>` (with HALE_DNA_MEMORY_DSN_OWNER for a Postgres of your own)";
     let v = c.query_one("SELECT value FROM " + sch + ".memory_meta WHERE key = 'schema_version'");
     if !v.ok {
-        if v.err.kind == "no_row" { return "memory schema " + sch + " has no schema version (this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "); " + fix; }
-        return "memory schema " + sch + " is not migrated for this toolchain (version " + to_string(MEMORY_SCHEMA_VERSION) + "): " + v.err.kind + " " + v.err.detail + "; " + fix;
+        if v.err.kind == "no_row" {
+            return "memory schema " + sch + " has no schema version (this toolchain needs version "
+                + to_string(MEMORY_SCHEMA_VERSION) + "); " + fix;
+        }
+        return "memory schema " + sch + " is not migrated for this toolchain (version "
+            + to_string(MEMORY_SCHEMA_VERSION) + "): " + v.err.kind + " " + v.err.detail + "; "
+            + fix;
     }
     let have = trim_nl(v.data);
     if have != to_string(MEMORY_SCHEMA_VERSION) {
-        return "memory schema " + sch + " is at version " + have + "; this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "; " + fix;
+        return "memory schema " + sch + " is at version " + have + "; this toolchain needs version "
+            + to_string(MEMORY_SCHEMA_VERSION) + "; " + fix;
     }
     return "";
 }
@@ -614,10 +909,14 @@ fn migrated(owner: String, record_id: String) -> Dsn {
 // (no variable named) or it was filled; otherwise why it could not be.
 fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
     if len(env_name) == 0 { return ""; }
-    if !std::env::var_exists(env_name) || len(std::env::var(env_name)) == 0 { return env_name + " is not set: no memory to open"; }
+    // a DSN in place of the name (`memory_source`)
+    if std::str::starts_with(env_name, "postgres") { return dial_from_text(c, env_name); }
+    if !std::env::var_exists(env_name) || len(std::env::var(env_name)) == 0 {
+        return env_name + " is not set: no memory to open";
+    }
     let d = parse_dsn(std::env::var(env_name));
     if !d.ok { return env_name + ": " + d.why; }
-    c.host = d.host;
+    c.host = reach_host(d.host);
     c.port = d.port;
     c.user = d.user;
     c.password = d.password;
@@ -651,17 +950,105 @@ fn migrated_head(owner: String, record_id: String) -> Dsn {
 // the owner's DSN. Roles belong to the server, not the database, so a
 // slice dropping its database leaves them behind. "" when nothing is
 // left, else why.
+// The record's schema and every role of it dropped, as one script: its
+// spine's, its head's and every owner's head role (GH #1026), whichever
+// owners it had. What `unmigrate` runs, and what a tenant's removal runs
+// inside the habitat's memory (dna/core/teardown.hl, `record-drop`).
+fn unmigrate_sql(record_id: String) -> String {
+    let base = schema_for(record_id);
+    let owned = (if len(base) > 40 { base[0..40] } else { base }) + "_head_";
+    return "DROP SCHEMA IF EXISTS " + base + " CASCADE; DROP ROLE IF EXISTS "
+        + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id)
+        + "; DO $d$ DECLARE r text; BEGIN FOR r IN SELECT rolname FROM pg_roles WHERE starts_with(rolname, '"
+        + owned + "') LOOP EXECUTE 'DROP ROLE ' || quote_ident(r); END LOOP; END $d$";
+}
+
 fn unmigrate(owner: String, record_id: String) -> String {
     let d = parse_dsn(owner);
     if !d.ok { return "the owner DSN: " + d.why; }
     let c = pq_conn(d);
     let st = c.open();
     if !st.ok { return "open: " + st.err.kind + " " + st.err.detail; }
-    // and every owner's head role (GH #1026), whichever owners it had
-    let base = schema_for(record_id);
-    let owned = (if len(base) > 40 { base[0..40] } else { base }) + "_head_";
-    let dropped = c.exec("DROP SCHEMA IF EXISTS " + base + " CASCADE; DROP ROLE IF EXISTS " + spine_role(record_id) + "; DROP ROLE IF EXISTS " + head_role(record_id) + "; DO $d$ DECLARE r text; BEGIN FOR r IN SELECT rolname FROM pg_roles WHERE starts_with(rolname, '" + owned + "') LOOP EXECUTE 'DROP ROLE ' || quote_ident(r); END LOOP; END $d$");
+    let dropped = c.exec(unmigrate_sql(record_id));
     c.close();
     if !dropped.ok { return dropped.err.kind + " " + dropped.err.detail; }
     return "";
+}
+
+// ---- the `database` heart role (GH #1653) ------------------------------
+//
+// A Hale heart that declares `database` in its genome's needs is given one
+// at graft: in the local profile a tenant database of its organism's
+// memory server (its memory allocation's Postgres, or the operator's on
+// `operator` backends), named for the organism, owned by a role of its own
+// that reaches nothing else. The heart reads it through
+// HALE_DNA_DATABASE_DSN, a DSN that names its vault slot and carries no
+// password, as every role's does (GH #989).
+
+// The heart's role and its database, both `heart_<key>`.
+fn heart_role(key: String) -> String { return "heart_" + std::str::lower(key); }
+
+type HeartDatabase {
+    ok: Bool = false;
+    dsn: String = "";
+    slot: String = "";
+    why: String = "";
+}
+
+// The heart's DSN on `owner`'s server: its role, its database, its slot.
+fn heart_dsn(owner: Dsn, key: String) -> HeartDatabase {
+    if !owner.ok { return HeartDatabase { why: "the owner DSN: " + owner.why }; }
+    let role = heart_role(key);
+    let d = Dsn {
+        ok: true,
+        user: role,
+        vault: role_vault_name(role),
+        host: owner.host,
+        port: owner.port,
+        database: role,
+        sslmode: owner.sslmode,
+    };
+    return HeartDatabase { ok: true, dsn: dsn_text(d), slot: role_vault_name(role) };
+}
+
+// The heart's database provisioned on `owner`'s server: its role's
+// password drawn into the vault where none is, the role made (or given the
+// vault's password again), and its database made once, owned by it.
+fn provision_heart_database(owner: Dsn, key: String) -> HeartDatabase {
+    if !owner.ok { return HeartDatabase { why: "the owner DSN: " + owner.why }; }
+    if len(key) == 0 { return HeartDatabase { why: "the organism has no record identity yet" }; }
+    let role = heart_role(key);
+    if len(provision_role(role)) == 0 {
+        return HeartDatabase {
+            why: "the heart's role password could not be provisioned in the vault ("
+                + role_vault_name(role) + ")",
+        };
+    }
+    let c = pq_conn(owner);
+    let st = c.open();
+    if !st.ok { return HeartDatabase { why: "open: " + st.err.kind + " " + st.err.detail }; }
+    let made = c.exec(role_sql(role));
+    if !made.ok {
+        c.close();
+        return HeartDatabase { why: "the heart's role: " + made.err.kind + " " + made.err.detail };
+    }
+    let have = c.query_one("SELECT datname FROM pg_database WHERE datname = '" + role + "'");
+    if !have.ok {
+        let db = c.exec("CREATE DATABASE " + role + " OWNER " + role);
+        if !db.ok {
+            c.close();
+            return HeartDatabase {
+                why: "the heart's database: " + db.err.kind + " " + db.err.detail,
+            };
+        }
+    }
+    let revoke = c.exec("REVOKE ALL ON DATABASE " + role + " FROM PUBLIC");
+    c.close();
+    if !revoke.ok {
+        return HeartDatabase {
+            why: "the heart's database is reachable by others: " + revoke.err.kind + " "
+                + revoke.err.detail,
+        };
+    }
+    return heart_dsn(owner, key);
 }

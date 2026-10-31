@@ -91,6 +91,19 @@ test('verdict browser contract: accepted rejection is command success and does n
   expect(script.posts).toHaveLength(1);
 });
 
+test('verdict browser contract: the receipt stays verified while its Review, a detail with no Task history, is selected', async ({ page, service }) => {
+  // the Task reassignment's re-read reads a Task's history; any other
+  // receipt never reaches it, whatever detail is open
+  const script = await scriptFor(page, service, { verdictStage: 'settled' });
+  await prepare(page, service, 'Reject');
+  await submit(page);
+  await expect(recovery(page)).toContainText(/succeeded/i);
+  await page.getByRole('button', { name: 'Check request status', exact: true }).click();
+  await expect(recovery(page)).toContainText(/succeeded/i);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(script.posts).toHaveLength(1);
+});
+
 test('verdict browser contract: a refused command cannot borrow another command’s settled approval or adoption', async ({ page, service }) => {
   await scriptFor(page, service, { verdictStage: 'refused_other_approved' });
   await prepare(page, service, 'Reject');
@@ -275,7 +288,9 @@ test('verdict browser contract: dismissing a completed request refreshes candida
   await service.mutate('redact-pending');
   await page.getByRole('button', { name: 'Dismiss completed request', exact: true }).click();
   await expect(recovery(page)).toHaveCount(0);
-  await expect.poll(() => script.source.record_head).not.toBe(originalSource);
+  // a redaction is the Ledger's row: the record's head stays (GH #1590)
+  expect(service.ledger().filter(row => row.kind === 'receipt.redacted' && row.entity === service.pending_practice)).toHaveLength(1);
+  expect(script.source.record_head).toBe(originalSource);
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
   await expect(page.locator('body')).not.toContainText(service.pending_text);
   expect(await recoveryMetadata(page)).toHaveLength(0);

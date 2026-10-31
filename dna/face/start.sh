@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Launch the face: the project service (the head) serving the browser
-# shell, owning the project registry and proxying each attached project's
-# native API. The shell owns only argument/build/process wiring, never domain
-# operations.
+# Launch the face: the standard face (dna/face/standard) serving the
+# browser shell and the project's ui/ on the public port, in front of the
+# project service (the head), which serves surfaces only: it owns the
+# project registry and proxies each attached project's native API. The shell
+# owns only argument/build/process wiring, never domain operations.
 set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--oidc-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
+Usage: dna/face/start.sh [PROJECT] [--port PORT] [--head-port PORT] [--api-port PORT] [--oidc-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
 
-Starts the face at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
+Starts the standard face at http://127.0.0.1:8792 (or the chosen port), the
+head behind it on the loopback. PROJECT is optional:
 given, it is attached at startup; without it the head starts detached and the
 browser's Projects workspace creates, initializes or attaches one.
-Without --head/HALE_HEAD_BIN and --api/HALE_API_BIN, builds the checkout's
+Without --head/HALE_HEAD_BIN, --face/HALE_FACE_BIN and --api/HALE_API_BIN, builds the checkout's
 project service and its per-project native API (dna/api/practice_review) in
 temporary storage using HALE_BIN (default: hale); the stub OpenID provider and
 the reflexes likewise, without HALE_OIDC_BIN and HALE_REFLEXES_BIN. With an
@@ -25,7 +27,10 @@ purpose and are re-adopted by the next head.
                      attached project. It must accept PROJECT PORT, as
                      dna/api/practice_review does.
   --head BINARY      Use an already built project service.
-  --port PORT        Loopback port of the head, 1..65535 (default: 8792).
+  --face BINARY      Use an already built standard face.
+  --port PORT        Loopback port of the face, the one a browser opens, 1..65535
+                     (default: 8792).
+  --head-port PORT   Loopback port of the head behind the face, 1..65535 (default: 8796).
   --api-port PORT    Loopback port of the API child, 1..65535 (default: 8793).
   --commands-port PORT
                      Loopback port of the API child's commands, its api binding's HTTP transport, 1..65535 (default: 8795).
@@ -35,7 +40,7 @@ purpose and are re-adopted by the next head.
 
 Existing service configuration is inherited:
   HALE_DNA_MEMORY_DSN_HEAD     Memory under the record's head role, as
-                               `hale dna memory migrate` prints it. The API
+                               `hale habitat migrate` keeps it. The API
                                reads Knowledge with it; without it Knowledge
                                is unsupported.
   HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_MEMORY_DSN_SPINE
@@ -43,10 +48,10 @@ Existing service configuration is inherited:
   HALE_DNA_NATS_URL_OWNER      The nerves' server a body the head starts runs
                                on. The head subscribes there, as the head's
                                user, to the rows the organism lands and tells
-                               the browser; without it, on the project's
-                               compose `nerves` while `hale dna dev` has it up.
+                               the browser; without it, on the organism's
+                               nerves in the local habitat while they are up.
   HALE_DNA_NATS_URL_HEAD       The head's own URL (subscribe only), as
-                               `hale dna nerves migrate` prints it; wins over both.
+                               `hale dna nerves urls` prints it; wins over both.
   HALE_DNA_HEAD_STATE          The head's state directory
                                (default: ${XDG_STATE_HOME:-~/.local/state}/hale/dna/head).
 The head serves under OIDC (GH #989): this starts the stub OpenID provider
@@ -69,12 +74,14 @@ oidc_port=8794
 commands_port=8795
 api=${HALE_API_BIN:-}
 head=${HALE_HEAD_BIN:-}
+face_bin=${HALE_FACE_BIN:-}
+head_port=8796
 oidc=${HALE_OIDC_BIN:-}
 reflexes_bin=${HALE_REFLEXES_BIN:-}
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --port|--api|--head|--api-port|--oidc-port|--commands-port)
+    --port|--head-port|--api|--head|--face|--api-port|--oidc-port|--commands-port)
       (($# >= 2)) || fail "$1 requires a value"
       case "$1" in
         --port) port=$2 ;;
@@ -83,6 +90,8 @@ while (($#)); do
         --commands-port) commands_port=$2 ;;
         --api) api=$2 ;;
         --head) head=$2 ;;
+        --face) face_bin=$2 ;;
+        --head-port) head_port=$2 ;;
       esac
       shift 2 ;;
     --source-drafts) export HALE_DNA_ORG_DRAFTS=1; shift ;;
@@ -95,14 +104,15 @@ done
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((api_port <= 65535)) || fail 'api-port must be 1..65535'
 [[ "$oidc_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((oidc_port <= 65535)) || fail 'oidc-port must be 1..65535'
 [[ "$commands_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((commands_port <= 65535)) || fail 'commands-port must be 1..65535'
-((port != api_port && port != oidc_port && api_port != oidc_port)) || fail 'the head, the API child and the provider need different ports'
+[[ "$head_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((head_port <= 65535)) || fail 'head-port must be 1..65535'
+((port != api_port && port != oidc_port && api_port != oidc_port && head_port != port && head_port != api_port && head_port != oidc_port)) || fail 'the face, the head, the API child and the provider need different ports'
 # the API child's api binding serves its HTTP transport there (GH #1135),
 # and a port it cannot hold stops it at start
-((commands_port != port && commands_port != api_port && commands_port != oidc_port)) || fail 'the API child'\''s commands need a port of their own'
+((commands_port != port && commands_port != head_port && commands_port != api_port && commands_port != oidc_port)) || fail 'the API child'\''s commands need a port of their own'
 face=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 checkout=$(cd -- "$face/../.." && pwd -P)
 valid_path "$checkout" || fail 'checkout paths cannot contain newlines'
-command -v git >/dev/null || fail 'git is required to read the DNA Record'
+command -v git >/dev/null || fail 'git is required to read the project'
 # A caller's repository overrides must never redirect a named project.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 if [[ -n "$project" ]]; then
@@ -111,7 +121,6 @@ if [[ -n "$project" ]]; then
   project=$(cd -- "$project" && pwd -P)
   top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || fail 'project must be a Git worktree'
   [[ "$(cd -- "$top" && pwd -P)" == "$project" ]] || fail 'pass the DNA project root, not a subdirectory'
-  git -C "$project" rev-parse --verify 'refs/dna/journal^{commit}' >/dev/null 2>&1 || fail 'project has no DNA Record; create it from the Projects workspace, or with hale dna first'
 fi
 for asset in index.html app.js application.js definition-draft.js organization-draft.js knowledge-draft.js task-administration.js projects.js task-create.js styles.css; do
   [[ -r "$face/web/$asset" && -s "$face/web/$asset" ]] || fail "missing browser asset: $asset"
@@ -124,6 +133,7 @@ fi
 build_dir=
 builds=()
 child=
+face_child=
 provider=
 reflexes=
 cleanup() {
@@ -139,6 +149,10 @@ cleanup() {
   if [[ -n "$child" ]]; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
+  fi
+  if [[ -n "$face_child" ]]; then
+    kill -TERM "$face_child" 2>/dev/null || true
+    wait "$face_child" 2>/dev/null || true
   fi
   if [[ -n "$provider" ]]; then
     kill -TERM "$provider" 2>/dev/null || true
@@ -163,6 +177,12 @@ hale=$(command -v -- "$hale")
 [[ "$hale" == /* ]] || hale="$(pwd -P)/$hale"
 valid_path "$hale" || fail 'compiler paths cannot contain newlines'
 export HALE_BIN=$hale
+# the record is read through the toolchain (`hale dna record-rows`), never its storage
+if [[ -n "$project" ]]; then
+  rows=$("$hale" dna record-rows "$project" 2>/dev/null) || rows=
+  [[ -n "$rows" ]] || fail 'project has no DNA Record; create it from the Projects workspace, or with hale dna first'
+  unset rows
+fi
 
 # Builds the seeds this launch was not handed, straight from the checkout,
 # each into the temporary build directory with `hale build -o`, so a build
@@ -206,6 +226,17 @@ absolute_executable() {
 # starts none.
 oidc_local=0
 [[ "${HALE_DNA_TRUSTED_LOCAL:-}" == 1 ]] || oidc_local=1
+# A habitat shares one identity with the organisms it grafts: its own
+# face's launch (HALE_DNA_IDENTITY=publish) keeps its provider's key in its
+# state, so the key outlives a restart, and publishes the provider at
+# <habitat>/identity.env; an organism's launch under a habitat that
+# published one signs in through it and starts no provider of its own.
+habitat_dir=${HALE_DNA_HABITAT:-${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local}
+identity_env=$habitat_dir/identity.env
+shared_identity=0
+if ((oidc_local)) && [[ "${HALE_DNA_IDENTITY:-}" != publish && -f "$identity_env" ]]; then
+  shared_identity=1
+fi
 if ((oidc_local)); then
   command -v curl >/dev/null || fail 'curl is required to wait for the OpenID provider'
   command -v openssl >/dev/null || fail 'openssl is required to make the OpenID provider its key'
@@ -213,7 +244,8 @@ fi
 seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
-if ((oidc_local)); then
+if [[ -z "$face_bin" ]]; then seeds+=(dna/face/standard); else face_bin=$(absolute_executable "$face_bin" face); fi
+if ((oidc_local && !shared_identity)); then
   if [[ -z "$oidc" ]]; then seeds+=(dna/oidc/serve); else oidc=$(absolute_executable "$oidc" 'OpenID provider'); fi
 fi
 # GH #988: the reflexes read a project's senses, so they are a seed when
@@ -230,6 +262,7 @@ if ((${#seeds[@]})); then
   build_seeds
   [[ -n "$api" ]] || api=$build_dir/bin/practice_review
   [[ -n "$head" ]] || head=$build_dir/bin/project_service
+  [[ -n "$face_bin" ]] || face_bin=$build_dir/bin/standard
   [[ -n "$oidc" ]] || oidc=$build_dir/bin/serve
   [[ -n "$reflexes_bin" ]] || reflexes_bin=$build_dir/bin/reflexes
 fi
@@ -238,12 +271,30 @@ fi
 # the stub provider serves on the loopback under a key and a secret made
 # for this launch, and the person running this signs in through it as
 # local-sub; it goes with the launcher (cleanup stops it on any exit).
-if ((oidc_local)); then
+if ((shared_identity)); then
+  # the habitat's provider, as its face published it: its issuer, its
+  # key's public half (which the head pins) and the client; this launch
+  # starts no provider
+  set -a
+  # shellcheck disable=SC1090
+  . "$identity_env"
+  set +a
+  [[ -n "${HALE_DNA_OIDC_ISSUER:-}" && -n "${HALE_DNA_OIDC_KEY:-}" && -n "${HALE_DNA_OIDC_DIAL:-}" ]] || fail "$identity_env does not name the habitat's provider"
+  curl -sf "$HALE_DNA_OIDC_DIAL/.well-known/openid-configuration" >/dev/null 2>&1 || fail "the habitat's identity does not answer at $HALE_DNA_OIDC_ISSUER: its face serves it (\`hale habitat up\`)"
+  export HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
+  printf 'face: signing in through the habitat'\''s identity, %s, as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
+elif ((oidc_local)); then
   # the provider's key, made for this launch and readable by you alone; the
   # head pins its public half, since anyone on this machine could answer
-  # on the loopback port
+  # on the loopback port. The habitat's own (HALE_DNA_IDENTITY=publish) is
+  # kept in its state instead, made once: the organisms that sign in
+  # through it pin the same half across its restarts
   key_file="$build_dir/oidc.key"
-  (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out "$key_file" 2>/dev/null) || fail 'cannot make the provider its key'
+  if [[ "${HALE_DNA_IDENTITY:-}" == publish && -n "${HALE_DNA_HEAD_STATE:-}" ]]; then
+    mkdir -p "$HALE_DNA_HEAD_STATE"
+    key_file="$HALE_DNA_HEAD_STATE/oidc.key"
+  fi
+  [[ -s "$key_file" ]] || (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out "$key_file" 2>/dev/null) || fail 'cannot make the provider its key'
   pub() { openssl ec -in "$key_file" -pubout -outform DER 2>/dev/null; }
   b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
   spki=$(pub | base64 -w0)
@@ -251,32 +302,43 @@ if ((oidc_local)); then
   key_y=$(pub | tail -c 32 | b64url)
   [[ ${#key_x} == 43 && ${#key_y} == 43 && -n "$spki" ]] || fail 'cannot read the provider key'\''s public half'
   # GH #989: the client's secret is the vault's `oidc-client-dna-local`,
-  # which the organism's bootstrap provisions (`hale dna init`, `upgrade`);
+  # which the organism's bootstrap provisions (`hale habitat graft`, `hale dna upgrade`);
   # the provider and the head each read it there, and nothing here draws,
   # holds or passes it. None in the vault: the provider refuses to start.
-  env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
+  # the provider binds the face's listen address and records its issuer
+  # under the habitat's declared address; it is probed where it binds
+  oidc_dial=${HALE_DNA_LISTEN_HOST:-127.0.0.1}
+  [[ "$oidc_dial" == 0.0.0.0 ]] && oidc_dial=127.0.0.1
+  services_file=
+  [[ "${HALE_DNA_IDENTITY:-}" == publish ]] && services_file=$habitat_dir/identity.services
+  env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" HALE_DNA_OIDC_SERVICES_FILE="$services_file" "$oidc" "$oidc_port" dna-local >&2 &
   provider=$!
   for _ in $(seq 1 100); do
-    curl -sf "http://127.0.0.1:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
-    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened (its client secret, oidc-client-dna-local, is provisioned by `hale dna init` or `hale dna upgrade` in a project)'
+    curl -sf "http://$oidc_dial:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
+    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened (its client secret, oidc-client-dna-local, is provisioned by `hale habitat graft` or `hale dna upgrade` in a project)'
     sleep 0.1
   done
   # the provider answering is ours: it publishes the key made above
-  curl -sf "http://127.0.0.1:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
-  export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
+  curl -sf "http://$oidc_dial:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
+  export HALE_DNA_OIDC_ISSUER="http://${HALE_DNA_HABITAT_ADDRESS:-127.0.0.1}:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through %s as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
+  # the habitat's provider, published for the organisms it grafts
+  if [[ "${HALE_DNA_IDENTITY:-}" == publish ]]; then
+    mkdir -p "$habitat_dir"
+    printf 'HALE_DNA_OIDC_ISSUER=%s\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_KEY=%s\nHALE_DNA_OIDC_DIAL=http://%s:%s\n' "$HALE_DNA_OIDC_ISSUER" "$spki" "$oidc_dial" "$oidc_port" >"$identity_env.$$" && mv "$identity_env.$$" "$identity_env" || fail "cannot publish the habitat's identity at $identity_env"
+  fi
 fi
 
 # GH #988: the reflexes, on the private-services tier beside the project's
 # store: they hold the store's read URL and a publish-only credential on
 # the project's nerves (the `reflexes` user), nothing else, and go with
-# the launcher. A store or nerves that cannot come up leaves the face
-# running without them.
+# the launcher. A store or nerves that are not up leave the face running
+# without them: the launcher brings nothing up (GH #1653).
 if ((oidc_local)) && [[ -n "$project" ]]; then
-  # either verb fails when its service cannot come up; under `set -e`
+  # either verb fails when its service is not up; under `set -e`
   # that must not end the launch, so each falls back to nothing
-  senses_url=$("$hale" dna senses up "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
-  roles=$("$hale" dna nerves migrate "$project" 2>/dev/null) || roles=
+  senses_url=$("$hale" dna senses url "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
+  roles=$("$hale" dna nerves urls "$project" 2>/dev/null) || roles=
   reflexes_url=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_URL_REFLEXES=//p')
   reflexes_vault=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_VAULT_REFLEXES=//p')
   org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
@@ -285,7 +347,7 @@ if ((oidc_local)) && [[ -n "$project" ]]; then
     reflexes=$!
     printf 'face: reflexes reading %s\n' "$senses_url"
   else
-    printf 'face: no reflexes: the project'\''s senses or nerves did not come up (`hale dna senses up`, `hale dna nerves migrate`)\n'
+    printf 'face: no reflexes: the project'\''s senses or nerves are not up (`hale habitat migrate %s` brings them up)\n' "$project"
   fi
 fi
 
@@ -293,8 +355,18 @@ printf 'face: starting http://127.0.0.1:%s/\n' "$port"
 if [[ -n "$project" ]]; then printf 'face: project %s\n' "$project"; else printf 'face: no project attached; open the Projects workspace\n'; fi
 if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" ]]; then printf 'face: Knowledge reads memory as the head (the DSN stays on the server)\n'; fi
 printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
-env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" "$head" "$port" "$face/web" "$api" "$api_port" ${project:+"$project"} <&0 &
+env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" HALE_DNA_PUBLIC_PORT="$port" "$head" "$head_port" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!
-if wait "$child"; then result=0; else result=$?; fi
-child=
+env -u LOTUS_OBS "$face_bin" "$port" "$face/web" "$head_port" &
+face_child=$!
+# either one ending ends the launch: a face with no head, or a head with no face, is no door
+# (polled with kill -0: the system Bash of macOS is 3.2, which has no `wait -n`)
+while kill -0 "$child" 2>/dev/null && kill -0 "$face_child" 2>/dev/null; do sleep 0.2; done
+if ! kill -0 "$child" 2>/dev/null; then
+  if wait "$child"; then result=0; else result=$?; fi
+  child=
+else
+  if wait "$face_child"; then result=0; else result=$?; fi
+  face_child=
+fi
 exit "$result"

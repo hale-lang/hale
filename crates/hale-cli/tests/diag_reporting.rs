@@ -1729,3 +1729,57 @@ fn a_stdlib_origin_span_never_renders_as_a_seed_location() {
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A cross-pool finding inside a stdlib locus (the TCP substrate under a
+/// `std::http::Server` whose handler runs on another pool) is reported
+/// at the program's literal that built THAT Server, naming the stdlib
+/// locus. It was printed with no file or line and labelled as code
+/// generated for an `api::serve` site, in a program with none (smoke,
+/// 2026-10-16): the substrate's code is parsed in the serve expansion's
+/// space, which no seed file holds. Two Servers here, the innocent one
+/// (`aaa`, all on main) sorting first, so a finding anchored at the
+/// first instance rather than its own would land on the wrong literal.
+#[test]
+fn a_cross_pool_finding_inside_a_stdlib_locus_is_located_at_its_literal() {
+    let d = seed_dir("xpool_stdlib");
+    let file = d.join("main.hl");
+    std::fs::write(
+        &file,
+        "locus H {
+    params { n: Int = 0; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, content_type: \"text/plain\", body: \"ok\" };
+    }
+}
+main locus App {
+    params {
+        h: H = H { };
+        g: H = H { };
+        aaa: std::http::Server = std::http::Server { host: \"127.0.0.1\", port: 0, max_accepts: 1, handler: self.g };
+        zzz: std::http::Server = std::http::Server { host: \"127.0.0.1\", port: 0, max_accepts: 1, handler: self.h };
+    }
+    placement {
+        h: cooperative(pool = main);
+        g: cooperative(pool = main);
+        aaa: cooperative(pool = main);
+        zzz: cooperative(pool = io);
+    }
+    run() { }
+}
+fn main() { App { }; }
+",
+    )
+    .expect("write");
+    let (_out, err, code) = hale_check(&[], &file);
+    let (json, _jerr, jcode) = hale_check(&["--json"], &file);
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(jcode, 1, "{json}");
+    assert!(!err.contains("in the code generated for an `api::serve`"), "mislabelled:\n{err}");
+    // the #1566 alias refusal stays at the handed-over field
+    assert!(err.lines().any(|l| l.contains("main.hl:12:") && l.contains("cross-pool alias")), "alias finding:\n{err}");
+    let inside: Vec<&str> = err.lines().filter(|l| l.contains("inside `std::http::Server`, built here")).collect();
+    assert_eq!(inside.len(), 1, "exactly one stdlib finding:\n{err}");
+    assert!(inside[0].contains("main.hl:12:34:"), "located at the faulty Server's literal (line 12), not aaa's:\n{err}");
+    assert!(json.lines().any(|l| l.contains("inside `std::http::Server`, built here") && l.contains("\"line\":12")), "--json carries it at line 12:\n{json}");
+}

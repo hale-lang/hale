@@ -1,0 +1,707 @@
+// dna/api/habitat_placement.hl — the habitat's allocations placed on its
+// hosts and applied there, as the head's Board commands (phase 4).
+//
+// Placement is the record's. `Commands::place_allocation` ("change a
+// host") binds an allocation to a host: a `habitat.allocated` row naming
+// the host and its provider (the host's), and nothing applies.
+// `Commands::apply_allocations` applies them, every allocation or those of
+// one host:
+//   - the allocation rows are exported as the `--placement` file `hale
+//     deploy render` takes (`<habitat>/placement.json`, `{instance, host,
+//     provider, role}`), the seam the habitat's own fleet seed will render
+//     through;
+//   - each allocation whose placement moved is withdrawn where it was
+//     applied, by that host's provider, and brought up where it is placed
+//     (`Provider.apply`: compose here, ssh elsewhere), its new address kept
+//     beside its files for everything that derives one (dna/core/placement.hl);
+//   - what each provider observes after it is the pulse;
+//   - and each apply is a `habitat.applied <key>/<role>` row.
+// A moved memory or nerves allocation starts empty on its new host (there is
+// no migration): a move of a memory that was applied, so holds its
+// organism's record, is refused unless `fresh` says to start it empty. The
+// habitat's head and face run with its body on this machine.
+import "../core" as dna;
+
+type AllocationPlace {
+    allocation: String = "";
+    host: String = "";
+}
+
+type ApplyAsk {
+    host: String = "";
+    fresh: Bool = false;
+}
+
+type PlaceReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    allocation: String = "{}";
+}
+
+type ApplyReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // whether the habitat's own memory or nerves moved: its head and face
+    // read their addresses at their start
+    restart: Bool = false;
+    // per allocation: allocation, host, provider, ok, why, state, detail
+    applied: String = "[]";
+}
+
+// The roles a placement moves: the servers an organism's allocations run,
+// and its own services. A heart's database and broker are tenants of its
+// memory and nerves, and move with them; the habitat's head and face run
+// with its body.
+const PLACEABLE_ROLES: String = "memory nerves senses services";
+
+// The allocation row `<key>/<role>` with its host, provider and project as
+// `h` places it.
+fn placed_body(body: String, h: dna::Host, key: String) -> String {
+    let role = std::json::find_string_field(body, "role");
+    let b = std::json::Builder { };
+    b.begin_object();
+    let mut it = std::json::object_first(body);
+    while !it.done {
+        let k = std::json::obj_key_string(it, body);
+        if k != "host" && k != "provider" && k != "project" {
+            b.field(k, std::json::obj_value_raw(it, body));
+        }
+        it = std::json::object_next(it, body);
+    }
+    b.string_field("host", h.name);
+    b.string_field("provider", h.provider);
+    // an organism's own services are a project of its own on the host
+    b.string_field(
+        "project",
+        dna::placed_project(h.name) + (if role == "services" { "-" + key } else { "" }),
+    );
+    b.end_object();
+    return b.result();
+}
+
+fn place_refused(code: String, why: String) -> PlaceReply {
+    return PlaceReply { code: code, why: why };
+}
+
+fn habitat_place(root: String, a: AllocationPlace) -> PlaceReply {
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.allocated");
+    let held = latest.get(a.allocation) or LatestRow { };
+    if held.at < 0 { return place_refused("not_found", "no allocation `" + a.allocation + "`"); }
+    let body = j.read(held.at).body;
+    let role = std::json::find_string_field(body, "role");
+    if !dna::has_word(PLACEABLE_ROLES, role) {
+        return place_refused(
+            "not_placeable",
+            "`" + role + "` is placed with what holds it: "
+                + (if role == "database" || role == "broker" {
+                    "its server's allocation"
+                } else {
+                    "the habitat's body, on this machine"
+                }),
+        );
+    }
+    if std::json::find_string_field(body, "provider") == "operator" {
+        return place_refused(
+            "not_placeable",
+            "an allocation on the operator's server is adopted, never placed",
+        );
+    }
+    let h = if a.host == "local" {
+        dna::Host { name: "local", provider: "compose", state: "ready" }
+    } else {
+        dna::recorded_host(root, a.host)
+    };
+    if len(h.provider) == 0 || h.state == "removed" {
+        return place_refused("not_found", "no host `" + a.host + "` was added");
+    }
+    if h.state != "ready" {
+        return place_refused("host_not_ready", "host `" + a.host + "` is " + h.state);
+    }
+    if a.host != "local" && !dna::has_word(h.offers, "compose") {
+        return place_refused("host_lacks", "host `" + a.host + "` does not offer compose");
+    }
+    let placed = placed_body(body, h, a.allocation[0..std::str::index_of(a.allocation, "/")]);
+    let r = j.append(j.revision(), "habitat.allocated", a.allocation, placed);
+    if !r.ok {
+        return place_refused(
+            "record_refused",
+            "the habitat's record refused the row (" + r.error + ")",
+        );
+    }
+    return PlaceReply { ok: true, allocation: placed };
+}
+
+// The `--placement` export: every allocation row as `{instance, host,
+// provider, role}`, the shape `hale deploy render` takes.
+@bounded_by(j)
+fn placement_export(j: dna::Journal, latest: LatestRows) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let host = std::json::find_string_field(e.body, "host");
+        if len(host) == 0 { continue; }
+        out.begin_object();
+        out.string_field("instance", e.entity);
+        out.string_field("host", host);
+        out.string_field("provider", std::json::find_string_field(e.body, "provider"));
+        out.string_field("role", std::json::find_string_field(e.body, "role"));
+        out.end_object();
+    }
+    out.end_array();
+    return out.result();
+}
+
+// The render of an organism's own services (`role` `services`): its compose
+// file, in the project its placement names, handed the habitat's name and
+// the secrets its programs read.
+fn services_render(body: String) -> dna::Render {
+    let r = dna::Render {
+        project: std::json::find_string_field(body, "project"),
+        dir: std::json::find_string_field(body, "render_dir"),
+        files: std::json::find_string_field(body, "render_files"),
+        mounted: std::json::find_string_field(body, "render_mounted"),
+    };
+    // the secrets its programs read ([dna.secrets.<name>] in its manifest),
+    // named for the organism it is; a declaration the toolchain refuses
+    // hands none
+    let organism = std::json::find_string_field(body, "organism");
+    let declared = dna::declared_secrets(r.dir);
+    let secrets = if declared.ok && len(organism) >= 12 {
+        dna::program_secrets(declared.lines, dna::schema_for(organism))
+    } else {
+        ""
+    };
+    // each of its services labelled as the habitat's, for the organism it is
+    return dna::Render {
+        project: r.project,
+        dir: r.dir,
+        files: r.files,
+        mounted: r.mounted,
+        labels: dna::render_labels(r, dna::organism_label(r.dir)),
+        secrets: secrets,
+        // the organism's reader vault, whatever its programs read now: an
+        // empty set is reconciled there too
+        vault: if len(organism) >= 12 { dna::reader_vault_dir(organism[0..12]) } else { "" },
+        // the habitat's name: an organism's own services are the habitat's
+        habitat: dna::habitat_name_here(),
+    };
+}
+
+// One allocation brought to where its row places it: withdrawn where it was
+// applied when that is elsewhere (a memory that was applied only with
+// `fresh`), its data forgotten there first when `fresh`, applied, kept,
+// observed, and recorded. The reply's entry, and whether the habitat's own
+// memory or nerves moved.
+fn apply_one(
+    root: String,
+    j: dna::RecordJournal,
+    entity: String,
+    body: String,
+    fresh: Bool,
+    out: std::json::Builder
+) -> Bool {
+    let slash = std::str::index_of(entity, "/");
+    let key = entity[0..slash];
+    let role = std::json::find_string_field(body, "role");
+    let host = std::json::find_string_field(body, "host");
+    let provider = std::json::find_string_field(body, "provider");
+    let was = dna::placed_on(key, role);
+    let marked = std::io::fs::file_exists(dna::placed_path(key, role));
+    let target = dna::AppliedOn {
+        host: if len(host) == 0 { "local" } else { host },
+        provider: provider,
+        address: if host == "local" || len(host) == 0 {
+            ""
+        } else {
+            dna::recorded_host(root, host).address
+        },
+        project: if (host == "local" || len(host) == 0) && role != "services" {
+            dna::local_habitat_project()
+        } else {
+            std::json::find_string_field(body, "project")
+        },
+    };
+    // an organism's own services never applied are applied nowhere yet
+    // (applied here, a marker says so)
+    let moved = was.host != target.host && (role != "services" || marked);
+    let mut ok = true;
+    let mut why = "";
+    if moved && role == "memory" && key == dna::allocation_key(root) {
+        ok = false;
+        why = "habitat_record: the habitat's own memory holds its record, the one that places everything: it is not moved (a moved memory starts empty, and there is no migration)";
+    } else if moved && role == "memory" && !fresh {
+        ok = false;
+        why = "memory_holds_rows: the memory on " + was.host
+            + " holds the organism's record, and a moved memory starts empty on its new host (there is no migration): apply with --fresh to start it empty there";
+    }
+    if ok && moved {
+        let gone = if role == "services" {
+            let mut r = services_render(body);
+            r.project = was.project;
+            if was.host == "local" {
+                dna::ComposeProvider { }.withdraw("local", r)
+            } else {
+                dna::SshProvider { root: root }.withdraw(was.host, r)
+            }
+        } else {
+            dna::placed_withdraw(key, role, was)
+        };
+        // nothing ran there yet is nothing to take down; any other failure
+        // stops the move: the allocation stays where it was applied, and
+        // the failure is the apply's outcome
+        if !gone.ok && !std::str::contains(gone.why, "no such service") {
+            ok = false;
+            why = "withdrawal_failed: it was not withdrawn from " + was.host + " ("
+                + dna::trim_nl(gone.why) + "), so it stays there and nothing was applied on "
+                + target.host;
+        }
+        if ok && fresh && role != "services" {
+            let forgot = dna::placed_forget(key, role, target);
+            if forgot.code != 0 {
+                ok = false;
+                why = "fresh_reset_failed: its data on " + target.host + " was not forgotten ("
+                    + dna::trim_nl(forgot.stderr) + "), so nothing was applied there";
+            }
+        }
+    }
+    let applied = if !ok {
+        dna::RenderApplied { why: why }
+    } else if role == "services" {
+        let kept = dna::place_cache(key, role, target);
+        if target.host == "local" {
+            dna::ComposeProvider { }.apply("local", services_render(body))
+        } else {
+            dna::SshProvider { root: root }.apply(target.host, services_render(body))
+        }
+    } else {
+        let kept = dna::place_cache(key, role, target);
+        dna::placed_apply(key, role)
+    };
+    if ok && !applied.ok {
+        // the placement it was applied at stays the one in force (and one
+        // never applied stays never applied)
+        if marked {
+            let back = dna::place_cache(key, role, was);
+        } else {
+            std::io::fs::unlink(dna::placed_path(key, role)) or discard;
+        }
+    }
+    let a = dna::Allocation {
+        role: role,
+        instance: key,
+        provider: provider,
+        host: target.host,
+        project: target.project,
+        service: if role == "services" {
+            ""
+        } else {
+            dna::compose_service(dna::placed_role(role), key)
+        },
+        placed: true,
+    };
+    let seen = if !applied.ok {
+        dna::AllocationState { detail: applied.why }
+    } else if target.host == "local" {
+        if role == "services" {
+            dna::AllocationState { state: "up", detail: "applied" }
+        } else {
+            dna::ComposeProvider { }.observe(a)
+        }
+    } else if role == "services" {
+        dna::AllocationState { state: "up", detail: "applied" }
+    } else {
+        dna::SshProvider { root: root }.observe(a)
+    };
+    let row = std::json::Builder { };
+    row.begin_object();
+    row.string_field("host", target.host);
+    row.string_field("provider", provider);
+    row.bool_field("ok", applied.ok);
+    row.string_field("why", applied.why);
+    row.string_field("state", seen.state);
+    row.bool_field("fresh", fresh && moved);
+    if applied.ok { row.field("published", applied.published); }
+    row.end_object();
+    let recorded = j.append(j.revision(), "habitat.applied", entity, row.result());
+    out.begin_object();
+    out.string_field("allocation", entity);
+    // the host as a person knows it: the habitat's own machine by the name
+    // it is reached at, not the `local` its rows branch on
+    out.string_field("host", dna::host_label(target.host));
+    out.string_field("provider", provider);
+    out.bool_field("ok", applied.ok);
+    out.string_field("why", applied.why);
+    out.string_field("state", seen.state);
+    out.string_field("detail", seen.detail);
+    out.end_object();
+    return applied.ok;
+}
+
+fn habitat_apply(root: String, a: ApplyAsk) -> ApplyReply {
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.allocated");
+    // the seam: the rows as the `--placement` file a render takes
+    let habitat_dir = dna::local_habitat_dir();
+    std::io::fs::write_file(
+        habitat_dir + "/placement.json",
+        placement_export(j, latest),
+    ) or discard;
+    let own = dna::allocation_key(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut all_ok = true;
+    let mut restart = false;
+    let mut moved_any = false;
+    let n = j.revision();
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let role = std::json::find_string_field(e.body, "role");
+        if !dna::has_word(PLACEABLE_ROLES, role) { continue; }
+        if std::json::find_string_field(e.body, "provider") == "operator" { continue; }
+        let host = std::json::find_string_field(e.body, "host");
+        let slash = std::str::index_of(e.entity, "/");
+        let key = e.entity[0..slash];
+        let was = dna::placed_on(key, role).host;
+        // one host's: what is placed there, and what leaves it
+        if len(a.host) > 0 && host != a.host && was != a.host { continue; }
+        let moved = was != (if len(host) == 0 { "local" } else { host });
+        if !apply_one(root, j, e.entity, e.body, a.fresh, out) { all_ok = false; }
+        if moved && key == own && (role == "memory" || role == "nerves") { restart = true; }
+        if moved && key != own && (role == "memory" || role == "nerves") { moved_any = true; }
+    }
+    out.end_array();
+    return ApplyReply {
+        ok: all_ok,
+        code: if all_ok { "" } else { "not_applied" },
+        why: if moved_any {
+            "an organism whose memory or nerves moved derives the new address at `hale habitat migrate <organism>`; a memory started empty holds no record, and the organism is grafted again"
+        } else {
+            ""
+        },
+        restart: restart,
+        applied: out.result(),
+    };
+}
+
+// ---- a graft, as the Board's command ---------------------------------------
+//
+// `Commands::graft` grafts a sapling the habitat pins, by name, on the host
+// it names (`local` or "" for this machine): the act `hale habitat graft
+// <sapling> --host <name>` is, run by the head with the toolchain that
+// launched it (`--no-head`: the act itself, never a call back to the head).
+// A graft takes minutes, so the command starts it and answers at once with
+// where it writes what it says (`log`) and, when it ends, its exit status
+// (`<log>.exit`); its end is the `habitat.grafted` row it records.
+
+type GraftAsk {
+    sapling: String = "";
+    host: String = "";
+    library: Bool = true;
+}
+
+type GraftReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // the graft's id, which `Commands::graft_log` reads it by, and the path
+    // it writes
+    graft: String = "";
+    log: String = "";
+}
+
+type GraftLogAsk {
+    graft: String = "";
+    from: Int = 0;
+}
+
+type GraftLogReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // the log from `from`, at most one page, and where the next page starts
+    text: String = "";
+    next: Int = 0;
+    // the graft ended, and its exit status (-1 until it has)
+    done: Bool = false;
+    exit: Int = -1;
+}
+
+// A page of a graft's log is at most this many bytes.
+const GRAFT_LOG_PAGE: Int = 65536;
+
+// A sapling's name is one word of letters, digits, `.`, `_` and `-`.
+fn graft_word_ok(name: String) -> Bool {
+    if len(name) == 0 || len(name) > 128 || std::str::starts_with(name, "-")
+        || std::str::starts_with(name, ".")
+    {
+        return false;
+    }
+    let mut i = 0;
+    while i < len(name) {
+        let c = name[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || c == "." || c == "_" || c == "-";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The log of the graft `graft` names: the one `Commands::graft` made, read by
+// its id (the sapling's name) and never by a path the caller supplies. The
+// path `Commands::graft` returned is accepted only when it is exactly that
+// log's.
+fn habitat_graft_log(a: GraftLogAsk) -> GraftLogReply {
+    let dir = dna::local_habitat_dir() + "/grafts";
+    let name = if std::str::starts_with(a.graft, dir + "/")
+        && std::str::ends_with(a.graft, ".log")
+    {
+        a.graft[(len(dir) + 1)..(len(a.graft) - 4)]
+    } else {
+        a.graft
+    };
+    if !graft_word_ok(name) {
+        return GraftLogReply {
+            code: "invalid_graft",
+            why: "a graft is named by the sapling's name",
+        };
+    }
+    let log = dir + "/" + name + ".log";
+    if !std::io::fs::file_exists(log) {
+        return GraftLogReply { code: "not_found", why: "no graft of `" + name + "` was started" };
+    }
+    let text = std::io::fs::read_file(log) or "";
+    let size = len(text);
+    let from = if a.from < 0 { 0 } else if a.from > size { size } else { a.from };
+    let to = if size - from > GRAFT_LOG_PAGE { from + GRAFT_LOG_PAGE } else { size };
+    let ended = std::io::fs::file_exists(log + ".exit");
+    let code = if ended {
+        dna::trim_nl(std::io::fs::read_file(log + ".exit") or "-1")
+    } else {
+        "-1"
+    };
+    return GraftLogReply {
+        ok: true,
+        text: text[from..to],
+        next: to,
+        done: ended && to == size,
+        exit: if ended { std::str::parse_int(code) or - 1 } else { -1 },
+    };
+}
+
+fn habitat_graft(root: String, a: GraftAsk) -> GraftReply {
+    let name = a.sapling;
+    if len(name) == 0 || len(name) > 128 || std::str::contains(name, "/")
+        || std::str::starts_with(name, "-") || std::str::contains(name, " ")
+        || std::str::contains(name, "\n")
+    {
+        return GraftReply { code: "invalid_sapling", why: "a sapling is named by one word" };
+    }
+    if std::str::starts_with(a.host, "-") || std::str::contains(a.host, " ")
+        || std::str::contains(a.host, "\n")
+    {
+        return GraftReply { code: "invalid_host", why: "a host is named by one word" };
+    }
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let dir = dna::local_habitat_dir() + "/grafts";
+    if dna::run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 {
+        return GraftReply { code: "not_started", why: "cannot make " + dir };
+    }
+    let log = dir + "/" + name + ".log";
+    std::io::fs::unlink(log + ".exit") or discard;
+    let mut args = name + "\n--no-head";
+    if len(a.host) > 0 && a.host != "local" { args = args + "\n--host\n" + a.host; }
+    if !a.library { args = args + "\n--no-library"; }
+    // the act runs as the operator's own command would, detached: none of
+    // the head's own memory, nerves or socket reaches it (the child derives
+    // its own), and its exit status lands beside its log
+    let started = dna::run_tool(
+        "sh\n-c\nlog=\"$1\"; shift; for v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; ( \"$@\" >\"$log\" 2>&1 </dev/null; echo $? >\"$log.exit\" ) >/dev/null 2>&1 &\nsh\n"
+            + log + "\n" + hale + "\nhabitat\ngraft\n" + args,
+    );
+    if started.code != 0 {
+        return GraftReply { code: "not_started", why: dna::trim_nl(started.stderr) };
+    }
+    return GraftReply { ok: true, code: "started", graft: name, log: log };
+}
+
+// ---- a tenant's model map, as the Board's command --------------------------
+//
+// `Commands::set_model_map` points a grafted organism's model map at an
+// endpoint: the act `hale dna models category <mode>.<size> <model>
+// --endpoint <url> [--key-vault <slot>]` is, run by the head in the
+// organism's directory. A key travels only as its vault slot's name.
+// `Commands::probe_model` asks the model a category of the organism's map
+// names, where the map says it is asked, once: what answered, never a key.
+
+type ModelMapSet {
+    organism: String = "";
+    category: String = "";
+    model: String = "";
+    endpoint: String = "";
+    key_vault: String = "";
+    tools: Bool = false;
+}
+
+type ModelProbe {
+    organism: String = "";
+    category: String = "";
+}
+
+type ModelMapReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    model: String = "";
+    endpoint: String = "";
+    answer: String = "";
+}
+
+// The directory of the organism the habitat grafted as `name`: its
+// allocation's cache names it ("" when the habitat grafted none so named).
+@bounded_by(root)
+fn grafted_root(root: String, name: String) -> String {
+    let j = habitat_journal(root);
+    let mut key = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted" && std::json::find_string_field(e.body, "name") == name {
+            key = if std::json::find_string_field(e.body, "state") == "removed" {
+                ""
+            } else {
+                e.entity
+            };
+        }
+        i = i + 1;
+    }
+    if len(key) == 0 { return ""; }
+    let cache = std::io::fs::read_file(
+        dna::local_habitat_dir() + "/allocations/" + key + "/allocation.json",
+    )
+    or "";
+    return std::json::find_string_field(cache, "root");
+}
+
+fn word_only(s: String) -> Bool {
+    return len(s) > 0 && len(s) <= 512 && !std::str::contains(s, " ")
+        && !std::str::contains(s, "\n") && !std::str::starts_with(s, "-");
+}
+
+fn habitat_set_model_map(root: String, a: ModelMapSet) -> ModelMapReply {
+    if !word_only(a.organism) || !word_only(a.category) || !word_only(a.model)
+        || (len(a.endpoint) > 0 && !word_only(a.endpoint))
+        || (len(a.key_vault) > 0 && !std::secret::vault_name_is_safe(a.key_vault))
+    {
+        return ModelMapReply {
+            code: "invalid",
+            why: "an organism, a category, a model, an endpoint URL and a vault slot's name, one word each",
+        };
+    }
+    let dir = grafted_root(root, a.organism);
+    if len(dir) == 0 {
+        return ModelMapReply {
+            code: "not_found",
+            why: "the habitat grafted no organism `" + a.organism + "`",
+        };
+    }
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let mut args = "dna\nmodels\ncategory\n" + a.category + "\n" + a.model;
+    if a.tools { args = args + "\n--tools"; }
+    if len(a.endpoint) > 0 { args = args + "\n--endpoint\n" + a.endpoint; }
+    if len(a.key_vault) > 0 { args = args + "\n--key-vault\n" + a.key_vault; }
+    // the organism's own act, in its directory, as its operator would run
+    // it: none of the head's own memory, nerves or socket reaches it
+    let r = dna::run_tool_timeout(
+        300,
+        "sh\n-c\ncd \"$1\" && shift && for v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; exec \"$@\"\nsh\n"
+            + dir + "\n" + hale + "\n" + args,
+    );
+    if r.code != 0 { return ModelMapReply { code: "not_set", why: dna::trim_nl(r.stderr) }; }
+    return ModelMapReply {
+        ok: true,
+        model: a.model,
+        endpoint: a.endpoint,
+        why: dna::trim_nl(r.stdout),
+    };
+}
+
+fn habitat_probe_model(root: String, a: ModelProbe) -> ModelMapReply {
+    if !word_only(a.organism) || !word_only(a.category) {
+        return ModelMapReply { code: "invalid", why: "an organism and a category, one word each" };
+    }
+    let dir = grafted_root(root, a.organism);
+    if len(dir) == 0 {
+        return ModelMapReply {
+            code: "not_found",
+            why: "the habitat grafted no organism `" + a.organism + "`",
+        };
+    }
+    // the organism's own record, by the DSN its checkout keeps
+    let j = dna::RecordJournal {
+        repo: dir,
+        dsn: dna::kept_dsn(dir, dna::HEAD_DSN_ENV),
+        author: "api",
+    };
+    let moved = j.refresh();
+    let c = dna::model_category_of(j, a.category);
+    if len(c.model) == 0 {
+        return ModelMapReply {
+            code: "not_mapped",
+            why: "no model fills `" + a.category + "` in " + a.organism + "'s map",
+        };
+    }
+    if len(c.endpoint) == 0 {
+        return ModelMapReply {
+            code: "no_endpoint",
+            model: c.model,
+            why: "`" + a.category + "` names no endpoint: its performer's own is asked",
+        };
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("model", c.model);
+    b.begin_array_field("messages");
+    b.begin_object();
+    b.string_field("role", "user");
+    b.string_field("content", "probe");
+    b.end_object();
+    b.end_array();
+    b.end_object();
+    let body = b.result();
+    let resp = if len(c.key_vault) > 0 {
+        dna::HostedCredential {
+            vault_slot: c.key_vault,
+        }.post_json(c.endpoint, body, "") or std::http::ClientResponse {
+            status: -1,
+            headers: "",
+            body: b"",
+        }
+    } else {
+        dna::post_json_keyless(c.endpoint, body, "") or std::http::ClientResponse {
+            status: -1,
+            headers: "",
+            body: b"",
+        }
+    };
+    let out = dna::parse_chat(resp.status, std::str::from_bytes(resp.body));
+    if !out.ok {
+        return ModelMapReply {
+            code: "not_answered",
+            model: c.model,
+            endpoint: c.endpoint,
+            why: out.refused,
+        };
+    }
+    return ModelMapReply { ok: true, model: c.model, endpoint: c.endpoint, answer: out.text };
+}

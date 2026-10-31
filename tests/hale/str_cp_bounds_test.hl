@@ -1,0 +1,62 @@
+// tests/hale/str_cp_bounds_test.hl — the code-point readers at the edges
+// of a String: in range, at the end, past the end, and mid-sequence. An
+// offset at or past the end is -1 and reads nothing past the terminator;
+// a sequence the end cuts short is invalid UTF-8, -1 too. The view forms
+// answer the same, bounded by the view's `n`.
+
+fn main() {
+    // "héllo": h(1) é(2) l l o, 6 bytes
+    let s = "h" + "éllo";
+    std::test::assert_eq_int(std::str::cp_at(s, 0), 104, "in range: 'h'");
+    std::test::assert_eq_int(std::str::cp_at(s, 1), 233, "in range: 'é'");
+    std::test::assert_eq_int(std::str::cp_size(s, 1), 2, "'é' is two bytes");
+    std::test::assert_eq_int(std::str::cp_at(s, 2), -1, "mid-sequence");
+    std::test::assert_eq_int(std::str::cp_size(s, 2), -1, "mid-sequence width");
+    std::test::assert_eq_int(std::str::cp_at(s, 5), 111, "the last byte: 'o'");
+    std::test::assert_eq_int(std::str::cp_at(s, 6), -1, "at the end");
+    std::test::assert_eq_int(std::str::cp_size(s, 6), -1, "at the end, width");
+    std::test::assert_eq_int(std::str::cp_at(s, 7), -1, "one past the end");
+    std::test::assert_eq_int(std::str::cp_size(s, 7), -1, "one past the end, width");
+    std::test::assert_eq_int(std::str::cp_at(s, 100000), -1, "far past the end");
+    std::test::assert_eq_int(std::str::cp_size(s, 100000), -1, "far past the end, width");
+    std::test::assert_eq_int(std::str::cp_at(s, -1), -1, "a negative offset");
+    // offsets that do not fit a size_t on a 32-bit target, or any target
+    std::test::assert_eq_int(std::str::cp_at(s, 1099511627776), -1, "2^40 past the end");
+    std::test::assert_eq_int(std::str::cp_size(s, 1099511627776), -1, "2^40 past the end, width");
+    std::test::assert_eq_int(std::str::cp_at(s, 9223372036854775807), -1, "the largest Int");
+    std::test::assert_eq_int(
+        std::str::cp_size(s, 9223372036854775807),
+            -1,
+        "the largest Int, width",
+    );
+    std::test::assert_eq_int(std::str::cp_at("", 0), -1, "the empty string");
+    // a sequence the end cuts short: the first two bytes of '日' (E6 97)
+    let cut = std::str::slice(std::str::bytes_view("日"), 0, 2);
+    std::test::assert_eq_int(std::str::cp_size(cut, 0), -1, "a truncated sequence is invalid");
+    std::test::assert_eq_int(std::str::cp_at(cut, 0), -1, "and decodes to nothing");
+    std::test::assert_eq_int(std::str::cp_count(cut), -1, "and counts as invalid");
+    std::test::assert_eq_int(std::str::cp_count(s), 5, "five code points in six bytes");
+
+    let v = std::str::bytes_view(s);
+    std::test::assert_eq_int(std::str::view_cp_at(v, 0), 104, "view: in range");
+    std::test::assert_eq_int(std::str::view_cp_at(v, 1), 233, "view: a two-byte sequence");
+    std::test::assert_eq_int(std::str::view_cp_size(v, 1), 2, "view: its width");
+    std::test::assert_eq_int(std::str::view_cp_at(v, 2), -1, "view: mid-sequence");
+    std::test::assert_eq_int(std::str::view_cp_at(v, 6), -1, "view: at the end");
+    std::test::assert_eq_int(std::str::view_cp_at(v, 100000), -1, "view: past the end");
+    std::test::assert_eq_int(std::str::view_cp_at(v, -1), -1, "view: a negative offset");
+    std::test::assert_eq_int(std::str::view_cp_at(v, 1099511627776), -1, "view: 2^40");
+    std::test::assert_eq_int(
+        std::str::view_cp_size(v, 9223372036854775807),
+            -1,
+        "view: the largest Int",
+    );
+    let w = std::str::bytes_view("日本語");
+    std::test::assert_eq_int(std::str::view_cp_at(w, 3), 26412, "view: a three-byte sequence");
+    std::test::assert_eq_int(std::str::view_cp_size(w, 6), 3, "view: the last one");
+    let e = std::str::bytes_view("a" + "😀");
+    std::test::assert_eq_int(std::str::view_cp_at(e, 1), 128512, "view: a four-byte sequence");
+    std::test::assert_eq_int(std::str::cp_at(e.text, 1), 128512, "the String form agrees");
+    let c = std::str::bytes_view(cut);
+    std::test::assert_eq_int(std::str::view_cp_size(c, 0), -1, "view: a truncated sequence");
+}

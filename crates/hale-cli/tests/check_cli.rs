@@ -1,4 +1,4 @@
-//! The `check_cli` integration-test binary: 24 test files of this area, kept
+//! The `check_cli` integration-test binary: 27 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,8 @@
 
 #[path = "bounded_annotation.rs"]
 mod bounded_annotation;
+#[path = "check_adopt.rs"]
+mod check_adopt;
 #[path = "check_arg_parsing.rs"]
 mod check_arg_parsing;
 #[path = "check_build_refusals.rs"]
@@ -53,6 +55,10 @@ mod nested_main_transition;
 mod sibling_file_topic_check;
 #[path = "source_map.rs"]
 mod source_map;
+#[path = "run_loop_reclaim_verify.rs"]
+mod run_loop_reclaim_verify;
+#[path = "sha256_stream_verify.rs"]
+mod sha256_stream_verify;
 #[path = "unbounded_alloc_opt_in.rs"]
 mod unbounded_alloc_opt_in;
 #[path = "workspace_check.rs"]

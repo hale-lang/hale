@@ -1220,6 +1220,107 @@ fn lsp_definition_resolves_std_paths_into_materialized_stdlib() {
     let _ = std::fs::remove_dir_all(&seed);
 }
 
+/// `textDocument/definition` on a name the checker resolved where it is
+/// written: a method call by its callee (a locus method of the seed's,
+/// a stdlib handle's member), a `std::` fn the stdlib writes in Hale, a
+/// field read and a struct literal's field by their type, a local by its
+/// `let`.
+#[test]
+fn lsp_definition_follows_calls_fields_and_locals() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_resolved_def_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&seed);
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+    let text = "locus Counter {\n\
+    params { n: Int = 0; }\n\
+    fn bump() { self.n = self.n + 1; }\n\
+    fn go() { self.bump(); }\n\
+}\n\
+type Pt { x: Int; y: Int; }\n\
+fn main() {\n\
+    let c = Counter { };\n\
+    c.bump();\n\
+    let p = Pt { x: 1, y: 2 };\n\
+    let q = p.x;\n\
+    let b = std::bytes::BytesBuilder { };\n\
+    b.append_str(\"x\");\n\
+    std::test::assert(q == 1, \"q\");\n\
+}\n";
+    std::fs::write(&file, text).expect("write seed file");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": text
+        }}
+    }));
+    let _ = lsp.recv(); // publishDiagnostics
+
+    // (line, the text the cursor starts on, the file the jump lands
+    // in, what the target line holds)
+    let cases = [
+        (8, "bump", "main.hl", "fn bump()"),
+        (3, "bump", "main.hl", "fn bump()"),
+        (10, "x;", "main.hl", "type Pt"),
+        (9, "x: 1", "main.hl", "type Pt"),
+        (13, "q ==", "main.hl", "let q"),
+        (12, "append_str", "bytes_builder.hl", "fn append_str"),
+        (13, "assert", "test.hl", "fn __test_assert("),
+    ];
+    for (id, (line, at, file_end, holds)) in cases.into_iter().enumerate() {
+        let character = text.lines().nth(line).unwrap().find(at).unwrap();
+        lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 10 + id, "method": "textDocument/definition",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            }
+        }));
+        let d = lsp.recv();
+        let def_uri = d
+            .pointer("/result/uri")
+            .and_then(|u| u.as_str())
+            .unwrap_or_else(|| panic!("`{}` on line {} resolves: {}", at, line, d));
+        assert!(def_uri.ends_with(file_end), "`{}` lands in {}: {}", at, file_end, def_uri);
+        let content = std::fs::read_to_string(def_uri.strip_prefix("file://").unwrap())
+            .expect("definition file");
+        let target = d.pointer("/result/range/start/line").unwrap().as_u64().unwrap() as usize;
+        let target_line = content.lines().nth(target).unwrap_or("");
+        assert!(
+            target_line.contains(holds),
+            "`{}` on line {} → line {} = {:?}, expected {:?}",
+            at,
+            line,
+            target,
+            target_line,
+            holds
+        );
+    }
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": {}
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": {}
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}
+
 /// A file inside the materialized stdlib cache
 /// (`…/hale/stdlib-<version>/…`) is a definition-jump target, not
 /// a seed: analyzed standalone it would spray spurious errors over
@@ -1433,12 +1534,11 @@ locus Desk {\n\
 }\n\
 api Public { rpc Desk::on_order; }\n\
 main locus App {\n\
-    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }\n\
+    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; h: api::Exposure = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse); }\n\
     run() {\n\
-        let h = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse);\n\
         let o = Order::from_json(\"{}\");\n\
         println(o.id);\n\
-        h.stop();\n\
+        self.h.stop();\n\
     }\n\
 }\n\
 fn main() { App { }; }\n",
@@ -1460,11 +1560,10 @@ locus Desk {\n\
 }\n\
 api Public { rpc Desk::on_order; }\n\
 main locus App {\n\
-    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }\n\
+    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; h: api::Exposure = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse); }\n\
     run() {\n\
-        let h = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse);\n\
         println(\"up\");\n\
-        h.stop();\n\
+        self.h.stop();\n\
     }\n\
 }\n\
 fn main() { App { }; }\n";
@@ -2180,7 +2279,7 @@ fn lsp_and_check_agree_over_a_seed_with_generated_source() {
         check.iter().all(|(file, ..)| file == "main.hl"),
         "a finding positioned outside the author's file (inside generated source?): {check:?}"
     );
-    for line in [7u64, 16u64] {
+    for line in [7u64, 15u64] {
         assert!(
             check.iter().any(|(_, l, ..)| *l == line),
             "no finding at main.hl:{line}: {check:?}"

@@ -1,0 +1,158 @@
+import "../lib/logfmt" as logfmt;
+
+/// The voice node: runs the seats configured on this machine and serves
+/// them to the coordinator. See ../spec/node.yaml (its admin API) and
+/// ../spec/protocol.yaml (its connection to the coordinator).
+///
+/// What the node offers comes from its capabilities file, read and checked
+/// at start; what it runs comes from the coordinator. Three loci, each on
+/// its own thread: `Admin` serves the local API, `Session` (session.hl)
+/// holds the connection on NATS and serves, and `Plane` (plane.hl) makes
+/// the calls to the api's node plane, so a call that waits on the api
+/// never keeps the session from answering a `serve`. The session and the
+/// plane talk over the bus; the admin API reads the data directory: local
+/// controls in `local.json`, the session's state in `session.json`.
+main locus Node {
+    params {
+        id: String = "";
+        data: String = "node-data";
+        capabilities: String = "";
+        admin: Admin = Admin { };
+        session: Session = Session { };
+        plane: Plane = Plane { };
+    }
+    placement {
+        admin: pinned;
+        session: pinned;
+        plane: pinned;
+    }
+    birth() {
+        log_info(
+            "starting",
+            fields2(std::log::kv("node", self.id), std::log::kv("data", self.data)),
+        );
+    }
+}
+
+const NODE_VERSION: String = "0.1.0-dev";
+
+/// `node --id ID [--api URL] [--token-vault ENTRY | --token T] [--data DIR] [--capabilities FILE] [--host H] [--port N]`.
+/// The enrollment token comes from the vault entry `--token-vault` (or
+/// `VOICE_ENROLLMENT_TOKEN_VAULT`) names, read on the sealed side each time
+/// it is sent: the way a grafted node is handed it. Standalone, `--token`
+/// or `VOICE_ENROLLMENT_TOKEN` still work, each with a warning that the
+/// token is in the open.
+fn main() {
+    // the one sink: every logger's lines are written here (log.hl)
+    let sink = logfmt::RecordSink { };
+    let mut id = "";
+    let mut api = "http://127.0.0.1:8080";
+    let mut token = "";
+    let mut token_vault = if std::env::var_exists("VOICE_ENROLLMENT_TOKEN_VAULT") {
+        std::env::var("VOICE_ENROLLMENT_TOKEN_VAULT")
+    } else {
+        ""
+    };
+    let mut data = "node-data";
+    let mut capabilities_file = "";
+    let mut host = "127.0.0.1";
+    let mut port = 8081;
+    let mut i = 1;
+    while i + 1 < std::env::args_count() {
+        let flag = std::env::arg(i);
+        let value = std::env::arg(i + 1);
+        if flag == "--id" {
+            id = value;
+        } else if flag == "--api" {
+            api = value;
+        } else if flag == "--token" {
+            token = value;
+        } else if flag == "--token-vault" {
+            token_vault = value;
+        } else if flag == "--data" {
+            data = value;
+        } else if flag == "--capabilities" {
+            capabilities_file = value;
+        } else if flag == "--host" {
+            host = value;
+        } else if flag == "--port" {
+            port = std::str::parse_int(value) or - 1;
+            if port < 1 || port > 65535 {
+                log_error("--port takes a port number", std::log::kv("value", value));
+                std::process::exit(2);
+            }
+        }
+        i = i + 2;
+    }
+    if len(id) == 0 {
+        log_error(
+            "usage: node --id ID [--api URL] [--token-vault ENTRY | --token T] [--data DIR] [--capabilities FILE] [--host H] [--port N]",
+            "",
+        );
+        std::process::exit(2);
+    }
+    // the enrollment token: a vault entry, or, standalone, in the open
+    let mut credential = std::secret::Credential { };
+    if len(token_vault) > 0 {
+        if len(token) > 0 {
+            log_error("--token and --token-vault both name the enrollment token: give one", "");
+            std::process::exit(2);
+        }
+        credential = std::secret::Credential { vault: token_vault };
+        if !credential.ready() {
+            log_error("the vault holds no enrollment token", std::log::kv("entry", token_vault));
+            std::process::exit(2);
+        }
+    } else if len(token) > 0 {
+        log_warn(
+            "the enrollment token is in the open, on the command line: name its vault entry with --token-vault instead",
+            "",
+        );
+    } else if std::env::var_exists("VOICE_ENROLLMENT_TOKEN")
+        && len(std::env::var("VOICE_ENROLLMENT_TOKEN")) > 0
+    {
+        log_warn(
+            "the enrollment token is in the open, in VOICE_ENROLLMENT_TOKEN: name its vault entry with VOICE_ENROLLMENT_TOKEN_VAULT instead",
+            "",
+        );
+        credential = std::secret::Credential { env_var: "VOICE_ENROLLMENT_TOKEN" };
+    }
+    ensure_data_dir(data);
+    if len(capabilities_file) == 0 {
+        capabilities_file = data + "/capabilities.json";
+    }
+    let file = std::io::fs::read_file(capabilities_file) or "";
+    if len(file) == 0 {
+        log_error(
+            "no capabilities file: list the engines this machine offers there (see node.yaml)",
+            std::log::kv("file", capabilities_file),
+        );
+        std::process::exit(2);
+    }
+    let problem = capabilities_problem(file);
+    if len(problem) > 0 {
+        log_error(problem, std::log::kv("file", capabilities_file));
+        std::process::exit(2);
+    }
+    let capabilities = declared_capabilities(file);
+    Node {
+        id: id,
+        data: data,
+        capabilities: capabilities,
+        admin: Admin { id: id, data: data, capabilities: capabilities, host: host, port: port },
+        session: Session { id: id, data: data, api: api, capabilities: capabilities },
+        plane: Plane {
+            data: data,
+            api: api,
+            token: token,
+            credential: credential,
+            capabilities: capabilities,
+        }
+    };
+}
+
+fn ensure_data_dir(data: String) {
+    if !std::io::fs::file_exists(data) {
+        std::io::fs::mkdir(data) or discard;
+    }
+}

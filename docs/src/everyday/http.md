@@ -1,14 +1,6 @@
 # HTTP
 
-> **Coming from Python / Node?** This is your Flask / Express
-> moment — but instead of decorators or a routes table, you write
-> a **handler locus**: a locus with a `handle(req) -> Response`
-> method. `std::http::Server` runs the accept loop and calls your
-> handler per request. Routing is an `if` on the path inside
-> `handle`, or `std::http::Router` once there are more than a few
-> routes.
-
-## A server
+`std::http` provides an HTTP/1.1 server, request router, streaming SSE and chunked-body writers/readers, and an outbound HTTP/HTTPS client. An HTTP server is configured by passing a handler locus—any locus implementing `fn handle(req: std::http::Request) -> std::http::Response`—to `std::http::Server`.
 
 ```hale
 locus Api {
@@ -30,41 +22,51 @@ locus Api {
 }
 
 fn main() {
-    // A statement-position locus literal fires its lifecycle: this
-    // runs the accept loop until the process is stopped.
     std::http::Server { port: 8080, handler: Api { } };
 }
 ```
 
-`hale build` it, run it, and `curl localhost:8080/health`. The
-handler's `params` persist across requests — `self.hits` counts
-them — because the `Api` locus is alive for the whole run.
+Compile and run the server with `hale build`, then query `curl localhost:8080/health`. Because `Api` stays alive for the lifetime of `Server`, its `params` (`self.hits`) persist across requests.
 
-## The pieces
+---
 
-- **`std::http::Request`** carries `method`, `path`, `version`,
-  `body`, and headers (looked up case-insensitively). For a couple
-  of routes you `match` / `if` on `method` and `path` right in the
-  handler; past that, use the Router (below).
-- **`std::http::Response`** needs at least `status` and `body`;
-  `content_type` defaults to `text/plain`, and you can add custom
-  `headers`.
-- **`std::http::Server`** takes a `port` and a `handler`, then
-  owns the listen-accept-parse-dispatch loop. `max_accepts: N`
-  bounds it to N requests (handy for tests); the default runs
-  until stopped. POST bodies are reassembled per `Content-Length`,
-  so clients that write headers and body in separate segments
-  (python's urllib, for one) work; requests are capped at 1 MiB
-  (oversized declared bodies get a `413`).
+## 1. Quickstart HTTP Server
 
-## Serving many requests at once
+### Core Server Types
 
-The server above answers **one request at a time**: `fn main()`'s
-thread runs the accept loop, and while one handler works — a
-`sleep`, a call to another service, a minute-long job — every
-other request waits, health checks included. To serve requests
-concurrently, make the server a field of a `main locus` and place
-it on an `async_io` pool:
+| Type / Interface | Key Fields & Methods | Description |
+|---|---|---|
+| `std::http::Request` | `method`, `path`, `version`, `body`, `conn_fd` | Parsed inbound HTTP request. Headers are queried case-insensitively. (`std::http::parse_request` parses raw requests into this type.) |
+| `std::http::Response` | `status`, `body`, `content_type`, `headers`, `takeover`, `takeover_raw` | Outbound HTTP response. Requires `status` and `body`; `content_type` defaults to `"text/plain"`. |
+| `std::http::Server` | `port`, `handler`, `name`, `max_accepts`, `max_connections`, `max_request_bytes`, `too_large` | Owns the listen-accept-parse-dispatch loop. Reassembles `POST` bodies by `Content-Length` across TCP segments. |
+| `std::http::Handler` | `fn handle(req: Request) -> Response;` | Structural interface satisfied automatically by any locus declaring a matching `handle` method. |
+
+### `std::http::Server` Configuration
+
+- **`max_accepts`**: Bounds the server to `N` requests before returning (useful in tests). By default, the server runs until stopped.
+- **`max_request_bytes`**: Caps the total size of a request including request line, headers, and body (`1 MiB` default, up to `1 GiB` maximum).
+- **`too_large`**: When a request's declared `Content-Length` exceeds `max_request_bytes`, the server replies immediately with `too_large` without reading the request body. Defaults to a plain-text `413 payload too large` response, and can be overridden (for example, `too_large: std::http::Response { status: 413, content_type: "application/json", body: "{\"error\":\"too large\"}" }`).
+
+### Structural `Handler` Interface
+
+`Server`'s `handler` parameter has type `std::http::Handler`:
+
+```hale
+// (declared in the standard library)
+interface Handler {
+    fn handle(req: Request) -> Response;
+}
+```
+
+Hale interfaces use structural satisfaction: any locus that defines `fn handle(req: std::http::Request) -> std::http::Response` satisfies `std::http::Handler` without an explicit `impl` declaration. Conversely, a parameter typed as `Handler` exposes only `h.handle(req)`—accessing concrete locus fields (such as `h.routes`) is a compile-time error.
+
+---
+
+## 2. Concurrent Serving
+
+When started directly in `fn main()`, on the `main` pool, `pinned`, or on a plain `cooperative(pool = io)` pool, `std::http::Server` processes **one request at a time** (macOS also runs one request at a time, as `async_io` pools are Linux-only).
+
+To serve requests concurrently, declare `std::http::Server` as a param on your `main locus` and place it on a `cooperative` pool with `where async_io`:
 
 ```hale
 locus Api {
@@ -72,7 +74,7 @@ locus Api {
 
     fn handle(req: std::http::Request) -> std::http::Response {
         if req.path == "/slow" {
-            std::time::sleep(1s);   // parks this request only
+            std::time::sleep(1s);   // parks this request coroutine only
         }
         self.hits = self.hits + 1;
         return std::http::Response { status: 200, body: f"hit #{self.hits}\n" };
@@ -85,7 +87,6 @@ main locus App {
     }
     placement { web: cooperative(pool = web) where async_io; }
     run() {
-        // the server runs on its own pool; main keeps the program up
         while !self.draining { std::time::sleep(100ms); }
     }
 }
@@ -95,53 +96,28 @@ fn main() {
 }
 ```
 
-That one placement line is the switch. On an `async_io` pool every
-connection runs on a coroutine of its own: when a handler parks — a
-`sleep`, a socket read, an outbound plain-HTTP call, a slow client
-on the write — the pool runs the other requests and keeps accepting.
-Five concurrent requests to `/slow` take one second instead of five.
-At most `max_connections` (256 by default) are in flight at once;
-the next ones wait for a slot (as many again), and past that a
-connection is closed unserved. Anywhere
-else — `fn main()`, the main pool, `pinned`, a plain
-`cooperative(pool = io)` — the server stays one-at-a-time, because a
-blocking call there holds the whole thread. (macOS has no `async_io`
-pools; a server there is one-at-a-time.)
+### Concurrency & State Semantics on `async_io`
 
-What it means for your handler's `params`: every request calls the
-same `Api` locus, and on one thread, so two `handle` calls never run
-*at the same time*. But they can **interleave at a park**: while
-one request sleeps, another runs and bumps `self.hits`. Code between
-two parks runs uninterrupted; a value you read before a park may have
-changed after it. Read state again after a `sleep` or a call out
-rather than trusting a copy from before it.
+- **Per-connection coroutines**: Each accepted connection runs on its own coroutine. When a handler parks (`std::time::sleep`, socket read/write, or outbound HTTP request), the pool executes other ready requests and continues accepting new connections.
+- **Connection limits (`max_connections`)**: Up to `max_connections` (`256` by default) requests execute concurrently. Up to `max_connections` additional connections wait in the queue; connections beyond that limit are closed unserved.
+- **Single-threaded interleaving**: Every request dispatches to the same `Api` locus on a single OS thread. Two `handle` calls never execute simultaneously, and code between park points runs uninterrupted. However, state may change across a park point (`sleep` or I/O call)—always re-read mutable `self` fields after parking rather than relying on values cached before the park.
+- **No blocking calls**: Synchronous file I/O or `std::process::run` blocks the pool's underlying OS thread and stalls all concurrent requests on that pool. `hale check` emits a warning if a blocking call is reachable from a `where async_io` locus.
 
-Blocking calls are the thing to avoid in a concurrent handler —
-https requests, `std::process::run`, file reads hold the pool's one
-thread, and with it every request. `hale check` warns about a
-blocking call reachable from an `async_io` locus.
+### Stopping a Server (`std::io::tcp::stop`)
 
-To stop the server from another locus, give it a `name` (unique in
-the process: a name another server holds fails the second one at
-birth; without one, the name is `127.0.0.1:<the port it bound>`) and
-call `std::io::tcp::stop(name)` — a plain function, so it works from any
-pool (calling `self.web.shutdown()` from `App`'s pool is refused: a
-method call may not cross pools). Stopping ends the accept and lets
-the requests already accepted finish: the server's `run()` returns once
-each has been answered.
+Because cross-pool method calls (such as `self.web.shutdown()`) are disallowed, stop a server from another pool by assigning it a unique `name` (defaults to `"127.0.0.1:<port>"`; duplicate active names fail at birth) and calling the free function `std::io::tcp::stop(name)`:
 
 ```hale,fragment
-// in App: `web: std::http::Server = std::http::Server { port: 8080, name: "web", handler: Api { } };`
+// In App params:
+// web: std::http::Server = std::http::Server { port: 8080, name: "web", handler: Api { } };
 std::io::tcp::stop("web");
 ```
 
-### The listener and the serving, placed apart
+`std::io::tcp::stop` closes the listening socket and waits for in-flight requests to finish before the server's `run()` returns. `SIGTERM` and `Ctrl-C` trigger the same graceful drain automatically. Note that `main`'s `run()` returning does not terminate an active server; a `main locus` that only constructs server loci does not need a `run()` block unless it performs additional coordination.
 
-`std::http::Server` is two pieces in one locus: a *listener* that
-accepts connections and hands each one over the bus, and a *consumer*
-that serves what it is handed. You can place the two yourself — the
-listener `pinned` on a thread of its own, the serving on `async_io`
-pools — and put more than one consumer behind one listener:
+### Sharded Listener & Worker Pools (`Acceptor` + `Connections`)
+
+`std::http::Server` combines a connection listener and a connection consumer in a single locus. For multi-core scaling, split them explicitly: place a single `std::io::tcp::Acceptor` on a `pinned` thread and distribute connections round-robin across multiple `std::io::tcp::Connections` shards on separate `where async_io` pools:
 
 ```hale
 locus Api {
@@ -153,7 +129,7 @@ locus Api {
 
 main locus App {
     params {
-        // consumers first: they are listening before the listener accepts
+        // Declare Connections consumers before Acceptor so subscribers exist before accept begins
         zero: std::io::tcp::Connections = std::io::tcp::Connections {
             listener: "web", shard: 0,
             handler: std::http::Responder { handler: Api { tag: "zero" } }
@@ -182,33 +158,12 @@ fn main() {
 }
 ```
 
-The listener deals its connections round-robin over its `shards`; each
-`Connections` takes the shard it names and serves it with its
-`handler` — `std::http::Responder` turns an HTTP `handle` into one, and
-any locus with `fn serve(c: std::io::tcp::Accepted)` is one too (it
-owns `c.fd`). A connection no consumer takes is closed by its listener,
-never leaked, so `require no_silent_loss(topic __TcpAcceptedT)` holds
-in a program's `claims`. Neither piece grows with the connections it
-serves: each connection is served in a child that goes with it, and
-the handle the listener sends is gone once the consumer has taken it.
+- **Handler adaptation**: `std::http::Responder` wraps an HTTP `Handler` into a connection consumer. Any locus declaring `fn serve(c: std::io::tcp::Accepted)` (taking ownership of `c.fd`) can also be passed as the `handler` of `Connections`.
+- **Zero connection leaks**: Any connection not claimed by a consumer is closed by `Acceptor`, satisfying `require no_silent_loss(topic __TcpAcceptedT)` in program `claims`. Each connection runs in a transient child arena that reclaims on close.
+- **Unix domain sockets**: `std::io::tcp::Acceptor { path: "/run/app.sock" }` listens on a Unix socket (named `"unix:/run/app.sock"`, removing the socket file on dissolve) and feeds the exact same `Connections` consumers. The API runtime's `http::Rpc`, `mcp::Rpc`, `unix::Rpc`, `grpc::Rpc`, and `ws::Hub` listeners use this same architecture (see [The API surface](../services/api.md)).
+- **Bus-subscribing connection children**: If per-connection work requires a locus that subscribes to the bus, declare `accept` and `release` on the handler to spawn it as a flow child rather than constructing it inline inside `serve` (loci constructed and dissolved inside a method have their deliveries queued for the main thread).
 
-`std::io::tcp::Acceptor { path: "/run/app.sock" }` listens on a Unix
-socket instead of a port (its name is `unix:/run/app.sock`, and it
-removes the file when it goes); the consumers are the same, since a
-connection's descriptor reads and writes alike for both. The api
-runtime's `http::Rpc`, `mcp::Rpc`, `unix::Rpc` and `grpc::Rpc`
-listeners and a `ws::Hub`'s are built this way too (see [The API
-surface](../services/api.md)). A handler whose
-per-connection work is a locus that subscribes to the bus starts it as
-a flow child of its own — declare `accept` and `release` for it on the
-handler — rather than building it inside `serve`: a locus born and gone
-within a method has its deliveries queued for the main thread.
-
-Below HTTP, `std::io::tcp::Listener` is the same two pieces with a
-function for a handler: each connection is handed to `on_connection`
-as a `std::io::tcp::Stream`, closed when the function returns.
-`max_accepts` defaults to 1 (pass `-1` to serve until stopped), and the
-placement decides the concurrency exactly as for `Server`:
+For raw TCP protocols below HTTP, `std::io::tcp::Listener` dispatches each accepted socket as a `std::io::tcp::Stream` to an `on_connection` function and closes the stream when the function returns (`max_accepts` defaults to `1`; pass `-1` to serve until stopped):
 
 ```hale
 fn echo(s: std::io::tcp::Stream) {
@@ -233,11 +188,17 @@ fn main() {
 }
 ```
 
-## Routing
+---
 
-When the `if` ladder in a handler grows past a few routes, hand
-the routing to `std::http::Router`. The lightest registration is
-a bare function — no handler locus needed:
+## 3. Routing
+
+Hale supports two routing patterns:
+1. **`std::http::Router`**: Dispatches routes to free functions or separate per-route handler loci, with support for middleware chains.
+2. **`std::http::build_context` + `std::http::is_route`**: Dispatches routes directly to methods on a single stateful locus.
+
+### Multi-Handler Routing (`std::http::Router`)
+
+For stateless endpoints, register a free function with `router.add_fn`:
 
 ```hale,fragment
 fn greet(ctx: std::http::Context) -> std::http::Response {
@@ -248,15 +209,7 @@ fn greet(ctx: std::http::Context) -> std::http::Response {
 router.add_fn("GET", "/hello/:name", greet);
 ```
 
-A locus handler (`add`) buys you state — counters, a database
-child, config params — and both forms share one list and one
-first-match-wins precedence order. The router **keeps** what `add`
-(and `use`) hand it: it holds the handler as a borrow and never
-owns it, so the handler has to live as long as the router does.
-Make each handler a field of the locus that owns the router, and
-fill the router in `birth()` — register patterns, get path captures
-and query params extracted, and mount the owner as the server's
-handler —
+For stateful endpoints, register a handler locus with `router.add`. Because `Router` borrows handler and middleware loci without owning them, **every registered handler and middleware locus must outlive the router**. Declare them as `params` fields on the locus that owns the `Router` and register them in `birth()`:
 
 ```hale
 locus Hello {
@@ -266,8 +219,6 @@ locus Hello {
     }
 }
 
-// The routes' owner: each handler is a field, so it lives exactly as
-// long as the router that dispatches to it.
 locus Routes {
     params {
         hello: Hello = Hello { };
@@ -286,23 +237,15 @@ fn main() {
 }
 ```
 
-A handler literal built in a function that returns the router, or
-in a function handed someone else's router, would be reclaimed with
-that function's frame while the router still dispatches to it, so
-`hale check` (and `hale build`) refuses it and names the rule (GH
-#1048). Building and using a router in one function — `r.add(…,
-Hello { }); r.dispatch(…)` — is sound: the handler and the router end
-together. Not inside a loop, though: a handler built in a loop body
-is reclaimed when the next iteration reuses its storage, so register
-handlers that are fields, or build each one outside the loop.
+> [!IMPORTANT]
+> Passing a temporary handler literal into a router that escapes the current function—or registering a handler constructed inside a loop body—would leave a dangling reference when the frame or loop iteration reclaims its storage. `hale check` rejects both patterns at compile time.
 
-`:name` segments capture (`path_param`), `?k=v` pairs are one
-`query_param(ctx.params, "k")` away (both hand the value back
-percent-decoded: `/hello%20world` captures `hello world`, and a
-query's `+` is a space too), the first matching route
-wins (register specific patterns before general ones), and
-anything unmatched hits an overridable 404. Middleware wraps the
-chain in onion order:
+### Path Captures, Query Strings, and Middleware
+
+- **Path parameters (`:name`)**: Extracted via `std::http::path_param(ctx.params, "name")`, automatically percent-decoded (`/hello%20world` yields `"hello world"`).
+- **Query parameters (`?k=v`)**: Extracted via `std::http::query_param(ctx.params, "k")`, percent-decoded with `+` converted to space.
+- **Route precedence**: `add` and `add_fn` share a single route list evaluated in first-match-wins order. Register specific routes before wildcard/parameterized routes. Unmatched requests return a customizable `404` response.
+- **Middleware (`router.use`)**: Wraps route handlers in onion order. A middleware locus implements `before` and `after`:
 
 ```hale
 locus Cors {
@@ -314,20 +257,13 @@ locus Cors {
         };
     }
 }
-// on the owner: a field `cors: Cors = Cors { };`, and in `birth()`
-// `self.router.use(self.cors);` — `use` keeps its middleware as `add` does
+// In Routes params: `cors: Cors = Cors { };`
+// In Routes birth(): `self.router.use(self.cors);`
 ```
 
-Each route's handler is its own locus, so per-route state lives
-where it belongs (a `hits` counter on the route that counts, not
-on a god-handler).
+### Single-Locus Routing (`build_context` + `is_route`)
 
-### One locus, many endpoints
-
-Sometimes the opposite shape is right: one API locus owning one
-piece of state — a database handle, a session table — with every
-endpoint as a method on it. For that, skip the Router and
-self-dispatch with `std::http::build_context` + `std::http::is_route`:
+When multiple endpoints share a single piece of locus state (such as a database connection or session table), dispatch directly inside `handle` using `std::http::build_context` and `std::http::is_route`:
 
 ```hale
 locus Api {
@@ -360,55 +296,62 @@ fn main() {
 }
 ```
 
-`build_context(req)` builds the same per-request bundle the Router
-would (query string split into `ctx.params.qs`); `is_route`
-matches method + pattern with the Router's own matcher — `:name`
-captures land in `ctx.params` on a hit, and *any* miss leaves
-them cleared, so the `if` ladder is first-match-wins in written
-order with no stale captures. The endpoint methods are plain
-direct calls with `self` in scope: state without ceremony.
+- `build_context(req)` splits the query string into `ctx.params.qs`.
+- `is_route(ctx, method, pattern)` runs the router matcher, populating `:name` captures in `ctx.params` on a match and clearing captures on a miss.
+- Always read `std::http::path_param(ctx.params, "id")` **after** `is_route` matches. Because records are value types, binding `let p = ctx.params;` before the `if` ladder copies an empty capture table (`hale check` warns on this bug).
+- Linear route matching costs ~90 ns per tested route (~1 µs for 10 routes) and pairs naturally with [replicated placement](../services/concurrency.md) (`pinned(..., replicas = K)`), giving each replica its own independent `Api` instance and state.
 
-Don't reach for a fancier router on performance instinct: at
-service-sized route counts (tens of routes) this linear scan
-costs about 90 ns per route it tries (measured worst case: the
-request matches the last route), a microsecond or so at ten
-routes, next to what the request spends in parsing and syscalls. The shape also pairs
-naturally with [replicated placement](../services/concurrency.md):
-under `pinned(..., replicas = K)` each replica is its own `Api`
-instance, so `params` state — that database handle — is
-per-thread by construction.
+---
 
-## A first taste of interfaces
+## 4. Streaming Responses & Connection Takeover
 
-How does `Server` know `Api` is a valid handler? `Server`'s
-`handler` field has the type `std::http::Handler`, which is an
-**interface** — a named set of required methods:
+### Server-Sent Events (`std::http::SseWriter`)
+
+To stream Server-Sent Events (`text/event-stream`), construct an `std::http::SseWriter` with `req.conn_fd`, emit events with `w.event(...)`, and return `w.end()`:
 
 ```hale
-// (declared in the standard library)
-interface Handler {
-    fn handle(req: Request) -> Response;
+locus Countdown {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let w = std::http::SseWriter { conn_fd: req.conn_fd };
+        let mut n = 3;
+        while n > 0 {
+            w.event(std::http::SseEvent { event: "tick", data: to_string(n) }) or discard;
+            std::time::sleep(1s);
+            n = n - 1;
+        }
+        w.event(std::http::SseEvent { event: "done", data: "liftoff" }) or discard;
+        return w.end();
+    }
 }
 ```
 
-Any locus that *has* a matching `handle` method satisfies
-`Handler` — automatically, with no `implements` clause to write.
-This is *structural* satisfaction: the shape is the contract. You
-declared `Api` with the right method, so it's a `Handler`. (Go
-programmers will recognize this; it's interfaces without the
-`impl` ceremony.)
+- Constructing `SseWriter` immediately flushes the HTTP response headers.
+- Each `w.event(SseEvent { ... })` writes a single chunked frame to the client. `SseEvent` accepts `data` (multi-line strings are split into one `data:` line per line), plus optional `event`, `id` (returned by reconnecting clients as `Last-Event-ID`), and `retry` (`retry: 5s`).
 
-The other side of the contract: a parameter typed by an interface
-offers only the interface's methods. In `fn serve_one(h: Handler)`,
-`h.handle(req)` is fine and `h.routes` is a compile error — `Handler`
-promises a `handle` method, not whatever fields the locus behind it
-happens to have.
+### Chunked Byte Streams (`std::http::BodyWriter`)
 
-## Taking over the connection
+For raw streaming bodies such as newline-delimited JSON (`application/x-ndjson`) or log tails, use `std::http::BodyWriter`:
 
-Some protocols start as HTTP and then stop being HTTP — WebSocket
-is the famous one. For those, a handler can *take over* the raw
-connection instead of finishing the request/response cycle:
+```hale,fragment
+let w = std::http::BodyWriter { conn_fd: req.conn_fd, content_type: "application/x-ndjson" };
+w.chunk("{\"step\": 1}\n") or discard;
+w.chunk("{\"step\": 2}\n") or discard;
+return w.end();
+```
+
+Both `SseWriter` and `BodyWriter` use HTTP/1.1 chunked transfer encoding. `w.event` and `w.chunk` fail only when the client disconnects—use that failure to break out of your loop and `return w.end();`, which writes the terminating chunk and closes the connection.
+
+> [!TIP]
+> Always place streaming handlers on a `where async_io` pool so parked streams do not block other connections, and set `std::io::tcp::set_send_timeout(req.conn_fd, 10s)` before streaming so stalled clients cannot block writes indefinitely.
+
+### Connection Takeover (`takeover` and `takeover_raw`)
+
+For protocol upgrades (such as WebSockets) or deferred responses written by another locus, a handler can take ownership of `req.conn_fd`:
+
+| Response Flag | What `Server` Writes | Caller Responsibility |
+|---|---|---|
+| `takeover: true` | Status line + custom `headers` (no `Content-Length` or `Connection: close`) | Read/write the upgraded protocol on `req.conn_fd` and call `std::io::tcp::close_fd(fd)` when done |
+| `takeover_raw: true` | Nothing (`status`, `headers`, and `body` are ignored) | Write the complete raw HTTP response (including `HTTP/1.1 200 OK\r\n...`) and close `req.conn_fd` |
 
 ```hale
 type Conn { fd: Int; }
@@ -417,9 +360,6 @@ topic WsConn { payload: Conn; subject: "ws.conn"; }
 locus WsHandler {
     bus { publish WsConn; }
     fn handle(req: std::http::Request) -> std::http::Response {
-        // req.conn_fd is the live socket. Hand it to whoever
-        // will own the session (typically: publish it to a
-        // session locus on its own pool).
         WsConn <- Conn { fd: req.conn_fd };
         return std::http::Response {
             status: 101,
@@ -431,35 +371,7 @@ locus WsHandler {
 }
 ```
 
-With `takeover: true` the server writes just the status line and
-your headers — no `Content-Length`, no `Connection: close` — and
-then *leaves the socket open and forgets it*. It's yours: read
-and write it through the raw-fd `std::io::tcp` functions
-(`send_fd(fd, bytes)` to write, `recv_into` to read, `close_fd`
-to hang up) or a borrowed
-`Stream { conn_fd: fd, owns_fd: false }`, and close it
-when the session ends. Three things to remember: the server's 5s
-receive timeout is still set on the fd (clear it with
-`std::io::tcp::set_recv_timeout(fd, 0)` for a long-lived
-session); a stalled peer — a half-dead connection, a throttled
-browser tab — will block your sends *forever* unless you bound
-them, so set `std::io::tcp::set_send_timeout(fd, 200ms)` before
-entering a push loop (an SSE/WS fan-out stalls its whole loop on
-one dead client otherwise); and a takeover response without
-stashing `req.conn_fd` leaks the connection.
-
-And sometimes the handler doesn't know the answer *yet* — the
-response will be produced later, by a different locus (a resolved
-promise, a bus reply, a job completing). For that, take the
-connection with **nothing** written:
-
-```hale,fragment
-return std::http::Response { status: 0, body: "", takeover_raw: true };
-```
-
-With `takeover_raw: true` the server writes no status line and no
-headers — the wire is untouched. Whoever ends up owning the fd
-writes the *entire* response, status line included:
+For `takeover_raw: true`, return `std::http::Response { status: 0, body: "", takeover_raw: true }` and later write the full HTTP frame from the owning locus:
 
 ```hale,fragment
 std::io::tcp::send_fd(fd, std::bytes::from_string(
@@ -467,78 +379,105 @@ std::io::tcp::send_fd(fd, std::bytes::from_string(
 std::io::tcp::close_fd(fd);
 ```
 
-`status`, `headers`, and `body` on the response are ignored. The
-same three caveats as `takeover` apply — plus one more: until you
-write, the client is waiting on a silent connection, so bound the
-deferral or arm your own timeout.
+When taking over a connection (via raw-fd helpers `send_fd`, `recv_into`, `close_fd` or a borrowed `Stream { conn_fd: fd, owns_fd: false }`), observe four rules:
+1. **Clear the receive timeout**: The server's 5s receive timeout remains on `fd`; call `std::io::tcp::set_recv_timeout(fd, 0)` for long-lived sessions.
+2. **Bound send timeouts**: Call `std::io::tcp::set_send_timeout(fd, 200ms)` before entering a push loop so one stalled client cannot block fan-out.
+3. **Never drop `req.conn_fd`**: Returning a takeover response without saving and eventually closing `req.conn_fd` leaks the socket descriptor.
+4. **Bound deferred responses**: Under `takeover_raw`, the client waits on a silent socket until you write, so enforce a timeout on deferred work.
 
-## Calling out
+---
 
-Outbound requests are one call:
+## 5. HTTP Client & Streaming Reads
+
+### One-Shot Requests & Pooled `Client`
+
+Use `std::http::get` and `std::http::post` for one-shot requests, or `std::http::Client` for connection pooling and automatic retries:
 
 ```hale,fragment
+// One-shot GET and POST (30s default deadline)
 let resp = std::http::get("https://example.com") or raise;
 println(std::str::from_bytes(resp.body));
 
-let posted = std::http::post("http://api.local/things",
-    std::bytes::from_string("{\"n\": 1}"), "application/json") or raise;
-```
+let posted = std::http::post(
+    "http://api.local/things",
+    std::bytes::from_string("{\"n\": 1}"),
+    "application/json"
+) or raise;
 
-An IPv6 host is bracketed in the URL, as everywhere:
-`std::http::get("http://[::1]:8080/health")`.
-
-Both are `fallible(std::http::HttpError)` — address the error with
-`or raise` / a substitute / an error-check fn, and branch on
-`err.kind` (`connect_failed`, `bad_url`, …) when it matters.
-Response bodies are **Bytes** (binary-safe; `std::str::from_bytes`
-when you know it's text). For repeated calls to the same host,
-`std::http::Client { keep_alive: true }` pools connections and
-retries with backoff:
-
-```hale,fragment
-let c = std::http::Client { keep_alive: true, max_retries: 2 };
+// Pooled client with retries and custom timeout
+let c = std::http::Client { keep_alive: true, max_retries: 2, timeout_ms: 5000 };
 let r = c.get("http://api.local/health") or raise;
 ```
 
-The `Client`'s `timeout_ms` (30 s unless you say otherwise) bounds
-each attempt's connect — and, for https, the TLS handshake — so a host
-that never answers costs that long, not the kernel's two minutes; the
-error's `detail` names the timeout. `timeout_ms: 0` turns the bound
-off. The one-shot `get` / `post` / `request` dial under the same 30 s
-bound, failing `connect_failed` when it ends; for another deadline,
-make the call through a `Client { timeout_ms: 2000, max_retries: 0 }`,
-which without `keep_alive` is the same one-shot exchange.
-
-The `Client` retries a 5xx too. A one-shot `get` hands a 5xx back as
-the response; the `Client`, once its retries are spent, fails with
-`retries_exhausted` and the last 5xx it received: `err.status`,
-`err.headers` and `err.body` are that response's, so a
-`503` with a `Retry-After` and a JSON reason still reaches you
-(`err.status` is `0` and the body empty when no attempt got an
-answer, and `err.detail` says what the last attempt hit).
-
-A value that goes into a URL is escaped with `std::url::encode`, and
-`std::url::decode` (or `decode_query`, where `+` is a space) reads one
-back:
+- **Error handling (`HttpError`)**: Client calls are `fallible(std::http::HttpError)` with `err.kind` (`"connect_failed"`, `"recv_failed"`, `"bad_url"`, `"retries_exhausted"`, etc.) and `err.detail`.
+- **Binary-safe bodies**: `resp.body` is `Bytes`; convert to text with `std::str::from_bytes(resp.body)`.
+- **URL encoding & IPv6**: Escape URL parameters with `std::url::encode` and decode with `std::url::decode` or `std::url::decode_query` (where `+` decodes to a space). Bracket IPv6 hosts in URLs (`"http://[::1]:8080/health"`):
 
 ```hale,fragment
-let q = std::url::encode("tea & cake");          // "tea%20%26%20cake"
+let q = std::url::encode("tea & cake");            // "tea%20%26%20cake"
 let r = std::http::get("http://api.local/search?q=" + q) or raise;
-let back = std::url::decode_query("tea+%26+cake");  // "tea & cake"
+let back = std::url::decode_query("tea+%26+cake"); // "tea & cake"
 ```
 
+- **Timeouts (`timeout_ms`)**: Defaults to `30000` (30s) on both `Client` and one-shot `get`/`post`/`request`. Bounds the entire operation (TCP dial, TLS handshake, request write, response headers and body read, and all retries). A truncated body at deadline is always an error. Set `timeout_ms: 0` to disable the timeout for large downloads.
+- **5xx Retry behavior**: One-shot `get` returns `5xx` responses directly. `Client` retries `5xx` responses up to `max_retries`; if all retries fail, it raises `HttpError` with `err.kind == "retries_exhausted"` and populates `err.status`, `err.headers`, and `err.body` from the final `5xx` response (`err.status == 0` if no response was received).
+- **`async_io` integration**: On a `where async_io` pool, TCP connect, TLS handshake, and socket reads/writes park only the calling coroutine. (DNS hostname resolution still runs synchronously on the worker thread; dial IP addresses or isolate slow resolvers on a dedicated pool.)
 
-On an `async_io` pool the client parks while it waits — on the
-connect, the TLS handshake, and every write and read — so http and
-https calls from many coroutines on one pool wait together instead
-of taking turns. The one thing that still runs on the worker is
-looking up a host *name*: if your resolver can be slow, dial an
-address or give the client its own pool.
+### Streaming Client Reads (`SseReader` and `BodyReader`)
 
-The `bindings` that wire a server across processes, and the lifecycle that lets a server shut down cleanly
-on Ctrl-C are all next-level topics — but the handler you wrote
-above doesn't change when you get there. The server *code* is
-already complete; the surrounding tier just gives it more ways to
-be deployed and supervised.
+To consume SSE streams or chunked responses incrementally as they arrive, use `std::http::SseReader` or `std::http::BodyReader`:
 
-Next: the transports below HTTP — [UDP & TLS](./sockets.md).
+```hale,fragment
+let url = std::http::parse_url("https://feeds.local/events") or raise;
+let feed = std::http::SseReader { req: std::http::ClientRequest { url: url, body: b"" } };
+while true {
+    let e = feed.event() or { break; };
+    println(e.event, ": ", e.data);
+}
+```
+
+- Constructing `SseReader` or `BodyReader` sends the request and reads the response status and headers immediately into `feed.body.status` and `feed.body.headers`.
+- `feed.event()` yields the next `SseEvent` (`data`, `event`, `id`, `retry`); `BodyReader`'s `chunk()` yields the next `Bytes` chunk.
+- **A long download in `run()`**: `let c = body.chunk() or { break; }; h.update(c); out.write_bytes(c) or { break; };` in `run()`'s own loop holds one chunk at a time, however long the body: each iteration's chunk is freed when the next iteration starts ([Memory & Lifetime](../systems/memory.md#per-iteration-loop-regions)). Keeping each chunk in a binding declared before the loop would keep them all.
+- **Bounded-wait reads (`event_within(ms)` and `chunk_within(ms)`)**: When a streaming relay also needs to service a control channel or cancellation signal between events, `feed.event_within(ms)` (or `body.chunk_within(ms)`) waits at most `ms` milliseconds and fails with `err.kind == "idle"` if nothing arrived, leaving the stream open and any partially received event buffered for the next read. The reader's overall `timeout_ms` still bounds the entire stream. Build the reader with `deferred: true` and the wait for the upstream's response head is bounded the same way: birth sends nothing, the first `event_within(ms)` opens the exchange and fails `idle` while the head has not come (or call `open_within(ms)`, which answers `true` once the head is read). The dial itself is still bounded by `timeout_ms`.
+- **A gated stream (`bearer:`)**: a download or a feed behind a token takes the vault credential itself, `std::http::BodyReader { req: ..., bearer: self.key }` (or on `SseReader`), and sends it as `Authorization: Bearer <token>`. The credential writes that header line onto the wire on its sealed side, so the token is never a `String` the program can read, deferred reader or not. A credential that resolves to nothing fails the opening with `send_failed` and nothing is sent. `hale check` refuses a `reveal_text()` into the `req` of a reader built with `deferred`, which would keep the header readable in `req` until the opening.
+- **Redirects (`follow_redirects`)**: a reader hands a 3xx back as it is unless its request sets `follow_redirects: n`, the most redirects it follows (a download URL that answers 302 to a CDN, say). The reader's `status` and `headers` are then the final target's. It follows the same scheme or an upgrade to https, never https to http (`err.kind == "redirect_refused"`), and fails `too_many_redirects` past `n`. When the redirect moves to another origin, the `Authorization` header and the `bearer` are not sent there. The whole-body `get`/`post`/`request` calls still return a 3xx as it is.
+- When the stream finishes, `event()` / `chunk()` fails with `err.kind == "end"` on clean completion or `"recv_failed"` on an interrupted connection or deadline expiry. `timeout_ms` defaults to `30000` (set `timeout_ms: 0` for long-lived streams).
+
+### End-to-End Example: SSE Relay
+
+Combining `SseReader` and `SseWriter` creates a streaming proxy that inspects the upstream status before forwarding events as they arrive:
+
+```hale
+locus Relay {
+    params {
+        upstream: String = "https://models.local/v1/chat/completions";
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let url = std::http::parse_url(self.upstream) or std::http::Url { };
+        let up = std::http::SseReader {
+            req: std::http::ClientRequest {
+                method: "POST",
+                url: url,
+                headers: "Content-Type: application/json",
+                body: std::bytes::from_string(req.body),
+            },
+            timeout_ms: 0,
+        };
+        if up.body.status != 200 {
+            return std::http::Response {
+                status: 502,
+                body: "upstream answered " + to_string(up.body.status)
+            };
+        }
+        let w = std::http::SseWriter { conn_fd: req.conn_fd };
+        while true {
+            let e = up.event() or { break; };
+            w.event(e) or { break; };
+        }
+        return w.end();
+    }
+}
+```
+
+Next: [UDP & TLS](./sockets.md).

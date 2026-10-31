@@ -20,6 +20,11 @@ and `http::Rpc` (R3); hubs and stream authorization are `ws::Hub` and
 `udp::Hub` (R5: § Streams); `mcp::Rpc` is the MCP transport (R6); and the
 structural path is retired (R4: § What this replaced), the clients reading
 descriptions (§ The clients). Each section names the step that ships it.
+Since GH #1565 an exposure is a param of the locus that holds it, its
+literal the serve call, placed by `placement { }` (§ Serving); the serve
+expression in a body, the earlier form, is refused. A program calls
+another system's surface through a client, a param built by
+`api::client`, typed by the surface's rows (§ Calling a surface).
 The fixtures under `tests/api-contract/` are what a consumer builds
 against: the consumer program of § The witness, its descriptions per
 exposure and caller, the program-wide inventory, one recorded request and
@@ -62,14 +67,21 @@ api Admin {
 }
 ```
 
-`api NAME { … }` at top level declares a **surface**; each `rpc
-Locus::fn [requires: [ROLE, …]];` line in it is one **surface row**.
-A row's columns:
+`api NAME [requires: [ROLE, …]] { … }` at top level declares a
+**surface**; each `rpc Locus::fn [requires: [ROLE, …]];` line in it is
+one **surface row**. A `requires` on the surface is its rows' default: a
+row that writes none holds the surface's roles, and a row that writes its
+own (`requires: []` for none) holds those instead. The default is resolved
+into the rows where the block is read, so a surface written with it and
+the same surface written row by row are one table and one digest, and the
+admission law judges each row's roles (law 4 names the row). A surface
+the program consumes rather than serves names each row's shape instead of
+a handler (§ Imported surfaces). A row's columns:
 
 | column | what it is |
 |---|---|
 | surface | the block's name |
-| member | the handler as a caller names it: `Locus::fn`, the locus in its author spelling (`lib::Orders::cancel` for a locus another seed declares) |
+| member | the handler as a caller names it: `Locus::fn`, the locus in its author spelling (`lib::Orders::cancel` for a locus another seed declares); a signature row's name (§ Imported surfaces) |
 | request | the type of the handler's one value parameter, or none |
 | response | the handler's return type, or none for `()` |
 | error | `E` when the handler is `fallible(E)`, `ClosureViolation` among them, or none |
@@ -131,6 +143,21 @@ locus Orders {
     fn cancel(c: CancelOrder, ctx: std::api::Context) -> Cancelled fallible(OrderError) { … }
 }
 ```
+
+**A route.** A row of an `api` block may say where `http::Rest` serves it
+(§ The REST transport): `rpc Orders::cancel at "DELETE /orders/{order}"
+status: 204 requires: [trader];`. The text is `METHOD /path`, the method one
+of `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, the path segments literals or
+whole `{name}` parameters, each naming a scalar field of the request;
+`status:` is the success status, `200` when it is left out. A route is
+part of the row's contract: a routed row's digest line carries a sixth
+field, the route canonical (`DELETE /orders/:order 204`), so it moves the
+member's digest and the surface's, and the description states it (`route`
+on the member). A surface with no route keeps the digest it had.
+`http::Rpc`, the Unix socket, `mcp::Rpc` and `grpc::Rpc` ignore it,
+and a row without one is served by `http::Rest` where `http::Rpc` serves it,
+`POST /call/<member>`. An `@rpc` row carries none (a route is written in the
+block). The admission law judges it (laws 9 and 10 below).
 
 The block and the sugar feed one row family, `surface`
 (`spec/registry.md`), and nothing else about the locus is read: not its
@@ -198,6 +225,35 @@ before anything is served:
    nothing: an rpc handler that may violate is \`fallible(ClosureViolation)\`,
    so its caller receives the server error instead of a result". The
    may-violate judgment is F.42's.
+8. **A surface is served or consumed, never both.** Its rows all name
+   handlers, or all name shapes (the signature rows of § Imported
+   surfaces): "\`Mixed\` holds \`shape\`, a row that names a shape, and
+   \`Desk::post\`, a row that names a handler: a surface is served (its
+   rows name handlers) or consumed (its rows name shapes); declare two
+   surfaces". A block that says where it was imported from (`from
+   openapi "…"`) holds signature rows only: "rpc \`Desk::post\`:
+   \`Notes\` is an imported surface, and its rows name the operations'
+   shapes, not handlers: \`rpc name(Request) -> Response;\`".
+9. **A route is well formed and binds fields of the request.** The
+   text is `METHOD /path` with a method of the five, a path that starts
+   with `/` and holds no empty segment, no trailing `/`, no `?`, and
+   parameters that are whole segments (`{name}`, at most eight, none
+   twice); `/.description` is the transport's; `status:` is a `2xx`.
+   Each parameter names a field of the row's request that a path can
+   carry (an integer, a number, a bool, a string, a time or a
+   payload-free enum): "rpc \`Orders::cancel\`: route \"GET
+   /orders/{oder}\": the parameter \`{oder}\` names no field of its
+   request (\`CancelOrder\`); did you mean \`order\`?".
+10. **The routes of a surface are unambiguous.** Two routes of one method
+    and one length meet when some path matches both. They may meet only
+    when one is the more specific: a literal where the other has a
+    parameter, and nowhere less (`GET /orders/open` beside `GET
+    /orders/{order}`). Two routes that match the same paths, or overlap
+    with neither more specific (`GET /p/{a}/x` and `GET /p/y/{b}`), are
+    refused, naming both: "rpc \`Orders::cancel\` and rpc
+    \`Orders::place\` are ambiguous routes of \`Public\`: both are served
+    at \`GET /orders/{}\`".
+
 ## The contract digest
 
 A surface's **digest** is its type-level contract: the hash of its rows
@@ -246,7 +302,8 @@ A type's **shape hash** is the hash of its **contract shape**
 struct's fields in declaration order as `<field>:<tag>` joined by `;`
 (`order:i;notional:q(cent)`, the tags of `spec/units.md` § Layout and
 the wire), a nested struct or enum tagged by its own contract shape
-hash (`#<hash>`), an enum `=enum(<variants>)`, and any other type `=`
+hash (`#<hash>`), an enum `=enum(<variants>)` (a variant's declared
+error class after it, `Missing@not_found`, § Error classes), and any other type `=`
 and its tag. The form is deep, so a field changed inside a nested type,
 or a variant added to an enum error type, moves every digest built on
 it. A flat struct's contract shape is its payload contract's shape, so
@@ -257,15 +314,31 @@ and keeps doing so, since it is a wire identity of its own.
 `locus:s;closure:s;diff:i`, folded like a flat struct (its payload
 contract stays `opaque:ClosureViolation`).
 
-**Compatibility is equality (v1).** A description carries its
-surface's name and digest, and a generated client carries the digest
-it was generated against. A request may carry that digest; a request
-whose digest is not the served one is refused as `digest_mismatch`
-before its payload is decoded or anything is queued, and the refusal
-names the digest the exposure serves (`"served"`), so the client can
-fetch the description again. A request that carries no digest is not
-checked. Whether a client built against a subset of a surface's
-members may call a surface that added others is an open point.
+**A member's digest** is the same fold over that member's line alone,
+under its own header: the text `hale-api-member 1`, LF, and the row's
+line as above (`tests/api-contract/digest.md` folds one by hand,
+`fnv1a64:03c08c25c690f01f` for `Public`'s `Orders::place`). It moves when
+that member's shapes, error type or required roles change, and for
+nothing else: a member added to the surface, or removed from it, or
+another member changed, leaves it where it is. A description lists each
+member's digest beside its name (`"digest"`, § The description).
+
+**Compatibility is additive (2026-10-18).** A description carries its
+surface's name and digest, and a generated client carries the surface
+digest it was generated against (`SURFACE_DIGEST`) and, on each call,
+names its member's digest (`Hale-Surface-Digest` over HTTP and gRPC,
+`"digest"` in a Unix line). A request may carry a digest; one that is
+neither the served surface's nor its member's served digest is refused as
+`digest_mismatch` before its payload is decoded or anything is queued,
+and the refusal names the digest the exposure serves (`"served"`), so
+the client can fetch the description again. So a client built against a
+surface keeps calling it after the surface gains members, or loses ones
+the client does not call, and is refused only for a member whose own
+contract moved; a request naming the old surface's digest, which no
+longer describes what is served, is refused as before. A request that
+carries no digest is not checked. The admission runs in the exposure,
+before the request reaches the receiver's dispatch. (Until 2026-10-18
+compatibility was equality: only the surface's digest was admitted.)
 
 ## Serving
 
@@ -277,20 +350,23 @@ main locus Desk {
         admin_roles: Grants = Grants { operator: "uid:1000" };
         orders: Orders = Orders { };
         ledger: Ledger = Ledger { };
+        public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
     }
+    placement { public: cooperative(pool = io) where async_io; }
     run() {
-        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
-        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
-        std::api::run_until_stopped(public);
-        public.stop();
-        admin.stop();
+        self.public.wait();
+        self.public.stop();
+        self.admin.stop();
     }
 }
 ```
 
-A **serve site**, `api::serve(SURFACE, TRANSPORT, as: NAME, receivers:
-{ TYPE: INSTANCE, … })`, pairs one surface with one transport instance
-and makes an **exposure**:
+An **exposure** is a param (GH #1565): `NAME: api::Exposure =
+api::serve(SURFACE, TRANSPORT, as: NAME, receivers: { TYPE: INSTANCE, … },
+bound: N, on_full: refuse);` in the params of the locus that holds it, its
+**holder**. The `api::serve(…)` call is the param's literal, the **serve
+site**; it pairs one surface with one transport instance:
 
 - the **surface** is named as declared (`Public`); a surface an imported
   seed declares is named by its path under the import alias
@@ -317,27 +393,179 @@ and makes an **exposure**:
   omits them is refused, as a topic binding without its bound is;
 - `receivers:` binds every locus type the surface's rows name to one
   instance. The bound instance is the destination: its pool is the
-  dispatch pool and its lifetime bounds the exposure. When the serving
-  locus holds exactly one instance of a type, its binding may be
-  elided and is inferred (both of `admin`'s above); two instances and no
-  binding is an error naming both. Two serve sites may bind one
-  surface to different instances;
-- the call returns the **handle**: what the serving locus holds, joins
-  and stops (`stop()`, § The request lifecycle).
+  dispatch pool and its lifetime bounds the exposure. When the holder
+  holds exactly one instance of a type, its binding may be elided and is
+  inferred (both of `admin`'s above); two instances and no binding is an
+  error naming both. Two serve sites may bind one surface to different
+  instances;
+- the param is the **handle**: what the holder holds, waits on and stops
+  (`self.public.wait()`, `self.public.stop()`, the `std::api::Handle`
+  methods; `std::api::run_until_stopped(self.public)` is the wait).
 
-**The exposure is a child of the serving locus** (R2a). A serve site
-makes its exposure when the serving locus is born, as a param the
-locus owns and settles with its other params (so before its `run()`),
-and the `api::serve(…)` expression in a body is that exposure's
-handle: its lifetime is the serving locus's, `stop()` or the locus's
-dissolution shuts it down (§ The runtime boundaries, shutdown), and a
-transport that cannot realize its listener fails the serving locus's
+**The exposure is a child of its holder.** It is born with the holder's
+other params, in declaration order (so before the holder's `run()`), and
+dissolves with them: its lifetime is the holder's, `stop()` or the
+holder's dissolution shuts it down (§ The runtime boundaries, shutdown),
+and a transport that cannot realize its listener fails the program's
 birth (§ The `Rpc` interface). The transport instance is held by the
 exposure: a literal in the call is a child of the exposure, a name
-(`self.fixture`) is a borrow of the instance the serving locus holds.
-The receivers are the serving locus's own instances, bound by the
-exposure to the bus (§ Receiver failure and generations); the role
-source and the bearer source are held by reference.
+(`self.fixture`) is a borrow of the instance the holder holds. The
+receivers are the holder's own params, bound by the exposure to the bus
+(§ Receiver failure and generations); the role source and the bearer
+source are held by reference. The exposure runs on its holder's pool,
+beside the sources it calls.
+
+**Any locus may hold an exposure.** A server is a locus like any other:
+
+```hale,fragment
+locus AdminServer {
+    params {
+        cfg: LiveConfig = LiveConfig { };
+        tokens: Tokens = Tokens { };
+        api: api::Exposure = api::serve(AdminApi, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.tokens }, as: "web", receivers: { LiveConfig: self.cfg }, bound: 64, on_full: refuse);
+    }
+}
+main locus App {
+    params { admin: AdminServer = AdminServer { }; }
+    placement { admin: cooperative(pool = io) where async_io; }
+}
+```
+
+**Where the listener runs.** A socket transport's listener (`unix::Rpc`,
+`http::Rpc`, `mcp::Rpc`, `grpc::Rpc`) accepts and reads on a coroutine
+that parks, so it runs on a named pool `where async_io`. The compiler adds
+it to the main locus as a param of its own (`__rpc_u_<n>`, `__rpc_h_<n>`,
+`__rpc_g_<n>`) and places it, with the connections it starts. It is
+born as early in the main locus's birth as its address allows: for an
+exposure the main locus holds, just before the exposure; for one a server
+below it holds, just before the param of the main locus the server sits
+under when the address reads nothing of the server, and just after it
+when it does (`bind: self.bind`), so the server is built first. A child
+born on the main thread runs its `run()` where it is born, before the next
+param of its owner is born (`spec/semantics.md` § Birth order is
+load-bearing), so when the listener comes after the server,
+everything the main locus builds up to and including that param must
+finish first. It is judged over the actual construction: each literal
+that builds the main locus, wherever the program writes it (a free fn, a
+method or hook of another locus, a param default, a fn param's default, a
+record type's field default, …; `fn main() { App { server: Server { n: 0
+} }; }`), each site judged on its own (a literal in a default once per
+literal or call that leaves the default, in that one's scope), else, when none is written, its
+defaults; a field a literal supplies replaces the default it would
+otherwise run, at every depth. In it: each param's value (a call it makes,
+resolved as the checker resolves it, an imported fn through the import
+renames; a call that cannot be resolved is taken to possibly not return),
+and everything a walked expression evaluates without writing it:
+
+| evaluated implicitly | walked |
+|---|---|
+| a locus literal `C { … }` anywhere in a walked expression (an array or tuple element, a block, an `if`/`match` arm, a call's argument, a literal's field, a default) | the params it leaves to their defaults, recursively; the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` and `birth_check` (awaited even when the param is placed on a pool: the main locus waits for a placed child's readiness); its `run()` (a child is built inline, its `run()` run where it is born), except the server's own param's when it is placed off the main thread |
+| a record literal `T { … }` | the fields it leaves to their defaults, recursively (`type Setup { n: Int = { Spinner { }; 0 }; }` built by `Setup { }` builds a `Spinner`; `Setup { n: 0 }` does not) |
+| a param with no value, typed as a record whose every field has a default | the `T { }` the compiler builds for it, its defaults walked |
+| a call that leaves out arguments | each omitted param's default, evaluated at the call site, of the fn or method the checker resolves the call to (as lowering expands them) |
+| a const that is no literal, read | its value, evaluated where it is read; a read as the checker resolves the name where it is evaluated, so a local or a parameter of the same name in scope shadows the const and a binding of a block that has ended does not. A default reads only its own fields and constants, and a caller binding that would shadow one where the default is left out is refused (`spec/types.md` § Locus params), each evaluation on its own |
+| a hook's params | their defaults |
+
+Nothing else runs code at construction: an enum variant's payload has no
+default, a generic parameter is a type, `@form(…)` arguments, capacity
+clauses, an array type's size and a scalar's `range:` are constants the
+compiler reads, `placement`, `topology`, `bindings` and `claims` emit no
+user code, a closure assertion is judged at closure, and a perspective's
+`params` are not lowered. A step that
+returns is fine. A step that may not return is
+refused, naming it and why ("…its listener (\`App\`'s) is born after
+\`self.server\`, once everything \`App\` builds up to it has finished, and
+\`Server\`'s \`birth()\` may not return (it may block: …)"), with three ways
+out: place the server on a pool when only its `run()` waits, move the
+waiting into the main locus's `run()`, or write an address that reads
+nothing of the server. "May not return" is the blocking analysis's: the
+effect rows' `BLOCK` class, interprocedural (a wait on the exposure or
+`run_until_stopped`, a sleep, a read, reached through any fn or method the
+step calls, a stdlib retry with a backoff among them), an edge the
+analysis cannot name, and, since the classes cannot judge a loop that
+spins without blocking nor a publish that waits for room, a `while` loop
+or an `or wait` anywhere in the step's statements or expressions (a
+`let`'s initializer, a block's tail, an `if` or `match` expression, a
+call's argument, a literal's field) or in a fn it reaches. Beside those:
+a recursion the step reaches (a fn of the program that reaches itself,
+directly or through others, methods and resolved fn values), refused even
+when it has a base case, since the check cannot prove a recursion ends; a
+param default that reaches its own call again; a fn used as a value,
+judged as a call of it; a publish to a topic a binding carries over a
+unix socket, an adapter or a shared-memory ring `on_overflow: block`; a
+recovery (`restart`, …), which rebuilds a child the check does not
+follow; every handler a publish in the step can run on the main thread,
+judged as a call: the subscriptions of loci placed on main (or that
+placement cannot place, an imported seed's among them) whose pattern the runtime matches the subject
+against (the topic's subject, or a trailing `**` over it; a `where key
+== …` filter taken as matching), and, for a subject built at run time,
+every such subscription of the published payload's type (a handler on
+the main thread runs inside the window, delivered in place or drained
+from main's queue between births; a subscriber on another pool runs on
+its own thread, and main does not wait for it); a `yield`, which
+runs whatever main's queue holds and is refused outright; and
+constructions nested past 32 levels. A `for` loop always ends
+(its range, array, buffer, form or batch is finite when it starts).
+`run() { println("started"); }` is admitted. The listener is inserted into whichever of
+the main locus's `params` blocks declares that param. Then it is placed:
+
+- for an exposure the main locus holds, by the exposure's own row
+  (`public: cooperative(pool = io) where async_io;` above). The row places
+  the listener; the exposure stays with the main locus. A row that cannot
+  host a listener is refused: "placement entry \`public\`: an exposure's
+  row places its listener, whose accept and reads park a coroutine, so it
+  runs on a named pool \`where async_io\`; write \`public: cooperative(pool
+  = io) where async_io\`", and a row on an exposure with no listener of its
+  own (the fixture transport, a hub) is refused as having nothing to place;
+- for an exposure a locus below the main locus holds, where the main
+  locus places the param its holder sits under: the listener runs on that
+  param's pool when its row is `cooperative(pool = P) where async_io`
+  (`admin` above: the listener, the server and its receivers on `io`),
+  and as an unplaced exposure's does otherwise. A holder nested deeper
+  (a child of a child) is placed as any locus is, by its nearest placed
+  ancestor, and its listener follows that ancestor's row;
+- unplaced, on the transport's shared `async_io` pool: `__api_unix`,
+  `__api_http` (which `mcp::Rpc` shares) or `__api_grpc`, which every
+  exposure of the transport shares.
+
+Since the main locus holds the listener, it holds the server once: an
+exposure whose holder the main locus does not hold through its params is
+refused ("exposure \`web\` is held by \`AdminServer\`, which no main locus
+holds through its params: …"), and so is one whose holder it holds twice,
+or as replicas ("exposure \`web\` is served twice: \`AdminServer\`, which
+holds it, is held by \`App\` as \`self.a\` and \`self.b\`; …"). A
+server's listener address (`bind:`, `path:`) is written in the server and
+read off the server as it was built: each `self.<param>` it reads is the
+main locus's `self.<path to the server>.<param>`, so the value a
+construction gives the param (a default, the literal of the param that
+holds the server, or an override at a construction of the main locus,
+`App { server: Server { bind: … } }`, at any depth) is the address the
+listener binds. A method of the server, or the server itself, cannot be
+read that way and is refused, naming it. The exposure starts from the
+`bind:` as written and is told the address the listener was bound to
+(`host:<bound port>`) when the listener first asks its transport whether
+the exposure is there, before anything is accepted, so its description
+names the port the kernel gave it. (Before, the address was followed up
+the defaults of the literals that build the server, which a
+construction's override bypassed, opening the listener on the default
+while the server held the override.)
+
+**A main locus with no `run()`** that holds a listener (its own exposure's,
+or one below it) serves until each of those exposures is stopped or the
+process drains, as `run() { self.public.wait(); }` would: the compiler
+gives it that run.
+
+**The retired form.** Before GH #1565 a serve site was an expression in a
+locus body (`let web = api::serve(…);` in `run()`) whose exposure was
+already a param the compiler added, and only the main locus could serve
+over a socket. The expression is refused, with the param to write: "\`api::serve\`
+in a body of \`Desk\`: an exposure is a param of the locus that holds it,
+built with it and placed by \`placement { }\`; declare it in \`params { }\`,
+\`web: api::Exposure = api::serve(Public, …);\`, and use \`self.web\` where
+the body used the handle (\`self.web.wait()\`, \`self.web.stop()\`)". This
+is a breaking change: a program that served from a body is rewritten to
+the param, one line per site, keeping its binds, roles, receivers and
+bounds.
 
 The laws of a serve site (R2a; R1 parsed a serve site only as far as a
 description names it, its surface, its transport instance's kind,
@@ -346,19 +574,24 @@ listener, codec and sources, `as:`, `receivers:`, `bound:` and
 that held one):
 
 1. **An exposure is named once.** "exposure \`public\` is served twice:
-   \`as:\` names one exposure; name this one apart".
+   \`as:\` names one exposure; name this one apart"; and its holder is
+   held once (above).
 2. **Every receiver type is bound.** "serve of \`Public\` as
    \`partner\`: \`Orders\` is held twice, as \`self.orders\` and
    \`self.partner_orders\`, and the serve binds neither: name the one
    that answers (\`receivers: { Orders: self.orders }\`)"; a type the
-   serving locus does not hold at all is the same error with no
-   instance to name.
-3. **A receiver outlives its exposure.** A receiver is a param of the
-   serving locus or a child it owns for as long as the handle lives; a
-   `let`-bound child that dissolves before the handle's `stop()` is
-   refused: "serve of \`Admin\`: \`ledger\` is \`let\`-bound and
-   dissolves at the end of this block, before \`admin.stop()\`; hold it
-   as a param".
+   holder does not hold at all is the same error with no instance to
+   name.
+3. **A receiver lives as long as its exposure.** A receiver is a param of
+   the holder, as the exposure is, so the holder's lifetime is both's; it
+   is declared before the exposure param, so it is born before the
+   exposure binds it (the holder's fields are born, drained and dissolved
+   in declaration order, and the exposure's own shutdown refuses what it
+   still holds): "serve of \`Public\` as \`public\`: \`orders\` is declared
+   after \`public\`, the exposure that binds it; a receiver is born before
+   the exposure that binds it, so declare \`orders\` first"; a receiver that is no param of the holder is refused,
+   "serve of \`Both\`: \`self.ledger\` is no param of \`Desk\`; hold the
+   receiver as a param".
 4. **A bound type is one the rows name.** "serve of \`Public\`:
    \`receivers:\` binds \`Ledger\`, which no row of \`Public\` names".
 5. **A serve site states its queue.** `bound:` and `on_full: refuse`
@@ -370,25 +603,31 @@ A serve site is also refused when it cannot be served at all: a surface
 no \`api\` block (or \`@rpc\` handler) declares, "serve of \`Pubic\`: no
 surface \`Pubic\` is declared; did you mean \`Public\`?"; no \`as:\`, "serve
 of \`Public\`: a serve site names its exposure with \`as:\`"; no transport
-instance; a receiver that is a param but is not built by a literal, "serve
-of \`Public\`: \`orders\` is not built by a literal in a param of \`Desk\`: the
-serve numbers the instance in the literal that builds it" (§ Receiver
-failure and generations); and a serve site in a free fn, "\`api::serve\` in
-\`serve_it\`: a serve site belongs to a locus's body, since its exposure is a
-param of the serving locus; serve from the locus that holds the
-receivers". A build refuses a serve site over a transport the compiler
-does not ship (one the stdlib lacks and the program does not declare):
-"\`api::serve\` over \`quic::Rpc\`: this compiler serves a surface over
-\`std::api::test::Rpc\`, the in-process transport, \`unix::Rpc\`, \`http::Rpc\`,
-\`mcp::Rpc\`, \`grpc::Rpc\`, \`ws::Hub\`, \`udp::Hub\`, or a transport the program declares; the other transports follow",
-and a serve over \`unix::Rpc\`, \`http::Rpc\`, \`mcp::Rpc\`, \`grpc::Rpc\`, \`ws::Hub\` or \`udp::Hub\` from a locus that is not the
-main locus: "\`api::serve\` over \`http::Rpc\` in \`Desk\`: a socket's listener
-runs on a pool of its own, which only the main locus places; serve from
-the main locus" (§ The Unix transport, § The HTTP transport).
+instance; a param typed as something else, "exposure param \`public\`:
+\`api::serve(…)\` builds an \`api::Exposure\`; declare \`public:
+api::Exposure\`"; a receiver that is a param but is not built by a
+literal, "serve of \`Public\`: \`orders\` is not built by a literal in a
+param of \`Desk\`: the serve numbers the instance in the literal that
+builds it" (§ Receiver failure and generations); a socket transport built
+elsewhere than in a literal the compiler can read its listener from
+("serve of \`Public\` as \`public\` over \`unix::Rpc\`: the compiler adds the
+transport's listener from the literal that builds it and reads its address
+there, and this transport is built elsewhere; …"); and a serve site in a
+free fn, "\`api::serve\` in \`serve_it\`: an exposure is a param of the
+locus that holds it and its receivers; declare it in that locus's params,
+\`p: api::Exposure = api::serve(Public, …);\`". A build refuses a serve site
+over a transport the compiler does not ship (one the stdlib lacks and the
+program does not declare): "\`api::serve\` over \`quic::Rpc\`: this compiler
+serves a surface over \`std::api::test::Rpc\`, the in-process transport,
+\`unix::Rpc\`, \`http::Rpc\`, \`mcp::Rpc\`, \`grpc::Rpc\`, \`ws::Hub\`, \`udp::Hub\`,
+or a transport the program declares; the other transports follow". A hub
+is the main locus's (§ Streams), so a serve over a \`ws::Hub\` or a
+\`udp::Hub\` from another locus is refused: "serve of \`Public\` over
+\`ws::Hub\` in \`Server\`: a hub is the main locus's, its listener and its
+stream bindings placed there; …".
 
-Only the entry program's main locus serves: the serve expansion builds
-the exposure's listener on it, and a `main locus` that arrives through
-`import` is constructed by nobody. A serve site in an imported main locus
+Only the entry program's main locus is constructed, and the exposures
+in its tree are the ones served. A serve site in an imported main locus
 that the program also writes the name of (`lib::Head { }` as a part of its
 own main locus, or as its `fn main`) would build and check and serve
 nothing, so it is refused: "`api::serve` in `lib::Head`, a main locus
@@ -545,10 +784,10 @@ is how the runtime is proven before a socket exists.
 
 `unix::Rpc` (`std::api::unix::Rpc`, R2b) serves an exposure over a Unix
 domain stream socket, one JSON object per line (§ Outcomes states the
-wire). It is written at a serve site, or held as a param and named:
+wire). It is written in the serve call, or held as a param and named:
 
 ```hale,fragment
-let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
+admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
 ```
 
 - **The principal is the peer's kernel credentials**, read once per
@@ -571,18 +810,18 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
   The socket file is removed when the exposure stops or is torn down, if
   the path still names the file the listener bound (a replacement may
   have taken a stopped listener's path; its file is left alone).
-- **The listener runs on a pool of its own.** A socket's accept and read
+- **The listener runs on an `async_io` pool.** A socket's accept and read
   park a coroutine, so they need an `async_io` pool, and only the main
-  locus places: the serve expansion adds the listener to the serving main
-  locus as a param, placed on the pool `__api_unix`, which every Unix
-  exposure of the program shares. The listener is one of the TCP
+  locus places: the serve expansion adds the listener to the main locus as
+  a param, placed by the exposure's row, or the row of the param its
+  server sits under, or on the pool `__api_unix`, which every unplaced Unix
+  exposure of the program shares (§ Serving). The listener is one of the TCP
   connection substrate's (spec/stdlib.md § The TCP connection substrate),
   named `unix:<path>`: it relays each accepted connection as a
   `std::io::tcp::Accepted` to the consumer on its route, whose handler
-  starts the connection's locus as a flow child on the same pool. A serve over `unix::Rpc` from a locus
-  that is not the main locus is refused, whether the transport is written at
-  the serve site or held as a param of that locus. The transport itself, and the
-  exposure, stay on the serving locus's pool; the two meet on the bus
+  starts the connection's locus as a flow child on the same pool. The
+  transport itself, and the exposure, stay on the holder's pool; the two
+  meet on the bus
   only (the subject `__api.unix.out`, keyed by exposure and connection).
 - **Framing is a line.** A request is one JSON object on one line of at
   most 60000 bytes:
@@ -623,6 +862,9 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
 
 ### The HTTP transport
 
+(`http::Rest`, the same transport routed by method and path, is § The REST
+transport.)
+
 `http::Rpc` (`std::api::http::Rpc`, R3) serves an exposure over HTTP/1.1,
 one request to a connection (`Connection: close`: no keep-alive, no
 chunked bodies). It is written at a serve site, or held as a param and
@@ -632,7 +874,7 @@ source) and `cors` (the browser origins it answers CORS for, below;
 optional):
 
 ```hale,fragment
-let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
 - **The principal is the bearer.** The request's `Authorization: Bearer
@@ -649,22 +891,24 @@ let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json,
   program's boot: the diagnostic on stderr and exit code 2, as for the Unix
   socket. Nothing is accepted until the exposure is attached to the bus
   (a client that connects earlier waits in the listen backlog). The
-  listener runs on the `async_io` pool `__api_http`, which every HTTP
-  exposure of the program shares, and each connection is a locus of that
-  pool (the listener is a TCP connection substrate listener named
-  `host:<bound port>`, as the Unix one is); only the main locus places, so a serve over `http::Rpc` from a
-  locus that is not the main locus is refused, written at the site or held
-  as a param. The transport and the
-  exposure stay on the serving locus's pool; the two meet on the bus
+  listener is placed as the Unix one is (§ Serving): by the exposure's row,
+  or its server's, on an `async_io` pool, else on the `async_io` pool
+  `__api_http`, which every unplaced HTTP exposure of the program shares;
+  each connection is a locus of the listener's pool (the listener is a TCP
+  connection substrate listener named `host:<bound port>`, as the Unix one
+  is). The transport and the exposure stay on the holder's pool; the two
+  meet on the bus
   (the subject `__api.http.out`, keyed by exposure and connection).
 - **Framing is the request.** `POST /call/<member>` carries the payload as
   its body (the member's `::` may be sent as `%3A%3A`), the client's
   digest, when it sends one, in `Hale-Surface-Digest`, and the connection
   is the correlation. `GET /.description` asks for the caller's
   description. A request line, method or path that is neither, an empty
-  body on a call, a head over 65536 bytes or a body over 1 MiB is
-  `malformed` (400); a request read gets 5 seconds of silence and 10 in
-  all.
+  body on a call or a head over 65536 bytes is `malformed` (400); a body
+  whose declared `Content-Length` is over 1 MiB (an `http::Rest`'s
+  `max_request_bytes`, § The REST transport) is refused before a byte of
+  it is read, `413` with `{"refusal": {"kind": "too_large", …}}`; a
+  request read gets 5 seconds of silence and 10 in all.
 - **The reply is the contract's.** Status and body are § Outcomes' HTTP
   column and nothing else: 200 with the response, 422 with `E`, 400, 409,
   401, 403, 429 and 503 with `{"refusal": {"kind": …, "reason": …}}` (a
@@ -718,6 +962,209 @@ let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json,
   the Unix socket, a program that ends without `stop()` releases its
   listener, and a caller with a request in flight sees the connection end.
 
+### The REST transport
+
+`http::Rest` (`std::api::http::Rest`, GH #1530) serves an exposure over
+the same HTTP/1.1 connection substrate as `http::Rpc`: the listener, the
+connections, the bearer, the role source, `cors`, the digest header, the
+exposure's queue (`bound:`, `on_full: refuse`), `stop()`, and every outcome
+of § Outcomes that is not a routing outcome are the ones of § The HTTP
+transport. What differs is the request line: a request is routed by its
+method and path to a row, by the routes the surface declares (§ Surfaces
+and their rows, a route), and the reply's success status is the row's.
+
+```hale,fragment
+api Gateway {
+    rpc Probe::live at "GET /healthz";
+    rpc Chat::complete at "POST /v1/chat/completions";
+    rpc Chat::model at "GET /v1/models/{model}";
+    rpc Items::create at "POST /v1/items" status: 201;
+    rpc Items::remove at "DELETE /v1/items/{id}" status: 204;
+    rpc Ops::retire at "POST /admin/retire" requires: [operator];
+}
+// in a locus that holds the receivers
+web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, anonymous: "public", cors: "https://app.example" }, as: "web", bound: 64, on_full: refuse);
+```
+
+- **The matcher is the surface's.** The compiler writes the route table
+  into the transport literal (`routes`, a field the program does not
+  write): one line per row, the most specific route of a method first, so
+  the first match is the most specific one (law 10 leaves no other
+  answer). A row with no route is `POST /call/<member>`, as over
+  `http::Rpc`; a row with one is served only there. Matching is on the
+  query-stripped path, a trailing `/` on the request tolerated, a
+  parameter's value percent-decoded.
+- **Binding.** The call's request is one JSON object, built from the
+  request:
+  - a path parameter is the field of its name, written as the field's
+    type (an integer, a number, a bool or a string; a value that is not
+    one is `malformed`, 400, naming the parameter);
+  - the query is the same for every other scalar field of the request,
+    by key (`+` is a space; a key that names no scalar field is ignored,
+    the first of a repeated key wins, a path parameter wins over a query
+    key of its name);
+  - the body, when one is sent, is the JSON object whose members are
+    laid beside those. A body that is not an object takes no path or
+    query parameter (`malformed`); a request with neither parameters nor
+    body is `{}`, and a body is passed as it is when no parameter is
+    bound. A field the request needs and nothing supplies is the codec's
+    `missing_field`, `malformed`.
+  The object is then decoded by the row's codec like a body over
+  `http::Rpc`, so the request's shape is judged in one place.
+- **Statuses.** The routing outcomes are the transport's, with the body
+  `{"refusal": {"kind": …, "reason": …}}`:
+  - the row's success status (`200`, or the route's `status:`; a `204`
+    has no body);
+  - `404`, kind `not_found`, for a path no route serves;
+  - `405`, kind `method_not_allowed`, for a path that takes other
+    methods, with `Allow` naming them (a `GET` allows `HEAD`;
+    `OPTIONS` is always allowed);
+  - `413` `too_large`, `415` `unsupported_media_type` and `403`
+    `unauthorized` for a cross-origin write, below;
+  - every other outcome is § Outcomes' (a handler error by its class,
+    § Error classes; `400`, `401`, `403`, `409`, `429`, `503`, `500`).
+  Routing is decided before the credential is read, so `404` and `405`
+  need none.
+- **`OPTIONS` and `HEAD`.** `OPTIONS` of a path a route serves is
+  answered by the transport, no credential read and nothing dispatched:
+  `204` with `Allow`; with `cors` set and an `Origin` that is listed, the
+  preflight's headers as `http::Rpc` states them, with
+  `Access-Control-Allow-Methods` the methods of the path rather than the
+  transport's; an `Origin` that is not listed is `403`. `HEAD` of a path
+  with a `GET` route is that route's reply with no body and the length of
+  the body it would have had; the call is made.
+- **`max_request_bytes`** (2026-10-22). `max_request_bytes: Int` is the
+  most a request's body may declare, as `std::http::Server`'s: `1048576`
+  (1 MiB) unless set, a value that is not positive 1 MiB and a larger
+  one than 1 GiB 1 GiB. A declared `Content-Length` over it is refused
+  before the body is read, `413` with kind `too_large`, naming the cap.
+  It is the listener's, so the rows and the `fallback` share it: one
+  listener, one cap (a fallback that wants a smaller one checks the body
+  it is handed). The transport hands it to its listener in its answer to
+  the listener's first asking, before a connection is accepted.
+- **Cross-origin writes** (2026-10-22). A browser sends a cross-site
+  form's `POST` (`text/plain`, `application/x-www-form-urlencoded`,
+  `multipart/form-data`) with no preflight, and a request of another
+  type only after one, which `cors` answers. So a request a row serves
+  is refused, before the credential is read and nothing dispatched:
+  - `415`, kind `unsupported_media_type`, when it carries a body whose
+    `Content-Type` is not the codec's (`application/json`, its case and
+    parameters such as `; charset=utf-8` aside), or none;
+  - `403`, kind `unauthorized`, when it is a write with no body (any
+    method but `GET`, `HEAD` and `OPTIONS`: a `DELETE`, a `POST` of a
+    request with no fields) and carries an `Origin` that `cors` does not
+    list; with `cors` unset no origin is listed, so a page that writes
+    with no body to its own origin's exposure lists that origin.
+  A caller that is not a browser sends no `Origin` and is not refused.
+  The `fallback` is not guarded: it gets the request untouched and
+  guards itself.
+- **`anonymous`.** `anonymous: String` (`""`, the default, is none) names
+  the caller of a request that sends no `Authorization` header at all: it
+  is a bearer principal of that name with no credential, the role source
+  decides what it holds, and a row that requires a role refuses it
+  `unauthorized`. A request that sends a credential is judged by
+  `principals` as ever, and one that sends a header that is not a bearer
+  is refused. Without `anonymous` such a request is refused
+  `unauthenticated` as over `http::Rpc`. It is the transport's knob and
+  never the surface's: it is how a health probe is a row (`GET /healthz`)
+  that needs no token.
+- **`fallback`** (2026-10-21). `fallback: h` names a
+  handler the program owns, any locus that satisfies `std::http::Handler`
+  (`fn handle(req: std::http::Request) -> std::http::Response`, the
+  interface `std::http::Server` dispatches to); a value that does not is
+  refused at the literal (`locus `X` does not satisfy interface
+  `std::http::Handler``). A request whose path no row serves goes to it,
+  on the same listener and the same connection, instead of `404`:
+  - the connection reads the request as it reads any (the head within
+    64 KiB, the body within the transport's `max_request_bytes` and its
+    `Content-Length`, the 10 s to
+    read it), then matches its path against the route table; a path no
+    route serves by any method (and that is not `/.description`) is the
+    fallback's, by every method, `OPTIONS` included;
+  - the handler gets the request untouched (`std::http::parse_request`
+    of the bytes received, its target with the query, its headers and
+    body, `conn_fd` the connection), and its `Response` is written as
+    `std::http::Server` writes one: whole, the last chunk of a streamed
+    body (a `BodyWriter` or `SseWriter` on `req.conn_fd`), the head only
+    for a `takeover` and nothing for a `takeover_raw`, after which the
+    connection is the handler's. The connection's 5 s receive and send
+    timeouts are still armed, as under the Server;
+  - **a path a row serves stays Rest's** by every method: another method
+    is the `405` with `Allow`, and `OPTIONS` and CORS of it are the
+    transport's. Only an unmatched path reaches the fallback;
+  - **the exposure's gate is the rows'**: the bearer, `anonymous`, the
+    role source, `requires`, `cors`, the digest header and the queue
+    judge only a request a row serves. The fallback reads no credential
+    and refuses nothing for the exposure: its own authentication, its
+    own CORS and its own limits are its handler's;
+  - **placement:** the fallback runs on the listener's connections, so
+    it is placed where the listener is: the exposure's own placement row
+    places the listener (§ The HTTP transport), and the handler's field
+    goes on the same `where async_io` pool. A handler placed anywhere else
+    is refused as a cross-pool alias (spec/types.md §
+    "Single-threaded-method invariant (F.31)"). On that pool each
+    connection is a coroutine, so a stream parks only its own;
+  - **concurrency:** the fallback is served as `std::http::Server`
+    serves its handler (`spec/stdlib.md` § "Server concurrency"), not as
+    a row is dispatched (§ The runtime boundaries): no queue and no one
+    call at a time. Every connection calls the one handler locus inside
+    its own coroutine, so calls never run in parallel (one worker thread
+    per pool) but interleave wherever one parks — a `sleep`, a socket
+    read, an outbound call, a chunk or event sent to a slow client. Fifty
+    one-second requests, or fifty event streams a second long, take a
+    second. What a handler read of its own `params` before a park may be
+    stale after it, exactly as under the Server; state that must hold
+    across a park is re-read or kept in the request's locals. The bound
+    is the listener's connections' (the TCP substrate's
+    `max_connections`, 256 served at once, as many again waiting for a
+    slot, past that a connection closed unserved), shared with the rows'
+    connections; the exposure's `bound:` and `on_full:` bound only the
+    calls queued for rows, so a fallback stream lasting minutes never
+    takes a slot of the exposure's queue. There is no fallback served one
+    connection at a time: a listener runs only on an `async_io` pool,
+    and the handler must be on that pool;
+  - the compiler hands the handler, and the route table, to the listener
+    it adds; the transport literal the exposure holds keeps neither. The
+    call of the handler is in `api_rest_fallback.hl`, which joins only a
+    program that gives a fallback, so a REST, RPC or MCP exposure without
+    one calls no `std::http` handler from its connections and its
+    program's analyses are unchanged.
+  - **held below the main locus:** the listener is the main locus's and
+    reads the fallback off the holder as built, as it reads the address
+    (§ Serving): `fallback: self.front` is `self.<holder>.front`, and
+    `fallback: self`, a holder that is its own handler, is
+    `self.<holder>`. A fallback that reads the holder puts the listener
+    after the holder in the main locus's birth whatever its address
+    reads. A fallback that cannot be read that way (a method of the
+    holder, `self.make()`) is refused at the serve site; it is never
+    served as an exposure with no fallback.
+
+  No `fallback` (the default) leaves everything as it was: a path no
+  route serves is `404`.
+
+  ```hale,fragment
+  web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, fallback: self.data_plane }, as: "web", bound: 64, on_full: refuse);
+  // placement { web: cooperative(pool = edge) where async_io; data_plane: cooperative(pool = edge) where async_io; }
+  ```
+- **`hubs`** (GH #1780). `hubs: [("/path", self.hub), …]` mounts `ws::Hub`s
+  of the main locus on this listener: a WebSocket upgrade at a mounted path
+  is the hub's connection, judged by the hub's sources and stream rows, and
+  the exposure's description lists the hub's streams (§ Streams, a hub
+  mounted on an `http::Rest`). The compiler hands the table to the listener;
+  the transport literal the exposure holds keeps none of it.
+- **The description** is `GET /.description`, as over `http::Rpc`;
+  `hale api export --surface NAME` writes the OpenAPI form with each
+  routed row at its method and path (path parameters as `in: path`,
+  the other scalar fields of a `GET` or `DELETE` as `in: query`, the
+  success status as the success response, `404` and `405` beside the
+  refusals) and a row with none at `POST /call/<member>`.
+  `hale api call http://host:port 'GET /orders/5' --limit 3` calls a
+  route by its method and path (§ Driving a served program).
+- **What the route table does not do** (a later step of GH #1530, with
+  resources on a surface): derive a verb or a path from what a handler
+  does, or a status from an error class beyond § Error classes; the
+  author writes the route.
+
 ### The MCP transport
 
 `mcp::Rpc` (`std::api::mcp::Rpc`, R6) serves an exposure as a Model
@@ -728,11 +1175,11 @@ held as a param and named, with the fields `bind` (`host:port`),
 `principals` (the bearer source, required) and `roles` (the role source):
 
 ```hale,fragment
-let public = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+public: api::Exposure = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
 It is built on § The HTTP transport's listener and connections, whole: the
-same limits, the same bearer, the same `async_io` pool (`__api_http`), the
+same limits, the same bearer, the same placement (`__api_http` unplaced), the
 same bind-at-birth (the diagnostic reads `api: mcp::Rpc could not listen
 on …`), the same refusal of a serve from a locus that is not the main
 locus, and a connection that fails alone. What is its own is the framing
@@ -825,7 +1272,7 @@ content type, § The protobuf codec),
 `principals` (the bearer source, required) and `roles` (the role source):
 
 ```hale,fragment
-let public = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+public: api::Exposure = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
 **The protocol is a library, and the library is not ours.** HTTP/2 (frames,
@@ -841,8 +1288,8 @@ scheduler: the socket is a descriptor `std::io::tcp` reads and writes, and a
 read parks its coroutine on the `async_io` pool as every read there does.
 
 **Two layers.** `std::io::h2` (`io_h2.hl`) is the server: a listener on the
-`async_io` pool `__api_grpc` (which every gRPC exposure of the program
-shares), and a connection locus per accepted socket, which feeds each read to
+`async_io` pool its exposure's placement names, `__api_grpc` unplaced (which
+every unplaced gRPC exposure of the program shares), and a connection locus per accepted socket, which feeds each read to
 its session, writes what the session drains and raises the session's stream
 events on the bus (`__api.h2.event`: a request's headers whole, bytes of its
 body, its end, a reset, a GOAWAY, a stream closed, the connection ended).
@@ -887,7 +1334,7 @@ closes the listener while the connections it accepted are served on.
   `HEADERS` frame closing the stream, `:status 200`, `content-type`,
   `grpc-status`, `grpc-message`, `grpc-status-details-bin`), the status the
   table of § Outcomes gives: `FAILED_PRECONDITION` (9) for a handler error,
-  with the message `handler_error`; `INVALID_ARGUMENT` (3),
+  or its class's code (§ Error classes), with the message `handler_error`; `INVALID_ARGUMENT` (3),
   `FAILED_PRECONDITION` (9, a digest mismatch), `UNAUTHENTICATED` (16),
   `PERMISSION_DENIED` (7), `RESOURCE_EXHAUSTED` (8) and `UNAVAILABLE` (14, for
   `shutting_down` and for `unavailable`) for a refusal, its reason the
@@ -937,7 +1384,7 @@ closes the listener while the connections it accepted are served on.
   --surface NAME --proto` prints it. `syntax = "proto3"`, no package, one
   `service NAME` (the surface) with a unary rpc per member, named as above; a
   message per record the rows reach, named as the schema document names the
-  type with the `::` of an imported type as `_`, and `Message` after it when
+  type with the `.` of a qualified imported type as `_` (`lib_Item`), and `Message` after it when
   that is the surface's own name (a service and a message share proto3's
   scope, and the service keeps the surface's name because it is the gRPC
   path: `api Todo` over `type Todo` is `service Todo` and `message
@@ -1025,6 +1472,27 @@ through this one path.
 | **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural |
 | **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
 
+**The receiver's side is a seam** (GH #1530, 2026-10-18; spec/semantics.md
+§ Seams). A call reaches its receiver's pool as a bus delivery keyed by the
+exposure, whose stamp is checked first (a call from before the receiver's
+generation is `unavailable`); what runs then is a seam the compiler writes
+on the receiver, `c -> decode -> self -> encode`. The decoder is one hop: it
+reads the body as JSON, or as protobuf when the exposure is gRPC and the body
+says `pb:`, and makes the row's **mirror** member, a record of the request,
+the context and the call's identity (its exposure and request id, and its
+wire). The mirror is generated, one member per row and never per request
+type, so two rows that take one request type stay two members; its names
+are the compiler's own (`__RpcIn_…`, `__RpcOut_…`) and no description,
+digest, export or client names them. The locus hop on `self` is the
+dispatch: each member goes to its row's eater, a generated method that
+unpacks it into the handler's arguments, the context last, and calls the
+handler on the receiver's pool, in its arena. The encoder takes the set of
+every row's response and every row's error, and the server error a
+violating handler answers (`ClosureViolation`), and writes each as the
+outcome it is, on the call's wire. Coverage is the surface's rows: every
+member has its eater, and the receiver's other methods are methods. A
+body neither codec reads ends the seam, and the call is `malformed`.
+
 **A lost connection.** A reply for a request whose connection was lost
 before the request completed is dropped: completion (`finish`) sees the
 lost mark, delivers nothing, and tells the transport the connection is
@@ -1067,12 +1535,17 @@ type std::api::Request {
 // the absence of a reply, so it has no variant.
 type std::api::Outcome = enum {
     Result(String),             // the response by the codec
-    HandlerError(String),       // the handler's E by the codec
+    HandlerError(String, std::api::ErrorClass),  // the handler's E by the
+                                // codec, and the class its variant declares
     Refusal(String, String, String),  // kind, reason, the extra: `served` on
                                 // digest_mismatch, `requires` (comma-joined)
                                 // on unauthorized, else ""
     ServerError,                // the handler violated; says nothing of it
 };
+
+// A handler error's class (§ Error classes): `Unclassed` for a variant
+// that declares none and for an error type that is a record.
+type std::api::ErrorClass = enum { Unclassed, NotFound, Conflict, Invalid, Forbidden, Unavailable };
 
 // What a caller is handed to hold; stop() is idempotent. wait() returns
 // when stop() or the drain has ended the exposure (§ Parking).
@@ -1134,6 +1607,15 @@ or serves the surface through several exposures, each with a receiver
 instance of its own; a window wider than one call per receiver is § Not
 yet.
 
+An `http::Rest` exposure's **`fallback`** is not a receiver and none of
+this applies to it (§ The REST transport, `fallback`): nothing is
+dispatched, queued or held in the pending table for it. The connection
+that read the request calls the handler itself, on the listener's
+`async_io` pool, as `std::http::Server`'s connections call theirs: each
+connection a coroutine of its own, the calls interleaving where they
+park, so fifty one-second fallback requests take a second while fifty
+calls of one receiver's row take fifty.
+
 **Completion** has one owner, the exposure's pending table: a record
 per accepted request keyed by the request id, holding the request (its
 payload, the member), the `Context`, the generation, the transport's
@@ -1154,7 +1636,7 @@ nothing.
 
 **Parking.** `h.wait()`, and `std::api::run_until_stopped(h)` which is
 the same call, return when `stop()` has run on the exposure or the
-process or the serving locus is draining. Between those they wait in
+process or the holder is draining. Between those they wait in
 bounded slices of 100 ms on `std::time::__idle_wait`: on the main thread
 that is a wait on main's bus queue which a delivery from another thread
 ends at once (the queue's wake descriptor, written by the enqueue, the
@@ -1230,7 +1712,7 @@ their use for live subscriptions (invalidation, delivery) is R5's (§ Streams).
   not is asked `holds` once per role the check needs, with the revision
   unstated (0).
 - The runtime queries both on the exposure's own pool under Hale's
-  cross-pool rules: a source is a locus the serving locus holds, placed
+  cross-pool rules: a source is a locus the exposure's holder holds, placed
   with the exposure (or `sync = serialized`); a transport never holds
   policy.
 - The interfaces are provider-independent: a local bootstrap table, a
@@ -1258,13 +1740,15 @@ it (the compiler wires `expiry` and `grants` from the source's type).
 
 A caller sees one of five outcomes, and every transport encodes each,
 by a mapping fixed in v1 and part of this contract: no transport
-chooses another, no row carries a status, and the digest has nothing
-to hash for one.
+chooses another, and no row carries a status. A handler error's status
+is the error class its variant declares, if it declares one (§ Error
+classes); the class is part of the error type's shape, which the digest
+holds.
 
 | outcome | meaning | HTTP | Unix JSON | gRPC | MCP |
 |---|---|---|---|---|---|
 | result | the handler returned | 200, body = the response by codec | `{"ok": true, "value": …}` | OK | result |
-| handler error | the handler failed with its declared `E` | 422, body = `E` by codec | `{"ok": false, "error": E}` | FAILED_PRECONDITION, `E` in details | error object with `E` |
+| handler error | the handler failed with its declared `E` | 422, or its class's status and `Hale-Error-Class` (§ Error classes), body = `E` by codec | `{"ok": false, "error": E}`, and `"class"` for a classed one | FAILED_PRECONDITION, or its class's code, `E` in details | error object with `E` |
 | refusal | the request was not accepted, or was accepted and did not run (the kinds below) | 400 / 409 / 401 / 403 / 429 / 503, body = `{"refusal": …}` | `{"ok": false, "refusal": {"kind": …, "reason": …}}` | INVALID_ARGUMENT / FAILED_PRECONDITION / UNAUTHENTICATED / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
 | server error | the handler failed with `ClosureViolation`, its row's error type (§ Structural failure in a handler) | 500, body = `{"refusal": {"kind": "server"}}` | `{"ok": false, "refusal": {"kind": "server"}}` | INTERNAL | error object |
 | transport failure | the connection or the protocol broke | the transport's own | EOF | the transport's own | the transport's own |
@@ -1286,6 +1770,71 @@ on `digest_mismatch` and `"requires"` on `unauthorized`. The server
 error's object is `{"kind": "server"}` and says nothing of the
 violation, which is the program's to report (§ Structural failure in a
 handler).
+
+### Error classes
+
+A variant of an enum may declare an **error class** before its name
+(2026-10-17):
+
+```text
+type OrderError = enum { @not_found Missing, @conflict Taken(String), Closed };
+```
+
+A class is transport-neutral: it says what kind of failure the variant
+is, and each transport answers a handler error of that variant with its
+own status for the class. A variant that declares none, and an error type
+that is a record, keep the handler error's 422 and `FAILED_PRECONDITION`.
+The checker refuses any other word (`` `@missing` on the variant `A` of
+`E` is no error class ``).
+
+| class | the handler says | HTTP | gRPC |
+|---|---|---|---|
+| `@not_found` | what the request names does not exist | 404 | NOT_FOUND (5) |
+| `@conflict` | the request conflicts with the current state (it exists already, it changed, it is closed) | 409 | ABORTED (10) |
+| `@invalid` | the request is well formed and the handler judged it invalid | 422 | INVALID_ARGUMENT (3) |
+| `@forbidden` | the caller may call the member and may not do this | 403 | PERMISSION_DENIED (7) |
+| `@unavailable` | what the handler needs is unavailable; a later call may succeed | 503 | UNAVAILABLE (14) |
+
+The body is the handler error's whatever its class: `E` by codec. Three
+of the statuses are a refusal's too (403, 409, 503), so over HTTP a classed
+handler error names its class in the header `Hale-Error-Class:
+not_found`, which no refusal carries, and a client tells the two apart by
+it, never by the body (an enum's variant may be named `refusal`); under
+CORS the response exposes it (`Access-Control-Expose-Headers`). An
+unclassed handler error's 422 carries no such header, as before.
+`@invalid` keeps HTTP's 422, which an unclassed error has too, because 400
+is `malformed`'s, the transport's own judgment that a request does not
+decode; gRPC tells the two apart (INVALID_ARGUMENT, FAILED_PRECONDITION).
+`@conflict` is ABORTED and not ALREADY_EXISTS: the class covers every
+conflict with the state (a duplicate, a version that moved, an order
+already closed), and ALREADY_EXISTS asserts one cause the class does not
+carry; the variant in the details names which. Over gRPC the message stays
+`handler_error` and the details' `Any` stays `E`, under the class's code.
+The Unix reply line names the class after the error, `{"ok": false,
+"error": "Missing", "class": "not_found"}`, and a line for an unclassed
+variant has no `class`. The MCP transport's error object has no member
+for it: its `code` (-32001) and `data` (`E`) are unchanged, and the class
+is the description's to say.
+
+The class is contract: the description and the schema documents carry it
+on the enum, `"x-hale-error-classes": {"Missing": "not_found", "Taken":
+"conflict"}` (only on an enum that declares one), the OpenAPI form lists
+each class's status as a response of the member (where a refusal has that
+status too, its schema is either body, `anyOf` the refusal and `E`, since a body may match both and the header, not the body, tells them apart), and
+the enum's contract shape renders a class after its variant
+(`=enum(Missing@not_found|Taken(s)@conflict|Closed)`), so a class declared,
+changed or removed moves every digest built on the type, and an enum that
+declares none hashes as it always has. A served description (`GET
+/.description`, `Describe`) carries the classes as the compiler's does.
+The generated clients and `hale call` read a response carrying
+`Hale-Error-Class` as the handler error, and `hale call` names the class
+(`handler error (not_found): "Missing"`).
+
+The runtime interface carries the class: `std::api::Outcome`'s
+`HandlerError(String, std::api::ErrorClass)` (§ The runtime boundaries),
+`Unclassed` for a variant that declares none. This is a breaking change
+for a transport the program writes, whose `match` on an outcome spells
+`HandlerError(b, c)` where it spelled `HandlerError(b)` (2026-10-17).
 
 **The Unix JSON transport** (`unix::Rpc`, R2b; the R2a fixture transport
 encodes its outcomes as these lines) is a Unix domain stream
@@ -1472,7 +2021,7 @@ it, and is answered as it ends (R2b may narrow the window).
 
 The instance bound is addressed by the number the serve site gives it,
 which the compiler writes into every literal that builds the field's
-instance in the serving locus: the param's own, and the right-hand side
+instance in the holder: the param's own, and the right-hand side
 of each `self.orders = Orders { … }` assignment. A receiver replaced
 that way keeps the binding, because the number rides in the literal;
 an instance built anywhere else carries no number and is bound to no
@@ -1518,7 +2067,8 @@ Streams are topic bindings, and the exposure's fields live on the
 binding row: `requires`, `bound`, `on_full`. A **hub** is a transport
 instance built by a literal in the main locus's `params`: `ws::Hub`
 (WebSocket) or `udp::Hub` (datagrams, § Over datagrams), with `bind:`
-the address it listens on, `principals:` and `roles:` its two sources and
+the address it listens on (or, for a `ws::Hub`, none, when an
+`http::Rest` mounts it: below), `principals:` and `roles:` its two sources and
 `as:` its name. The literal is the param's default and the only hub:
 the compiler numbers it and gives it its rows there, so a construction
 that supplies the param is refused ("param `hub` is a hub that streams
@@ -1542,6 +2092,19 @@ Roles). A row states `bound:` and `on_full:`; `refuse` is not a
 policy of a stream, since a subscriber that cannot keep up loses events,
 never the subscription. A hub has at most sixteen stream rows.
 
+A hub in a `main locus` the program imports is built as in its own
+seed's build: the import renames its stream rows' topics with the
+library's own, so a program that imports such a seed for its other
+declarations (as an application's tests import the application) checks
+and builds, and the hub never runs, since only the entry program's main
+locus is constructed. A program that also writes that main locus's name
+(`lib::Head { }` as a part of its own main locus, or as its `fn main`)
+would start a hub whose streams carry nothing, since only the entry's
+`bindings { }` bind, so it is refused, as a serve site there is (§
+Serving): "hub `self.hub` in `lib::Head`, a main locus the program
+imports: only the entry program's main locus binds streams; hold the hub
+in the entry's main locus and bind the streams there".
+
 The hub's address is bound in the program's birth, before any user code
 runs, and a program that cannot bind it does not boot (a diagnostic and
 exit status 2, as for a socket transport). A hub is a main-locus param
@@ -1560,6 +2123,69 @@ endpoint is one socket of its own.
 Each stream is a thread of its own for the publish fanout to write
 through (an adapter binding's), so a hub with many streams costs that many
 threads.
+
+**A hub mounted on an `http::Rest`** (GH #1780). A `ws::Hub` may instead
+take its connections on the listener of an `http::Rest` exposure of the same
+main locus, at a path: the transport's `hubs:` lists the mounts, and the
+hub writes no `bind:`.
+
+```hale,fragment
+params {
+    hub: ws::Hub = ws::Hub { principals: self.bearer, roles: self.hub_roles, as: "fills" };
+    web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, hubs: [("/admin/v1/hub", self.hub)] }, as: "web", bound: 64, on_full: refuse);
+}
+bindings {
+    Fills: self.hub requires: [operator], bound: 64, on_full: drop_old;
+}
+```
+
+- **One address.** The hub opens no listener: the compiler adds none for
+  it, and places nothing on `__api_ws`. Every connection is the Rest
+  listener's. Once it has read a request's head, a request that asks for
+  a WebSocket upgrade (`Upgrade: websocket`, its case aside) at a mounted
+  path (the query-stripped path, with a trailing `/` tolerated) is handed
+  to the hub. That happens before its body is read or its path is matched
+  against the routes. Everything else is routed as § The REST transport
+  says: a row, the `fallback`, or `404`, including a request at a mounted
+  path that is not an upgrade. The Rest exposure's
+  gate (its bearer, `anonymous`, role source, `requires`, `cors`, queue)
+  never judges a handed-over connection.
+- **The hub's own gate.** A handed-over connection is a connection of the
+  hub as on its own listener: the upgrade, the credential (`Authorization:
+  Bearer`, or `?access_token=`), the hub's sources, its stream rows'
+  `requires`, `bound` and `on_full`, revocation, expiry, `stop()` and the
+  `ws` frames are this section's, unchanged. What the Rest connection had
+  read past the head (frames a client sent with the upgrade) is the hub
+  connection's.
+- **Where it runs, and its bound.** The hub's connections run on the Rest
+  listener's `where async_io` pool, each a coroutine of its own, held by
+  the listener. The 5 s receive timeout of a Rest request is cleared when
+  the connection is handed over, so a quiet subscriber is not cut off. The
+  5 s send timeout stays, as on the hub's own listener. At most 256
+  mounted connections of one listener are open at once. An upgrade past
+  that is answered `503` and closed. These connections are bounded apart
+  from the Rest listener's own `max_connections`, which counts each
+  connection only until it is handed over.
+- **The description.** The Rest exposure's description (`GET
+  /.description` on its listener, and `hale check --api --exposure NAME`)
+  lists the mounted hubs' stream rows in `"streams"`, with the schemas they
+  reach, filtered as its members are, by the exposure's role source. The
+  hub's `requires` still decides every subscription, under the hub's own
+  role source. A mounted hub has no `GET /.description` of its own, since
+  that path is the exposure's. Its exposure (`hub@<digest>/<name>`) is
+  described statically as before, its listener's address the Rest's
+  `bind:` when that is written as a string.
+- **The laws.** `hubs:` is a list of `("/path", self.<hub>)` pairs, written
+  in the main locus (an `http::Rest` held below it is refused: a hub is the
+  main locus's). A path starts with `/` and holds only letters, digits,
+  `-`, `.`, `_`, `~` and `/`, with no empty segment and no trailing `/`.
+  It is not `/.description`, and it is not a path a row of the surface
+  serves by any method (a row's path stays the surface's). Two hubs never
+  share a path. Each mount names a `ws::Hub` param of the main locus that
+  at least one stream is bound to, mounted once in the program and writing
+  no `bind:`. A `udp::Hub` has no connection to take over and is refused.
+  A hub neither bound nor mounted is refused, as before, for stating no
+  address.
 
 - **Admission.** A subscription is authorized against the row's
   `requires` before it is admitted, from the `Context` the hub's
@@ -1790,7 +2416,22 @@ wire: read as an `Int` and converted, a quantity by its denomination,
 `n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
 and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
-refused by law 5.
+refused by law 5. The encoder writes a record's text through one
+builder, each piece appended once, so what writing a value costs, in
+time and in memory, is linear in its text, a list of any length
+included (2026-10-22; it appended each element to the text written so
+far, keeping every prefix alive until the record was written: about
+800 MB for a page of 1000 records).
+
+**A Float** crosses JSON as the same double: the encoder writes the
+shortest number that reads back as it (`0.30000000000000004`,
+`99.999995`, `100`, `1e-300`), a field, a list's element and a whole
+value alike, and the decoder reads it with `std::str::parse_float`, a
+subnormal included. NaN and the infinities are no JSON number: the
+encoder writes them as `nan`, `inf` and `-inf`, which the decoder (and
+any other JSON reader) refuses, `wrong_type`, so such a value does not
+cross JSON. Protobuf carries a Float as its eight bytes, every double
+included.
 
 **An instant and a duration.** The stdlib's `Time` (a point over
 `Duration` with no origin, `spec/types.md`) is the one point the codec
@@ -1833,6 +2474,203 @@ request or response is never itself a list: a page of records is a
 record, `type Page { items: bounded[Item; 50]; }`, which leaves room
 for what a page says beside its items.
 
+**An optional field** is a presence pair (2026-10-17): a field `x` beside
+a field `has_x` of the same record whose type is `Bool` (an alias of it
+included). Hale has no optional type; the flag is the presence. On the
+JSON wire `x` is a key that may be left out, and `null` is its absence
+as well: a payload carrying `x` with a value other than `null` sets
+`has_x`, one that leaves it out or sends `null` leaves `has_x` false and
+`x` at its default, or its type's zero where it declares none (a range
+that leaves out `0` has its least value as its zero; a record's zero is
+built of its fields' defaults and zeros, and is built only when the record
+is absent; a `bounded` list's is empty). The last of a key sent twice wins:
+a `null` after a value is an absence, the earlier value gone. `has_x` is no key: the decoder skips one a payload sends, as it
+skips any unknown key, and the encoder never writes it. The encoder writes
+`x` only when `has_x` is set. The value is as strict as any field's: `"x":
+5` for a `String` is `wrong_type`. Any shape a field may have may be
+optional, a list included (JSON tells a present empty list, `[]`, from an
+absent one). A description gives `x` the schema `{"anyOf": [<its schema>,
+{"type": "null"}]}`, lists it under no `required`, and has no property for
+`has_x`. Protobuf carries the pair as declared: `x` its field, `has_x` a
+`bool` field of its own, each numbered by its place in the record (the
+`.proto` notes the pair in the two fields' comments), and a message
+carrying neither reads as an absence, `x` at its default or zero. The
+digest is the record's shape, which already holds both fields.
+
+**A three-way field** is a presence triple (2026-10-19): a presence pair
+and a third field `clear_x` of the same record whose type is `Bool`. It
+is the field of a PATCH, where leaving `x` out keeps what the server
+holds, `null` clears it, and a value sets it. On the JSON wire `null` is
+then a value of its own: a payload that sends `"x": null` sets `clear_x`
+and leaves `has_x` false and `x` at its default or zero; one that sends a
+value sets `has_x`; one that leaves `x` out sets neither. The last of a
+key sent twice wins, as ever. `clear_x` is no key either. The encoder
+writes `x`'s value when `has_x` is set, `"x": null` when `clear_x` is set
+instead, and nothing when neither is (a record that sets both is written
+as set). A pair without the third field reads `null` as an absence, as
+above, so declaring the triple is what makes `null` mean clear. A
+description gives `x` the pair's schema with `"x-hale-null": "clear"`
+beside it, and lists it under no `required`. Protobuf carries the three
+fields as declared, `clear_x` a `bool` of its own. The generated clients
+carry it: the Hale client declares the triple; in TypeScript the property
+is optional and may be `null` (`x?: T | null`), and the client sends
+`null` as `null` and leaves out an `undefined` one.
+
+**An enum** crosses as its variant (2026-10-17), externally tagged: a
+payload-free variant is its name as a JSON string (`"Up"`), a variant
+of one value the object `{"<Variant>": <value>}`, and one of several
+`{"<Variant>": [<value>, ...]}` with exactly as many. A value is what a
+field of its type is (a scalar, an identity, a range or a quantity by its
+count, a `Time`, a record, a payload-free enum); a list, and an enum with
+payloads of its own, are not a variant's value, and law 5 refuses the
+row naming the variant. An enum may be a field, a list's element when it
+is payload-free (a `bounded` holds no enum with payloads, `spec/types.md`),
+a row's whole request or response, and its error type. Decoding is
+strict, and every refusal is `wrong_type` for the field the enum is read
+for (`payload` for a row's whole value): an unknown variant, a payload
+variant sent as a bare name, a payload-free one sent as an object, an
+object of other than one key, a value of the wrong kind, or the wrong
+number of values. An absent enum field is its default when it declares
+one (`scope: Scope = Scope::key`), and otherwise `missing_field`, unless
+it is optional (above): its zero is its first variant, with its values'
+zeros. A description gives a payload-free enum
+`{"type": "string", "enum": [<variants>], "x-hale-type": "<Enum>"}` and
+one with payloads, inline, `{"oneOf": [<that, for its payload-free
+variants>, {"type": "object", "properties": {"<Variant>": <value
+schema>}, "required": ["<Variant>"], "additionalProperties": false},
+...], "x-hale-type": "<Enum>"}`, a variant of several values an array
+schema with `prefixItems` and its count as `minItems` and `maxItems`.
+In protobuf a payload-free enum is a proto3 `enum` whose values are
+`<Enum>_<Variant>` (proto3 scopes an enum's values beside it, so the
+prefix keeps two enums apart), numbered from 0 in declaration order: a
+field of it is a varint, a list of it a `repeated` field, and a number no
+variant has is `wrong_type`. An enum with payloads is a message of one
+`oneof value`, a member per variant numbered from 1 in declaration order:
+a payload-free variant a `bool` (any value of it is the variant), a
+variant of one value that value's field, one of several the message
+`<Enum>_<Variant>` of fields `v0`, `v1`, ... A message carrying no
+member is `missing_field`; of several, the last wins, and a member whose
+value is a message (a record, several values) sent again before another is
+merged with the one before it, as proto3 merges a `oneof`. The message of
+several values has plain proto3 fields, which a client leaves out at their
+zero, so a value it does not carry is its zero (`0`, `""`, the epoch, the
+first variant), never `missing_field`. A row whose whole request or response is a payload-free enum
+crosses gRPC in the one-field message a scalar row has, its `value` the
+enum. The digest is the enum's shape, which holds its variants and their
+values. A set (`spec/types.md` § Set types) crosses as the enum it is,
+each member a variant of one value named for its type: `type Inbound =
+NewOrder | Cancel;` is `{"Cancel": {"id": 1}}`, and its description the
+`oneof` above.
+
+**A map** is a list keyed by one of its records' fields (2026-10-17):
+`checks: bounded[Check; 16] indexed_by name;`, the `@form(hashmap)` model
+projected onto a value (spec/forms.md), no new type. The clause's rules
+are the checker's (spec/types.md § bounded[T; N]): a `bounded` list of a
+user-declared struct, keyed by a `String` field of it. On the JSON wire
+it is an object keyed by each record's `name`, the record without its
+key as the value (`{"db": {"status": "up"}, "cache": {"status":
+"down"}}`): the key lifted out on encode, in the list's order, and
+restored on decode, where a value's own key field, if a payload sends
+one, is not read. A key the object repeats is refused `malformed`,
+`duplicate_key`; more entries than the list holds is `too_long`; an
+absent map is empty, as an absent `bounded` list is. A map may be
+optional (a presence pair, above): an absent key and `null` are its
+absence, `{}` a present empty map, and its schema is the map's or `null`;
+in protobuf its flag is a field of its own, as any optional field's is. The description
+gives it `{"type": "object", "additionalProperties": <the record's schema
+without its key>, "maxProperties": N, "x-hale-key": "<key>"}`. In
+protobuf it is a proto3 `map<string, T>`, each entry its key and the
+whole record, the key field carried in it too: the value is the record's
+own message, the one every other use of the type names, rather than a
+second message per map. On decode the entry's key wins over the record's,
+and a key repeated is `duplicate_key` here as well (proto3 lets a parser
+keep the last; the codec is as strict as the JSON one). The digest
+folds the key in (`checks:bounded[...]@name`), since the field crosses
+as an object and not a list. A key field with a presence pair or triple
+(`name` beside `has_name`, and `clear_name`) is supplied by the map: a
+record read from it, through JSON or protobuf, has `has_name` set and
+`clear_name` unset, whatever the record sent, and neither flag crosses
+in the value.
+
+**A map of values** (2026-10-19) names the value too: `checks:
+bounded[Check; 16] indexed_by name -> status;`, where `Check` is `{ name:
+String; status: String; }`. Each element crosses as its `status` alone,
+keyed by its `name` (`{"db": "ok", "nats": "unavailable"}`), and is built
+back of the member's key and value on decode. It is still the hashmap
+model projected onto a value, the list's elements carrying their key, so
+the program holds the same bounded list of records. The clause names
+which field is the value rather than guessing it from the record's shape:
+a record of one field besides its key keeps crossing as a map of records
+(`{"db": {"status": "up"}}`), and spelling a map of values never moves a
+wire that exists.
+
+The element has no fields but the key and the value, so the decoder
+builds every record whole, and the check refuses any other field at the
+clause; the key's own presence flags are the key's (the decoder sets the
+key present and not cleared, as for a map of records). The value is a scalar (a unit-dialect one by its count), a `Time`
+or a payload-free enum, read through its aliases as the codec reads every
+field; a record, a list (an alias of one included), or an enum with
+payloads is refused at the clause, because a map of records already
+carries one. What the check admits is the codec's own answer
+(`json_gen::uncarried_wire_maps`), so no admitted map is left out of a
+codec. A
+member's value is read as a list element of its type is, and one of the
+wrong kind is `wrong_type`. A key the object repeats is `duplicate_key`,
+more entries than the list holds `too_long`, and an absent map is empty,
+as for a map of records.
+
+The description gives it `{"type": "object", "additionalProperties":
+<the value's schema>, "maxProperties": N, "x-hale-key": "<key>",
+"x-hale-value": "<value>"}`. In protobuf it is a proto3 `map<string, V>`
+of the value's scalar or enum, each entry its key (1) and value (2) as
+plain proto3 fields. So an entry that leaves its value out (a proto3
+writer drops a zero) is the value's zero, and one that leaves its key out
+is the empty key. The digest folds the value in beside the key
+(`checks:bounded[...]@name->status`). The generated clients keep the
+records and put each one's value alone on the wire.
+
+**Free-form JSON** (2026-10-19) is a `std::json::Value` field: any JSON
+value the program carries and never decodes into a type of its own (a
+seat's configuration, a change's before and after). It is held as its
+text, and the codecs carry that text byte for byte. The decoder takes the
+member's value as sent, and the encoder writes it back, so key order,
+spacing and a number's spelling survive. A value is well-formed JSON at
+most 64 levels deep, or it is refused `wrong_type`, and at most 64 KiB,
+or it is refused `too_long`. A list of values, a map of them, and an
+optional one (a presence pair) are carried as for any field. A row's
+whole request or response is never a `Value`: it is a record's field, and
+law 5 refuses the row. The description gives it `{"x-hale-any": true}`,
+an empty schema marked so a reader does not look inside, and the contract
+digest tags it `json`. Protobuf carries the text as a `string`, commented
+as JSON. A `google.protobuf.Value` would keep neither the bytes nor a
+number's precision. The Hale client declares `std::json::Value`. The
+TypeScript and JavaScript clients type it `unknown`, as the response's
+`JSON.parse` gave it and as `JSON.stringify` writes it back, so a client
+is not byte-faithful; the server is. A program builds a value with
+`std::json::Value::parse(text) -> Value fallible(ParseError)`, held to the
+same rules, or takes `std::json::Value::null()`. The check refuses a
+literal of one (by either spelling), a store into one (`v.text = …`,
+through a `let mut` copy or a record's field alike), and every other
+constructor, so every `Value` is one `parse` admitted; a codec reads one
+through `parse` too, and writes its text as it is. It reads one through its `.text` with
+`std::json`'s cursors (`find_field_raw`, `object_first`, ...). Two values
+are equal when their texts are; there is no semantic JSON equality.
+
+**A program's own use of the codec** (2026-10-17). `T::api_decode(text) -> T
+fallible(JsonError)` and `T::api_encode(value) -> String` call the api
+codec of a record or an enum `T` from any program, served or not: the same
+codec a row of `T` crosses, as strict, with the same refusals
+(`wrong_type`, `missing_field`, `too_long`, ...), a program needing no
+surface to read or write the wire a surface speaks. A program that
+handwrites a REST router over a surface decodes a request body into a
+row's request type and encodes the result with them. An enum decoded whole
+names `payload` as the field it refuses, as a row's whole enum does. `T`
+is a record or an enum the codec carries whole (law 5's classification of
+a row's request); any other type is refused at the call (`` `Blob::api_decode`:
+the api codec carries `Blob` only if it is a record or an enum all of which
+the JSON codec carries ... ``). The codecs are generated once per program,
+shared with its served rows.
+
 Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
 element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
@@ -1840,8 +2678,18 @@ or `false` for a `Bool`, one quoted and correctly escaped string for a
 `String`, a number for a `Float`, a number with no fraction or exponent for
 an `Int` and for the integer a unit scalar counts; anything else is
 refused before the request is queued), a
-missing field without a literal default is `missing_field`, and a
-handler only ever sees a decoded value. A row whose shape has a field
+missing field without a default is `missing_field`, and a handler only
+ever sees a decoded value. A field with a default may be left out, and
+the description lists it under no `required`: whatever the declaration
+writes for it (a literal, an enum's variant, a record, a value computed
+from others) is what the absent field decodes to, through either codec,
+as the record's own literal would build it. A default reads only its own
+fields and constants, never the scope of the literal that leaves it
+(`spec/types.md` § Locus params), so every default a record can declare
+is one the decoder builds on its own, and the description and both
+decoders agree on each field. A list is the one exception,
+by its shape: a `bounded` list left out is empty and a fixed array is
+always sent, a default of either unread (above). A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),
 never left out.
 
@@ -1858,10 +2706,10 @@ element, in any mix, holding the bound as the JSON codec does
 the epoch (which is all of `Time`; the field's comment says so), not
 `google.protobuf.Timestamp`, which would make the well-known type a
 dependency of every file and of the descriptor reflection serves; a
-`Duration` is an `int64`, its nanoseconds. The set of shapes is the JSON codec's, so
-there is no shape without a proto3 encoding: a map, an `optional` and an
-enum are shapes the codec does not carry, and law 5 refuses the row
-before a `.proto` could be asked of it. The `.proto`
+`Duration` is an `int64`, its nanoseconds. An optional field is its two
+fields, an enum a proto3 `enum` or a `oneof` message, and a map a
+`map<string, T>` (above). The set of shapes is the JSON codec's, so
+there is no shape without a proto3 encoding. The `.proto`
 generator refuses all the same, by row, so that were the codec to carry one it
 would not be approximated.
 
@@ -1888,8 +2736,8 @@ caller's `Context` under that exposure's role source:
   it; a Unix listener's path; a UDP hub's `host:<bound port>`;
 - the caller: the principal the exposure established, and the roles it
   holds among those the exposure's rows and streams require;
-- the **members** the caller may call: name, request, response and
-  error schemas, and `requires`; a member whose error type is
+- the **members** the caller may call: name, the member's digest (§ The
+  contract digest), request, response and error schemas, and `requires`; a member whose error type is
   `ClosureViolation` carries the string `"ClosureViolation"` in place
   of an error schema (§ Surfaces and their rows);
 - the **streams** of the hubs at that listener the caller may subscribe
@@ -1899,8 +2747,10 @@ caller's `Context` under that exposure's role source:
 - the transport's **outcome encoding** (§ Outcomes);
 - the JSON Schema of every type the listed members and streams name,
   and nothing else, a quantity's field carrying `x-hale-unit` (its
-  `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`
-  (§ Codecs);
+  `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`,
+  an optional field's `anyOf` with `null`, and no property for its
+  presence flag, an enum inline with its variants, a map's
+  `additionalProperties` and `x-hale-key` (§ Codecs);
 - the notes, in the document's own text: authorization is a boundary
   check at the serve site, never a proof over the program's internal
   call paths; a request accepted runs to completion whatever becomes of
@@ -1931,7 +2781,11 @@ prints from the rows, without a running program (R1): every surface
 with its digest and all its rows, every exposure with its listener, its
 sources and its receivers, and every hub with its exposure identity,
 its stream digest, its listener, its sources and its stream rows. It is
-a deployment inventory, not an authorization statement for any caller.
+a deployment inventory, not an authorization statement for any caller. A program
+that declares **named faces** (a `dna::Face` param of its main locus,
+`spec/dna.md` § Faces) adds a `faces` array: each face's `name`, `app`, `roles`,
+`consumes` and `port`, as its literal wrote them; a program that declares none
+has no `faces` key.
 
 `hale check --api --exposure NAME --caller PRINCIPAL [--holds ROLE,…]`
 prints one exposure's description for one caller, from the same rows.
@@ -1971,7 +2825,8 @@ JSON, its keys in the schema's order; the fixtures are the same values
 pretty-printed, and a producer is held to them as values. The OpenAPI,
 JSON Schema and MCP forms of GH #1107 are projections of a surface's
 rows, one per surface, each carrying the digest: `hale check --api
---surface NAME --openapi` (a `POST /call/<member>` per row, `200` its
+--surface NAME --openapi` (a `POST /call/<member>` per row, or the
+method and path of a row that declares a route, `200` its
 response, `422` its handler error, `500` a `ClosureViolation` row's
 server error, the refusals by their statuses, the digest as the
 `Hale-Surface-Digest` header), `--json-schema` (every type the rows name
@@ -2078,10 +2933,37 @@ release wrote that still reads the same is current.
 **The determinism rule.** A generator is a pure function of the rows and the
 schemas they name: it reads no path, no clock and no environment, so the same
 surface yields the same bytes on any run and any checkout. Two consequences
-bind the documents. An imported type is named by the path its declaration has
-under the import alias (`lib::Item`, in a schema's name, a `$ref` and an
-`x-hale-type`), never by the cross-seed mangled name, which embeds the
-library's location. And a tool, a path or a schema is named by what the
+bind the documents. **A schema's name** (in a schema's key, a `$ref` and an
+`x-hale-type`) is the name the type is declared with, an imported type's
+included (`Item`, declared in the library the program imports as `lib`).
+Only when another type of the program is declared with the same name, or a
+generated form declares it for itself, is the imported one qualified, by the
+path its importer writes with `.` for `::` (`lib.Item`). The names the forms
+declare for themselves are one list, which every generator names its
+declarations from: the `.proto`'s `HaleRefusal` and `HaleEmpty`, each client
+preamble's names such as `ApiRefusal` or `Refusal`, a builtin record such as
+`ClosureViolation`; for each member of the program's surfaces, the `.proto`'s
+rpc `Orders__place` and one-field wrappers `Orders__placeRequest`,
+`…Response` and `…Error`, and a client's `OrdersPlaceOutcome` and member fn;
+for each topic, a client's `FillsEvent`, `FillsSubscription` and
+`subscribeFills`; and for each surface, the `.proto`'s service. What the
+forms generate after a schema is reserved by the schema's final name, since
+it is spelled from it: the spelling of a qualified name (`lib_Item`), the
+TypeScript and JavaScript clients' codecs (`encode_lib_Item`,
+`decode_lib_Item`; the Hale client's are the type's own `api_encode` and
+`api_decode`) and an enum's
+`.proto` variant names (`a_Shape_Pair` for the variant `Pair` of an imported
+`a.Shape`); the naming reserves them to a fixpoint, so a third library's
+record `a_Shape_Pair` is `c.a_Shape_Pair`. A form declares nothing else but a
+schema's name, which a test holds every generator to. The program's own type keeps the bare name, and two imported
+types whose importers write one path (two seeds, each importing a `lib` of
+its own) are told apart by a count after it (`lib.Item.2`), in the order of
+their mangled names. So an imported type is never named by the cross-seed
+mangled name, which embeds the library's location, and no name holds `::`,
+which OpenAPI refuses in a component's key. The digest does not move with a
+name: it is over the contract's shapes. (Until 2026-10-17 an imported type
+was named by its importer's path, `lib::Item`, downstream handoff: an
+exported OpenAPI form did not lint.) And a tool, a path or a schema is named by what the
 program declares, in an order the rows fix (members by name as bytes, schemas
 by name).
 
@@ -2094,8 +2976,16 @@ client:
   `Duration` among them; a `Time` is a `Time` in Hale and its RFC 3339 text,
   a `string`, in TypeScript, since a `Date` holds milliseconds; a list is
   the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
-  TypeScript, whose bound the server holds; an enum or any shape the JSON codec
-  does not carry is refused, never approximated), and
+  TypeScript, whose bound the server holds; an optional field is the
+  presence pair in Hale and an optional property (`text?: string`), left
+  out of the object when absent, in TypeScript, and a presence triple's
+  `text?: string | null`, its `null` sent as `null`; an enum is the server's
+  enum in Hale and in TypeScript the union of its variants as the wire
+  writes them (`"Empty" | { Circle: number } | { Rect: [number, number] }`);
+  a wire map is its records in either, `bounded[T; N] indexed_by <key>` in
+  Hale and an array in TypeScript, keyed into the wire's object and back
+  by the client; any shape the JSON codec does not carry is refused, never
+  approximated), and
   one function per member taking the endpoint, the bearer and the request;
 - sends the surface's digest on every call (`digest` in the line over a socket,
   `Hale-Surface-Digest` over HTTP) and names it in a constant, so a program
@@ -2110,7 +3000,18 @@ client:
   was not admitted, and a lost connection when the hub ended it with no closed
   frame.
 
-The **Hale client** is one module (a function `<locus>_<fn>` per member whose
+The **Hale client** declares each record as the server does, so that the
+compiler's api codec (§ Codecs, a program's own use of it) reads and writes it:
+a field named for its JSON key (and tagged `json:"<key>"` where the key is no
+identifier), an optional field and its `has_` flag, each enum the rows
+reach with its variants, a map with its `indexed_by` clause, and a field a
+payload may leave out given its type's zero as its default (an empty record
+where one can be built, an enum's first variant with its values' zeros), so
+a value is built naming only what it means (`T { code: "x" }`). It encodes a
+request with `T::api_encode` and decodes a reply with `T::api_decode`, an
+enum's as a record's, as strictly as the server reads a request: a reply that does
+not decode is `Lost` with the codec's kind and field ("the result did not
+decode: wrong_type: id"). It is one module (a function `<locus>_<fn>` per member whose
 answer is the enum `<Member>Outcome` = `Result(T) | HandlerError(E) |
 Refusal(ApiRefusal) | ServerError | Lost(why)`, and a locus `<Topic>Subscription`
 per stream with `start`, `next`, `next_for`) speaking `unix:PATH`, `http://` and
@@ -2120,7 +3021,11 @@ dependency beyond `fetch` and `WebSocket` (`http://` and `ws://`; a socket is no
 spoken, `fetch` has none): an async function per member answering
 `{kind: "result" | "handler_error" | "refusal" | "server_error"}` and throwing
 `TransportError` for the fifth, and `subscribe<Topic>(opts)`, an async iterable
-of events; the credential rides a hub upgrade as `?access_token=`. The
+of events; the credential rides a hub upgrade as `?access_token=`. Its
+`encode_<T>` and `decode_<T>` per record and enum convert between its types and
+the wire; a map's key is lifted out of each record on the way out and put
+back on the way in (`apiMapEncode`, `apiMapDecode`, which only a client of a
+surface that names a map carries). The
 **JavaScript client** (`--lang js`) is the TypeScript client as one ES module a
 page or `node` loads with no compile step: the same exports by the same names,
 the same wire and outcomes, its types JSDoc (`@typedef` per record and outcome,
@@ -2143,6 +3048,298 @@ requests of `tests/api-contract/wire/` are what the generated clients write, and
 the recorded replies what they read (the TypeScript and JavaScript clients run
 the same compiled scenarios to the same outcomes)
 (`tests/hale/api/client_test.hl`, `crates/hale-cli/tests/fixtures/ts-client/`).
+
+## Imported surfaces
+
+A surface the program **consumes** is declared like one it serves, with
+rows that name each operation's shape instead of a handler, and called
+through a client (§ Calling a surface). `hale api
+import` writes one from an OpenAPI 3 document or an MCP endpoint's tool
+list, and `hale api drift` holds it to that source afterwards. The block is
+an ordinary `api` declaration: the checker admits it, the description and
+the generated forms list it like any surface, and nothing serves it.
+
+The OpenAPI document is JSON or YAML: it is JSON when it opens with `{`,
+and YAML otherwise, or when its name ends `.yaml` or `.yml` or a URL
+answers `application/yaml` or `text/yaml`; `hale api drift` reads it the
+same way. The YAML reader gives the value the JSON reader gives for the same
+document, and reads the subset an OpenAPI document is written in: block
+mappings and sequences by indentation, plain, single- and double-quoted
+scalars (with escapes), `|` and `>` block scalars with `-` and `+`
+chomping, flow collections, comments, and one document with its `---` and
+`...` markers. Scalars resolve by the YAML 1.2 core schema (`~` and `null`
+are null; `on` and `yes` are strings; a mapping key is the text it is
+written as). It refuses, naming the line, anchors and aliases (`&`, `*`),
+merge keys (`<<`), tags (`!`), complex keys (`?`), directives, duplicate
+keys, tab indentation and more than one document.
+
+```hale,fragment
+api Shelf from openapi "../shelf.json" {
+    rpc create_item(ShelfNewItem) -> ShelfItem wire: "POST /items";
+    // response: std::json::Value, an array with no `maxItems`, and a record holds a bounded list only
+    rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: "GET /items?limit";
+}
+
+type ShelfNewItem {
+    name: String;
+    has_note: Bool = false;
+    note: String = "";
+}
+```
+
+**The block.** `api NAME from openapi "LOCATION"` or `from mcp
+"LOCATION"` names where the surface was read from: an `http://` or
+`https://` URL, or a file path relative to the file holding the block. A
+**signature row**, `rpc name(Request) -> Response [wire: "…"] [requires:
+[ROLE, …]];`, names its member (`name`, no locus), its request (the
+parentheses may be empty) and its response (none without the arrow), and
+`wire:` is the operation as its endpoint names it: an OpenAPI operation's
+method and path (`"GET /items/{itemId}"`, its query parameters' names
+after a `?`), an MCP tool's name
+(`"get-weather"`). A signature row has no error column. Its types are
+checked where they are written (an unknown name is refused there), and
+law 5 holds them to the JSON codec, with one allowance: a signature row's
+whole request or response may be a `std::json::Value`, the shape of a
+source that declares none. A signature row's member digest is a handler
+row's, over the same slots. Law 8 keeps the two kinds of row apart, and a
+serve site of a consumed surface is refused: "serve of \`Shelf\`:
+\`Shelf\` is a surface the program consumes, whose rows name shapes and
+no handler, so nothing here answers them". A signature row is no
+handler of a `role R` group (docs/src/claims.md).
+
+**`hale api import SOURCE --as NAME [--out FILE] [--openapi | --mcp]`**
+reads the source and writes the block, then the records and enums it
+names, each prefixed with the surface's name (`ShelfItem`), into `FILE`
+(`-` for stdout; by default the surface's name in snake case with `.hl`,
+in the current directory). A file is read as an OpenAPI document; a URL
+as one when it serves one by `GET`, and as an MCP endpoint otherwise
+(`--openapi` and `--mcp` say which). The mapping:
+
+- **An OpenAPI operation** (OpenAPI 3; Swagger 2.0 and a YAML document are
+  refused naming why) is a row named by its `operationId` in snake case
+  (`listItems` is `list_items`), else by its method and path
+  (`get_items_item_id`); `wire:` is `"METHOD /path"`, followed by `?` and
+  its query parameters' names joined by `&` when it has any (`"GET
+  /items?limit"`), so a client tells the query from the body. Its request is the
+  JSON body's schema when the operation has no path or query parameter, a
+  record of its parameters when it has no body, and a record of both,
+  the body as the field `body`, when it has both; a header or cookie
+  parameter is not carried. Its response is the JSON schema of its
+  lowest-numbered `2xx` response, none when that response has no JSON
+  content.
+- **An MCP tool** (every page of `tools/list`, after `initialize`, over
+  the Streamable HTTP transport, a JSON or an event-stream answer alike;
+  the notification and every page name the session and the protocol
+  version the server chose, `MCP-Protocol-Version`, and a version the
+  import does not speak, 2025-06-18, 2025-03-26 or 2024-11-05, is refused)
+  is a row named by the tool's name in snake case, `wire:` its name; its
+  request is a record of its `inputSchema` (none when the schema declares
+  no property), its response a record of its `outputSchema`, or a
+  `std::json::Value` when it declares none.
+- **A schema**: an object with properties is a record, its fields named
+  by the key in snake case with a `json:"key"` tag when the two differ (a
+  key that would name a field `has_…` or `clear_…`, which reads as another
+  field's presence flag, is `key_has_…`, its key in the tag); a
+  property the object does not require, or that admits `null`, is a
+  presence pair (§ Codecs); a string enum whose values are all names is an
+  enum; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
+  `Bool` and `String`; an array with a `maxItems` of at most 1024 is a
+  `bounded` list; a `$ref` inside the document is the type it names,
+  declared once. What the codec cannot carry is a `std::json::Value`,
+  with a comment saying why: a union (`oneOf`, `anyOf`, an `allOf` of
+  several), an object with no properties or a map, an array with no
+  bound, a list of lists, a whole list as a request or response, a
+  recursive shape, a reference outside the document, a schema with no
+  type.
+
+The file is a function of the source: two imports of one document write
+the same bytes, so it is committed with the program and re-imported to
+change it, never edited by hand.
+
+**`hale api drift [file.hl | dir] [--surface NAME] [--document]`** reads each imported
+surface's source again, maps it as the import does, and compares the two
+row by row by **shape**: a row's request, response and `wire:`, every
+record they name written out as its fields' JSON keys and types (an
+optional field marked as such) and every enum as its variants, so a record
+renamed in the program is no drift. Each difference is one line on
+stdout, in the order of the rows' names, in a form a watcher parses:
+
+```text
+drift Shelf added add_item
+drift Shelf removed create_item
+drift Shelf changed get_items_item_id response
+```
+
+`changed` names the slot that moved, `request`, `response` or `wire`, a
+line each. A surface in step prints `Shelf: in step with ../shelf.json (4
+rows)`. Exit 0 in step, 1 on drift, 2 when a source cannot be read or the
+usage is wrong; a block with no `from` is not checked. `hale check --api`
+runs the same check over every file the program loads, the seeds it
+imports included, each seed's blocks against its own records and their
+sources relative to their own files, after its document: the lines go to
+stderr, and drift exits 1.
+
+`--document` compares nothing: it prints each imported surface's source
+itself, parsed (an OpenAPI document, JSON or YAML alike; an MCP endpoint's
+`{"server", "tools"}`) and canonical: JSON with every object's keys sorted,
+two-space indent, a newline after each document. Exit 0, or 2 when a source
+cannot be read. Drift lines name a row and a slot, so two upstream changes
+to one row read the same; the document tells one revision of the source
+from the next, which is what a watcher digests (DNA's integration watches).
+
+## Calling a surface
+
+A program calls another system through a **client**: a param of the locus
+that holds it, recognized by its literal as an exposure is (§ Serving), and
+typed by the rows of the surface it calls.
+
+```hale,fragment
+locus Desk {
+    params {
+        creds: std::api::VaultPrincipals = std::api::VaultPrincipals { slots: "editor=shelf-editor, *=shelf-reader" };
+        shelf: api::Client = api::client(Shelf, http::Client { base: "http://127.0.0.1:9000", principals: self.creds });
+    }
+    fn label(id: Int) -> String {
+        return match self.shelf.get_item(ShelfGetItemRequest { item_id: id }) {
+            ShelfGetItemOutcome::Result(item) -> item.name,
+            ShelfGetItemOutcome::HandlerError(f) -> "failed: " + f.class,
+            ShelfGetItemOutcome::Refusal(r) -> "refused: " + r.kind,
+            ShelfGetItemOutcome::ServerError -> "server error",
+            ShelfGetItemOutcome::Lost(why) -> "lost: " + why,
+        };
+    }
+}
+```
+
+**The site.** `NAME: api::Client = api::client(SURFACE, TRANSPORT);` in
+the params of its holder. The **surface** is one the program consumes
+(§ Imported surfaces) or a Hale surface whose rows the program declares
+and another program serves; a surface an imported seed declares is named
+by its path under the alias (`lib::Svc`), as at a serve site. The
+**transport** is a literal of one of two loci of `std::api`:
+
+- `http::Client { base, principals }`: `base` is `http://host:port` (a
+  path prefix allowed; `https://` as `std::http` speaks it). A row of a
+  Hale surface is `POST <base>/call/<member>` under the row's member
+  digest in `Hale-Surface-Digest`, as the generated clients call it (§ The
+  clients). A row of an imported OpenAPI surface is its operation, `wire:
+  "METHOD /path/{param}?query&names"`: each field of the request the path
+  names (by its JSON key) fills it; for `GET`, `HEAD` and `DELETE` every
+  other field is the query; for another method the request is the body
+  when the wire names no parameter (neither in the path nor after `?`),
+  and otherwise the field `body` is the body and every other field the
+  query, the layout `hale api import` gives such a request; a `null`
+  field, and an optional field left out, is no query parameter.
+- `mcp::Client { url, principals }`: `url` is the MCP endpoint
+  (`http://host:port/mcp`), spoken over the Streamable HTTP transport as
+  `hale api import` speaks it. The client opens the session at its first
+  call (`initialize` with the protocol version `2025-06-18`, a version the
+  endpoint answers outside 2025-06-18, 2025-03-26 and 2024-11-05 losing
+  the call, then `notifications/initialized`) and names the session id and
+  the version on every call after it; a JSON answer and an event-stream
+  answer are both read. Each row is a `tools/call`: a Hale row's tool is
+  its member's (`Orders__place`, § The MCP transport) with its member
+  digest in `params._meta["hale/digest"]` and the header; an imported
+  row's is its `wire:`. An endpoint that ends the session (`404`) loses
+  that call, and the next opens another.
+
+A surface imported from MCP is not called over `http::Client`, nor one
+imported from OpenAPI over `mcp::Client`, nor, over `mcp::Client`, a Hale
+surface with a row whose request is no JSON object (an enum): an MCP tool's
+input is an object, and `mcp::Rpc` serves such a row as no tool. No call is retried, a row that
+streams is not called, and the client holds no connection past a call.
+
+**Principals.** `principals:` is who the client is to the system it calls,
+as an exposure's `principals:` is who calls it: a locus implementing
+`std::api::ClientPrincipals`, `fn bearer(role: String) -> String`, the
+bearer presented as `Authorization: Bearer` for a row that requires
+`role`. A row's bearer is the first of its `requires` the principals hold
+one for, else the one for no role (`bearer("")`); "" presents none, and a
+client that names no principals presents none. The standard library's
+is `std::api::VaultPrincipals { slots }`: `ROLE=SLOT` pairs, comma
+separated, each the vault slot (`std::secret`'s `vault:` name) holding the
+bearer for that role, `*=SLOT` the slot for a row that requires none and
+for a role with no slot of its own. A slot is read at each call, as a
+vault credential is, and one that holds nothing presents no bearer.
+
+**What the compiler writes** (`client_expand`, before the check): a
+locus per surface the program calls, `__ApiClient_<Surface>`, which the
+param is built as, holding the transport. It has a method per row:
+
+| | an imported row | a Hale row |
+|---|---|---|
+| name | the row's (`create_item`) | its member in snake case (`Orders::place` is `orders_place`) |
+| parameter | the request, `request: T`; none for `()` | the request; none for a handler that takes none |
+| answer | `<Surface><Row>Outcome`, the row in camel case (`ShelfCreateItemOutcome`) | the same (`ShopOrdersPlaceOutcome`) |
+| `HandlerError` | `HandlerError(std::api::Failure)` | `HandlerError(E)`, the handler's own error type; none for a handler that declares none or `ClosureViolation` |
+
+The answer is § Outcomes as one enum: `Result(T)` (or `Result` for a row
+with no response), the `HandlerError` above, `Refusal(std::api::Refusal)`
+(`kind`, `reason`, `requires` joined by `,`, `served`), `ServerError`,
+and `Lost(String)`, a call that got no outcome (the endpoint could not be
+reached, the answer was no outcome, or a value did not decode, which names
+the codec's kind and field). A whole request or response is a record or
+an enum, carried by its api codec (§ Codecs), or, for an imported row, a
+`std::json::Value`; a row that carries anything else is refused, as are
+two rows that would be one method and a row whose method would be a
+lifecycle name (`run`, `birth`, …).
+
+**Outcomes read back as the served side maps them.** A Hale row's
+answer is read by § Outcomes' table: over HTTP a `200` is the result, a
+response naming `Hale-Error-Class` or a `422` the handler error, decoded as
+`E` (so a caller matches the variants of the handler's own enum, `@not_found
+Missing` answered `404` read back as `Missing`), a `{"refusal": …}` body
+the refusal, `{"refusal": {"kind": "server"}}` the server error; over MCP
+a result is the response (its `structuredContent`, else its text), `-32001`
+the handler error (its `data`), `-32603` the server error, and any other
+error the refusal its `data` and code name. An imported OpenAPI row's
+`2xx` is the result; `400`, `401` and `429` are the refusals `malformed`,
+`unauthenticated` and `full`; a status an error class answers with (`404`,
+`409`, `422`, `403`, `503`, § Error classes) is the handler error, a
+`std::api::Failure` whose `class` is that class's word (`not_found`), and
+any other `4xx` the handler error with no class; any other `5xx` is the
+server error. An imported MCP tool's result is the result, and a result
+with `isError` the handler error, the tool's text as the failure's body.
+
+**A call is an effect.** Each method carries the class `client(<Surface>)`
+(`@effects(is: { client(Shelf) })`), an instantiation of an effect family
+the compiler declares over the surfaces the program calls, so the claims
+name the calls with nothing of their own: `forbid reaches(desks,
+effects(client(Shelf)))` is violated by a path from a desk to a call of
+`Shelf`, its witness ending at the method (`Desk::look ->
+__ApiClient_Shelf::get_item`), and `effects(client(*))` names every
+surface's calls. The family is the existing indexed one (`effect
+NAME(domain)`, docs/src/claims.md), its domain the surface names, so a
+claim, an `@effects(none: { client(Shelf) })` and a `@budget` read it as
+any declared class.
+
+**Placement.** A client is a param like any other. It runs on its holder's
+pool unless a `placement` row names it, and its methods are called from
+its own pool (F.31: a call from another pool is refused); a holder placed
+`where async_io` parks each wait of a call there, as `std::http` does.
+
+**The site's law.** A site the compiler cannot build is refused at the
+call, naming why ("client of \`Shelff\`: no surface \`Shelff\` is
+declared", "client of \`Shelf\` over \`mcp::Client\`: row \`get_item\` is the
+HTTP operation \`GET /items/{itemId}\`; a surface imported from OpenAPI is
+called over \`http::Client\`", "the transport is a literal of
+\`http::Client { base, principals }\` or \`mcp::Client { url, principals }\`",
+"\`api::client(…)\` builds an \`api::Client\`; declare \`NAME:
+api::Client\`"). A client is a param's literal and nothing else: an
+`api::client(…)` anywhere else (a `let`, an argument, a body) is refused
+("\`api::client(…)\` builds a client, which is a param of the locus that
+calls it: …").
+
+**A leg's tools.** **`hale api export --surface NAME --tools-for ROLES
+[target]`** prints the tools a caller acting as `ROLES` (comma separated,
+`''` for none) is given of the surface: one per row those roles admit (a
+row that requires none, or whose every required role one of them holds, a
+role holding each role it includes), named `<Surface>.<row>`, the row as
+the client names its method (`Shelf.create_item`, `Shop.orders_place`),
+each with the MCP form's input schema, `x-hale-member` and
+`x-hale-requires`, under `x-hale-surface`, `x-hale-digest` and
+`x-hale-roles`. The namespace keeps two surfaces' rows apart in one tool
+list; it writes no bundle, so it is given without `--out` and `--check`.
 
 ## Driving a served program
 
@@ -2240,6 +3437,15 @@ JSON string. Over the Unix socket the reply's `id` must be it: a reply that
 answers another request is a transport failure, as is a connection that ends
 with no reply. (HTTP carries no id; the connection is the correlation.)
 
+**A route by its path.** Where the member is `METHOD /path` (`hale api call
+http://127.0.0.1:8080 'GET /v1/items/5' --limit 3`), the endpoint is an
+`http::Rest` listener's and the verb calls the route as written: no
+description is read, the flags are the query (`?limit=3`; a bare flag is
+`true`), `--json` is the body of a `POST`, `PUT` or `PATCH` (a `GET` or
+`DELETE` takes none: exit 5), `--bearer` and `--digest` ride as headers. A
+`2xx` is the result; a classed handler error, a refusal (the `404` of a
+path no route serves included) and the server error exit as below.
+
 **Outcomes and exit codes.** Each outcome of § Outcomes is one exit code. A
 result prints its value as JSON on stdout; every other outcome prints the wire
 outcome as the transport wrote it (the whole reply line over the socket, the
@@ -2259,6 +3465,76 @@ whatever its kind, and nothing on stderr; the exit code does not change.
 exposure refused to describe (the wire refusal on stderr), 4 when nothing
 answered (a refused connection, no listener, a connection that closed) or what
 did answer is not a Hale exposure (the message says which), and 5 for usage.
+
+## Repositories
+
+`@repo(T)` on a locus tells the compiler that the locus is where `T`'s
+important state lives (RFC #1530). Local field writes, caches and counters
+are not important; writes through a repo are. It is a checker: the driver
+(in memory, SQL, a file) is written by hand, and the compiler holds it to
+the shape below. `T` is a record with exactly one field tagged
+`` `db:"name,key"` `` (the key tag is the one piece of the `db` tag system in
+scope; the other tags and generated drivers wait).
+
+```hale
+type Order { id: OrderId `db:"id,key"`; customer: Int; total: Int; }
+type OrderError = enum { @not_found Missing, @conflict Exists };
+
+@repo(Order)
+locus Orders {
+    @effects(is: { reads(Order) })
+    fn get(id: OrderId) -> Order fallible(OrderError) { … }
+    @effects(is: { creates(Order) }) @idempotent
+    fn create(o: Order) -> Order fallible(OrderError) { … }
+    @effects(is: { writes(Order) }) @idempotent
+    fn put(id: OrderId, o: Order) -> Order fallible(OrderError) { … }
+    @effects(is: { deletes(Order) }) @idempotent
+    fn remove(id: OrderId) fallible(OrderError) { … }
+}
+```
+
+**Where it is declared.** `@repo(T)` is accepted only in the program's own
+source. A library or imported module that declares one is refused at the
+check, naming the locus ("`@repo(Item)` on `r::Items` is declared in an
+imported module; a repository is declared in the program that uses it");
+imported repositories arrive with generated drivers (GH #1530).
+
+**The method set.** `get(id: K) -> T`, `create(o: T) -> T`, `put(id: K, o:
+T) -> T` and `remove(id: K)`, `K` the key field's type, each `fallible(E)`
+with one `E` for the repo. A missing method, or one of another shape, is
+named.
+
+**The state class.** Each method declares exactly one class of the family
+`reads(T) | writes(T) | creates(T) | deletes(T) | mutates(T)`, an
+ordinary indexed effect family (§ Calling a surface's `client(S)` is
+another) that `@repo` declares over the types the program's repos hold, so
+the classes propagate through calls and a claim names them
+(`forbid reaches(Public, effects(writes(Order)))`). The four methods above
+carry `reads`, `creates`, `writes` and `deletes`; `mutates` is for a
+method whose result depends on the arguments and the prior state
+(increment, append, a guarded transition). A repo declares no class of
+another type. The family's five words are the program's effect names while
+a `@repo` is in it: an `effect reads(…)` of its own collides.
+
+**The idempotency marker.** Every class but `reads` carries exactly one of
+`@idempotent` and `@not_idempotent`, and `reads` carries neither: there is
+no default, so the question is asked at every write. `creates` is honestly
+idempotent only when the caller supplies the key. The spelling of the
+markers is a placeholder.
+
+**Extra methods.** A method beyond the four (`find_by_customer`) is allowed
+and carries a class like any other; a transport cannot render it from its
+shape alone.
+
+**What is promised.** Atomicity is per repo operation: a `get` then a
+`put` in one handler is two operations, and nothing across two repos is
+promised. A handler that holds the repo inherits the classes through its
+calls, so "read-only" is a fact about the effect row, not a purity proof.
+The class at the leaf is trusted, as every frontier claim is, so the
+hand-written driver is where the audit lives. Reaching a leaf's class from
+a wrapper (a validating repo that calls inward), the derived change feed
+and `@evented` are the later steps of the RFC; the check today is of the
+repo itself.
 
 ## What this replaced
 
@@ -2349,6 +3625,14 @@ values).
 
 ## Open points
 
+- **Binding an imported surface** to a client (`api::client(Surface,
+  mcp::Client | http::Client)`), which reads the signature rows' `wire:`;
+  until then an imported surface is declared, checked and described, and
+  called by nothing the compiler generates.
+- **The import's reach**: a YAML document, Swagger 2.0, a header or cookie
+  parameter, an operation's error responses, authentication beyond what a
+  public document needs, and a `$ref` to another document are not read.
+
 - **`grpc://` endpoints for `hale describe` and `hale call`**: the
   clients are Rust and have no HTTP/2 stack (the runtime's nghttp2 is
   linked into compiled programs, the test suite's client is hand-written
@@ -2366,13 +3650,15 @@ values).
   surface's**: it is not filtered by the roles a caller holds, as a description
   is. A surface whose member names are themselves confidential to a role needs
   a filtered descriptor, which the `.proto` the digest names cannot be.
-- **Additive compatibility**: a client built against a subset of a
-  surface's members, after v1's equality.
-- **A per-variant status mapping** declared on a handler's error type,
-  which would join the rows, the description and the digest.
 - **A receiver binding naming a `@form` collection's element** (a
   surface over many instances of one type, keyed by the request), or
   only a single instance.
+- **A mounted hub's path in the description**: the description of an
+  `http::Rest` exposure lists the streams of the hubs it mounts (§ Streams,
+  a hub mounted on an `http::Rest`) but not the path each is mounted at, so
+  a client learns the path out of band; stating it is a change to
+  `spec/api-description.schema.json` and the contract fixtures, left for a
+  follow-up.
 - **A hub that also serves a surface** (rpcs and streams on one
   connection): the rpcs are carried (§ Rpcs on a hub), but the hub's
   live description lists its streams only; the full document of a surface
@@ -2401,10 +3687,6 @@ values).
 - **A description over `hale call` for a hub that also serves a
   surface**: the hub's live document lists streams only (above), so `hale
   call ws://…` does not check the member against it.
-- **Imported schema names**: the schema name of a type an imported seed
-  declares embeds the import path, so a description is not stable across
-  checkout directories for such a type.
-- **A surface-level `requires` default** that rows inherit.
 - **The wire framing of rpcs over UDP** (a correlation id field, the
   largest datagram; R6). Over WebSocket they are framed (§ Streams).
 - **Leases for a datagram subscriber** that vanishes without

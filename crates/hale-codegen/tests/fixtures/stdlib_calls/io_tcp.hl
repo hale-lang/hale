@@ -18,7 +18,7 @@ fn main() {
     std::io::tcp::recv_stamped_into(fd, buf, 64);
     let got = std::io::tcp::__recv(fd, 64);
     let raw = std::io::tcp::__recv_bytes(fd, 64);
-    let sent = std::io::tcp::__send(fd, "x");
+    let sent = std::io::tcp::__send(fd, "x") + std::io::tcp::__send_bytes_until(fd, b"x", 0);
     let status = std::io::tcp::__last_io_status();
     let kind = std::io::tcp::__io_error_kind(11);
     let detail = std::io::tcp::__io_error_detail(11);
@@ -30,5 +30,12 @@ fn main() {
     let on_pool = std::io::tcp::__on_pool();
     let named = std::io::tcp::__name_listener("calls", -1);
     let stopped = std::io::tcp::__stop_listener("calls") + std::io::tcp::__local_port(-1);
-    println(got, len(raw), sent + status + shut + closed + waited + within, kind, detail, parks + on_pool + named + stopped);
+    println(
+        got,
+        len(raw),
+        sent + status + shut + closed + waited + within,
+        kind,
+        detail,
+        parks + on_pool + named + stopped,
+    );
 }

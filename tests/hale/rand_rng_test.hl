@@ -5,7 +5,11 @@
 
 fn main() {
     let a = std::rand::Rng { seed: 0 };
-    std::test::assert_eq_int(a.next(), -2152535657050944081, "seed 0, first output 0xe220a8397b1dcdaf");
+    std::test::assert_eq_int(
+        a.next(),
+            -2152535657050944081,
+        "seed 0, first output 0xe220a8397b1dcdaf",
+    );
     std::test::assert_eq_int(a.next(), 7960286522194355700, "second 0x6e789e6aa1b965f4");
     std::test::assert_eq_int(a.next(), 487617019471545679, "third 0x06c45d188009454f");
 
@@ -46,5 +50,9 @@ fn main() {
     std::test::assert(seen_low && seen_high, "both ends of [0, 10) drawn");
     std::test::assert_eq_int(r.next_int(0), 0, "max <= 0 is 0");
     std::test::assert_eq_int(r.range(3, 3), 3, "an empty range is lo");
-    std::test::assert_eq_int(r.range(-9223372036854775807 - 1, 9223372036854775807), -9223372036854775807 - 1, "a span past Int is lo");
+    std::test::assert_eq_int(
+        r.range(-9223372036854775807 - 1, 9223372036854775807),
+            -9223372036854775807 - 1,
+        "a span past Int is lo",
+    );
 }

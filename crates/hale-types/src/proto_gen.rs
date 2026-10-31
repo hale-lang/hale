@@ -75,11 +75,21 @@ impl Scalar {
     }
 }
 
+/// What a `std::json::Value`'s `string` field carries, said in its comment.
+const JSON_TEXT: &str = "Hale: std::json::Value, the JSON text as sent";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     Scalar(Scalar),
     /// A message of the file (or of the package), by its name.
     Message(String),
+    /// An `enum` of the file (a payload-free Hale enum), by its name.
+    Enum(String),
+    /// `map<string, value>`: a wire map (spec/api.md § Codecs), its value the
+    /// record's message, or a map of values' scalar or enum; `entry` the
+    /// implicit entry message protoc names after the field (`checks` ->
+    /// `ChecksEntry`).
+    Map { value: Box<Ty>, entry: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +136,16 @@ pub struct PService {
     pub methods: Vec<PMethod>,
 }
 
+/// A proto3 `enum`: a payload-free Hale enum, each variant `<Enum>_<Variant>`
+/// (proto3 scopes an enum's values beside the enum, so the prefix keeps two
+/// enums' variants apart) numbered from 0 in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PEnum {
+    pub name: String,
+    pub comment: Vec<String>,
+    pub values: Vec<(String, u32)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtoFile {
     /// The file's name as a descriptor states it (`Public.proto`).
@@ -134,6 +154,8 @@ pub struct ProtoFile {
     pub package: String,
     pub header: Vec<String>,
     pub messages: Vec<PMessage>,
+    /// The enums, after the messages.
+    pub enums: Vec<PEnum>,
     pub service: Option<PService>,
 }
 
@@ -146,11 +168,11 @@ fn message(name: &str, fields: Vec<PField>) -> PMessage {
 }
 
 /// The message a record has in the file of `surface`: its document name with
-/// the `::` of an imported type spelled `_`, and `Message` after it when that
+/// the `.` of an imported type's qualified name spelled `_`, and `Message` after it when that
 /// is the surface's own name, which the service holds (a service and a
 /// message share proto3's scope, and the service's name is the gRPC path).
 pub fn message_name(display: &str, surface: &str) -> String {
-    let name = display.replace("::", "_");
+    let name = display.replace("::", "_").replace('.', "_");
     if name == surface {
         format!("{name}Message")
     } else {
@@ -220,9 +242,22 @@ fn carried(
     what: &str,
     f: &FieldSchema,
     wrappers: &mut Vec<PMessage>,
+    extra: &mut Extra,
 ) -> Result<String, String> {
     match f {
         FieldSchema::Ref(name) => Ok(message_name(name, surface)),
+        // an enum with payloads is its message; a payload-free one is the
+        // one-field message of a scalar row, its `value` the enum
+        FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+            Ty::Message(m) => Ok(m),
+            ty => {
+                let wrapper = wrapper_name(member, what);
+                let mut m = message(&wrapper, vec![field("value", 1, ty, Label::Optional)]);
+                m.comment = vec![format!("The {} of `{member}`, an enum.", what.to_lowercase())];
+                wrappers.push(m);
+                Ok(wrapper)
+            }
+        },
         FieldSchema::Scalar { json, hale_type, unit } => {
             let Some(s) = scalar_of(json) else {
                 return Err(format!("{member}: the {what} is a `{json}`, which proto3 has no scalar for"));
@@ -244,8 +279,15 @@ fn carried(
             wrappers.push(m);
             Ok(name)
         }
-        FieldSchema::List { .. } => Err(format!(
+        FieldSchema::List { .. } | FieldSchema::Map { .. } => Err(format!(
             "{member}: the {what} is a list, which crosses as a field of a record (law 5 refuses the row)"
+        )),
+        // a presence pair is two fields of a record, never a row's whole shape
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(format!(
+            "{member}: the {what} is an optional field, which crosses as a field of a record"
+        )),
+        FieldSchema::Any => Err(format!(
+            "{member}: the {what} is a `std::json::Value`, which crosses as a field of a record (law 5 refuses the row)"
         )),
         FieldSchema::Unformed => Err(format!(
             "{member}: the {what} is a shape the codec does not carry (an enum, an array or a name the program does not declare), \
@@ -271,9 +313,7 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
                 _ => None,
             };
             for f in m.request.iter().chain(m.response.iter()).chain(error) {
-                if let FieldSchema::Ref(n) = f {
-                    work.push(n);
-                }
+                refs_of(f, &mut work);
             }
         }
         while let Some(n) = work.pop() {
@@ -283,22 +323,15 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             reached.push(n);
             if let Some(t) = model.types.get(n) {
                 for (_, f) in &t.properties {
-                    match f {
-                        FieldSchema::Ref(r) => work.push(r),
-                        FieldSchema::List { items, .. } => {
-                            if let FieldSchema::Ref(r) = items.as_ref() {
-                                work.push(r);
-                            }
-                        }
-                        _ => {}
-                    }
+                    refs_of(f, &mut work);
                 }
             }
         }
     }
     let mut messages: Vec<PMessage> = Vec::new();
+    let mut extra = Extra::default();
     for (display, schema) in model.types.iter().filter(|(d, _)| reached.contains(&d.as_str())) {
-        messages.push(record(display, schema, surface)?);
+        messages.push(record(display, schema, surface, &mut extra)?);
     }
     // the rpcs, in the rows' order
     let mut wrappers: Vec<PMessage> = Vec::new();
@@ -312,14 +345,14 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             format!("requires {}", m.requires.join(", "))
         });
         let input = match &m.request {
-            Some(f) => carried(surface, &m.name, "Request", f, &mut wrappers)?,
+            Some(f) => carried(surface, &m.name, "Request", f, &mut wrappers, &mut extra)?,
             None => {
                 uses_empty = true;
                 EMPTY.to_string()
             }
         };
         let output = match &m.response {
-            Some(f) => carried(surface, &m.name, "Response", f, &mut wrappers)?,
+            Some(f) => carried(surface, &m.name, "Response", f, &mut wrappers, &mut extra)?,
             None => {
                 uses_empty = true;
                 EMPTY.to_string()
@@ -329,7 +362,7 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             ClientError::None => {}
             ClientError::Server => comment.push("a violation is the server error (ClosureViolation): status 13, no handler error".to_string()),
             ClientError::Type(f) => {
-                let e = carried(surface, &m.name, "Error", f, &mut wrappers)?;
+                let e = carried(surface, &m.name, "Error", f, &mut wrappers, &mut extra)?;
                 comment.push(format!("handler error: status 9, a detail of type {}", type_url(&e)));
             }
         }
@@ -342,6 +375,7 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             comment,
         });
     }
+    messages.extend(extra.messages.drain(..));
     messages.extend(wrappers);
     if uses_empty {
         let mut e = message(EMPTY, Vec::new());
@@ -365,11 +399,12 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
     // names share one scope
     let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
     seen.insert(surface.as_str(), ());
-    for m in &messages {
-        if seen.insert(m.name.as_str(), ()).is_some() {
+    let enum_names = extra.enums.iter().flat_map(|e| std::iter::once(e.name.as_str()).chain(e.values.iter().map(|(v, _)| v.as_str())));
+    for name in messages.iter().map(|m| m.name.as_str()).chain(enum_names) {
+        if seen.insert(name, ()).is_some() {
             return Err(format!(
                 "the message `{}` is named twice in the file of {surface} (a type of the program, the surface, or a name this file generates)",
-                m.name
+                name
             ));
         }
     }
@@ -384,11 +419,109 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
         package: String::new(),
         header: header(model, uses_empty),
         messages,
+        enums: extra.enums,
         service: Some(PService { name: surface.clone(), methods }),
     })
 }
 
-fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage, String> {
+/// What the file declares beside the records: the enums, and the messages of
+/// an enum with payloads (its `oneof`, and a record per variant of several
+/// values), each once.
+#[derive(Default)]
+struct Extra {
+    enums: Vec<PEnum>,
+    messages: Vec<PMessage>,
+}
+
+/// The records a schema reaches, through a list's items and an enum's values.
+fn refs_of<'a>(f: &'a FieldSchema, out: &mut Vec<&'a str>) {
+    match f {
+        FieldSchema::Ref(r) => out.push(r),
+        FieldSchema::List { items, .. } => refs_of(items, out),
+        FieldSchema::Nullable { inner, .. } => refs_of(inner, out),
+        FieldSchema::Map { name, of: None, .. } => out.push(name),
+        FieldSchema::Map { of: Some((_, v)), .. } => refs_of(v, out),
+        FieldSchema::Enum { variants, .. } => {
+            for (_, values) in variants {
+                for v in values {
+                    refs_of(v, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The type of a value of an enum's variant, or of an enum's message field.
+fn value_ty(f: &FieldSchema, surface: &str, what: &str, extra: &mut Extra) -> Result<Ty, String> {
+    match f {
+        FieldSchema::Scalar { json, .. } => scalar_of(json).map(Ty::Scalar).ok_or_else(|| format!("{what}: `{json}` has no proto3 scalar")),
+        FieldSchema::Time => Ok(Ty::Scalar(Scalar::Int64)),
+        FieldSchema::Ref(n) => Ok(Ty::Message(message_name(n, surface))),
+        FieldSchema::Enum { name, variants, .. } => enum_ty(name, variants, surface, extra),
+        _ => Err(format!("{what}: a shape an enum's value cannot be has no proto3 encoding; no approximation is made")),
+    }
+}
+
+/// The proto3 type of a Hale enum, declaring it in `extra` the first time:
+/// a payload-free enum is an `enum`, its values `<Enum>_<Variant>` from 0;
+/// one with payloads a message of one `oneof value`, a member per variant
+/// numbered from 1 (a payload-free variant a `bool`, a variant of one value
+/// that value, one of several the message `<Enum>_<Variant>` of fields `v0`,
+/// `v1`, ...), as the protobuf codec writes it (spec/api.md § Codecs).
+fn enum_ty(display: &str, variants: &[(String, Vec<FieldSchema>)], surface: &str, extra: &mut Extra) -> Result<Ty, String> {
+    let name = message_name(display, surface);
+    if !is_ident(&name) {
+        return Err(format!("the type `{display}` is not a proto3 enum or message name"));
+    }
+    let comment = if display != name { vec![format!("Hale: {display}")] } else { Vec::new() };
+    if variants.iter().all(|(_, v)| v.is_empty()) {
+        if !extra.enums.iter().any(|e| e.name == name) {
+            let values = variants.iter().enumerate().map(|(i, (v, _))| (crate::api_names::proto_variant(&name, v), i as u32)).collect();
+            extra.enums.push(PEnum { name: name.clone(), comment, values });
+        }
+        return Ok(Ty::Enum(name));
+    }
+    if extra.messages.iter().any(|m| m.name == name) {
+        return Ok(Ty::Message(name));
+    }
+    // reserve the name first: a variant's record is declared after it
+    let at = extra.messages.len();
+    extra.messages.push(message(&name, Vec::new()));
+    let mut fields = Vec::new();
+    for (i, (v, values)) in variants.iter().enumerate() {
+        let number = i as u32 + 1;
+        if !is_ident(v) {
+            return Err(format!("{display}: the variant `{v}` is not a proto3 field name"));
+        }
+        let ty = match values.as_slice() {
+            [] => Ty::Scalar(Scalar::Bool),
+            [one] => value_ty(one, surface, &format!("{display}::{v}"), extra)?,
+            many => {
+                let rec = crate::api_names::proto_variant(&name, v);
+                let mut vf = Vec::new();
+                for (k, value) in many.iter().enumerate() {
+                    let t = value_ty(value, surface, &format!("{display}::{v}"), extra)?;
+                    vf.push(field(&format!("v{k}"), k as u32 + 1, t, Label::Plain));
+                }
+                let mut m = message(&rec, vf);
+                m.comment = vec![format!("Hale: the values of {display}::{v}")];
+                extra.messages.push(m);
+                Ty::Message(rec)
+            }
+        };
+        let mut f = field(v, number, ty, Label::Plain);
+        f.oneof = Some(0);
+        fields.push(f);
+    }
+    let mut m = message(&name, fields);
+    m.oneofs = vec!["value".to_string()];
+    m.comment = comment;
+    extra.messages[at] = m;
+    Ok(Ty::Message(name))
+}
+
+fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) -> Result<PMessage, String> {
     let name = message_name(display, surface);
     if !is_ident(&name) {
         return Err(format!("the type `{display}` is not a proto3 message name"));
@@ -415,7 +548,25 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
         }
         json_names.push((key, json));
         let number = i as u32 + 1;
-        fields.push(match f {
+        // an optional field is its value's field, its flag a field of its own
+        // (protobuf carries a presence pair as declared, spec/api.md § Codecs)
+        let (f, flag) = match f {
+            FieldSchema::Nullable { inner, flag, .. } => (inner.as_ref(), Some(flag)),
+            f => (f, None),
+        };
+        let mut p = match f {
+            FieldSchema::Presence { of, clears, .. } => {
+                let mut p = field(key, number, Ty::Scalar(Scalar::Bool), Label::Optional);
+                p.comment = Some(if *clears {
+                    format!("Hale: whether `{of}` is cleared (sent as JSON `null`)")
+                } else {
+                    format!("Hale: whether `{of}` is present")
+                });
+                p
+            }
+            FieldSchema::Nullable { .. } => {
+                return Err(format!("{display}.{key}: an optional field inside an optional field has no proto3 encoding"))
+            }
             FieldSchema::Scalar { json, hale_type, unit } => {
                 let Some(s) = scalar_of(json) else {
                     return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
@@ -425,6 +576,49 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                 p
             }
             FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Plain),
+            // free-form JSON: its text, as sent
+            FieldSchema::Any => {
+                let mut p = field(key, number, Ty::Scalar(Scalar::String), Label::Optional);
+                p.comment = Some(JSON_TEXT.to_string());
+                p
+            }
+            // a payload-free enum has presence as a scalar does; one with
+            // payloads is a message
+            FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+                ty @ Ty::Enum(_) => field(key, number, ty, Label::Optional),
+                ty => field(key, number, ty, Label::Plain),
+            },
+            // a wire map: `map<string, T>`, its value the whole record (the
+            // key carried in it too: the record's own message, shared with
+            // every other use of the type)
+            FieldSchema::Map { name, key: k, max, of: None, .. } => {
+                let value = Box::new(Ty::Message(message_name(name, surface)));
+                let mut p = field(key, number, Ty::Map { value, entry: map_entry_name(key) }, Label::Repeated);
+                p.comment = Some(format!("Hale: keyed by `{k}`; at most {max}"));
+                p
+            }
+            // a map of values: `map<string, V>`, its value the scalar or the
+            // payload-free enum each element crosses as
+            FieldSchema::Map { key: k, max, of: Some((v, schema)), .. } => {
+                let value = match schema.as_ref() {
+                    FieldSchema::Scalar { json, .. } => {
+                        let Some(s) = scalar_of(json) else {
+                            return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
+                        };
+                        Ty::Scalar(s)
+                    }
+                    FieldSchema::Time => Ty::Scalar(Scalar::Int64),
+                    FieldSchema::Any => Ty::Scalar(Scalar::String),
+                    FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+                        ty @ Ty::Enum(_) => ty,
+                        _ => return Err(format!("{display}.{key}: a map's value `{name}` has payloads, which no map value carries")),
+                    },
+                    _ => return Err(format!("{display}.{key}: a map's value `{v}` is no scalar")),
+                };
+                let mut p = field(key, number, Ty::Map { value: Box::new(value), entry: map_entry_name(key) }, Label::Repeated);
+                p.comment = Some(format!("Hale: keyed by `{k}`, each the `{v}`; at most {max}"));
+                p
+            }
             FieldSchema::Time => {
                 let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Optional);
                 p.comment = Some(TIME.to_string());
@@ -445,6 +639,14 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                         p
                     }
                     FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Repeated),
+                    FieldSchema::Any => {
+                        let mut p = field(key, number, Ty::Scalar(Scalar::String), Label::Repeated);
+                        p.comment = Some(JSON_TEXT.to_string());
+                        p
+                    }
+                    FieldSchema::Enum { name, variants, .. } => {
+                        field(key, number, enum_ty(name, variants, surface, extra)?, Label::Repeated)
+                    }
                     FieldSchema::Time => {
                         let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Repeated);
                         p.comment = Some(TIME.to_string());
@@ -469,7 +671,15 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                      has no proto3 encoding; no approximation is made"
                 ))
             }
-        });
+        };
+        if let Some(flag) = flag {
+            let note = format!("optional, present when `{flag}`");
+            p.comment = Some(match p.comment.take() {
+                Some(c) => format!("{c}; {note}"),
+                None => format!("Hale: {note}"),
+            });
+        }
+        fields.push(p);
     }
     let mut m = message(&name, fields);
     if display != name {
@@ -566,6 +776,17 @@ impl ProtoFile {
             }
             o.push_str("}\n");
         }
+        for e in &self.enums {
+            o.push('\n');
+            for c in &e.comment {
+                o.push_str(&format!("// {c}\n"));
+            }
+            o.push_str(&format!("enum {} {{\n", e.name));
+            for (v, n) in &e.values {
+                o.push_str(&format!("  {v} = {n};\n"));
+            }
+            o.push_str("}\n");
+        }
         o
     }
 
@@ -583,14 +804,45 @@ impl ProtoFile {
         for m in &self.messages {
             out.push(q(&m.name));
         }
+        for e in &self.enums {
+            out.push(q(&e.name));
+        }
         out
     }
+}
+
+/// The entry message protoc makes of a map field: the field's name in
+/// CamelCase (`_` dropped, the letter after it upper case) and `Entry`.
+fn map_entry_name(field: &str) -> String {
+    let mut o = String::new();
+    let mut up = true;
+    for c in field.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            o.push(c.to_ascii_uppercase());
+            up = false;
+        } else {
+            o.push(c);
+        }
+    }
+    o.push_str("Entry");
+    o
 }
 
 fn field_text(f: &PField) -> String {
     let ty = match &f.ty {
         Ty::Scalar(s) => s.keyword().to_string(),
-        Ty::Message(m) => m.clone(),
+        Ty::Message(m) | Ty::Enum(m) => m.clone(),
+        Ty::Map { value, .. } => {
+            let tail = f.comment.as_ref().map_or(String::new(), |c| format!(" // {c}"));
+            let value = match value.as_ref() {
+                Ty::Scalar(s) => s.keyword().to_string(),
+                Ty::Message(m) | Ty::Enum(m) => m.clone(),
+                Ty::Map { .. } => unreachable!("a map's value is no map"),
+            };
+            return format!("map<string, {value}> {} = {};{tail}", f.name, f.number);
+        }
     };
     let label = match f.label {
         Label::Plain => "",
@@ -680,6 +932,14 @@ impl ProtoFile {
                         put_varint(5, 11, &mut fd);
                         put_str(6, &q(n), &mut fd);
                     }
+                    Ty::Enum(n) => {
+                        put_varint(5, 14, &mut fd);
+                        put_str(6, &q(n), &mut fd);
+                    }
+                    Ty::Map { entry, .. } => {
+                        put_varint(5, 11, &mut fd);
+                        put_str(6, &q(&format!("{}.{entry}", m.name)), &mut fd);
+                    }
                 }
                 let index = match (f.oneof, f.label) {
                     (Some(k), _) => Some(k),
@@ -703,12 +963,59 @@ impl ProtoFile {
                 }
                 put_bytes(2, &fd, &mut msg);
             }
+            // a map field's entry message, nested in its message as protoc
+            // nests it: `key` (1) and `value` (2), `map_entry` set
+            for f in &m.fields {
+                let Ty::Map { value, entry } = &f.ty else { continue };
+                let mut nd = Vec::new();
+                put_str(1, entry, &mut nd);
+                let mut kd = Vec::new();
+                put_str(1, "key", &mut kd);
+                put_varint(3, 1, &mut kd);
+                put_varint(4, 1, &mut kd);
+                put_varint(5, Scalar::String.descriptor_type(), &mut kd);
+                put_str(10, "key", &mut kd);
+                put_bytes(2, &kd, &mut nd);
+                let mut vd = Vec::new();
+                put_str(1, "value", &mut vd);
+                put_varint(3, 2, &mut vd);
+                put_varint(4, 1, &mut vd);
+                match value.as_ref() {
+                    Ty::Scalar(s) => put_varint(5, s.descriptor_type(), &mut vd),
+                    Ty::Message(n) => {
+                        put_varint(5, 11, &mut vd);
+                        put_str(6, &q(n), &mut vd);
+                    }
+                    Ty::Enum(n) => {
+                        put_varint(5, 14, &mut vd);
+                        put_str(6, &q(n), &mut vd);
+                    }
+                    Ty::Map { .. } => unreachable!("a map's value is no map"),
+                }
+                put_str(10, "value", &mut vd);
+                put_bytes(2, &vd, &mut nd);
+                let mut opts = Vec::new();
+                put_varint(7, 1, &mut opts);
+                put_bytes(7, &opts, &mut nd);
+                put_bytes(3, &nd, &mut msg);
+            }
             for o in m.oneofs.iter().chain(synthetic.iter()) {
                 let mut od = Vec::new();
                 put_str(1, o, &mut od);
                 put_bytes(8, &od, &mut msg);
             }
             put_bytes(4, &msg, &mut file);
+        }
+        for e in &self.enums {
+            let mut ed = Vec::new();
+            put_str(1, &e.name, &mut ed);
+            for (v, n) in &e.values {
+                let mut vd = Vec::new();
+                put_str(1, v, &mut vd);
+                put_varint(2, u64::from(*n), &mut vd);
+                put_bytes(2, &vd, &mut ed);
+            }
+            put_bytes(5, &ed, &mut file);
         }
         if let Some(svc) = &self.service {
             let mut sd = Vec::new();
@@ -758,6 +1065,7 @@ pub fn description_file() -> ProtoFile {
         package: "hale.api".to_string(),
         header: vec!["The reserved method of every gRPC exposure: the description for the caller its bearer names.".to_string()],
         messages: vec![message("DescribeRequest", Vec::new()), doc],
+        enums: Vec::new(),
         service: Some(PService {
             name: "Description".to_string(),
             methods: vec![PMethod {
@@ -818,6 +1126,7 @@ pub fn reflection_file() -> ProtoFile {
         package: "grpc.reflection.v1".to_string(),
         header: vec!["gRPC server reflection (grpc/reflection/v1/reflection.proto).".to_string()],
         messages: vec![request, ext, response, fdr, enr, lsr, sr, er],
+        enums: Vec::new(),
         service: Some(PService {
             name: "ServerReflection".to_string(),
             methods: vec![PMethod {
@@ -843,6 +1152,7 @@ mod tests {
             digest: "fnv1a64:0".to_string(),
             members: vec![ClientMember {
                 name: "R::f".to_string(),
+                digest: String::new(),
                 request: Some(request),
                 response: None,
                 error: ClientError::None,
@@ -924,7 +1234,7 @@ mod tests {
     fn a_synthetic_oneof_never_takes_the_name_of_a_field() {
         let oneofs = |names: &[&str]| {
             let fields = names.iter().enumerate().map(|(i, n)| field(n, i as u32 + 1, Ty::Scalar(Scalar::Int64), Label::Optional)).collect();
-            let file = ProtoFile { name: "S.proto".to_string(), package: String::new(), header: Vec::new(), messages: vec![message("Data", fields)], service: None };
+            let file = ProtoFile { name: "S.proto".to_string(), package: String::new(), header: Vec::new(), messages: vec![message("Data", fields)], enums: Vec::new(), service: None };
             let d = file.descriptor();
             let named = |n: &str| {
                 let needle = [&[0x42, n.len() as u8 + 2, 0x0a, n.len() as u8][..], n.as_bytes()].concat();

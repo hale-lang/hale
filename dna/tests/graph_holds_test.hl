@@ -2,7 +2,7 @@
 // `hale dna fill`, the Board's verdicts on it, and the trust it is judged
 // under.
 //
-// On hale-lang/voice at a32b295f (dna/tests/onboarding/voice), on a record
+// On hale-lang/voice at aaa3d39d (dna/tests/onboarding/voice-heart), on a record
 // of its own: graph_holes_test holds the proposals and the Board's round
 // over all 40; here the Board ratifies the four holes the holds need,
 // each by its own Review (the board, api's dev and reviewer, and compose's
@@ -18,7 +18,11 @@
 import "../core" as dna;
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -93,7 +97,10 @@ locus App {
         let mut n = 0;
         while n < tries {
             if dna::run_tool("kill\n-0\n" + pid).code != 0 {
-                let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n" + self.repo);
+                let rest = dna::run_tool(
+                    "sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; true\nsh\n"
+                        + self.repo,
+                );
                 return true;
             }
             std::time::sleep(200ms);
@@ -110,7 +117,12 @@ locus App {
     // real bound). `proposed: …`, `refused: …`, or `cli: <why>` for a check
     // the CLI makes before it asks; the CLI's warnings stay on `stderr`.
     fn fill(args: String, secs: Int) -> Filled {
-        let before = dna::GitJournal { repo: self.repo }.revision();
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let before = dna::RecordJournal { repo: self.repo }.revision();
         let r = self.dna("fill\n" + args);
         if r.code == 0 { return Filled { answer: "proposed: " + r.stdout, stderr: r.stderr }; }
         let cut = std::str::index_of(r.stderr, "journaled no answer for ");
@@ -119,12 +131,22 @@ locus App {
         let id = after[0..std::str::index_of(after, " ")];
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let j = dna::GitJournal { repo: self.repo };
+            let j = dna::RoutedJournal {
+                record: dna::RecordJournal { repo: self.repo },
+                ledger: dna::MemoryLedger { repo: self.repo },
+            };
             let mut i = before;
             while i < j.revision() {
                 let e = j.read(i);
-                if e.entity == id && e.kind == "hold.proposed" { return Filled { answer: "proposed: " + e.body, stderr: r.stderr }; }
-                if e.entity == id && e.kind == "hold.refused" { return Filled { answer: "refused: " + std::json::find_string_field(e.body, "why"), stderr: r.stderr }; }
+                if e.entity == id && e.kind == "hold.proposed" {
+                    return Filled { answer: "proposed: " + e.body, stderr: r.stderr };
+                }
+                if e.entity == id && e.kind == "hold.refused" {
+                    return Filled {
+                        answer: "refused: " + std::json::find_string_field(e.body, "why"),
+                        stderr: r.stderr,
+                    };
+                }
                 i = i + 1;
             }
             std::time::sleep(500ms);
@@ -143,12 +165,22 @@ locus App {
         let id = after[0..std::str::index_of(after, " ")];
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let j = dna::GitJournal { repo: self.repo };
+            let j = dna::RoutedJournal {
+                record: dna::RecordJournal { repo: self.repo },
+                ledger: dna::MemoryLedger { repo: self.repo },
+            };
             let mut i = 0;
             while i < j.revision() {
                 let e = j.read(i);
-                if e.entity == id && e.kind == "position.proposed" { return Filled { answer: "proposed: " + e.body, stderr: r.stderr }; }
-                if e.entity == id && e.kind == "position.refused" { return Filled { answer: "refused: " + std::json::find_string_field(e.body, "why"), stderr: r.stderr }; }
+                if e.entity == id && e.kind == "position.proposed" {
+                    return Filled { answer: "proposed: " + e.body, stderr: r.stderr };
+                }
+                if e.entity == id && e.kind == "position.refused" {
+                    return Filled {
+                        answer: "refused: " + std::json::find_string_field(e.body, "why"),
+                        stderr: r.stderr,
+                    };
+                }
                 i = i + 1;
             }
             std::time::sleep(500ms);
@@ -165,12 +197,20 @@ locus App {
     // One answer per decision the script asks for.
     @bounded_by(script)
     fn decide(review: String, args: String, secs: Int) -> String {
-        let before = dna::GitJournal { repo: self.repo }.revision();
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let before = dna::RecordJournal { repo: self.repo }.revision();
         let wrote = self.dna("review\n" + review + "\n" + args + "\n--no-wait");
         if wrote.code != 0 { return "not written: " + wrote.stderr; }
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let j = dna::GitJournal { repo: self.repo };
+            let j = dna::RoutedJournal {
+                record: dna::RecordJournal { repo: self.repo },
+                ledger: dna::MemoryLedger { repo: self.repo },
+            };
             let mut i = before;
             while i < j.revision() {
                 let e = j.read(i);
@@ -186,14 +226,27 @@ locus App {
     fn logged(needle: String, tries: Int) -> Bool {
         let mut n = 0;
         while n < tries {
-            if std::str::contains(std::io::fs::read_file(self.repo + "/.hale/body.log") or "", needle) { return true; }
+            if std::str::contains(
+                std::io::fs::read_file(self.repo + "/.hale/body.log") or "",
+                needle,
+            ) {
+                return true;
+            }
             std::time::sleep(500ms);
             n = n + 1;
         }
         return false;
     }
     fn count_rows(kind: String) -> Int {
-        let j = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.repo },
+            ledger: dna::MemoryLedger { repo: self.repo },
+        };
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
@@ -216,8 +269,16 @@ locus App {
     fn show_org(head: String, tries: Int) -> String {
         let mut n = 0;
         while n < tries {
-            let r = dna::run_tool("sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && exec \"$3\" dna show org\nsh\n" + self.repo + "\n" + head + "\n" + toolchain());
-            if r.code == 0 && !std::str::contains(r.stderr, "memory has projected") && len(r.stdout) > 0 { return r.stdout; }
+            let r = dna::run_tool(
+                "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && exec \"$3\" dna show org\nsh\n"
+                    + self.repo + "\n" + head + "\n" + toolchain(),
+            );
+            if r.code == 0
+                && !std::str::contains(r.stderr, "memory has projected")
+                && len(r.stdout) > 0
+            {
+                return r.stdout;
+            }
             std::time::sleep(500ms);
             n = n + 1;
         }
@@ -238,55 +299,100 @@ locus App {
     // head, which is where an adopted ledger's body lease is read
     fn dna(args: String) -> dna::RunResult {
         if len(self.head) > 0 {
-            return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
+            return dna::run_tool_timeout(
+                900,
+                "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+                    + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args,
+            );
         }
-        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + self.repo + "\n" + toolchain() + "\ndna\n" + args);
+        return dna::run_tool_timeout(
+            900,
+            "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && shift && exec \"$@\"\nsh\n"
+                + self.repo + "\n" + toolchain() + "\ndna\n" + args,
+        );
     }
     run() {
         let scratch = dna::scratch_root("graph-holds");
         self.repo = scratch + "/voice";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
-        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
-        let init = self.dna("init\n.");
-        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
-        std::test::assert(std::str::contains(init.stdout, "; 40 proposal(s)"), "and proposes its holes: " + init.stdout);
+        let made = dna::voice_repo(source(), self.repo, "t", true);
+        std::test::assert_eq_int(
+            made.code,
+            0,
+            "the fixture, a repository of its own: " + made.stderr,
+        );
+        let init = dna::grafted(self.repo, ".\n--attach");
+        std::test::assert_eq_int(
+            init.code,
+            0,
+            "graft reads the repository: " + init.stdout + init.stderr,
+        );
+        std::test::assert(
+            std::str::contains(init.stdout, "; 40 proposal(s)"),
+            "and proposes its holes: " + init.stdout,
+        );
 
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-        let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
-        if len(owner) == 0 || len(nats) == 0 { eprintln("graph_holds_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)"); dna::scratch_done(scratch); return; }
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
+        let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") {
+            std::env::var("HALE_DNA_NATS_URL_OWNER")
+        } else {
+            ""
+        };
+        if len(owner) == 0 || len(nats) == 0 {
+            eprintln(
+                "graph_holds_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)",
+            );
+            dna::scratch_done(scratch);
+            return;
+        }
 
         // ---- the organism, on the repository record: its organization alone
         std::io::fs::write_file(self.repo + "/dna/org/models.hl", CATALOG) or discard;
-        let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm catalog\nsh\n" + self.repo);
-        std::test::assert_eq_int(committed.code, 0, "the scripted catalog committed: " + committed.stderr);
-        let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
+        let committed = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && git add -A && git commit -qm catalog\nsh\n" + self.repo,
+        );
+        std::test::assert_eq_int(
+            committed.code,
+            0,
+            "the scripted catalog committed: " + committed.stderr,
+        );
+        let migrated = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n"
+                + self.repo + "\n" + owner + "\n" + toolchain(),
+        );
         let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
-        std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
+        std::test::assert(
+            migrated.code == 0 && std::str::starts_with(head, "postgres"),
+            "memory migrated for the record: " + migrated.stdout + migrated.stderr,
+        );
         self.head = head;
-        let start = "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
+        let start = "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
+            + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
         let started = dna::run_tool(start);
-        let mut body = dna::trim_nl(started.stdout);
-        std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
-        std::test::assert(self.logged("a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)", 240), "its compose services left alone: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
-        // ---- the ledger adopted (GH #1150), as a deployment adopts it: asked
-        // for, carried out on the organization's tick, then the organization
-        // started again so it carries the lease the host hands a body on a
-        // ledger (an organization running when the ledger is adopted keeps
-        // appending unfenced until it restarts, and the host does not yet
-        // restart it or hand it the lease on adoption: deferred, #1150);
-        // each decision's execution rows then land in the ledger, fenced,
-        // not as commits
-        let adopted = self.dna("ledger\nadopt\n--as\nada");
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
-        let adopt_by = std::time::now() + 300;
-        while self.count_rows("ledger.adopted") == 0 && std::time::now() <= adopt_by { std::time::sleep(500ms); }
-        std::test::assert(self.count_rows("ledger.adopted") > 0, "the organization adopts the ledger on its tick: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
-        let stopped = dna::run_tool("kill\n" + body);
-        std::test::assert(self.gone(body, 600), "the organization stops after adopting");
-        body = dna::trim_nl(dna::run_tool(start).stdout);
-        std::test::assert(self.organization_up(600), "and runs again on the ledger: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        let body = dna::trim_nl(started.stdout);
+        std::test::assert(
+            self.organization_up(600),
+            "the organization runs on a repository record: "
+                + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""),
+        );
+        std::test::assert(
+            self.logged(
+                "a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)",
+                240,
+            ),
+            "its compose services left alone: "
+                + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""),
+        );
+        // ---- the ledger: a record has it from its first row (GH #1590);
+        // each decision's execution rows land in it, fenced
         let ledger = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
-        std::test::assert(ledger.ensure_open(), "the record's ledger opens for the fixture: " + ledger.failure);
+        std::test::assert(
+            ledger.ensure_open(),
+            "the record's ledger opens for the fixture: " + ledger.failure,
+        );
 
         // ---- the Board ratifies the holes the holds need, each by its own Review
         let seats = "board\napi/dev\napi/reviewer\ncompose/operator\n";
@@ -295,103 +401,276 @@ locus App {
             let nl = std::str::index_of(rest, "\n");
             let seat = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            let decided = self.decide(self.review_of("ratify the position `" + seat + "`"), "approve\n--as\nada\n--authority\nboard", 900);
-            std::test::assert(std::str::starts_with(decided, "settled: approve"), "the Board ratifies " + seat + ": " + decided);
+            let decided = self.decide(
+                self.review_of("ratify the position `" + seat + "`"),
+                "approve\n--as\nada\n--authority\nboard",
+                900,
+            );
+            std::test::assert(
+                std::str::starts_with(decided, "settled: approve"),
+                "the Board ratifies " + seat + ": " + decided,
+            );
         }
         // a verdict answers at `review.settled`; each ratification is the
         // practice-ratify execution it adopts (GH #995), waited for, bounded
         let ratify_by = std::time::now() + 600;
-        while self.count_rows("knowledge.ratified") < 4 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
-        std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 4, "the four holes ratified by the organism");
+        while self.count_rows("knowledge.ratified") < 4 && std::time::now() <= ratify_by {
+            std::time::sleep(200ms);
+        }
+        std::test::assert_eq_int(
+            self.count_rows("knowledge.ratified"),
+            4,
+            "the four holes ratified by the organism",
+        );
         // and the executions behind them ran on the ledger, not as commits
         let refreshed = ledger.refresh();
         let mut in_ledger = 0;
         let mut li = 0;
         while li < ledger.revision() {
             let e = ledger.read(li);
-            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" { in_ledger = in_ledger + 1; }
+            if e.kind == "workflow.admitted"
+                && std::json::find_string_field(e.body, "definition") == "practice-ratify"
+            {
+                in_ledger = in_ledger + 1;
+            }
             li = li + 1;
         }
-        std::test::assert_eq_int(in_ledger, 4, "the four practice-ratify executions are in the ledger: " + ledger.failure);
-        let git = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_int(
+            in_ledger,
+            4,
+            "the four practice-ratify executions are in the ledger: " + ledger.failure,
+        );
+        let git = dna::RecordJournal { repo: self.repo };
         let mut as_commits = 0;
         let mut gi = 0;
-        while gi < git.revision() { if git.read(gi).kind == "workflow.admitted" { as_commits = as_commits + 1; } gi = gi + 1; }
+        while gi < git.revision() {
+            if git.read(gi).kind == "workflow.admitted" {
+                as_commits = as_commits + 1;
+            }
+            gi = gi + 1;
+        }
         std::test::assert_eq_int(as_commits, 0, "and none of them is a commit on the record");
         // (the chart pads its names to the widest it shows: compose's)
         let seated = self.show_until(head, "  compose  operator {mandate: pending}\n", 240);
-        std::test::assert(std::str::contains(seated, "  board {mandate: pending}\n") && std::str::contains(seated, "  api      dev {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) {mandate: pending}\n") && std::str::contains(seated, "  compose  operator {mandate: pending}\n"), "the four holes are the org chart's: " + seated);
+        std::test::assert(
+            std::str::contains(seated, "  board {mandate: pending}\n")
+                && std::str::contains(
+                    seated,
+                    "  api      dev {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) {mandate: pending}\n",
+                )
+                && std::str::contains(seated, "  compose  operator {mandate: pending}\n"),
+            "the four holes are the org chart's: " + seated,
+        );
 
         // ---- fill: a holder asked of the organization
         let dev = self.fill("api/dev\nada\n--as\ngrace", 900);
-        std::test::assert(std::str::starts_with(dev.answer, "proposed: ") && std::str::contains(dev.answer, "position:api/dev"), "a holder proposed through the organization: " + dev.answer + dev.stderr);
+        std::test::assert(
+            std::str::starts_with(dev.answer, "proposed: ")
+                && std::str::contains(dev.answer, "position:api/dev"),
+            "a holder proposed through the organization: " + dev.answer + dev.stderr,
+        );
         let same = self.fill("api/reviewer\nada\n--as\ngrace", 900);
-        std::test::assert(std::str::starts_with(same.answer, "proposed: ") && std::str::contains(same.stderr, "warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev"), "under dna.trust = local the same holder is a warning: " + same.answer + same.stderr);
+        std::test::assert(
+            std::str::starts_with(same.answer, "proposed: ")
+                && std::str::contains(
+                    same.stderr,
+                    "warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev",
+                ),
+            "under dna.trust = local the same holder is a warning: " + same.answer + same.stderr,
+        );
         let stranger = self.dna("fill\napi/dev\nzed\n--as\ngrace");
-        std::test::assert(stranger.code != 0 && std::str::contains(stranger.stderr, "zed is no person this record knows"), "a holder is a person the record knows: " + stranger.stderr);
+        std::test::assert(
+            stranger.code != 0
+                && std::str::contains(stranger.stderr, "zed is no person this record knows"),
+            "a holder is a person the record knows: " + stranger.stderr,
+        );
         let nowhere = self.dna("fill\nnowhere/dev\nada\n--as\ngrace");
-        std::test::assert(nowhere.code != 0 && std::str::contains(nowhere.stderr, "is no position or organization the record states or proposes"), "for a position it states: " + nowhere.stderr);
-        let rj = dna::GitJournal { repo: self.repo };
-        std::test::assert(rj.append(rj.revision(), "graph.retired", "position:compose/operator", "{}").ok, "a position retired");
+        std::test::assert(
+            nowhere.code != 0
+                && std::str::contains(
+                    nowhere.stderr,
+                    "is no position or organization the record states or proposes",
+                ),
+            "for a position it states: " + nowhere.stderr,
+        );
+        let rj = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.repo },
+            ledger: dna::MemoryLedger { repo: self.repo },
+        };
+        std::test::assert(
+            rj.append(rj.revision(), "graph.retired", "position:compose/operator", "{}").ok,
+            "a position retired",
+        );
         let gone = self.dna("fill\ncompose/operator\nada\n--as\ngrace");
-        std::test::assert(gone.code != 0 && std::str::contains(gone.stderr, "is no position or organization the record states or proposes"), "a retired position holds no one: " + gone.stderr);
+        std::test::assert(
+            gone.code != 0
+                && std::str::contains(
+                    gone.stderr,
+                    "is no position or organization the record states or proposes",
+                ),
+            "a retired position holds no one: " + gone.stderr,
+        );
         let own = self.fill("board\nada\n--as\nada", 900);
-        std::test::assert(std::str::starts_with(own.answer, "proposed: "), "ada proposes herself for the board: " + own.answer + own.stderr);
+        std::test::assert(
+            std::str::starts_with(own.answer, "proposed: "),
+            "ada proposes herself for the board: " + own.answer + own.stderr,
+        );
         let listed_holds = self.dna("review");
-        std::test::assert(std::str::contains(listed_holds.stdout, "holds — 3 proposed holder(s)"), "the holds, listed together: " + listed_holds.stdout);
+        std::test::assert(
+            std::str::contains(listed_holds.stdout, "holds — 3 proposed holder(s)"),
+            "the holds, listed together: " + listed_holds.stdout,
+        );
         let self_review = self.review_of("ada holding the position `board`, as ada proposes");
         // the Board is the exception to independence: the asker may decide
         // a Board Review of her own (here she withdraws it, so nobody is seated)
         let declined = self.decide(self_review, "reject\n--as\nada\n--authority\nboard", 900);
-        std::test::assert(std::str::starts_with(declined, "settled: reject"), "the proposer may decide her own Board proposal: " + declined);
-        let approve_dev = self.decide(self.review_of("ada holding the position `api/dev`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 900);
-        std::test::assert(std::str::starts_with(approve_dev, "settled: approve"), "grace's proposal ratified: " + approve_dev);
-        let approve_rev = self.decide(self.review_of("ada holding the position `api/reviewer`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 900);
-        std::test::assert(std::str::starts_with(approve_rev, "settled: approve"), "and the same holder's: " + approve_rev);
+        std::test::assert(
+            std::str::starts_with(declined, "settled: reject"),
+            "the proposer may decide her own Board proposal: " + declined,
+        );
+        let approve_dev = self.decide(
+            self.review_of("ada holding the position `api/dev`, as grace proposes"),
+            "approve\n--as\nada\n--authority\nboard",
+            900,
+        );
+        std::test::assert(
+            std::str::starts_with(approve_dev, "settled: approve"),
+            "grace's proposal ratified: " + approve_dev,
+        );
+        let approve_rev = self.decide(
+            self.review_of("ada holding the position `api/reviewer`, as grace proposes"),
+            "approve\n--as\nada\n--authority\nboard",
+            900,
+        );
+        std::test::assert(
+            std::str::starts_with(approve_rev, "settled: approve"),
+            "and the same holder's: " + approve_rev,
+        );
         // (compose/operator retired, the chart pads to api's name again)
-        let held = self.show_until(head, "  api  dev [ada] {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) [ada] {mandate: pending}\n", 240);
-        std::test::assert(std::str::contains(held, "  api  dev [ada] {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) [ada] {mandate: pending}\n") && std::str::contains(held, "  board {mandate: pending}\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
-        std::test::assert(self.logged("warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev", 240), "memory says so where it projects it: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        let held = self.show_until(
+            head,
+            "  api  dev [ada] {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) [ada] {mandate: pending}\n",
+            240,
+        );
+        std::test::assert(
+            std::str::contains(
+                held,
+                "  api  dev [ada] {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) [ada] {mandate: pending}\n",
+            )
+                && std::str::contains(held, "  board {mandate: pending}\n"),
+            "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: "
+                + held,
+        );
+        std::test::assert(
+            self.logged(
+                "warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev",
+                240,
+            ),
+            "memory says so where it projects it: "
+                + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""),
+        );
 
         // ---- once the Board has a holder, a proposal's Review requires it
         // (GH #1089): the organization records the route's signers when it
         // opens the Review, and a verdict from anyone else is refused
         // whatever authority it claims
         let seat = self.fill("board\nada\n--as\ngrace", 900);
-        std::test::assert(std::str::starts_with(seat.answer, "proposed: "), "grace proposes ada for the board: " + seat.answer + seat.stderr);
-        let seated = self.decide(self.review_of("ada holding the position `board`, as grace proposes"), "approve\n--as\nbob\n--authority\nboard", 900);
-        std::test::assert(std::str::starts_with(seated, "settled: approve"), "nobody holds the board yet, so its authority ratifies: " + seated);
+        std::test::assert(
+            std::str::starts_with(seat.answer, "proposed: "),
+            "grace proposes ada for the board: " + seat.answer + seat.stderr,
+        );
+        let seated = self.decide(
+            self.review_of("ada holding the position `board`, as grace proposes"),
+            "approve\n--as\nbob\n--authority\nboard",
+            900,
+        );
+        std::test::assert(
+            std::str::starts_with(seated, "settled: approve"),
+            "nobody holds the board yet, so its authority ratifies: " + seated,
+        );
         let boarded = self.show_until(head, "  board [ada] {mandate: pending}\n", 240);
-        std::test::assert(std::str::contains(boarded, "  board [ada] {mandate: pending}\n"), "ada holds the board: " + boarded);
+        std::test::assert(
+            std::str::contains(boarded, "  board [ada] {mandate: pending}\n"),
+            "ada holds the board: " + boarded,
+        );
 
         // ---- a position opened at run time: its node and its mandate, one
         // Review the Board decides once (`hale dna position open`)
-        let opened = self.open_position("web/dev\n--mandate\nDecides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.\n--under\nboard\n--as\ngrace", 900);
-        std::test::assert(std::str::starts_with(opened.answer, "proposed: "), "grace proposes opening web/dev: " + opened.answer + opened.stderr);
-        let asked = dna::GitJournal { repo: self.repo };
+        let opened = self.open_position(
+            "web/dev\n--mandate\nDecides: how the web client is built. May not: sign its own changes. Cites: the practices in force. Escalates: to the Board.\n--under\nboard\n--as\ngrace",
+            900,
+        );
+        std::test::assert(
+            std::str::starts_with(opened.answer, "proposed: "),
+            "grace proposes opening web/dev: " + opened.answer + opened.stderr,
+        );
+        let asked = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.repo },
+            ledger: dna::MemoryLedger { repo: self.repo },
+        };
         let mut under = "";
         let mut k = 0;
         while k < asked.revision() {
             let e = asked.read(k);
-            if e.kind == "position.requested" && dna::native_json_string(e.body, "position") == "position:web/dev" { under = dna::native_json_string(e.body, "under"); }
+            if e.kind == "position.requested"
+                && dna::native_json_string(e.body, "position") == "position:web/dev"
+            {
+                under = dna::native_json_string(e.body, "under");
+            }
             k = k + 1;
         }
-        std::test::assert_eq_str(under, "position:board", "a bare `--under` is the node the graph states");
-        let nowhere = self.open_position("web/qa\n--mandate\nDecides: what ships.\n--under\nnowhere\n--as\ngrace", 900);
-        std::test::assert(std::str::contains(nowhere.answer + nowhere.stderr, "names no node the graph states"), "a part the graph does not state is refused: " + nowhere.answer + nowhere.stderr);
+        std::test::assert_eq_str(
+            under,
+            "position:board",
+            "a bare `--under` is the node the graph states",
+        );
+        let nowhere = self.open_position(
+            "web/qa\n--mandate\nDecides: what ships.\n--under\nnowhere\n--as\ngrace",
+            900,
+        );
+        std::test::assert(
+            std::str::contains(nowhere.answer + nowhere.stderr, "names no node the graph states"),
+            "a part the graph does not state is refused: " + nowhere.answer + nowhere.stderr,
+        );
         let listed_positions = self.dna("review");
-        std::test::assert(std::str::contains(listed_positions.stdout, "positions — 1 position(s) to open, each with its mandate"), "listed under positions: " + listed_positions.stdout);
-        let opening = self.decide(self.review_of("ratify opening the position `web/dev`, with its mandate, as grace proposes"), "approve\n--as\nada", 900);
-        std::test::assert(std::str::starts_with(opening, "settled: approve"), "the Board, ada, ratifies the opening as one Review: " + opening);
+        std::test::assert(
+            std::str::contains(
+                listed_positions.stdout,
+                "positions — 1 position(s) to open, each with its mandate",
+            ),
+            "listed under positions: " + listed_positions.stdout,
+        );
+        let opening = self.decide(
+            self.review_of(
+                "ratify opening the position `web/dev`, with its mandate, as grace proposes",
+            ),
+            "approve\n--as\nada",
+            900,
+        );
+        std::test::assert(
+            std::str::starts_with(opening, "settled: approve"),
+            "the Board, ada, ratifies the opening as one Review: " + opening,
+        );
         let twice = self.open_position("web/dev\n--mandate\nDecides: it again.\n--as\ngrace", 900);
-        std::test::assert(std::str::contains(twice.answer, "already a position"), "a position is opened once: " + twice.answer);
+        std::test::assert(
+            std::str::contains(twice.answer, "already a position"),
+            "a position is opened once: " + twice.answer,
+        );
         let staffed = self.fill("web/dev\nbob\n--as\ngrace", 900);
-        std::test::assert(std::str::starts_with(staffed.answer, "proposed: "), "and the opened position is filled as any: " + staffed.answer + staffed.stderr);
-        let proposed = self.dna("practice\npropose\nsmall-commits\n--text\nkeep each commit to one change\n--as\ngrace");
+        std::test::assert(
+            std::str::starts_with(staffed.answer, "proposed: "),
+            "and the opened position is filled as any: " + staffed.answer + staffed.stderr,
+        );
+        let proposed = self.dna(
+            "practice\npropose\nsmall-commits\n--text\nkeep each commit to one change\n--as\ngrace",
+        );
         std::test::assert_eq_int(proposed.code, 0, "grace proposes a practice: " + proposed.stderr);
         // the organization proposes it and opens its Review: its id from the
         // record, and the route it recorded
-        let jr = dna::GitJournal { repo: self.repo };
+        let jr = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.repo },
+            ledger: dna::MemoryLedger { repo: self.repo },
+        };
         let mut practice = "";
         let mut routed = "";
         let deadline = std::time::now() + 900;
@@ -400,29 +679,64 @@ locus App {
             let mut ri = 0;
             while ri < jr.revision() {
                 let e = jr.read(ri);
-                if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "name") == "small-commits" { practice = std::json::find_string_field(e.body, "review_id"); }
-                if e.kind == "review.routed" && len(practice) > 0 && e.entity == practice { routed = e.body; }
+                if e.kind == "knowledge.proposed"
+                    && std::json::find_string_field(e.body, "name") == "small-commits"
+                {
+                    practice = std::json::find_string_field(e.body, "review_id");
+                }
+                if e.kind == "review.routed" && len(practice) > 0 && e.entity == practice {
+                    routed = e.body;
+                }
                 ri = ri + 1;
             }
             if len(routed) == 0 { std::time::sleep(500ms); }
         }
-        std::test::assert_eq_str(dna::native_json_string(routed, "signers"), "position:board=ada", "the Review records the Board's holder as its signer: " + routed);
+        std::test::assert_eq_str(
+            dna::native_json_string(routed, "signers"),
+            "position:board=ada",
+            "the Review records the Board's holder as its signer: " + routed,
+        );
         let outsider = self.decide(practice, "approve\n--as\nbob\n--authority\nboard", 900);
-        std::test::assert(std::str::starts_with(outsider, "refused: ") && std::str::contains(outsider, "reviewer bob holds no position this Review requires (position:board)"), "bob claims the board's authority and is refused: " + outsider);
+        std::test::assert(
+            std::str::starts_with(outsider, "refused: ")
+                && std::str::contains(
+                    outsider,
+                    "reviewer bob holds no position this Review requires (position:board)",
+                ),
+            "bob claims the board's authority and is refused: " + outsider,
+        );
         let board_verdict = self.decide(practice, "approve\n--as\nada", 900);
-        std::test::assert(std::str::starts_with(board_verdict, "settled: approve by ada"), "ada, who holds it, ratifies it: " + board_verdict);
+        std::test::assert(
+            std::str::starts_with(board_verdict, "settled: approve by ada"),
+            "ada, who holds it, ratifies it: " + board_verdict,
+        );
 
         // ---- under any other trust the same holder is refused
         let bob = self.fill("node/dev\nada\n--as\ngrace", 900);
-        std::test::assert(std::str::starts_with(bob.answer, "proposed: "), "ada proposed for node/dev: " + bob.answer + bob.stderr);
+        std::test::assert(
+            std::str::starts_with(bob.answer, "proposed: "),
+            "ada proposed for node/dev: " + bob.answer + bob.stderr,
+        );
         let k = dna::run_tool("kill\n" + body);
         std::test::assert(self.gone(body, 600), "the organism stops");
         let signed = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\ndna.trust\nsigned");
         std::test::assert_eq_int(signed.code, 0, "the record's trust set to signed");
         let refused_signed = self.dna("fill\nnode/reviewer\nada\n--as\ngrace");
-        std::test::assert(refused_signed.code != 0 && std::str::contains(refused_signed.stderr, "fill: refused: ada holds position:node/dev") && std::str::contains(refused_signed.stderr, "dna.trust = signed"), "refused, with the reason: " + refused_signed.stdout + refused_signed.stderr);
+        std::test::assert(
+            refused_signed.code != 0
+                && std::str::contains(
+                    refused_signed.stderr,
+                    "fill: refused: ada holds position:node/dev",
+                )
+                && std::str::contains(refused_signed.stderr, "dna.trust = signed"),
+            "refused, with the reason: " + refused_signed.stdout + refused_signed.stderr,
+        );
 
-        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, dna::MemoryRecord { repo: self.repo }.identity()),
+            "",
+            "this run's schema and roles dropped",
+        );
         dna::scratch_done(scratch);
     }
 }

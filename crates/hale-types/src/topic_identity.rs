@@ -43,7 +43,7 @@
 //! its contract form is what a surface row's types are, for the
 //! contract digest (GH #1417), and agrees with it on every flat struct.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
 use hale_syntax::Span;
@@ -270,6 +270,8 @@ pub enum ShapeForm {
 /// the `Int` it is) and the quantities and points (each its `q(…)` tag).
 pub struct Shapes<'a> {
     types: BTreeMap<&'a str, &'a TypeDecl>,
+    /// The name a document gives each imported type ([`Shapes::display_name`]).
+    imported_names: BTreeMap<&'a str, String>,
     ints: std::collections::BTreeSet<&'a str>,
     quantities: BTreeMap<&'a str, String>,
 }
@@ -286,10 +288,60 @@ pub enum TypeClass<'a> {
     /// A builtin record (`ClosureViolation`, …), by name; its fields are
     /// [`Shapes::builtin_fields`].
     Builtin(&'static str),
-    Enum,
+    /// A declared enum: its name and variants (spec/api.md § Codecs).
+    Enum { name: &'a str, variants: &'a [hale_syntax::ast::EnumVariant] },
     /// Anything else: an array, a tuple, a generic, a name the program
     /// does not declare.
     Other,
+}
+
+/// The document name of every imported type of `types` (by its mangled
+/// name): the name it is declared with, when no other type of the program
+/// is declared with that name and no generated form declares it
+/// (`crate::api_names::reserved_for`), and otherwise its importer's path joined with `.`
+/// (`lib.Orders`), the program's own type keeping the bare name.
+/// Two imported types whose importers write one path (two seeds, each
+/// importing its own `lib`) are told apart by a count after it
+/// (`lib.Orders.2`), in the order of their mangled names.
+fn imported_names<'a>(
+    types: &BTreeMap<&'a str, &'a TypeDecl>,
+    reserved: &BTreeSet<String>,
+    derived: &BTreeMap<&'a str, BTreeSet<String>>,
+) -> BTreeMap<&'a str, String> {
+    // what another type's schema generates (`crate::api_names::schema_names`)
+    let taken_by_other = |me: &str, n: &str| reserved.contains(n) || derived.iter().any(|(k, s)| *k != me && s.contains(n));
+    let declared = |name: &'a str, t: &'a TypeDecl| -> &'a str {
+        t.display.as_deref().map_or(name, |d| d.rsplit("::").next().unwrap_or(d))
+    };
+    let mut count: BTreeMap<&str, usize> = BTreeMap::new();
+    for (name, t) in types {
+        *count.entry(declared(name, t)).or_default() += 1;
+    }
+    let mut out = BTreeMap::new();
+    let mut taken: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, t) in types {
+        let Some(path) = t.display.as_deref() else { continue };
+        let bare = declared(name, t);
+        let doc = if count[bare] == 1 && !taken_by_other(name, bare) {
+            bare.to_string()
+        } else {
+            // the generated code spells a qualified name with `_`
+            // (`lib_Item`): one another type is declared as, or a form
+            // generates, takes the next count too
+            let qualified = path.replace("::", ".");
+            let n = taken.entry(qualified.clone()).or_default();
+            loop {
+                *n += 1;
+                let doc = if *n == 1 { qualified.clone() } else { format!("{qualified}.{n}") };
+                let ident = crate::api_names::type_ident(&doc);
+                if !count.contains_key(ident.as_str()) && !taken_by_other(name, &ident) {
+                    break doc;
+                }
+            }
+        };
+        out.insert(*name, doc);
+    }
+    out
 }
 
 /// The FNV-1a/64 fold of a shape string: a type's shape hash, in either
@@ -336,18 +388,45 @@ impl<'a> Shapes<'a> {
         // different denominations disagree in the shape hash; a program
         // with neither renders exactly what it did.
         let quantities = crate::units::quantity_tags(&scalars);
-        Shapes { types, ints, quantities }
+        // The names a form generates after a schema depend on the name the
+        // schema finally has (`a.Shape`'s `.proto` variant `a_Shape_Pair`),
+        // so they are reserved to a fixpoint: name, reserve what the names
+        // generate, and name again until nothing new is reserved. A name
+        // reserved only qualifies more imported types, so it ends.
+        // A type's own generated names never move it, only another's.
+        let reserved = crate::api_names::reserved_for(slices);
+        let mut derived: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        let mut imported = imported_names(&types, &reserved, &derived);
+        for _ in 0..16 {
+            let mut grew = false;
+            for (name, t) in &types {
+                let doc = imported.get(name).cloned().unwrap_or_else(|| name.to_string());
+                let mut more = BTreeSet::new();
+                crate::api_names::schema_names(&doc, t, &mut more);
+                let have = derived.entry(*name).or_default();
+                for m in more {
+                    grew |= have.insert(m);
+                }
+            }
+            if !grew {
+                break;
+            }
+            imported = imported_names(&types, &reserved, &derived);
+        }
+        Shapes { types, imported_names: imported, ints, quantities }
     }
 
-    /// The name a document gives the declared type `name` (GH #1417, R8a):
-    /// the author's spelling of an imported type (`lib::Orders`, its
-    /// declared path under the import alias) where the cross-seed rename
-    /// recorded one, and the name itself otherwise. A mangled name embeds
-    /// the library's path, which is the checkout's, so a document that
-    /// named it would differ between two checkouts of one program.
+    /// The name a document gives the declared type `name` (GH #1417, R8a;
+    /// `spec/api.md` § Schema names): the name a program's own type is
+    /// declared with, and an imported type's too (`Orders`, declared in
+    /// the library), unless another type of the program is declared with
+    /// that name; then the imported one is named by the path its importer
+    /// writes, joined with `.` (`lib.Orders`). A mangled name embeds the
+    /// library's path, which is the checkout's, and `::` is not a schema
+    /// key OpenAPI admits, so a document names neither.
     pub fn display_name(&self, name: &str) -> String {
-        match self.types.get(name).and_then(|t| t.display.as_deref()) {
-            Some(d) => d.to_string(),
+        match self.imported_names.get(name) {
+            Some(d) => d.clone(),
             None => name.to_string(),
         }
     }
@@ -416,7 +495,7 @@ impl<'a> Shapes<'a> {
         if let Some(td) = self.types.get(name) {
             match &td.body {
                 TypeDeclBody::Struct(fields) => return TypeClass::Struct { name: td.name.name.as_str(), fields },
-                TypeDeclBody::Enum(_) => return TypeClass::Enum,
+                TypeDeclBody::Enum(variants) => return TypeClass::Enum { name: td.name.name.as_str(), variants },
                 TypeDeclBody::Scalar(_) | TypeDeclBody::Alias(_) => {
                     let unit = self.quantities.get(name).cloned();
                     // An identity, a range, a quantity or a point over
@@ -557,14 +636,36 @@ impl<'a> Shapes<'a> {
     }
 
     /// The contract shape of a type a row names: a struct's fields as
-    /// `<field>:<tag>` joined by `;`, an enum as `=enum(<variants>)`, any
+    /// `<field>:<tag>` joined by `;`, an enum as `=enum(<variants>)` (a
+    /// variant's declared error class after it, `Missing@not_found`), any
     /// other type as `=` and its tag. `stack` holds the named types being
     /// rendered, outermost first.
     fn contract_top(&self, te: &TypeExpr, stack: &mut Vec<String>) -> String {
         if let Some(fields) = self.struct_fields(te, true) {
+            // a wire map's key is part of its shape (`<field>:<tag>@<key>`):
+            // it crosses as an object keyed by the key, not as a list; a
+            // map of values' value too (`@<key>-><value>`), since each
+            // element crosses as it alone
+            let keys: BTreeMap<&str, String> = match Self::bare_name(te).and_then(|n| self.types.get(n)).map(|td| &td.body) {
+                Some(TypeDeclBody::Struct(fs)) => fs
+                    .iter()
+                    .filter_map(|f| {
+                        let k = f.indexed_by.as_ref()?;
+                        let key = match &f.map_value {
+                            Some(v) => format!("{}->{}", k.name, v.name),
+                            None => k.name.clone(),
+                        };
+                        Some((f.name.name.as_str(), key))
+                    })
+                    .collect(),
+                _ => BTreeMap::new(),
+            };
             return fields
                 .iter()
-                .map(|(name, ty)| format!("{name}:{}", self.contract_tag(ty, stack)))
+                .map(|(name, ty)| match keys.get(name.as_str()) {
+                    Some(k) => format!("{name}:{}@{k}", self.contract_tag(ty, stack)),
+                    None => format!("{name}:{}", self.contract_tag(ty, stack)),
+                })
                 .collect::<Vec<_>>()
                 .join(";");
         }
@@ -572,12 +673,20 @@ impl<'a> Shapes<'a> {
             let vs = variants
                 .iter()
                 .map(|v| {
-                    if v.fields.is_empty() {
+                    let mut out = if v.fields.is_empty() {
                         v.name.name.clone()
                     } else {
                         let fs: Vec<String> = v.fields.iter().map(|f| self.contract_tag(f, stack)).collect();
                         format!("{}({})", v.name.name, fs.join(","))
+                    };
+                    // a declared error class is contract (spec/api.md §
+                    // Error classes): `Missing@not_found`; a variant with
+                    // none renders as it always has
+                    if let Some(c) = &v.class {
+                        out.push('@');
+                        out.push_str(&c.name);
                     }
+                    out
                 })
                 .collect::<Vec<_>>();
             return format!("=enum({})", vs.join("|"));
@@ -616,6 +725,10 @@ impl<'a> Shapes<'a> {
     /// and `(<tag>,…)` for the compound forms; `opaque(<type>)` for a type
     /// that names nothing the program declares.
     fn contract_tag(&self, ty: &TypeExpr, stack: &mut Vec<String>) -> String {
+        // free-form JSON is any value, carried as its text
+        if hale_syntax::json_gen::is_json_value(ty) {
+            return "json".to_string();
+        }
         if let Some(t) = self.flat_tag(ty) {
             return t;
         }
@@ -904,6 +1017,17 @@ mod tests {
         assert_eq!(forms(src, "Order").1, format!("side:#{h}"));
         let (_, _, added) = forms("type Side = enum { Buy, Sell(Int, String), Hold };", "Side");
         assert_ne!(added, h, "a variant added moves the hash");
+    }
+
+    /// A variant's declared error class is in the shape after it, and a
+    /// class added moves the hash; an enum declaring none is unchanged.
+    #[test]
+    fn an_error_class_is_in_the_shape() {
+        let (_, contract, h) = forms("type E = enum { @not_found Missing, Taken(String) };", "E");
+        assert_eq!(contract, "=enum(Missing@not_found|Taken(s))");
+        let (_, plain, unclassed) = forms("type E = enum { Missing, Taken(String) };", "E");
+        assert_eq!(plain, "=enum(Missing|Taken(s))");
+        assert_ne!(h, unclassed);
     }
 
     /// Arrays, bounded arrays and tuples are their element tags, and an

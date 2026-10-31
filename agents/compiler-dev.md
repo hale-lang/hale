@@ -215,8 +215,8 @@ Contract: [`spec/model.md`](../spec/model.md); tutorial:
   resolution. It no longer evaluates.
 - `claim_lowering.rs` lowers every law surface (claims blocks,
   constitutions, `@effects` / `@no_panic` / `@budget` /
-  `@phase_effects`) to `ClaimIrTable`; fleet plan rows lower in
-  `hale-cli/src/fleet.rs`.
+  `@phase_effects`) to `ClaimIrTable`; a fleet locus's claim rows
+  lower in `hale-cli/src/fleet.rs`.
 - `judgment.rs` is the one authority for `hale check` and the
   artifact. Verdicts: `holds | violated | uncertified | invalid`
   (`verdict.rs`); every non-`holds` verdict carries a diagnostic.

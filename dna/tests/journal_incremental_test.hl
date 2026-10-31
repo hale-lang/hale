@@ -1,11 +1,9 @@
 // dna/tests/journal_incremental_test.hl — a journal kept for a process's
-// life reads, at a refresh, only the rows the record gained since it last
-// read it, and reads the record whole when the chain was not simply grown:
-// a reconcile rebuilds the local rows on top of the remote's head, beside
-// the old chain, so the rows it held are no longer a prefix. Either way
-// what it holds is what a journal reading the record afresh holds: every
-// row's seq, kind, entity, body, author, predecessor and id, the text, the
-// head and the record's identity.
+// life holds, after a refresh, what a journal reading the record afresh
+// holds: every row's seq, kind, entity, body, author, predecessor and id,
+// the text, the head and the record's identity — whoever else appended in
+// between. The record is memory's and only grows (GH #1590), so a refresh
+// reads the rows it gained.
 
 import "../core" as dna;
 
@@ -15,15 +13,20 @@ fn row(kind: String, entity: String, body: String) -> dna::Row {
 
 main locus App {
     params {
-        kept: dna::GitJournal = dna::GitJournal { };
+        kept: dna::RecordJournal = dna::RecordJournal { };
     }
     // `kept` holds what a journal opened now reads.
     fn same_as_fresh(repo: String, what: String) {
-        let fresh = dna::GitJournal { repo: repo, author: "fresh" };
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let fresh = dna::RecordJournal { repo: repo, author: "fresh" };
         std::test::assert_eq_int(self.kept.revision(), fresh.revision(), what + ": the rows");
         std::test::assert_eq_str(self.kept.head(), fresh.head(), what + ": the head");
         std::test::assert_eq_str(self.kept.genesis(), fresh.genesis(), what + ": the identity");
-        std::test::assert_eq_str(self.kept.text, fresh.text, what + ": the text");
+        std::test::assert_eq_str(self.kept.text(), fresh.text(), what + ": the text");
         let mut i = 0;
         while i < fresh.revision() {
             let a = self.kept.read(i);
@@ -45,33 +48,47 @@ main locus App {
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "a repository: " + init.stderr);
-        self.kept = dna::GitJournal { repo: repo, author: "kept" };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory");
+        self.kept = dna::RecordJournal { repo: repo, author: "kept" };
+        let born = self.kept.revision();
         let mut k = 0;
         while k < 3 {
-            let r = self.kept.append(self.kept.revision(), "kept.row", "k" + to_string(k), "{\"n\": " + to_string(k) + ", \"text\": \"tab\\there é\"}");
+            let r = self.kept.append(
+                self.kept.revision(),
+                "kept.row",
+                "k" + to_string(k),
+                "{\"n\": " + to_string(k) + ", \"text\": \"tab\\there é\"}",
+            );
             std::test::assert(r.ok, "kept row " + to_string(k) + " landed: " + r.error);
-            // the journal that appended the chain's first row knows the
-            // record's identity at once, before any refresh (F.26)
-            std::test::assert_eq_str(self.kept.genesis(), self.kept.read(0).digest, "the identity after row " + to_string(k));
+            // the identity is the first row's digest, the genome's pin
+            std::test::assert_eq_str(
+                self.kept.genesis(),
+                self.kept.read(0).digest,
+                "the identity after row " + to_string(k),
+            );
             k = k + 1;
         }
-        self.same_as_fresh(repo, "its own rows on an empty chain");
-        let base = self.kept.read(1).digest;
+        self.same_as_fresh(repo, "its own rows on a new record");
 
         // another writer grows the chain: the kept journal reads its rows alone
-        let other = dna::GitJournal { repo: repo, author: "other" };
+        let other = dna::RecordJournal { repo: repo, author: "other" };
         let rows = dna::RowBatch { };
         k = 0;
         while k < 5 {
-            rows.push(row("other.row", "o" + to_string(k), "a row with \"quotes\", a \\\\ and\nlines " + to_string(k)));
+            rows.push(
+                row(
+                    "other.row",
+                    "o" + to_string(k),
+                    "a row with \"quotes\", a \\\\ and\nlines " + to_string(k),
+                ),
+            );
             k = k + 1;
         }
         let grew = other.append_batch(other.revision(), rows);
         std::test::assert(grew.ok, "the other writer's rows landed: " + grew.error);
         std::test::assert(self.kept.refresh(), "the kept journal saw the chain move");
-        std::test::assert_eq_int(self.kept.revision(), 8, "it holds the new rows");
+        std::test::assert_eq_int(self.kept.revision(), born + 8, "it holds the new rows");
         self.same_as_fresh(repo, "grown by another writer");
-        std::test::assert_eq_int(self.kept.reads_whole, 0, "the chain was never read whole: the journal began on an empty one");
 
         // and its own append on top, then another writer's single row
         let mine = self.kept.append(self.kept.revision(), "kept.row", "k3", "after the others");
@@ -80,25 +97,6 @@ main locus App {
         std::test::assert(one.ok, "one more from the other writer: " + one.error);
         std::test::assert(self.kept.refresh(), "moved again");
         self.same_as_fresh(repo, "grown again");
-        std::test::assert_eq_int(self.kept.reads_whole, 0, "and still not");
-
-        // a reconcile's rebuild: rows built on an earlier row, beside the
-        // chain, and the chain swapped to them — longer, and not grown from
-        // the head the kept journal holds
-        let rec = dna::GitRecord { repo: repo };
-        let mut at = base;
-        k = 0;
-        while k < 12 {
-            at = rec.build(at, row("rebuilt.row", "r" + to_string(k), "rebuilt " + to_string(k)), false, "");
-            std::test::assert(len(at) > 0, "rebuilt row " + to_string(k) + ": " + rec.last_error);
-            k = k + 1;
-        }
-        std::test::assert(rec.move_chain("journal", at, "*"), "the chain swapped to the rebuilt one");
-        std::test::assert(self.kept.refresh(), "the kept journal saw the swap");
-        std::test::assert_eq_int(self.kept.revision(), 14, "it holds the rebuilt chain");
-        std::test::assert_eq_str(self.kept.read(2).kind, "rebuilt.row", "the rows after the base are the rebuilt ones");
-        self.same_as_fresh(repo, "rebuilt beside the chain");
-        std::test::assert_eq_int(self.kept.reads_whole, 1, "a rebuilt chain is read whole");
 
         // a refresh with nothing new moves nothing
         std::test::assert(!self.kept.refresh(), "nothing new");

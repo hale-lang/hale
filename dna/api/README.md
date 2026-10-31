@@ -39,7 +39,7 @@ hale build dna/api -o target/seeds/api/api
 ./target/seeds/api/api /absolute/path/to/a/dna-project 8792
 ```
 
-The project must already have a DNA Record (`hale dna new` / `init`). The server
+The project must already have a DNA Record (`hale habitat graft`). The server
 binds only `127.0.0.1`. Stop it with Ctrl-C. Discover the native application id:
 
 ```sh
@@ -144,7 +144,13 @@ that does not build is `definitions_unavailable` with the reason. The face's
 definitions views read what the organization admits. A composed head supplies
 the application-owned catalog to `ops::DeclaredWorkflowCatalog`, alongside the
 same declared `AdmissionLimits` and the loaded-source `DefinitionProvenance`,
-then passes that provider to `api::serve(root, port, web, provider)` or `Api`.
+then hands that provider to the head it composes: as `definitions:` of the
+`Api` handler its `std::http::Server` param is built with, beside its own
+`Commands`, with the exposures of `HeadCommands` as params of its main locus
+(`dna/api/practice_review/main.hl` composes one this way), or through the
+seed's standalone entry, `serve_with_commands(root, port, web, provider,
+commands)` (`serve(root, port, web, provider)` with no commands; both are
+plain functions of `dna/api/main.hl`, not serve sites).
 The provider must share the actual catalog used by that application; no parallel
 sample or reconstructed catalog establishes this capability.
 
@@ -378,9 +384,7 @@ position the record states or proposes and a person it knows (the CLI's
 (`dna::batch_plan`). A refusal there is a receipt (`state: "refused"`,
 `receipt.structure.why`) and no row; the same batch still pending is
 answered `already_proposed` with the Review it awaits. A command is
-conditioned on `record_head` (`stale_subject` once the Record moved) and
-refused `commands_unsupported` once the Record's ledger is adopted, as
-raising work is. The receipt's `structure` branch reads back `{ state,
+conditioned on `record_head` (`stale_subject` once the Record moved). The receipt's `structure` branch reads back `{ state,
 request_id, review_id, event_id, why, warning }`: `requested` until the
 organization answers the request row, then `proposed` (with the Review) or
 `refused` (with why). `vacate` has no command of its own: it is a one-step
@@ -418,11 +422,16 @@ only the members it may call.
 **HTTP is the surface's own exposure** (GH #1135, #1417; `bearer.hl`). The
 head serves `http::Rpc` on the port its launcher gives it in
 `HALE_DNA_COMMANDS_PORT` (never derived from the reads' port; unset, the
-exposure listens on a port the system picks and nothing is told, `api.http`
-is `""` and a relayed command answers 503 `commands_unavailable`) and no
-program forwards a call unauthenticated. The project head gives its API child
-the port `start.sh --commands-port` names (8795 by default); a fixture takes
-one from its free-port helper. `POST /call/Commands::claim` takes the payload
+exposure listens on a port the system picks) and no program forwards a call
+unauthenticated. Once the server and the exposure listen, the process prints
+both ports and, when its launcher names a file in `HALE_DNA_API_PORTS`,
+writes them there (`api=<port>`, `commands=<port>`, renamed into place). The
+project head gives its API child the ports `start.sh --api-port` and
+`--commands-port` name (8793 and 8795 by default); a head started without
+them hands the child 0 for both and reads back the ports it got, so no port
+is drawn free and lost to a neighbour before the bind. Until the child has
+reported a commands port, a relayed command answers 503
+`commands_unavailable`. `POST /call/Commands::claim` takes the payload
 as its body under `Authorization: Bearer <token>`, and answers per
 `spec/api.md` § Outcomes: 200 with the `CommandReply`, or a `{"refusal": …}`
 body with the status the kind earns (`unauthenticated` 401, `unauthorized` 403,
@@ -527,8 +536,8 @@ states factual support, not the caller's authority. Each row also carries
 `usage`: the model calls attributed to the Task — its plan, its Mutations'
 attempts and their verdicts — as the same object the executions carry.
 
-Reads require a trusted-local principal and a complete Record-only projection
-before Ledger adoption. They serve only the current captured head: an old
+Reads require a trusted-local principal and a complete projection of the record
+and its Ledger, read as one. They serve only the current captured head: an old
 `snapshot` returns 409, rather than historical Task contents. Hidden Tasks are
 omitted, including identifiers and counts; incomplete, unsupported or over-limit
 history is unavailable. An unavailable projection is not an empty Task list.
@@ -613,20 +622,29 @@ receipt grant. `recover` is independent of `reassign`, so an operator may retain
 lookup after new writes are denied. Lookup does not repeat the mutation and
 resolves the original receipt even after the Task changes.
 
+`/dna/tasks` reads the record and its Ledger as one (`basis.memory` is
+`record+ledger`), and the `task.reassigned` fact is the Ledger's row, written under the head's role and keyed by the
+command, with `command_record_head` naming the Ledger row before it. A history
+row's `sequence` is its position in that one read: the record's rows, then the
+Ledger's. `basis.ledger_revision` is the Ledger's rows read, so every
+`sequence` is below `record_revision` plus `ledger_revision`.
+
 This profile does not retire people, transfer responsibility across owners,
 modify source ownership, complete Tasks or control workflow execution. OIDC,
-signed trust, Ledger-backed administration and source-to-live ownership joins
+signed trust and source-to-live ownership joins
 need their own supported service contract. Existing CLI Task commands are not
 made part of this provider by this call.
 
 ## Head: project service
 
 `dna/api/project_service` is the head (GH #965): the one process the
-browser talks to. It serves the shell, owns the operator-machine state — a
+browser talks to. It serves surfaces only (the standard face serves the shell in front of it), owns the operator-machine state — a
 project registry, a receipt journal, run and child files under
 `${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}` —
 and reverse-proxies every `/api/hale/v1/applications…` request to the attached
-project's API child (`practice_review <root> <api-port>`) on the loopback, so
+project's API child (`practice_review <root> <api-port>`; 0, the head's
+default, is whatever port the child is given, which it reports back) on the
+loopback, so
 the browser has one origin and the child's exact-`Origin` guard holds untouched.
 Switching a project replaces the child. The head re-implements no verb: each
 operation runs `$HALE_BIN dna …` (or `git config` for the two forge keys) as a
@@ -681,11 +699,12 @@ head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","activ
   pushed.
 
 Operations (all version 1): `dna.project.create` / `init` (600 s runs of
-`hale dna new` / `init`, then an attach), `attach` / `detach` / `forget`
+`hale habitat graft`, then an attach), `attach` / `detach` / `forget`
 (inline; attach validates the worktree, the Record, the `dna/` seed, and
 refuses `principal_unsupported` / `trust_unsupported` for OIDC or signed
 projects), `dna.project.sync` / `publish` (a commit and push of the genome,
-then a sync), `dna.forge.configure` / `sync`, and the fourteen body, secret,
+then a sync), `dna.forge.configure` (the forge's Board logins alone: the
+forge is the habitat's allocation, `hale habitat forge`) / `sync`, and the fourteen body, secret,
 model, connection and handoff operations of the head's contract.
 A secret is never a value on this wire: `dna.secret.set` names a **source** —
 a 0600 one-line file under `${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/`
@@ -701,7 +720,9 @@ and it proxies no `/auth/*`. Restarting a head over the same state directory
 answers every earlier `request_id` with the same terminal receipt and
 re-attaches the last activated project. `tests/journal_test.hl`,
 `tests/operations_test.hl` and `tests/head_api_test.hl` run under
-`HALE_HEAD_BIN` and `HALE_API_BIN`; each makes its own scratch root.
+`HALE_HEAD_BIN` and `HALE_HEAD_API_BIN` (`head_assets_test.hl` and `head_face_test.hl`
+also `HALE_FACE_BIN`, a build of `dna/face/standard`) (a build of `dna/api/practice_review`,
+the child a head is configured to run); each makes its own scratch root.
 ## Raising work
 
 `dna.task.create@1` is the face's `hale dna ask`: it records the same
@@ -747,9 +768,13 @@ against. Its `task_create` object names the minted `intent_id`, the row's
 `refused`, or `born` with `task_id` filled from the `task.born` row whose body
 starts with `<intent_id>: `. A born-but-unhanded Task is absent from
 `/dna/tasks`, so `CommandLookup { request_id }` is how the face follows the
-ask; nothing else is re-read. After `ledger.adopted` new asks are refused
-(`commands_unsupported`) like every other operation here; recorded asks stay
-recoverable.
+ask; nothing else is re-read. On a record with a Ledger — every record born in memory has one from its
+first rows (GH #1590) — the ask is
+the Ledger's row: the head writes it there under its role
+(`HALE_DNA_MEMORY_DSN_HEAD`), keyed by the command so a retry lands once, with
+`command_record_head` naming the Ledger row before it; the record is
+unmoved, and the answer is re-derived over the record and its Ledger read as
+one. Without the head's memory DSN the ask is `commands_unsupported`.
 
 Two asks minted in the same millisecond on one host would share an id and the
 organism admits one Task per id; this head steps an id its Record already holds
@@ -844,7 +869,7 @@ settles every reply (`attempt.outcome`, naming the request and carrying
 `result_ref` and the hat) or refuses it with
 `attempt.outcome_refused` naming why and the request; `CommandLookup { request_id }`
 re-derives `settled` with the disposition, or `refused` with the reason and the
-refusing row's id. Once the organism has adopted the ledger, both calls and
+refusing row's id. On a record with a Ledger, both calls and
 the hat read and write it under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`);
 without it they answer `commands_unsupported` / `context_source_unavailable`.
 
@@ -895,13 +920,11 @@ loads the authenticated API data.
 
 Practice documents must match their content digest, proposal metadata and a
 supported native canonical encoding. Redacted/protected text is suppressed even
-when a stale local blob remains. After any Ledger adoption the API still serves
-Record metadata, but withholds canonical text and derived Review questions until
-a later adapter can establish current Ledger receipt visibility. Typed decision
-outcomes remain distinct from withheld display text. The legacy local CLI keeps
-its existing receipt-rendering behavior.
-Ledger abandonment does not restore visibility: it does not copy historical
-receipt restrictions back into Record. Unknown classification metadata and
+when a stale local blob remains. Receipt restrictions are the Ledger's rows, read
+beside the record: when the Ledger cannot be read, the API still serves Record
+metadata but withholds canonical text and derived Review questions. Typed
+decision outcomes remain distinct from withheld display text. The legacy local
+CLI keeps its existing receipt-rendering behavior. Unknown classification metadata and
 conflicting Review subject references likewise cannot establish readable text.
 
 See the [query layer](../operations/README.md) for projection semantics.
@@ -916,7 +939,8 @@ hale build dna/api -o target/seeds/api/api
 HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/tests
 hale check dna/api/practice_review && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
 hale check dna/api/project_service && hale build dna/api/project_service -o target/seeds/project_service/project_service
-HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/project_service/tests
+hale check dna/face/standard && hale build dna/face/standard -o target/seeds/standard/standard
+HALE_BIN="$(command -v hale)" HALE_FACE_BIN="$PWD/target/seeds/standard/standard" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" hale test dna/api/project_service/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```
@@ -971,9 +995,8 @@ exact details include the immutable bound nodes, admitted attempt histories and
 native transition order. Decimal strings preserve native integer identities.
 `recursive_workflows: false` still means the head supplies no execution service.
 
-This initial adapter reads complete Record routing-0 histories only. Any past
-Ledger adoption makes it unavailable, including after abandonment; it does not
-merge memories or guess a missing Ledger. OIDC reads require an owning-service
+This adapter reads the record and its Ledger as one; a reader that cannot reach
+the Ledger is unavailable rather than guessing what it holds. OIDC reads require an owning-service
 visibility provider and are unavailable here. Reference visibility changes or
 non-public/non-internal Work classes suppress an entire affected execution.
 The response does not dereference receipt bodies, infer runtime identities, or
@@ -1006,14 +1029,16 @@ identity namespace as the record's other commands: payload
 `PersonRetirement { request_id, person, subject_digest, to }`, targeting
 `dna.person`. An empty successor is permitted only for a complete plan with no held Tasks.
 
-Publication creates ordinary Task reassignment facts and a retirement fact
-off-ref, then publishes the complete chain with one Record compare-and-swap.
-Recovery verifies that exact chain and its transfer manifest. The browser retains
+The transfers are the Ledger's rows, landed first (each keyed
+by the command and the Task, so one asked again lands once), and the retirement
+is the record's row after them, its manifest naming the transfers' ids: the
+rows `hale dna retire` writes there. Two memories take no one write, so a
+retirement stopped between its transfers and its row keeps the transfers and
+is asked again against the plan they changed (`stale_subject`). The browser retains
 only request identity across reloads and never resubmits an uncertain request.
 
 This profile requires the updated Body and CLI writers from the same deployment;
 their exact admission checks prevent concurrent handoffs to retired people.
-It supports local Record authority, at most 32 transferred Tasks, and no prior
-Ledger adoption. Source memberships and declared positions are separate. Mixed
+It supports local Record authority and at most 32 transferred Tasks. Source memberships and declared positions are separate. Mixed
 old writers, cross-owner transfer and distributed Record reconciliation are not
 covered by this local atomic publication profile.

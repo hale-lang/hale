@@ -1,8 +1,9 @@
 // ---- the wire, as every client of a surface speaks it (spec/api.md § The clients) ----
 //
 // An endpoint is `unix:PATH` (or a path), `http://host:port` for a member's
-// call, and `ws://host:port` for a stream. A call sends the surface's digest
-// (`digest` in the line over a socket, `Hale-Surface-Digest` over HTTP) and
+// call, and `ws://host:port` for a stream. A call sends its member's digest
+// (`digest` in the line over a socket, `Hale-Surface-Digest` over HTTP), which
+// a surface that has since gained members still admits, and
 // is one of five outcomes; TLS is not spoken here.
 
 const API_WAIT_NS: Int = 30000000000;
@@ -39,7 +40,12 @@ fn api_lost(why: String) -> ApiRaw {
 }
 
 fn api_refusal(raw: ApiRaw) -> ApiRefusal {
-    return ApiRefusal { kind: raw.kind, reason: raw.reason, requires: raw.requires, served: raw.served };
+    return ApiRefusal {
+        kind: raw.kind,
+        reason: raw.reason,
+        requires: raw.requires,
+        served: raw.served,
+    };
 }
 
 // A JSON string token.
@@ -95,23 +101,53 @@ fn api_refused(refusal: String, status: Int) -> ApiRaw {
 
 // ---- over HTTP: POST <endpoint>/call/<member>, the body the request's JSON ----
 
-fn api_http_send(endpoint: String, bearer: String, member: String, payload: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn api_http_send(
+    endpoint: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(endpoint + "/call/" + member) or raise;
     let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-    let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + SURFACE_DIGEST;
-    let req = std::http::ClientRequest { method: "POST", url: u, headers: headers, body: std::bytes::from_string(payload) };
+    let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + digest;
+    let req = std::http::ClientRequest {
+        method: "POST",
+        url: u,
+        headers: headers,
+        body: std::bytes::from_string(payload),
+    };
     return std::http::request(req) or raise;
 }
 
-fn api_http(endpoint: String, bearer: String, member: String, payload: String) -> ApiRaw {
+fn api_http(
+    endpoint: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> ApiRaw {
     let lost = std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
-    let r = api_http_send(endpoint, bearer, member, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let r = api_http_send(endpoint, bearer, member, digest, payload) or std::http::ClientResponse {
+        status: 0,
+        body: std::bytes::from_string(err.kind + " " + err.detail),
+    };
     let text = std::str::from_bytes(r.body);
-    if r.status == 0 { return api_lost("the endpoint " + endpoint + " cannot be reached: " + text); }
+    if r.status == 0 {
+        return api_lost("the endpoint " + endpoint + " cannot be reached: " + text);
+    }
     if r.status == 200 { return ApiRaw { outcome: 0, body: text }; }
     if r.status == 422 { return ApiRaw { outcome: 1, body: text }; }
+    // a classed handler error names its class (spec/api.md § Error classes)
+    if std::str::contains(std::str::lower(r.headers), "hale-error-class:") {
+        return ApiRaw { outcome: 1, body: text };
+    }
     let refusal = std::json::find_field_raw(text, "refusal");
-    if len(refusal) == 0 { return api_lost("the endpoint answered " + to_string(r.status) + " with no refusal: " + text); }
+    if len(refusal) == 0 {
+        return api_lost(
+            "the endpoint answered " + to_string(r.status) + " with no refusal: " + text,
+        );
+    }
     return api_refused(refusal, r.status);
 }
 
@@ -136,8 +172,9 @@ fn api_unix_exchange(path: String, line: String) -> String {
     return "";
 }
 
-fn api_unix(path: String, member: String, payload: String) -> ApiRaw {
-    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":" + api_str(API_ID) + ",\"digest\":" + api_str(SURFACE_DIGEST) + "}";
+fn api_unix(path: String, member: String, digest: String, payload: String) -> ApiRaw {
+    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":"
+        + api_str(API_ID) + ",\"digest\":" + api_str(digest) + "}";
     let reply = api_unix_exchange(path, line);
     if len(reply) == 0 { return api_lost("the socket " + path + " gave no answer"); }
     if std::json::find_bool_field(reply, "ok") {
@@ -146,26 +183,51 @@ fn api_unix(path: String, member: String, payload: String) -> ApiRaw {
     let error = std::json::find_field_raw(reply, "error");
     if len(error) > 0 { return ApiRaw { outcome: 1, body: error }; }
     let refusal = std::json::find_field_raw(reply, "refusal");
-    if len(refusal) == 0 { return api_lost("the socket answered a line that is no outcome: " + reply); }
+    if len(refusal) == 0 {
+        return api_lost("the socket answered a line that is no outcome: " + reply);
+    }
     return api_refused(refusal, 0);
 }
 
-// One call of a member: its request as JSON in, its outcome out. A bearer is
-// named for HTTP (and a hub); a socket's caller is its peer.
-fn api_call(endpoint: String, bearer: String, member: String, payload: String) -> ApiRaw {
-    if std::str::starts_with(endpoint, "http://") { return api_http(endpoint, bearer, member, payload); }
-    if std::str::starts_with(endpoint, "https://") { return api_lost("TLS is not spoken by this client"); }
-    if std::str::starts_with(endpoint, "ws://") { return api_lost("a hub endpoint carries streams: subscribe to one"); }
-    if std::str::starts_with(endpoint, "unix:") { return api_unix(endpoint[5..len(endpoint)], member, payload); }
-    return api_unix(endpoint, member, payload);
+// One call of a member: its request as JSON in, its outcome out, under the
+// member's own digest (which a surface that gained members still admits). A
+// bearer is named for HTTP (and a hub); a socket's caller is its peer.
+fn api_call(
+    endpoint: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> ApiRaw {
+    if std::str::starts_with(endpoint, "http://") {
+        return api_http(endpoint, bearer, member, digest, payload);
+    }
+    if std::str::starts_with(endpoint, "https://") {
+        return api_lost("TLS is not spoken by this client");
+    }
+    if std::str::starts_with(endpoint, "ws://") {
+        return api_lost("a hub endpoint carries streams: subscribe to one");
+    }
+    if std::str::starts_with(endpoint, "unix:") {
+        return api_unix(endpoint[5..len(endpoint)], member, digest, payload);
+    }
+    return api_unix(endpoint, member, digest, payload);
 }
 
 // ---- the description the exposure serves the caller ----
 
-fn api_get(url: String, bearer: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn api_get(
+    url: String,
+    bearer: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(url) or raise;
     let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-    let req = std::http::ClientRequest { method: "GET", url: u, headers: auth + "Accept: application/json", body: std::bytes::from_string("") };
+    let req = std::http::ClientRequest {
+        method: "GET",
+        url: u,
+        headers: auth + "Accept: application/json",
+        body: std::bytes::from_string(""),
+    };
     return std::http::request(req) or raise;
 }
 
@@ -174,14 +236,24 @@ fn api_get(url: String, bearer: String) -> std::http::ClientResponse fallible(st
 // served; "" when it could not be read.
 fn api_describe(endpoint: String, bearer: String) -> String {
     if std::str::starts_with(endpoint, "http://") {
-        let r = api_get(endpoint + "/.description", bearer) or std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
+        let r = api_get(endpoint + "/.description", bearer) or std::http::ClientResponse {
+            status: 0,
+            body: std::bytes::from_string(""),
+        };
         return if r.status == 200 { std::str::from_bytes(r.body) } else { "" };
     }
     if std::str::starts_with(endpoint, "ws://") {
-        let r = api_get("http://" + endpoint[5..len(endpoint)] + "/.description", bearer) or std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
+        let r = api_get(
+            "http://" + endpoint[5..len(endpoint)] + "/.description",
+            bearer,
+        ) or std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
         return if r.status == 200 { std::str::from_bytes(r.body) } else { "" };
     }
-    let path = if std::str::starts_with(endpoint, "unix:") { endpoint[5..len(endpoint)] } else { endpoint };
+    let path = if std::str::starts_with(endpoint, "unix:") {
+        endpoint[5..len(endpoint)]
+    } else {
+        endpoint
+    };
     return std::json::find_field_raw(api_unix_exchange(path, "{\"describe\":true}"), "value");
 }
 
@@ -227,7 +299,11 @@ locus ApiWs {
         std::io::tcp::__set_recv_timeout_ns(fd, 100000000);
         self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
         let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-        self.stream.send("GET / HTTP/1.1\r\nHost: " + hostport + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + API_WS_KEY + "\r\nSec-WebSocket-Version: 13\r\n" + auth + "\r\n") or discard;
+        self.stream.send(
+            "GET / HTTP/1.1\r\nHost: " + hostport
+                + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "
+                + API_WS_KEY + "\r\nSec-WebSocket-Version: 13\r\n" + auth + "\r\n",
+        ) or discard;
         let until = std::time::monotonic_ns() + API_WAIT_NS;
         let mut head = "";
         while std::time::monotonic_ns() < until && std::str::index_of(head, "\r\n\r\n") < 0 {

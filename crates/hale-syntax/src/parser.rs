@@ -788,6 +788,8 @@ impl Parser {
         let mut supervised_locus = false;
         // GH #436: `@sealed locus` — params readable only from inside.
         let mut sealed_locus = false;
+        // GH #1530: `@repo(T) locus …` — the locus is the place T's state lives.
+        let mut repo_locus: Option<RepoAnnotation> = None;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -814,6 +816,8 @@ impl Parser {
             // GH #436: `@sealed locus` — state confinement.
             let is_sealed = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "sealed");
+            let is_repo = matches!(&kind_tok,
+                TokenKind::Ident(s) if s == "repo");
             // GH #723: the fn-level CONTRACT decorators — `@unbounded`,
             // `@hot`, `@budget(...)`, and the effect assertions
             // (`@no_syscall` … and the general `@effects(...)`). They
@@ -895,6 +899,23 @@ impl Parser {
                 leading_span = Some(match leading_span {
                     Some(s) => s.merge(at.span),
                     None => at.span,
+                });
+                continue;
+            }
+            if is_repo {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // `repo`
+                if repo_locus.is_some() {
+                    return Err(Diag::parse(at.span, "a locus takes one `@repo(T)`"));
+                }
+                self.expect(TokenKind::LParen, "(")?;
+                let ty = self.expect_ident("the type the repo holds")?;
+                let close = self.expect(TokenKind::RParen, ")")?;
+                let span = at.span.merge(close.span);
+                repo_locus = Some(RepoAnnotation { ty, span });
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(span),
+                    None => span,
                 });
                 continue;
             }
@@ -1051,6 +1072,7 @@ impl Parser {
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
             || phase_effects.is_some() || supervised_locus || depends.is_some()
             || sealed_locus
+            || repo_locus.is_some()
         {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
@@ -1078,6 +1100,7 @@ impl Parser {
             locus.depends = depends;
             locus.supervised = supervised_locus;
             locus.sealed = sealed_locus;
+            locus.repo = repo_locus;
             return Ok(TopDecl::Locus(locus));
         }
         // #382 phase 3: `domain wing = { delta, gamma };` — a
@@ -1337,6 +1360,13 @@ impl Parser {
                 }
                 self.parse_target_decl().map(TopDecl::Target)
             }
+            // Phase 4 (C2): `fleet locus NAME { … }`. `fleet` is a word
+            // only in front of `locus`; everywhere else it is a name.
+            TokenKind::Ident(s)
+                if s == "fleet" && matches!(self.peek_at(1), TokenKind::Locus) =>
+            {
+                self.parse_fleet_decl().map(TopDecl::Fleet)
+            }
             // GH #382 phase 1: `group NAME = { member, ... };` —
             // declared claim vocabulary. Contextual keyword, same
             // pattern as `topic` / `target`.
@@ -1350,12 +1380,19 @@ impl Parser {
             {
                 self.parse_role_decl().map(TopDecl::Role)
             }
-            // GH #1417: `api NAME { rpc Locus::fn ...; }`, told from an
-            // identifier named `api` by a name and then `{`.
+            // GH #1417: `api NAME [requires: [..]] { rpc Locus::fn ...; }`,
+            // told from an identifier named `api` by a name and then `{`
+            // or the surface's `requires:`, or an imported surface's `from
+            // openapi "…"` / `from mcp "…"`.
             TokenKind::Ident(s)
                 if s == "api"
                     && matches!(self.peek_at(1), TokenKind::Ident(_))
-                    && matches!(self.peek_at(2), TokenKind::LBrace) =>
+                    && (matches!(self.peek_at(2), TokenKind::LBrace)
+                        || (matches!(self.peek_at(2), TokenKind::Ident(r) if r == "requires")
+                            && matches!(self.peek_at(3), TokenKind::Colon))
+                        || (matches!(self.peek_at(2), TokenKind::Ident(r) if r == "from")
+                            && matches!(self.peek_at(3), TokenKind::Ident(_))
+                            && matches!(self.peek_at(4), TokenKind::StringLit(_)))) =>
             {
                 self.parse_api_decl().map(TopDecl::Api)
             }
@@ -1506,13 +1543,45 @@ impl Parser {
         })
     }
 
-    /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }` —
-    /// a surface (spec/api.md § Surfaces and their rows). `api` and `rpc`
-    /// are contextual; the locus may be qualified (`rpc lib::Orders::cancel;`),
-    /// its last segment being the handler.
+    /// GH #1417: `api NAME [requires: [ROLE, …]] { rpc Locus::fn
+    /// [requires: [ROLE, …]]; … }` — a surface (spec/api.md § Surfaces and
+    /// their rows). `api` and `rpc` are contextual; the locus may be
+    /// qualified (`rpc lib::Orders::cancel;`), its last segment being the
+    /// handler. A `requires` on the surface is the default of its rows: a
+    /// row that writes none holds it, and one that writes its own
+    /// (`requires: []` included) holds that instead. The row is what every
+    /// later pass reads, so the default is resolved here.
+    ///
+    /// An imported surface (spec/api.md § Imported surfaces) names where it
+    /// came from, `api NAME from openapi "…" { … }` or `from mcp "…"`, and
+    /// its rows name their shape and no handler: `rpc name(Request) ->
+    /// Response wire: "…";`, the request and the response each optional.
     fn parse_api_decl(&mut self) -> Result<ApiDecl, Diag> {
         let kw = self.bump(); // `api`
         let name = self.expect_ident("surface name")?;
+        let source = if matches!(self.peek(), TokenKind::Ident(s) if s == "from") {
+            let from = self.bump();
+            let kind = self.expect_ident("`openapi` or `mcp`")?;
+            if kind.name != "openapi" && kind.name != "mcp" {
+                return Err(Diag::parse(
+                    kind.span,
+                    format!(
+                        "an imported surface is `from openapi \"…\"` or `from mcp \"…\"`, got `from {}`",
+                        kind.name
+                    ),
+                ));
+            }
+            let at = self.peek_token().span;
+            let location = self.expect_string_literal("the document an imported surface was read from")?;
+            Some(ApiSource { kind, location, span: from.span.merge(at) })
+        } else {
+            None
+        };
+        let default_requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
+            Some(self.parse_requires_list()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::LBrace, "{")?;
         let mut rows = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
@@ -1524,7 +1593,13 @@ impl Parser {
                 ));
             }
             self.bump(); // `rpc`
-            let mut segs = vec![self.expect_ident("the handler's locus")?];
+            let first = self.expect_ident("the handler's locus")?;
+            if self.at(&TokenKind::LParen) {
+                let row = self.parse_signature_row(tok.span, first, default_requires.as_ref())?;
+                rows.push(row);
+                continue;
+            }
+            let mut segs = vec![first];
             while self.eat(&TokenKind::ColonColon) {
                 segs.push(self.expect_member_name("a name after `::`")?);
             }
@@ -1540,16 +1615,76 @@ impl Parser {
             let method = segs.pop().expect("two segments");
             let written = segs.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
             let locus = Ident::new(written.clone(), segs[0].span.merge(segs[segs.len() - 1].span));
+            let route = if matches!(self.peek(), TokenKind::Ident(s) if s == "at") {
+                let at = self.bump();
+                let lit = self.peek_token().span;
+                let text = self.expect_string_literal("the route, `METHOD /path`")?;
+                let mut end = lit;
+                let mut status = None;
+                if matches!(self.peek(), TokenKind::Ident(s) if s == "status") {
+                    self.bump();
+                    self.expect(TokenKind::Colon, ":")?;
+                    let n = self.peek_token().clone();
+                    let TokenKind::IntLit(v) = n.kind else {
+                        return Err(Diag::parse(n.span, "`status:` takes an integer, the success status of the route"));
+                    };
+                    self.bump();
+                    end = n.span;
+                    status = Some(v as i64);
+                }
+                Some(RpcRoute { text, status, span: at.span.merge(end) })
+            } else {
+                None
+            };
             let requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
                 self.parse_requires_list()?
             } else {
-                Vec::new()
+                default_requires.clone().unwrap_or_default()
             };
             let semi = self.expect(TokenKind::Semi, ";")?;
-            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span) });
+            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span), signature: None, route });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
-        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None })
+        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None, source })
+    }
+
+    /// The rest of a signature row after its name: `(Request) [->
+    /// Response] [wire: "…"] [requires: [ROLE, …]];`.
+    fn parse_signature_row(
+        &mut self,
+        start: Span,
+        name: Ident,
+        default_requires: Option<&Vec<Ident>>,
+    ) -> Result<RpcRow, Diag> {
+        self.expect(TokenKind::LParen, "(")?;
+        let request = if self.at(&TokenKind::RParen) { None } else { Some(self.parse_type_expr()?) };
+        self.expect(TokenKind::RParen, ")")?;
+        let response = if self.eat(&TokenKind::Arrow) { Some(self.parse_type_expr()?) } else { None };
+        let mut wire = None;
+        let mut requires = None;
+        loop {
+            match self.peek() {
+                TokenKind::Ident(s) if s == "wire" && wire.is_none() => {
+                    self.bump();
+                    self.expect(TokenKind::Colon, ":")?;
+                    wire = Some(self.expect_string_literal("the operation's name at its endpoint")?);
+                }
+                TokenKind::Ident(s) if s == "requires" && requires.is_none() => {
+                    requires = Some(self.parse_requires_list()?);
+                }
+                _ => break,
+            }
+        }
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(RpcRow {
+            locus: Ident::new(String::new(), name.span),
+            written: String::new(),
+            method: name,
+            requires: requires.unwrap_or_else(|| default_requires.cloned().unwrap_or_default()),
+            span: start.merge(semi.span),
+            signature: Some(RpcSignature { request, response, wire }),
+            route: None,
+        })
     }
 
     /// GH #1417: `requires: [ROLE, …]`, the roles a caller of a row (or a
@@ -1983,8 +2118,31 @@ impl Parser {
                 }
                 TokenKind::Ident(s) if s == "avoiding" => {
                     self.bump();
-                    avoiding =
-                        Some(self.expect_ident("group name after `avoiding`")?);
+                    // A group's name, or a stdlib module inline
+                    // (`avoiding std::log::*`): the module is the gate
+                    // itself, so naming it needs no group of its own.
+                    // It stands for the implicit group of that one
+                    // member, named by its spelling.
+                    if matches!(self.peek_at(1), TokenKind::ColonColon) {
+                        let m = self.parse_group_member()?;
+                        if !m.glob || m.segments.first().map(|s| s.name.as_str()) != Some("std") {
+                            return Err(Diag::parse(
+                                m.span,
+                                format!(
+                                    "`avoiding {}`: an inline gate names a \
+                                     stdlib module (`avoiding std::log::*`); \
+                                     name any other set as a group \
+                                     (`group gate = {{ … }};`, `avoiding gate`)",
+                                    m.display()
+                                ),
+                            ));
+                        }
+                        avoiding = Some(Ident::new(m.display(), m.span));
+                    } else {
+                        avoiding = Some(
+                            self.expect_ident("group name after `avoiding`")?,
+                        );
+                    }
                 }
                 _ => break,
             }
@@ -2130,6 +2288,28 @@ impl Parser {
     fn parse_require_form(&mut self) -> Result<ClaimForm, Diag> {
         self.bump(); // `require`
         let pred_tok = self.peek_token().clone();
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "separate_domains")
+        {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let group = |parser: &mut Self| -> Result<Ident, Diag> {
+                let q = parser.peek_token().clone();
+                if !matches!(&q.kind, TokenKind::Ident(s) if s == "all") {
+                    return Err(Diag::parse(
+                        q.span,
+                        "expected `all` before each group in \
+                         `require separate_domains(all A, all B)`",
+                    ));
+                }
+                parser.bump();
+                parser.expect_ident("group name")
+            };
+            let left = group(self)?;
+            self.expect(TokenKind::Comma, ",")?;
+            let right = group(self)?;
+            self.expect(TokenKind::RParen, ")")?;
+            return Ok(ClaimForm::RequireSeparateDomains { left, right });
+        }
         // GH #436: `require sealed(all G);` — a universal over the
         // group's members rather than an existential over endpoints,
         // so it parses its own shape.
@@ -2230,7 +2410,8 @@ impl Parser {
                     pred_tok.span,
                     format!(
                         "expected `subscribes`, `publishes`, \
-                         `sealed`, `attributed`, or `no_silent_loss` after `require`, \
+                         `sealed`, `attributed`, `no_silent_loss`, or \
+                         `separate_domains` after `require`, \
                          got {:?}",
                         other
                     ),
@@ -3196,6 +3377,8 @@ impl Parser {
             || name == "budget"
             || name == "gated"
             || name == "rpc"
+            || name == "idempotent"
+            || name == "not_idempotent"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -3281,6 +3464,9 @@ impl Parser {
             match name.as_str() {
                 "unbounded" => out.unbounded = true,
                 "hot" => out.hot = true,
+                // GH #1530: the repo method's idempotency marker. Kept
+                // as the decorator's name; `repo_check` reads it.
+                "idempotent" | "not_idempotent" => {}
                 _ => out.effects.push(
                     Self::effect_assert_for(&name)
                         .expect("is_fn_decorator admitted this name"),
@@ -3719,6 +3905,7 @@ impl Parser {
             depends: None,
             supervised: false,
             sealed: false,
+            repo: None,
             name,
             is_main,
             export: false,
@@ -3732,6 +3919,164 @@ impl Parser {
             span: kw.span.merge(close.span),
             id: NodeId::NONE,
         })
+    }
+
+    /// Phase 4 (C2): `fleet locus NAME { params { … } placement { … }
+    /// bindings { … } claims { … } }`. Each block at most once, in any
+    /// order; nothing else, since a fleet never runs: no `fn`, no
+    /// lifecycle, no `bus`.
+    fn parse_fleet_decl(&mut self) -> Result<FleetDecl, Diag> {
+        let kw = self.peek_token().clone();
+        self.bump(); // `fleet`
+        self.expect(TokenKind::Locus, "locus")?;
+        let name = self.expect_decl_name("fleet name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut params: Option<ParamsBlock> = None;
+        let mut placement: Option<Vec<FleetPlacement>> = None;
+        let mut bindings: Option<BindingsBlock> = None;
+        let mut claims: Option<ClaimsBlock> = None;
+        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
+            let tok = self.peek_token().clone();
+            let word = match &tok.kind {
+                TokenKind::Ident(w) => w.clone(),
+                _ => String::new(),
+            };
+            let twice = |what: &str| {
+                Diag::parse(
+                    tok.span,
+                    format!("fleet locus `{}` has a second `{what}` block; write each block once", name.name),
+                )
+            };
+            match word.as_str() {
+                "params" => {
+                    if params.is_some() {
+                        return Err(twice("params"));
+                    }
+                    params = Some(self.parse_params_block()?);
+                }
+                "placement" => {
+                    if placement.is_some() {
+                        return Err(twice("placement"));
+                    }
+                    placement = Some(self.parse_fleet_placement()?);
+                }
+                "bindings" => {
+                    if bindings.is_some() {
+                        return Err(twice("bindings"));
+                    }
+                    bindings = Some(self.parse_bindings_block()?);
+                }
+                "claims" => {
+                    if claims.is_some() {
+                        return Err(twice("claims"));
+                    }
+                    claims = Some(self.parse_claims_block()?);
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        tok.span,
+                        format!(
+                            "a fleet locus holds `params`, `placement`, `bindings` and `claims`: \
+                             it is checked as one graph and never runs, so `{}` has no place in \
+                             fleet locus `{}`",
+                            if word.is_empty() { "this" } else { word.as_str() },
+                            name.name
+                        ),
+                    ));
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        let Some(params) = params else {
+            return Err(Diag::parse(
+                name.span,
+                format!(
+                    "fleet locus `{}` has no `params` block: a fleet's params are its instances, \
+                     each another seed's `main locus` (`oms: oms::Oms;`)",
+                    name.name
+                ),
+            ));
+        };
+        let written = params
+            .params
+            .iter()
+            .filter_map(|p| match &p.ty {
+                Some(TypeExpr::Named { path, .. }) if path.segments.len() == 2 => Some((
+                    p.name.name.clone(),
+                    path.segments[0].name.clone(),
+                    path.segments[1].name.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        Ok(FleetDecl {
+            name,
+            params,
+            placement: placement.unwrap_or_default(),
+            bindings,
+            claims,
+            span: kw.span.merge(close.span),
+            written,
+        })
+    }
+
+    /// `placement { oms: host("box-a"); gw: replicas(2); }` inside a
+    /// fleet locus: one default per instance, a host by name or a
+    /// replica count.
+    fn parse_fleet_placement(&mut self) -> Result<Vec<FleetPlacement>, Diag> {
+        self.bump(); // `placement`
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut out = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
+            let instance = self.expect_ident("instance name")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let head = self.peek_token().clone();
+            let spec = match &head.kind {
+                TokenKind::Ident(w) if w == "host" => {
+                    let mut hosts = Vec::new();
+                    loop {
+                        let head = self.peek_token().clone();
+                        if !matches!(&head.kind, TokenKind::Ident(w) if w == "host") {
+                            return Err(Diag::parse(head.span, "after `,` a fleet placement names another `host(\"<name>\")`"));
+                        }
+                        self.bump();
+                        self.expect(TokenKind::LParen, "(")?;
+                        let t = self.peek_token().clone();
+                        let TokenKind::StringLit(h) = &t.kind else {
+                            return Err(Diag::parse(t.span, "`host(…)` names its host as a string: `host(\"box-a\")`"));
+                        };
+                        hosts.push(h.clone());
+                        self.bump();
+                        self.expect(TokenKind::RParen, ")")?;
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    FleetPlacementSpec::Hosts(hosts)
+                }
+                TokenKind::Ident(w) if w == "replicas" => {
+                    self.bump();
+                    self.expect(TokenKind::LParen, "(")?;
+                    let t = self.peek_token().clone();
+                    let TokenKind::IntLit(n) = t.kind else {
+                        return Err(Diag::parse(t.span, "`replicas(…)` takes a count: `replicas(2)`"));
+                    };
+                    self.bump();
+                    self.expect(TokenKind::RParen, ")")?;
+                    FleetPlacementSpec::Replicas(n.max(0) as u64)
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        head.span,
+                        "a fleet placement is `host(\"<name>\")` or `replicas(<n>)`",
+                    ));
+                }
+            };
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            out.push(FleetPlacement { span: instance.span.merge(semi.span), instance, spec });
+        }
+        self.expect(TokenKind::RBrace, "}")?;
+        Ok(out)
     }
 
     /// Phase 2a: one item in a locus header's post-`:` list —
@@ -4130,11 +4475,93 @@ impl Parser {
             TokenKind::Ident(s) if s == "birth_check" => {
                 self.parse_birth_check_decl().map(LocusMember::BirthCheck)
             }
+            // GH #1530 step 2 contextual keyword — `seam { … }` or
+            // `seam name(x: T) { … }`.
+            TokenKind::Ident(s)
+                if s == crate::ast::seam_words::SEAM
+                    && matches!(self.peek_at(1), TokenKind::LBrace | TokenKind::Ident(_)) =>
+            {
+                self.parse_seam_decl().map(LocusMember::Seam)
+            }
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected locus member, got {:?}", other),
             )),
         }
+    }
+
+    /// GH #1530 step 2: a seam. The closed flow, `seam { SOURCE -> HOP ->
+    /// … ; [or end; | or violate NAME;] }`, and the callable one, `seam
+    /// NAME(x: T) [-> R] { x -> HOP -> … ; [or end;] }`. A hop is `self`
+    /// or a `self.` path; the chain ends at its `;`.
+    fn parse_seam_decl(&mut self) -> Result<SeamDecl, Diag> {
+        use crate::ast::seam_words;
+        let kw = self.bump(); // `seam`
+        let (name, param, ret) = if let TokenKind::Ident(_) = self.peek() {
+            let name = self.expect_ident("seam name")?;
+            self.expect(TokenKind::LParen, "(")?;
+            let pname = self.expect_ident("the seam's entry parameter")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let ty = self.parse_type_expr()?;
+            let close = self.expect(TokenKind::RParen, ")")?;
+            let param = Param { span: pname.span.merge(close.span), name: pname, ty, default: None, secret: false };
+            let ret = if self.eat(&TokenKind::Arrow) { Some(self.parse_type_expr()?) } else { None };
+            (Some(name), Some(param), ret)
+        } else {
+            (None, None, None)
+        };
+        self.expect(TokenKind::LBrace, "{")?;
+        let head = self.parse_expr()?;
+        let mut hops = Vec::new();
+        while self.eat(&TokenKind::Arrow) {
+            let start = self.peek_token().span;
+            if !matches!(self.peek(), TokenKind::KwSelf) {
+                return Err(Diag::parse(
+                    start,
+                    "a seam's hop is `self` or a `self.` path (`self.desk`, `self.wire.decode`): the chain is \
+                     static, so each hop is a method or a child of the locus",
+                ));
+            }
+            self.bump();
+            let mut path = Vec::new();
+            let mut end = start;
+            while self.eat(&TokenKind::Dot) {
+                let seg = self.expect_member_name("a hop's name")?;
+                end = seg.span;
+                path.push(seg);
+            }
+            hops.push(SeamHop { path, span: start.merge(end) });
+        }
+        self.expect(TokenKind::Semi, ";")?;
+        if hops.is_empty() {
+            return Err(Diag::parse(head.span(), "a seam has at least one hop: `source -> self.hop;`"));
+        }
+        let on_failure = if matches!(self.peek(), TokenKind::Ident(s) if s == seam_words::OR) {
+            self.bump();
+            let word = self.peek_token().clone();
+            let f = match &word.kind {
+                TokenKind::Ident(s) if s == seam_words::END => {
+                    self.bump();
+                    SeamFailure::End(word.span)
+                }
+                TokenKind::Ident(s) if s == seam_words::VIOLATE => {
+                    self.bump();
+                    SeamFailure::Violate(self.expect_ident("closure name")?)
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        word.span,
+                        "a seam's failure clause is `or end;` or `or violate <closure>;`",
+                    ))
+                }
+            };
+            self.expect(TokenKind::Semi, ";")?;
+            Some(f)
+        } else {
+            None
+        };
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(SeamDecl { name, param, ret, head, hops, on_failure, span: kw.span.merge(close.span) })
     }
 
     /// F.27 v2: `birth_check { COND_EXPR } -> violate NAME[(PAYLOAD)];`.
@@ -5400,6 +5827,7 @@ impl Parser {
                     ty: None,
                     init: ParamInit::Inferred,
                     id: NodeId::NONE,
+                    serve: None,
                 });
             }
             Some(self.parse_type_expr()?)
@@ -5435,6 +5863,7 @@ impl Parser {
             ty,
             init,
             id: NodeId::NONE,
+            serve: None,
         })
     }
 
@@ -6251,6 +6680,46 @@ impl Parser {
                 self.bump();
             }
             let ty = self.parse_type_expr()?;
+            // GH #1530 step 1: a set type, `type S = A | B | C;`. Untagged:
+            // each member is a named type and is its own discriminant, so
+            // the set is an enum whose variants are named for their
+            // members (`A(A)`), marked as members.
+            if kind.is_none() && self.at(&TokenKind::Pipe) {
+                let mut members = vec![ty];
+                while self.eat(&TokenKind::Pipe) {
+                    members.push(self.parse_type_expr()?);
+                }
+                let end = self.expect(TokenKind::Semi, ";")?.span;
+                let mut variants = Vec::new();
+                for m in members {
+                    let TypeExpr::Named { path, generic_args, span } = &m else {
+                        return Err(Diag::parse(
+                            m.span(),
+                            "a set's member is a named type the program declares (`type S = A | B;`): it is its \
+                             own discriminant, so a primitive, a list, a tuple or a function type cannot be one; \
+                             declare a struct that holds the value",
+                        ));
+                    };
+                    if !generic_args.is_empty() {
+                        return Err(Diag::parse(
+                            *span,
+                            "a set's member is a named type without type arguments: declare `type A = Pair<Int>;` \
+                             and name `A`",
+                        ));
+                    }
+                    let last = path.segments.last().expect("a path has a segment").clone();
+                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], class: None, span: *span, member: true });
+                }
+                return Ok(TypeDecl {
+                    display: None,
+                    name,
+                    generics,
+                    body: TypeDeclBody::Enum(variants),
+                    span: kw.span.merge(end),
+                    id: NodeId::NONE,
+                    synthetic: false,
+                });
+            }
             // The denomination, `in UNIT` / `in 100ms` / `in 100 ms`.
             let denom = if self.at(&TokenKind::In) {
                 let in_tok = self.bump();
@@ -6430,6 +6899,20 @@ impl Parser {
         let name = self.expect_member_name("field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
+        // `indexed_by <field>`: the field is a wire map keyed by its
+        // elements' `<field>` (the slot clause's spelling and rules)
+        let indexed_by = if self.eat_word("indexed_by") {
+            Some(self.expect_ident("field name after `indexed_by`")?)
+        } else {
+            None
+        };
+        // `-> <field>`: a map of scalars, each element crossing as that
+        // field's value alone
+        let map_value = if indexed_by.is_some() && self.eat(&TokenKind::Arrow) {
+            Some(self.expect_ident("field name after `->`")?)
+        } else {
+            None
+        };
         let default = if self.eat(&TokenKind::Eq) {
             Some(self.parse_expr()?)
         } else {
@@ -6454,10 +6937,22 @@ impl Parser {
             ty,
             default,
             tag,
+            indexed_by,
+            map_value,
         })
     }
 
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, Diag> {
+        // `@not_found Missing`: the variant's error class (spec/api.md §
+        // Error classes), any word here; the checker names the classes.
+        let class = if self.at(&TokenKind::At) {
+            let at = self.bump();
+            let mut word = self.expect_ident("error class")?;
+            word.span = at.span.merge(word.span);
+            Some(word)
+        } else {
+            None
+        };
         let name = self.expect_ident("variant name")?;
         let mut fields = Vec::new();
         if self.eat(&TokenKind::LParen) {
@@ -6470,7 +6965,7 @@ impl Parser {
             self.expect(TokenKind::RParen, ")")?;
         }
         let span = name.span;
-        Ok(EnumVariant { name, fields, span })
+        Ok(EnumVariant { name, fields, class, span, member: false })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {
@@ -8768,8 +9263,8 @@ const RETIRED_GATED: &str = "`@gated` is retired: a role requirement is `require
 /// `serve:`, `http(…)` and the exposed reads it made of `expose` members.
 const RETIRED_API_BINDING: &str = "`bindings { api: … }` is retired: a program serves a surface. \
      Declare the operations as `api NAME { rpc Locus::handler requires: [role]; }` \
-     (or `@rpc` on the handler) and serve them with `api::serve(NAME, unix::Rpc { … })` \
-     or `http::Rpc { … }`, the role sources being the transport's `roles:` and \
+     (or `@rpc` on the handler) and serve them from an exposure param, `web: api::Exposure = \
+     api::serve(NAME, unix::Rpc { … }, …);` or over `http::Rpc { … }`, the role sources being the transport's `roles:` and \
      `principals:`; a stream is a topic binding to a hub, `Topic: self.hub requires: \
      [role];`; a read is an `rpc` row whose handler returns the value (spec/api.md)";
 
@@ -8874,7 +9369,7 @@ const BUILTIN_CALL_FORMS: &[(&str, Option<&str>)] = &[
 ];
 
 /// The [`BUILTIN_CALL_FORMS`] entry `name` spells, if any.
-fn builtin_call_form(
+pub fn builtin_call_form(
     name: &str,
 ) -> Option<(&'static str, Option<&'static str>)> {
     BUILTIN_CALL_FORMS.iter().copied().find(|(w, _)| *w == name)

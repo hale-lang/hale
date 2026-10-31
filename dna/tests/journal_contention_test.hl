@@ -1,19 +1,18 @@
 // dna/tests/journal_contention_test.hl — GH #603: an organism's append
-// that loses the ref race goes round with the new tail until it
-// lands. Three tries used to be the bound; a host reconciling the
-// record beside a busy organism won every race for seconds, and the
-// organism's own rows — an apply, a restart request — were dropped in
-// silence, the mutation never retained. Here another writer (a shell
-// loop, compare-and-swapping like a host) appends two hundred rows
-// while the journal appends forty; every row of both lands, once.
+// that loses the race at the record's tail goes round with the new tail
+// until it lands. Three tries used to be the bound, and a busy second
+// writer dropped the organism's own rows in silence. Here another writer
+// (a shell loop through memory's own append function, GH #1590) appends
+// two hundred rows while the journal appends forty; every row of both
+// lands, once.
 
 import "../core" as dna;
 
-const SCRIPT: String = "repo=\"$1\"; n=0\nwhile [ $n -lt 200 ]; do\n  head=$(git -C \"$repo\" rev-parse -q --verify refs/dna/journal)\n  text=$(git -C \"$repo\" show \"$head:journal.jsonl\")\n  seq=$(printf '%s\\n' \"$text\" | grep -c .)\n  row=\"{\\\"seq\\\": $seq, \\\"kind\\\": \\\"shell.row\\\", \\\"entity\\\": \\\"s$n\\\", \\\"body\\\": \\\"row $n\\\", \\\"author\\\": \\\"shell\\\"}\"\n  blob=$(printf '%s\\n%s\\n' \"$text\" \"$row\" | git -C \"$repo\" hash-object -w --stdin)\n  tree=$(printf '100644 blob %s\\tjournal.jsonl\\n' \"$blob\" | git -C \"$repo\" mktree)\n  c=$(git -C \"$repo\" -c user.name=shell -c user.email=s@l commit-tree \"$tree\" -p \"$head\" -m \"shell $n\")\n  if git -C \"$repo\" update-ref refs/dna/journal \"$c\" \"$head\" 2>/dev/null; then n=$((n+1)); fi\ndone\ntouch \"$repo/.hale/dna/shell.done\"\n";
+const SCRIPT: String = "dsn=\"$1\"; sch=\"$2\"; dir=\"$3\"; n=0\nwhile [ $n -lt 200 ]; do\n  out=$(psql \"$dsn\" -tAq -c \"SET search_path TO $sch, public\" -c \"SELECT record_append(-1, coalesce((SELECT digest FROM record_rows ORDER BY seq DESC LIMIT 1), 'genesis'), 'shell.row', 's$n', 'row $n', 'shell', '', '')\" 2>/dev/null)\n  case \"$out\" in *'\"error\" : \"\"'*) n=$((n+1)) ;; esac\ndone\ntouch \"$dir/shell.done\"\n";
 
 main locus App {
     params {
-        j: dna::GitJournal = dna::GitJournal { };
+        j: dna::RecordJournal = dna::RecordJournal { };
     }
     fn count(kind: String) -> Int {
         let mut n = 0;
@@ -37,17 +36,33 @@ main locus App {
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
-        self.j = dna::GitJournal { repo: repo, author: "org" };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory");
+        self.j = dna::RecordJournal { repo: repo, author: "org" };
+        let born = self.j.revision();
         let seed = self.j.append(self.j.revision(), "seed", "s", "the first row");
         std::test::assert(seed.ok, "seeded");
         std::io::fs::write_file(repo + "/.hale/dna/appender.sh", SCRIPT) or discard;
         // the other writer, detached: it compare-and-swaps like a host does
-        let spawn = dna::run_tool("sh\n-c\nnohup sh \"$1\" \"$2\" >/dev/null 2>&1 &\nsh\n" + repo + "/.hale/dna/appender.sh\n" + repo);
+        let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
+        let spawn = dna::run_tool(
+            "sh\n-c\nnohup sh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + repo
+                + "/.hale/dna/appender.sh\n" + owner + "\n"
+                + dna::schema_for(dna::record_scope(repo)) + "\n" + repo + "/.hale/dna",
+        );
         std::test::assert_eq_int(spawn.code, 0, "the appender started: " + spawn.stderr);
         let mut i = 0;
         while i < 40 {
-            let r = self.j.append(self.j.revision(), "org.row", "o" + to_string(i), "org row " + to_string(i));
-            std::test::assert(r.ok, "org row " + to_string(i) + " landed (" + r.error + ": " + self.j.last_error + ")");
+            let r = self.j.append(
+                self.j.revision(),
+                "org.row",
+                "o" + to_string(i),
+                "org row " + to_string(i),
+            );
+            std::test::assert(
+                r.ok,
+                "org row " + to_string(i) + " landed (" + r.error + ": " + self.j.last_error()
+                    + ")",
+            );
             i = i + 1;
         }
         let mut waited = 0;
@@ -56,13 +71,16 @@ main locus App {
             waited = waited + 1;
         }
         std::test::assert(waited < 1200, "the appender finished");
-        self.j.load();
+        let moved = self.j.refresh();
         std::test::assert_eq_int(self.count("shell.row"), 200, "every shell row landed");
         std::test::assert_eq_int(self.count("org.row"), 40, "every org row landed, once");
-        std::test::assert_eq_int(self.j.revision(), 241, "and nothing else");
+        std::test::assert_eq_int(self.j.revision(), born + 241, "and nothing else");
         i = 0;
         while i < 40 {
-            std::test::assert(self.has_body("org row " + to_string(i)), "org row " + to_string(i) + " is in the record");
+            std::test::assert(
+                self.has_body("org row " + to_string(i)),
+                "org row " + to_string(i) + " is in the record",
+            );
             i = i + 1;
         }
         dna::scratch_done(repo);

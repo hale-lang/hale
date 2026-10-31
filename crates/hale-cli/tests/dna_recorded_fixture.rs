@@ -1,5 +1,5 @@
 //! GH #583 M4 — the recorded fixture: a workspace of three services
-//! under a plan with claims across them (`dna/acceptance/trio`), whose
+//! under a fleet with claims across them (`dna/acceptance/trio`), whose
 //! organization is driven by scripted asks end to end — a change
 //! deployed to two nodes, the organization grown by a supervisor under
 //! pressure, a cross-service change denied by the fleet's law — every
@@ -18,6 +18,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -33,10 +39,12 @@ fn git(args: &[&str], cwd: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+// The record's rows, then its Ledger's (GH #1590: the day's work is the
+// Ledger's). Each keeps its own memory's seq: there is no order across
+// the two.
 fn journal(app: &Path) -> Vec<Row> {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
+    let _s = trace::Span::new("hale", "dna record-rows");
+    (record::text(app) + "\n" + &record::ledger_text(app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -87,7 +95,7 @@ fn dump(app: &Path) -> String {
 // entities, saying the same things. The fixture's children run as one
 // person (`USER=riley`) on every machine. Two things vary from run to run
 // and are normalized away: values a run draws (commit and build hashes,
-// digests over them, times, pids, the scratch root and the machine's
+// digests over them, the record's nonce and the identity drawn from it, times, pids, the scratch root and the machine's
 // name, the toolchain's version, ids minted from the clock, row numbers
 // and the heads read at them, and the size of the model diff, which
 // carries the core's own shape), and the order rows of
@@ -138,7 +146,11 @@ fn token_class(t: &str) -> Option<String> {
     if hex(t) {
         return match t.len() {
             64 => Some("<digest>".into()),
+            // a record's organization token, its identity cut to fit (GH #1590)
+            56 => Some("<id>".into()),
             40 => Some("<sha>".into()),
+            // the nonce a record is born with (GH #1590)
+            32 => Some("<nonce>".into()),
             16 => Some("<hex16>".into()),
             12 => Some("<hex12>".into()),
             _ => None,
@@ -364,6 +376,8 @@ struct Fixture {
     nats_app: String,   // an application's server, which a node hands its instances (GH #986)
     nats_app_user: String, // the application's own user (GH #989)
     nats_app_vault: String, // the vault name of the application's credential (GH #989; never the password)
+    // its directory, and every compose project run from under it, goes last
+    _scratch: scratch::Scratch,
 }
 
 impl Fixture {
@@ -395,7 +409,12 @@ impl Fixture {
     fn spawn(&mut self, args: &[&str], cwd: &Path) {
         let _s = trace::Span::new("spawn", args.join(" "));
         let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
-        let c = self.cmd(args, cwd).stdout(Stdio::null()).stderr(log).spawn().expect("spawn");
+        let mut cmd = self.cmd(args, cwd);
+        // GH #1590: `hale dna run` takes the spine's DSN from its environment
+        if args.starts_with(&["dna", "run"]) {
+            cmd.env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), cwd));
+        }
+        let c = cmd.stdout(Stdio::null()).stderr(log).spawn().expect("spawn");
         self.procs.push(c);
     }
     fn logs(&self) -> String {
@@ -454,18 +473,20 @@ fn bring_up() -> Fixture {
         let _ = std::fs::remove_dir_all(&tape);
     }
     std::fs::create_dir_all(&tape).unwrap();
-    let d = std::env::temp_dir().join(format!("hale_dna_trio_{}", std::process::id()));
+    let scratch = scratch::Scratch::new(format!("hale_dna_trio_{}", std::process::id()));
+    let d = scratch.to_path_buf();
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     // the workspace name is part of what the organization is generated
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new(), nats_app_user: String::new(), nats_app_vault: String::new() };
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new(), nats_app_user: String::new(), nats_app_vault: String::new(), _scratch: scratch };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
-    let (ok, out) = f.hale(&["dna", "init", ".", "--no-library"], &app);
+    habitat::habitat();
+    let (ok, out) = f.hale(&["habitat", "graft", ".", "--attach", "--no-library", "--no-pack"], &app);
     assert!(ok, "init: {out}");
     std::fs::write(app.join("dna/org/models.hl"), std::fs::read_to_string(repo.join("dna/acceptance/trio.fixture/catalog.hl")).unwrap()).unwrap();
     let (ok, out) = f.hale(&["check", "--matrix", "."], &app);
@@ -474,7 +495,7 @@ fn bring_up() -> Fixture {
     git(&["commit", "-q", "-m", "the organization"], &app);
     git(&["init", "-q", "--bare", "-b", "main", &f.bare.to_string_lossy()], &d);
     git(&["remote", "add", "origin", &f.bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     for e in &f.edges {
         git(&["clone", "-q", &f.bare.to_string_lossy(), &e.to_string_lossy()], &d);
     }
@@ -625,7 +646,9 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     // a node expresses the whole revision it checks out, so every
     // instance comes up at the candidate; the two the change touched
     // are the ones the window is judged over, one per node
-    let ups: Vec<&Row> = rows.iter().filter(|(q, k, e, b)| *q > deploy.0 && k == "instance.up" && e.starts_with("gateway-") && b.contains(&cand1)).collect();
+    // (an instance's row is the Ledger's and the deploy the record's: no
+    // seq orders them, the candidate names the rows after it)
+    let ups: Vec<&Row> = rows.iter().filter(|(_, k, e, b)| k == "instance.up" && e.starts_with("gateway-") && b.contains(&cand1)).collect();
     assert_eq!(ups.len(), 2, "both gateway instances came up at the candidate:\n{}", dump(&app));
     let node_of = |b: &str| serde_json::from_str::<serde_json::Value>(b).unwrap()["node"].as_str().unwrap().to_string();
     assert!(ups.iter().any(|r| node_of(&r.3) == "edge-1") && ups.iter().any(|r| node_of(&r.3) == "edge-2"), "one per node");

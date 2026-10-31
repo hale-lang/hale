@@ -1,0 +1,26 @@
+// Hale stdlib — std::observe::Probes (GH #1477 S1).
+//
+// A main-locus param of this type asks the runtime to serve the
+// process's health over HTTP on `port`:
+//
+//     params { probes: std::observe::Probes { port: 9090 }; }
+//
+// `/healthz` (503 naming a queue that holds work its consumer has not
+// touched for the stall window), `/readyz` (200 once the main locus's
+// births are done, 503 while it drains) and `/capacity` (each queue's
+// waiting cells, capacity and stall time, as JSON). The probes answer
+// from a thread of the runtime's own, not from a pool the program
+// places, so a wedged pool or a main thread busy in its run() cannot
+// keep them from answering: the param is declared and named like any
+// other, and a placement does not apply to it. Its birth starts the
+// listener; the main locus marks the process ready once every birth is
+// done. The check allows one, on the main locus, built by its default:
+// a construction of the main locus does not supply another.
+locus __StdObserveProbes {
+    params {
+        port: Int = 9090;
+    }
+    birth() {
+        std::process::__probes_start(self.port);
+    }
+}

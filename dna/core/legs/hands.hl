@@ -16,7 +16,11 @@ type HandResult {
 }
 
 fn hand_result(r: dna::RunResult, output: String) -> HandResult {
-    if r.code != 0 { return HandResult { error: dna::trim_nl(if len(r.stderr) > 0 { r.stderr } else { r.stdout }) }; }
+    if r.code != 0 {
+        return HandResult {
+            error: dna::trim_nl(if len(r.stderr) > 0 { r.stderr } else { r.stdout }),
+        };
+    }
     return HandResult { ok: true, output: output };
 }
 
@@ -36,6 +40,10 @@ interface GitHand {
     // the candidate a Mutation and its Review (GH #1156). The worktree
     // itself goes with `clean`.
     fn patch(worktree: String) -> HandResult;
+    // The worktree on a new branch `name` of its HEAD, and that branch
+    // pushed to the repository it was cloned from (`origin`).
+    fn branch(worktree: String, name: String) -> HandResult;
+    fn push(worktree: String, name: String) -> HandResult;
 }
 interface ForgeHand {
     // A review opened from the worktree's branch: its url.
@@ -48,6 +56,14 @@ interface ToolchainHand {
     fn test(path: String) -> HandResult;
     fn fmt_check(path: String) -> HandResult;
 }
+// The Go toolchain beside it, for a codebase that declares `go`: each
+// runs in the leg's worktree of the codebase and answers bounded output.
+interface GoHand {
+    fn available() -> HandResult;
+    fn vet(worktree: String) -> HandResult;
+    fn test(worktree: String, pkg: String) -> HandResult;
+    fn gofmt_check(worktree: String) -> HandResult;
+}
 interface DeployHand { fn express(revision: String) -> HandResult; }
 interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
 // The lease the brief is held under: a performer that waits — a
@@ -57,18 +73,30 @@ interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
 // under the same holder and token, counted per renewal so each is its
 // own act.
 locus HeadLease {
-    params { api: String = ""; attempt: String = ""; holder: String = ""; token: Int = 0; renewals: Int = 0; }
+    params {
+        api: String = "";
+        attempt: String = "";
+        holder: String = "";
+        token: Int = 0;
+        renewals: Int = 0;
+    }
     fn renew(ttl: Int) -> HandResult {
         if len(self.attempt) == 0 { return HandResult { error: "no lease is held" }; }
         self.renewals = self.renewals + 1;
         let head = Head { api: self.api };
         if !head.attach() { return HandResult { error: head.error }; }
-        let request = "work-renew:" + self.attempt + ":" + to_string(self.token) + ":" + to_string(ttl) + ":" + to_string(self.renewals);
+        let request = "work-renew:" + self.attempt + ":" + to_string(self.token) + ":"
+            + to_string(ttl) + ":" + to_string(self.renewals);
         let reply = head.renew(request, self.attempt, self.holder, self.token, ttl);
         if !reply.ok { return HandResult { error: reply.error }; }
         let receipt = std::json::find_field_raw(reply.body, "data");
-        let state = std::json::find_string_field(std::json::find_field_raw(receipt, "attempt"), "state");
-        if state == "refused" { return HandResult { error: std::json::find_string_field(receipt, "reason") }; }
+        let state = std::json::find_string_field(
+            std::json::find_field_raw(receipt, "attempt"),
+            "state",
+        );
+        if state == "refused" {
+            return HandResult { error: std::json::find_string_field(receipt, "reason") };
+        }
         return HandResult { ok: true, output: state };
     }
     // The spend the attempt may make (GH #1131): asked of the spine under
@@ -77,26 +105,54 @@ locus HeadLease {
     // allowance in micro-dollars (-1 when nothing bounds it). Refused, or
     // no answer in time: why, and the performer makes no call.
     fn allowance(wait: Int) -> HandResult {
-        if len(self.attempt) == 0 { return HandResult { error: "no lease is held, so no spend can be asked for" }; }
+        if len(self.attempt) == 0 {
+            return HandResult { error: "no lease is held, so no spend can be asked for" };
+        }
         let head = Head { api: self.api };
         if !head.attach() { return HandResult { error: head.error }; }
-        if len(head.allowance_member) == 0 { return HandResult { error: "the head lists no `Commands::ask_allowance`: its toolchain predates the budget gate (GH #1131)" }; }
+        if len(head.allowance_member) == 0 {
+            return HandResult {
+                error: "the head lists no `Commands::ask_allowance`: its toolchain predates the budget gate (GH #1131)",
+            };
+        }
         let request = "work-allowance:" + self.attempt + ":" + to_string(self.token);
         let asked = head.allowance(request, self.attempt, self.holder, self.token);
         if !asked.ok { return HandResult { error: asked.error }; }
         let deadline = std::time::now() + wait;
         let mut reply = asked;
-        let mut outcome = std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt");
-        while std::json::find_string_field(outcome, "state") == "requested" && std::time::now() < deadline {
+        let mut outcome = std::json::find_field_raw(
+            std::json::find_field_raw(reply.body, "data"),
+            "attempt",
+        );
+        while std::json::find_string_field(outcome, "state") == "requested"
+            && std::time::now() < deadline
+        {
             std::time::sleep(500ms);
             reply = head.lookup(request);
             // a record read while it moved is read again on the next turn
-            if !reply.ok && !std::str::starts_with(reply.error, "snapshot_changed") { return HandResult { error: reply.error }; }
-            if reply.ok { outcome = std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt"); }
+            if !reply.ok && !std::str::starts_with(reply.error, "snapshot_changed") {
+                return HandResult { error: reply.error };
+            }
+            if reply.ok {
+                outcome = std::json::find_field_raw(
+                    std::json::find_field_raw(reply.body, "data"),
+                    "attempt",
+                );
+            }
         }
         let state = std::json::find_string_field(outcome, "state");
-        if state == "granted" { return HandResult { ok: true, output: to_string(std::json::find_int_field(outcome, "allowance_micros")) }; }
-        if state == "requested" { return HandResult { error: "the spine did not answer the ask for attempt " + self.attempt + "'s spend within " + to_string(wait) + "s" }; }
+        if state == "granted" {
+            return HandResult {
+                ok: true,
+                output: to_string(std::json::find_int_field(outcome, "allowance_micros")),
+            };
+        }
+        if state == "requested" {
+            return HandResult {
+                error: "the spine did not answer the ask for attempt " + self.attempt
+                    + "'s spend within " + to_string(wait) + "s",
+            };
+        }
         return HandResult { error: std::json::find_string_field(outcome, "reason") };
     }
 }
@@ -105,8 +161,11 @@ locus HeadLease {
 // (`dna::scratch_root`, one per worktree, swept by `clean` and by the
 // suite), so nothing a performer does reaches the primary checkout;
 // patches through a file, commits under the leg's own name.
+// `root` is the organism's ("": HALE_DNA_GENOME, else the leg's own
+// directory): a push to a repository at its allocated Forgejo goes as its
+// own Forgejo user (`push`).
 locus ScratchGit {
-    params { made: Int = 0; roots: String = ""; }
+    params { made: Int = 0; roots: String = ""; root: String = ""; }
     fn worktree(repo: String, base: String) -> HandResult {
         self.made = self.made + 1;
         let dir = dna::scratch_root("legs-git-" + to_string(self.made));
@@ -115,7 +174,10 @@ locus ScratchGit {
         // detached auto-gc, which writes into the directory while `clean`
         // removes it and leaves it behind; nothing in a scratch worktree
         // is kept long enough to need packing
-        let cloned = dna::run_tool("git\nclone\n--quiet\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + repo + "\n" + dir);
+        let cloned = dna::run_tool(
+            "git\nclone\n--quiet\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + repo
+                + "\n" + dir,
+        );
         if cloned.code != 0 { return hand_result(cloned, ""); }
         if len(base) == 0 || base == "HEAD" { return HandResult { ok: true, output: dir }; }
         let out = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n--detach\n" + base);
@@ -131,7 +193,9 @@ locus ScratchGit {
     fn clean() {
         let mut rest = self.roots;
         while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n"); let dir = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let dir = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
             if len(dir) > 0 { dna::scratch_done(dir); }
         }
         self.roots = "";
@@ -139,59 +203,353 @@ locus ScratchGit {
     fn commit(worktree: String, message: String) -> HandResult {
         let staged = dna::run_tool("git\n-C\n" + worktree + "\nadd\n-A");
         if staged.code != 0 { return hand_result(staged, ""); }
-        let out = dna::run_tool("git\n-C\n" + worktree + "\n-c\nuser.name=legs\n-c\nuser.email=legs@hale-dna\ncommit\n--quiet\n--allow-empty\n-m\n" + message);
+        let out = dna::run_tool(
+            "git\n-C\n" + worktree
+                + "\n-c\nuser.name=legs\n-c\nuser.email=legs@hale-dna\ncommit\n--quiet\n--allow-empty\n-m\n"
+                + message,
+        );
         if out.code != 0 { return hand_result(out, ""); }
         let sha = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD");
         return hand_result(sha, dna::trim_nl(sha.stdout));
     }
     fn patch(worktree: String) -> HandResult {
         let out = dna::run_tool("git\n-C\n" + worktree + "\nformat-patch\n-1\n--stdout\nHEAD");
-        if out.code == 0 && len(out.stdout) == 0 { return HandResult { error: "the worktree's last commit has no patch" }; }
+        if out.code == 0 && len(out.stdout) == 0 {
+            return HandResult { error: "the worktree's last commit has no patch" };
+        }
         return hand_result(out, out.stdout);
+    }
+    fn branch(worktree: String, name: String) -> HandResult {
+        let out = dna::run_tool("git\n-C\n" + worktree + "\ncheckout\n--quiet\n-b\n" + name);
+        return hand_result(out, name);
+    }
+    // The branch pushed to the worktree's origin. A repository at the
+    // organism's allocated Forgejo takes it as the organism's own user, its
+    // token the vault slot the allocation names: the token reaches git
+    // through a credential helper reading a file only this user can read,
+    // never an argv or this process's environment.
+    fn push(worktree: String, name: String) -> HandResult {
+        let f = dna::forge_allocated(allocated_root(self.root));
+        let origin = dna::trim_nl(
+            dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin").stdout,
+        );
+        let slash = std::str::index_of(f.repo, "/");
+        if f.provider != "forgejo" || len(allocated_slug(f.address, origin)) == 0 || slash <= 0 {
+            let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
+            return hand_result(out, name);
+        }
+        let token = std::secret::Credential { vault: f.key_vault };
+        if !token.ready() {
+            return HandResult {
+                error: "no token in the vault slot " + f.key_vault
+                    + " the organism's forge allocation names",
+            };
+        }
+        let made = dna::run_tool("mktemp\n-d\n-t\nhale-leg-forge-XXXXXX");
+        let dir = dna::trim_nl(made.stdout);
+        if made.code != 0 || len(dir) == 0 {
+            return HandResult { error: "no private directory for the forge's token" };
+        }
+        if !token.write_private(dir + "/token") {
+            dna::run_tool("rm\n-rf\n" + dir);
+            return HandResult { error: "the forge's token could not be written for git" };
+        }
+        let out = dna::run_tool(
+            "git\n-C\n" + worktree
+                + "\n-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username="
+                + f.repo[0..slash] + "; echo \"password=$(cat '" + dir
+                + "/token')\"; }; f\npush\n--quiet\norigin\n" + name,
+        );
+        dna::run_tool("rm\n-rf\n" + dir);
+        return hand_result(out, name);
     }
 }
 
 // The forge through `gh`: a pull request from the worktree's branch, and
 // its review decision as a verdict. The forge decides; nothing here merges.
 locus GhForge {
-    params { opened: Int = 0; }
+    // `repo` (owner/name) and `base` name a codebase's own repository and
+    // default branch; empty, `gh` reads them from the worktree's remote.
+    params { opened: Int = 0; repo: String = ""; base: String = ""; }
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         self.opened = self.opened + 1;
-        let out = dna::run_tool("sh\n-c\ncd \"$1\" && gh pr create --title \"$2\" --body \"$3\"\nsh\n" + worktree + "\n" + title + "\n" + body);
+        if len(self.repo) > 0 {
+            let at = dna::run_tool(
+                "sh\n-c\ncd \"$1\" && gh pr create --repo \"$2\" --base \"$3\" --head \"$(git rev-parse --abbrev-ref HEAD)\" --title \"$4\" --body \"$5\"\nsh\n"
+                    + worktree + "\n" + self.repo + "\n" + self.base + "\n" + title + "\n" + body,
+            );
+            return hand_result(at, dna::trim_nl(at.stdout));
+        }
+        let out = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && gh pr create --title \"$2\" --body \"$3\"\nsh\n" + worktree + "\n"
+                + title + "\n" + body,
+        );
         return hand_result(out, dna::trim_nl(out.stdout));
     }
     fn verdict(review: String) -> HandResult {
-        let out = dna::run_tool("gh\npr\nview\n" + review + "\n--json\nreviewDecision\n--jq\n.reviewDecision");
+        let out = dna::run_tool(
+            "gh\npr\nview\n" + review + "\n--json\nreviewDecision\n--jq\n.reviewDecision",
+        );
         if out.code != 0 { return hand_result(out, ""); }
         let decision = dna::trim_nl(out.stdout);
-        return HandResult { ok: true, output: if decision == "APPROVED" { "approve" } else if decision == "CHANGES_REQUESTED" { "revise" } else { "pending" } };
+        return HandResult {
+            ok: true,
+            output: if decision == "APPROVED" {
+                "approve"
+            } else if decision == "CHANGES_REQUESTED" {
+                "revise"
+            } else {
+                "pending"
+            },
+        };
+    }
+}
+
+// The forge a leg's review opens at is the organism's allocation (phase 4
+// ruling): "open a review" is the verb, and the allocation answers it —
+// the habitat's Forgejo, GitHub, or none. No leg names a forge by kind.
+// `root` is the organism's root ("": HALE_DNA_GENOME, else the leg's own
+// directory, where `hale dna work` runs it); the allocation is read at each
+// call, as the host's forge sync reads it.
+locus AllocatedForge {
+    params { root: String = ""; }
+    fn organism() -> String { return allocated_root(self.root); }
+    fn open_review(worktree: String, title: String, body: String) -> HandResult {
+        let f = dna::forge_allocated(self.organism());
+        if f.provider == "github" {
+            let gh = GhForge { };
+            return gh.open_review(worktree, title, body);
+        }
+        if f.provider != "forgejo" {
+            return HandResult {
+                error: "no forge to open a review at: the organism's forge allocation is "
+                    + f.provider + " (its Reviews are decided in its own face or CLI)",
+            };
+        }
+        let origin = dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin");
+        let slug = allocated_slug(f.address, dna::trim_nl(origin.stdout));
+        if len(slug) == 0 {
+            return HandResult {
+                error: "the codebase's repository (" + dna::trim_nl(origin.stdout)
+                    + ") is not at the allocated forge, " + f.address,
+            };
+        }
+        let head = dna::run_tool(
+            "git\n-C\n" + worktree + "\nsymbolic-ref\n--short\nrefs/remotes/origin/HEAD",
+        );
+        let named = dna::trim_nl(head.stdout);
+        let fj = dna::ForgejoForge {
+            address: f.address,
+            repo: slug,
+            base: if std::str::starts_with(named, "origin/") {
+                named[7..len(named)]
+            } else {
+                "main"
+            },
+            token_slot: f.key_vault,
+        };
+        let bridge = ForgeBridge { forge: fj };
+        return bridge.open_review(worktree, title, body);
+    }
+    fn verdict(review: String) -> HandResult {
+        let f = dna::forge_allocated(self.organism());
+        if f.provider == "github" {
+            let gh = GhForge { };
+            return gh.verdict(review);
+        }
+        if f.provider != "forgejo" {
+            return HandResult {
+                error: "no forge to read a verdict from: the organism's forge allocation is "
+                    + f.provider,
+            };
+        }
+        let pulls = std::str::index_of(review, "/pulls/");
+        let slug = if pulls > 0 { allocated_slug(f.address, review[0..pulls]) } else { "" };
+        if len(slug) == 0 {
+            return HandResult { error: "the review " + review + " is not at the allocated forge" };
+        }
+        let fj = dna::ForgejoForge { address: f.address, repo: slug, token_slot: f.key_vault };
+        let bridge = ForgeBridge { forge: fj };
+        return bridge.verdict(review);
+    }
+}
+
+// The organism a leg's hands act for: `root`, else HALE_DNA_GENOME, else
+// the leg's own directory (where `hale dna work` runs it).
+fn allocated_root(root: String) -> String {
+    if len(root) > 0 { return root; }
+    let named = std::env::var("HALE_DNA_GENOME");
+    return if len(named) > 0 { named } else { "." };
+}
+
+// The `owner/name` of a repository at the forge at `address`, from its url
+// there (`<address>/<owner>/<name>[.git]`); "" when it is elsewhere.
+fn allocated_slug(address: String, repo: String) -> String {
+    if len(address) == 0 || !std::str::starts_with(repo, address + "/") { return ""; }
+    let mut r = repo[(len(address) + 1)..len(repo)];
+    if std::str::ends_with(r, ".git") { r = r[0..(len(r) - 4)]; }
+    let slash = std::str::index_of(r, "/");
+    if slash <= 0 || slash == len(r) - 1 || std::str::contains(r[(slash + 1)..len(r)], "/") {
+        return "";
+    }
+    return r;
+}
+
+// The forge hand over the core's `Forge` (a code-review host behind an
+// interface, `forge.hl`): a review is opened for the worktree's current
+// branch. The forge is the repository's own, so a codebase's reviews open
+// where its code is; the memory forge stands in for it in fixtures.
+locus ForgeBridge {
+    params { forge: dna::Forge = dna::NoForge { }; }
+    fn open_review(worktree: String, title: String, body: String) -> HandResult {
+        let br = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\n--abbrev-ref\nHEAD");
+        if br.code != 0 { return hand_result(br, ""); }
+        let origin = dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin");
+        let r = self.forge.open_review(
+            dna::trim_nl(br.stdout),
+            title,
+            "repository: " + dna::trim_nl(origin.stdout) + "\n\n" + body,
+        );
+        if !r.present { return HandResult { error: r.why }; }
+        return HandResult { ok: true, output: r.ref };
+    }
+    fn verdict(review: String) -> HandResult {
+        let lines = self.forge.verdicts(review);
+        if std::str::contains(lines, "\tapprove\t") {
+            return HandResult { ok: true, output: "approve" };
+        }
+        if std::str::contains(lines, "\trevise\t") {
+            return HandResult { ok: true, output: "revise" };
+        }
+        return HandResult { ok: true, output: "pending" };
     }
 }
 
 // The toolchain: this binary's own `hale` (HALE_BIN) on a path.
 locus Toolchain {
     params { hale: String = ""; }
-    fn bin() -> String { return if len(self.hale) > 0 { self.hale } else if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" }; }
-    fn check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\ncheck\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
-    fn test(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\ntest\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
-    fn fmt_check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\nfmt\n--check\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
+    fn bin() -> String {
+        return if len(self.hale) > 0 {
+            self.hale
+        } else if std::env::var_exists("HALE_BIN") {
+            std::env::var("HALE_BIN")
+        } else {
+            "hale"
+        };
+    }
+    fn check(path: String) -> HandResult {
+        let r = dna::run_tool(self.bin() + "\ncheck\n" + path);
+        return hand_result(r, dna::trim_nl(r.stdout));
+    }
+    fn test(path: String) -> HandResult {
+        let r = dna::run_tool(self.bin() + "\ntest\n" + path);
+        return hand_result(r, dna::trim_nl(r.stdout));
+    }
+    fn fmt_check(path: String) -> HandResult {
+        let r = dna::run_tool(self.bin() + "\nfmt\n--check\n" + path);
+        return hand_result(r, dna::trim_nl(r.stdout));
+    }
+}
+
+// A package pattern a Go tool may be handed: `./...`, `./pkg/x`, `example.com/m/p`.
+// No leading `-` (a flag), and only characters a package path holds.
+fn go_pattern_ok(p: String) -> Bool {
+    if len(p) == 0 || len(p) > 200 || std::str::starts_with(p, "-") { return false; }
+    let mut i = 0;
+    while i < len(p) {
+        let c = p[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "."
+            || c == "/"
+            || c == "_"
+            || c == "-"
+            || c == "~"
+            || c == "@"
+            || c == "+";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The Go toolchain on PATH: `go vet`, `go test` and `gofmt -l`. A machine
+// with no `go` says so plainly.
+locus GoToolchain {
+    fn available() -> HandResult {
+        let r = dna::run_tool(
+            "sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh",
+        );
+        if r.code != 0 {
+            return HandResult {
+                error: "the Go toolchain is not installed here: `go` and `gofmt` are not on PATH, so this codebase's go hands cannot run",
+            };
+        }
+        return HandResult { ok: true };
+    }
+    fn in_tree(worktree: String, argv: String) -> dna::RunResult {
+        return dna::run_tool(
+            "sh\n-c\ncd \"$1\" && shift && exec \"$@\" 2>&1\nsh\n" + worktree + "\n" + argv,
+        );
+    }
+    fn vet(worktree: String) -> HandResult {
+        let up = self.available();
+        if !up.ok { return up; }
+        let r = self.in_tree(worktree, "go\nvet\n./...");
+        if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
+        return HandResult { ok: true, output: clipped(dna::trim_nl(r.stdout)) };
+    }
+    fn test(worktree: String, pkg: String) -> HandResult {
+        let up = self.available();
+        if !up.ok { return up; }
+        let target = if len(pkg) == 0 { "./..." } else { pkg };
+        if !go_pattern_ok(target) {
+            return HandResult { error: "`" + target + "` is not a package pattern" };
+        }
+        let r = self.in_tree(worktree, "go\ntest\n" + target);
+        if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
+        return HandResult { ok: true, output: clipped(dna::trim_nl(r.stdout)) };
+    }
+    // `gofmt -l .`: the files not formatted, one a line; none is clean.
+    fn gofmt_check(worktree: String) -> HandResult {
+        let up = self.available();
+        if !up.ok { return up; }
+        let r = self.in_tree(worktree, "gofmt\n-l\n.");
+        if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
+        let listed = dna::trim_nl(r.stdout);
+        if len(listed) > 0 {
+            return HandResult { error: "not gofmt-formatted:\n" + clipped(listed) };
+        }
+        return HandResult { ok: true, output: "" };
+    }
 }
 
 // Deploy is the body's until #987 hands it over: refused, naming it.
 locus NoDeploy {
-    fn express(revision: String) -> HandResult { return HandResult { error: "deploy is not a leg's hand yet: the body expresses a revision (GH #987 hands deploy to legs)" }; }
+    fn express(revision: String) -> HandResult {
+        return HandResult {
+            error: "deploy is not a leg's hand yet: the body expresses a revision (GH #987 hands deploy to legs)",
+        };
+    }
 }
 // The heart's API is not a hand until #987: refused, naming it.
 locus NoHeart {
-    fn ask(path: String, body: String) -> HandResult { return HandResult { error: "the heart's API is not a leg's hand yet (GH #987 hands the heart to legs)" }; }
+    fn ask(path: String, body: String) -> HandResult {
+        return HandResult {
+            error: "the heart's API is not a leg's hand yet (GH #987 hands the heart to legs)",
+        };
+    }
 }
 
 // The set a performer is handed.
 locus Hands {
     params {
         git: GitHand = ScratchGit { };
-        forge: ForgeHand = GhForge { };
+        // the organism's forge allocation answers "open a review"
+        forge: ForgeHand = AllocatedForge { };
         toolchain: ToolchainHand = Toolchain { };
+        go: GoHand = GoToolchain { };
         deploy: DeployHand = NoDeploy { };
         heart: HeartHand = NoHeart { };
         lease: HeadLease = HeadLease { };

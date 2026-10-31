@@ -21,68 +21,149 @@ main locus App {
     fn matches(store: dna::Pq, digest: String, text: String, accepted: Bool) {
         let item = store.idea(digest);
         std::test::assert(item.present, "actual native candidate appears in the graph");
-        std::test::assert_eq_str(item.idea.id, digest, "graph retains exact content-addressed identity");
-        std::test::assert_eq_str(item.idea.text, text, "graph preserves all 8192 bytes, Unicode, CRLF, literal escapes and non-NUL controls");
-        std::test::assert_eq_str(item.idea.name, "concept/équipe 🧭", "native node name remains exact");
-        std::test::assert(item.idea.accepted == accepted, "graph distinguishes proposal from native ratification");
+        std::test::assert_eq_str(
+            item.idea.id,
+            digest,
+            "graph retains exact content-addressed identity",
+        );
+        std::test::assert_eq_str(
+            item.idea.text,
+            text,
+            "graph preserves all 8192 bytes, Unicode, CRLF, literal escapes and non-NUL controls",
+        );
+        std::test::assert_eq_str(
+            item.idea.name,
+            "concept/équipe 🧭",
+            "native node name remains exact",
+        );
+        std::test::assert(
+            item.idea.accepted == accepted,
+            "graph distinguishes proposal from native ratification",
+        );
     }
     fn check(owner: String) {
         let repo = "/tmp/dna-node-document-" + to_string(std::process::pid());
         std::io::fs::mkdir(repo) or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "temporary native Record");
-        let j = dna::GitJournal { repo: repo };
-        let receipts = dna::GitReceipts { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, board: dna::Board { who: "board" } };
-        let text = exact_text(); std::test::assert_eq_int(len(text), 8192, "advertised maximum text byte bound");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: repo },
+            ledger: dna::MemoryLedger { repo: repo },
+        };
+        let receipts = dna::MemoryReceipts { repo: repo };
+        let body = dna::Dna {
+            journal: j,
+            verification: dna::HaleVerification { receipts: receipts, repo: repo },
+            board: dna::Board { who: "board" },
+        };
+        let text = exact_text();
+        std::test::assert_eq_int(len(text), 8192, "advertised maximum text byte bound");
         let codec = dna::KnowledgeNodeRequestCodec { };
         let mut request = dna::KnowledgeNodeRequest {
-            request_id: "node/exact-document", operation: "dna.knowledge.node.propose", kind: "concept",
-            name: "concept/équipe 🧭", text: text, author: "org", target: "org", by: "riley", because: "Preserve exact native knowledge."
+            request_id: "node/exact-document",
+            operation: "dna.knowledge.node.propose",
+            kind: "concept",
+            name: "concept/équipe 🧭",
+            text: text,
+            author: "org",
+            target: "org",
+            by: "riley",
+            because: "Preserve exact native knowledge."
         };
         request.candidate_digest = dna::digest_of(codec.document(request));
         std::test::assert(codec.valid(request), "maximum-sized exact request is valid");
         body.on_knowledge_node_requested(request);
         let digest = request.candidate_digest;
-        std::test::assert_eq_str(dna::first_row(j, "knowledge.node.proposed", request.request_id).body, codec.proposed(request), "real Body acknowledges exact candidate");
+        std::test::assert_eq_str(
+            dna::first_row(j, "knowledge.node.proposed", request.request_id).body,
+            codec.proposed(request),
+            "real Body acknowledges exact candidate",
+        );
         let id = "nodedocument" + to_string(std::process::pid());
-        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let dsn = dna::migrated(owner, id);
+        std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
         let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
         std::test::assert(store.open(), "the store opens: " + store.last_error());
         let proposed = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(proposed.error, "", "actual native proposal projects");
         self.matches(store, digest, text, false);
         dna::ReviewVerdict <- dna::Verdict {
-            command_id: "review/exact-document", review_id: dna::knowledge_review_id(digest), subject_digest: digest,
-            verdict: "approve", reviewer: "board-member", authority: "board", comment: "Approve exact native bytes."
+            command_id: "review/exact-document",
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "board-member",
+            authority: "board",
+            comment: "Approve exact native bytes."
         };
         let mut ticks = 0;
-        while !body.knowledge_record.ratified(digest) && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
-        std::test::assert(body.knowledge_record.ratified(digest), "real Review ratified the exact native candidate");
+        while !body.knowledge_record.ratified(digest) && ticks < 200 {
+            std::time::sleep(20ms);
+            ticks = ticks + 1;
+        }
+        std::test::assert(
+            body.knowledge_record.ratified(digest),
+            "real Review ratified the exact native candidate",
+        );
         let ratified = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(ratified.error, "", "native ratification projects");
         self.matches(store, digest, text, true);
         let document = receipts.read(digest[7..len(digest)]);
-        std::test::assert_eq_str(dna::digest_of(document), digest, "graph projection never rewrites receipt identity");
-        std::test::assert_eq_str(dna::native_json_string(document, "text"), text, "retained receipt and graph agree byte-for-byte");
-        let fresh_record = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(
+            dna::digest_of(document),
+            digest,
+            "graph projection never rewrites receipt identity",
+        );
+        std::test::assert_eq_str(
+            dna::native_json_string(document, "text"),
+            text,
+            "retained receipt and graph agree byte-for-byte",
+        );
+        let fresh_record = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: repo },
+            ledger: dna::MemoryLedger { repo: repo },
+        };
         let rebuilt_id = id + "rebuilt";
-        let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
+        let rebuilt_dsn = dna::migrated(owner, rebuilt_id);
+        std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
         let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };
         std::test::assert(rebuilt.open(), "the fresh store opens: " + rebuilt.last_error());
         let replay = ops::apply_record(rebuilt, fresh_record, receipts);
         std::test::assert_eq_str(replay.error, "", "fresh graph rebuild from real Record succeeds");
-        std::test::assert_eq_int(replay.watermark, fresh_record.revision(), "fresh graph reaches complete ratification evidence");
+        std::test::assert_eq_int(
+            replay.watermark,
+            fresh_record.revision(),
+            "fresh graph reaches complete ratification evidence",
+        );
         self.matches(rebuilt, digest, text, true);
         store.close(); rebuilt.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, id), "", "record's schema and roles dropped");
-        std::test::assert_eq_str(dna::unmigrate(owner, rebuilt_id), "", "rebuilt record's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, id),
+            "",
+            "record's schema and roles dropped",
+        );
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, rebuilt_id),
+            "",
+            "rebuilt record's schema and roles dropped",
+        );
         let removed = dna::run_tool("rm\n-rf\n" + repo);
     }
     run() {
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
         if len(owner) > 0 { self.check(owner); }
-        else { eprintln("node_document_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); }
+        else {
+            eprintln("node_document_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+        }
     }
 }
 fn main() { App { }; }

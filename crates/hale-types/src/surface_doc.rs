@@ -379,6 +379,8 @@ impl<'s, 'a> Book<'s, 'a> {
 
 fn field_schema(f: &FieldSchema, base: &str) -> J {
     match f {
+        // any JSON: no constraint, marked so a reader does not look inside
+        FieldSchema::Any => o(vec![("x-hale-any", J::Bool(true))]),
         FieldSchema::Scalar { json, hale_type, unit } => {
             let mut pairs = vec![("type".to_string(), s(json))];
             if let Some(t) = hale_type {
@@ -399,14 +401,88 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             pairs.push(("maxItems".to_string(), J::Int(*max as i64)));
             J::Obj(pairs)
         }
-        FieldSchema::Unformed => J::Obj(Vec::new()),
+        FieldSchema::Nullable { inner, clear: None, .. } => {
+            o(vec![("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])]))])
+        }
+        // a presence triple's field: `null` clears it
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => o(vec![
+            ("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])])),
+            ("x-hale-null", s("clear")),
+        ]),
+        // no key of its own: `type_schema` leaves it out
+        FieldSchema::Presence { .. } | FieldSchema::Unformed => J::Obj(Vec::new()),
+        FieldSchema::Enum { name, variants, classes } => {
+            // the declared error classes, by variant (spec/api.md § Error
+            // classes): a key only an enum declaring one has
+            let classed = |mut pairs: Vec<(String, J)>| {
+                if !classes.is_empty() {
+                    pairs.push((
+                        "x-hale-error-classes".to_string(),
+                        J::Obj(classes.iter().map(|(v, c)| (v.clone(), s(c))).collect()),
+                    ));
+                }
+                J::Obj(pairs)
+            };
+            let units: Vec<J> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| s(n)).collect();
+            let unit_count = units.len();
+            let unit = |units: Vec<J>| vec![("type".to_string(), s("string")), ("enum".to_string(), J::Arr(units))];
+            if unit_count == variants.len() {
+                let mut pairs = unit(units);
+                pairs.push(("x-hale-type".to_string(), s(name)));
+                return classed(pairs);
+            }
+            let mut one = Vec::new();
+            if unit_count > 0 {
+                one.push(J::Obj(unit(units)));
+            }
+            for (v, values) in variants.iter().filter(|(_, v)| !v.is_empty()) {
+                let value = match values.as_slice() {
+                    [only] => field_schema(only, base),
+                    many => o(vec![
+                        ("type", s("array")),
+                        ("prefixItems", J::Arr(many.iter().map(|f| field_schema(f, base)).collect())),
+                        ("minItems", J::Int(many.len() as i64)),
+                        ("maxItems", J::Int(many.len() as i64)),
+                    ]),
+                };
+                one.push(o(vec![
+                    ("type", s("object")),
+                    ("properties", J::Obj(vec![(v.clone(), value)])),
+                    ("required", J::Arr(vec![s(v)])),
+                    ("additionalProperties", J::Bool(false)),
+                ]));
+            }
+            classed(vec![("oneOf".to_string(), J::Arr(one)), ("x-hale-type".to_string(), s(name))])
+        }
+        FieldSchema::Map { key, value, max, of: None, .. } => o(vec![
+            ("type", s("object")),
+            ("additionalProperties", type_schema(value, base)),
+            ("maxProperties", J::Int(*max as i64)),
+            ("x-hale-key", s(key)),
+        ]),
+        FieldSchema::Map { key, max, of: Some((field, schema)), .. } => o(vec![
+            ("type", s("object")),
+            ("additionalProperties", field_schema(schema, base)),
+            ("maxProperties", J::Int(*max as i64)),
+            ("x-hale-key", s(key)),
+            ("x-hale-value", s(field)),
+        ]),
     }
 }
 
 fn type_schema(t: &TypeSchema, base: &str) -> J {
     o(vec![
         ("type", s("object")),
-        ("properties", J::Obj(t.properties.iter().map(|(k, f)| (k.clone(), field_schema(f, base))).collect())),
+        (
+            "properties",
+            J::Obj(
+                t.properties
+                    .iter()
+                    .filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. }))
+                    .map(|(k, f)| (k.clone(), field_schema(f, base)))
+                    .collect(),
+            ),
+        ),
         ("required", strs(t.required.iter().map(String::as_str))),
     ])
 }
@@ -427,6 +503,7 @@ fn member(row: &Row, book: &mut Book<'_, '_>, base: &str) -> J {
     let error = if h.server_error { s("ClosureViolation") } else { ty(h.error.as_ref()) };
     o(vec![
         ("name", s(&row.member)),
+        ("digest", s(&digest_text(row.member_digest()))),
         ("request", request),
         ("response", response),
         ("error", error),
@@ -581,12 +658,32 @@ fn inventory_of(rows: &SurfaceRows, schemas: &Schemas<'_>, only: Option<&str>) -
             ])
         })
         .collect();
-    o(vec![
+    let mut fields = vec![
         ("inventory", J::Int(1)),
         ("app", s(rows.app.as_deref().unwrap_or(""))),
         ("surfaces", J::Arr(surfaces)),
         ("exposures", J::Arr(exposures)),
         ("hubs", J::Arr(hubs)),
+    ];
+    // Named faces (spec/dna.md § Faces): present only when the program
+    // declares some, so an inventory without them is byte for byte as before.
+    if only.is_none() && !rows.faces.is_empty() {
+        let faces = rows
+            .faces
+            .iter()
+            .map(|f| {
+                o(vec![
+                    ("name", s(&f.name)),
+                    ("app", s(&f.app)),
+                    ("roles", strs(f.roles.iter().map(String::as_str))),
+                    ("consumes", strs(f.consumes.iter().map(String::as_str))),
+                    ("port", J::Int(f.port)),
+                ])
+            })
+            .collect();
+        fields.push(("faces", J::Arr(faces)));
+    }
+    fields.extend(vec![
         ("schemas", book.render(DOC_REFS)),
         (
             "notes",
@@ -596,7 +693,8 @@ fn inventory_of(rows: &SurfaceRows, schemas: &Schemas<'_>, only: Option<&str>) -
                 ("lifecycle", s(NOTE_LIFECYCLE)),
             ]),
         ),
-    ])
+    ]);
+    o(fields)
 }
 
 /// The principal `--caller` names: a JSON object as the exposure would
@@ -649,7 +747,12 @@ pub fn description(
         let hubs: Vec<&Hub> = rows
             .hubs
             .iter()
-            .filter(|h| h.transport.address.is_some() && h.transport.address == t.address)
+            .filter(|h| {
+                // a hub the exposure's `http::Rest` mounts (GH #1780), or one
+                // on its own listener at the same address
+                h.mounted_on.as_deref() == Some(exposure)
+                    || (h.mounted_on.is_none() && h.transport.address.is_some() && h.transport.address == t.address)
+            })
             .collect();
         let required: BTreeSet<&str> = rows
             .rows_of(surface)
@@ -862,24 +965,63 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
     let refusal = |what: &str| {
         J::Obj(vec![("description".to_string(), s(what)), content(o(vec![("$ref", s(&format!("{REFS}{REFUSAL}")))]))])
     };
-    let mut paths = Vec::new();
+    let mut paths: Vec<(String, Vec<(String, J)>)> = Vec::new();
     for row in members {
         let Handled::Fn(h) = &row.handler else { continue };
+        // a row with a route is served there (`http::Rest`); one without is
+        // the member's `POST /call/<member>`
+        let route = row.route.as_ref().and_then(|r| crate::rest_routes::parse(r).ok());
+        let mut parameters = vec![o(vec![
+            ("name", s("Hale-Surface-Digest")),
+            ("in", s("header")),
+            ("required", J::Bool(false)),
+            ("schema", o(vec![("type", s("string")), ("const", s(&digest_text(digest)))])),
+        ])];
+        let fields = h.request.as_ref().map(|r| schemas.request_fields(&r.te)).unwrap_or_default();
+        let json_of = |k: char| match k {
+            'i' => "integer",
+            'f' => "number",
+            'b' => "boolean",
+            _ => "string",
+        };
+        let mut bound_in_path: Vec<String> = Vec::new();
+        if let Some(r) = &route {
+            for name in r.params() {
+                bound_in_path.push(name.to_string());
+                let kind = fields.iter().find(|(n, _)| n == name).map_or('s', |(_, k)| *k);
+                parameters.insert(
+                    0,
+                    o(vec![
+                        ("name", s(name)),
+                        ("in", s("path")),
+                        ("required", J::Bool(true)),
+                        ("schema", o(vec![("type", s(json_of(kind)))])),
+                    ]),
+                );
+            }
+        }
+        // a method without a body takes the rest of the request's scalar
+        // fields in the query
+        let bodyless = route.as_ref().is_some_and(|r| r.method == "GET" || r.method == "DELETE");
+        if bodyless {
+            for (name, kind) in &fields {
+                if !bound_in_path.contains(name) {
+                    parameters.push(o(vec![
+                        ("name", s(name)),
+                        ("in", s("query")),
+                        ("required", J::Bool(false)),
+                        ("schema", o(vec![("type", s(json_of(*kind)))])),
+                    ]));
+                }
+            }
+        }
         let mut op = vec![
             ("operationId".to_string(), s(&row.member)),
             ("summary".to_string(), s(&format!("rpc {}", row.member))),
             ("description".to_string(), s(&format!("{}; the server still authorizes every request.", requires_text(row)))),
-            (
-                "parameters".to_string(),
-                J::Arr(vec![o(vec![
-                    ("name", s("Hale-Surface-Digest")),
-                    ("in", s("header")),
-                    ("required", J::Bool(false)),
-                    ("schema", o(vec![("type", s("string")), ("const", s(&digest_text(digest)))])),
-                ])]),
-            ),
+            ("parameters".to_string(), J::Arr(parameters)),
         ];
-        if let Some(req) = &h.request {
+        if let (Some(req), false) = (&h.request, bodyless) {
             let schema = field_schema(&book.type_ref(&req.te), REFS);
             op.push(("requestBody".to_string(), J::Obj(vec![("required".to_string(), J::Bool(true)), content(schema)])));
         }
@@ -889,7 +1031,12 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
             ok.push(content(field_schema(&book.type_ref(&t.te), REFS)));
         }
         let ok = J::Obj(ok);
-        responses.push(("200".to_string(), ok));
+        let ok_status = route.as_ref().map_or(200, |r| r.status);
+        responses.push((ok_status.to_string(), ok));
+        if route.is_some() {
+            responses.push(("404".to_string(), refusal("no route serves the path (refusal: not_found)")));
+            responses.push(("405".to_string(), refusal("the path takes other methods, named in Allow (refusal: method_not_allowed)")));
+        }
         for (status, what) in [
             ("400", "refusal: malformed"),
             ("401", "refusal: unauthenticated"),
@@ -898,23 +1045,83 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
         ] {
             responses.push((status.to_string(), refusal(what)));
         }
+        let mut classed: Vec<(u16, String, J)> = Vec::new();
         if let (Some(e), false) = (&h.error, h.server_error) {
-            let schema = field_schema(&book.type_ref(&e.te), REFS);
+            let fs = book.type_ref(&e.te);
+            let schema = field_schema(&fs, REFS);
             responses.push((
                 "422".to_string(),
-                J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", schemas.show(e)))), content(schema)]),
+                J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", schemas.show(e)))), content(schema.clone())]),
             ));
+            // a variant's error class answers with its class's status
+            // (spec/api.md § Error classes)
+            if let FieldSchema::Enum { classes, .. } = &fs {
+                for c in crate::surfaces::ERROR_CLASSES.iter().filter(|c| c.http != 422) {
+                    let vs: Vec<&str> = classes.iter().filter(|(_, w)| w == c.word).map(|(v, _)| v.as_str()).collect();
+                    if !vs.is_empty() {
+                        let what = format!("handler error: {} ({}, @{})", schemas.show(e), vs.join(", "), c.word);
+                        classed.push((c.http, what, schema.clone()));
+                    }
+                }
+            }
         }
         responses.push(("429".to_string(), refusal("refusal: full")));
         if h.server_error {
             responses.push(("500".to_string(), refusal("server error: the handler violated (ClosureViolation)")));
         }
         responses.push(("503".to_string(), refusal("refusal: shutting_down, unavailable")));
+        for (status, what, schema) in classed {
+            let key = status.to_string();
+            match responses.iter_mut().find(|(k, _)| *k == key) {
+                // a refusal answers with the status too: either body
+                Some((_, J::Obj(have))) => {
+                    let said = match have.iter().find(|(k, _)| k == "description") {
+                        Some((_, J::Str(d))) => d.clone(),
+                        _ => String::new(),
+                    };
+                    *have = vec![
+                        ("description".to_string(), s(&format!("{said}; or {what}"))),
+                        // `anyOf`: a handler error's body may also match the
+                        // refusal's schema (a variant `refusal`), and the
+                        // `Hale-Error-Class` header tells them apart, not the body
+                        content(o(vec![("anyOf", J::Arr(vec![o(vec![("$ref", s(&format!("{REFS}{REFUSAL}")))]), schema]))])),
+                    ];
+                }
+                _ => responses.push((key, J::Obj(vec![("description".to_string(), s(&what)), content(schema)]))),
+            }
+        }
+        responses.sort_by_key(|(k, _)| k.parse::<u16>().unwrap_or(u16::MAX));
         op.push(("responses".to_string(), J::Obj(responses)));
         op.push(("security".to_string(), J::Arr(vec![o(vec![("bearer", J::Arr(Vec::new()))])])));
         op.push(("x-hale-requires".to_string(), strs(row.requires.iter().map(|(r, _)| r.as_str()))));
-        paths.push((format!("/call/{}", row.member), o(vec![("post", J::Obj(op))])));
+        let (path, method) = match &route {
+            Some(r) => (
+                if r.segs.is_empty() {
+                    "/".to_string()
+                } else {
+                    r.segs
+                        .iter()
+                        .map(|g| match g {
+                            crate::rest_routes::Seg::Lit(l) => format!("/{l}"),
+                            crate::rest_routes::Seg::Param(p) => format!("/{{{p}}}"),
+                        })
+                        .collect()
+                },
+                r.method.to_lowercase(),
+            ),
+            None => (format!("/call/{}", row.member), "post".to_string()),
+        };
+        match paths.iter_mut().find(|(p, _)| *p == path) {
+            Some((_, item)) => item.push((method, J::Obj(op))),
+            None => paths.push((path, vec![(method, J::Obj(op))])),
+        }
     }
+    let served = if rows.rows_of(surface).any(|r| r.route.is_some()) {
+        "POST /call/<member> for a row that declares no route, the declared METHOD /path (http::Rest) for one that does"
+    } else {
+        "POST /call/<member>"
+    };
+    let paths: Vec<(String, J)> = paths.into_iter().map(|(p, item)| (p, J::Obj(item))).collect();
     let mut component_schemas = match book.render(REFS) {
         J::Obj(p) => p,
         _ => Vec::new(),
@@ -957,7 +1164,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
                 (
                     "description",
                     s(&format!(
-                        "The surface {surface} over HTTP (spec/api.md § Outcomes): POST /call/<member>, the body by \
+                        "The surface {surface} over HTTP (spec/api.md § Outcomes): {served}, the body by \
                          the JSON codec. {NOTE_AUTHORIZATION}; {NOTE_LIFECYCLE}."
                     )),
                 ),
@@ -1018,44 +1225,11 @@ pub fn tool_name(member: &str) -> String {
 /// The MCP form of a surface: every row a tool, its input schema the
 /// request's, self-contained (the types it reaches under `$defs`).
 pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J, String> {
-    const REFS: &str = "#/$defs/";
     let (digest, members) = surface_members(rows, surface)?;
     let mut tools = Vec::new();
     for row in members {
         let Handled::Fn(h) = &row.handler else { continue };
-        let mut book = Book::new(schemas);
-        let input = match &h.request {
-            Some(req) => match book.type_ref(&req.te) {
-                FieldSchema::Ref(name) => {
-                    let mut root = match book.types.get(&name).map(|t| type_schema(t, REFS)) {
-                        Some(J::Obj(p)) => p,
-                        _ => Vec::new(),
-                    };
-                    let defs: Vec<(String, J)> = book
-                        .types
-                        .iter()
-                        .filter(|(k, _)| **k != name)
-                        .map(|(k, t)| (k.clone(), type_schema(t, REFS)))
-                        .collect();
-                    if !defs.is_empty() {
-                        root.push(("$defs".to_string(), J::Obj(defs)));
-                    }
-                    J::Obj(root)
-                }
-                // An MCP tool's input is an object: a request that is not
-                // one is wrapped under its parameter's name, and the
-                // transport unwraps it before decoding by shape.
-                other => {
-                    let param = h.params.first().map_or("request", |p| p.0.as_str());
-                    o(vec![
-                        ("type", s("object")),
-                        ("properties", o(vec![(param, field_schema(&other, REFS))])),
-                        ("required", strs([param])),
-                    ])
-                }
-            },
-            None => o(vec![("type", s("object")), ("properties", J::Obj(Vec::new()))]),
-        };
+        let input = tool_input(schemas, h);
         let returns = h.response.as_ref().map_or("nothing".to_string(), |t| schemas.show(t));
         let fails = match (&h.error, h.server_error) {
             (_, true) => "; a violation is the server error".to_string(),
@@ -1084,6 +1258,86 @@ pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J
     ]))
 }
 
+/// A tool's input schema: the request's, self-contained (a type it reaches
+/// under `$defs`), an empty object for none.
+fn tool_input(schemas: &Schemas<'_>, h: &crate::surfaces::Handler) -> J {
+    const REFS: &str = "#/$defs/";
+    let mut book = Book::new(schemas);
+    match &h.request {
+        Some(req) => match book.type_ref(&req.te) {
+            FieldSchema::Ref(name) => {
+                let mut root = match book.types.get(&name).map(|t| type_schema(t, REFS)) {
+                    Some(J::Obj(p)) => p,
+                    _ => Vec::new(),
+                };
+                let defs: Vec<(String, J)> = book
+                    .types
+                    .iter()
+                    .filter(|(k, _)| **k != name)
+                    .map(|(k, t)| (k.clone(), type_schema(t, REFS)))
+                    .collect();
+                if !defs.is_empty() {
+                    root.push(("$defs".to_string(), J::Obj(defs)));
+                }
+                J::Obj(root)
+            }
+            // An MCP tool's input is an object: a request that is not
+            // one is wrapped under its parameter's name, and the
+            // transport unwraps it before decoding by shape.
+            other => {
+                let param = h.params.first().map_or("request", |p| p.0.as_str());
+                o(vec![
+                    ("type", s("object")),
+                    ("properties", o(vec![(param, field_schema(&other, REFS))])),
+                    ("required", strs([param])),
+                ])
+            }
+        },
+        None => o(vec![("type", s("object")), ("properties", J::Obj(Vec::new()))]),
+    }
+}
+
+/// The tools a leg acting as `held` is given of `surface` (spec/api.md §
+/// Calling a surface): one per row those roles admit (a row that requires
+/// none, or whose every required role one of them holds, a role holding
+/// each role it `includes`), named `<Surface>.<row>`, the row as the
+/// surface's client names its method (`Shelf.create_item`,
+/// `Shop.orders_place`), so two surfaces' tools never share a name. Each
+/// has the MCP form's input schema. `confer` is each role's conferring
+/// roles (`rpc_expand::conferring`).
+pub fn leg_tools(
+    rows: &SurfaceRows,
+    schemas: &Schemas<'_>,
+    surface: &str,
+    held: &[String],
+    confer: &BTreeMap<String, Vec<String>>,
+) -> Result<J, String> {
+    let (digest, members) = surface_members(rows, surface)?;
+    let holds = |role: &str| confer.get(role).is_some_and(|c| c.iter().any(|h| held.contains(h)));
+    let mut tools = Vec::new();
+    for row in members {
+        let Handled::Fn(h) = &row.handler else { continue };
+        if !row.requires.iter().all(|(r, _)| holds(r)) {
+            continue;
+        }
+        let method = if row.signature { row.member.clone() } else { crate::api_names::snake(&row.member) };
+        let returns = h.response.as_ref().map_or("nothing".to_string(), |t| schemas.show(t));
+        tools.push(o(vec![
+            ("name", s(&format!("{surface}.{method}"))),
+            ("description", s(&format!("rpc {} of {surface}: returns {returns}. {}.", row.member, requires_text(row)))),
+            ("inputSchema", tool_input(schemas, h)),
+            ("x-hale-member", s(&row.member)),
+            ("x-hale-requires", strs(row.requires.iter().map(|(r, _)| r.as_str()))),
+        ]));
+    }
+    Ok(o(vec![
+        ("x-hale-surface", s(surface)),
+        ("x-hale-digest", s(&digest_text(digest))),
+        ("x-hale-roles", strs(held.iter().map(String::as_str))),
+        ("tools", J::Arr(tools)),
+    ]))
+}
+
 // ---- the client model (GH #1417, R8a) ----
 
 /// What a member's failure is, as a client types it.
@@ -1103,6 +1357,10 @@ pub enum ClientError {
 #[derive(Debug, Clone)]
 pub struct ClientMember {
     pub name: String,
+    /// The member's digest (`fnv1a64:…`), which a call names so that the
+    /// surface may gain members without refusing it; "" where no call is
+    /// made (a gRPC descriptor's model).
+    pub digest: String,
     pub request: Option<FieldSchema>,
     pub response: Option<FieldSchema>,
     pub error: ClientError,
@@ -1150,6 +1408,7 @@ pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) ->
         };
         out.push(ClientMember {
             name: row.member.clone(),
+            digest: digest_text(row.member_digest()),
             request,
             response,
             error,

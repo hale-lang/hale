@@ -107,23 +107,101 @@ pub struct Manifest {
     pub dna: DnaManifest,
 }
 
-/// The `[dna]` section.
+/// The `[dna]` section. A key this toolchain does not know is kept aside
+/// (`unknown`) and warned of, never refused: an organism's manifest may
+/// declare what a newer toolchain reads before the toolchain beside it
+/// knows it, and a typo is still named (`warn_unknown_dna`).
 #[derive(Deserialize, Default, Clone, Debug)]
-#[serde(deny_unknown_fields)]
 pub struct DnaManifest {
     pub fleet: Option<String>,
+    /// GH #1590: `[dna] record = "<identity>"` — the record this genome
+    /// belongs to, pinned by `hale habitat graft` / `hale dna upgrade`. The DNA host
+    /// reads it (`dna::record_identity_at`); the toolchain only carries it.
+    #[allow(dead_code)] // declared so it is known (not warned of); read in Hale
+    pub record: Option<String>,
+    /// GH #1653: `[dna] needs = ["memory", "nerves", "senses"]` — the roles
+    /// the organism needs from the habitat, satisfied at graft
+    /// (`dna::habitat::needs_of` reads and checks it).
+    #[allow(dead_code)] // declared so it is known (not warned of)
+    pub needs: Option<Vec<String>>,
+    /// `[dna] brings = ["database", "broker"]` — the heart roles among its
+    /// needs the application's own compose provides, which a graft leaves
+    /// to it unless `--reuse` (`dna::habitat::brings_of` reads and checks it).
+    #[allow(dead_code)] // declared so it is known (not warned of)
+    pub brings: Option<Vec<String>>,
+    /// GH #1653: `[dna.migrations.<role>] command = [...]` — a heart's
+    /// own migration for a heart role it declares, which the habitat runs
+    /// when the heart opts in (`dna::habitat::heart_migrations`).
+    #[allow(dead_code)] // declared so it is known (not warned of)
+    pub migrations: Option<toml::Table>,
+    /// D8: `[[dna.codebase]]` — the codebases the organism works on,
+    /// each attached at its graft with phase 3's fields (`name`, `repo`,
+    /// `branch`, `build`, `test`, `toolchain`;
+    /// `dna::habitat::manifest_codebases` reads them).
+    #[allow(dead_code)] // declared so it is known (not warned of)
+    pub codebase: Option<Vec<toml::Table>>,
+    /// `[dna.reflex.<name>]` — what the organism watches for in its senses
+    /// (`dna::habitat::reflexes::declared` reads and checks it).
+    #[allow(dead_code)] // declared so it is known (not warned of)
+    pub reflex: Option<toml::Table>,
+    /// `[dna] toolchain = "<version>"` — the hale release the organism runs
+    /// on, as a codebase's `toolchain` is: what the habitat installs on a
+    /// host to run its host commands (`dna::habitat::hosted`).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub toolchain: Option<String>,
+    /// `[dna.host.<name>]` — a host command of the organism's own, which the
+    /// habitat runs on a host it manages (`hale habitat organism place`;
+    /// `dna::habitat::hosted::host_commands` reads and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub host: Option<toml::Table>,
+    /// `[dna.secrets.<name>]` — a secret the seed declares, which the
+    /// habitat keeps in the organism's vault and hands to its readers
+    /// (`dna::secrets::declared` reads and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub secrets: Option<toml::Table>,
+    /// `[dna.provides.<capability>]` — what the seed serves the habitat's
+    /// other organisms (`models`: an OpenAI-compatible endpoint, each tenant
+    /// keyed by a member of a drawn family; `dna::provides::declared` reads
+    /// and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub provides: Option<toml::Table>,
+    /// `[dna.ui.<name>]` — a web UI the seed serves, which the habitat's
+    /// home screen lists (`dna::uis::declared` reads and checks it).
+    #[allow(dead_code)] // known, so it is not warned of; read through the raw manifest
+    pub ui: Option<toml::Table>,
+    /// Every other key of `[dna]`, which this toolchain does not know.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
 
-/// GH #566 F5: the fleet the DNA expresses — its name and plan path
-/// (relative to the manifest), when `[dna] fleet` names one.
+/// A warning, once per process, for each `[dna]` key of `manifest` this
+/// toolchain does not know: it is ignored, not refused.
+fn warn_unknown_dna(manifest: &Path, dna: &DnaManifest) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    for key in dna.unknown.keys() {
+        let said = format!("{}:{key}", manifest.display());
+        let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+        if seen.contains(&said) {
+            continue;
+        }
+        seen.push(said);
+        eprintln!("hale: {}: this toolchain does not know `[dna] {key}` and ignores it (a newer toolchain may read it; or it is misspelled)", manifest.display());
+    }
+}
+
+/// GH #566 F5: the fleet the DNA expresses — its name and fleet seed
+/// path, when `[dna] fleet` names one.
 pub fn read_dna_fleet(manifest: &Path) -> Result<Option<(String, PathBuf)>, String> {
     if !manifest.exists() {
         return Ok(None);
     }
     let src = fs::read_to_string(manifest).map_err(|e| format!("read {}: {}", manifest.display(), e))?;
     let m: Manifest = toml::from_str(&src).map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
+    warn_unknown_dna(manifest, &m.dna);
     let Some(name) = m.dna.fleet else { return Ok(None) };
-    let Some(rel) = m.fleets.get(&name) else {
+    let fleets = seeds_only(manifest, m.fleets)?;
+    let Some(rel) = fleets.get(&name) else {
         return Err(format!("{}: `[dna] fleet = \"{name}\"` names no entry of `[fleets]`", manifest.display()));
     };
     let base = manifest.parent().unwrap_or(Path::new("."));
@@ -193,6 +271,14 @@ pub struct EnvSpec {
     /// nobody, which `--matrix` accepts; an absent role it does not.
     #[serde(default)]
     pub roles: BTreeMap<String, Vec<String>>,
+    /// GH #1477: the deployment backend `hale deploy render` uses here,
+    /// `compose` or `kubernetes`; `--backend` overrides it.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// GH #1477: `[environments.<name>.env]` — the environment values
+    /// every rendered workload carries here.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// GH #1109: the spellings a role member may take.
@@ -344,7 +430,7 @@ pub struct Lockfile {
     pub deps: Vec<LockedDep>,
     /// GH #528: `[dna] toolchain = "<version>"` — the compiler
     /// version whose `dna/core` was materialized into `vendor/dna/`
-    /// by `hale dna init` / `upgrade`. Toolchain-owned, so it is
+    /// by `hale habitat graft` / `hale dna upgrade`. Toolchain-owned, so it is
     /// pinned here beside the git deps rather than in `hale.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dna: Option<DnaLock>,
@@ -429,7 +515,9 @@ pub fn fetch(repo_root: &Path) -> Result<(), String> {
 fn read_manifest(path: &Path) -> Result<Manifest, String> {
     let src = fs::read_to_string(path)
         .map_err(|e| format!("read {}: {}", path.display(), e))?;
-    toml::from_str(&src).map_err(|e| format!("parse {}: {}", path.display(), e))
+    let m: Manifest = toml::from_str(&src).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    warn_unknown_dna(path, &m.dna);
+    Ok(m)
 }
 
 pub(crate) fn read_lockfile(path: &Path) -> Result<Lockfile, String> {
@@ -557,6 +645,26 @@ fn short_sha(sha: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A heart's manifest, as voice's is: its needs, what it brings itself,
+    /// and its migration, all admitted by the strict `[dna]` table.
+    #[test]
+    fn a_hearts_manifest_with_what_it_brings_parses() {
+        let src = "[dna]\nneeds = [\"memory\", \"nerves\", \"database\", \"broker\"]\nbrings = [\"database\", \"broker\"]\n\n[dna.migrations.database]\ncommand = [\"hale\", \"run\", \"api\", \"migrate\"]\n";
+        let m: Manifest = toml::from_str(src).expect("parse");
+        assert_eq!(m.dna.brings.as_deref(), Some(&["database".to_string(), "broker".to_string()][..]));
+    }
+
+    /// A manifest newer than the toolchain: a `[dna]` table this one does not
+    /// know is kept aside, not refused; the ones it knows are read.
+    #[test]
+    fn a_dna_key_this_toolchain_does_not_know_is_kept_aside() {
+        let src = "[dna]\nneeds = [\"memory\"]\n\n[dna.host.node]\ninstall = [\"hale\", \"run\", \"node\", \"install\"]\n\n[dna.someday]\nwhat = 1\n";
+        let m: Manifest = toml::from_str(src).expect("a newer manifest parses");
+        assert!(m.dna.host.is_some(), "host commands are known");
+        assert_eq!(m.dna.unknown.keys().collect::<Vec<_>>(), ["someday"]);
+        assert_eq!(m.dna.needs.as_deref(), Some(&["memory".to_string()][..]));
+    }
 
     #[test]
     fn parses_minimal_manifest() {
@@ -716,7 +824,7 @@ pub fn read_claims_config(
     Ok((m.environments, m.claims.base))
 }
 
-/// GH #408 Phase 5: the `[fleets]` table — name → plan path,
+/// GH #408 Phase 5: the `[fleets]` table — name → fleet seed path,
 /// relative to the manifest.
 pub fn read_fleets(
     manifest: &Path,
@@ -728,7 +836,21 @@ pub fn read_fleets(
         .map_err(|e| format!("read {}: {}", manifest.display(), e))?;
     let m: Manifest = toml::from_str(&src)
         .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
-    Ok(m.fleets)
+    seeds_only(manifest, m.fleets)
+}
+
+/// A `[fleets]` entry names a fleet seed: a plan JSON is not an input.
+fn seeds_only(manifest: &Path, fleets: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    for (name, rel) in &fleets {
+        if rel.ends_with(".json") {
+            return Err(format!(
+                "{}: `[fleets] {name} = \"{rel}\"` names a plan; a fleet is a seed declaring \
+                 `fleet locus` (a plan JSON is only an export: `hale fleet export <seed>`)",
+                manifest.display()
+            ));
+        }
+    }
+    Ok(fleets)
 }
 
 /// GH #408 Phase 7: the `[fleet_trust]` key paths, resolved

@@ -1,51 +1,18 @@
-//! GH #408 Phase 1: composing topology artifacts into a fleet model.
+//! GH #408: composing a fleet's instances into one model, from a fleet
+//! seed (`fleet locus`, phase 4).
 //!
-//! The composition unit is the artifact INSTANCE, never the source
-//! file. Matching wire identities establish compatibility; only an
-//! explicit route creates a fleet edge. A source-merged "super-main"
-//! would invent local bus edges between binaries no route connects,
-//! erase deploy-time routes that exist only in config, and turn
-//! cross-process messaging into ordinary call reachability — so these
-//! tests care as much about what is NOT connected as what is.
+//! The composition unit is the INSTANCE's artifact, cut from its seed,
+//! never merged source. Matching wire identities establish
+//! compatibility; only a binding creates a fleet edge. A source-merged
+//! "super-main" would invent local bus edges between binaries no route
+//! connects and turn cross-process messaging into call reachability —
+//! so these tests care as much about what is NOT connected as what is.
 
+#[path = "support/fleet_seed.rs"]
+mod fleet_seed;
+
+use fleet_seed::{fleet, hale_in, root, stdout_in, write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn root(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir()
-        .join(format!("hale_fleet_{}_{}", std::process::id(), tag));
-    let _ = std::fs::remove_dir_all(&d);
-    d
-}
-
-fn write(root: &Path, rel: &str, src: &str) {
-    let p = root.join(rel);
-    std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
-    std::fs::write(&p, src).expect("write");
-}
-
-fn hale(args: &[&str]) -> (String, i32) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(args)
-        .output()
-        .expect("run hale");
-    (
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        out.status.code().unwrap_or(-1),
-    )
-}
-
-fn hale_stdout(args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(args)
-        .output()
-        .expect("run hale");
-    String::from_utf8_lossy(&out.stdout).to_string()
-}
 
 const TOPICS: &str = r#"
 type Intent { id: Int; }
@@ -91,136 +58,65 @@ main locus GwApp { params { g: Gateway = Gateway { }; } }
 fn main() { GwApp { }; }
 "#;
 
-const PLAN: &str = r#"{
-  "schema": "1.0",
-  "name": "prod",
-  "instances": [
-    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
-    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
-    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
-  ],
-  "routes": [
-    {"id": "intent", "transport": "unix",
-     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
-     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]},
-    {"id": "request", "transport": "unix",
-     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
-     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}
-  ]
-}"#;
+/// A prober that also sends orders straight to the gateway.
+fn rogue() -> String {
+    PROBER
+        .replace(
+            "bus { publish t::OrderIntent; }",
+            "bus { publish t::OrderIntent; publish t::OrderRequest; }",
+        )
+        .replace(
+            "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }",
+            "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; \
+             let o = t::Order { id: 1 }; t::OrderRequest <- o; }",
+        )
+}
 
-/// Three seeds, three artifacts, one plan.
-fn fleet(tag: &str) -> PathBuf {
+const IMPORTS: &[(&str, &str)] = &[
+    ("pa", "../prober"),
+    ("oa", "../oms"),
+    ("ga", "../gw"),
+    ("t", "../lib"),
+];
+const PARAMS: &[&str] = &["prober: pa::Prober;", "oms: oa::OmsApp;", "gw: ga::GwApp;"];
+const BOTH: &[&str] = &[
+    "t::OrderIntent: unix(\"/tmp/hale-fleet-intent.sock\");",
+    "t::OrderRequest: unix(\"/tmp/hale-fleet-request.sock\");",
+];
+const CLAIMS: &[&str] = &[
+    "orders_pass_oms: forbid reaches(prober, gw) avoiding oms;",
+    "one_order_authority: count publishers(topic t::OrderRequest) == 1;",
+    "gw_receives_orders: require subscribes(some gw, topic t::OrderRequest);",
+];
+
+/// Three seeds and a fleet seed `prod/` over their mains.
+fn workspace(tag: &str) -> PathBuf {
     let r = root(tag);
     write(&r, "lib/topics.hl", TOPICS);
     write(&r, "prober/main.hl", PROBER);
     write(&r, "oms/main.hl", OMS);
     write(&r, "gw/main.hl", GW);
     write(&r, "hale.toml", "[deps]\n");
-    for app in ["prober", "oms", "gw"] {
-        let dst = r.join(format!("artifacts/{}.json", app));
-        std::fs::create_dir_all(dst.parent().expect("parent")).expect("mkdir");
-        let (out, code) = hale(&[
-            "check",
-            r.join(app).to_str().expect("utf8"),
-            &format!("--dump-topology={}", dst.display()),
-        ]);
-        assert_eq!(code, 0, "component `{}` must check clean: {}", app, out);
-    }
-    write(&r, "prod.plan.json", PLAN);
+    write(&r, "prod/fleet.hl", &fleet(IMPORTS, PARAMS, &[], BOTH, &[]));
     r
 }
 
-/// Round 7: tamper controls restamp BOTH digests — `law_digest`
-/// recomputes from the canonical-JSON law rows, then the document
-/// trailer — so each control exercises the binding it targets,
-/// not the digest gate.
-fn restamp_both(artifact: &str) -> String {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = artifact.rfind(key).expect("digest trailer");
-    let mut body = artifact[..cut].to_string();
-    // Round 2 (#490): the shape_hash is recomputed at admission,
-    // so hashed-half tampers must restamp it too — each pin then
-    // exercises the deep binding it targets, not the identity
-    // gate. (The stale-identity control below does NOT use this
-    // helper.)
-    let sk = "\"shape_hash\": \"";
-    if let Some(at) = body.find(sk) {
-        let start = at + sk.len();
-        if let Some(rel) = body[start..].find('"') {
-            let claimed_end = start + rel;
-            let model_start =
-                claimed_end + "\",\n".len();
-            if let Some(end_rel) =
-                body[model_start..].find(",\n  \"sources\": [")
-            {
-                let fresh = format!(
-                    "{:016x}",
-                    fnv1a64(
-                        body[model_start
-                            ..model_start + end_rel]
-                            .as_bytes()
-                    )
-                );
-                body.replace_range(start..claimed_end, &fresh);
-            }
-        }
-    }
-    let lk = "\"law_digest\": \"";
-    if let (Some(at), Ok(v)) = (
-        body.find(lk),
-        serde_json::from_str::<serde_json::Value>(&format!(
-            "{}\n}}\n",
-            body
-        )),
-    ) {
-        if v["law"]["rows"].is_array() {
-            let canon = serde_json::to_string(&serde_json::json!({
-                "issues": v["law"]["issues"],
-                "rows": v["law"]["rows"],
-            }))
-            .unwrap();
-            let fresh =
-                format!("{:016x}", fnv1a64(canon.as_bytes()));
-            let start = at + lk.len();
-            let end = start
-                + body[start..].find('"').expect("digest close");
-            body.replace_range(start..end, &fresh);
-        }
-    }
-    format!(
-        "{}{}{:016x}\"\n}}\n",
-        body,
-        key,
-        fnv1a64(body.as_bytes())
-    )
+/// A fleet seed `<name>/` beside the others.
+fn seed(r: &Path, name: &str, placement: &[&str], bindings: &[&str], claims: &[&str]) {
+    write(
+        r,
+        &format!("{name}/fleet.hl"),
+        &fleet(IMPORTS, PARAMS, placement, bindings, claims),
+    );
 }
 
-fn plan_of(r: &Path) -> String {
-    r.join("prod.plan.json").to_str().expect("utf8").to_string()
+fn dump(r: &Path, seed: &str) -> serde_json::Value {
+    let out = stdout_in(r, &["fleet", "dump", seed]);
+    serde_json::from_str(&out).unwrap_or_else(|e| panic!("fleet artifact parses ({e}): {out}"))
 }
 
-/// Criteria 1-3: three independently compiled artifacts load, get
-/// instance-qualified, and an explicit route file connects a
-/// publisher in one to a subscriber in another — twice, so the graph
-/// carries A → route → B → route → C.
-#[test]
-fn three_artifacts_compose_into_a_routed_chain() {
-    let r = fleet("chain");
-    let out = hale_stdout(&["fleet", "dump", &plan_of(&r)]);
-    let v: serde_json::Value =
-        serde_json::from_str(&out).expect("fleet artifact parses");
-    let _ = std::fs::remove_dir_all(&r);
-
-    let routed: Vec<(String, String, String)> = v["relations"]["routed"]
+fn routed(v: &serde_json::Value) -> Vec<(String, String, String)> {
+    v["relations"]["routed"]
         .as_array()
         .expect("routed")
         .iter()
@@ -231,157 +127,94 @@ fn three_artifacts_compose_into_a_routed_chain() {
                 e["route"].as_str().unwrap_or("").to_string(),
             )
         })
-        .collect();
+        .collect()
+}
+
+/// Three independently compiled seeds compose, instance-qualified, and
+/// the fleet's two bindings derive a route each: A → route → B → route →
+/// C.
+#[test]
+fn three_seeds_compose_into_a_routed_chain() {
+    let r = workspace("chain");
+    let v = dump(&r, "prod");
+    let _ = std::fs::remove_dir_all(&r);
+    let e = routed(&v);
     assert!(
-        routed.contains(&(
+        e.contains(&(
             "prober-0::Probe::submit".into(),
             "oms-0::Oms::on_intent".into(),
-            "intent".into()
+            "t::OrderIntent".into()
         )),
-        "A → route → B: {:?}",
-        routed
+        "A → B: {e:?}"
     );
     assert!(
-        routed.contains(&(
+        e.contains(&(
             "oms-0::Oms::on_intent".into(),
             "gw-0::Gateway::on_order".into(),
-            "request".into()
+            "t::OrderRequest".into()
         )),
-        "B → route → C: {:?}",
-        routed
+        "B → C: {e:?}"
     );
-    // Every vertex is instance-qualified: an application TYPE is not
-    // a deployed instance.
     for vtx in v["vertices"].as_array().expect("vertices") {
         let s = vtx.as_str().unwrap_or("");
         assert!(
-            s.starts_with("prober-0::")
-                || s.starts_with("oms-0::")
-                || s.starts_with("gw-0::"),
-            "unqualified vertex `{}`",
-            s
+            s.starts_with("prober-0::") || s.starts_with("oms-0::") || s.starts_with("gw-0::"),
+            "unqualified vertex `{s}`"
         );
     }
 }
 
-/// The property that separates composition from source-merging:
-/// matching wire identities are COMPATIBILITY, not connection. Two
-/// binaries that both know a topic are not joined unless the plan
-/// routes them.
+/// Matching wire identities are COMPATIBILITY, not connection: with no
+/// binding, nothing is routed though every instance knows the topics.
 #[test]
 fn matching_topics_alone_do_not_create_an_edge() {
-    let r = fleet("noroute");
-    // Same three instances, no routes at all.
-    let plan = PLAN.replace(
-        &PLAN[PLAN.find("\"routes\"").expect("routes")..PLAN.rfind('}').expect("brace")],
-        "\"routes\": []\n",
-    );
-    write(&r, "noroute.plan.json", &plan);
-    let out = hale_stdout(&[
-        "fleet",
-        "dump",
-        r.join("noroute.plan.json").to_str().expect("utf8"),
-    ]);
-    let v: serde_json::Value =
-        serde_json::from_str(&out).expect("parses");
+    let r = workspace("noroute");
+    seed(&r, "bare", &[], &[], &[]);
+    let v = dump(&r, "bare");
     let _ = std::fs::remove_dir_all(&r);
-
     assert!(
-        v["relations"]["routed"].as_array().expect("routed").is_empty(),
-        "every instance declares the same topics, and a source merge \
-         would have joined them — only a route may: {}",
-        out
+        routed(&v).is_empty(),
+        "only a binding creates a fleet edge: {v}"
     );
 }
 
-/// Criterion 5. The join key is the WIRE identity, so a shared local
-/// name over a different payload shape is not a route.
+/// The join key is the WIRE identity: a shared subject over a different
+/// payload shape cannot form a route.
 #[test]
 fn a_same_subject_different_payload_route_is_rejected() {
-    let r = fleet("wire");
-    // A second gateway whose `Order` carries an extra field: same
-    // subject, different payload hash.
-    write(&r, "lib2/topics.hl", &TOPICS.replace(
-        "type Order  { id: Int; }",
-        "type Order  { id: Int; extra: Int; }",
-    ));
+    let r = workspace("wire");
+    write(
+        &r,
+        "lib2/topics.hl",
+        &TOPICS.replace(
+            "type Order  { id: Int; }",
+            "type Order  { id: Int; extra: Int; }",
+        ),
+    );
     write(&r, "gw2/main.hl", &GW.replace("\"../lib\"", "\"../lib2\""));
-    let dst = r.join("artifacts/gw2.json");
-    let (_, code) = hale(&[
-        "check",
-        r.join("gw2").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    assert_eq!(code, 0, "gw2 must check clean");
-
-    let plan = PLAN
-        .replace(
-            r#"{"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}"#,
-            r#"{"id": "gw-0", "artifact": "artifacts/gw.json", "labels": []},
-    {"id": "gw2-0", "artifact": "artifacts/gw2.json", "labels": []}"#,
-        )
-        .replace(
-            r#"[{"instance": "gw-0",  "topic": "t::OrderRequest"}]"#,
-            r#"[{"instance": "gw-0", "topic": "t::OrderRequest"},
-                     {"instance": "gw2-0", "topic": "t::OrderRequest"}]"#,
-        );
-    write(&r, "wire.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("wire.plan.json").to_str().expect("utf8"),
-    ]);
+    let mut imports = IMPORTS.to_vec();
+    imports.push(("g2", "../gw2"));
+    let mut params = PARAMS.to_vec();
+    params.push("gw2: g2::GwApp;");
+    write(
+        &r,
+        "wire/fleet.hl",
+        &fleet(&imports, &params, &[], BOTH, &[]),
+    );
+    let (out, code) = hale_in(&r, &["fleet", "check", "wire"]);
     let _ = std::fs::remove_dir_all(&r);
-
-    assert_ne!(code, 0, "incompatible payloads must fail: {}", out);
+    assert_ne!(code, 0, "incompatible payloads must fail: {out}");
     assert!(
         out.contains("cannot be formed") && out.contains("WIRE identity"),
-        "and say the contracts disagree, naming both hashes: {}",
-        out
+        "{out}"
     );
 }
 
-/// A component is a foundation for a certificate, so anything that
-/// cannot be verified is refused rather than trusted.
-#[test]
-fn an_unverifiable_component_is_refused() {
-    let r = fleet("tamper");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    // Rewrite a wire subject — a `topics` row, which `shape_hash`
-    // does not cover but `artifact_digest` does.
-    std::fs::write(&p, good.replacen("svc.order.intent", "svc.order.EVIL", 1))
-        .expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(out.contains("artifact_digest"), "{}", out);
-}
-
-/// A downstream handoff, and the cross-tier lock this suite lacked:
-/// a component carrying a `@budget` contract must be ADMISSIBLE.
-///
-/// The two tiers disagreed about the artifact contract. The
-/// application tier judges budget law through the evidence sidecar
-/// (GH #476 Change 5h), which routes its certificates into `lowered`
-/// keyed `(law ordinal, cert ordinal)` like every other family — but
-/// admission still also expected the pre-5h cert-less row keyed by
-/// law ordinal alone. Nothing emits that row, so the exact
-/// lowered↔law bijection was unsatisfiable and `hale fleet check`
-/// refused every artifact that `hale check` had just passed:
-///
-/// ```text
-/// malformed artifact — law ordinal 16 has no lowered evidence row
-/// matching `bound alloc <= 0 on paths from {...}`
-/// ```
-///
-/// Every fleet fixture here was budget-free, so no test could see it.
+/// A downstream handoff, the cross-tier lock: a component carrying a
+/// `@budget` contract is admissible to the fleet its own check passes.
 #[test]
 fn a_component_with_a_budget_contract_is_admissible() {
-    let r = fleet("budget");
-    // Re-dump the gateway with a budget contract on a helper its
-    // handler calls. Only this component changes; the plan and the
-    // other two artifacts stay as `fleet()` built them.
+    let r = workspace("budget");
     write(
         &r,
         "gw/main.hl",
@@ -398,260 +231,95 @@ main locus GwApp { params { g: Gateway = Gateway { }; } }
 fn main() { GwApp { }; }
 "#,
     );
-    let dst = r.join("artifacts/gw.json");
-    let (out, code) = hale(&[
-        "check",
-        r.join("gw").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    assert_eq!(code, 0, "the application tier passes it: {}", out);
-    let art = std::fs::read_to_string(&dst).expect("read");
+    let (out, code) = hale_in(&r, &["fleet", "check", "prod"]);
+    let art =
+        std::fs::read_to_string(r.join(".hale/fleet/prod/gw.topology.json")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&r);
     assert!(
         art.contains("\"family\": \"budget\""),
         "test premise: the artifact carries a budget law row"
     );
-    assert!(
-        art.contains("bound alloc <= 0 on paths from {Gateway::score}"),
-        "test premise: the budget law lowered an evidence row"
-    );
-    // ...and so must the deployment tier, on the very same bytes.
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
     assert_eq!(
         code, 0,
-        "the deployment tier must admit the artifact the \
-         application tier passed: {}",
-        out
+        "the deployment tier admits what the application tier passed: {out}"
     );
 }
 
-/// A component whose own law fails is not admissible: local claims
-/// are a precondition of fleet admission.
+/// Local law is a precondition of admission: a seed whose own claim
+/// fails has no artifact to compose.
 #[test]
 fn a_component_whose_own_claims_fail_is_refused() {
-    let r = fleet("verdict");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    // Simulate a failing component by asking the composer to trust a
-    // verdict it should reject. (Rewriting the file breaks the
-    // digest, so assert the ordering instead: integrity first, then
-    // meaning.)
-    std::fs::write(&p, good.replacen("\"verdict\": \"clean\"", "\"verdict\": \"law_failed\"", 1))
-        .expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let r = workspace("verdict");
+    write(
+        &r,
+        "prober/main.hl",
+        &PROBER.replace(
+            "main locus Prober { params { p: Probe = Probe { }; } }",
+            "main locus Prober {\n    params { p: Probe = Probe { }; }\n    \
+             claims { quiet: count publishers(topic t::OrderIntent) == 0; }\n}",
+        ),
+    );
+    let (out, code) = hale_in(&r, &["fleet", "check", "prod"]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    // Integrity is checked before meaning, so this reports as a
-    // digest failure — which is correct: an edited artifact is not
-    // evidence of anything, whatever it now says.
+    assert_ne!(code, 0, "{out}");
     assert!(
-        out.contains("artifact_digest") || out.contains("verdict"),
-        "{}",
-        out
+        out.contains("does not check, so it has no artifact"),
+        "{out}"
     );
 }
 
-/// GH #476 Change 6 (round 4): the composer RECOMPUTES the
-/// verdict from the component's own law rows — a restamped
-/// artifact whose top-level verdict lies `clean` over a violated
-/// law row is refused past the integrity gate.
-#[test]
-fn a_restamped_lying_verdict_is_refused() {
-    let r = fleet("lyingverdict");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    // Inject a VIOLATED law row (the prober's own table is empty)
-    // while keeping the top-level verdict `clean`; then RESTAMP
-    // the digest so integrity passes and the recompute is what
-    // bites.
-    let lied = good.replacen(
-        "\"rows\": [\n    ]",
-        "\"rows\": [\n      {\"ordinal\": 0, \"name\": \"ghost\", \
-         \"origin\": \"main\", \"family\": \"reachability\", \
-         \"verdict\": \"violated\", \"law\": {\"kind\": \
-         \"forbid_reaches\"}}\n    ]",
-        1,
-    );
-    assert_ne!(lied, good, "test premise: a law row was injected");
-    assert!(
-        lied.contains("\"verdict\": \"clean\""),
-        "test premise: the document still claims clean"
-    );
-    std::fs::write(&p, restamp_both(&lied)).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    // The shared admission refuses BEFORE the verdict recompute:
-    // the injected row's payload is incomplete, and the deep
-    // decoder names it. Either refusal is the law account speaking
-    // — the digest gate was passed, and the lie did not survive.
-    assert!(
-        out.contains("malformed artifact")
-            || out.contains("disagrees with its own law rows"),
-        "the refusal names the law account, not the digest: {}",
-        out
-    );
-    assert!(
-        !out.contains("artifact_digest"),
-        "integrity passed; the law account is what refused: {}",
-        out
-    );
-}
-
-#[test]
-fn a_route_naming_an_undeclared_instance_is_rejected() {
-    let r = fleet("ghost");
-    let plan = PLAN.replace(
-        r#"[{"instance": "oms-0",    "topic": "t::OrderIntent"}]"#,
-        r#"[{"instance": "ghost", "topic": "t::OrderIntent"}]"#,
-    );
-    write(&r, "ghost.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("ghost.plan.json").to_str().expect("utf8"),
-    ]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(out.contains("does not declare"), "{}", out);
-}
-
-/// Criteria 9 and 10. The fleet identity must move when the deployed
-/// arrangement moves, and stay put when only source locations do.
+/// The fleet identity moves when the deployed arrangement moves, and
+/// stays put when only source locations do.
 #[test]
 fn the_fleet_shape_hash_tracks_the_arrangement_not_provenance() {
-    let r = fleet("hash");
-    let hash_of = |plan: &str| -> String {
-        let out = hale_stdout(&["fleet", "dump", plan]);
-        let v: serde_json::Value =
-            serde_json::from_str(&out).expect("parses");
-        v["fleet_shape_hash"].as_str().unwrap_or("").to_string()
+    let r = workspace("hash");
+    let hash_of = |seed: &str| {
+        dump(&r, seed)["fleet_shape_hash"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
     };
-    let base = hash_of(&plan_of(&r));
+    let base = hash_of("prod");
     assert!(!base.is_empty());
-
-    // (a) provenance-only: a leading comment shifts every span in a
-    // component, and its artifact changes — but the MODEL does not.
-    write(&r, "prober/main.hl", &format!("// shift every span\n{}", PROBER));
-    let dst = r.join("artifacts/prober.json");
-    let (_, code) = hale(&[
-        "check",
-        r.join("prober").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    assert_eq!(code, 0);
+    // provenance only: a leading comment shifts every span of a component
+    write(
+        &r,
+        "prober/main.hl",
+        &format!("// shift every span\n{PROBER}"),
+    );
     assert_eq!(
-        hash_of(&plan_of(&r)),
+        hash_of("prod"),
         base,
         "moving source must not change the deployed arrangement"
     );
-
-    // (b) a transport change IS the arrangement.
-    write(&r, "t2.plan.json", &PLAN.replacen("\"unix\"", "\"udp\"", 1));
+    // a transport is the arrangement
+    seed(
+        &r,
+        "ring",
+        &[],
+        &[
+            BOTH[0],
+            "t::OrderRequest: shm_ring(\"/orders\", slot_count: 8, on_overflow: block);",
+        ],
+        &[],
+    );
     assert_ne!(
-        hash_of(r.join("t2.plan.json").to_str().expect("utf8")),
+        hash_of("ring"),
         base,
         "a changed transport is a changed fleet"
     );
-
-    // (c) …and so is instance cardinality.
-    write(
-        &r,
-        "t3.plan.json",
-        &PLAN.replace(
-            r#"{"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}"#,
-            r#"{"id": "gw-0", "artifact": "artifacts/gw.json", "labels": []},
-    {"id": "gw-1", "artifact": "artifacts/gw.json", "labels": []}"#,
-        ),
-    );
+    // and so is instance cardinality
+    seed(&r, "two", &["gw: replicas(2);"], BOTH, &[]);
     assert_ne!(
-        hash_of(r.join("t3.plan.json").to_str().expect("utf8")),
+        hash_of("two"),
         base,
-        "a second instance of one artifact is a different deployment"
+        "a second instance of one seed is a different deployment"
     );
     let _ = std::fs::remove_dir_all(&r);
 }
 
-#[test]
-fn a_duplicate_instance_id_is_rejected() {
-    let r = fleet("dupid");
-    let plan = PLAN.replace(r#""id": "oms-0""#, r#""id": "prober-0""#);
-    write(&r, "dup.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("dup.plan.json").to_str().expect("utf8"),
-    ]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(out.contains("used twice"), "{}", out);
-}
-
-/// An unknown key in a plan is a mistake, not something to ignore —
-/// the same rule the environment manifest follows.
-#[test]
-fn an_unknown_plan_field_is_rejected() {
-    let r = fleet("unknownfield");
-    write(
-        &r,
-        "bad.plan.json",
-        &PLAN.replace("\"name\": \"prod\"", "\"name\": \"prod\", \"transprot\": \"unix\""),
-    );
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("bad.plan.json").to_str().expect("utf8"),
-    ]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "a misspelled plan key must not be ignored: {}", out);
-}
-
-// =====================================================================
-// Phase 2: fleet claims over the composed model
-// =====================================================================
-
-/// Groups quantify over INSTANCES, by id or label; claims are
-/// normalized rows rather than source grammar, so a generator can
-/// produce a plan without Hale syntax committing to a deployment
-/// format.
-fn with_claims(plan: &str, extra_routes: &str) -> String {
-    let groups_and_claims = format!(
-        r#""groups": {{
-    "strategies": {{"labels": ["strategy"]}},
-    "gateways":   {{"labels": ["gateway"]}},
-    "oms":        {{"instances": ["oms-0"]}}
-  }},
-  "claims": [
-    {{"name": "orders_pass_oms",
-     "forbid_reaches": {{"from": "strategies", "to": "gateways", "avoiding": "oms"}}}},
-    {{"name": "one_order_authority",
-     "count_publisher_instances": {{"subject": "svc.order.request", "eq": 1}}}},
-    {{"name": "gw_receives_orders",
-     "require_subscribes": {{"group": "gateways", "subject": "svc.order.request"}}}}
-  ],
-  "routes": [{}"#,
-        extra_routes
-    );
-    plan.replace("\"routes\": [", &groups_and_claims)
-}
-
-/// Every path from a strategy to a gateway crosses the OMS, so the
-/// interposition claim holds — and the cardinality and existence
-/// claims with it.
-#[test]
-fn fleet_claims_hold_on_a_compliant_plan() {
-    let r = fleet("claims_ok");
-    write(&r, "c.plan.json", &with_claims(PLAN, ""));
-    let out = hale_stdout(&[
-        "fleet",
-        "dump",
-        r.join("c.plan.json").to_str().expect("utf8"),
-    ]);
-    let v: serde_json::Value =
-        serde_json::from_str(&out).expect("fleet artifact parses");
-    let _ = std::fs::remove_dir_all(&r);
-
-    let results: Vec<(String, String)> = v["claims"]
+fn results(v: &serde_json::Value) -> Vec<(String, String)> {
+    v["claims"]
         .as_array()
         .expect("claims")
         .iter()
@@ -661,485 +329,178 @@ fn fleet_claims_hold_on_a_compliant_plan() {
                 c["result"].as_str().unwrap_or("").to_string(),
             )
         })
-        .collect();
-    for (name, res) in &results {
-        assert_eq!(res, "holds", "claim `{}` should hold: {:?}", name, results);
-    }
-    assert_eq!(results.len(), 3, "{:?}", results);
+        .collect()
 }
 
-/// The required canary, and the flagship of the whole tier: a route
-/// that skips the mediator. The witness must cross artifacts, name
-/// the route, and name the source file on each side — none of which
-/// a bundle-global offset could have supported, which is why Phase 0
-/// came first.
+#[test]
+fn fleet_claims_hold_on_a_compliant_fleet() {
+    let r = workspace("claims_ok");
+    seed(&r, "lawful", &[], BOTH, CLAIMS);
+    let v = dump(&r, "lawful");
+    let _ = std::fs::remove_dir_all(&r);
+    let res = results(&v);
+    assert_eq!(res.len(), 3, "{res:?}");
+    for (name, verdict) in &res {
+        assert_eq!(verdict, "holds", "claim `{name}`: {res:?}");
+    }
+}
+
+/// A prober that also publishes the gateway's topic joins the derived
+/// route, and that path avoids the OMS.
 #[test]
 fn a_bypass_route_violates_the_interposition_claim() {
-    let r = fleet("bypass");
-    // A prober that can publish the executable request directly.
-    write(
-        &r,
-        "rogue/main.hl",
-        &PROBER
-            .replace(
-                "bus { publish t::OrderIntent; }",
-                "bus { publish t::OrderIntent; publish t::OrderRequest; }",
-            )
-            .replace(
-                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }",
-                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; \
-                 let o = t::Order { id: 1 }; t::OrderRequest <- o; }",
-            ),
-    );
-    let dst = r.join("artifacts/rogue.json");
-    let (_, code) = hale(&[
-        "check",
-        r.join("rogue").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    assert_eq!(code, 0, "the rogue component itself is legal");
-
-    let plan = with_claims(PLAN, "")
-        .replace("artifacts/prober.json", "artifacts/rogue.json")
-        .replace(
-            r#"{"id": "request", "transport": "unix","#,
-            r#"{"id": "bypass", "transport": "unix",
-     "publishers":  [{"instance": "prober-0", "topic": "t::OrderRequest"}],
-     "subscribers": [{"instance": "gw-0",     "topic": "t::OrderRequest"}]},
-    {"id": "request", "transport": "unix","#,
-        );
-    write(&r, "bypass.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("bypass.plan.json").to_str().expect("utf8"),
-    ]);
+    let r = workspace("bypass");
+    write(&r, "prober/main.hl", &rogue());
+    seed(&r, "lawful", &[], BOTH, CLAIMS);
+    let (out, code) = hale_in(&r, &["fleet", "check", "lawful"]);
     let _ = std::fs::remove_dir_all(&r);
-
-    assert_ne!(code, 0, "a bypass must fail the fleet: {}", out);
+    assert_ne!(code, 0, "a bypass must fail the fleet: {out}");
+    assert!(out.contains("orders_pass_oms"), "{out}");
     assert!(
-        out.contains("orders_pass_oms"),
-        "the interposition claim must be the one that fails: {}",
-        out
+        out.contains("prober-0::Probe::submit") && out.contains("gw-0::Gateway::on_order"),
+        "witness names both ends: {out}"
     );
-    // The witness crosses two artifacts…
     assert!(
-        out.contains("prober-0::Probe::submit")
-            && out.contains("gw-0::Gateway::on_order"),
-        "witness must name both ends, instance-qualified: {}",
-        out
+        out.contains("route `t::OrderRequest`"),
+        "and the route, since the hop is not a call: {out}"
     );
-    // …names the route that carries it…
     assert!(
-        out.contains("route `bypass`"),
-        "and the route, since the hop is not a call: {}",
-        out
-    );
-    // …and points at a source FILE on each side, which is what the
-    // Phase 0 source map exists for.
-    assert!(
-        out.contains("rogue/main.hl") && out.contains("gw/main.hl"),
-        "and the file each vertex lives in: {}",
-        out
+        out.contains("prober/main.hl") && out.contains("gw/main.hl"),
+        "and the file each vertex lives in: {out}"
     );
 }
 
-/// Criterion 6: a second deployed publisher violates exact
-/// cardinality. Fleet cardinality counts instance-qualified
-/// endpoints, which is a different sort from the application tier's
-/// declaration count — both components are individually legal.
 #[test]
 fn a_second_deployed_publisher_violates_the_cardinality_claim() {
-    let r = fleet("cardinality");
-    write(
-        &r,
-        "rogue/main.hl",
-        &PROBER
-            .replace(
-                "bus { publish t::OrderIntent; }",
-                "bus { publish t::OrderIntent; publish t::OrderRequest; }",
-            )
-            .replace(
-                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }",
-                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; \
-                 let o = t::Order { id: 1 }; t::OrderRequest <- o; }",
-            ),
-    );
-    let dst = r.join("artifacts/rogue.json");
-    hale(&[
-        "check",
-        r.join("rogue").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    let plan = with_claims(PLAN, "")
-        .replace("artifacts/prober.json", "artifacts/rogue.json");
-    write(&r, "card.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("card.plan.json").to_str().expect("utf8"),
-    ]);
+    let r = workspace("cardinality");
+    seed(&r, "lawful", &["oms: replicas(2);"], BOTH, CLAIMS);
+    let (out, code) = hale_in(&r, &["fleet", "check", "lawful"]);
     let _ = std::fs::remove_dir_all(&r);
-
-    assert_ne!(code, 0, "{}", out);
+    assert_ne!(code, 0, "{out}");
     assert!(
-        out.contains("one_order_authority")
-            && out.contains("counted 2 deployed publisher"),
-        "the count is over DEPLOYED endpoints, and must name them: {}",
-        out
+        out.contains("one_order_authority") && out.contains("counted 2 deployed publisher"),
+        "{out}"
     );
 }
 
-/// Criterion 7: removing the required subscriber violates the
-/// structural existence claim.
-#[test]
-fn removing_the_required_subscriber_violates_the_existence_claim() {
-    let r = fleet("existence");
-    // A gateway that subscribes nothing.
-    write(
-        &r,
-        "gw/main.hl",
-        "import \"../lib\" as t;\n\
-         locus Gateway { params { n: Int = 0; } fn idle() -> Int { return self.n; } }\n\
-         main locus GwApp { params { g: Gateway = Gateway { }; } }\n\
-         fn main() { GwApp { }; }\n",
-    );
-    let dst = r.join("artifacts/gw.json");
-    let (_, code) = hale(&[
-        "check",
-        r.join("gw").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    assert_eq!(code, 0, "a gateway that listens for nothing is legal alone");
-
-    // The route to it can no longer be formed either, so drop it and
-    // test the existence claim on its own.
-    let plan = with_claims(PLAN, "")
-        .replace(
-            r#"{"id": "request", "transport": "unix",
-     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
-     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}"#,
-            "",
-        )
-        .replace("]},\n    \n  ]", "]}\n  ]");
-    write(&r, "gone.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("gone.plan.json").to_str().expect("utf8"),
-    ]);
-    let _ = std::fs::remove_dir_all(&r);
-
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("gw_receives_orders"),
-        "the existence claim must fail: {}",
-        out
-    );
-}
-
-/// An unknown group is an error, never an empty set — a `forbid`
-/// satisfied by an empty quantification domain is a fail-open
-/// wearing formal clothing.
-#[test]
-fn an_empty_or_unknown_group_is_an_error() {
-    let r = fleet("groups");
-    // Only the GROUP's label — `.replace` would otherwise rewrite the
-    // instance's label too, leaving them consistent and the group
-    // resolving fine.
-    let plan = with_claims(PLAN, "").replace(
-        r#""strategies": {"labels": ["strategy"]}"#,
-        r#""strategies": {"labels": ["nonexistent"]}"#,
-    );
-    write(&r, "g.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("g.plan.json").to_str().expect("utf8"),
-    ]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("no instance carries") || out.contains("vacuously"),
-        "{}",
-        out
-    );
-}
-
-/// A downstream conformance run found this: `require_subscribes`
-/// checked only that the endpoint EXISTS, so a plan where the ledger
-/// subscribes `exec.fill` and nothing publishes it reported `holds`.
-///
-/// The law "fills must reach the ledger" then cannot catch a missing
-/// route, which is the one thing it is for. A synthetic fixture hides
-/// it because whoever writes one routes everything they assert — this
-/// only surfaced against a real deployment slice whose publisher
-/// happened to sit outside the selected instances.
+/// The existence claim is about traffic: a subscriber nothing routes to
+/// does not satisfy it.
 #[test]
 fn require_subscribes_needs_a_route_not_just_an_endpoint() {
-    let r = fleet("unrouted");
-    // The gateway subscribes `svc.order.request` and the OMS
-    // publishes it — but the plan carries only the intent route, so
-    // nothing delivers order requests.
-    let plan = with_claims(PLAN, "")
-        .replace(
-            r#",
-    {"id": "request", "transport": "unix",
-     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
-     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}"#,
-            "",
-        );
-    write(&r, "unrouted.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("unrouted.plan.json").to_str().expect("utf8"),
-    ]);
-
+    let r = workspace("unrouted");
+    seed(&r, "unrouted", &[], &[BOTH[0]], &[CLAIMS[2]]);
+    let (out, code) = hale_in(&r, &["fleet", "check", "unrouted"]);
     assert_ne!(
         code, 0,
-        "the endpoint exists but nothing routes to it — the claim is \
-         about traffic, and no traffic flows: {}",
-        out
+        "the endpoint exists but nothing routes to it: {out}"
     );
     assert!(
-        out.contains("gw_receives_orders")
-            && out.contains("no route in this plan carries it"),
-        "and the failure must say the endpoint is unconnected rather \
-         than absent: {}",
-        out
+        out.contains("gw_receives_orders") && out.contains("no route in this plan carries it"),
+        "{out}"
     );
-
-    // Control: with the route restored it holds, so the check is not
-    // simply rejecting every require_subscribes.
-    write(&r, "routed.plan.json", &with_claims(PLAN, ""));
-    let (out2, code2) = hale(&[
-        "fleet",
-        "check",
-        r.join("routed.plan.json").to_str().expect("utf8"),
-    ]);
+    seed(&r, "routed", &[], BOTH, &[CLAIMS[2]]);
+    let (out, code) = hale_in(&r, &["fleet", "check", "routed"]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(code2, 0, "the routed plan still passes: {}", out2);
+    assert_eq!(code, 0, "the routed fleet passes: {out}");
 }
 
-// =====================================================================
-// Phase 5: the workspace's declared deployments
-// =====================================================================
-
-/// A repository usually has more than one deployment — production,
-/// staging, a reconciliation arrangement. Checking whichever one you
-/// remembered to name is the same partial-coverage problem `--matrix`
-/// solves for entrypoints, so `hale fleet check` with no plan checks
-/// every fleet the workspace declares.
-fn hale_in(cwd: &Path, args: &[&str]) -> (String, i32) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .expect("run hale");
-    (
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        out.status.code().unwrap_or(-1),
-    )
-}
-
+/// An instance in both groups is a zero-length violation; `avoiding`
+/// may not mask an endpoint; a sealed boundary refuses a routed edge it
+/// does not grant; a path over two routes names each.
 #[test]
-fn fleet_check_with_no_plan_checks_every_declared_deployment() {
-    let r = fleet("allfleets");
-    write(&r, "staging.plan.json", &PLAN.replace("\"prod\"", "\"staging\""));
-    write(
+fn the_reachability_forms_judge_the_fleet() {
+    let r = workspace("forms");
+    seed(
         &r,
-        "hale.toml",
-        "[deps]\n\n[fleets]\nproduction = \"prod.plan.json\"\nstaging = \"staging.plan.json\"\n",
+        "same",
+        &[],
+        BOTH,
+        &["self_reach: forbid reaches(gw, gw);"],
     );
-    let (out, code) = hale_in(&r, &["fleet", "check"]);
-    let _ = std::fs::remove_dir_all(&r);
-
-    assert_eq!(code, 0, "{}", out);
-    assert!(out.contains("2 fleet(s) checked"), "{}", out);
+    let (out, code) = hale_in(&r, &["fleet", "check", "same"]);
     assert!(
-        out.contains("fleet `production`") && out.contains("fleet `staging`"),
-        "each deployment must be named as it is checked: {}",
-        out
+        code != 0 && out.contains("self_reach"),
+        "the source already is the destination: {out}"
     );
-}
-
-/// One broken deployment must not hide the others, and the worst exit
-/// code wins so a missing plan is not masked by an ordinary claim
-/// failure elsewhere.
-#[test]
-fn a_missing_plan_fails_without_hiding_the_rest() {
-    let r = fleet("missingplan");
-    write(
+    seed(
         &r,
-        "hale.toml",
-        "[deps]\n\n[fleets]\nproduction = \"prod.plan.json\"\nghost = \"nope.plan.json\"\n",
+        "masked",
+        &[],
+        BOTH,
+        &["masked: forbid reaches(prober, gw) avoiding gw;"],
     );
-    let (out, code) = hale_in(&r, &["fleet", "check"]);
-    let _ = std::fs::remove_dir_all(&r);
-
-    assert_eq!(code, 2, "a missing plan is a usage error: {}", out);
-    assert!(out.contains("plan not found"), "{}", out);
+    let (out, code) = hale_in(&r, &["fleet", "check", "masked"]);
     assert!(
-        out.contains("fleet `production`"),
-        "the healthy deployment must still have been checked: {}",
-        out
+        code != 0 && out.contains("masked"),
+        "avoiding an endpoint deletes the domain: {out}"
     );
-}
-
-/// Reporting success for zero deployments would say nothing.
-#[test]
-fn a_workspace_with_no_declared_fleets_is_a_usage_error() {
-    let r = fleet("nofleets");
-    write(&r, "hale.toml", "[deps]\n");
-    let (out, code) = hale_in(&r, &["fleet", "check"]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(code, 2, "{}", out);
-    assert!(out.contains("declares no `[fleets]`"), "{}", out);
-}
-
-/// Fleets and environments are separate axes: a fleet is an
-/// arrangement of deployed instances, an environment is law bound to
-/// an entrypoint. Declaring both must not make either ambiguous, and
-/// a name may appear in both meaning different things.
-#[test]
-fn fleets_and_environments_are_independent_axes() {
-    let r = fleet("axes");
-    write(
+    seed(
         &r,
-        "hale.toml",
-        "[claims]\nno_base = true\n\n\
-         [environments.production]\nsource_only = true\n\
-         entrypoints = [\"prober\", \"oms\", \"gw\"]\n\n\
-         [fleets]\nproduction = \"prod.plan.json\"\n",
+        "sealed",
+        &[],
+        BOTH,
+        &["sealed: only edges prober -> oms { };"],
     );
-    // The fleet axis works…
-    let (out, code) = hale_in(&r, &["fleet", "check"]);
-    assert_eq!(code, 0, "fleet axis: {}", out);
-    assert!(out.contains("1 fleet(s) checked"), "{}", out);
-
-    // …and the entrypoint x environment axis works over the same
-    // manifest, with `production` meaning something different.
-    let (out2, code2) = hale_in(&r, &["check", "--matrix"]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_eq!(
-        code2, 0,
-        "the environment axis is unaffected by the fleets table: {}",
-        out2
+    let (out, code) = hale_in(&r, &["fleet", "check", "sealed"]);
+    assert!(
+        code != 0 && out.contains("sealed"),
+        "an ungranted routed edge crosses the boundary: {out}"
     );
-    assert!(out2.contains("pair(s) checked"), "{}", out2);
-}
-
-/// Round 5: DELETING a component's law rows must not pass
-/// vacuously. A claims-bearing prober artifact has its `law.rows`
-/// emptied (claims section intact) and is restamped; the shared
-/// admission's claims↔law join refuses it.
-#[test]
-fn deleted_law_rows_are_refused() {
-    let r = fleet("deletedlaw");
-    // Rebuild the prober WITH a claim so its law table is
-    // non-empty (the base prober's is empty — deleting nothing
-    // proves nothing).
-    write(
+    seed(
         &r,
-        "prober/main.hl",
-        r#"
-import "../lib" as t;
-fn leak(v: Int) -> Int { return v; }
-fn safe(v: Int) -> Int { return v; }
-group a_side = { safe };
-group b_side = { leak };
-locus Probe {
-    params { n: Int = 0; }
-    bus { publish t::OrderIntent; }
-    fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }
-}
-main locus Prober {
-    params { p: Probe = Probe { }; }
-    claims { iso: forbid reaches(a_side, b_side); }
-}
-fn main() { Prober { }; }
-"#,
+        "granted",
+        &[],
+        BOTH,
+        &["granted: only edges prober -> oms { publish t::OrderIntent; };"],
     );
-    let p = r.join("artifacts/prober.json");
-    let (out, code) = hale(&[
-        "check",
-        r.join("prober").to_str().expect("utf8"),
-        &format!("--dump-topology={}", p.display()),
-    ]);
-    assert_eq!(code, 0, "claimed prober must check clean: {}", out);
-    let good = std::fs::read_to_string(&p).expect("read");
-
-    // Empty law.rows by bracket-matching from the `"rows": [`
-    // inside the `law` object.
-    let law_at = good.find("\"law\": {").expect("law section");
-    let rows_key = good[law_at..]
-        .find("\"rows\": [")
-        .map(|i| law_at + i)
-        .expect("law.rows");
-    let open = rows_key + "\"rows\": ".len();
-    let bytes = good.as_bytes();
-    let mut depth = 0usize;
-    let mut close = open;
-    let mut in_str = false;
-    let mut esc = false;
-    for (i, &b) in bytes.iter().enumerate().skip(open) {
-        if esc {
-            esc = false;
-            continue;
-        }
-        match b {
-            b'\\' if in_str => esc = true,
-            b'"' => in_str = !in_str,
-            b'[' if !in_str => depth += 1,
-            b']' if !in_str => {
-                depth -= 1;
-                if depth == 0 {
-                    close = i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    assert!(close > open, "bracket match");
-    let gutted =
-        format!("{}[]{}", &good[..open], &good[close + 1..]);
-    assert_ne!(gutted, good, "test premise: rows were deleted");
-    assert!(
-        gutted.contains("\"claims\""),
-        "test premise: the claims section survives"
+    let (out, code) = hale_in(&r, &["fleet", "check", "granted"]);
+    assert_eq!(code, 0, "the granted subject crosses: {out}");
+    seed(
+        &r,
+        "hops",
+        &[],
+        BOTH,
+        &["no_orders: forbid reaches(prober, gw);"],
     );
-    std::fs::write(&p, restamp_both(&gutted)).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let (out, code) = hale_in(&r, &["fleet", "check", "hops"]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
+    assert_ne!(code, 0, "{out}");
     assert!(
-        out.contains("does not project one-to-one from law"),
-        "the claims↔law join refuses the gutted account: {}",
-        out
-    );
-    assert!(
-        !out.contains("artifact_digest"),
-        "integrity passed; the law account is what refused: {}",
-        out
+        out.contains("route `t::OrderIntent`") && out.contains("route `t::OrderRequest`"),
+        "{out}"
     );
 }
 
-/// Round 2 (#490): route identity is ONE grain. A component with
-/// only a LITERAL end on the topic's wire (a raw send to
-/// "svc.order.intent", never `publish t::OrderIntent`) cannot
-/// satisfy a route naming the topic — the role check and the edge
-/// builder both read the typed topic-identity rows.
+/// Every bound of a count evaluates over deployed instances.
+#[test]
+fn every_count_bound_evaluates() {
+    let r = workspace("bounds");
+    seed(
+        &r,
+        "bounds",
+        &["gw: replicas(3);"],
+        BOTH,
+        &[
+            "exactly: count subscribers(topic t::OrderRequest) == 3;",
+            "at_most: count subscribers(topic t::OrderRequest) <= 2;",
+            "at_least: count subscribers(topic t::OrderRequest) >= 3;",
+        ],
+    );
+    let (out, code) = hale_in(&r, &["fleet", "check", "bounds"]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("fleet claim `at_most` violated"), "{out}");
+    assert!(
+        !out.contains("`exactly` violated") && !out.contains("`at_least` violated"),
+        "{out}"
+    );
+}
+
+/// Route identity is the topic grain: a component that sends the wire
+/// LITERALLY, never the topic, publishes nothing a binding can route.
 #[test]
 fn literal_only_publisher_cannot_satisfy_a_topic_route() {
-    let r = fleet("literalroute");
-    // Rebuild the prober to publish the WIRE literally, never the
-    // topic identity.
+    let r = workspace("literalroute");
     write(
         &r,
         "prober/main.hl",
@@ -1157,608 +518,100 @@ main locus Prober { params { p: Probe = Probe { }; } }
 fn main() { Prober { }; }
 "#,
     );
-    let dst = r.join("artifacts/prober.json");
-    let (out, code) = hale(&[
-        "check",
-        r.join("prober").to_str().expect("utf8"),
-        &format!("--dump-topology={}", dst.display()),
-    ]);
-    assert_eq!(code, 0, "literal prober checks clean: {}", out);
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let (out, code) = hale_in(&r, &["fleet", "check", "prod"]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
+    assert_ne!(code, 0, "{out}");
     assert!(
-        out.contains("declares no topic")
-            || out.contains("nothing in that component"),
-        "the topic-grain role check refuses the literal-only \
-         publisher: {}",
-        out
+        out.contains("binding `t::OrderIntent` wires nothing"),
+        "{out}"
     );
 }
 
-/// Round 2 (#490): the declared IDENTITY must recompute. A
-/// coordinated edit of the hashed endpoint_identity AND its
-/// unhashed mirrors under a STALE shape_hash — with only
-/// artifact_digest restamped — refuses before any decoding.
 #[test]
-fn stale_shape_hash_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let r = fleet("staleshape");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    // Rewrite the literal wire in BOTH the hashed identity and the
-    // unhashed mirrors, consistently.
-    let drifted = good.replace(
-        "svc.order.intent",
-        "svc.order.hijack",
-    );
-    assert_ne!(drifted, good, "test premise: the wire drifted");
-    // Restamp ONLY the document digest — the shape_hash stays
-    // stale.
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = drifted.rfind(key).expect("digest trailer");
-    let body = &drifted[..cut];
-    let restamped = format!(
-        "{}{}{:016x}\"\n}}\n",
-        body,
-        key,
-        fnv1a64(body.as_bytes())
-    );
-    std::fs::write(&p, restamped).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("shape_hash does not recompute"),
-        "the stale identity refuses: {}",
-        out
-    );
-}
-
-/// Round 3 (#490): the typed decoder is STRICT — a malformed
-/// semantic row is refused, never silently filtered. A call edge
-/// whose endpoint is a number would otherwise vanish before the
-/// shared traversal, flipping a violated fleet prohibition to
-/// holds; a non-string unknown reason would erase residue the
-/// graph must certify over. The oms component is rebuilt to carry
-/// BOTH shapes, and each premise is asserted — no silent skip. (The
-/// unknown is `call_any`'s call through a parameter no function value
-/// of the program can be: since F.40 E5 a call through a function
-/// value the program does take resolves to it.)
-#[test]
-fn malformed_semantic_rows_are_refused_not_dropped() {
-    const OMS_WITH_SHAPES: &str = r#"
-import "../lib" as t;
-fn call_it(v: Int) -> Int { return v + 1; }
-fn call_any(f: fn(Bool) -> Int) -> Int { return f(true); }
-locus Oms {
-    params { n: Int = 0; }
-    bus { subscribe t::OrderIntent as on_intent; publish t::OrderRequest; }
-    fn on_intent(i: t::Intent) {
-        self.n = call_it(i.id);
-        let o = t::Order { id: i.id };
-        t::OrderRequest <- o;
-    }
-}
-main locus OmsApp { params { o: Oms = Oms { }; } }
-fn main() { OmsApp { }; }
-"#;
-    for (tag, needle, patched, expect) in [
-        (
-            "badcall",
-            "{\"from\": \"Oms::on_intent\", \"to\": \"call_it\"}",
-            "{\"from\": \"Oms::on_intent\", \"to\": 7}",
-            "relations.calls[0].to must be a string",
-        ),
-        (
-            "badreason",
-            "\"reasons\": [\"indirect_call\"]",
-            "\"reasons\": [7]",
-            "unknowns[0].reasons[0] must be a string",
-        ),
-    ] {
-        let r = fleet(tag);
-        write(&r, "oms/main.hl", OMS_WITH_SHAPES);
-        let p = r.join("artifacts/oms.json");
-        let (out, code) = hale(&[
-            "check",
-            r.join("oms").to_str().expect("utf8"),
-            &format!("--dump-topology={}", p.display()),
-        ]);
-        assert_eq!(code, 0, "{}: oms rebuilds clean: {}", tag, out);
-        let good = std::fs::read_to_string(&p).expect("read");
-        assert!(
-            good.contains(needle),
-            "{}: test premise — the shape is present:\n{}",
-            tag,
-            good
-        );
-        let bad = good.replacen(needle, patched, 1);
-        std::fs::write(&p, restamp_both(&bad)).expect("write");
-        let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-        let _ = std::fs::remove_dir_all(&r);
-        assert_ne!(code, 0, "{}: {}", tag, out);
-        assert!(
-            out.contains(expect),
-            "{}: the strict decoder refuses (wanted `{}`): {}",
-            tag,
-            expect,
-            out
-        );
-    }
-}
-
-/// Round 3 (#490): duplicate object keys are refused before/// Round 3 (#490): duplicate object keys are refused before
-/// parsing — serde's last-wins map would otherwise let a stale
-/// `shape_hash` shadow the raw-verified one.
-#[test]
-fn duplicate_shape_hash_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let r = fleet("dupkey");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    // Append a SECOND shape_hash after the sources section — the
-    // raw verifier reads the first; serde would keep this one.
-    let marker = ",\n  \"claims\": [";
-    let poisoned = good.replacen(
-        marker,
-        ",\n  \"shape_hash\": \"deadbeefdeadbeef\",\n  \
-         \"claims\": [",
-        1,
-    );
-    assert_ne!(poisoned, good, "test premise: the key landed");
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = poisoned.rfind(key).expect("digest trailer");
-    let body = &poisoned[..cut];
-    let restamped = format!(
-        "{}{}{:016x}\"\n}}\n",
-        body,
-        key,
-        fnv1a64(body.as_bytes())
-    );
-    std::fs::write(&p, restamped).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("duplicate object key `shape_hash`"),
-        "the duplicate key refuses before parsing: {}",
-        out
-    );
-}
-
-/// Round 4 (#490): duplicate detection compares DECODED key names
-/// — `"shape_hash"` and `"shape_hash"` are one parsed key,
-/// so the escaped spelling cannot smuggle a second value past the
-/// scanner into serde's last-wins map.
-#[test]
-fn escaped_duplicate_key_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let r = fleet("escdup");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    let marker = ",\n  \"claims\": [";
-    let poisoned = good.replacen(
-        marker,
-        ",\n  \"shape\\u005fhash\": \"deadbeefdeadbeef\",\n  \
-         \"claims\": [",
-        1,
-    );
-    assert_ne!(poisoned, good, "test premise: the key landed");
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = poisoned.rfind(key).expect("digest trailer");
-    let body = &poisoned[..cut];
-    let restamped = format!(
-        "{}{}{:016x}\"\n}}\n",
-        body,
-        key,
-        fnv1a64(body.as_bytes())
-    );
-    std::fs::write(&p, restamped).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("duplicate object key `shape_hash`"),
-        "the DECODED key comparison refuses the escaped \
-         duplicate: {}",
-        out
-    );
-}
-
-/// Round 5 (#490): the top-level layout is CLOSED and canonical —
-/// an unknown top-level key (the round-4 decoy vehicle) refuses by
-/// name before any verifier runs, and order defines the verified
-/// hash ranges, so a nested decoy has no host to hide in.
-#[test]
-fn unknown_top_level_key_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let r = fleet("decoy");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    let decoyed = good.replacen(
-        "\n  \"shape_hash\": \"",
-        "\n  \"aa_decoy\": {\"shape_hash\": \
-         \"deadbeefdeadbeef\"},\n  \"shape_hash\": \"",
-        1,
-    );
-    assert_ne!(decoyed, good, "test premise: the decoy landed");
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = decoyed.rfind(key).expect("digest trailer");
-    let body = &decoyed[..cut];
-    let restamped = format!(
-        "{}{}{:016x}\"\n}}\n",
-        body,
-        key,
-        fnv1a64(body.as_bytes())
-    );
-    std::fs::write(&p, restamped).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("unknown top-level key `aa_decoy`"),
-        "the closed layout refuses the decoy by name: {}",
-        out
-    );
-}
-
-/// Round 5 (#490): ORDER defines the verified hash ranges. Moving
-/// `relations` before `shape_hash` (out of the model-half
-/// interval) refuses; a non-final `artifact_digest` refuses.
-#[test]
-fn top_level_reordering_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let restamp_doc = |body: &str| -> String {
-        format!(
-            "{},\n  \"artifact_digest\": \"{:016x}\"\n}}\n",
-            body,
-            fnv1a64(body.as_bytes())
-        )
-    };
-    // 1. Move the relations section BEFORE shape_hash: its edits
-    //    would then leave shape_hash unchanged.
-    let r = fleet("reorder");
-    let p = r.join("artifacts/prober.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    let rel_at = good.find("  \"relations\": {").expect("relations");
-    let rel_end = good[rel_at..]
-        .find("\n  \"groups\"")
-        .map(|i| rel_at + i)
-        .expect("groups follows relations");
-    let rel_text = &good[rel_at..rel_end];
-    let moved = format!(
-        "{}{}\n{}{}",
-        &good[..good.find("  \"shape_hash\"").expect("sh")],
-        rel_text.trim_end_matches('\n'),
-        &good[good.find("  \"shape_hash\"").expect("sh")..rel_at],
-        &good[rel_end + 1..]
-    );
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = moved.rfind(key).expect("digest trailer");
-    std::fs::write(&p, restamp_doc(&moved[..cut]))
-        .expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("out of canonical order"),
-        "the moved model-half section refuses: {}",
-        out
-    );
-    // 2. artifact_digest not final: move it before `verdict`.
-    let good2 = {
-        // regenerate a clean artifact
-        let dst = r.join("artifacts/prober.json");
-        let (o, c) = hale(&[
-            "check",
-            r.join("prober").to_str().expect("utf8"),
-            &format!("--dump-topology={}", dst.display()),
-        ]);
-        assert_eq!(c, 0, "{}", o);
-        std::fs::read_to_string(&dst).expect("read")
-    };
-    let cut = good2.rfind(key).expect("digest trailer");
-    let digest_entry = &good2[cut + 2..]; // skip ",\n"
-    let digest_entry =
-        digest_entry.trim_end_matches("\n}\n").to_string();
-    let body = &good2[..cut];
-    let verdict_at =
-        body.rfind(",\n  \"verdict\"").expect("verdict");
-    let nonfinal = format!(
-        "{},\n  {}{}\n}}\n",
-        &body[..verdict_at],
-        digest_entry,
-        &body[verdict_at..]
-    );
-    std::fs::write(&p, nonfinal).expect("write");
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    assert!(
-        out.contains("out of canonical order")
-            || out.contains("must be the final top-level entry"),
-        "the non-final digest refuses: {}",
-        out
-    );
-}
-
-/// Round 5 (#490): an admitted component whose own account says
-/// `exact_calls: false` / `adequacy.reachability: "degraded"` —
-/// with NO legacy unknowns — must not let a fleet reachability
-/// prohibition certify `holds` over it. The account is honored,
-/// scoped like the unreachable-unknown rule.
-#[test]
-fn degraded_component_blocks_absence_certification() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    let r = fleet("degraded");
-    // The oms component (routed FROM the strategy source) declares
-    // the degraded account, self-consistently: exact_calls off,
-    // reachability degraded — an HONEST direction (claiming less).
-    let p = r.join("artifacts/oms.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    // Withdrawing exact_calls degrades every CALLS-consuming
-    // family — the account must stay self-consistent (admission
-    // recomputes adequacy from the capability flags).
-    let humble = good
-        .replacen(
-            "\"exact_calls\": true",
-            "\"exact_calls\": false",
-            1,
-        )
-        .replacen(
-            "\"reachability\": \"exact\"",
-            "\"reachability\": \"degraded\"",
-            1,
-        )
-        .replacen(
-            "\"boundary\": \"exact\"",
-            "\"boundary\": \"degraded\"",
-            1,
-        )
-        .replacen(
-            "\"bound\": \"exact\"",
-            "\"bound\": \"degraded\"",
-            1,
-        )
-        .replacen(
-            "\"certificate\": \"exact\"",
-            "\"certificate\": \"degraded\"",
-            1,
-        );
-    assert_ne!(humble, good, "test premise: the account changed");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&good).expect("parses");
-    assert!(
-        parsed["unknowns"]
-            .as_array()
-            .is_some_and(Vec::is_empty),
-        "test premise: no legacy unknowns:\n{}",
-        parsed["unknowns"]
-    );
-    let key = ",\n  \"artifact_digest\": \"";
-    let cut = humble.rfind(key).expect("digest trailer");
-    let body = &humble[..cut];
-    let restamped = format!(
-        "{}{}{:016x}\"\n}}\n",
-        body,
-        key,
-        fnv1a64(body.as_bytes())
-    );
-    std::fs::write(&p, restamped).expect("write");
-    // A reachability prohibition from the strategy label to the
-    // gateway label spans oms (the routed middle hop). With the
-    // routes in place there is no MODELED path only because oms's
-    // interior carries the edge — whose completeness oms itself
-    // has withdrawn.
+fn fleet_check_with_no_seed_checks_every_declared_deployment() {
+    let r = workspace("allfleets");
+    seed(&r, "staging", &["gw: replicas(2);"], BOTH, &[]);
     write(
         &r,
-        "prod.plan.json",
-        r#"{
-  "schema": "1.0",
-  "name": "prod",
-  "instances": [
-    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
-    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
-    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
-  ],
-  "groups": {
-    "strategies": {"labels": ["strategy"]},
-    "gateways":   {"labels": ["gateway"]}
-  },
-  "claims": [
-    {"name": "no_reach",
-     "forbid_reaches": {"from": "strategies", "to": "gateways"}}
-  ],
-  "routes": [
-    {"id": "intent", "transport": "unix",
-     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
-     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]}
-  ]
-}"#,
+        "hale.toml",
+        "[deps]\n\n[fleets]\nproduction = \"prod\"\nstaging = \"staging\"\n",
     );
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("2 fleet(s) checked"), "{out}");
     assert!(
-        out.contains("uncertified")
-            && out.contains("degraded `reachability` adequacy")
-            && out.contains("exact_calls"),
-        "the degraded account blocks holds and names the \
-         withdrawn capability: {}",
-        out
+        out.contains("fleet `production`") && out.contains("fleet `staging`"),
+        "{out}"
     );
 }
 
-/// Round 6 (#490): completeness is applied with the POLARITY of
-/// the law. Positive witnesses survive degradation; counts
-/// evaluate over a [known, known+hidden] interval; definite
-/// violations from known rows stand.
 #[test]
-fn completeness_polarity_is_respected() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
-    // Withdraw one capability flag coherently (every family
-    // consumes EFFECTS and PUBLISHES, so all five degrade).
-    let withdraw = |src: &str, flag: &str| -> String {
-        let mut out = src.replacen(
-            &format!("\"{}\": true", flag),
-            &format!("\"{}\": false", flag),
-            1,
-        );
-        for fam in [
-            "reachability",
-            "boundary",
-            "endpoint",
-            "bound",
-            "certificate",
-        ] {
-            out = out.replacen(
-                &format!("\"{}\": \"exact\"", fam),
-                &format!("\"{}\": \"degraded\"", fam),
-                1,
-            );
-        }
-        let key = ",\n  \"artifact_digest\": \"";
-        let cut = out.rfind(key).expect("digest trailer");
-        let body = out[..cut].to_string();
-        format!(
-            "{}{}{:016x}\"\n}}\n",
-            body,
-            key,
-            fnv1a64(body.as_bytes())
-        )
-    };
-    let r = fleet("polarity");
-    // gw-0 withdraws exact_publishes: an UNCOUNTED component that
-    // could hide a publisher — and whose endpoint adequacy is
-    // degraded by flags unrelated to any subscribe witness.
-    let p = r.join("artifacts/gw.json");
-    let good = std::fs::read_to_string(&p).expect("read");
-    std::fs::write(&p, withdraw(&good, "exact_publishes"))
-        .expect("write");
+fn a_missing_seed_fails_without_hiding_the_rest() {
+    let r = workspace("missing");
     write(
         &r,
-        "prod.plan.json",
-        r#"{
-  "schema": "1.0",
-  "name": "prod",
-  "instances": [
-    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
-    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
-    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
-  ],
-  "groups": {
-    "gateways": {"labels": ["gateway"]}
-  },
-  "claims": [
-    {"name": "gw_gets_orders",
-     "require_subscribes": {"group": "gateways", "subject": "svc.order.request"}},
-    {"name": "at_least_one",
-     "count_publisher_instances": {"subject": "svc.order.intent", "min": 1}},
-    {"name": "at_least_two",
-     "count_publisher_instances": {"subject": "svc.order.intent", "min": 2}},
-    {"name": "at_most_zero",
-     "count_publisher_instances": {"subject": "svc.order.intent", "max": 0}},
-    {"name": "exactly_zero",
-     "count_publisher_instances": {"subject": "svc.order.intent", "eq": 0}},
-    {"name": "exactly_two",
-     "count_publisher_instances": {"subject": "svc.order.intent", "eq": 2}}
-  ],
-  "routes": [
-    {"id": "intent", "transport": "unix",
-     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
-     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]},
-    {"id": "request", "transport": "unix",
-     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
-     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}
-  ]
-}"#,
+        "hale.toml",
+        "[deps]\n\n[fleets]\nproduction = \"prod\"\nghost = \"nope\"\n",
     );
-    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
     let _ = std::fs::remove_dir_all(&r);
-    assert_ne!(code, 0, "{}", out);
-    // A known routed subscriber is a POSITIVE witness — unrelated
-    // endpoint-family degradation cannot erase it; likewise a
-    // `min` already met by the known row. Neither may appear as a
-    // failing claim.
+    assert_eq!(code, 2, "a missing seed is a usage error: {out}");
+    assert!(out.contains("fleet seed not found"), "{out}");
     assert!(
-        !out.contains("`gw_gets_orders`"),
-        "the routed witness stays holds: {}",
-        out
+        out.contains("fleet `production`"),
+        "the healthy deployment was still checked: {out}"
     );
+}
+
+#[test]
+fn a_workspace_with_no_declared_fleets_is_a_usage_error() {
+    let r = workspace("nofleets");
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("declares no `[fleets]`"), "{out}");
+}
+
+/// A plan JSON is no input: not on the command line, not in `[fleets]`.
+#[test]
+fn a_plan_is_not_an_input() {
+    let r = workspace("noplan");
+    write(&r, "prod.plan.json", "{}");
+    let (out, code) = hale_in(&r, &["fleet", "check", "prod.plan.json"]);
+    assert_eq!(code, 2, "{out}");
     assert!(
-        !out.contains("`at_least_one`"),
-        "min met by the known lower bound stays holds: {}",
-        out
+        out.contains("not a fleet seed") && out.contains("hale fleet export"),
+        "{out}"
     );
-    // Interval [1, 2]: one known publisher (prober-0), one hidden
-    // candidate (gw-0 withdraws publisher completeness).
-    assert!(
-        out.contains("`at_least_two` uncertified"),
-        "min above the lower bound but inside the interval is          uncertified, not violated: {}",
-        out
+    write(
+        &r,
+        "hale.toml",
+        "[deps]\n\n[fleets]\nproduction = \"prod.plan.json\"\n",
     );
-    assert!(
-        out.contains("`at_most_zero` violated"),
-        "a known count already exceeding max stays violated: {}",
-        out
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("names a plan"), "{out}");
+}
+
+/// `[fleets]` and `[environments]` are separate axes: a workspace
+/// declares both, and each check runs its own.
+#[test]
+fn fleets_and_environments_are_independent_axes() {
+    let r = workspace("axes");
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n\
+         [environments.production]\nsource_only = true\n\
+         entrypoints = [\"prober\", \"oms\", \"gw\"]\n\n\
+         [fleets]\nproduction = \"prod\"\n",
     );
-    assert!(
-        out.contains("`exactly_zero` violated"),
-        "eq below the known lower bound is a definite violation:          {}",
-        out
-    );
-    assert!(
-        out.contains("`exactly_two` uncertified"),
-        "eq inside the undecided interval is uncertified: {}",
-        out
-    );
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    assert_eq!(code, 0, "fleet axis: {out}");
+    assert!(out.contains("1 fleet(s) checked"), "{out}");
+    let (out, code) = hale_in(&r, &["check", "--matrix"]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 0, "entrypoint axis: {out}");
 }

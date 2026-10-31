@@ -9,6 +9,13 @@
 // handler compares the thread it runs on with the worker's.
 // Expected outcome: both handlers run on the owner's worker, once each,
 // and the second failure was raised off it.
+//
+// The call into `Kid` from main goes through a fn value on purpose: F.31
+// refuses a direct method call on a locus another pool holds
+// (`self.o.kid.poke()`, GH #1561), and a call through a fn value is the
+// escape it deliberately does not trace (spec/types.md § F.31). That is
+// the one way a child still fails off its owner's domain, which this
+// fixture delivers.
 
 @ffi("c") fn pthread_self() -> Int;
 
@@ -23,6 +30,8 @@ locus Kid {
     closure fuse { captures: n; epoch inline; }
     fn poke() { violate fuse; }
 }
+
+fn poke_kid(k: Kid) { k.poke(); }
 
 locus Owner {
     params {
@@ -50,7 +59,8 @@ main locus App {
         let mine = pthread_self();
         let deadline = std::time::monotonic_ns() + 8000000000;
         while self.o.heard == 0 && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
-        self.o.kid.poke();
+        let via: fn (Kid) = poke_kid;
+        via(self.o.kid);
         while self.o.heard < 2 && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
         let worker = self.o.worker;
         if mine != worker {

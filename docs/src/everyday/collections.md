@@ -1,90 +1,6 @@
-# Lists & maps
+# Lists & Maps
 
-> **Coming from Python / Node?** Hale has no built-in `list` /
-> `[]` that grows, no `dict` / `{}`, no `Vec<T>` or `Map<K,V>`.
-> Instead you declare a small locus and annotate it with a
-> **form** — `@form(vec)` for a growable list, `@form(hashmap)`
-> for a keyed map. You get the same operations (`push`, `get`,
-> `len`, `set`, …); they're just methods on a locus you named.
-
-## A growable list — `@form(vec)`
-
-```hale
-@form(vec)
-locus Names {
-    capacity { heap items of String; }
-}
-
-fn main() {
-    let names = Names { };
-    names.push("Ada");
-    names.push("Grace");
-    println(names.len());            // 2
-    let first = names.get(0) or "";  // "Ada"
-}
-```
-
-Three things are happening:
-
-- **`@form(vec)`** tells the compiler "this locus is a growable
-  list." It synthesizes the methods for you: `push`, `get`,
-  `set`, `pop`, `len`, `is_empty`, `clear`, `truncate`, and sorting.
-- **`capacity { heap items of String; }`** is where the list's
-  storage lives. Read it as "this list holds `String`s." The
-  element type comes from here.
-- **`get` and `pop` are fallible** — an index might be out of
-  bounds — so you address them with `or`, just like any fallible
-  call:
-  ```hale,fragment
-  let x = names.get(99) or "(missing)";
-  ```
-- **What you take out is yours.** `get` and `pop` hand back your own
-  copy of an element that carries a `String` or `Bytes`; `pop` and
-  `set` free the element the vec held. A vec used as a queue — push,
-  then pop once handled — stays the same size for as long as the
-  locus lives.
-- **Reuse a list with `clear()`.** `clear()` empties the vec and
-  `truncate(n)` keeps its first `n` elements; what they drop is freed
-  the way `pop` frees it, and the buffer keeps its room. A scratch
-  list you fill per message can live on the locus and be cleared
-  each time instead of rebuilt.
-
-Iterate with `for` over the items:
-
-```hale,fragment
-for name in names.items {
-    println(name);
-}
-```
-
-`.items` is the vec's own name for its elements, whatever you called
-the slot: a list declared `capacity { heap cells of Int; }` is still
-walked as `for c in list.items`, and the compiler points there if you
-write `list.cells`.
-
-(The indexed `while i < names.len()` + `.get(i)` walk also works,
-and is what you want when you need the index — but prefer `.items`
-as the default: it reads better and, on hashmaps especially, it's
-dramatically faster. A hashmap walk via `key_at(i)`/`entry_at(i)`
-rescans from slot 0 on every call — O(cap×len) for the whole walk —
-while `for e in m.entries` visits each occupied slot once.)
-
-The element type can be anything — a primitive, or one of your
-own `type` records:
-
-```hale
-type Player { id: String; score: Int; }
-
-@form(vec)
-locus Roster {
-    capacity { heap players of Player; }
-}
-```
-
-## A keyed map — `@form(hashmap)`
-
-A map keys entries by a field *on the value itself* — the key is
-one of the record's fields, named with `indexed_by`:
+Hale does not use garbage-collected generic container values like `Vec<T>` or `HashMap<K, V>`. Instead, dynamic collections are loci annotated with `@form(...)` whose storage and methods are specialized at compile time for their element type, while fixed-capacity inline lists inside `type` records use `bounded[T; N]` or `[T; N]`.
 
 ```hale
 type Account { user: String; balance: Int; }
@@ -105,20 +21,124 @@ fn main() {
 }
 ```
 
-- **`set(value)`** takes the whole record and reads the key out
-  of its `indexed_by` field — there's no separate key argument.
-- **`get(key)`** and **`remove(key)`** are fallible (the key
-  might be absent); `has(key)` returns a plain `Bool`.
-- Keys are `Int` or `String`.
+## Collection Forms and Inline Sequences Overview
 
-This "the key is a field of the value" shape matches how keyed
-stores almost always look in practice — you rarely have a key
-that *isn't* already part of the thing you're storing.
+Each `@form` locus manages a single collection (one `@form` per locus). Use `@form` loci for component state and `bounded[T; N]` or `[T; N]` for pure data fields inside `type` records.
 
-## A bounded queue — `@form(ring_buffer)`
+| Collection | Declaration Syntax | Primary Operations | Iteration & Notes |
+|---|---|---|---|
+| **`@form(vec)`** (Growable list) | `capacity { heap items of T; }` | `push(x)`, `get(i)`*, `set(i, x)`*, `pop()`*, `len()`, `is_empty()`, `clear()`, `truncate(n)`, `sort*` | `for x in v.items { ... }` |
+| **`@form(hashmap)`** (Keyed table) | `capacity { pool entries of T indexed_by k; }` | `set(v)`, `get(k)`*, `has(k) -> Bool`, `remove(k)`*, `len()`, `is_empty()`, `bump(k)`, `key_at(i)`, `entry_at(i)` | `for e in m.entries { ... }`; keys are `Int` or `String` |
+| **`@form(set)`** (Keyed membership) | `capacity { pool items of T indexed_by k; }` | `insert(v)`, `contains(k) -> Bool`, `remove(k)`*, `len()`, `is_empty()` | Keyed existence set without unused value payloads |
+| **`@form(ring_buffer, cap = N)`** (Bounded FIFO) | `capacity { pool events of T; }` | `push(x) -> Bool` (`false` if full), `pop()`*, `len()`, `is_full()` | Fixed capacity `N`; caller controls backpressure on `false` |
+| **`@form(lru_cache, cap = N)`** (Bounded LRU cache) | `capacity { pool entries of T indexed_by k; }` | `put(v)`, `get(k)`*, `contains(k) -> Bool`, `remove(k)`*, `len()`, optional `fn on_evict(k, v)` | Evicts least-recently-used entry when exceeding `N` |
+| **`@form(heap)`** (Priority queue) | `capacity { heap jobs of T ordered_by min\|max f; }` | `push(v)`, `pop()`*, `peek()`*, `len()`, `is_empty()`, `clear()` | Drain with `while !q.is_empty() { let x = q.pop() or ...; }` |
+| **`bounded[T; N]`** (Inline bounded list) | `tags: bounded[String; 32];` (field on `type`) | `push(f, x)`*, `at(f, i)`*, `set(f, i, x)`*, `count(f)`, `clear(f)`, `truncate(f, n)` | `for x in f { ... }`; starts empty (`count = 0`) |
+| **`[T; N]`** (Fixed array) | `let xs: [Int; 4] = [0; 4];` | `xs[i]`, `len(xs)` | `for x in xs { ... }`; fixed size `N` |
 
-When you want a fixed-size FIFO that refuses new entries once
-it's full (recent-events buffers, sliding windows):
+*\*Operations marked with `*` are `fallible` (out-of-bounds, missing key, empty, or at capacity) and require an `or` clause.*
+
+## Growable Lists (`@form(vec)`)
+
+Annotate a locus with `@form(vec)` and declare a `heap` slot in `capacity { ... }` to create a dynamically resized contiguous list:
+
+```hale
+@form(vec)
+locus Names {
+    capacity { heap items of String; }
+}
+
+fn main() {
+    let names = Names { };
+    names.push("Ada");
+    names.push("Grace");
+    println(names.len());            // 2
+
+    let first = names.get(0) or "";  // "Ada"
+    for name in names.items {
+        println(name);
+    }
+}
+```
+
+- **Element types:** Can be any scalar (`Int`, `String`, etc.) or user-defined `type` record (`type Player { id: String; score: Int; }`).
+- **Iteration via `.items`:** Always iterate a `@form(vec)` with `for x in v.items` regardless of the slot name written in `capacity { heap my_slot of T; }` (writing `v.my_slot` produces a diagnostic pointing to `v.items`). Use indexed `while i < v.len()` + `v.get(i)` only when you need the index.
+- **Value ownership and memory reuse:** `get` and `pop` return an independent copy of elements containing `String` or `Bytes`. `pop`, `set`, `clear()`, and `truncate(n)` immediately reclaim the memory of dropped or overwritten elements so a long-lived vec used as a queue or per-message scratch buffer (cleared via `clear()`) maintains a flat memory footprint.
+
+## Keyed Maps (`@form(hashmap)`), Sets (`@form(set)`), and Caches (`@form(lru_cache)`)
+
+### `@form(hashmap)`
+
+A `@form(hashmap)` keys records by one of the record's own `Int` or `String` fields declared via `indexed_by`:
+
+```hale,fragment
+type Account { user: String; balance: Int; }
+
+@form(hashmap)
+locus Accounts {
+    capacity { pool entries of Account indexed_by user; }
+}
+```
+
+- **`set(record)`** inserts or updates the record using its `indexed_by` field as the key (there is no separate key argument).
+- **`get(key)` and `remove(key)`** are `fallible(KeyError)`; **`has(key)`** returns `Bool`.
+- **Copy semantics:** Modifying a record returned by `get(key)` does not mutate the map entry unless you pass it back to `set(record)`. When you mutate the local and immediately `set` it back under the same key, the compiler optimizes the update in place with zero allocations.
+- **Iteration via `.entries`:** Always use `for e in m.entries { ... }` to iterate over a hashmap (`O(capacity)` single pass). Avoid looping with `key_at(i)` or `entry_at(i)`, which rescan from slot `0` on each call (`O(capacity × len)`).
+
+### `@form(set)`
+
+When you only need key membership without storing extra value fields, use `@form(set)`:
+
+```hale
+type Item { key: String; }
+
+@form(set)
+locus Seen {
+    capacity { pool items of Item indexed_by key; }
+}
+
+fn main() {
+    let seen = Seen { };
+    seen.insert(Item { key: "req-1" });
+    if seen.contains("req-1") {
+        println("already processed");
+    }
+}
+```
+
+### `@form(lru_cache, cap = N)`
+
+`@form(lru_cache, cap = N)` is a fixed-capacity keyed table that automatically evicts the least-recently-used entry when `put` exceeds `cap`:
+
+```hale
+type Entry { key: String; fd: Int; }
+
+@form(lru_cache, cap = 128)
+locus ConnCache {
+    capacity { pool entries of Entry indexed_by key; }
+
+    fn on_evict(k: String, v: Entry) {
+        println("evicted ", k, " fd=", v.fd);
+    }
+}
+
+fn main() {
+    let c = ConnCache { };
+    c.put(Entry { key: "a", fd: 3 });
+    let e = c.get("a") or Entry { key: "", fd: -1 };
+    println(e.fd);
+}
+```
+
+- **`put(record)`** is infallible and evicts the oldest entry if full.
+- **`get(key)`** (`fallible(KeyError)`) marks the entry as recently used; **`contains(key)`** (`Bool`) checks existence without updating recency; **`remove(key)`** (`fallible(KeyError)`) removes and returns the entry.
+- **`fn on_evict(k: K, v: T)`:** Optional hook on the locus called whenever an entry is evicted—and for each remaining entry (least-recently-used first) when the cache locus dissolves. `on_evict` may not call `put` on its own cache.
+
+## Bounded Queues (`@form(ring_buffer)`) and Priority Queues (`@form(heap)`)
+
+### `@form(ring_buffer, cap = N)`
+
+`@form(ring_buffer, cap = N)` is a fixed-capacity FIFO queue:
 
 ```hale
 @form(ring_buffer, cap = 64)
@@ -127,16 +147,11 @@ locus Recent {
 }
 ```
 
-`push` returns a `Bool` — `false` when the buffer is full, and the
-new entry is not stored — so you decide whether to drop it, apply
-backpressure, or `pop` the oldest and push again. `pop` takes the
-oldest entry and is fallible on empty.
+`push(x)` returns `Bool`: `true` if stored, or `false` if the buffer is at capacity (leaving the buffer unchanged so the caller can drop the item, apply backpressure, or `pop()` the oldest entry first). `pop()` removes and returns the oldest entry and is fallible when empty.
 
-## A priority queue — `@form(heap)`
+### `@form(heap)`
 
-When you always want the most urgent item next — a job queue, a
-timer list, the frontier of a search — declare a heap and say which
-field orders it, and which end comes out first:
+`@form(heap)` is a binary priority queue ordered by a `min` or `max` record field (`Int`, `Float`, `String`, `Time`, or `Duration`):
 
 ```hale
 type Job { name: String; priority: Int; }
@@ -149,7 +164,7 @@ locus Jobs {
 fn main() {
     let q = Jobs { };
     q.push(Job { name: "deploy", priority: 2 });
-    q.push(Job { name: "page", priority: 0 });
+    q.push(Job { name: "page",   priority: 0 });
     q.push(Job { name: "report", priority: 5 });
     while !q.is_empty() {
         let j = q.pop() or raise;
@@ -158,19 +173,11 @@ fn main() {
 }
 ```
 
-`ordered_by min priority` pops the smallest `priority` first;
-`ordered_by max at` would pop the largest `at`. The field can be an
-`Int`, `Float`, `String`, `Time` or `Duration`. `pop` and `peek`
-(the next item, left in place) are fallible on an empty heap; there
-is no `get(i)` and no `for` over a heap — drain it with `pop` to see
-the items in order.
+`pop()` and `peek()` are fallible on an empty heap. Heaps do not support indexed `get(i)` or `for` loops; drain them with `pop()`. See [Forms Under the Hood](../systems/forms.md) for layout and cross-pool synchronization (`sync = serialized | striped | lockfree`).
 
-## A list inside a type — `bounded[T; N]`
+## Inline Bounded Lists (`bounded[T; N]`)
 
-The forms above are *loci* — whole entities with their own
-lifecycle. A `type` is pure data, so it can't hold one. What it CAN
-hold is a **bounded** collection — a
-fixed-capacity list laid out inline in the value:
+Because a `type` record is pure data copied by value, it cannot contain a `@form` locus. To embed a variable-length list up to a known maximum `N` directly inside a `type`, use `bounded[T; N]`:
 
 ```hale
 type Message {
@@ -179,9 +186,7 @@ type Message {
 }
 
 fn main() {
-    let msg = Message { id: "msg1" };   // tags starts empty —
-                                        // bounded fields can't be
-                                        // spelled in a literal
+    let msg = Message { id: "msg1" };   // `tags` starts empty (cannot be set in literal)
     push(msg.tags, "urgent") or raise;
     push(msg.tags, "billing") or raise;
 
@@ -192,264 +197,55 @@ fn main() {
 }
 ```
 
-Six operations, all compiler intrinsics (types stay method-free,
-like `len(s)`):
+### `bounded[T; N]` Intrinsics and Rules
 
-- `push(f, x)` — append; **fallible** with
-  `CapacityError { cap, count }` when full. What to do at capacity
-  is *your* policy, written in the `or` arm.
-- `at(f, i)` — read slot `i`; fallible `IndexError` out of range.
-- `set(f, i, x)` — overwrite a live slot; fallible `IndexError`.
-- `count(f)` — the live count (the capacity lives in the type).
-- `clear(f)` — reset to empty.
-- `truncate(f, n)` — shrink the count (never grows); with `set`,
-  this is the drop-front idiom for FIFO windows.
+| Intrinsic | Signature | Behavior |
+|---|---|---|
+| `push(b, x)` | `(bounded[T; N], T) -> () fallible(CapacityError)` | Appends `x`; fails with `CapacityError { cap, count }` when full |
+| `at(b, i)` | `(bounded[T; N], Int) -> T fallible(IndexError)` | Reads element at index `i` (`0 <= i < count(b)`) |
+| `set(b, i, x)` | `(bounded[T; N], Int, T) -> () fallible(IndexError)` | Overwrites live slot `i` (`0 <= i < count(b)`) |
+| `count(b)` | `(bounded[T; N]) -> Int` | Returns live element count (`len(b)` is rejected and points to `count(b)`) |
+| `clear(b)` | `(bounded[T; N]) -> ()` | Resets live count to `0` |
+| `truncate(b, n)` | `(bounded[T; N], Int) -> ()` | Shrinks live count to `n` (never grows) |
 
-None of those six names is reserved, unlike `sum` or `abs` further
-down this page. They are recognized by the *type* of their first
-argument, so the compiler can tell your function from the intrinsic
-— and yours wins:
+- **Supported element types:** Scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, unit types), payload-free enums, `String`, `Bytes`, and structs. Wrap tuples, fixed arrays, or payload-carrying enums in a struct to store them in a `bounded`.
+- **Copying and returning:** Assigning `row.tags = msg.tags;` between two `bounded[T; N]` fields of the exact same type copies all live elements and the count. A function cannot return a bare `bounded[T; N]` directly; wrap it in a `type` record and return the record.
+- **Populating via helper functions:** A helper function `fn fill(r: Row)` that pushes `String`, `Bytes`, or structs into `r` allocates those elements in the caller's frame. Passing a locus field directly (`fill(self.row)`) is rejected because those frame-allocated elements would be freed when the caller returns; instead, populate a local record and assign it whole (`let mut mine = Row { }; fill(mine); self.row = mine;`), which copies the elements into the locus's arena.
+- **Printing:** `bounded` of scalar elements (`Int`, `Float`, `Bool`, `Decimal`, `Duration`) prints its live slice (`[7, 8]`). `bounded[String; N]` (and structs containing one) cannot be printed directly—iterate over it or print `count(b)`.
+- **Custom function overrides:** The six intrinsic names (`count`, `push`, `at`, `set`, `clear`, `truncate`) are dispatched by the exact `bounded[T; N]` receiver type and are not reserved keywords. Declaring `fn count(xs: bounded[Int; 8]) -> Int` overrides the intrinsic for `bounded[Int; 8]` without affecting `bounded[Int; 4]`.
 
-```hale,fragment
-fn count(xs: bounded[Int; 8]) -> Int { return 8801; }
-// ... count(w.samples) on a bounded[Int; 8] now runs YOUR body
-```
+## Collection Query Chains
 
-The match is on the whole receiver type, capacity included: a
-`fn count(xs: bounded[Int; 4])` does not take over calls on a
-`bounded[Int; 8]`, and the intrinsic answers those. (That is what
-keeps your `count` from capturing the standard library's own calls
-on its own buffers.) `f.get(i)` and the chain terminals are reached
-through a receiver, so they are never yours to shadow.
-
-A `bounded` of **scalars** (`Int`, `Float`, `Bool`, `Decimal`,
-`Duration`) prints directly, showing the *live* count rather than
-the capacity — an eight-slot buffer holding two elements reads as
-`[7, 8]`. A `bounded[String; N]` like `tags` above does not print;
-neither does a struct containing one. Iterate it, or print
-`count`. (The compiler names the field when it refuses, so you
-won't have to work out which one it meant.)
-
-Use `bounded` when the maximum is known and the list is a *field of
-a value* — per-message tags, route parameters, a chat window. The
-old workaround (a tab-separated string you re-parse on every read)
-is retired. Whole-struct copies carry the elements automatically, and
-scalar-element bounded values even cross the zero-copy bus as flat
-bytes.
-
-## Why a form instead of a generic type
-
-A list isn't just "a type parameterized by its element" — it's a
-bundle of decisions: contiguous memory, dynamic length, who owns
-the storage, what happens to it when the owner goes away. A form
-makes those decisions at the declaration, and picks an
-implementation tuned for the element type. The upshot for you at
-this level is simple: **`@form(vec)` is your list, `@form(hashmap)`
-is your map.** The reasoning behind forms — and how to choose
-between them on performance grounds — is in [Forms under the
-hood](../systems/forms.md) at the systems level.
-
-One form per locus: a locus is a list *or* a map, not both. If
-you need both, that's two loci — which is usually what the data
-wanted anyway.
-
-## Asking questions about a collection
-
-Once you have a collection, the common thing you want is not to *build
-a new one* — it's to answer a question about the one you have. How
-many are active? Put the active ones over there.
+You can query, transform, and aggregate `@form(vec)`, `@form(hashmap)` (`.entries`), `bounded[T; N]`, and `[T; N]` collections using single-pass fused chains:
 
 ```hale,fragment
-let n = users.filter(it.active).count();
-users.filter(it.active).into(actives);
+let active_count = users.filter(it.active).count();
+let total_age    = users.filter(it.active).map(it.age).sum();
+users.filter(it.active).into(active_users_vec);
 ```
 
-This works on any of the collections in this chapter — a
-`@form(vec)`, a `@form(hashmap)` (via `.entries`), a `bounded[T; N]`,
-and a plain fixed array:
+Every chain is lowered by the compiler into a single inline loop with **zero heap allocations**, making chains legal inside `@budget(alloc_per_call = 0)` and `@hot` functions. Within stage expressions, `it` refers to the current element (and `idx` refers to the 0-based position after `.enumerate()`).
 
-```hale,fragment
-let live = self.probes.filter(it.live).count();   // probes: [Probe; 16]
-let hot  = self.recent.filter(it > 90).count();   // recent: bounded[Int; 8]
-```
+### Chain Stages and Terminals
 
-A `bounded` chain walks the elements you actually pushed, not its
-capacity — an empty one answers zero rather than reading unused
-slots.
+| Stage / Terminal | Example | Result & Behavior |
+|---|---|---|
+| `.filter(pred)` | `xs.filter(it > 10)` | Keeps elements where `pred` is `true` |
+| `.map(expr)` | `users.map(it.age)` | Projects each element to `expr` (use `.map(it)` as an identity stage on `[T; N]`) |
+| `.take(n)` / `.skip(n)` | `items.skip(20).take(10)` | Takes or skips `n` elements arriving at that position in the chain |
+| `.enumerate()` | `xs.enumerate().filter(idx % 2 == 0)` | Binds `idx: Int` (counting elements reaching `.enumerate()`) for subsequent stages |
+| `.count()` | `users.filter(it.active).count()` | Returns `Int` count of matching elements |
+| `.sum()` / `.sum(seed)` | `prices.map(it).sum(0.0d)` | Sums elements (`sum()` defaults to `Int` `0`; pass `seed` for `Float`, `Decimal`, or non-zero start) |
+| `.any(pred)` / `.all(pred)` | `users.any(it.age < 18)` | Short-circuiting `Bool` test (`false` / `true` on empty collections) |
+| `.find(pred)` | `users.find(it.id == want) or def` | `fallible`: returns first matching element (does not compose after `.map`) |
+| `.min(key)` / `.max(key)` | `users.max(it.age) or raise` | `fallible`: returns the whole element with the minimum or maximum `key` |
+| `.into(target_vec)` | `users.filter(it.active).into(out)` | Appends matching elements into caller-owned `@form(vec)` `out` |
+| `.each { ... }` | `users.each { println(it.name); }` | Executes block for each element (`break` and `continue` supported) |
+| `.sort_into(vec[, cmp])` | `scores.sort_into(ranked, cmp_fn)` | Copies into `@form(vec)` `ranked` and sorts ascending (or via `cmp_fn`) |
+| `.reverse_into(vec)` | `recent.take(10).reverse_into(out)` | Copies into `@form(vec)` `out` in reverse order |
+| `.group_count_into(map, key)` | `orders.group_count_into(by_desk, it.desk)` | Increments per-key `Int` counter in `@form(hashmap)` `by_desk` |
 
-`it` is the current element. Chain as many stages as you like; they
-run in a single pass:
+> [!NOTE]
+> Chain stages and terminals (`map`, `filter`, `count`, `find`, `first`) are recognized only after `.`, so you can freely define top-level functions with those names. Only bare compiler builtins (`sum`, `prod`, `min`, `max`, `abs`, `len`, `to_string`, `print`, `println`) are reserved at free-function position—and even those remain valid as locus method names (`fn sum()`).
 
-```hale,fragment
-let n = readings.filter(it > 10).filter(it < 100).count();
-let total = users.filter(it.active).map(it.age).sum();
-```
-
-`map` rebinds the element; `sum` adds it up. Bare `sum()` is for Int
-elements; give it a seed and the seed's type drives the accumulator —
-`sum(0.0)` sums Floats, `sum(100)` starts an Int sum at 100.
-
-A chain needs at least one stage: `prices.sum(0.0d)` on a fixed array
-is not a chain (a bare `.sum(…)` could be a locus's own method), and
-the compiler says to write `prices.map(it).sum(0.0d)` — `map(it)`
-passes each element through.
-
-Position matters too, and there are stages for it:
-
-```hale,fragment
-let podium = scores.take(3).sum();          // stop after three
-let rest = scores.skip(3).sum();            // drop the first three
-let page = items.skip(20).take(10).count(); // pagination in one pass
-```
-
-`take` and `skip` count elements arriving *at their own spot in the
-chain*, so `filter(p).skip(2)` skips the first two matches, not the
-first two elements. When you need the position itself, `enumerate()`
-binds `idx` for everything after it:
-
-```hale,fragment
-let evens = xs.enumerate().filter(idx % 2 == 0).sum();
-xs.filter(it.active).enumerate().each {
-    println(idx, ": ", it.name);   // idx counts the matches
-}
-```
-
-Yes-or-no questions have their own terminals:
-
-```hale,fragment
-if users.any(it.age < 18) { restrict(); }
-if users.all(len(it.name) > 0) { proceed(); }
-```
-
-On an empty selection `any` is `false` and `all` is `true` — the
-usual vacuous-truth convention.
-
-Looking *for* an element is fallible — an empty result is handled
-with the same `or` you already use everywhere:
-
-```hale,fragment
-let bob = users.find(it.id == want) or User { id: 0, age: 0, name: "?" };
-let oldest = users.max(it.age) or raise;
-let youngest = users.min(it.age) or raise;
-```
-
-`find` returns the element itself (project after, not before —
-`map` doesn't compose with `find`), and `min`/`max` take a key and
-return the *element* that had it, not the key.
-
-And when the point is the side effect, `each` takes a block:
-
-```hale,fragment
-users.filter(it.age >= 18).each {
-    total = total + it.age;
-    "user.greet" <- Greeting { id: it.id };
-}
-```
-
-The block *is* the loop body — `it` is in scope, `break` and
-`continue` do what they do in any loop, and nothing is captured
-because there is no closure.
-
-The whole-set operations — the ones that need every element before
-they can produce anything — write into a collection *you* own:
-
-```hale,fragment
-let ranked = Scores { };
-scores.filter(it > 0).sort_into(ranked);        // ascending
-scores.sort_into(ranked, harder_first);         // your comparator fn
-recent.take(10).reverse_into(latest_first);
-let by_desk = DeskCounts { };
-orders.group_count_into(by_desk, it.desk);      // tally per key
-```
-
-`sort_into` and `reverse_into` fill a `@form(vec)` and reorder it in
-place; `group_count_into` bumps a per-key Int counter in a
-`@form(hashmap)` (its cell type is the key plus one Int field). The
-chain itself still allocates nothing — the storage is yours, declared
-where you can see it.
-
-This looks like an iterator chain from another language, and it is
-deliberately not one. There is no intermediate collection between the
-stages, and no lazy object holding state — the whole chain is rewritten
-to one loop before your program is typechecked. What you write is
-exactly what runs.
-
-That has a practical consequence worth knowing: **a chain allocates
-nothing**, so it is legal in a handler with a strict budget.
-
-```hale,fragment
-@budget(alloc_per_call = 0)
-fn urgent(rs: Readings) -> Int {
-    return rs.filter(it > 90).count();
-}
-```
-
-In most languages the composable style is the one you give up on the
-hot path. Here it is the one that survives, because nothing is being
-built.
-
-Two things follow from the same fact. Because the chain is not a
-value, you can't store one in a variable or return it — it's a
-question you ask, not a thing you hold. And because there's no
-closure, `it` can't capture anything or outlive the call, so none of
-the usual questions about what a lambda captures arise.
-
-Operations that need to see every element before producing any — sorting,
-grouping — can't be part of a fused pass. Those write into storage you
-supply, and the allocation shows up where you can see it.
-
-### Can I name my own function `map`?
-
-Yes. Every stage and terminal on this page is recognized only after
-a `.`, so a free `fn map(...)`, `fn count(...)` or `fn first(...)`
-is an ordinary function and is called as written.
-
-`sum`, `prod`, `min` and `max` are the exception — they, and the
-other bare builtins (`abs`, `len`, `to_string`, the printers …),
-are answered by the compiler at a *bare* call site, before it
-looks at your program:
-
-```hale,fragment
-fn sum(a: Int) -> Int { return a + 1; }    // error, at `sum`
-```
-
-> `` `sum` is a built-in call form and cannot name a fn; rename it ``
-
-`sum(x)` and `prod(x)` are the closure-test accumulators, and
-`min(a, b)` / `max(a, b)` are the arithmetic builtins, so a function
-of that name could never be the one that runs. Rename it — `sum_of`,
-`clamp_min` — and everything works. `spec/tokens.md` §
-*Built-in identifiers* has the exact set; the
-*[Functions](../basics/functions.md)* chapter has the same rule
-from the caller's side.
-
-A *method* can still be called any of them, because a method is
-reached through a receiver and no builtin claims that position:
-
-```hale,fragment
-locus Bucket {
-    params { total: Int = 0; }
-    fn sum() -> Int { return self.total; }    // fine
-}
-```
-
-## Membership
-
-If the question is only *is this here*, reach for a set rather than a
-map with a value you don't use:
-
-```hale,fragment
-type Item { key: String; }
-
-@form(set)
-locus Seen { capacity { pool items of Item indexed_by key; } }
-
-seen.insert(Item { key: "a" });
-if seen.contains("a") { ... }
-```
-
-`contains` answers `Bool` directly. Through a map you would be writing
-`get(k) or false` at every call site, which is the value you didn't
-want leaking back into your code.
-
-Next: [Records & data](./records.md).
+Next: [Records & Data](./records.md).

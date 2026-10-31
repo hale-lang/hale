@@ -7,6 +7,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -40,7 +46,9 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let text = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    // the record's rows and its Ledger's: the day's work (asks, Tasks,
+    // workflows) is the Ledger's (GH #1590)
+    let text = record::text(app) + &record::ledger_text(app);
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .map(|v| {
@@ -85,8 +93,8 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
         return;
     };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-    let d = std::env::temp_dir().join(format!("hale_dna_twelve_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_twelve_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     let app = d.join("orgtwelve");
     copy_dir(&repo.join("dna/acceptance/chat-server"), &app);
@@ -100,7 +108,8 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(ok, "before: {out}");
     let (ok, out) = hale(&["test", "."], &app);
     assert!(ok && out.contains("1 passed, 0 failed"), "before: {out}");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "init: {out}");
     let (ok, out) = hale(&["check", "--matrix", "."], &app);
     assert!(ok, "after init, the law: {out}");

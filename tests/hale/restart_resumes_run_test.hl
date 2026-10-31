@@ -41,7 +41,11 @@ main locus App {
     run() {
         std::test::assert_eq_int(self.early.runs, 3, "the held child ran again until it passed");
         std::test::assert_eq_int(self.early.births, 3, "each restart re-ran birth()");
-        std::test::assert_eq_str(self.seen, "early;early;", "both failures reached the handler, and the first write survived App's params");
+        std::test::assert_eq_str(
+            self.seen,
+            "early;early;",
+            "both failures reached the handler, and the first write survived App's params",
+        );
 
         let late = Once { tag: "late" };
         std::test::assert_eq_int(late.runs, 3, "a child built in run() restarts too");

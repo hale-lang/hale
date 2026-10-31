@@ -206,3 +206,74 @@ re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context, stored as the miss's
 evidence, with the one line taken back out. No fresh model call was
 made; every answer is unchanged.
+
+The record moved into memory (GH #1590), which changed the generated
+organization's `main.hl` in five places: the comment over its journal
+says both memories are in memory, and `dna::GitJournal`,
+`dna::GitLeases` and the two `dna::GitReceipts` became
+`dna::RecordJournal`, `dna::MemoryLeases` and `dna::MemoryReceipts`. The
+organization-growth edit (`de69ea6f2bcd…`, was `abc3822558b3…`) is
+re-keyed, and its recorded output carries the same five changes and,
+in the position it grows, the same `dna::MemoryReceipts` its Leader's
+copy now names, and nothing else. The growth assessment
+(`2897c2dd9fe1…`, was `9792e47cd54c…`) is re-keyed for the changed
+context alone. The new context's digest was checked against the miss's
+evidence, each old key was reproduced from its entry's fields, and each
+new key was the one the miss named. No fresh model call was made; every
+answer, token and cost field is unchanged. `rows.jsonl` now holds the
+record's rows and its Ledger's: the record is born with
+`record.genesis` and `record.key` (its nonce and the
+identity drawn from it are normalized), and the readings' subject names
+the record's identity where it named a commit.
+
+#1672 gave the effect lattice a `stdio` class, which every program that
+prints now carries beside `syscall`, so a topology's `shape_hash` moved.
+The baseline review's context carries the semantic diff's header line,
+`classification: source-only (shape_hash <h> -> <h>)`, and that hash is
+the only change to it. The review (`9f645a42de8b…`, was
+`cbebcc1016a6…`) is re-keyed for the changed context alone. The old
+context was reproduced by a build that leaves `stdio` out of the
+rendering, which hit the old entry, and the two contexts differ in that
+one line. No fresh model call was made; the answer is unchanged.
+
+#1715 made `hale fmt` wrap at 100 columns, which changed the generated
+organization's text and, through a frozen seed, one file's ending. In the
+generated organization's `main.hl` five places wrap (the grant's
+`dna::Grant { … }`, `HaleVerification { … }`, the nerves consumer's
+`ConsumerSpec { … }`, the `eprintln(…)` after a failed connection and the
+`run()` loop's body), and in its `law.hl` the `positions` group and the
+`apply_only_through_the_substrate` clause. The trio's own sources are
+frozen (`.hale-fmt-frozen`: a tape is keyed on their bytes), so the
+editor's `fmt` leaves the edited `main.hl` as the recording wrote it,
+without the final newline the old `fmt` added. The organization-growth
+edit (`ac1f62d44200…`, was `de69ea6f2bcd…`) is re-keyed, and its recorded
+output carries the wrapped template and the recorded fulfilment Leader
+unchanged, and nothing else. The growth assessment (`b248cbadc924…`, was
+`2897c2dd9fe1…`) is re-keyed for the changed context alone, as are the two
+classifications of asks (`2e9fa207a709…`, was `3ae207cde943…`;
+`c788dabe931b…`, was `78b459018b60…`), which carry `law.hl`; the editor's
+cross-service edit (`0878167cb626…`, was `fe9d9e6e68f8…`), whose context
+is the edited `main.hl` without its final newline; and the review
+(`d1852fec3cfb…`, was `2f14b89f8dd0…`), whose source diff gains the
+`\ No newline at end of file` hunk and the candidate blob's new hash. Each
+old context digest was reproduced from the new context with the wraps put
+back (the edit's from its recorded output, which the old `fmt` closed with
+a newline; the review's with the hunk taken out and `index
+5980e16..efd80e8` put back), and each new key was the one the miss named.
+`rows.jsonl` did not move. No fresh model call was made; every answer,
+token and cost field is unchanged.
+
+The solo path (#1737) set `solo_without_model` on the generated
+organization's substrate, which changed one place in its `main.hl`:
+`planned: true` gains a comma and three lines after it (a two-line
+comment and `solo_without_model: true`). Two entries carry that file in
+their context. The organization-growth edit (`d9d4e054dcff…`, was
+`ac1f62d44200…`) is re-keyed, and its recorded output carries the same
+three lines and comma and nothing else; the growth assessment
+(`120afbb06c89…`, was `b248cbadc924…`) is re-keyed for the changed
+context alone. Each new context was read from the run's receipt and
+matched the miss's digest, each old context digest was reproduced from
+it with the change taken back out, each old key was reproduced from its
+entry's fields, and each new key was the one the miss named.
+`rows.jsonl` did not move. No fresh model call was made; every answer,
+token and cost field is unchanged.

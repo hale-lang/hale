@@ -10,6 +10,10 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -24,7 +28,7 @@ fn hale_env(args: &[&str], cwd: &Path, home: &Path, stdin: Option<&str>) -> (boo
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HOME", home)
+        .env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local"))
         .env("HALE_VAULT_DIR", home.join("vault"))
         .env_remove("HALE_VAULT_ADDR")
         .env_remove("ANTHROPIC_API_KEY")
@@ -46,10 +50,16 @@ fn git(args: &[&str], cwd: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn journal(cwd: &Path) -> String {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(cwd).output().unwrap();
-    String::from_utf8_lossy(&out.stdout).to_string()
+/// The record's rows, then its Ledger's (GH #1590: a body's rows are the
+/// Ledger's), read with the vault under `home`.
+fn journal(cwd: &Path, home: &Path) -> String {
+    let _s = trace::Span::new("hale", "dna record-rows");
+    let hale = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+        c.env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local")).env("HALE_VAULT_DIR", home.join("vault")).env_remove("HALE_VAULT_ADDR").env("HALE_DNA_DISCOVER", "off");
+        c
+    };
+    record::text_in(hale(), cwd) + &record::ledger_in(hale(), cwd)
 }
 
 fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
@@ -60,8 +70,13 @@ fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HOME", home)
+        .env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local"))
         .env("HALE_VAULT_DIR", home.join("vault"))
+        .env("HALE_DNA_MEMORY_DSN_SPINE", {
+            let mut m = Command::new(env!("CARGO_BIN_EXE_hale"));
+            m.env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local")).env("HALE_VAULT_DIR", home.join("vault")).env_remove("HALE_VAULT_ADDR").env("HALE_DNA_DISCOVER", "off");
+            record::spine(m, app)
+        })
         .env_remove("HALE_VAULT_ADDR")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OPENAI_API_KEY")
@@ -102,18 +117,47 @@ fn stop_host(app: &Path, host: &mut std::process::Child) {
     let _ = host.wait();
 }
 
+/// A hosted backend a person adds to the generated catalog: its key is
+/// named, and in no slot of the vault until `hale dna secret set` fills it.
+const HOSTED_BY_HAND: &str = r#"
+// A hosted backend added by hand; its key is set with `hale dna secret set`.
+fn hosted() -> dna::OpenAiChat {
+    return dna::OpenAiChat {
+        name: "deep",
+        model: "gpt-4o",
+        endpoint: "https://api.openai.com/v1/chat/completions",
+        credential: dna::HostedCredential { key: "OPENAI_API_KEY", scheme: "bearer" },
+        input_micros_per_1k: 2500,
+        output_micros_per_1k: 10000,
+    };
+}
+"#;
+
 #[test]
 fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record() {
     let _t = trace::test("dna_body_provision");
-    let d = std::env::temp_dir().join(format!("hale_dna_prov_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_prov_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let home = d.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    let (ok, out) = hale_env(&["dna", "new", "prov"], &d, &home, None);
+    // the habitat it is grafted from, its own under the test's HOME (GH
+    // #1653): on the operator's backends when they are named, else its own
+    let operator = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().all(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+    let (ok, out) = hale_env(&["habitat", "up", "--no-body", "--backends", if operator { "operator" } else { "own" }], &d, &home, None);
+    assert!(ok, "the test's habitat: {out}");
+    let (ok, out) = hale_env(&["habitat", "graft", "prov", "--no-pack"], &d, &home, None);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("prov");
+    // a graft with no model key in the vault writes no hosted backend (the
+    // habitat's models are the organism's), so the hosted backend whose
+    // credential this test follows is added by hand, as the catalog says to
+    let models = app.join("dna/org/models.hl");
+    let mut catalog = std::fs::read_to_string(&models).unwrap();
+    assert!(!catalog.contains("HostedCredential { key: \""), "a keyless graft names no credential:\n{catalog}");
+    catalog.push_str(HOSTED_BY_HAND);
+    std::fs::write(&models, catalog).unwrap();
     git(&["config", "user.name", "riley"], &app);
     git(&["config", "user.email", "riley@l"], &app);
     git(&["add", "-A"], &app);
@@ -133,7 +177,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     assert!(!ok && out.contains("ssh nobody@localhost.invalid is not reachable") && out.contains("nothing was written"), "{out}");
     let cfg = Command::new("git").args(["config", "dna.body"]).current_dir(&app).output().unwrap();
     assert!(!cfg.status.success(), "no body was recorded: {}", String::from_utf8_lossy(&cfg.stdout));
-    assert!(!journal(&app).contains("body.provisioned"), "no row either");
+    assert!(!journal(&app, &home).contains("body.provisioned"), "no row either");
     // the dry run is the plan, exactly: the pinned toolchain, the clone, the unit
     let lock = std::fs::read_to_string(app.join("hale.lock")).unwrap();
     let pin = lock.split("toolchain = \"").nth(1).unwrap().split('"').next().unwrap().to_string();
@@ -141,8 +185,8 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, plan) = hale_env(&["dna", "body", "provision", "riley@srv", "--dsn", "postgres://dna:pw@db:5432/dna", "--dry-run"], &app, &home, None);
     assert!(ok, "{plan}");
     // a body's name on a machine carries its record's identity (#635)
-    let genesis = git(&["rev-list", "--max-parents=0", "refs/dna/journal"], &app);
-    let key = format!("prov-{}", &genesis.trim()[..12]);
+    let genesis = record::identity(&app);
+    let key = format!("prov-{}", &genesis[..12]);
     for needle in [
         "nothing was written",
         &format!("PIN='{pin}'"),
@@ -152,6 +196,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
         "git clone -q \"$REMOTE\" \"$DIR\"",
         "hale dna upgrade .",
         "HALE_DNA_MEMORY_DSN_OWNER=$DSN",
+        "hale habitat migrate .",
         "hale-dna-$NAME.service",
         "WorkingDirectory=%h/dna/prov",
         &format!("EnvironmentFile=-%h/.config/hale-dna/{key}.env"),
@@ -164,14 +209,14 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     }
     let cfg = Command::new("git").args(["config", "dna.body"]).current_dir(&app).output().unwrap();
     assert!(!cfg.status.success(), "a dry run writes nothing");
-    // without the DSN the plan brings Postgres up from compose
+    // without the DSN the plan brings Postgres up in the body's habitat
     let (ok, plan) = hale_env(&["dna", "body", "provision", "riley@srv", "--dry-run"], &app, &home, None);
     assert!(ok && plan.contains("DSN=''") && plan.contains("docker compose version"), "{plan}");
     // body start/stop/logs need a body
     let (ok, out) = hale_env(&["dna", "body", "logs"], &app, &home, None);
     assert!(!ok && out.contains("no body is known here"), "{out}");
     git(&["remote", "set-url", "origin", &bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
 
     // ---- secrets ----
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
@@ -181,13 +226,13 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, out) = hale_env(&["dna", "secret", "set", "not a name"], &app, &home, Some("x\n"));
     assert!(!ok && out.contains("is not a secret's name"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "set", &cred], &app, &home, Some(""));
-    assert!(!ok && out.contains("no value was given on stdin"), "{out}");
+    assert!(!ok && out.contains(&format!("no value on stdin for {cred}")), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("x\n"));
     assert!(!ok && out.contains("was never set"), "{out}");
     // ---- the host: a missing credential surfaces at once ----
-    // (the bootstrap left the key's slot of the vault empty)
+    // (the key was added after the bootstrap, so the vault has nothing for it)
     let slot = home.join(format!("vault/model-{cred}"));
-    assert_eq!(std::fs::read_to_string(&slot).expect("the bootstrap named the slot"), "", "the bootstrap named the slot, empty");
+    assert!(!slot.exists(), "no slot of the vault holds {cred} yet");
     let log = d.join("host.log");
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
@@ -198,7 +243,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, board) = hale_env(&["dna", "board"], &app, &home, None);
     assert!(ok && board.contains(&format!("body: no credential for the model (none of {cred} is in the vault where the body runs)")), "{board}");
     stop_host(&app, &mut host);
-    assert!(journal(&app).contains("\"kind\": \"body.credential_missing\", \"entity\": \"model\""));
+    assert!(journal(&app, &home).contains("\"kind\": \"body.credential_missing\", \"entity\": \"model\""));
 
     // ---- set and rotate: the slot of the vault, never the record ----
     let (ok, out) = hale_env(&["dna", "secret", "set", &cred], &app, &home, Some("sk-test-123\n"));
@@ -211,7 +256,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("sk-test-456\n"));
     assert!(ok && out.contains(&format!("secret rotate: {cred} is in its slot of the vault")), "{out}");
     assert_eq!(std::fs::read_to_string(&slot).unwrap(), "sk-test-456", "the newest value");
-    let j = journal(&app);
+    let j = journal(&app, &home);
     assert_eq!(j.matches(&format!("\"kind\": \"secret.rotated\", \"entity\": \"{cred}\"")).count(), 2, "{j}");
     assert!(!j.contains("sk-test"), "the value is nowhere in the record: {j}");
     assert!(std::fs::read_dir(app.join(".hale/dna")).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with("secret.")), "no temp file is left behind");
@@ -222,12 +267,33 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     assert!(std::fs::read_to_string(&log).unwrap().contains("the model's credential is present now"), "{}", std::fs::read_to_string(&log).unwrap());
-    let org_pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap().trim().to_string();
-    let environ = std::fs::read(format!("/proc/{org_pid}/environ")).unwrap_or_default();
+    let environ = org_environ(&app);
     assert!(!environ.is_empty() && !String::from_utf8_lossy(&environ).contains("sk-test-456"), "the organization's environment does not carry the key");
     let (ok, st) = hale_env(&["dna", "status"], &app, &home, None);
     assert!(ok && !st.contains("no credential"), "{st}");
     stop_host(&app, &mut host);
-    assert!(journal(&app).contains("\"kind\": \"body.credential_present\", \"entity\": \"model\""));
+    assert!(journal(&app, &home).contains("\"kind\": \"body.credential_present\", \"entity\": \"model\""));
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The running organization's environment, read from `/proc`. One read
+/// can come back empty: the pid file names the process the host is
+/// restarting, whose environ reads empty while it exits (or before the
+/// replacement's exec). So it is read again, re-reading the pid file
+/// each time, until it is non-empty or 5 s have passed; an empty answer
+/// then fails the caller's assertion as it did.
+fn org_environ(app: &std::path::Path) -> Vec<u8> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default().trim().to_string();
+        let environ = if pid.is_empty() {
+            Vec::new()
+        } else {
+            std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default()
+        };
+        if !environ.is_empty() || std::time::Instant::now() >= deadline {
+            return environ;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }

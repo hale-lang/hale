@@ -32,18 +32,24 @@ type Policies {
 fn policy_dir(root: String) -> String { return root + "/" + POLICY_DIR; }
 fn authority_path(root: String) -> String { return policy_dir(root) + "/" + AUTHORITY_FILE; }
 fn task_policy_path(root: String) -> String { return policy_dir(root) + "/" + TASK_POLICY_FILE; }
-fn organization_policy_path(root: String) -> String { return policy_dir(root) + "/" + ORGANIZATION_POLICY_FILE; }
+fn organization_policy_path(root: String) -> String {
+    return policy_dir(root) + "/" + ORGANIZATION_POLICY_FILE;
+}
 
 // `git config dna.trust`, "local" when unset.
 fn trust_of(root: String) -> String {
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let declared = record.setting("trust");
     return if len(declared) == 0 { "local" } else { declared };
 }
 
 // §2.8: one board grant for the head's principal, in its mode (`oidc`
 // for the person who signed in, GH #989; `local` in a fixture's session).
-fn authority_policy_json(application_id: String, principal_mode: String, principal_name: String) -> String {
+fn authority_policy_json(
+    application_id: String,
+    principal_mode: String,
+    principal_name: String
+) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("format", "dna.practice-review-authority/1");
@@ -94,16 +100,27 @@ fn ensure_policy_dir(root: String) -> Bool {
 // Writes the two synthesized files that are absent; true when
 // `authority.json` was written now (the receipt's `authority_written`).
 // Idempotent: a second attach writes nothing.
-fn write_policies(root: String, application_id: String, principal_mode: String, principal_name: String) -> Bool {
+fn write_policies(
+    root: String,
+    application_id: String,
+    principal_mode: String,
+    principal_name: String
+) -> Bool {
     if !ensure_policy_dir(root) { return false; }
     let mut wrote = false;
     if !std::io::fs::file_exists(authority_path(root)) {
-        wrote = write_private(authority_path(root), authority_policy_json(application_id, principal_mode, principal_name));
+        wrote = write_private(
+            authority_path(root),
+            authority_policy_json(application_id, principal_mode, principal_name),
+        );
     }
     // the Task authority grants a local principal alone: under OIDC no Task
     // policy is synthesized, and the child serves no Task commands (GH #989)
     if principal_mode == "local" && !std::io::fs::file_exists(task_policy_path(root)) {
-        let w = write_private(task_policy_path(root), task_policy_json(application_id, principal_name));
+        let w = write_private(
+            task_policy_path(root),
+            task_policy_json(application_id, principal_name),
+        );
     }
     return wrote;
 }
@@ -164,8 +181,14 @@ fn authority_json(root: String, application_id: String) -> String {
 fn policy_env(root: String) -> String {
     if len(root) == 0 { return ""; }
     let mut out = "";
-    if std::io::fs::file_exists(authority_path(root)) { out = out + "HALE_DNA_COMMAND_POLICY=" + authority_path(root) + "\n"; }
-    if std::io::fs::file_exists(task_policy_path(root)) { out = out + "HALE_DNA_TASK_POLICY=" + task_policy_path(root) + "\n"; }
-    if std::io::fs::file_exists(organization_policy_path(root)) { out = out + "HALE_DNA_ORGANIZATION_POLICY=" + organization_policy_path(root) + "\n"; }
+    if std::io::fs::file_exists(authority_path(root)) {
+        out = out + "HALE_DNA_COMMAND_POLICY=" + authority_path(root) + "\n";
+    }
+    if std::io::fs::file_exists(task_policy_path(root)) {
+        out = out + "HALE_DNA_TASK_POLICY=" + task_policy_path(root) + "\n";
+    }
+    if std::io::fs::file_exists(organization_policy_path(root)) {
+        out = out + "HALE_DNA_ORGANIZATION_POLICY=" + organization_policy_path(root) + "\n";
+    }
     return out;
 }

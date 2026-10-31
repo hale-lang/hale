@@ -10,6 +10,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -46,13 +52,13 @@ import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
         gateway: dna::MutationGateway {
-            leases: dna::GitLeases { repo: "." },
+            leases: dna::MemoryLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -77,11 +83,12 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
         eprintln!("dna_review: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_review_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_review_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrev", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgrev", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrev");
     git(&["init", "-q", "-b", "main"], &app);
@@ -128,6 +135,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
@@ -179,15 +187,15 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     finish(&mut host);
     // #649: the candidate is kept under the mutation's name whatever
     // happens to its worktree — listed, shown as a diff, and dropped by a row
-    let kept = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/candidates/m1"]).current_dir(&app).output().unwrap();
-    assert!(kept.status.success(), "the candidate is pointed at under refs/dna/candidates/m1");
+    let kept = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/heads/dna/candidate/m1"]).current_dir(&app).output().unwrap();
+    assert!(kept.status.success(), "the candidate is kept as the branch dna/candidate/m1");
     let (ok5, out5) = hale(&["dna", "candidates"], &app);
     assert!(ok5 && out5.contains("m1") && out5.contains("review m1 settled"), "candidates:\n{out5}");
     let (ok6, out6) = hale(&["dna", "candidates", "m1"], &app);
     assert!(ok6 && out6.contains("candidate m1 at") && out6.contains("diff ("), "one candidate as a diff:\n{out6}");
     let (ok7, out7) = hale(&["dna", "candidates", "drop", "m1", "--why", "reviewed and applied; the diff is in the genome", "--as", "riley"], &app);
     assert!(ok7 && out7.contains("candidate m1 dropped by riley"), "drop:\n{out7}");
-    let gone = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/candidates/m1"]).current_dir(&app).output().unwrap();
+    let gone = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/heads/dna/candidate/m1"]).current_dir(&app).output().unwrap();
     assert!(!gone.status.success(), "dropped: no longer pointed at");
     let (ok8, out8) = hale(&["dna", "history", "m1"], &app);
     assert!(ok8 && out8.contains("candidate.dropped"), "the drop is a row:\n{out8}");

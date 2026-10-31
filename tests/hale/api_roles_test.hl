@@ -49,12 +49,13 @@ fn app_source(sock: String) -> String {
         + "    params {\n"
         + "        billing: Billing = Billing { };\n"
         + "        roles: std::api::StaticRoles = std::api::StaticRoles { known: \"support auditor owner\" };\n"
+        + "        h: api::Exposure = api::serve(Public, unix::Rpc { path: \"" + sock
+        + "\", roles: self.roles }, as: \"shop\", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);\n"
         + "    }\n"
         + "    placement { billing: cooperative(pool = work) where async_io; }\n"
         + "    run() {\n"
-        + "        let h = api::serve(Public, unix::Rpc { path: \"" + sock + "\", roles: self.roles }, as: \"shop\", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);\n"
         + "        std::time::sleep(12s);\n"
-        + "        h.stop();\n"
+        + "        self.h.stop();\n"
         + "    }\n"
         + "}\n"
         + "fn main() { Shop { }; }\n";
@@ -143,7 +144,10 @@ locus Api {
     // A call of `member` with `payload`.
     fn call(member: String, payload: String) -> String {
         self.n = self.n + 1;
-        return self.ask_line("{\"call\":\"" + member + "\",\"payload\":" + payload + ",\"id\":\"c-" + to_string(self.n) + "\"}");
+        return self.ask_line(
+            "{\"call\":\"" + member + "\",\"payload\":" + payload + ",\"id\":\"c-"
+                + to_string(self.n) + "\"}",
+        );
     }
 
     fn describe() -> String {
@@ -198,36 +202,73 @@ fn main() {
     std::test::assert_eq_int(built.code, 0, "the app builds: " + built.stderr);
     let bin = src[0..(len(src) - 3)];
     // What `hale check --api` says this caller may use, per exposure.
-    let emitted = run_tool(hale + "\ncheck\n--api\n--exposure\nshop\n--caller\nuid:" + me + "\n--holds\nsupport\n" + src);
+    let emitted = run_tool(
+        hale + "\ncheck\n--api\n--exposure\nshop\n--caller\nuid:" + me + "\n--holds\nsupport\n"
+            + src,
+    );
     std::test::assert_eq_int(emitted.code, 0, "hale check --api --exposure: " + emitted.stderr);
-    std::test::assert(has(emitted.stdout, "\"name\": \"Billing::on_refund\"") && !has(emitted.stdout, "\"name\": \"Billing::read_ledger\""), "the emitted description carries the role requirement: " + emitted.stdout);
+    std::test::assert(
+        has(emitted.stdout, "\"name\": \"Billing::on_refund\"")
+            && !has(emitted.stdout, "\"name\": \"Billing::read_ledger\""),
+        "the emitted description carries the role requirement: " + emitted.stdout,
+    );
 
     // Table A: this uid holds support (by user name), an auditor and an
     // owner who is someone else.
     let table_a = "support=user:" + my_name + ";auditor=uid:" + other + ";owner=uid:" + other;
     let p = Proc { };
-    std::test::assert(p.start("env\nLOTUS_API_ROLES=" + table_a + "\n" + bin), "the app started under table A");
+    std::test::assert(
+        p.start("env\nLOTUS_API_ROLES=" + table_a + "\n" + bin),
+        "the app started under table A",
+    );
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
 
     let r1 = api.call("Billing::on_refund", "{\"order_id\":4,\"amount\":5}");
     std::test::assert(has(r1, "\"ok\":true"), "a holder's call is answered: " + r1);
-    std::test::assert(has(r1, "\"role\":\"support\""), "the handler's context named the authorizing role: " + r1);
+    std::test::assert(
+        has(r1, "\"role\":\"support\""),
+        "the handler's context named the authorizing role: " + r1,
+    );
     let r2 = api.call("Billing::read_ledger", "{}");
-    std::test::assert(has(r2, "\"ok\":false") && has(r2, "\"kind\":\"unauthorized\"") && has(r2, "\"requires\":[\"auditor\"]"), "a row the caller does not hold the role for is refused, naming what it requires: " + r2);
+    std::test::assert(
+        has(r2, "\"ok\":false")
+            && has(r2, "\"kind\":\"unauthorized\"")
+            && has(r2, "\"requires\":[\"auditor\"]"),
+        "a row the caller does not hold the role for is refused, naming what it requires: " + r2,
+    );
     let r3 = api.call("Billing::read_count", "{}");
-    std::test::assert(has(r3, "\"ok\":true") && has(r3, "\"n\":1"), "an ungated row answers: " + r3);
+    std::test::assert(
+        has(r3, "\"ok\":true") && has(r3, "\"n\":1"),
+        "an ungated row answers: " + r3,
+    );
     let r5 = api.call("Billing::on_note", "{\"text\":\"hi\"}");
     std::test::assert(has(r5, "\"ok\":true"), "an ungated command is answered with no role: " + r5);
     let d1 = api.describe();
     let desc1 = std::json::find_field_raw(d1, "value");
-    std::test::assert(lists(desc1, "Billing::on_refund") && lists(desc1, "Billing::on_note") && lists(desc1, "Billing::read_count"), "the description lists what this caller may call: " + desc1);
-    std::test::assert(!lists(desc1, "Billing::read_ledger"), "the description hides the row this caller may not use: " + desc1);
+    std::test::assert(
+        lists(desc1, "Billing::on_refund")
+            && lists(desc1, "Billing::on_note")
+            && lists(desc1, "Billing::read_count"),
+        "the description lists what this caller may call: " + desc1,
+    );
+    std::test::assert(
+        !lists(desc1, "Billing::read_ledger"),
+        "the description hides the row this caller may not use: " + desc1,
+    );
     // The live answer and `hale check --api` list the same members for the
     // same caller (the live document carries the identity, the caller and
     // the members; the schemas stay the compiler's document's).
-    for m in ["Billing::on_refund", "Billing::on_note", "Billing::read_count", "Billing::read_ledger"] {
-        std::test::assert(lists(desc1, m) == has(emitted.stdout, "\"name\": \"" + m + "\""), "the live description and `check --api` agree on " + m);
+    for m in [
+        "Billing::on_refund",
+        "Billing::on_note",
+        "Billing::read_count",
+        "Billing::read_ledger"
+    ] {
+        std::test::assert(
+            lists(desc1, m) == has(emitted.stdout, "\"name\": \"" + m + "\""),
+            "the live description and `check --api` agree on " + m,
+        );
     }
     p.stop();
     std::io::fs::unlink(sock) or discard;
@@ -240,34 +281,61 @@ fn main() {
     let mut supplementary = "";
     let mut gi = 0;
     while len(nth_word(groups, gi)) > 0 {
-        if nth_word(groups, gi) != my_gid && len(supplementary) == 0 { supplementary = nth_word(groups, gi); }
+        if nth_word(groups, gi) != my_gid && len(supplementary) == 0 {
+            supplementary = nth_word(groups, gi);
+        }
         gi = gi + 1;
     }
-    let auditor_member = if len(supplementary) > 0 { "gid:" + supplementary } else { "group:" + my_group };
+    let auditor_member = if len(supplementary) > 0 {
+        "gid:" + supplementary
+    } else {
+        "group:" + my_group
+    };
     let table_b = "support=uid:" + other + ";auditor=" + auditor_member + ";owner=";
     let q = Proc { };
-    std::test::assert(q.start("env\nLOTUS_API_ROLES=" + table_b + "\n" + bin), "the app started under table B");
+    std::test::assert(
+        q.start("env\nLOTUS_API_ROLES=" + table_b + "\n" + bin),
+        "the app started under table B",
+    );
     let api2 = Api { };
     std::test::assert(api2.connect(sock), "connected under table B");
     let b1 = api2.call("Billing::on_refund", "{\"order_id\":4,\"amount\":5}");
-    std::test::assert(has(b1, "\"kind\":\"unauthorized\"") && !has(b1, "\"by\""), "a non-holder's call is refused: " + b1);
+    std::test::assert(
+        has(b1, "\"kind\":\"unauthorized\"") && !has(b1, "\"by\""),
+        "a non-holder's call is refused: " + b1,
+    );
     let b4 = api2.call("Billing::read_ledger", "{}");
-    std::test::assert(has(b4, "\"balance\":100"), "the auditor reads the gated field, by group membership (" + auditor_member + "): " + b4);
+    std::test::assert(
+        has(b4, "\"balance\":100"),
+        "the auditor reads the gated field, by group membership (" + auditor_member + "): " + b4,
+    );
     let d3 = std::json::find_field_raw(api2.describe(), "value");
-    std::test::assert(!lists(d3, "Billing::on_refund") && lists(d3, "Billing::read_ledger"), "the description is this caller's slice: " + d3);
+    std::test::assert(
+        !lists(d3, "Billing::on_refund") && lists(d3, "Billing::read_ledger"),
+        "the description is this caller's slice: " + d3,
+    );
     q.stop();
     std::io::fs::unlink(sock) or discard;
 
     // Table C: this uid is owner, which includes support.
     let table_c = "support=;auditor=;owner=uid:" + me;
     let w = Proc { };
-    std::test::assert(w.start("env\nLOTUS_API_ROLES=" + table_c + "\n" + bin), "the app started under table C");
+    std::test::assert(
+        w.start("env\nLOTUS_API_ROLES=" + table_c + "\n" + bin),
+        "the app started under table C",
+    );
     let api3 = Api { };
     std::test::assert(api3.connect(sock), "connected under table C");
     let c1 = api3.call("Billing::on_refund", "{\"order_id\":1,\"amount\":1}");
-    std::test::assert(has(c1, "\"ok\":true") && has(c1, "\"role\":\"support\""), "owner includes support, and the handler sees the row's role: " + c1);
+    std::test::assert(
+        has(c1, "\"ok\":true") && has(c1, "\"role\":\"support\""),
+        "owner includes support, and the handler sees the row's role: " + c1,
+    );
     let c3 = api3.call("Billing::read_ledger", "{}");
-    std::test::assert(has(c3, "\"kind\":\"unauthorized\""), "owner does not include auditor: " + c3);
+    std::test::assert(
+        has(c3, "\"kind\":\"unauthorized\""),
+        "owner does not include auditor: " + c3,
+    );
     w.stop();
     std::io::fs::unlink(sock) or discard;
     std::io::fs::unlink(bin) or discard;
@@ -278,10 +346,15 @@ fn main() {
     let dir = "/tmp/hale-1109-env-" + tag;
     std::io::fs::mkdir(dir) or discard;
     std::io::fs::write_file(dir + "/hale.toml",
-        "[claims]\nno_base = true\n\n[environments.test]\nsource_only = true\nentrypoints = [\".\"]\n\n[environments.test.roles]\nsupport = [\"uid:" + me + "\"]\nauditor = []\nowner = []\n") or discard;
+        "[claims]\nno_base = true\n\n[environments.test]\nsource_only = true\nentrypoints = [\".\"]\n\n[environments.test.roles]\nsupport = [\"uid:"
+            + me + "\"]\nauditor = []\nowner = []\n") or discard;
     std::io::fs::write_file(dir + "/main.hl", app_source(sock)) or discard;
     let matrix = run_tool(hale + "\ncheck\n--matrix\n" + dir);
-    std::test::assert_eq_int(matrix.code, 0, "every declared role is mapped, so the matrix passes: " + matrix.stderr + matrix.stdout);
+    std::test::assert_eq_int(
+        matrix.code,
+        0,
+        "every declared role is mapped, so the matrix passes: " + matrix.stderr + matrix.stdout,
+    );
     let _rm = run_tool("rm\n-rf\n" + dir);
 
     // A table the program cannot act on is refused at birth, as
@@ -289,16 +362,38 @@ fn main() {
     // spellings.
     let bad_src = std::io::fs::mktemp("/tmp/hale-1109-bad-", ".hl") or "";
     std::io::fs::write_file(bad_src, app_source(sock)) or discard;
-    std::test::assert_eq_int(run_tool(hale + "\nbuild\n" + bad_src).code, 0, "built for the refusals");
+    std::test::assert_eq_int(
+        run_tool(hale + "\nbuild\n" + bad_src).code,
+        0,
+        "built for the refusals",
+    );
     let bad_bin = bad_src[0..(len(bad_src) - 3)];
     let x = Proc { };
-    std::test::assert(x.start("env\nLOTUS_API_ROLES=suport=uid:" + me + "\n" + bad_bin), "started under an undeclared role");
+    std::test::assert(
+        x.start("env\nLOTUS_API_ROLES=suport=uid:" + me + "\n" + bad_bin),
+        "started under an undeclared role",
+    );
     let x_code = x.exit_code();
-    std::test::assert_eq_int(x_code, 2, "a table naming an undeclared role refuses to start: " + x.out);
-    std::test::assert(has(x.out, "refusing to start") && has(x.out, "`suport` is not a role this program declares"), "and says why: " + x.out);
+    std::test::assert_eq_int(
+        x_code,
+        2,
+        "a table naming an undeclared role refuses to start: " + x.out,
+    );
+    std::test::assert(
+        has(x.out, "refusing to start")
+            && has(x.out, "`suport` is not a role this program declares"),
+        "and says why: " + x.out,
+    );
     let y = Proc { };
-    std::test::assert(y.start("env\nLOTUS_API_ROLES=support=riley\n" + bad_bin), "started under a bad member spelling");
-    std::test::assert_eq_int(y.exit_code(), 2, "a member outside the five spellings refuses to start: " + y.out);
+    std::test::assert(
+        y.start("env\nLOTUS_API_ROLES=support=riley\n" + bad_bin),
+        "started under a bad member spelling",
+    );
+    std::test::assert_eq_int(
+        y.exit_code(),
+        2,
+        "a member outside the five spellings refuses to start: " + y.out,
+    );
     std::test::assert(has(y.out, "`riley` is not a role member"), "and says which: " + y.out);
     std::io::fs::unlink(bad_bin) or discard;
     std::io::fs::unlink(bad_src) or discard;

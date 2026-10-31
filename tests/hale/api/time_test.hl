@@ -51,13 +51,24 @@ main locus Desk {
         clock: Clock = Clock { };
         bearer: Tokens = Tokens { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
-    }
-
-    // Never called: the serve site is what makes the compiler write the
-    // protobuf codecs beside the JSON ones.
-    fn serving() {
-        let h = api::serve(Times, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Clock: self.clock }, bound: 4, on_full: refuse);
-        h.stop();
+        // Served over gRPC only so the compiler writes the protobuf codecs
+        // beside the JSON ones; nothing calls it.
+        h: api::Exposure = api::serve(
+            Times,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Clock: self.clock },
+            bound: 4,
+            on_full: refuse
+        );
+        times: api::Exposure = api::serve(
+            Times,
+            self.f,
+            as: "times",
+            receivers: { Clock: self.clock },
+            bound: 8,
+            on_full: refuse
+        );
     }
 
     fn refused(id: Int, member: String, body: String, reason: String, what: String) {
@@ -73,13 +84,14 @@ main locus Desk {
         let before = self.clock.entered;
         self.f.call_as_peer(id, member, body, 1000);
         std::test::assert_eq_str(self.f.await_outcome(id, 2000), "result", what);
-        std::test::assert(std::str::contains(self.f.line(id), "\"value\":" + value + ","), what + ": its value " + self.f.line(id));
+        std::test::assert(
+            std::str::contains(self.f.line(id), "\"value\":" + value + ","),
+            what + ": its value " + self.f.line(id),
+        );
         std::test::assert_eq_int(self.clock.entered, before + 1, what + ": the handler ran once");
     }
 
     run() {
-        let h = api::serve(Times, self.f, as: "times", receivers: { Clock: self.clock }, bound: 8, on_full: refuse);
-
         // ---- a record: an instant to the nanosecond, a duration, a list of instants ----
         let full = "{\"at\":\"2026-10-12T03:04:05.123456789Z\",\"every\":1500000000,\"seen\":[\"1969-07-20T20:17:40Z\",\"2026-10-12T00:00:00.5Z\"],\"since\":\"2026-02-03T04:05:06Z\",\"grace\":0}";
         self.ran(1, "Clock::stamp", full, full, "a record of times");
@@ -87,19 +99,85 @@ main locus Desk {
         self.ran(2, "Clock::stamp", "{\"at\":\"2026-10-12T03:04:05.100Z\",\"every\":1," + two + "}",
             "{\"at\":\"2026-10-12T03:04:05.1Z\",\"every\":1,\"seen\":[\"2026-10-12T00:00:00Z\",\"2026-10-12T00:00:00.00000001Z\"],\"since\":\"2026-01-01T00:00:00Z\",\"grace\":5000000000}",
             "trailing zeros dropped, the defaults kept");
-        self.refused(3, "Clock::stamp", "{\"at\":\"2026-10-12T03:04:05\",\"every\":1}", "wrong_type: at", "an instant with no zone");
-        self.refused(4, "Clock::stamp", "{\"at\":\"2026-10-12T03:04:05+01:00\",\"every\":1}", "wrong_type: at", "an instant with an offset");
-        self.refused(5, "Clock::stamp", "{\"at\":\"2999-01-01T00:00:00Z\",\"every\":1}", "wrong_type: at", "an instant Time cannot hold");
-        self.refused(6, "Clock::stamp", "{\"at\":1760238245,\"every\":1}", "wrong_type: at", "a number where an instant is");
-        self.refused(7, "Clock::stamp", "{\"at\":\"2026-10-12T03:04:05Z\",\"every\":\"1s\"}", "wrong_type: every", "a duration as text");
-        self.refused(8, "Clock::stamp", "{\"at\":\"2026-10-12T03:04:05Z\",\"every\":1.5}", "wrong_type: every", "a fraction of a nanosecond");
-        self.refused(9, "Clock::stamp", "{\"at\":\"2026-10-12T03:04:05Z\",\"every\":1,\"seen\":[\"yesterday\",\"2026-10-12T00:00:00Z\"]}", "wrong_type: seen", "a list's element that is no instant");
-        self.refused(10, "Clock::stamp", "{\"every\":1}", "missing_field: at", "an instant left out");
+        self.refused(
+            3,
+            "Clock::stamp",
+            "{\"at\":\"2026-10-12T03:04:05\",\"every\":1}",
+            "wrong_type: at",
+            "an instant with no zone",
+        );
+        self.refused(
+            4,
+            "Clock::stamp",
+            "{\"at\":\"2026-10-12T03:04:05+01:00\",\"every\":1}",
+            "wrong_type: at",
+            "an instant with an offset",
+        );
+        self.refused(
+            5,
+            "Clock::stamp",
+            "{\"at\":\"2999-01-01T00:00:00Z\",\"every\":1}",
+            "wrong_type: at",
+            "an instant Time cannot hold",
+        );
+        self.refused(
+            6,
+            "Clock::stamp",
+            "{\"at\":1760238245,\"every\":1}",
+            "wrong_type: at",
+            "a number where an instant is",
+        );
+        self.refused(
+            7,
+            "Clock::stamp",
+            "{\"at\":\"2026-10-12T03:04:05Z\",\"every\":\"1s\"}",
+            "wrong_type: every",
+            "a duration as text",
+        );
+        self.refused(
+            8,
+            "Clock::stamp",
+            "{\"at\":\"2026-10-12T03:04:05Z\",\"every\":1.5}",
+            "wrong_type: every",
+            "a fraction of a nanosecond",
+        );
+        self.refused(
+            9,
+            "Clock::stamp",
+            "{\"at\":\"2026-10-12T03:04:05Z\",\"every\":1,\"seen\":[\"yesterday\",\"2026-10-12T00:00:00Z\"]}",
+            "wrong_type: seen",
+            "a list's element that is no instant",
+        );
+        self.refused(
+            10,
+            "Clock::stamp",
+            "{\"every\":1}",
+            "missing_field: at",
+            "an instant left out",
+        );
 
         // ---- a whole payload ----
-        self.ran(11, "Clock::instant", "\"1677-09-21T00:12:43.145224192Z\"", "\"1677-09-21T00:12:43.145224193Z\"", "the first instant Time holds, and one after");
-        self.refused(12, "Clock::instant", "\"2026-10-12\"", "wrong_type: payload", "a date with no time");
-        self.ran(15, "Clock::instant", "\"1969-12-31T23:59:59.999999999Z\"", "\"1970-01-01T00:00:00Z\"", "an instant before the epoch");
+        self.ran(
+            11,
+            "Clock::instant",
+            "\"1677-09-21T00:12:43.145224192Z\"",
+            "\"1677-09-21T00:12:43.145224193Z\"",
+            "the first instant Time holds, and one after",
+        );
+        self.refused(
+            12,
+            "Clock::instant",
+            "\"2026-10-12\"",
+            "wrong_type: payload",
+            "a date with no time",
+        );
+        self.ran(
+            15,
+            "Clock::instant",
+            "\"1969-12-31T23:59:59.999999999Z\"",
+            "\"1970-01-01T00:00:00Z\"",
+            "an instant before the epoch",
+        );
         self.ran(13, "Clock::span", "250", "500", "a duration, by its nanoseconds");
         self.refused(14, "Clock::span", "\"250ns\"", "wrong_type: payload", "a duration as text");
 
@@ -112,18 +190,32 @@ main locus Desk {
             std::test::assert(false, "the protobuf decoder: " + err.kind + " " + err.field);
             return;
         };
-        std::test::assert_eq_str(__api_encode_Stamp(back), full, "a record of times carried as protobuf");
+        std::test::assert_eq_str(
+            __api_encode_Stamp(back),
+            full,
+            "a record of times carried as protobuf",
+        );
         let at = __api_pb_put_int(1, std::time::nanos(`2026-10-12T03:04:05.000000001Z`));
         let every = __api_pb_put_int(2, 7);
         let seen = std::bytes::concat(__api_pb_put_int(3, 0 - 1), __api_pb_put_int(3, 0));
-        let read = __api_pb_decode_Stamp(std::bytes::concat(std::bytes::concat(at, every), seen)) or {
+        let read = __api_pb_decode_Stamp(
+            std::bytes::concat(std::bytes::concat(at, every), seen),
+        ) or {
             std::test::assert(false, "a message of nanoseconds: " + err.kind + " " + err.field);
             return;
         };
-        std::test::assert_eq_str(std::time::iso8601(read.at), "2026-10-12T03:04:05.000000001Z", "an instant as its nanoseconds");
+        std::test::assert_eq_str(
+            std::time::iso8601(read.at),
+            "2026-10-12T03:04:05.000000001Z",
+            "an instant as its nanoseconds",
+        );
         std::test::assert(read.every == 7ns, "a duration as its nanoseconds");
         std::test::assert(read.grace == 5s, "a duration's default");
-        std::test::assert_eq_str(std::time::iso8601(read.seen[0]), "1969-12-31T23:59:59.999999999Z", "an instant before the epoch");
+        std::test::assert_eq_str(
+            std::time::iso8601(read.seen[0]),
+            "1969-12-31T23:59:59.999999999Z",
+            "an instant before the epoch",
+        );
     }
 }
 

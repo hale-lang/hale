@@ -1,9 +1,7 @@
 // The existing Host authority read, shared with the co-located runtime reader.
-// Remote reads refresh a local tracking cell; they never acquire/renew a lease.
+// It reads the lease row in memory; it never acquires or renews a lease.
 import "../core" as dna;
 
-const BODY_LEASE: String = "lease/body";
-const BODY_LEASE_TRACK: String = "remote/lease/body";
 const FENCE_MARGIN: Int = 5;
 
 type BodyLeaseView {
@@ -17,53 +15,41 @@ type BodyLeaseView {
 
 locus HostAuthority {
     params { root: String = ""; }
-    fn record_head() -> dna::Head { let r = dna::GitRecord { repo: self.root }; return r.head("journal"); }
-    fn owner() -> String { let r = dna::GitRecord { repo: self.root }; return r.setting("owner"); }
-    fn trust() -> String { let r = dna::GitRecord { repo: self.root }; let t = r.setting("trust"); return if len(t) == 0 { "local" } else { t }; }
-    fn row_verified(sha: String) -> Bool { let r = dna::GitRecord { repo: self.root }; return r.signer(sha).verified; }
+    fn record_head() -> dna::Head {
+        let r = dna::MemoryRecord { repo: self.root };
+        return r.head("journal");
+    }
+    fn owner() -> String {
+        let r = dna::MemoryRecord { repo: self.root };
+        return r.setting("owner");
+    }
+    fn trust() -> String {
+        let r = dna::MemoryRecord { repo: self.root };
+        let t = r.setting("trust");
+        return if len(t) == 0 { "local" } else { t };
+    }
+    fn row_verified(sha: String) -> Bool {
+        let r = dna::MemoryRecord { repo: self.root };
+        return r.signer(sha).verified;
+    }
     // GH #1123: a body that names its organization (`dna.owner`) is one
     // of a shared record's bodies; which positions it owns is the graph's.
     fn shared() -> Bool { return len(self.owner()) > 0; }
-    fn routing() -> Int { let j = dna::GitJournal { repo: self.root, author: "host" }; return dna::routing_of(j); }
     fn lease_key() -> String { if self.shared() { return "owner/" + self.owner(); } return "body"; }
-    fn parse_lease(sha: String, text: String) -> BodyLeaseView {
-        if len(text) == 0 { return BodyLeaseView { }; }
-        let a = std::str::index_of(text, "\n");
-        if a < 0 { return BodyLeaseView { }; }
-        let holder = text[0..a];
-        let rest = text[(a + 1)..len(text)];
-        let b = std::str::index_of(rest, "\n");
-        if b < 0 { return BodyLeaseView { }; }
-        let token = std::str::parse_int(rest[0..b]) or 0;
-        let rest2 = rest[(b + 1)..len(rest)];
-        let c = std::str::index_of(rest2, "\n");
-        if c < 0 { return BodyLeaseView { }; }
-        let expires = std::str::parse_int(rest2[0..c]) or 0;
-        let present = dna::trim_nl(rest2[(c + 1)..len(rest2)]) == "1";
-        return BodyLeaseView { present: present, holder: holder, token: token, expires: expires, sha: sha };
-    }
     fn store_lease(sl: dna::MemoryLeases) -> BodyLeaseView {
         // GH #985: the lease table in memory, through the process's own
         // handle, under whichever role it holds (the body's spine, or a head)
         let l = sl.current(self.lease_key());
         if !sl.reachable { return BodyLeaseView { ok: false }; }
         if len(l.holder) == 0 && l.token == 0 { return BodyLeaseView { }; }
-        return BodyLeaseView { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };
+        return BodyLeaseView {
+            present: l.present,
+            holder: l.holder,
+            token: l.token,
+            expires: l.expires,
+            sha: to_string(l.token),
+        };
     }
-    fn body_lease(leases: dna::MemoryLeases) -> BodyLeaseView {
-        if self.routing() > 0 { return self.store_lease(leases); }
-        let r = dna::GitRecord { repo: self.root }; let remote = r.remote(); let mut key = BODY_LEASE;
-        if len(remote) > 0 {
-            let f = r.receive(remote, BODY_LEASE);
-            if !f.ok {
-                if !f.absent { return BodyLeaseView { ok: false }; }
-                let gone = r.drop_cell(BODY_LEASE_TRACK);
-                return BodyLeaseView { };
-            }
-            key = BODY_LEASE_TRACK;
-        }
-        let c = r.cell(key);
-        if !c.present { return BodyLeaseView { }; }
-        return self.parse_lease(c.version, c.text);
-    }
+    // GH #1590: the lease is a row of memory, as the record is
+    fn body_lease(leases: dna::MemoryLeases) -> BodyLeaseView { return self.store_lease(leases); }
 }

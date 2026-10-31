@@ -1,0 +1,72 @@
+// tests/hale/seam_frame_classifier_test.hl — a seam (GH #1530 step 2) over
+// a frame classifier: the decoder is an if-chain on the frame's kind byte
+// making one of six message kinds, and anything else falls through to
+// `Unknown`, a member that holds the frame's bytes. `Unknown` is declared
+// by the decoder like any member, so the session covers it like any other:
+// nothing falls through at runtime unhandled, and a seventh kind added to
+// `Frame` would fail the build at `Session` until a method takes it.
+
+type Hello { version: Int; }
+type Ping { seq: Int; }
+type Pong { seq: Int; }
+type Data { size: Int; }
+type Ack { seq: Int; }
+type Bye { }
+type Unknown { raw: Bytes; }
+type Frame = Hello | Ping | Pong | Data | Ack | Bye | Unknown;
+
+locus Wire {
+    fn decode(b: Bytes) -> Frame {
+        let kind = std::bytes::read_u8(b, 0) or - 1;
+        let arg = std::bytes::read_u8(b, 1) or 0;
+        if kind == 72 { return Hello { version: arg - 48 }; }
+        if kind == 80 { return Ping { seq: arg - 48 }; }
+        if kind == 81 { return Pong { seq: arg - 48 }; }
+        if kind == 68 { return Data { size: len(b) - 1 }; }
+        if kind == 65 { return Ack { seq: arg - 48 }; }
+        if kind == 66 { return Bye { }; }
+        return Unknown { raw: b };
+    }
+}
+
+locus Session {
+    params { pings: Int = 0; bytes: Int = 0; }
+    fn hello(h: Hello) -> String { return "hello v" + to_string(h.version); }
+    fn ping(p: Ping) -> String {
+        self.pings = self.pings + 1;
+        return "ping " + to_string(p.seq);
+    }
+    fn pong(p: Pong) -> String { return "pong " + to_string(p.seq); }
+    fn data(d: Data) -> String {
+        self.bytes = self.bytes + d.size;
+        return "data " + to_string(d.size);
+    }
+    fn ack(a: Ack) -> String { return "ack " + to_string(a.seq); }
+    fn bye(b: Bye) -> String { return "bye"; }
+    fn unknown(u: Unknown) -> String { return "unknown of " + to_string(len(u.raw)); }
+}
+
+locus Link {
+    params { wire: Wire = Wire { }; session: Session = Session { }; }
+    seam classify(frame: Bytes) {
+        frame -> self.wire.decode -> self.session;
+    }
+}
+
+fn main() {
+    let l = Link { };
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("H2")), "hello v2", "hello");
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("P1")), "ping 1", "ping");
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("Q1")), "pong 1", "pong");
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("Dabcd")), "data 4", "data");
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("A9")), "ack 9", "ack");
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("B")), "bye", "bye");
+    std::test::assert_eq_str(
+        l.classify(std::bytes::from_string("zzz")),
+        "unknown of 3",
+        "the fallthrough member",
+    );
+    std::test::assert_eq_str(l.classify(std::bytes::from_string("P7")), "ping 7", "another ping");
+    std::test::assert_eq_int(l.session.pings, 2, "the session's state, counted by its own methods");
+    std::test::assert_eq_int(l.session.bytes, 4, "and its byte count");
+}

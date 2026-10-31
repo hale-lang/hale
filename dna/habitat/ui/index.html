@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>habitat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap">
+  <link rel="stylesheet" href="operator.css">
+  <script type="module" src="operator.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1 id="name">habitat</h1>
+      <nav>
+        <a href="#habitat" id="nav-habitat" aria-current="page">habitat</a>
+        <a href="#hardware" id="nav-hardware">hardware</a>
+        <a href="#infrastructure" id="nav-infrastructure">infrastructure</a>
+        <a href="#organisms" id="nav-organisms">organisms</a>
+        <a href="#alerts" id="nav-alerts">alerts</a>
+        <a href="/organization" id="nav-organization">organization</a>
+        <a href="/grafana/" id="nav-dashboards">dashboards</a>
+      </nav>
+      <span id="state" data-state="down">down</span>
+    </header>
+    <section id="crossing" class="crossing" hidden>
+      <div class="edge">crossing: sign in</div>
+      <p id="crossing-why"></p>
+      <p><a id="signin" href="./">sign in through the provider</a></p>
+    </section>
+    <div id="screen-habitat">
+    <section id="habitat" hidden>
+      <h2>habitat</h2>
+      <dl>
+        <dt>name</dt><dd id="habitat-name"></dd>
+        <dt>state</dt><dd id="habitat-state"></dd>
+        <dt>pulse</dt><dd id="habitat-pulse"></dd>
+        <dt>record</dt><dd id="habitat-record"></dd>
+        <dt>organisms</dt><dd id="habitat-count"></dd>
+      </dl>
+    </section>
+    <section id="uis" hidden>
+      <h2>uis</h2>
+      <table>
+        <thead><tr><th>ui</th><th>organism</th><th>link</th><th>sign in</th></tr></thead>
+        <tbody id="ui-rows"></tbody>
+      </table>
+      <p id="uis-empty" class="dim" hidden>no organism is grafted</p>
+      <p id="uis-outcome" class="outcome" hidden></p>
+    </section>
+    </div>
+    <div id="screen-hardware" hidden>
+      <section id="hosts">
+        <h2>hosts</h2>
+        <div id="host-rows"></div>
+        <p id="hosts-empty" class="dim" hidden>no host but this machine</p>
+        <p id="host-outcome" class="outcome" hidden></p>
+        <div id="remove-confirm" class="crossing" hidden>
+          <div class="edge">crossing: remove <span id="remove-host"></span> and what runs there</div>
+          <ul id="remove-plan"></ul>
+          <form id="remove-form" autocomplete="off">
+            <label>type the host's name to confirm <input id="remove-typed" required></label>
+            <button type="submit">remove</button> <button type="button" id="remove-cancel">cancel</button>
+          </form>
+        </div>
+      </section>
+      <section id="host-key" class="crossing" hidden>
+        <div class="edge">crossing: authorize the habitat on <span id="key-host"></span></div>
+        <p>Append this line to <code>~/.ssh/authorized_keys</code> on the machine, then probe it.</p>
+        <pre id="key-line"></pre>
+        <p><button type="button" id="key-copy">copy</button> <span id="key-copied" class="dim"></span></p>
+      </section>
+      <section id="host-add" class="crossing">
+        <div class="edge">crossing: add a host</div>
+        <form id="add-form" autocomplete="off">
+          <label>name <input id="add-name" required placeholder="rack-a.lan"></label>
+          <label>user <input id="add-user" placeholder="this account"></label>
+          <label>port <input id="add-port" type="number" min="1" max="65535" value="22"></label>
+          <button type="submit">add</button>
+        </form>
+      </section>
+    </div>
+    <div id="screen-alerts" hidden>
+      <section id="alerts">
+        <h2>alerts</h2>
+        <table>
+          <thead><tr><th>state</th><th>reflex</th><th>host</th><th>what</th><th>for</th></tr></thead>
+          <tbody id="alert-rows"></tbody>
+        </table>
+        <p id="alerts-empty" class="dim" hidden>nothing is firing</p>
+        <p id="alerts-outcome" class="outcome" hidden></p>
+      </section>
+    </div>
+    <div id="screen-infrastructure" hidden>
+      <section id="allocations">
+        <h2>allocations</h2>
+        <table>
+          <thead><tr><th>role</th><th>organism</th><th>provider</th><th>runs</th><th>host</th><th>state</th><th>place on</th></tr></thead>
+          <tbody id="allocation-rows"></tbody>
+        </table>
+        <p id="allocations-empty" class="dim" hidden>nothing is allocated</p>
+        <p><button type="button" id="apply-all">apply</button></p>
+        <p id="allocation-outcome" class="outcome" hidden></p>
+        <div id="apply-confirm" class="crossing" hidden>
+          <div class="edge">crossing: a moved memory starts empty</div>
+          <p id="apply-confirm-why"></p>
+          <p><button type="button" id="apply-fresh">apply fresh</button> <button type="button" id="apply-cancel">cancel</button></p>
+        </div>
+        <h2>pulse</h2>
+        <table>
+          <thead><tr><th>allocation</th><th>host</th><th>state</th><th>outcome</th></tr></thead>
+          <tbody id="pulse-rows"></tbody>
+        </table>
+      </section>
+      <section id="policy">
+        <h2>policy</h2>
+        <table>
+          <thead><tr><th>role</th><th>provider</th><th>profile</th></tr></thead>
+          <tbody id="policy-rows"></tbody>
+        </table>
+      </section>
+    </div>
+    <div id="screen-organisms" hidden>
+      <section id="placed">
+        <h2>placed organisms</h2>
+        <table>
+          <thead><tr><th>name</th><th>purpose</th><th>state</th><th>pulse</th><th>allocations</th><th></th></tr></thead>
+          <tbody id="placed-rows"></tbody>
+        </table>
+        <p id="placed-empty" class="dim" hidden>no organism is grafted</p>
+        <p id="organism-outcome" class="outcome" hidden></p>
+        <div id="organism-confirm" class="crossing" hidden>
+          <div class="edge">crossing: remove the organism <span id="organism-name"></span> and everything the habitat holds for it</div>
+          <ul id="organism-plan"></ul>
+          <form id="organism-form" autocomplete="off">
+            <label>type the organism's name to confirm <input id="organism-typed" required></label>
+            <button type="submit">remove</button> <button type="button" id="organism-cancel">cancel</button>
+          </form>
+        </div>
+      </section>
+      <section id="saplings">
+        <h2>saplings</h2>
+        <table>
+          <thead><tr><th>name</th><th>purpose</th><th>revision</th><th>digest</th><th>nursery</th><th>graft on</th></tr></thead>
+          <tbody id="sapling-rows"></tbody>
+        </table>
+        <p id="saplings-empty" class="dim" hidden>no sapling is pinned</p>
+        <p id="graft-outcome" class="outcome" hidden></p>
+      </section>
+      <section id="nurseries">
+        <h2>nurseries</h2>
+        <table>
+          <thead><tr><th>source</th><th>kind</th></tr></thead>
+          <tbody id="nursery-rows"></tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

@@ -203,3 +203,71 @@ fn string_fields_retire_with_survivor_guard() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A slot's String fields are the slot's own, even when the value
+/// stored came from the vec's own arena, as the locus's String params
+/// do. `push` and `set` used the sharing clone, so a slot held the
+/// param's block, and the slot's retire on the next `set` freed it
+/// under the param (`b intact` read garbage on main). A swap
+/// (`set(0, Row { id: self.b, note: self.a })` over one holding them
+/// the other way round), and a field the new element keeps from the
+/// old one at another offset, must keep their blocks too. Run with
+/// chunk recycling off, so a freed block is really freed.
+#[test]
+fn a_slot_owns_its_strings_even_from_the_vecs_own_arena() {
+    let src = r#"
+        type Row { id: String = ""; note: String = ""; }
+        @form(vec)
+        locus Rows {
+            capacity { heap items of Row; }
+            params { a: String = ""; b: String = ""; label: String = ""; }
+            fn seed() { self.push(Row { id: self.a, note: self.b }); }
+            fn flip() { self.set(0, Row { id: self.b, note: self.a }) or discard; }
+            fn fresh() {
+                self.set(0, Row { id: std::str::upper("xxxxxxxxxxxxxxxxxxxxxxxxx"), note: std::str::upper("yyyyyyyyyyyyyyyyyyyyyyyy") }) or discard;
+            }
+            fn twice() { self.push(Row { id: self.label, note: self.label }); }
+            fn keep_note() { self.set(1, Row { id: std::str::upper("zzzz"), note: self.label }) or discard; }
+        }
+        fn check(got: String, want: String, what: String) {
+            if got != want {
+                println(f"BAD {what}: {got}");
+                std::process::exit(1);
+            }
+        }
+        fn main() {
+            let r = Rows {
+                a: std::str::upper("first-string-value"),
+                b: std::str::upper("second-string-value"),
+                label: std::str::upper("a-label-long-enough-to-matter"),
+            };
+            r.seed();
+            r.flip();
+            let r0 = r.get(0) or Row { };
+            check(r0.id, "SECOND-STRING-VALUE", "flipped id");
+            check(r0.note, "FIRST-STRING-VALUE", "flipped note");
+            r.fresh();
+            let churn = std::str::upper("qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
+            check(r.a, "FIRST-STRING-VALUE", "a intact");
+            check(r.b, "SECOND-STRING-VALUE", "b intact");
+            r.twice();
+            r.keep_note();
+            let r1 = r.get(1) or Row { };
+            check(r1.id, "ZZZZ", "kept id");
+            check(r1.note, "A-LABEL-LONG-ENOUGH-TO-MATTER", "kept note");
+            check(r.label, "A-LABEL-LONG-ENOUGH-TO-MATTER", "label intact");
+            check(churn, "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ", "churn");
+            println("slots own their strings");
+        }
+    "#;
+    let bin = build("own_strings", src);
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("slots own their strings"),
+        "stdout: {:?}\nstderr: {:?}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

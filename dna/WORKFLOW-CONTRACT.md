@@ -306,8 +306,7 @@ never blindly repeated. **[decided]**
 ## 8. Durable transitions
 
 Proposed fact families (card 05 fixes the exact names and codecs). All
-are Ledger rows under split routing and Record rows on routing 0, and
-are added to `memory_of` explicitly. `task.*` names are not reused.
+are Ledger rows, and are added to `memory_of` explicitly. `task.*` names are not reused.
 **[decided]**
 
 | Fact | Entity | Carries |

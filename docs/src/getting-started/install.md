@@ -1,85 +1,71 @@
 # Install
 
-> Get the `hale` toolchain on your path.
+You can install `hale` using a **prebuilt release archive** (fastest) or by **building from source**. Because `hale` compiles programs to native machine code and links the C runtime (`lotus`), every host also requires a standard C toolchain (`clang`, `openssl`, `zlib`) to build and run `.hl` programs.
 
-There are two ways to get `hale`: download a **prebuilt binary**
-(quickest), or **build from source** (for contributors, or a
-platform without a prebuilt). Either way, read [What you need to
-run programs](#what-you-need-to-run-programs) — `hale` is a
-compiler that shells out to a C toolchain, so it has a couple of
-runtime requirements no matter how you install it.
+---
 
-## Quickest: prebuilt binary
+## 1. Install Prebuilt Binary (Recommended)
 
-Grab the tarball for your platform from the
-[releases page](https://github.com/hale-lang/hale/releases):
-
-| Platform | Asset |
-|---|---|
-| Linux x86_64 (glibc) | `hale-<version>-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux ARM64 (glibc)  | `hale-<version>-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon  | `hale-<version>-aarch64-apple-darwin.tar.gz` |
-
-The installer picks the right one for you, unpacks it into
-`~/.hale/bin` (`HALE_INSTALL` moves it, `HALE_VERSION=v<x.y.z>`
-pins a release) and tells you the `PATH` line to add:
+Run the install script to download the latest release for your platform into `~/.hale/bin`:
 
 ```sh
 curl -fsSL https://hale-lang.org/install.sh | sh
 ```
 
-Or by hand:
+- Set `HALE_INSTALL=/custom/dir` to change the installation directory.
+- Set `HALE_VERSION=v0.31.0` to pin a specific version.
+
+### Manual Archive Installation
+
+Download the tarball for your platform from the [GitHub Releases page](https://github.com/hale-lang/hale/releases):
+
+| Platform | Release Asset |
+|---|---|
+| Linux x86_64 (glibc) | `hale-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 (glibc) | `hale-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `hale-<version>-aarch64-apple-darwin.tar.gz` |
+
+Extract the archive and add the directory to your `PATH`:
 
 ```sh
 mkdir -p ~/.hale/bin
 tar -xzf hale-<version>-<triple>.tar.gz -C ~/.hale/bin
-# The archive holds `hale` AND `libhale_ts_shim.a` (and, on macOS,
-# the dylibs `hale` loads) — keep them in the SAME directory: the
-# compiler looks for the shim next to its own binary, and without
-# it refuses to build `std::ts` programs.
 export PATH="$HOME/.hale/bin:$PATH"
 hale --help
 ```
 
-The binary is **self-contained with respect to LLVM** — LLVM 18 is
-statically linked in, so you do *not* need to install LLVM to run
-the compiler. There is no prebuilt for Intel Macs: build from
-source there (the installer says so).
+> [!IMPORTANT]
+> Keep all extracted files (`hale`, `libhale_ts_shim.a`, and any bundled macOS dylibs) in the **same directory**. The compiler looks for `libhale_ts_shim.a` alongside its own executable when linking `std::ts` programs.
 
-## What you need to run programs
+The prebuilt `hale` binary statically links LLVM 18; you do not need LLVM installed to run the prebuilt compiler. (Intel macOS does not have a prebuilt archive—use [Build from Source](#3-build-from-source) below.)
 
-Regardless of how you installed `hale`, compiling a program
-(`hale run` / `hale build`) recompiles and links the runtime on
-your machine, so you need a C toolchain present:
+---
 
-- **`clang`** on your `PATH`, under that name — used to compile
-  the runtime's C sources and link the emitted native code. (On
-  Debian/Ubuntu, `clang-18` alone installs only `clang-18`; add the
-  `clang` package or a symlink.) `lld` is optional: on Linux a
-  native build uses `ld.lld` when it is on `PATH`, for faster
-  links, and it is required for `LOTUS_LTO=1` and for `wasm32`
-  (`wasm-ld`).
-- **OpenSSL** and **zlib** development files (headers and
-  libraries: `libssl-dev` and `zlib1g-dev` on Debian/Ubuntu,
-  `openssl@3` from Homebrew on macOS) — the runtime's TLS and
-  compression sources are compiled against them and every program
-  links them.
+## 2. Host Dependencies for Compiling `.hl` Programs
 
-Installing `clang` pulls in `libLLVM` as *clang's own* dependency —
-that's expected and harmless; `hale` itself doesn't need it.
+When you run `hale build` or `hale run`, the compiler emits native object code, compiles the C runtime, and links against OpenSSL and zlib. Install these packages on your machine:
 
-## Build from source
+| OS | Required Host Packages | Install Command |
+|---|---|---|
+| **Ubuntu / Debian** | `clang`, `libssl-dev`, `zlib1g-dev` (`lld` optional for faster linking / LTO / WASM) | `sudo apt install clang lld libssl-dev zlib1g-dev` |
+| **Fedora / RHEL** | `clang`, `lld`, `openssl-devel`, `zlib-devel` | `sudo dnf install clang lld openssl-devel zlib-devel` |
+| **macOS (Homebrew)** | Xcode Command Line Tools (`clang`) + `openssl@3` | `brew install openssl@3` |
 
-Requirements:
+> **Debian/Ubuntu note:** Ensure the binary named `clang` is on your `PATH` (installing `clang-18` alone only provides `/usr/bin/clang-18`; install the `clang` wrapper package as well).
 
-- **Rust** 1.95 or newer (the compiler is written in Rust).
-- **LLVM 18** development libraries, with `llvm-config-18` on your
-  `PATH` (or `LLVM_SYS_180_PREFIX` pointing at the install). LLVM
-  17, 19, and 20 will *not* link — the backend is pinned to 18.
-- **clang** (+ **lld** for LTO / wasm), **OpenSSL** headers, and
-  **git**.
+---
 
-**Debian / Ubuntu** (LLVM 18 is in stock apt on 24.04+):
+## 3. Build from Source
+
+Building the `hale` compiler from source requires:
+
+- **Rust 1.95+**
+- **LLVM 18 development libraries** (`llvm-config-18` on `PATH` or `LLVM_SYS_180_PREFIX` set; LLVM 17, 19, and 20 are not compatible)
+- **clang**, **lld**, **OpenSSL** headers, **zlib** headers, and **git**
+
+### Install Build Dependencies
+
+**Debian / Ubuntu (24.04+):**
 
 ```sh
 sudo apt install llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -87,20 +73,20 @@ sudo apt install llvm-18-dev libpolly-18-dev libzstd-dev \
                  libssl-dev pkg-config git
 ```
 
-**Fedora**
+**Fedora:**
 
 ```sh
-sudo dnf install llvm18-devel clang18 lld openssl-devel git
+sudo dnf install llvm18-devel clang18 lld openssl-devel zlib-devel git
 ```
 
-**macOS (Homebrew)**
+**macOS (Homebrew):**
 
 ```sh
 brew install llvm@18 openssl@3 git
 export LLVM_SYS_180_PREFIX="$(brew --prefix llvm@18)"
 ```
 
-Then:
+### Compile the Workspace
 
 ```sh
 git clone https://github.com/hale-lang/hale
@@ -108,157 +94,69 @@ cd hale
 cargo build --release
 ```
 
-The `hale` binary lands at `target/release/hale` (and
-`libhale_ts_shim.a` beside it). Put the binary on your path, or
-invoke it through Cargo as shown below.
+The compiled binary is placed at `target/release/hale` (with `libhale_ts_shim.a` alongside it). Always build the whole workspace (`cargo build --release`) rather than `cargo build -p hale-cli` so that `libhale_ts_shim.a` is built.
 
-### Reproducible / release build
+### Containerized Release Build
 
-`release/docker-compose.yml` builds a self-contained Linux tarball
-in a pinned `ubuntu:24.04` + LLVM 18 container, so you don't have
-to match the toolchain locally:
+To build a self-contained Linux `x86_64` tarball inside a pinned Ubuntu 24.04 + LLVM 18 container:
 
 ```sh
 docker compose -f release/docker-compose.yml run --rm build
-# -> dist/hale-x86_64-unknown-linux-gnu.tar.gz
+# Output: dist/hale-x86_64-unknown-linux-gnu.tar.gz
 ```
 
-## Platform support
+---
 
-Three different questions hide behind "does Hale support X", and they
-have different answers. Keeping them apart:
+## 4. Platform & Target Matrix
 
-**1. Where a prebuilt compiler exists** — Linux x86_64, Linux ARM64,
-and macOS on Apple Silicon, per the table above.
+Run `hale targets` (or `hale --list-targets`) to inspect all targets supported by your compiler binary.
 
-**2. Where the compiler can be built from source** — the three above,
-plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
-[building from source](#build-from-source).
+| Target / Platform | Host Support | Target Codegen Support | Notes |
+|---|---|---|---|
+| **Linux x86_64 (`x86_64-unknown-linux-gnu`)** | Prebuilt & source | Native & cross-compiled | Full feature support (`epoll` for `async_io`, `SOCK_SEQPACKET` for `unix` bus bindings). |
+| **Linux ARM64 (`aarch64-unknown-linux-gnu`)** | Prebuilt & source | Native & cross-compiled | Full feature support (AWS Graviton, Ampere, ARM servers). |
+| **Linux musl (`x86_64` / `aarch64-unknown-linux-musl`)** | — | Cross-compiled static binary | Produces a zero-dependency static ELF binary. Note: `where async_io` pools are rejected on musl at check time because musl lacks `ucontext`. |
+| **macOS Apple Silicon (`aarch64-apple-darwin`)** | Prebuilt & source | Native on macOS | Uses `kqueue` for `async_io` and length-framed stream sockets for `unix(...)` bindings. Emitted binaries statically link OpenSSL. |
+| **macOS Intel (`x86_64-apple-darwin`)** | Build from source | Native on macOS | Build compiler from source with Homebrew `llvm@18`. |
+| **WebAssembly (`wasm32`)** | — | `hale build --target wasm32` | Emits `.wasm` + `.mjs` loader from any host (requires `wasm-ld` / `lld`). |
+| **Windows (`*-pc-windows-msvc`)** | Use WSL2 (Ubuntu) | Not yet supported ([GH #445](https://github.com/hale-lang/hale/issues/445)) | Refused at check/build time with an explicit target error. |
 
-**3. What a build can emit** — `hale targets` (also spelled
-`hale --list-targets`) is the authority. Native binaries for the platform `hale` itself runs on — a
-Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
-`wasm32` objects for the browser from either. A **Linux** triple from
-any other host — `--target x86_64-unknown-linux-gnu` or
-`aarch64-unknown-linux-gnu` on a Mac, the other architecture on
-Linux, or a **musl** triple (`x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl`: a static binary that runs on any Linux)
-from anywhere — is cross-compiled and linked here; see
-[Cross-compiling for Linux](#cross-compiling-for-linux) below. A macOS
-triple from anywhere else gets as far as a relocatable object for that
-platform (`app.o`) and stops with a note — there is no Apple SDK to
-link against off a Mac. `x86_64-pc-windows-msvc` and
-`aarch64-pc-windows-msvc` are named and refused with a precise error,
-because Windows codegen does not exist yet
-([GH #445](https://github.com/hale-lang/hale/issues/445)).
+---
 
-### Cross-compiling for Linux
+## 5. Cross-Compiling to Linux (from macOS or Linux)
 
-The everyday case: develop on a Mac, deploy to Linux servers. A Hale
-program always links the lotus C runtime, OpenSSL, zlib and (for
-`std::ts`) a tree-sitter staticlib, so unlike a pure-Go binary it needs
-a C toolchain and those libraries *for the target*. Two pieces supply
-them ([GH #970](https://github.com/hale-lang/hale/issues/970)):
+To compile Linux binaries (`gnu` or static `musl`) from macOS or another architecture, Hale uses **Zig** as a cross-C compiler/linker plus a **target sysroot** containing static OpenSSL, zlib, and `libhale_ts_shim.a`:
 
-1. **zig**, as the C compiler and linker. `zig cc -target
-   x86_64-linux-gnu.2.31` carries its own glibc headers and stubs for
-   every Linux target, so nothing has to be installed for the target's
-   libc. `brew install zig` (or a release from ziglang.org); `HALE_ZIG`
-   names the binary if it is not on `PATH`.
-2. **A target sysroot**: OpenSSL and zlib for the target, as static
-   archives, plus the tree-sitter shim. `scripts/target-sysroot.sh
-   <triple>` builds one into `~/.cache/hale/sysroot/<triple>/` — both
-   libraries from pinned source tarballs, compiled with zig against the
-   same glibc floor (a minute or two, once per target) — and cross-builds
-   `libhale_ts_shim.a` when run from a checkout with `rustup target add
-   <triple>` done. Needs `curl`, `perl` and `make` besides zig.
-   `HALE_TARGET_SYSROOT` points at one kept elsewhere.
-
-Then:
+1. **Install Zig:** `brew install zig` (or download from [ziglang.org](https://ziglang.org/)). Set `HALE_ZIG` if `zig` is not on `PATH`.
+2. **Build the target sysroot once:** Run `scripts/target-sysroot.sh <triple>` (requires `zig`, `curl`, `perl`, and `make`). This populates `~/.cache/hale/sysroot/<triple>/` (override with `HALE_TARGET_SYSROOT`; set `HALE_TARGET_GLIBC` to customize the glibc version floor, default `2.31`).
 
 ```sh
-scripts/target-sysroot.sh x86_64-unknown-linux-gnu     # once
-hale build --target x86_64-unknown-linux-gnu app.hl    # ELF x86-64, runs on any glibc ≥ 2.31
+# Build sysroot once per target triple:
+scripts/target-sysroot.sh x86_64-unknown-linux-gnu
+scripts/target-sysroot.sh x86_64-unknown-linux-musl
+
+# Cross-compile for glibc >= 2.31:
+hale build --target x86_64-unknown-linux-gnu app.hl
+
+# Cross-compile a fully static binary for Alpine / scratch containers:
+hale build --target x86_64-unknown-linux-musl app.hl
 ```
 
-The emitted binary depends on the target's glibc and nothing else —
-OpenSSL and zlib are linked in. For a binary that depends on *nothing*,
-build for musl: `hale build --target x86_64-unknown-linux-musl app.hl`
-(after `scripts/target-sysroot.sh x86_64-unknown-linux-musl`) is one
-static file that runs on any Linux — Alpine, a `scratch` container, an
-old glibc — with no libc to match. One carve-out: `async_io` pools are
-refused for musl at check time (its libc has no `ucontext`, which the
-coroutine backend needs). `hale run` refuses a foreign target
-(nothing it builds runs here) and `hale test` has no `--target`;
-`LOTUS_ASAN` and the other sanitizers are host-only. Without zig or the sysroot the build
-fails before linking and says which one is missing. `HALE_TARGET_GLIBC`
-picks a different glibc floor (the script and the compiler read the
-same variable).
+---
 
-The rest of this section is about the *host* — where `hale` itself
-runs, and what changes about a program compiled there.
-
-| Platform | Status |
-|---|---|
-| **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
-| **Linux ARM64** (glibc) | Supported, prebuilt — the release matrix builds it on a native aarch64 runner (AWS Graviton, EKS arm64 nodes, Ampere). Same feature set as x86_64. |
-| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, all pool backends included: **`async_io` pools** run on kqueue (Linux's on epoll; same coroutines, same semantics). One carve-out. **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). What `hale` emits does not need Homebrew on the machine that runs it: emitted binaries link OpenSSL statically (`otool -L` shows only libSystem and libz). The prebuilt `hale` launches without Homebrew too — the release tarball carries its libunwind beside it — but compiling a program needs OpenSSL's headers, so the machine that runs `hale` needs `brew install openssl@3`. Building the compiler *from source* needs `brew install llvm@18 openssl@3`. Intel Macs have no prebuilt; build from source. |
-| **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler *names* `x86_64-pc-windows-msvc` (`hale targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
-| **wasm32** | `hale build --target wasm32` for the browser. |
-
-## Verify
+## 6. Verifying Your Installation
 
 ```sh
 hale --help
 ```
 
-Or from a source checkout:
+If you built from a source checkout and want to run the compiler's test suite:
 
 ```sh
-cargo build --release          # the whole workspace
-./target/release/hale --help
-```
+# On macOS, add Homebrew's lib path so test binaries find libzstd:
+export LIBRARY_PATH="$(brew --prefix)/lib"
 
-To run the compiler's own test suite (in parallel — every test builds
-to its own path):
-
-```sh
 cargo nextest run --release --workspace
 ```
 
-On macOS, export `LIBRARY_PATH="$(brew --prefix)/lib"` first. LLVM 18
-links against zstd, which Homebrew keeps outside the linker's default
-search path; `hale`'s own build script adds the directory, but the test
-binaries have no such script and fail with `ld: library 'zstd' not
-found` without it.
-
-## The two ways to run a program
-
-Both go through the **same LLVM-native compiler** — there's no
-separate interpreter, so they never disagree:
-
-- **`hale run prog.hl`** — compiles and runs in one step (the
-  binary is temporary). The fast inner loop while you write.
-- **`hale build prog.hl`** — compiles to a native binary on disk
-  via LLVM. This is the artifact you ship.
-
-```sh
-hale run   prog.hl   # compile + run
-hale build prog.hl   # compile to ./prog
-./prog
-```
-
-Throughout this guide we write `hale run` / `hale build` as if
-`hale` is on your path. From a source checkout without it
-installed, build the workspace once with `cargo build --release`
-and use `./target/release/hale`. Build the *whole* workspace:
-`cargo build -p hale-cli` skips the tree-sitter staticlib that
-`std::ts` links against, and a `hale` built that way refuses
-`std::ts` programs with a build error saying so.
-
-Starting a project rather than a scratch file? `hale init my-app`
-scaffolds the canonical minimal shape — `hale.toml`, a hello-world
-seed, a first test — ready for `hale run` / `hale test` / `hale
-verify` out of the box.
-
-Next: [Your first run](./first-run.md).
+Next: **[Quickstart & Toolchain](./first-run.md)**.

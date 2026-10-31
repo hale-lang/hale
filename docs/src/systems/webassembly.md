@@ -1,88 +1,64 @@
-# WebAssembly & the browser
+# WebAssembly & the Browser
 
-> **Coming from the web stack?** Hale compiles to a self-contained
-> `.wasm` plus a small `.mjs` loader — no Emscripten, no bundler.
-> The same locus/bus/`std::*` program you run natively can run in
-> the browser; you choose the target at build time. The browser
-> APIs you can't reimplement (fetch, WebSocket, WebGL, the DOM)
-> come in as thin host functions, and Hale functions you want the
-> page to call go out as exports.
+Hale compiles directly to a self-contained `.wasm` module and an ES module loader (`.mjs`) without requiring Emscripten, `wasi-sdk`, or external bundlers. The in-process locus model, typed message bus, and `@form` collections run in the browser unchanged, while `@ffi("js")` imports and `@export` declarations bridge browser APIs (`fetch`, WebSocket, WebGL, DOM) and the JavaScript event loop.
 
-## Building for wasm
+```hale
+target wasm { }
+@ffi("js") fn console_log(msg: String);
+
+@export locus Client {
+    params { ticks: Int = 0; }
+    birth() {
+        console_log("client initialized");
+    }
+    fn frame() {
+        self.ticks = self.ticks + 1;
+    }
+}
+```
+
+## Building for `wasm32`
+
+Pass `--target wasm32` to `hale build` or declare `target wasm { }` at the top level of your source file:
 
 ```sh
 hale build client/main.hl --target wasm32
 ```
 
-This emits `client/main.wasm` (self-contained — the runtime is
-linked in, with no libc and no external runtime) and `client/main.mjs` (a loader that
-instantiates the module and wires the host functions). A program
-written for the browser can say so itself:
+This produces two files:
+- `client/main.wasm`: A self-contained WebAssembly binary with the Hale arena runtime linked in and zero external libc dependencies.
+- `client/main.mjs`: A JavaScript ES module loader that instantiates the WebAssembly module and binds host imports.
 
-```hale
-target wasm { }
-```
+### Declaring `target wasm { }` in Source
 
-With that declaration, `hale build client/main.hl` builds for wasm32
-with no flag at all, and `hale check` and the editor judge the program
-as wasm32 — the same cells, the same refusals. It goes at the top level
-of the file. A `target` block inside a `module { }` is a parse error —
-it is a directive for the whole program, and putting it out of reach
-of everything that reads it would only look like it worked.
+Adding `target wasm { }` at the top level of a file marks the program as a WebAssembly target permanently:
 
-`--target` always wins over the host, and `hale check` takes it too:
-`hale check --target wasm32 app.hl` judges an undeclared program as the
-browser build will. A `--target` that contradicts the declaration —
-building a `target wasm` program for the host — is refused at the
-declaration rather than quietly building the other thing. And since
-nothing a wasm32 build emits runs here, `hale run` refuses a declared
-program, as it refuses `--target wasm32`.
+| Command | Behavior with `target wasm { }` |
+|---|---|
+| `hale build client/main.hl` | Compiles for `wasm32` automatically without `--target wasm32`. |
+| `hale check client/main.hl` | Validates the program against the `wasm32` capability matrix. |
+| `hale build --target native ...` | Rejected at compile time (contradicts the in-source `target wasm` directive). |
+| `hale run client/main.hl` | Rejected (`wasm32` binaries execute in a WebAssembly host, not directly on the OS). |
 
-The browser sandbox has no syscalls, so the parts of a program that
-need them are refused or do nothing there; [What wasm32
-can do](#what-wasm32-can-do) lists each one. Reach the outside world
-through host functions instead.
+> [!IMPORTANT]
+> `target wasm { }` must appear at the top level of a file. Placing a `target` block inside a `module { }` block is a syntax error. To typecheck a file that omits `target wasm { }` against browser restrictions, run `hale check --target wasm32 app.hl`.
 
-The check finds every way your program reaches a refused namespace,
-not just a call spelled `std::io::fs::…`: building a
-`std::io::tcp::Listener { … }`, calling `conn.recv(64)` on a
-`std::io::tcp::Stream`, calling a library's `c::stamp()` whose body
-calls `std::process::pid()`, or building a library's `lib::Kid { }`
-whose params default (or `on_failure` handler) calls it. Each is
-refused where your code makes it, with the chain that leads to the
-namespace:
+### Transitive Capability Checking
+
+Because the browser sandbox provides no POSIX syscalls, OS-dependent standard library modules are rejected at compile time (see [What wasm32 can do](#what-wasm32-can-do)). `hale check` traces reachability across the entire call graph and reports a witness chain for any disallowed capability:
 
 ```text
 error: `std::process` is unavailable under `target wasm`: OS process control (`std::process`) isn't available in the browser — witness: `c::stamp` → `std::process::pid`
 ```
 
-A helper you write yourself is refused once, inside it, not at every
-call. A type that only names a stdlib handle (a parameter typed
-`std::io::tcp::Stream`) is fine. A call through a local is followed to
-the function the local holds (`let f = pid; f()` needs what `pid` needs,
-and the refusal's witness names `f`). A call through a function value
-the compiler can't pin to one function — a function-typed parameter, a
-local holding a field, a call's result or an `if` value, a local you
-reassign (a loop that reassigns one anywhere inside it counts for the
-whole loop) — needs what any function of its type that your program
-passes around as a value needs: those are the only functions it can
-reach. What the compiler cannot see through at all — a method on a value
-whose type it doesn't know, or such a call in a library locus's params
-default or `on_failure` handler — is refused under wasm32, since it
-can't promise what that call needs.
+- **Direct and indirect calls**: Constructing a refused locus (`std::io::tcp::Listener { ... }`), calling a method on a handle (`conn.recv(64)`), calling an imported library function, or instantiating a library locus whose `params` default or `on_failure` handler reaches a refused namespace all fail with a full witness path.
+- **Function values**: Local function bindings (`let f = pid; f()`) trace to the bound target. Calls through dynamic function values (parameters, struct fields, call results, `if` expressions, or locals reassigned in a loop) require that every function of that signature passed as a value in the program is valid on `wasm32`.
+- **Type-only references**: Naming a handle type in a signature (such as a parameter typed `std::io::tcp::Stream`) without invoking its methods is permitted.
 
-The **in-process typed bus** — `topic` / `bus { publish … }` /
-`bus { subscribe … }` across loci — runs under wasm exactly as it
-does natively: a `Subject <- payload` is delivered to every matching
-subscriber's handler in the same module, payload-copied through the
-synthesized wire codec. So the idiomatic locus + topic + bus shape is
-fully available client-side; the transports between processes are
-not (see the placement and bus table below).
+### Supported Runtime Features on `wasm32`
 
-The **`@form` collections** — `@form(vec)`, `@form(hashmap)`, and
-`@form(ring_buffer)` — run under wasm too; their runtime primitives use
-the target-pointer-width `size_t` ABI, so a `push` / `set` / `get` / `len`
-behaves identically to native.
+- **In-process bus**: `topic`, `bus { publish ... }`, and `bus { subscribe ... }` work identically to native builds within the WebAssembly module.
+- **`@form` collections**: `@form(vec)`, `@form(hashmap)`, and `@form(ring_buffer)` use the target-pointer-width `size_t` ABI and behave identically to native builds.
 
 ## What wasm32 can do
 
@@ -113,7 +89,7 @@ compiler consults, with the reasons it gives.
 | `std::time` | the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep never waits | a host clock (`performance.now`, `Date.now`) or timer through an `@ffi("js")` host import |
 | `std::ts` | the tree-sitter parser is a native static library the wasm link never reaches | parsing on the host, through an `@ffi("js")` host import |
 
-Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::hex`, `std::io`, `std::iter`, `std::json`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::url`, `std::yaml`.
+Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::hex`, `std::io`, `std::iter`, `std::json`, `std::json::Value`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::observe`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::url`, `std::yaml`.
 
 **Placement and the bus.**
 
@@ -139,10 +115,9 @@ Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::
 
 <!-- /capability-matrix -->
 
-## Calling the host: `@ffi("js")`
+## Calling JavaScript Host Functions (`@ffi("js")`)
 
-`@ffi("js")` is the wasm sibling of [`@ffi("c")`](./binding-c.md):
-it declares a function the JavaScript loader provides.
+Use `@ffi("js")` on a bodiless top-level function to declare an import supplied by the JavaScript host environment:
 
 ```hale
 target wasm { }
@@ -151,83 +126,52 @@ target wasm { }
                         x2: Float, y2: Float, z2: Float);
 ```
 
-Marshalling: `Float` and `Int` both arrive as a plain JS `number` —
-an `@ffi("js")` `Int` crosses as f64, *not* a `BigInt`, so your host
-handler gets a number with no `Number(x)` step, and an `Int`-returning
-import takes a plain number back. (The one caveat is f64's range:
-`Int`s beyond 2^53 lose precision across this boundary — send those as
-a `String`/`Bytes` payload. And this applies to `@ffi("js")` only;
-`@ffi("c")` keeps i64.) `String`/`Bytes` arrive as a pointer the loader
-reads out of wasm memory. The loader ships a built-in `console_log` and
-the libm set (so `std::math` just works); your page supplies the rest
-through `run(glue)`:
+### Type Marshalling Across `@ffi("js")`
+
+| Hale Type | JavaScript Representation | Notes |
+|---|---|---|
+| `Float` | `number` (`f64`) | Passed directly by value. |
+| `Int` | `number` (`f64`, *not* `BigInt`) | Crosses as an IEEE-754 number so JS handlers require no `Number(x)` cast. Values exceeding $2^{53}$ lose precision; pass 64-bit IDs as `String` or `Bytes`. (`@ffi("c")` retains `i64`.) |
+| `String` / `Bytes` | Pointer into linear memory | Automatically decoded/encoded by the generated `.mjs` loader. |
+
+The generated `.mjs` loader provides `console_log` and the `libm` math functions (`std::math`) out of the box. Supply your own `@ffi("js")` imports by passing a factory to `run(glue)`:
 
 ```js
 import { run } from "./main.mjs";
 const inst = await run((h) => ({
-  draw_line: (x1,y1,z1,x2,y2,z2) => { /* push to a WebGL buffer */ },
+  draw_line: (x1, y1, z1, x2, y2, z2) => {
+    /* push vertices to WebGL buffer */
+  },
 }));
 ```
 
-Only the wasm32 loader can supply a `js` import, so a native build of a
-program that declares one is refused at the declaration — even if
-nothing calls it. Keep browser imports in the browser build.
+### Host Loader & Instantiation Notes
 
-If you instantiate the module yourself instead of through the generated
-loader, your imports object has to supply every `env` import the module
-declares (`WebAssembly.Module.imports(mod)` lists them): the console
-writers and libm set the loader ships, your `@ffi("js")` functions, and
-`dprintf` and `fflush`, which the generated loader stubs with `() => 0`.
-The runtime's thread and socket calls are not linked into a wasm32
-module, so they are not among them.
+- **Wasm-only**: Declaring an `@ffi("js")` function in a native build is rejected at compile time, even if the function is never called.
+- **Custom instantiation**: If you instantiate the `.wasm` module directly instead of using the generated `.mjs` loader, your `env` imports object must provide every symbol listed by `WebAssembly.Module.imports(mod)`: the console writers, the `libm` math symbols, your `@ffi("js")` functions, and `dprintf` / `fflush` (stubbed as `() => 0` by the default loader). Thread and socket symbols are not linked into `wasm32` modules.
+- **Console output (`println` vs. `eprintln`)**: The generated loader routes `println` to the browser console, but stubs `dprintf` (`() => 0`). As a result, `eprintln` produces no output and unhandled closure violations trap without printing a message. Always use `println` or `@ffi("js") fn console_log` for browser diagnostics.
 
-The loader has no stderr writer yet: `eprintln` lowers to `dprintf`, so
-under the generated loader it prints nothing, and a closure violation
-no `on_failure` absorbs stops the module (a trap) without its message.
-Use `println` or a `console_log` for diagnostics you need to see.
+## Exporting to JavaScript (`@export locus` and Entry Inversion)
 
-## Letting the host call you: `@export` + the app locus
-
-To run a game loop or react to network messages, the *host* needs
-to call *into* Hale. The browser-client shape is an **`@export
-locus`** — the persistent "app" of your program:
+Because browser applications cannot block the main thread inside a `main()` loop, interactive WebAssembly modules use **entry inversion**: the module exports a stateful `@export locus` whose methods are driven by browser callbacks (such as `requestAnimationFrame` or WebSocket listeners):
 
 ```hale
 @export locus Client {
     params { sx: Float = 0.0; sy: Float = 0.0; ready: Bool = false; }
     birth() { }
-    fn on_message() { /* parse an inbound frame, update fields */ }
-    fn frame()      { /* render from the fields */ }
+    fn on_message() { /* parse inbound frame, update self.* */ }
+    fn frame()      { /* render current state */ }
 }
 ```
 
-Each `fn` method becomes a wasm export the page calls by name
-(`inst.exports.frame()`). State lives in the locus's fields and
-**persists across calls** — `on_message()` writes `self.sx`,
-`frame()` reads it, just like a native locus. On the native target
-an `@export locus` is an ordinary locus. (There is also a lower-level
-`@export fn` for free functions — same export, but stateless; see
-below. On a native target an `@export fn` becomes an unmangled C
-symbol instead, for C code that calls back into Hale.) A `fallible`
-method stays internal and is not exported (the host has no error
-channel), and the locus must not define `run()` — the host drives
-it.
-
-## The run-model: entry inversion
-
-A native program blocks in `main`. A browser program can't — it
-must return to the event loop so the page stays responsive. So a
-program built with `@export` runs **inverted**: there is no `main`,
-and the host drives the exports (typically `frame()` once per
-`requestAnimationFrame`).
-
-The compiler synthesizes an exported **`_hale_start()`** that sets
-up a *persistent* program arena and **instantiates your `@export
-locus`** (running `birth`). The loader calls it once at startup;
-after that the page drives the methods:
+When compiling an `@export locus` for `wasm32`:
+1. The compiler synthesizes `_hale_start()`, which initializes a persistent program arena and instantiates the `@export locus` (running its `birth()` hook). The `.mjs` loader invokes `_hale_start()` automatically during `await run(glue)`.
+2. Every non-`fallible` `fn` member is exported on `inst.exports` (e.g., `inst.exports.frame()`). `fallible` methods remain internal because JavaScript callers have no error-addressing channel.
+3. Fields declared in `params` persist across host invocations.
+4. Defining `run()` on an `@export locus` is rejected at compile time because execution is driven externally by the host:
 
 ```js
-const inst = await run(glue);     // _hale_start ran here (Client is alive)
+const inst = await run(glue); // _hale_start() runs here; Client is born
 function tick() {
   inst.exports.frame();
   requestAnimationFrame(tick);
@@ -235,61 +179,36 @@ function tick() {
 requestAnimationFrame(tick);
 ```
 
-A program made of `@export` declarations needs no `fn main` at all —
-as long as it's built for wasm32. Checked or built for the host, it has
-no entry point, and the check says so at its first `@export`: declare
-`target wasm { }`, or pass `--target wasm32`.
+An `@export`-based program requires no `fn main()` when compiled with `target wasm { }` or `--target wasm32` (checking or building it for a native host without `fn main()` is rejected). On a native target, an `@export locus` behaves as a standard locus.
 
-## Quick wasm from a bare `fn main`: `--wrap-main`
+## Wrapping a Bare `fn main` (`--wrap-main`)
 
-A wasm program needs an `@export` entry — but a script, a tutorial
-snippet, or anything pasted into the browser playground is just a
-`fn main`. The `--wrap-main` build flag bridges that gap:
+For scripts, single-file examples, or browser playground snippets written with a standard `fn main()` and no `@export` declaration, pass `--wrap-main`:
 
 ```sh
 hale build snippet.hl --target wasm32 --wrap-main
 ```
 
-When the program has a top-level `fn main()` and no `@export` entry,
-`--wrap-main` synthesizes — *on the parsed AST*, before typecheck — the
-equivalent of:
+When the program has a top-level `fn main()` and no `@export` entry, `--wrap-main` transforms the parsed AST prior to typechecking into the equivalent of:
 
 ```hale,fragment
 target wasm { }
 @export locus __Main { birth() { <main's body> } }
 ```
 
-so `main`'s body runs once at `_hale_start`, exactly as it would run
-once natively. Because it works on the AST, not the source text:
+Because `--wrap-main` operates on the AST rather than text:
+- Compiler diagnostics preserve exact original line and column numbers.
+- String literals and comments containing braces (`{` or `}`) cannot corrupt the wrapper.
+- The `target wasm` capability gate is injected automatically, rejecting unsupported OS modules (`std::io::tcp`, `std::process`, etc.) with accurate source spans.
 
-- **diagnostics keep the user's line/col** — the synthesized locus
-  borrows `main`'s spans and the body is moved intact, so a type error
-  on the user's line 3 is reported on line 3 (a textual wrap would shift
-  every following line);
-- it's **string/comment-safe** — the real lexer found the body, so a
-  `{` or `}` inside a string literal or comment can't mis-wrap it;
-- the **`target wasm` gate is injected too**, so the syscall-backed
-  stdlib (`std::io::tcp`, `std::process`, …) is rejected with a precise
-  diagnostic, on untouched source.
+`--wrap-main` requires an explicit wasm target (`--target wasm32`, `--target wasm32-unknown-unknown`, or an in-source `target wasm { }` declaration) and is rejected on native builds. If the source already declares an `@export` entry, `--wrap-main` leaves the program unchanged.
 
-It is **wasm-only and opt-in**: it requires a wasm32 build — `--target
-wasm32` (or `wasm32-unknown-unknown`), or a `target wasm { }` the source
-itself declares — since there is no native entry-inversion to wrap; on
-a native build it errors. The declaration it injects doesn't count:
-`hale build --wrap-main snippet.hl` alone is still refused. It's never
-implied — a normal wasm program may legitimately keep a bare
-`fn main` exported as `main`. If the program already declares an
-`@export` entry, `--wrap-main` leaves it untouched (prefer-explicit).
-This is the one flag the browser playground passes so it can hand the
-compiler raw user source and surface errors on the exact line.
+## Passing Inbound Bytes (`lotus_wasm_inbox`)
 
-## Inbound messages
-
-The page hands network bytes to Hale through the **inbox**: write
-them into wasm memory, publish the length, then call a method.
+To pass binary payloads or WebSocket frames from JavaScript into a Hale `@export locus`, allocate a buffer in linear memory via `lotus_wasm_alloc`, copy the bytes in, set the inbox length with `lotus_wasm_set_inbox`, and invoke your exported handler:
 
 ```js
-// JS: hand a WebSocket frame to Hale, then notify it
+// JavaScript host: copy WebSocket payload into wasm inbox
 const bytes = new TextEncoder().encode(ev.data);
 const ptr = inst.exports.lotus_wasm_alloc(bytes.length);
 new Uint8Array(inst.exports.memory.buffer).set(bytes, ptr);
@@ -297,9 +216,11 @@ inst.exports.lotus_wasm_set_inbox(bytes.length);
 inst.exports.on_message();
 ```
 
+On the Hale side, read the buffer with `lotus_wasm_inbox()`:
+
 ```hale
 target wasm { }
-@ffi("c") fn lotus_wasm_inbox() -> Bytes;   // the bytes JS wrote
+@ffi("c") fn lotus_wasm_inbox() -> Bytes;
 
 @export locus Client {
     params { sx: Float = 0.0; sy: Float = 0.0; ready: Bool = false; }
@@ -307,69 +228,37 @@ target wasm { }
         let msg = lotus_wasm_inbox();
         if len(msg) > 0 {
             let s = std::str::from_bytes(msg);
-            // ... std::json parse, then store into self.* ...
+            // Parse with std::json and update self.* fields
             self.ready = true;
         }
     }
-    fn frame() { /* render from the fields */ }
+    fn frame() { }
 }
 ```
 
-This is the full pattern for a browser client: the page owns the
-transport (fetch / WebSocket) and the GL context; the `@export
-locus` parses the protocol with `std::json`, holds the game state
-in its fields, runs the camera, and emits geometry — the same code
-shape it would have natively.
+## Stateless Function Exports (`@export fn`)
 
-## Lower-level: `@export fn` + the state cell
-
-If you don't want a locus, you can export free functions
-(`@export fn frame()`). These are stateless — each call's
-allocations are released on return — so cross-call state must be
-parked in the runtime **state cell**, packed into `Bytes`:
+If you do not need a locus, annotate free functions with `@export fn`:
 
 ```hale
 @ffi("c") fn lotus_wasm_state_set(b: Bytes);
 @ffi("c") fn lotus_wasm_state_get() -> Bytes;
 ```
 
-The `@export locus` model is preferred for anything with state; the
-state cell exists for the free-fn path and for hand-rolled layouts.
+An `@export fn` is stateless—its scratch allocations are reclaimed as soon as the function returns. To persist raw bytes across `@export fn` calls without an `@export locus`, use `lotus_wasm_state_set` and `lotus_wasm_state_get` (or prefer `@export locus` for structured state). On native builds, `@export fn` emits an unmangled C symbol callable from external C code. See [`spec/ffi.md` § WASM host interface](https://github.com/hale-lang/hale/blob/main/spec/ffi.md) for full ABI details.
 
-See [`spec/ffi.md` § WASM host interface](https://github.com/hale-lang/hale/blob/main/spec/ffi.md) for the
-exact marshalling and diagnostic rules.
+## Compiling Package C Sources (`[ffi] csrc`) on `wasm32`
 
-## C from a package
+When an imported package lists C files under `[ffi] csrc` in its `hale.toml`, `hale build --target wasm32` compiles those `.c` files for `wasm32` and links them into your `.wasm` module alongside the runtime.
 
-If a package ships C alongside its Hale — a `[ffi] csrc` list in its
-`hale.toml` — those sources are compiled for wasm32 and linked into
-your module, the same as the runtime's own C.
-
-Two things are different here from a native build, and both will stop
-you rather than surprise you later.
-
-**The wasm build is freestanding.** There is no libc sysroot: the
-runtime compiles against a small forward-declared shim, not wasi-sdk.
-A C file that `#include`s `<string.h>` builds natively and does not
-build for wasm. You get a build error naming the file.
-
-**`link = [...]` doesn't exist here.** It is an error, not a silent
-omission; [What wasm32 can do](#what-wasm32-can-do) gives its wording
-and the alternative.
-
-One footgun worth knowing before you write the C. Hale's `Int` is
-**64-bit**, so the declaration must be `long long`:
+Keep three `wasm32` C constraints in mind:
+1. **Freestanding environment (no libc sysroot)**: Wasm builds compile against a minimal forward-declared runtime shim rather than `wasi-sdk`. C files that `#include <string.h>` or other system headers will fail to compile on `wasm32` with an error naming the file.
+2. **No dynamic linking (`[ffi] link`)**: `[ffi] link = [...]` is rejected on `wasm32` because browser modules cannot link system shared libraries. Ship all required C implementations in `csrc`.
+3. **64-bit `Int` (`long long`)**: Hale's `Int` is always 64-bit (`i64`). On `wasm32`, `int` is 32-bit while `long long` is 64-bit:
 
 ```c
-long long tsa_answer(long long n) { return n * 6; }   /* right */
-int       tsa_answer(int n)       { return n * 6; }   /* links, then traps */
+long long tsa_answer(long long n) { return n * 6; } /* Correct: i64 -> i64 */
+int       tsa_answer(int n)       { return n * 6; } /* Traps with signature_mismatch */
 ```
 
-The second one links and then fails at the call with a wasm
-`signature_mismatch`. That's abrupt, but it is the good outcome: on a
-native target the same mismatch quietly truncates instead.
-
-*(Before Hale 0.13, package `csrc` was skipped for wasm entirely and
-those symbols became stubs returning 0 — a build that looked fine and
-a program that silently did nothing. If you have a workaround
-supplying them from JS, it can go.)*
+Declaring a parameter or return type as `int` instead of `long long` (or `int64_t`) links but traps at runtime with a WebAssembly `signature_mismatch` error.

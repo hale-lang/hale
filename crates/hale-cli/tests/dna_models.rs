@@ -10,7 +10,11 @@
 
 #[path = "support/vault.rs"]
 mod vault;
-use std::path::{Path, PathBuf};
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+use std::path::Path;
 
 fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)], unset: &[&str]) -> (bool, String) {
     let mut c = vault::hale();
@@ -47,8 +51,8 @@ fn bare_path() -> String {
     "/usr/bin:/bin".to_string()
 }
 
-fn workdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hale_dna_models_{}_{}", std::process::id(), tag));
+fn workdir(tag: &str) -> scratch::Scratch {
+    let d = scratch::Scratch::new(format!("hale_dna_models_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -81,20 +85,33 @@ fn probe_catalog() -> String {
 
 #[test]
 fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_routers_from_it() {
-    // 1. nothing found: the catalog names OpenAI with a placeholder key
+    // 1. nothing found: no hosted backend at all (no placeholder key for a
+    //    person to fill), every position on the desk, and the leg asks only
+    //    where the habitat's map names an endpoint
     let d = workdir("bare");
-    let (ok, out) = hale_env(&["dna", "new", "bare"], &d, &[("PATH", &bare_path())], NO_KEYS);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "bare", "--no-pack"], &d, &[("PATH", &bare_path())], NO_KEYS);
     assert!(ok, "{out}");
     let app = d.join("bare");
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).expect("init writes the catalog");
     assert!(out.contains("created ") && out.contains("dna/org/models.hl"), "{out}");
     assert!(out.contains("models  found   no model key in the vault (`hale dna secret set <NAME>`), no ollama on PATH"), "{out}");
-    assert!(out.contains("frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY, not in the vault: hosted backends are not permitted until it is) · desk = llama3 (ollama at 127.0.0.1:11434, not found)"), "{out}");
-    assert!(out.contains("leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day"), "{out}");
+    assert!(out.contains("no hosted backend (no model key in the vault) · desk = llama3 (ollama at 127.0.0.1:11434, not found)"), "{out}");
+    assert!(out.contains("leader, editor, agent: deep = desk, quick = desk, private = desk · budget 25.00 USD a day"), "{out}");
+    assert!(out.contains("the habitat's models fill the model map"), "{out}");
+    assert!(out.contains("skipped models map (no hosted model key in the vault: the habitat's models map it"), "{out}");
+    for absent in ["fn frontier()", "fn fast()", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "gpt-4o"] {
+        assert!(!catalog.contains(absent), "no hosted placeholder ({absent:?}) in:\n{catalog}");
+    }
+    let work = std::fs::read_to_string(app.join("dna/org/work.hl")).unwrap();
+    // the generated file is formatted, so the literal is split across lines
+    assert!(work.contains("fn model() -> legs::ModelPerformer {\n    return legs::ModelPerformer {\n        router: agent_models(),\n        effect: \"effect_free\",\n        mapped_only: true,\n    };"), "{work}");
+    assert!(!work.contains("legs::NoModel"), "{work}");
+    let (ok, secrets_out) = hale_env(&["dna", "secrets"], &app, &[("PATH", &bare_path())], NO_KEYS);
+    assert!(ok && !secrets_out.contains("model-OPENAI_API_KEY") && !secrets_out.contains("model-ANTHROPIC_API_KEY"), "no model key is required: {secrets_out}");
     for needle in [
-        "fn frontier() -> dna::OpenAiChat",
-        "model: \"gpt-4o\", endpoint: \"https://api.openai.com/v1/chat/completions\", credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" }",
-        "fn fast() -> dna::OpenAiChat",
+        "No hosted backend: no model key was in the vault",
+        "fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: desk(), deep: desk(), private: desk() };",
         "fn desk() -> dna::LocalModel",
         "fn leader_models() -> dna::ModelRouter",
         "fn editor_models() -> dna::ModelRouter",
@@ -126,13 +143,14 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     let keyed = d2.join("vault");
     std::fs::create_dir_all(&keyed).unwrap();
     std::fs::write(keyed.join("model-ANTHROPIC_API_KEY"), "sk-ant-test").unwrap();
-    let (ok, out) = hale_env(&["dna", "new", "withkey"], &d2, &[("PATH", &bare_path()), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["OPENAI_API_KEY"]);
+    habitat::lend(&keyed);
+    let (ok, out) = hale_env(&["habitat", "graft", "withkey", "--no-pack"], &d2, &[("PATH", &bare_path()), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["OPENAI_API_KEY"]);
     assert!(ok, "{out}");
     let catalog = std::fs::read_to_string(d2.join("withkey/dna/org/models.hl")).unwrap();
     assert!(out.contains("models  found   ANTHROPIC_API_KEY in the vault, no ollama on PATH"), "{out}");
     assert!(out.contains("frontier = claude-opus-5 · fast = claude-haiku-4-5-20251001 (ANTHROPIC_API_KEY)"), "{out}");
-    assert!(catalog.contains("fn frontier() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"deep\", model: \"claude-opus-5\", endpoint: \"https://api.anthropic.com/v1/messages\", credential: dna::HostedCredential { key: \"ANTHROPIC_API_KEY\", scheme: \"x-api-key\" }, input_micros_per_1k: 15000, output_micros_per_1k: 75000 };"), "{catalog}");
-    assert!(catalog.contains("fn fast() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"quick\", model: \"claude-haiku-4-5-20251001\""), "{catalog}");
+    assert!(catalog.contains("fn frontier() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages {\n        name: \"deep\",\n        model: \"claude-opus-5\",\n        endpoint: \"https://api.anthropic.com/v1/messages\",\n        credential: dna::HostedCredential { key: \"ANTHROPIC_API_KEY\", scheme: \"x-api-key\" },\n        input_micros_per_1k: 15000,\n        output_micros_per_1k: 75000,\n    };"), "{catalog}");
+    assert!(catalog.contains("fn fast() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages {\n        name: \"quick\",\n        model: \"claude-haiku-4-5-20251001\""), "{catalog}");
     assert!(!catalog.contains("-> dna::OpenAiChat"), "no OpenAI backend when Anthropic is chosen:\n{catalog}");
     // and the organization checks and builds from it
     let (ok, out) = hale_env(&["check", "--matrix", "."], &d2.join("withkey"), &[], &[]);
@@ -140,7 +158,8 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
 
     // 3. re-running keeps the catalog the project may have edited
     std::fs::write(d2.join("withkey/dna/org/models.hl"), "// mine\n").unwrap();
-    let (ok, out) = hale_env(&["dna", "init", "."], &d2.join("withkey"), &[("PATH", &bare_path())], NO_KEYS);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", ".", "--attach", "--no-pack"], &d2.join("withkey"), &[("PATH", &bare_path()), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], NO_KEYS);
     assert!(ok, "{out}");
     assert_eq!(std::fs::read_to_string(d2.join("withkey/dna/org/models.hl")).unwrap(), "// mine\n", "kept on re-run");
     assert!(!out.contains("models  found"), "no discovery report when the catalog is kept:\n{out}");
@@ -148,8 +167,8 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
 
 /// A stand-in `claude` on PATH: prints the result object `claude -p
 /// --output-format json` prints, with a cost.
-fn fake_claude_dir(tag: &str) -> PathBuf {
-    let bin = workdir(tag).join("bin");
+fn fake_claude_dir(tag: &str) -> scratch::Scratch {
+    let bin = workdir(tag).nested("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let script = "#!/bin/sh\nprintf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"ready\", \"total_cost_usd\": 0.002, \"usage\": {\"input_tokens\": 4, \"output_tokens\": 1}}\\n'\n";
     std::fs::write(bin.join("claude"), script).unwrap();
@@ -164,7 +183,8 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     let path = format!("{}:{}", bin.display(), bare_path());
     let d = workdir("harnessed");
     // no key: the harness fills every model-backed slot
-    let (ok, out) = hale_env(&["dna", "new", "harnessed"], &d, &[("PATH", &path)], NO_KEYS);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "harnessed", "--no-pack"], &d, &[("PATH", &path)], NO_KEYS);
     assert!(ok, "{out}");
     let app = d.join("harnessed");
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
@@ -180,12 +200,13 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     let keyed = d2.join("vault");
     std::fs::create_dir_all(&keyed).unwrap();
     std::fs::write(keyed.join("model-OPENAI_API_KEY"), "sk-test").unwrap();
-    let (ok, out) = hale_env(&["dna", "new", "keyed"], &d2, &[("PATH", &path), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["ANTHROPIC_API_KEY"]);
+    habitat::lend(&keyed);
+    let (ok, out) = hale_env(&["habitat", "graft", "keyed", "--no-pack"], &d2, &[("PATH", &path), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["ANTHROPIC_API_KEY"]);
     assert!(ok, "{out}");
-    let catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
+    let keyed_catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
     assert!(out.contains("models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk"), "{out}");
-    assert!(catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{catalog}");
-    assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{catalog}");
+    assert!(keyed_catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{keyed_catalog}");
+    assert!(keyed_catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{keyed_catalog}");
     // the organization checks and builds with the harness wired
     let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);
     assert!(ok, "matrix: {out}");
@@ -208,7 +229,9 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
 
     // the probe runs the harness (an answer-only call in a directory of
     // its own; the stand-in needs no confinement, so the org chart's
-    // leave is given in the probe's copy of the catalog)
+    // leave is given in the probe's copy of the catalog) — the keyless
+    // project's own catalog, which has no hosted backend to probe
+    assert!(!catalog.contains("fn frontier()"), "{catalog}");
     let probed = catalog.replace("confinement: dna::Bubblewrap { } };", "confinement: dna::NoConfinement { }, allow_unconfined: true };");
     std::fs::write(app.join("dna/org/models.hl"), probed).unwrap();
     let mut c = vault::hale();
@@ -221,7 +244,7 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
     let harness_line = stdout.lines().find(|l| l.starts_with("harness ")).unwrap_or_else(|| panic!("a harness line:\n{stdout}"));
     assert!(harness_line.starts_with("harness     quick     claude                        ok  ") && harness_line.contains("  2000 micro-dollars  \"ready\""), "{stdout}");
-    assert!(stdout.lines().any(|l| l.starts_with("frontier    deep      gpt-4o ") && l.contains("not permitted")), "{stdout}");
+    assert!(!stdout.lines().any(|l| l.starts_with("frontier ")), "no hosted backend to probe with no key:\n{stdout}");
 }
 
 /// The review's second round, finding 3: a non-interactive codex is
@@ -233,14 +256,15 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
 /// the genome out of reach, and says so in the generated comment.
 #[test]
 fn the_generated_codex_entry_can_write_in_the_export_it_is_given() {
-    let bin = workdir("codex-bin").join("bin");
+    let bin = workdir("codex-bin").nested("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("codex"), "#!/bin/sh\nprintf 'ready\\n'\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), bare_path());
     let d = workdir("codexed");
-    let (ok, out) = hale_env(&["dna", "new", "codexed"], &d, &[("PATH", &path)], NO_KEYS);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "codexed", "--no-pack"], &d, &[("PATH", &path)], NO_KEYS);
     assert!(ok, "{out}");
     let app = d.join("codexed");
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
@@ -255,7 +279,8 @@ fn the_generated_codex_entry_can_write_in_the_export_it_is_given() {
 #[test]
 fn upgrade_gives_an_older_organization_a_catalog_and_says_what_to_point_at_it() {
     let d = workdir("upgrade");
-    let (ok, out) = hale_env(&["dna", "new", "older"], &d, &[("PATH", &bare_path())], NO_KEYS);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "older", "--no-pack"], &d, &[("PATH", &bare_path())], NO_KEYS);
     assert!(ok, "{out}");
     let app = d.join("older");
     // an organization from before the catalog: routers inline, no models.hl
@@ -279,7 +304,8 @@ fn upgrade_gives_an_older_organization_a_catalog_and_says_what_to_point_at_it() 
 #[test]
 fn models_probes_every_backend_of_the_catalog_without_starting_the_organization() {
     let d = workdir("probe");
-    let (ok, out) = hale_env(&["dna", "new", "probed"], &d, &[("PATH", &bare_path())], NO_KEYS);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "probed", "--no-pack"], &d, &[("PATH", &bare_path())], NO_KEYS);
     assert!(ok, "{out}");
     let app = d.join("probed");
     std::fs::write(app.join("dna/org/models.hl"), SCRIPTED_CATALOG).unwrap();

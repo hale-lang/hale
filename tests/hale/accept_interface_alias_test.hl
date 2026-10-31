@@ -44,7 +44,11 @@ fn main() {
     let p = Pool { };
     p.go();
     std::test::assert_eq_int(p.sum, 13, "an alias of an interface admits Small (3) and Big (10)");
-    std::test::assert_eq_int(p.kids(), 0, "Flows' release makes every Job a flow, type-wide: they leave at their run's end");
+    std::test::assert_eq_int(
+        p.kids(),
+        0,
+        "Flows' release makes every Job a flow, type-wide: they leave at their run's end",
+    );
     let f = Flows { };
     f.go();
     std::test::assert_eq_int(f.accepted, 3, "an alias of an alias admits both too");

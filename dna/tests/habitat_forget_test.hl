@@ -1,0 +1,650 @@
+// dna/tests/habitat_forget_test.hl — the habitat forgotten whole, planned
+// before anything is removed (phase 4 ruling: destroy is plan-then-confirm).
+//
+// A habitat with everything a forget removes: its record and memory, a
+// grafted organism (its record, its genome, its Forgejo repository, its
+// allocations), the compose project and its volumes, vault slots, its
+// Forgejo, and an `ssh` host with an allocation applied there. The host is
+// an sshd in a container of the fixture's own whose docker CLI drives this
+// machine's daemon, as in habitat_hosts_test.
+//
+// `hale habitat down --forget --plan` lists every group, each line with its
+// size or count and whether it is recoverable, and changes nothing (the
+// state digest before and after is the same); an organism is removed
+// the same way (`hale habitat organism remove`), what it had on a host that
+// does not answer named and left; `--forget` with stdin not a
+// terminal is refused; a wrong name typed back is refused and changes
+// nothing; a plain `down` stops and removes nothing; the right name removes
+// exactly the plan, on this machine and on the host; and a second `--plan`
+// shows nothing but the authorized key line the habitat cannot remove.
+// Without docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations and
+// the head a fixture's trusted-local one.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+// The shell command line `line` run in `dir` at a terminal, with `typed`
+// typed at it.
+fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
+    return in_dir(
+        dir,
+        "sh\n-c\nif [ -e /proc/version ]; then printf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null; else f=\"$PWD/term-alive-$$\" && : > \"$f\" && { sleep 0.2; printf '%s\\n' \"$1\"; while [ -f \"$f\" ]; do sleep 0.1; done; } | script -q /dev/null sh -c \"trap 'rm -f \\\"$f\\\"' EXIT; $2\"; fi\nsh\n"
+            + typed + "\n" + line,
+    );
+}
+
+// The shell command line `line` run in `dir` at a terminal: once it prints
+// `prompt`, the shell line `change` runs, and then `typed` is typed at it
+// (what changes while a person reads a plan). What the terminal shows is
+// kept in `dir` (the fixture's scratch root) while it runs.
+fn at_terminal_after(
+    dir: String,
+    typed: String,
+    line: String,
+    prompt: String,
+    change: String
+) -> dna::RunResult {
+    return in_dir(
+        dir,
+        "sh\n-c\no=\"$PWD/terminal-$$.log\" && : > \"$o\" && n=0 && if [ -e /proc/version ]; then { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; } | script -qefc \"$2\" \"$o\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\"; exit $s; else f=\"$PWD/term-alive-$$\" && : > \"$f\" && { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; while [ -f \"$f\" ]; do sleep 0.1; done; } | script -qF \"$o\" sh -c \"trap 'rm -f \\\"$f\\\"' EXIT; $2\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\" \"$f\"; exit $s; fi\nsh\n"
+            + typed + "\n" + line + "\n" + prompt + "\n" + change,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// The last non-empty line of `text`.
+fn last_line(text: String) -> String {
+    let t = dna::trim_nl(text);
+    let mut at = len(t);
+    while at > 0 && t[(at - 1)..at] != "\n" { at = at - 1; }
+    return t[at..len(t)];
+}
+
+// The machine: alpine's sshd and docker CLI, as habitat_hosts_test builds it.
+fn sshd_files(dir: String) {
+    std::io::fs::write_file(
+        dir + "/Dockerfile",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/docker.sh",
+        "#!/bin/sh\nif [ -z \"$DOCKER_API_VERSION\" ]; then\n  max=\"$(/usr/bin/docker version 2>&1 | sed -n 's/.*Maximum supported API version is \\([0-9.]*\\).*/\\1/p' | head -n 1)\"\n  [ -n \"$max\" ] && export DOCKER_API_VERSION=\"$max\"\nfi\nexec /usr/bin/docker \"$@\"\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/entry.sh",
+        "set -e\nchmod 666 /var/run/docker.sock 2>/dev/null || true\nDOCKER_GID=\"$(stat -c %g /var/run/docker.sock 2>/dev/null || echo \"${DOCKER_GID:-0}\")\"\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+    ) or discard;
+}
+
+fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: String) -> String {
+    return "services:\n  sshd:\n    build: .\n    image: hale-dna-test-sshd:1\n    environment:\n      HOST_UID: \""
+        + uid + "\"\n      HOST_HOME: \"" + home + "\"\n      DOCKER_GID: \"" + gid
+        + "\"\n    ports: [\"127.0.0.1:" + to_string(port) + ":22\"]\n    volumes:\n      - \""
+        + socket + ":/var/run/docker.sock\"\n      - \"" + home + ":" + home + "\"\n";
+}
+
+// What the habitat holds, as a digest a test compares: its compose volumes
+// and containers (by name, whatever their state), its vault slots, the
+// entries of its directory (but the processes' pid files), what it applied on the host, and with `rows`
+// the record's `habitat.` rows.
+fn state(home: String, rows: Bool) -> String {
+    let project = dna::local_habitat_project();
+    let volumes = dna::run_tool(
+        "sh\n-c\ndocker volume ls -q --filter label=com.docker.compose.project | grep -e \"^$1\" | sort\nsh\n"
+            + project,
+    ).stdout;
+    let containers = dna::run_tool(
+        "sh\n-c\ndocker ps -a --filter label=com.docker.compose.project --format '{{.Names}}' | grep -e \"^$1\" | sort\nsh\n"
+            + project,
+    ).stdout;
+    let vault = dna::run_tool(
+        "sh\n-c\nls -A \"$1\" | sort\nsh\n" + std::secret::vault_local_dir(),
+    ).stdout;
+    // the pid files a stopped process leaves are its own markers, not data
+    let dir = dna::run_tool(
+        "sh\n-c\nls -A \"$1\" | grep -v '\\.pid$' | sort\nsh\n" + dna::local_habitat_dir(),
+    ).stdout;
+    let remote = dna::run_tool(
+        "sh\n-c\nls -A \"$1/.hale/habitat\" 2>/dev/null | sort\nsh\n" + home,
+    ).stdout;
+    let mut habitat = "";
+    if rows {
+        habitat = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && \"$2\" dna record-rows . | grep -c '\"kind\": \"habitat\\.'\nsh\n"
+                + dna::local_habitat_dir() + "/genome\n" + toolchain(),
+        ).stdout;
+    }
+    return "volumes:\n" + volumes + "containers:\n" + containers + "vault:\n" + vault + "dir:\n"
+        + dir + "remote:\n" + remote + "rows: " + habitat;
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0
+        || dna::run_tool("sh\n-c\ncommand -v script").code != 0
+    {
+        eprintln("habitat_forget_test: not exercised (docker compose or script is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_forget_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let endpoint = dna::trim_nl(
+        dna::run_tool("docker\ncontext\ninspect\n--format\n{{.Endpoints.docker.Host}}").stdout,
+    );
+    if !std::str::starts_with(endpoint, "unix://") {
+        eprintln("habitat_forget_test: not exercised (the docker daemon is not on a unix socket)");
+        return;
+    }
+    let socket = if std::io::fs::file_exists("/proc/version") {
+        endpoint[7..len(endpoint)]
+    } else {
+        "/var/run/docker.sock"
+    };
+    let scratch = dna::scratch_root("habitat-forget");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+    let name = "forget-test";
+
+    // ---- the habitat, up with its head and its Forgejo
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup\n--name\n" + name);
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
+    );
+    let key = dna::allocation_key(genome);
+    std::test::assert_eq_int(len(key), 12, "the habitat has a record identity");
+
+    // ---- a grafted organism: its record, its allocations, its Forgejo
+    // repository and its slots
+    let grafted = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\ngraft\ntenant\n--no-library\n--no-pack\n--own\nmemory",
+    );
+    std::test::assert(
+        grafted.code == 0,
+        "an organism is grafted: " + grafted.stdout + grafted.stderr,
+    );
+    let tkey = dna::allocation_key(scratch + "/tenant");
+    // each with a memory server of its own (`--own memory`), whose volume
+    // the plans name; a tenant of the habitat's memory is
+    // habitat_saplings_test's
+    let doomed = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\ngraft\ndoomed\n--no-library\n--no-pack\n--own\nmemory",
+    );
+    std::test::assert(
+        doomed.code == 0,
+        "a second organism is grafted: " + doomed.stdout + doomed.stderr,
+    );
+    let dkey = dna::allocation_key(scratch + "/doomed");
+    // a third whose forge is GitHub, its token a slot a person supplied
+    let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--no-library\n--no-pack");
+    std::test::assert(
+        keeper.code == 0,
+        "a third organism is grafted: " + keeper.stdout + keeper.stderr,
+    );
+    let github = in_dir(
+        scratch,
+        toolchain()
+            + "\nhabitat\nforge\nkeeper\ngithub\n--repo\nexample/keeper\n--key-vault\ngh-keeper-token\n--no-head",
+    );
+    std::test::assert(github.code == 0, "its forge is GitHub's: " + github.stdout + github.stderr);
+    let vault_dir = std::secret::vault_local_dir();
+    std::io::fs::write_file(vault_dir + "/gh-keeper-token", "supplied-by-a-person\n") or discard;
+
+    // ---- a host: the fixture's sshd, the habitat's key authorized there,
+    // and an allocation applied over SSH
+    let port = dna::free_port(0);
+    let sshd = scratch + "/sshd";
+    let home = scratch + "/home";
+    std::io::fs::mkdir(sshd) or discard;
+    std::io::fs::mkdir(home) or discard;
+    sshd_files(sshd);
+    let uid = dna::trim_nl(dna::run_tool("id\n-u").stdout);
+    let gid = dna::trim_nl(dna::run_tool("stat\n-c\n%g\n" + socket).stdout);
+    std::io::fs::write_file(sshd + "/compose.yaml", sshd_compose(port, home, socket, uid, gid))
+    or discard;
+    let machine = "dna-forget-" + to_string(std::process::pid());
+    let compose = "docker\ncompose\n-p\n" + machine + "\n--project-directory\n" + sshd;
+    let up = dna::run_tool_timeout(600, compose + "\nup\n-d\n--build");
+    std::test::assert_eq_int(up.code, 0, "the machine's sshd is up: " + up.stderr);
+    let mut answered = false;
+    let mut tries = 0;
+    while !answered && tries < 60 {
+        answered = len(dna::ssh_host_key("localhost", port)) > 0;
+        if !answered { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(answered, "the machine answers SSH on " + to_string(port));
+    let container = dna::trim_nl(dna::run_tool(compose + "\nps\n-q\nsshd").stdout);
+    let added = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\nhost\nadd\nlocalhost\n--port\n" + to_string(port)
+            + "\n--user\nhale",
+    );
+    std::test::assert(added.code == 0, "the host is added: " + added.stdout + added.stderr);
+    let authorize = last_line(added.stdout);
+    let auth = dna::run_tool(
+        "docker\nexec\n-u\nhale\n" + container
+            + "\nsh\n-c\nmkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && printf '%s\\n' \"$1\" >> \"$HOME/.ssh/authorized_keys\" && chmod 600 \"$HOME/.ssh/authorized_keys\"\nsh\n"
+            + authorize,
+    );
+    std::test::assert_eq_int(auth.code, 0, "the key is authorized on the machine: " + auth.stderr);
+    let probed = in_dir(scratch, toolchain() + "\nhabitat\nhost\nprobe\nlocalhost");
+    std::test::assert(
+        probed.code == 0 && std::str::contains(probed.stdout, "): ready"),
+        "the host is ready: " + probed.stdout + probed.stderr,
+    );
+    let render_dir = scratch + "/probe";
+    std::io::fs::mkdir(render_dir) or discard;
+    std::io::fs::write_file(
+        render_dir + "/compose.yaml",
+        "services:\n  probe:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    volumes: [\"probe:/data\"]\nvolumes:\n  probe: {}\n",
+    ) or discard;
+    let remote_project = dna::placed_project("localhost");
+    let render = dna::Render { project: remote_project, dir: render_dir, files: "compose.yaml" };
+    let applied = dna::SshProvider { root: genome }.apply("localhost", render);
+    std::test::assert(applied.ok, "a render is applied over SSH: " + applied.why);
+    let j = dna::RecordJournal { repo: genome, author: "fixture" };
+    let moved = j.refresh();
+    let placed = j.append(
+        j.revision(),
+        "habitat.allocated",
+        key + "/probe",
+        "{\"organism\":\"" + key + "\",\"role\":\"probe\",\"service\":\"probe\",\"project\":\""
+            + remote_project + "\",\"provider\":\"ssh\",\"host\":\"localhost\",\"vault\":[]}",
+    );
+    std::test::assert(
+        placed.ok,
+        "the allocation is a row of the habitat's record: " + placed.error,
+    );
+    // a host that does not answer (ready once, nothing listens there now),
+    // with an allocation of the habitat's and one of the second organism's
+    // placed on it
+    let gone_port = dna::free_port(5);
+    let rack = dna::Host {
+        name: "rack-c.lan",
+        provider: "ssh",
+        state: "ready",
+        offers: "compose",
+        address: "127.0.0.1",
+        port: gone_port,
+        user: "ops",
+        host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIInventedInventedInventedInventedInventedInv",
+        fingerprint: "SHA256:invented",
+    };
+    std::test::assert(
+        j.append(j.revision(), "habitat.host", rack.name, dna::host_row_body(rack)).ok,
+        "the unanswering host's row landed",
+    );
+    std::test::assert(
+        j.append(
+            j.revision(),
+            "habitat.allocated",
+            key + "/probe2",
+            "{\"organism\":\"" + key
+                + "\",\"role\":\"probe2\",\"service\":\"probe2\",\"project\":\"p\",\"provider\":\"ssh\",\"host\":\"rack-c.lan\",\"vault\":[]}",
+        ).ok
+            && j.append(
+                j.revision(),
+                "habitat.allocated",
+                dkey + "/probe",
+                "{\"organism\":\"" + dkey
+                    + "\",\"role\":\"probe\",\"service\":\"probe\",\"project\":\"p\",\"provider\":\"ssh\",\"host\":\"rack-c.lan\",\"vault\":[]}",
+            ).ok,
+        "the allocations placed there landed",
+    );
+    // the second organism's memory placed on that host and never applied
+    // there: it still runs here, and its removal is planned here
+    std::test::assert(
+        j.append(
+            j.revision(),
+            "habitat.allocated",
+            dkey + "/memory",
+            "{\"organism\":\"" + dkey + "\",\"role\":\"memory\",\"service\":\"memory-" + dkey
+                + "\",\"project\":\"p\",\"provider\":\"ssh\",\"host\":\"rack-c.lan\",\"vault\":[]}",
+        ).ok,
+        "a placement of its memory, not applied, landed",
+    );
+    // the first organism's own services, a compose project of this machine
+    // holding a volume
+    let services = dna::local_habitat_project() + "-" + tkey;
+    std::test::assert(
+        dna::run_tool(
+            "docker\nvolume\ncreate\n--label\ncom.docker.compose.project=" + services + "\n"
+                + services + "_data",
+        ).code == 0
+            && j.append(
+                j.revision(),
+                "habitat.allocated",
+                tkey + "/services",
+                "{\"organism\":\"" + tkey
+                    + "\",\"role\":\"services\",\"service\":\"\",\"project\":\""
+                    + services + "\",\"provider\":\"compose\",\"host\":\"local\",\"vault\":[]}",
+            ).ok,
+        "its services project and its row landed",
+    );
+
+    // ---- an organism removed, plan-then-confirm: its record and memory,
+    // genome, Forgejo account, allocations by host (the unanswering host's
+    // named and left), compose services, vault slots and rows
+    let oplan = in_dir(scratch, toolchain() + "\nhabitat\norganism\nremove\ndoomed\n--plan");
+    let op = oplan.stdout;
+    std::test::assert(
+        oplan.code == 0
+            && std::str::contains(op, "the plan to remove the organism doomed")
+            && std::str::contains(op, "its record and memory\n")
+            && std::str::contains(
+                op,
+                "its record, in its memory (memory-" + dkey + "), its volume ",
+            )
+            && (std::str::contains(
+                op,
+                "its genome repository\n  - its genome repository " + scratch + "/doomed",
+            ) || std::str::contains(
+                op,
+                "its genome repository\n  - its genome repository /private" + scratch + "/doomed",
+            ))
+            && std::str::contains(op, "its Forgejo account doomed-" + dkey)
+        // its nerves an account on the habitat's NATS: dropped there,
+        // the server the habitat's and kept
+            && std::str::contains(
+                op,
+                "its organization, an account on the habitat's nerves (nerves-",
+            )
+            && std::str::contains(op, "the server is the habitat's, kept")
+            && std::str::contains(op, "its compose services and projects\n")
+            && std::str::contains(op, "its vault slots (names only)\n  - its slots: ")
+            && std::str::contains(
+                op,
+                "unreachable: left on rack-c.lan, cannot be removed from here (not recoverable from the habitat): "
+                    + dkey + "/probe (probe)",
+            )
+            && std::str::contains(op, "marked removed in the habitat's record")
+            && !std::str::contains(op, "memory-" + tkey),
+        "the organism's plan lists what is its alone: " + op + oplan.stderr,
+    );
+    let held_before = state(home, true);
+    let opiped = in_dir(
+        scratch,
+        "sh\n-c\nexec \"$1\" habitat organism remove doomed </dev/null\nsh\n" + toolchain(),
+    );
+    std::test::assert(
+        opiped.code == 2 && std::str::contains(opiped.stderr, "stdin is not a terminal"),
+        "an organism's removal off a terminal is refused: " + opiped.stdout + opiped.stderr,
+    );
+    let owrong = at_terminal(scratch, "tenant", toolchain() + " habitat organism remove doomed");
+    std::test::assert(
+        owrong.code != 0 && std::str::contains(owrong.stdout, "(confirm_mismatch)"),
+        "a name that is not the organism's is refused: " + owrong.stdout + owrong.stderr,
+    );
+    std::test::assert_eq_str(state(home, true), held_before, "and changes nothing");
+    // what the plan would remove changes while the person reads it (a slot
+    // of the organism's appears): the name typed back is refused
+    let ochanged = at_terminal_after(
+        scratch,
+        "doomed",
+        toolchain() + " habitat organism remove doomed",
+        "type the organism",
+        "touch '" + vault_dir + "/extra-" + dkey + "'",
+    );
+    std::test::assert(
+        ochanged.code != 0 && std::str::contains(ochanged.stdout, "(plan_changed)")
+            && std::str::contains(state(home, false), "memory-" + dkey),
+        "a plan that changed before its confirmation is refused, nothing removed: "
+            + ochanged.stdout + ochanged.stderr,
+    );
+    // a repository added to its Forgejo account while the person reads the
+    // plan: refused, the account and its repositories bound by id
+    let forge_port = dna::trim_nl(text_of(dna::local_habitat_dir() + "/forge/port"));
+    let rchanged = at_terminal_after(
+        scratch,
+        "doomed",
+        toolchain() + " habitat organism remove doomed",
+        "type the organism",
+        "curl -s -o /dev/null -X POST -H \"Authorization: token $(cat '" + vault_dir + "/forgejo-"
+            + dkey
+            + "')\" -H 'Content-Type: application/json' -d '{\"name\": \"late\"}' http://127.0.0.1:"
+            + forge_port + "/api/v1/user/repos",
+    );
+    std::test::assert(
+        rchanged.code != 0 && std::str::contains(rchanged.stdout, "(plan_changed)"),
+        "a repository added before the confirmation is refused: " + rchanged.stdout
+            + rchanged.stderr,
+    );
+    // a resource that cannot be removed: the organism's services project's
+    // network, with a container of no project's attached. The removal stops
+    // there, says which item and why, and leaves the rest
+    let dservices = dna::local_habitat_project() + "-" + dkey;
+    let blocker = "dna-forget-blocker-" + to_string(std::process::pid());
+    std::test::assert(
+        dna::run_tool(
+            "docker\nnetwork\ncreate\n--label\ncom.docker.compose.project=" + dservices + "\n"
+                + dservices + "_default",
+        ).code == 0
+            && dna::run_tool(
+                "docker\nrun\n-d\n--name\n" + blocker + "\n--network\n" + dservices
+                    + "_default\nbusybox:1.36\nsleep\n600",
+            ).code == 0
+            && j.append(
+                j.revision(),
+                "habitat.allocated",
+                dkey + "/services",
+                "{\"organism\":\"" + dkey
+                    + "\",\"role\":\"services\",\"service\":\"\",\"project\":\""
+                    + dservices + "\",\"provider\":\"compose\",\"host\":\"local\",\"vault\":[]}",
+            ).ok,
+        "a network the removal cannot remove is in its way",
+    );
+    let stuck = at_terminal(scratch, "doomed", toolchain() + " habitat organism remove doomed");
+    std::test::assert(
+        stuck.code != 0
+            && std::str::contains(stuck.stdout, "FAILED    " + dkey + "/services: its services")
+            && std::str::contains(stuck.stdout, "network " + dservices + "_default: ")
+            && std::str::contains(stuck.stdout, "(exit ")
+            && std::str::contains(
+                stuck.stdout,
+                "not done  its record, in its memory (memory-" + dkey,
+            )
+            && std::str::contains(stuck.stdout, "(partly_removed)"),
+        "a removal that cannot remove an item says which and why, and leaves the rest: "
+            + stuck.stdout + stuck.stderr,
+    );
+    std::test::assert(
+        std::str::contains(state(home, false), "memory-" + dkey),
+        "its memory's volume, after the failed item, is left",
+    );
+    dna::run_tool("docker\nrm\n-f\n" + blocker);
+    let removed = at_terminal(scratch, "doomed", toolchain() + " habitat organism remove doomed");
+    std::test::assert(
+        removed.code == 0 && std::str::contains(removed.stdout, "the organism doomed is removed")
+            && std::str::contains(removed.stdout, "done      unreachable: left on rack-c.lan")
+            && !std::str::contains(removed.stdout, "FAILED"),
+        "the organism's name removes it, naming what is left on the host that does not answer: "
+            + removed.stdout + removed.stderr,
+    );
+    std::test::assert(
+        std::str::contains(removed.stdout, "doomed-" + dkey + "/late (id "),
+        "planned again, the plan names the repository by its id: " + removed.stdout,
+    );
+    let account = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\nhttp://127.0.0.1:" + forge_port
+            + "/api/v1/users/doomed-" + dkey,
+    ).stdout;
+    std::test::assert_eq_str(account, "404", "its Forgejo account is gone");
+    let held_after = state(home, false);
+    std::test::assert(
+        !std::str::contains(held_after, dkey) && std::str::contains(held_after, "memory-" + tkey),
+        "its volumes, containers and slots are gone, the other organism's kept: " + held_after,
+    );
+
+    // ---- the plan: every group, each line with its size or count and
+    // whether it is recoverable, and nothing changed
+    let before = state(home, true);
+    let plan = in_dir(scratch, toolchain() + "\nhabitat\ndown\n--forget\n--plan");
+    let p = plan.stdout;
+    std::test::assert(
+        plan.code == 0
+            && std::str::contains(p, "the plan to forget the habitat `" + name + "`")
+            && std::str::contains(p, "the habitat's record and memory\n")
+            && std::str::contains(p, "the habitat's record " + key + "…: ")
+            && std::str::contains(p, "2 organisms grafted")
+            && std::str::contains(p, tkey + "/services: its services, compose project " + services)
+            && std::str::contains(p, "gh-keeper-token")
+            && std::str::contains(
+                p,
+                "(credentials a person supplied, which the habitat did not mint)",
+            )
+            && !std::str::contains(p, "doomed")
+            && std::str::contains(
+                p,
+                "unreachable: left on rack-c.lan, cannot be removed from here (not recoverable from the habitat): "
+                    + key + "/probe2",
+            )
+            && std::str::contains(p, "the newest row at ")
+            && std::str::contains(p, "the grafted organisms\n  tenant (" + tkey + "…)")
+            && std::str::contains(p, "its record, in its memory (memory-" + tkey + ")")
+            && (std::str::contains(p, "its genome repository " + scratch + "/tenant")
+                    || std::str::contains(
+                        p,
+                        "its genome repository /private" + scratch + "/tenant",
+                    ))
+            && std::str::contains(p, "its Forgejo repository ")
+            && std::str::contains(p, tkey + "/nerves: nerves (nerves-" + tkey + ")")
+            && std::str::contains(p, "the compose projects and their volumes\n")
+            && std::str::contains(p, "the vault (slot names only)\n")
+            && std::str::contains(p, "ssh-habitat-" + key)
+            && std::str::contains(p, "the habitat's Forgejo and its accounts\n")
+            && std::str::contains(p, "its accounts hale-admin, tenant-")
+            && std::str::contains(p, "(2 accounts (")
+            && std::str::contains(p, "the hosts\n")
+            && std::str::contains(p, "authorized_keys: the habitat cannot remove it")
+            && std::str::contains(p, "on the hosts, over SSH\n  on localhost")
+            && std::str::contains(p, key + "/probe: probe of " + remote_project)
+            && std::str::contains(p, "~/.hale/habitat/" + remote_project)
+            && std::str::contains(p, "recoverable: no")
+            && std::str::contains(p, "recoverable: yes"),
+        "the plan lists every group with counts and recoverability: " + p + plan.stderr,
+    );
+    let admin = text_of(std::secret::vault_local_dir() + "/forgejo-admin");
+    std::test::assert(
+        len(dna::trim_nl(admin)) > 0 && !std::str::contains(p, dna::trim_nl(admin))
+            && !std::str::contains(p, "PRIVATE KEY"),
+        "the plan names slots, never a value",
+    );
+    std::test::assert_eq_str(state(home, true), before, "the plan changes nothing");
+
+    // ---- refused: without a terminal, and with a wrong name typed back
+    let piped = in_dir(
+        scratch,
+        "sh\n-c\nexec \"$1\" habitat down --forget </dev/null\nsh\n" + toolchain(),
+    );
+    std::test::assert(
+        piped.code == 2 && std::str::contains(piped.stderr, "stdin is not a terminal"),
+        "a forget off a terminal is refused: " + piped.stdout + piped.stderr,
+    );
+    let wrong = at_terminal(scratch, "not-" + name, toolchain() + " habitat down --forget");
+    std::test::assert(
+        wrong.code != 0
+            && std::str::contains(wrong.stdout, "is not the habitat's name; nothing was removed"),
+        "a wrong name is refused: " + wrong.stdout + wrong.stderr,
+    );
+    std::test::assert_eq_str(state(home, true), before, "and changes nothing");
+
+    // ---- a plain down takes compose down and keeps the volumes, vault and files
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    std::test::assert(
+        down.code == 0 && std::str::contains(down.stdout, "its data is kept"),
+        "a plain down stops the habitat: " + down.stdout + down.stderr,
+    );
+    let down_state = state(home, false);
+    std::test::assert(
+        std::str::contains(down_state, "containers:\n" + remote_project + "-probe-1\nvault:\n")
+            && std::str::contains(down_state, "memory-" + key)
+            && std::str::contains(down_state, "memory-" + tkey)
+            && std::str::contains(down_state, "forgejo-admin")
+            && std::str::contains(down_state, "genome"),
+        "a plain down leaves only the volumes, vault and files (and the remote host's allocation): "
+            + down_state,
+    );
+
+    // ---- what forgetting would remove changes while the person reads the
+    // plan (a volume appears in a project the plan removes whole, which a
+    // name alone would not tell): refused
+    let project = dna::local_habitat_project();
+    let fchanged = at_terminal_after(
+        scratch,
+        name,
+        toolchain() + " habitat down --forget",
+        "type the habitat",
+        "docker volume create --label com.docker.compose.project=" + services + " " + services
+            + "_more >/dev/null",
+    );
+    std::test::assert(
+        fchanged.code != 0 && std::str::contains(fchanged.stdout, "(plan_changed)")
+            && std::str::contains(fchanged.stdout, "nothing was removed"),
+        "a forget whose plan changed before its confirmation is refused: " + fchanged.stdout
+            + fchanged.stderr,
+    );
+    std::test::assert(
+        std::str::contains(state(home, false), "memory-" + key),
+        "and nothing was removed",
+    );
+
+    // ---- the right name: exactly the plan, here and on the host
+    let forgot = at_terminal(scratch, name, toolchain() + " habitat down --forget");
+    std::test::assert(
+        forgot.code == 0
+            && std::str::contains(forgot.stdout, "the habitat `" + name + "` is forgotten")
+            && !std::str::contains(forgot.stdout, "FAILED"),
+        "the right name removes the plan: " + forgot.stdout + forgot.stderr,
+    );
+    let after = state(home, false);
+    std::test::assert(
+        std::str::contains(after, "volumes:\ncontainers:\n")
+            && !std::str::contains(after, "forgejo-admin")
+            && !std::str::contains(after, "ssh-habitat-")
+            && std::str::contains(after, "gh-keeper-token")
+            && !std::str::contains(after, "genome")
+            && std::str::contains(after, "forgotten-notes.jsonl")
+            && std::str::contains(after, "remote:\nrows: "),
+        "its volumes, containers, slots, directory and what it ran on the host are gone: " + after,
+    );
+    let probe_left = dna::run_tool(
+        "docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project=" + remote_project,
+    ).stdout;
+    std::test::assert_eq_str(dna::trim_nl(probe_left), "", "the host's allocation is gone");
+
+    // ---- a second plan: nothing but the line the habitat cannot remove
+    let again = in_dir(scratch, toolchain() + "\nhabitat\ndown\n--forget\n--plan");
+    std::test::assert(
+        again.code == 0 && std::str::contains(again.stdout, "4 item(s)")
+            && std::str::contains(again.stdout, "noted when the habitat was forgotten")
+            && std::str::contains(again.stdout, "hale@localhost:~/.ssh/authorized_keys")
+            && std::str::contains(again.stdout, "ops@rack-c.lan:~/.ssh/authorized_keys")
+            && std::str::contains(again.stdout, "unreachable: left on rack-c.lan"),
+        "a second plan holds only what the habitat could not remove: the authorized key lines and what is left on the host that did not answer: "
+            + again.stdout + again.stderr,
+    );
+
+    dna::run_tool(compose + "\ndown\n-v");
+    dna::scratch_done(scratch);
+}

@@ -447,6 +447,10 @@ locus Kid {
     }
 }
 
+fn pick_of(k: Kid, o: Owner) -> Int {
+    return k.pick() or { println("or heard=", o.heard, " closure=", err.closure); 7 };
+}
+
 locus Owner {
     params {
         worker: Int = pthread_self();
@@ -466,7 +470,11 @@ main locus App {
     placement { o: cooperative(pool = side); }
     run() {
         let mine = pthread_self();
-        let b = self.o.kid.pick() or { println("or heard=", self.o.heard, " closure=", err.closure); 7 };
+        // through a fn value: F.31 refuses the direct call on a locus
+        // another pool holds (GH #1561), and a fn value is the escape it
+        // does not trace
+        let via: fn(Kid, Owner) -> Int = pick_of;
+        let b = via(self.o.kid, self.o);
         println("b=", b);
         if mine != self.o.worker { println("raised off the worker"); }
         if self.o.posted_on == self.o.worker { println("handled on the worker"); }
@@ -475,7 +483,14 @@ main locus App {
 
 fn main() { App { }; }
 "#;
-    let out = build_and_run_full("violate_value_cross_pool", src);
+    // through a fn value, which the checker does not follow; F.31's runtime
+    // backstop would refuse the call, so it is off for this fixture of the
+    // off-domain delivery (GH #1566)
+    let bin = harness::unique_bin("lotus_test_violate_value_cross_pool");
+    let options = hale_codegen::BuildOptions { no_xpool_backstop: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{:?}\n{stderr}", out.status);
     assert_eq!(
@@ -486,12 +501,13 @@ fn main() { App { }; }
 }
 
 /// A method serving a perspective, the perspective fn and the impl both
-/// `fallible(ClosureViolation)`: `hale check` passes (conformance matches
-/// the fallibility, `hale-types`' `violate_fallible.rs` pins it), and the
-/// build refuses the perspective call, as it refused every `fallible`
-/// perspective call before F.42. This is why F.42 exempts a
+/// `fallible(ClosureViolation)`: conformance matches the fallibility,
+/// and the build refuses the perspective call, as it refused every
+/// `fallible` perspective call before F.42 (`hale check` refuses the
+/// call first, at the method name, so the two agree:
+/// `corpus_check_build_agreement`). This is why F.42 exempts a
 /// perspective-served method: the day the call lowers, this pin fails
-/// and the exemption goes.
+/// and the exemption goes, with the check's refusal.
 #[test]
 fn a_fallible_perspective_call_is_refused_at_the_build() {
     let src = r#"

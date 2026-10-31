@@ -27,16 +27,27 @@ fn toolchain() -> String {
 }
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
 // The composed head's binary: the one the suite names, else built from the
 // source tree here, out of the tree, into the fixture's scratch.
 fn head_binary(scratch: String) -> String {
-    if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
+    if std::env::var_exists("HALE_NATIVE_HEAD_API")
+        && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API"))
+    {
+        return std::env::var("HALE_NATIVE_HEAD_API");
+    }
     let out = scratch + "/practice_review";
-    let built = dna::run_tool_timeout(600, toolchain() + "\nbuild\n" + source() + "/dna/api/practice_review\n-o\n" + out);
+    let built = dna::run_tool_timeout(
+        600,
+        toolchain() + "\nbuild\n" + source() + "/dna/api/practice_review\n-o\n" + out,
+    );
     std::test::assert_eq_int(built.code, 0, "the composed head builds: " + built.stderr);
     return out;
 }
@@ -103,12 +114,20 @@ fn members_of(line: String) -> String {
 
 // A friction entry on the surface's wire, filed as `position:agent`.
 fn friction(id: String, request: String, text: String) -> String {
-    return "{\"id\":\"" + id + "\",\"call\":\"Commands::file_friction\",\"payload\":{\"request_id\":\"" + request + "\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"position\":\"position:agent\",\"attempt_id\":\"\",\"text\":\"" + text + "\"}}";
+    return "{\"id\":\"" + id
+        + "\",\"call\":\"Commands::file_friction\",\"payload\":{\"request_id\":\"" + request
+        + "\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"position\":\"position:agent\",\"attempt_id\":\"\",\"text\":\""
+        + text + "\"}}";
 }
 
 // The `friction.filed` rows of the record whose body names `text`.
 fn filed_rows(repo: String, text: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let j = dna::RecordJournal { repo: repo };
     let moved = j.refresh();
     let mut n = 0;
     let mut i = 0;
@@ -152,8 +171,11 @@ locus Proc {
 
 locus App {
     params { repo: String = ""; }
-    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
-        std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
+    fn append(j: dna::RecordJournal, kind: String, entity: String, body: String) {
+        std::test::assert(
+            j.append(j.revision(), kind, entity, body).ok,
+            "the record takes " + kind + " " + entity,
+        );
     }
     run() {
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
@@ -166,23 +188,48 @@ locus App {
         // A record: the positions named, nobody seated, no local trust; this
         // uid is ada.
         self.repo = scratch + "/rec";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/dna\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git config --add dna.unix.member \"uid:$2=ada\"\nsh\n" + self.repo + "\n" + me);
+        let made = dna::run_tool(
+            "sh\n-c\nmkdir -p \"$1/dna\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git config --add dna.unix.member \"uid:$2=ada\"\nsh\n"
+                + self.repo + "\n" + me,
+        );
         std::test::assert_eq_int(made.code, 0, "a record of its own: " + made.stderr);
-        let j = dna::GitJournal { repo: self.repo };
-        self.append(j, "graph.node", ops::graph_node_id("position", "agent"), ops::graph_node_body("position", "agent", "", ""));
-        self.append(j, "graph.node", ops::graph_node_id("position", "board"), ops::graph_node_body("position", "board", "", ""));
-        let record = dna::GitRecord { repo: self.repo };
-        let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RecordJournal { repo: self.repo };
+        self.append(
+            j,
+            "graph.node",
+            ops::graph_node_id("position", "agent"),
+            ops::graph_node_body("position", "agent", "", ""),
+        );
+        self.append(
+            j,
+            "graph.node",
+            ops::graph_node_id("position", "board"),
+            ops::graph_node_body("position", "board", "", ""),
+        );
+        let record = dna::MemoryRecord { repo: self.repo };
+        let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\""
+            + record.identity()
+            + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
 
         let rpc = scratch + "/head.sock";
         let port = dna::free_port(0);
         let head = Proc { };
-        let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" HALE_DNA_RPC_SOCKET=\"$4\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + rpc;
+        let argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" HALE_DNA_RPC_SOCKET=\"$4\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n"
+            + self.repo + "\n" + binary + "\n" + to_string(port) + "\n" + rpc;
         std::test::assert(head.start(argv), "the composed head started");
         let first = Api { };
         let up = first.connect(rpc);
-        std::test::assert(up, "connected to the composed head's surface: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
+        std::test::assert(
+            up,
+            "connected to the composed head's surface: "
+                + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""),
+        );
 
         // ---- unseated: the read is ada's, the durable command is not
         // The first describe waits for the head to answer, as the seated one
@@ -201,15 +248,33 @@ locus App {
             }
             probes = probes + 1;
         }
-        std::test::assert(len(d0) > 0, "unseated: the surface answered a describe: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
-        std::test::assert_eq_str(members_of(d0), "Commands::create_task Commands::lookup Commands::lookup_knowledge Commands::preview_batch", "unseated: the surface lists the ungated rows only: " + d0);
+        std::test::assert(
+            len(d0) > 0,
+            "unseated: the surface answered a describe: "
+                + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""),
+        );
+        std::test::assert_eq_str(
+            members_of(d0),
+            "Commands::alerts Commands::allocations Commands::brief Commands::complete_task Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::placements Commands::policy Commands::preview_batch Commands::saplings Commands::take_task Commands::uis",
+            "unseated: the surface lists the ungated rows only: " + d0,
+        );
         // the calls below go over a connection made once the head answers
         let surface = Api { };
         std::test::assert(surface.connect(rpc), "connected to the answering surface");
         let denied = surface.ask(friction("u-1", "f-unseated", "the hat named no tool grant"));
-        std::test::assert(has(denied, "\"id\":\"u-1\",\"ok\":false") && has(denied, "\"kind\":\"unauthorized\"") && has(denied, "Commands::file_friction requires position") && has(denied, "\"requires\":[\"position\"]"), "unseated: a friction entry is refused, naming position: " + denied);
+        std::test::assert(
+            has(denied, "\"id\":\"u-1\",\"ok\":false")
+                && has(denied, "\"kind\":\"unauthorized\"")
+                && has(denied, "Commands::file_friction requires position")
+                && has(denied, "\"requires\":[\"position\"]"),
+            "unseated: a friction entry is refused, naming position: " + denied,
+        );
         std::time::sleep(1200ms);
-        std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 0, "and nothing landed in the record");
+        std::test::assert_eq_int(
+            filed_rows(self.repo, "the hat named no tool grant"),
+            0,
+            "and nothing landed in the record",
+        );
 
         // ---- the record seats ada; the surface follows it
         let e = ops::GraphEdge { kind: "holds" };
@@ -223,24 +288,57 @@ locus App {
             listed = surface.ask("{\"describe\":true}");
             tries = tries + 1;
         }
-        std::test::assert_eq_str(members_of(listed), "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge", "seated: the description follows the record");
+        std::test::assert_eq_str(
+            members_of(listed),
+            "Commands::alerts Commands::allocations Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::brief Commands::claim Commands::complete_task Commands::create_task Commands::file_friction Commands::fill Commands::hosts Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::open_position Commands::outcome Commands::placements Commands::policy Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::saplings Commands::take_task Commands::uis Commands::unbind_knowledge Commands::unlink_knowledge",
+            "seated: the description follows the record",
+        );
 
         // ---- seated: the durable command goes through the surface
         let filed = surface.ask(friction("s-1", "f-seated", "the hat named no tool grant"));
-        std::test::assert(has(filed, "\"id\":\"s-1\",\"ok\":true"), "seated: the friction entry is answered: " + filed);
-        std::test::assert(!has(filed, "commands_unsupported") && !has(filed, "\"kind\":\"unauthorized\""), "by the composed provider, not the standalone one: " + filed);
-        std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 1, "and it is in the record: one friction.filed row");
+        std::test::assert(
+            has(filed, "\"id\":\"s-1\",\"ok\":true"),
+            "seated: the friction entry is answered: " + filed,
+        );
+        std::test::assert(
+            !has(filed, "commands_unsupported") && !has(filed, "\"kind\":\"unauthorized\""),
+            "by the composed provider, not the standalone one: " + filed,
+        );
+        std::test::assert_eq_int(
+            filed_rows(self.repo, "the hat named no tool grant"),
+            1,
+            "and it is in the record: one friction.filed row",
+        );
 
         // the surface's own read finds the command by the request id
-        let looked = surface.ask("{\"id\":\"s-2\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"f-seated\"}}");
-        std::test::assert(has(looked, "\"id\":\"s-2\",\"ok\":true") && has(looked, "f-seated") && !has(looked, "commands_unsupported"), "lookup returns the command by its request id: " + looked);
-        let missing = surface.ask("{\"id\":\"s-3\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"f-never\"}}");
-        std::test::assert(!has(missing, "f-seated") && !has(missing, "commands_unsupported"), "and not a request that was never made: " + missing);
+        let looked = surface.ask(
+            "{\"id\":\"s-2\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"f-seated\"}}",
+        );
+        std::test::assert(
+            has(looked, "\"id\":\"s-2\",\"ok\":true")
+                && has(looked, "f-seated")
+                && !has(looked, "commands_unsupported"),
+            "lookup returns the command by its request id: " + looked,
+        );
+        let missing = surface.ask(
+            "{\"id\":\"s-3\",\"call\":\"Commands::lookup\",\"payload\":{\"request_id\":\"f-never\"}}",
+        );
+        std::test::assert(
+            !has(missing, "f-seated") && !has(missing, "commands_unsupported"),
+            "and not a request that was never made: " + missing,
+        );
 
         // filing it again by the same request id is the same command, not a second row
         let again = surface.ask(friction("s-4", "f-seated", "the hat named no tool grant"));
-        std::test::assert(has(again, "\"id\":\"s-4\",\"ok\":true"), "the same request again is answered: " + again);
-        std::test::assert_eq_int(filed_rows(self.repo, "the hat named no tool grant"), 1, "and files nothing more");
+        std::test::assert(
+            has(again, "\"id\":\"s-4\",\"ok\":true"),
+            "the same request again is answered: " + again,
+        );
+        std::test::assert_eq_int(
+            filed_rows(self.repo, "the hat named no tool grant"),
+            1,
+            "and files nothing more",
+        );
 
         head.stop();
         std::io::fs::unlink(rpc) or discard;

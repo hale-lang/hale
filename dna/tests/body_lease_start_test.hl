@@ -18,7 +18,10 @@ fn toolchain() -> String {
 // Run `argv` (newline-separated) in `dir`: discovery off, a cache of this
 // fixture's own so the host binary is found in one place.
 fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n"
+            + dir + "\n" + cache + "\n" + argv,
+    );
 }
 
 fn alive(pid: String) -> Bool {
@@ -50,63 +53,120 @@ main locus App {
         std::io::fs::mkdir(cache) or discard;
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, cache, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nbodied\n--profile\nremote-body\n--remote\n" + bare + "\n--body\nriley@srv");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(
+            scratch,
+            cache,
+            dna::in_habitat(
+                toolchain() + "\nhabitat\ngraft\nbodied\n--profile\nremote-body\n--remote\n" + bare
+                    + "\n--body\nriley@srv",
+            ),
+        );
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/bodied";
         let g1 = in_dir(a, cache, "git\nconfig\nuser.name\norganism-host");
         let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nhost@dna");
         let g3 = in_dir(a, cache, "git\nadd\n-A");
         let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
-        let g5 = in_dir(a, cache, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        let g5 = in_dir(a, cache, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(g5.code, 0, "pushed: " + g5.stderr);
-        // a head elsewhere, with the record
+        // a head elsewhere: the genome cloned, the record reached through
+        // memory (`memory migrate` with the owner's DSN keeps the head's DSN
+        // in the clone, GH #1590)
         let head = scratch + "/head";
-        let c1 = in_dir(scratch, cache, "git\nclone\n-q\n-b\nmain\n" + bare + "\n" + head);
+        let c1 = dna::clone_repo_with("-b\nmain\n", bare, head);
         let c2 = in_dir(head, cache, "git\nconfig\nuser.name\nriley");
         let c3 = in_dir(head, cache, "git\nconfig\nuser.email\nriley@l");
-        let c4 = in_dir(head, cache, toolchain() + "\ndna\nupgrade\n.");
-        let c5 = in_dir(head, cache, toolchain() + "\ndna\nsync");
-        std::test::assert(std::str::contains(c5.stdout, "pulled the record"), "the head has the record: " + c5.stdout + c5.stderr);
+        let c4 = in_dir(head, cache, toolchain() + "\ndna\nmemory\nmigrate");
+        let c5 = in_dir(head, cache, toolchain() + "\ndna\nstatus");
+        std::test::assert(
+            c5.code == 0 && std::str::contains(c5.stdout, "event(s), chain verified"),
+            "the head has the record: " + c4.stdout + c4.stderr + c5.stdout + c5.stderr,
+        );
 
         // the host binary, built into this fixture's cache
         let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
-        let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
+        let host = dna::trim_nl(
+            in_dir(
+                scratch,
+                cache,
+                "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache,
+            ).stdout,
+        );
         std::test::assert(len(host) > 0, "the host is built: " + built.stdout + built.stderr);
         // the first line alone is the version: `hale --version` has a
         // second one since GH #726 (the embedded DNA digest)
-        let version = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\n\"$1\" --version | head -1\nsh\n" + toolchain()).stdout);
+        let version = dna::trim_nl(
+            in_dir(scratch, cache, "sh\n-c\n\"$1\" --version | head -1\nsh\n" + toolchain()).stdout,
+        );
 
         // a toolchain whose build takes twenty seconds
         let slow = scratch + "/slowhale";
-        std::io::fs::write_file(slow, "#!/bin/sh\nif [ \"$1\" = build ]; then sleep 20; fi\nexec \"" + toolchain() + "\" \"$@\"\n") or discard;
+        std::io::fs::write_file(
+            slow,
+            "#!/bin/sh\nif [ \"$1\" = build ]; then sleep 20; fi\nexec \"" + toolchain()
+                + "\" \"$@\"\n",
+        ) or discard;
         let x = dna::run_tool("chmod\n+x\n" + slow);
 
         // host A takes the lease and builds
-        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$4\" \"$3\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + slow + "\n" + version + "\n" + a + "\n" + host);
+        let started = in_dir(
+            a,
+            cache,
+            "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" HALE_DNA_MEMORY_DSN_SPINE=\"$5\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$4\" \"$3\" >a.log 2>&1 </dev/null & echo $!\nsh\n"
+                + slow + "\n" + version + "\n" + a + "\n" + host + "\n" + dna::fixture_spine(a),
+        );
         let mut taken = false;
         let mut tries = 0;
         while !taken && tries < 120 {
-            if log_has(a + "/a.log", "body lease taken") { taken = true; } else { std::time::sleep(250ms); }
+            if log_has(a + "/a.log", "body lease taken") {
+                taken = true;
+            } else {
+                std::time::sleep(250ms);
+            }
             tries = tries + 1;
         }
-        std::test::assert(taken, "host A took the lease: " + (std::io::fs::read_file(a + "/a.log") or ""));
+        std::test::assert(
+            taken,
+            "host A took the lease: " + (std::io::fs::read_file(a + "/a.log") or ""),
+        );
 
         // while A builds, the head takes the lease over
         let claimed = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
-        std::test::assert(std::str::contains(claimed.stdout, "was taken by riley"), "the head took the lease: " + claimed.stdout + claimed.stderr);
+        std::test::assert(
+            std::str::contains(claimed.stdout, "was taken by riley"),
+            "the head took the lease: " + claimed.stdout + claimed.stderr,
+        );
 
         // A finishes its build and starts nothing
         let mut ended = false;
         tries = 0;
         while !ended && tries < 240 {
-            if std::io::fs::file_exists(a + "/a.exit") { ended = true; } else { std::time::sleep(500ms); }
+            if std::io::fs::file_exists(a + "/a.exit") {
+                ended = true;
+            } else {
+                std::time::sleep(500ms);
+            }
             tries = tries + 1;
         }
         let log = std::io::fs::read_file(a + "/a.log") or "";
         std::test::assert(ended, "host A ended: " + log);
-        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(a + "/a.exit") or ""), "3", "host A exited 3: " + log);
-        std::test::assert(std::str::contains(log, "before starting the organization: the body lease is no longer mine") && !std::str::contains(log, "organization (pid"), "no organization was started under a lease that was not A's: " + log);
-        std::test::assert(!std::io::fs::file_exists(a + "/.hale/dna/org.pid"), "no organization process");
+        std::test::assert_eq_str(
+            dna::trim_nl(std::io::fs::read_file(a + "/a.exit") or ""),
+            "3",
+            "host A exited 3: " + log,
+        );
+        std::test::assert(
+            std::str::contains(
+                log,
+                "before starting the organization: the body lease is no longer mine",
+            )
+                && !std::str::contains(log, "organization (pid"),
+            "no organization was started under a lease that was not A's: " + log,
+        );
+        std::test::assert(
+            !std::io::fs::file_exists(a + "/.hale/dna/org.pid"),
+            "no organization process",
+        );
 
         // ---- every exit takes what the body started (the fifth review of
         // #622): under `dev` the organization starts and its tool runs, then
@@ -117,43 +177,93 @@ main locus App {
         // starts, so a build that fails stops the host earlier, with nothing
         // to take). The tool must not outlive the host. Without nerves the
         // host has nothing to wait for, so this half needs a NATS server.
-        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") {
+            std::env::var("HALE_DNA_NATS_URL_OWNER")
+        } else {
+            ""
+        };
         if len(nats_owner) == 0 {
-            eprintln("body_lease_start_test: the `dev` half was not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
+            eprintln(
+                "body_lease_start_test: the `dev` half was not exercised (HALE_DNA_NATS_URL_OWNER is not set)",
+            );
             dna::scratch_done(scratch);
             return;
         }
-        let nerves = in_dir(a, cache, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        let nerves = in_dir(
+            a,
+            cache,
+            "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n"
+                + toolchain() + "\n" + nats_owner,
+        );
         let nats_spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
         let nats_org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
-        std::test::assert(nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0, "the nerves' stream is in place: " + nerves.stdout + nerves.stderr);
+        std::test::assert(
+            nerves.code == 0 && len(nats_spine) > 0 && len(nats_org) > 0,
+            "the nerves' stream is in place: " + nerves.stdout + nerves.stderr,
+        );
         std::io::fs::write_file(a + "/dna/org/main.hl", WORKER_ORG) or discard;
-        let gc = in_dir(a, cache, "sh\n-c\ngit add -A && git commit -q -m 'an organization with a worker tool' && git push -q origin main");
+        let gc = in_dir(
+            a,
+            cache,
+            "sh\n-c\ngit add -A && git commit -q -m 'an organization with a worker tool' && git push -q origin main",
+        );
         std::test::assert_eq_int(gc.code, 0, "the worker organization is the genome: " + gc.stderr);
-        let dev = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" HALE_DNA_NATS_URL_SPINE=\"$5\" HALE_DNA_NATS_ORG=\"$6\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$4\" \"$3\" >b.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + version + "\n" + a + "\n" + host + "\n" + nats_spine + "\n" + nats_org);
+        let dev = in_dir(
+            a,
+            cache,
+            "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" HALE_DNA_NATS_URL_SPINE=\"$5\" HALE_DNA_NATS_ORG=\"$6\" nohup sh -c 'timeout 240 \"$0\" dev \"$1\" . \"\" \"\" --no-iris; echo $? > b.exit' \"$4\" \"$3\" >b.log 2>&1 </dev/null & echo $!\nsh\n"
+                + toolchain() + "\n" + version + "\n" + a + "\n" + host + "\n" + nats_spine + "\n"
+                + nats_org,
+        );
         let mut org_up = false;
         tries = 0;
         while !org_up && tries < 360 {
-            if log_has(a + "/b.log", "organization (pid") && std::io::fs::file_exists(a + "/worker.pid") { org_up = true; } else { std::time::sleep(500ms); }
+            if log_has(a + "/b.log", "organization (pid")
+                && std::io::fs::file_exists(a + "/worker.pid")
+            {
+                org_up = true;
+            } else {
+                std::time::sleep(500ms);
+            }
             tries = tries + 1;
         }
-        std::test::assert(org_up, "the organization started and its tool ran: " + (std::io::fs::read_file(a + "/b.log") or ""));
+        std::test::assert(
+            org_up,
+            "the organization started and its tool ran: "
+                + (std::io::fs::read_file(a + "/b.log") or ""),
+        );
         let retaken = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
-        std::test::assert(std::str::contains(retaken.stdout, "was taken by riley"), "the head takes the lease while the host waits: " + retaken.stdout + retaken.stderr);
+        std::test::assert(
+            std::str::contains(retaken.stdout, "was taken by riley"),
+            "the head takes the lease while the host waits: " + retaken.stdout + retaken.stderr,
+        );
         let mut dev_ended = false;
         tries = 0;
         while !dev_ended && tries < 360 {
-            if std::io::fs::file_exists(a + "/b.exit") { dev_ended = true; } else { std::time::sleep(500ms); }
+            if std::io::fs::file_exists(a + "/b.exit") {
+                dev_ended = true;
+            } else {
+                std::time::sleep(500ms);
+            }
             tries = tries + 1;
         }
         let dev_log = std::io::fs::read_file(a + "/b.log") or "";
-        std::test::assert(dev_ended && dna::trim_nl(std::io::fs::read_file(a + "/b.exit") or "") != "0" && !std::str::contains(dev_log, "expression bodied (pid"), "the host stopped before the application started: " + dev_log);
+        std::test::assert(
+            dev_ended
+                && dna::trim_nl(std::io::fs::read_file(a + "/b.exit") or "") != "0"
+                && !std::str::contains(dev_log, "expression bodied (pid"),
+            "the host stopped before the application started: " + dev_log,
+        );
         let worker = dna::trim_nl(std::io::fs::read_file(a + "/worker.pid") or "");
         std::test::assert(len(worker) > 0, "the organization's tool ran: " + dev_log);
         let tick = dna::trim_nl(dna::run_tool("tail\n-n\n1\n" + a + "/worker.tick").stdout);
         std::time::sleep(1500ms);
         let later = dna::trim_nl(dna::run_tool("tail\n-n\n1\n" + a + "/worker.tick").stdout);
-        std::test::assert(!alive(worker) && tick == later, "the tool did not outlive the host: alive " + (if alive(worker) { "yes" } else { "no" }) + ", ticks " + tick + " then " + later);
+        std::test::assert(
+            !alive(worker) && tick == later,
+            "the tool did not outlive the host: alive " + (if alive(worker) { "yes" } else { "no" })
+                + ", ticks " + tick + " then " + later,
+        );
         if alive(worker) { let k = dna::run_tool("kill\n-KILL\n" + worker); }
 
         dna::scratch_done(scratch);

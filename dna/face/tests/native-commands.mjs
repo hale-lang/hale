@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
 import { freePorts, commandsAnnounced, settle, wireLine } from './command-wire.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
+import { recordIdentity, recordState, receiptBody } from './record-memory.mjs';
 import { scaffoldProject, hostReady, organizationReady, hostChildren, running, headMemory } from './native-command-harness.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -39,7 +40,7 @@ const inherited = isolatedEnvironment();
 // observation, model, signing, OIDC, or native service configuration is forwarded.
 const childEnv = Object.fromEntries([
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM',
-  'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR',
+  'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR', 'XDG_DATA_HOME', 'HALE_DNA_HABITAT',
 ].filter(key => inherited[key] !== undefined).map(key => [key, inherited[key]]));
 const owned = new Set();
 const processes = [];
@@ -227,11 +228,10 @@ async function startApi(name = 'alice') {
   return capabilities.json.data;
 }
 async function switchActor(name) { await stop(api); return startApi(name); }
+// The record, as memory keeps it (GH #1590).
 function journal() {
-  const head = git('rev-parse', 'refs/dna/journal').trim();
-  const text = git('show', `${head}:journal.jsonl`);
-  const rows = text.trim().split('\n').filter(Boolean).map(line => {
-    const row = JSON.parse(line);
+  const { head, text, rows: kept } = recordState(fixture);
+  const rows = kept.map(row => {
     let data = null;
     try { data = JSON.parse(row.body); } catch { /* Native settled prose is not JSON. */ }
     return { ...row, data };
@@ -321,7 +321,9 @@ async function created(command) {
 function assertCandidate(receipt, command) {
   const digest = receipt.proposal.candidate_digest;
   assert.match(digest, /^sha256:[0-9a-f]{64}$/);
-  const document = git('cat-file', '-p', 'refs/dna/receipts/' + digest.slice(7));
+  // the body memory keeps (GH #1590)
+  const document = receiptBody(fixture, digest);
+  assert(document !== null, `memory keeps no body ${digest}`);
   assert.equal('sha256:' + createHash('sha256').update(document, 'utf8').digest('hex'), digest);
   const value = JSON.parse(document);
   assert.equal(value.text, command.arguments.text);
@@ -387,10 +389,11 @@ async function scenario(name, run) {
 
 let failure;
 try {
-  scaffoldProject({ hale: binaries.hale, root: fixture, env: { ...childEnv, USER: actor, LOGNAME: actor }, actor });
+  // the graft births the record in memory (GH #1590, #1653), with the owner's servers
+  scaffoldProject({ hale: binaries.hale, root: fixture, env: { ...childEnv, USER: actor, LOGNAME: actor, HALE_DNA_MEMORY_DSN_OWNER: owner }, actor });
   const ready = await startHost();
-  application = git('rev-list', '--max-parents=0', 'refs/dna/journal').trim();
-  assert.match(application, /^[0-9a-f]{40,64}$/);
+  application = recordIdentity(fixture);
+  assert.match(application, /^[0-9a-f]{64}$/);
   assert.equal(ready.practice_id, ready.bootstrap_digest);
   save('authority.json', {
     format: 'dna.practice-review-authority/1', application_id: application,
@@ -542,15 +545,15 @@ try {
   let snapshot;
   try {
     snapshot = journal();
-    fs.writeFileSync(path.join(evidence, 'journal.jsonl'), snapshot.text);
-    fs.writeFileSync(path.join(evidence, 'refs.txt'), git('show-ref'));
+    fs.writeFileSync(path.join(evidence, 'record.jsonl'), snapshot.text);
+    fs.writeFileSync(path.join(evidence, 'refs.txt'), (() => { try { return git('show-ref'); } catch { return ''; } })());
   } catch (error) { failure ||= error; }
   const hashes = Object.fromEntries(Object.entries(binaries).map(([name, binary]) => [name, { path: binary, sha256: createHash('sha256').update(fs.readFileSync(binary)).digest('hex') }]));
   save('requests.json', requests); save('receipts.json', receipts); save('processes.json', processes);
   const result = {
     ok: !failure, passed: cases.length, expected: 9, cases, elapsed_ms: Date.now() - started,
     application_id: application, record_head: snapshot?.head, record_rows: snapshot?.rows.length,
-    evidence, fixture, policy: policyPath, journal: path.join(evidence, 'journal.jsonl'),
+    evidence, fixture, policy: policyPath, journal: path.join(evidence, 'record.jsonl'),
     binaries: hashes, post_requests: requests.filter(row => row.method === 'POST').length,
     read_requests: requests.filter(row => row.method === 'GET').length,
     discarded_replies: requests.filter(row => row.discarded).length,

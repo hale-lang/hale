@@ -1,97 +1,103 @@
-# The head and the face
+# Edge API Server, Web UI, and Reviews (The Head and the Face)
 
-The **head** is the edge API: the one surface people and services
-reach. It knows who is calling (a session, a bearer, a socket peer),
-maps them to the positions the record says they hold, and admits their
-commands into the record with a receipt. It never performs work. The
-operator who serves it owns it; it is built from source (`dna/api`) and
-started for you by `hale dna head` (or, from a checkout, by
-`dna/face/start.sh`). A head fails closed: with no
-principal source it refuses to start, a caller it cannot name gets
-nothing, and a command outside the caller's positions is refused. It
-never holds the spine's database role, a model credential or the forge
-token. The **face** is the browser shell over it, where the organism
-shows itself to people.
+The **head** (`dna/api`) is the edge API server for a DNA project. It authenticates callers (via OIDC sessions, bearer tokens, or Unix domain sockets), resolves their held positions from the record, and admits commands (`HeadCommands`) into the Postgres record with idempotent receipts. The **face** (`dna/face`) is the browser UI shell served in front of the head. Neither the head nor the face executes tasks or holds the spine's database role, model API keys, or GitHub forge tokens.
 
-| part | what it is | where it lives |
+```sh
+# Start the project head, standard browser face (port 8792), and local OIDC stub
+hale dna head /absolute/path/to/project
+
+# Inspect the Board queue and render or decide a pending Review from the CLI
+hale dna board
+hale dna review <id>
+hale dna review <id> approve --comment "verified semantic diff and test receipts"
+```
+
+## Architecture Overview
+
+| Component | Engineering Role | Source / Entrypoint |
 | --- | --- | --- |
-| head | a project's API: reads over HTTP, commands as a surface (`HeadCommands`) over a socket and an HTTP exposure | `dna/api` |
-| the project head | the face's server: a registry of projects, receipts, a proxy to each project's head | `dna/api/project_service`, `hale dna head`, `dna/face/start.sh` |
-| face | the browser shell | `dna/face` |
-| surface | `hale dna ui`: a read-only page from the record | `dna/ui` |
-| the Board and Reviews | the queue, the Review, its verdicts and signers | `hale dna board`, `hale dna review`, `dna/core/review.hl` |
-| the forge mirror | Reviews as pull requests | `hale dna github sync`, `dna/host/forge_github.hl` |
+| **Head** (`dna/api`) | Project edge API: serves HTTP read queries and exposes the `HeadCommands` mutation surface over a Unix socket and HTTP | `dna/api` |
+| **Project Head** | Multi-project server: manages project registry, detached CLI operation receipts, and proxies to each attached project's API child | `dna/api/project_service`, `hale dna head`, `dna/face/start.sh` |
+| **Standard Face** | Browser UI shell serving `/index`, `/app/`, and the Projects workspace in front of the head | `dna/face` |
+| **Read-Only UI** (`hale dna ui`) | Standalone read-only HTTP server rendering offline CLI projections on port `8790` | `dna/ui` |
+| **Board & Reviews** | Governance queue, 3-view Review rendering, signer routing, and verdict settlement | `hale dna board`, `hale dna review`, `hale dna route`, `dna/core/review.hl` |
+| **Forge Mirror** | Reviews mirrored as pull requests at the organism's allocated forge, and their verdicts read back | `hale dna forge sync`, `dna/core/forgejo.hl`, `dna/host/forge_github.hl` |
 
-## Start the head
+---
 
-With the toolchain installed, and a project made by `hale dna new`:
+## Starting the Project Head (`hale dna head`)
+
+For any project created or attached with `hale habitat graft`, start the head and browser face with:
 
 ```sh
 hale dna head /absolute/path/to/project
 ```
 
-The toolchain carries the head's sources, the face's assets and the
-launcher, as it carries the host's: the first `hale dna head` builds the
-project head, the project's API child, the stub OpenID provider and the
-reflexes into the toolchain cache, side by side (a few minutes), and every
-later one starts them at once, until the toolchain changes. It prints the
-face's loopback URL. With no project it starts detached, and the
-browser's Projects workspace creates, initializes or attaches one.
+On first run, `hale dna head` compiles the project head, standard face, project API child, stub OIDC provider (`dna/oidc`), and reflexes into the toolchain cache (subsequent starts launch immediately until the toolchain version changes) and prints the face's loopback URL. If invoked without a project path, the server starts detached so you can attach or manage projects from the browser's Projects workspace.
 
-With a project, the head reads Knowledge from memory under the record's
-head role. `hale dna head` derives that DSN as `hale dna memory migrate`
-derives it and hands it to the head alone; it is never printed. When the
-project's memory is not up it says so and starts anyway, with Knowledge
-unsupported: `hale dna dev` brings the project's memory and nerves up.
-An operator's own `HALE_DNA_MEMORY_DSN_HEAD` wins.
+When developing from a `hale` compiler checkout, `dna/face/start.sh /absolute/path/to/project` accepts the exact same flags (`--help` lists all options) and builds directly from the working tree into temporary storage on each start.
 
-From a checkout of hale, the launcher starts the same head, building it
-from the checkout into temporary storage on every start:
+### Default Ports and Dynamic Port Binding
 
-```sh
-dna/face/start.sh /absolute/path/to/project
-```
-
-Both take the same flags; `hale dna head --help` and
-`dna/face/start.sh --help` list them.
-
-| port | what listens | flag |
+| Default Port | Service | CLI Flag |
 | --- | --- | --- |
-| 8792 | the project head, serving the face | `--port` |
-| 8793 | the API child's reads | `--api-port` |
-| 8794 | the stub OpenID provider (`dna/oidc`) | `--oidc-port` |
-| 8795 | the API child's commands: its surface's HTTP exposure | `--commands-port` |
+| `8792` | Project head serving the standard browser face | `--port` |
+| `8793` | Project API child (HTTP read endpoints) | `--api-port` |
+| `8794` | Local stub OpenID Connect provider (`dna/oidc`) | `--oidc-port` |
+| `8795` | Project API child (`HeadCommands` HTTP mutation surface) | `--commands-port` |
+| `8796` | Internal loopback port where the head listens behind the standard face | `--head-port` |
 
-The API child says when each part is listening. Its commands port is
-given to it (`HALE_DNA_COMMANDS_PORT`), never derived from the reads'
-port, and once its binding holds that port it prints:
+When `dna/api/project_service` is started with an API port of `0` and no `HALE_DNA_COMMANDS_PORT` (such as in test fixtures), it passes port `0` for both sockets to the API child. The child binds ephemeral OS ports and reports both back via `HALE_DNA_API_PORTS` (preventing port-race collisions), printing:
 
 ```text
 hale dna api: commands http://127.0.0.1:<port>/
 ```
 
-The launcher starts no body, database or broker; those are the
-project head's operations, each a CLI verb it runs on request.
+The API child serves the same surface over MCP too, for an agent pairing with a person, on an ephemeral port it always picks itself; it reports it as `mcp=<port>` in `HALE_DNA_API_PORTS` and prints:
 
-## Who you are
+```text
+hale dna api: mcp mcp://127.0.0.1:<port>
+```
 
-A head has exactly two ways in, and a caller is always a person, a
-service, or nobody.
+### Database Role and Memory Requirements
 
-**On the socket**, a peer is the local account the kernel vouches for,
-mapped to a person in the record's own config:
+The head reads the record and Knowledge from Postgres under the least-privilege **head role** (`HALE_DNA_MEMORY_DSN_HEAD`). `hale dna head` derives this DSN from an active, migrated memory allocation and passes it exclusively to the head process without printing it; an explicit `HALE_DNA_MEMORY_DSN_HEAD` in the environment takes precedence.
+
+The head never starts databases, brokers, or the organism body, and never runs schema migrations. If the project's memory allocation is down or unmigrated, the head refuses to start and directs you to run `hale habitat migrate <project>`.
+
+---
+
+## The Habitat Face and Operator UI
+
+Because the local habitat is itself a DNA organism, `hale habitat up` starts the standard face over the habitat's own head alongside its body. `hale habitat status` prints the URL on the `face` line (`hale habitat down` stops it):
+
+```sh
+$ hale habitat status
+...
+face    http://127.0.0.1:8864/ (up, compose service face)
+```
+
+- **Habitat Index (`/index`):** Lists every organism grafted from the habitat under **Organisms**, showing its name, state (`up` while its face responds, `grafted` otherwise), face URL, and head URL (each organism receives a dedicated block of loopback ports stored in `dna.head.url` at graft time).
+- **Infrastructure Surface Calls:** The habitat head exposes `Commands::hosts` (registered machines and their capabilities), `Commands::allocations` (every organism role's placement provider, host, and live state: `up`, `degraded`, or `down`), and `Commands::policy` (role-to-provider mapping). The face queries these endpoints via `POST /api/hale/v1/head/surface/call/Commands::hosts` (and sibling rows) with `{"limit": 50}`.
+- **Habitat Operator UI (`/app/`):** Served directly from `dna/habitat/ui/` in the habitat's genome using a generated ES-module client (`hale api client --lang js`, committed at `dna/habitat/ui/head-client.js`) with zero build step. Unauthenticated visitors are redirected to the OIDC provider before the page is served. Styling is defined in `dna/habitat/ui/operator.css` (brass indicates a boundary crossing; color is reserved strictly for operational state). The page is four screens switched by the hash: the habitat (its name and state, and the web UIs across its organisms from `Commands::uis`: each organism's face and each UI its manifest declares under `[dna.ui.<name>]`, with its link and how to sign in), **hardware** (hosts, their offers and host keys, add a host and copy the key line, probe, remove: a host with allocations shows its removal's plan, `Commands::plan_remove_host`, and a field for the host's name, which `Commands::remove_host` checks), **infrastructure** (allocations with a host picker, `apply` and its pulse, the confirm step for a move that starts a memory empty) and **organisms** (the organisms with purpose and pulse, the saplings, a `graft` per sapling that follows the graft's log, and `remove` on each organism: its plan from `Commands::plan_remove_organism` and a field for its name). A refusal is shown as the row said it.
+
+---
+
+## Authentication and Principal Mapping
+
+A head fails closed: it refuses to start without a configured principal source, rejects unmapped callers, and speaks plain HTTP (terminate TLS at a reverse proxy when exposing over a network). Callers authenticate through one of two channels:
+
+### 1. Local Unix Domain Socket
+
+Commands sent by `hale dna work` ([Legs, hands and voice](./legs.md)) travel over a per-record Unix domain socket located under `$XDG_RUNTIME_DIR/hale/dna/` (or `.hale/dna/` in the checkout), advertised in the head's capabilities. The OS kernel vouches for the peer's UID, which the head maps to a person via local Git config (written automatically for the current user by `hale habitat graft`):
 
 ```sh
 git config --local --add dna.unix.member "uid:1000=alice"
 ```
 
-`hale dna new` and `hale dna init` map whoever runs them. The socket is
-one per record, under `$XDG_RUNTIME_DIR/hale/dna/` (else the record's
-`.hale/dna`), and the head names it in its capabilities. This is where `hale dna work` sends its
-commands ([Legs, hands and voice](./legs.md)).
+### 2. HTTP and OpenID Connect (OIDC)
 
-**Over HTTP**, every caller is an identity provider's subject. Name the
-provider and map the subjects you trust:
+Over HTTP, every caller is authenticated against an OIDC identity provider:
 
 ```sh
 git config dna.principal oidc
@@ -101,86 +107,46 @@ git config --add dna.oidc.member "<subject>=alice"
 hale dna secret set OIDC_CLIENT_SECRET
 ```
 
-The client secret goes into the vault as `oidc-client-<client>`
-([The skin](./skin.md)). `dna.oidc.redirect` names the callback when it
-is not the head's own `/auth/callback`. The head reads the issuer's
-discovery document and signing keys once, at start, and does not start
-without them. Every token is verified: ES256 under the issuer's keys,
-the issuer, this client in the audience, unexpired. An issuer on the
-loopback is anyone's who can bind its port, so the record pins its key
-(`dna.oidc.key`), and the head trusts that key alone.
+- **Vault & Discovery:** `hale dna secret set OIDC_CLIENT_SECRET` stores the client secret in the vault slot `oidc-client-<client>` ([The skin](./skin.md)). Set `dna.oidc.redirect` if the callback URL differs from the head's `/auth/callback`. At startup, the head fetches the issuer's OIDC discovery document and JWKS signing keys (and refuses to start if they are unreachable). Every token is verified for `ES256` signature, issuer, audience (`dna.oidc.client`), and expiration. For loopback issuers (`127.0.0.1` / `localhost`), the record must pin the issuer's public key in `dna.oidc.key`, and the head trusts only that key. Unauthenticated clients can query `/.well-known/hale-dna` to discover the head's issuer and client ID.
+- **Human Principals (`dna.oidc.member`):**
+  - *Browser sessions:* Authenticate via the OIDC authorization-code flow with random `state` and `nonce` bound to the initiating browser. Mapped subjects receive an 8-hour `HttpOnly` session cookie (cleared by `/auth/logout`); unmapped subjects receive no session.
+  - *CLI / Leg bearer tokens:* Present `Authorization: Bearer <id-token>`. Against the local stub issuer, `hale dna work login` mints this token; against an external issuer, users sign in at `/auth/login`.
+  - *Lease-gated reads:* Context packages (`/dna/context`, used by `hale dna work brief`) can only be read by the person whose bearer token matches the active lease holder on that Work's attempt.
+- **Service Principals (`dna.oidc.service`):** Automated services without a human operator obtain tokens via the OIDC `client_credentials` grant and map their subject with:
+  ```sh
+  git config --local --add dna.oidc.service "<subject>=<service>"
+  ```
+  Service principals authenticate as `service:<service>`, receive no browser session, hold no positions, and can only execute read queries—never commands. A subject cannot be mapped as both a person and a service.
+- **Local Stub OIDC Mode:** `hale dna head` and `dna/face/start.sh` automatically launch the local stub OIDC provider (`dna/oidc`), sign you in as subject `local-sub` mapped to `$USER`, pin the stub's key in `dna.oidc.key`, and refuse to attach projects configured for a different issuer.
+- **Fixture Mode (`HALE_DNA_TRUSTED_LOCAL=1`):** Starting a head without `dna.principal = oidc` or `HALE_DNA_TRUSTED_LOCAL=1` fails immediately:
+  ```text
+  trusted-local is a fixture's mode (HALE_DNA_TRUSTED_LOCAL=1); a project serves its head under OIDC: `git config dna.principal oidc` with dna.oidc.issuer, dna.oidc.client and dna.oidc.member (dna/face/start.sh sets them up with the stub provider, dna/oidc)
+  ```
 
-- **A person** signs in through the browser: the authorization-code
-  flow, a random `state` and `nonce`, a callback bound to the browser
-  that started it. The session is an `HttpOnly` cookie that lasts eight
-  hours or until `/auth/logout`. An unmapped subject gets no session.
-  A program acting for a person presents its ID token as
-  `Authorization: Bearer <token>` instead; a leg gets one from
-  `hale dna work login` where the issuer is the local stub, and signs
-  in at `/auth/login` where it is not ([Legs, hands and voice](./legs.md)).
-  The head names its issuer and client at `/.well-known/hale-dna`,
-  unauthenticated, which is what the verb asks.
-- **A service**, a program with no person behind it, gets its own token
-  from the issuer with the `client_credentials` grant and presents it
-  as a bearer. Map it beside your members, with
-  `git config --local --add dna.oidc.service "<subject>=<service>"`.
-  It reads as `service:<service>`, gets no session, and sends no
-  commands: a command is a person's, and a service holds no position.
-  A subject is a person or a service, never both.
+---
 
-What a person's token reads is the record's to say. The hat of a Work
-(`…/dna/context`, what `hale dna work brief` prints) is read by the person
-who holds that Work's attempt lease and by no one else: the member map
-names the person, and the claim row names who holds the lease
-([Legs, hands and voice](./legs.md)).
+## `HeadCommands` Surface, Authorization Gates, and Receipts
 
-**Local mode is OIDC too.** `hale dna head` (and `dna/face/start.sh`) starts the stub
-provider on the loopback and signs you in through it as the subject
-`local-sub`, mapped to `$USER`; it configures a project it attaches for
-that issuer, pins the stub's key, and refuses a project another issuer
-serves.
+Every mutation accepted by the record is a member of the `HeadCommands` API surface. Both the CLI and the browser UI call this exact same generated surface (`hale api client --surface HeadCommands`; the Hale client for legs is committed in `dna/core/legs/head_commands`).
 
-**Trusted-local is a fixture's mode.** A head started with neither
-`dna.principal = oidc` nor `HALE_DNA_TRUSTED_LOCAL=1` refuses to start:
+### Authorization Gates
 
-```text
-trusted-local is a fixture's mode (HALE_DNA_TRUSTED_LOCAL=1); a project serves its head under OIDC: `git config dna.principal oidc` with dna.oidc.issuer, dna.oidc.client and dna.oidc.member (dna/face/start.sh sets them up with the stub provider, dna/oidc)
-```
+Authorization gates are evaluated identically over the Unix socket and HTTP based on the positions held by the authenticated person in the record:
 
-The head speaks plain HTTP. On a network, put TLS in front of it.
-
-## Commands and their receipts
-
-Every command the record takes is a row of the head's surface `HeadCommands`.
-The record answers who holds what, so the same rows' `requires` apply on
-the socket and over HTTP:
-
-| gate | who passes | rows |
+| Gate | Required Seat | `HeadCommands` Operations |
 | --- | --- | --- |
-| `owner` | a holder of `position:board` | `propose_organization`, `reassign_task`, `retire_person` |
-| `reviewer` | a holder of `position:reviewer` | `verdict` |
-| `position` | a holder of any live position | `propose`, the attempt rows (`claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance`), `file_friction`, the `*_knowledge` changes, the structure (`open_position`, `fill`, `apply_batch`) |
-| none | any person the head can name | `create_task`, `lookup`, `lookup_knowledge`, `preview_batch` |
+| `owner` | Holder of `position:board` | `propose_organization`, `reassign_task`, `retire_person` |
+| `reviewer` | Holder of `position:reviewer` | `verdict` |
+| `position` | Holder of any active position | `propose`, attempt lifecycle (`claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance`), `file_friction`, `*_knowledge` mutations, org structure (`open_position`, `fill`, `apply_batch`) |
+| `none` | Any authenticated person | `create_task`, `lookup`, `lookup_knowledge`, `preview_batch` |
 
-Over HTTP a command is `POST /call/<member>` on the commands port, under
-the caller's bearer. A browser holds a session, not a bearer: the
-head that serves the page relays its `POST …/commands` with the
-session's token, after checking what a cookie needs (the exact
-`Origin`, `X-Hale-Command: 1`, a JSON body).
+Over HTTP, clients invoke `POST /call/<member>` on the commands port (`8795`) with a bearer token. For browser sessions, the face server validates CSRF preconditions (exact `Origin` match, `X-Hale-Command: 1` header, and JSON content type) on `POST …/commands` and relays the request using the session's token.
 
-**Every mutation is a head command; the UI is a client** of the
-generated surface. A change to the organization's structure made from a
-UI is not a second code path: `open_position`, `fill` and `apply_batch`
-write exactly the rows `hale dna position open`, `hale dna fill` and
-`hale dna apply` write, in the caller's name, and refuse what those verbs
-refuse, with the same words. The organization answers the rows whoever
-sent them, and the Board decides through `verdict`. `vacate` is a
-one-step batch (`vacate <position> <holder>`). Each takes the Record's
-`head` it was prepared against as `record_head`, and a moved Record is
-`stale_subject`. `preview_batch` is a read: the batch planned against
-the head, not proposed, as data (the org chart's lines before and after,
-and those it adds, takes out and keeps), so a UI shows the change, then
-applies it at the head the preview names:
+### Structural Mutations and Batch Previews (`preview_batch` / `apply_batch`)
+
+UI and API calls to `open_position`, `fill`, and `apply_batch` write the exact same rows—and enforce the exact same refusal rules—as `hale dna position open`, `hale dna fill`, and `hale dna apply` (`vacate` is submitted as a one-step batch: `vacate <position> <holder>`). Every structural mutation requires `record_head` (the record digest it was prepared against) and fails with `stale_subject` if the record has advanced.
+
+Before applying a batch, UIs call `preview_batch` to compute a read-only diff against the current record head:
 
 ```text
 preview_batch { steps }            → { ok, why, head, before, after, added, removed, unchanged, pending }
@@ -188,37 +154,22 @@ apply_batch { request_id, record_head: head, steps, pack: "" }
                                    → receipt.structure { state: requested, request_id, review_id, … }
 ```
 
-The receipt's `structure` reads `requested` until the organization
-answers, then `proposed` (with the Review) or `refused` (with why); the
-same steps still pending answer `already_proposed`, naming their Review.
-The clients are generated from the surface (`hale api client --surface
-HeadCommands`); the legs' Hale client is committed in
-`dna/core/legs/head_commands`.
+The returned receipt's `structure.state` begins as `requested` and transitions to `proposed` (with `review_id`) or `refused` (with `why`) once the organization processes it; submitting identical steps while a Review is still open returns `already_proposed` with the existing `review_id`.
 
-A command is one act per request id. Its receipt names the command and
-request ids, the operation, the principal (`principal_mode`,
-`principal_name` and the positions the person holds),
-the target, and a `state` with its `reason`. Sent again under the same
-id, a command that landed is found by it and answered with the same
-receipt; `lookup` reads one back.
+### Command and Operation Receipts
 
-The project head keeps receipts of its own operations (create, init,
-attach, sync, the local body, secrets, the model probe, and more), each
-a CLI verb run detached, with its pid, exit code and log as files,
-under a `command-<digest>` identity:
+- **Surface Command Receipts:** Keyed by `request_id`. Each receipt records the command ID, `request_id`, operation name, principal metadata (`principal_mode`, `principal_name`, and held positions), target, `state`, and `reason`. Retrying a command with the same `request_id` returns the stored receipt (`lookup` fetches a receipt by ID).
+- **Detached Project Head Operations:** When the project head runs detached CLI operations (such as grafting, attaching, syncing, starting the local body, setting secrets, or probing models), it tracks each execution by its `command-<digest>` identity alongside its PID, exit code, and log file through the state machine:
+  ```text
+  recorded → admitted | refused → running → succeeded | failed | outcome_unknown
+  ```
+  Retrying an identical operation replays the receipt; changing arguments with the same ID conflicts. Any operation that crosses the network and exceeds its deadline is marked `outcome_unknown` (never assumed `failed`).
 
-```text
-recorded → admitted | refused → running → succeeded | failed | outcome_unknown
-```
+---
 
-An identical retry replays the receipt; a changed one conflicts. A
-verb that reaches beyond this machine and passes its deadline is
-`outcome_unknown`, never `failed`. The head appends nothing to any
-record itself.
+## The Board Queue (`hale dna board`)
 
-## The Board's queue
-
-`hale dna board` is what waits for the Board. A fresh project's:
+`hale dna board` reads the record offline from any clone and summarizes every item awaiting Board action or operator intervention:
 
 ```text
 $ hale dna board
@@ -230,108 +181,59 @@ secret: the forge's token is not in the vault (forge-token); `hale dna secret se
 decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one
 ```
 
-It lists the pending Reviews that need the Board, how many the Leader
-is deciding inside its grant, handed Tasks waiting on a decision
-(`tasks waiting:`), proposals, the last report, grant changes, a model
-credential the body lacks, the secrets the vault lacks, and the latest
-violations the organism absorbed. It reads the record, so it works in
-any clone.
+The output includes:
+- Pending Reviews requiring `board` authority (plus a count of Reviews currently delegated to the Leader within its autonomy grant).
+- Human-assigned Tasks awaiting completion or a third-party decision (`tasks waiting:`).
+- Pending organizational proposals, grant changes, and the most recent filed report.
+- Missing vault credentials (`FORGE_TOKEN`, model API keys) and the latest absorbed runtime violations (`violation.recorded`).
 
-## Reviews
+---
 
-A Review owns one question: the candidate's digest, the authority or
-the positions it requires, and the verdicts it received.
+## Reviews, Verdicts, and Signer Routing
+
+Every Review (`dna/core/review.hl`) governs a single candidate digest, tracking the required authority or signer positions and all submitted verdicts.
 
 ```sh
-hale dna review                  # the pending Reviews
-hale dna review <id>             # render one
-hale dna review <id> --iris      # a change's semantic diff in iris's review view
+hale dna review                  # list all pending Reviews grouped by family
+hale dna review <id>             # render a Review offline (question, 3 views, and status)
+hale dna review <id> --iris      # inspect a code change's semantic diff in the Iris review view
 ```
 
-The list groups the toolchain's seeded proposals under their headings
-(`purpose`, `design`, `operating`, `using`, the library's families and a repository's `holes`,
-`practices` and `holds`, `positions` opened at run time and the
-repository's graph read again, `ingest`), in the order they were proposed: under `holes`,
-each position is followed by its mandate (`ratify the mandate of
-<position>: …`), so `hale dna review holes approve` ratifies the
-position and then its mandate, and the mandate is bound to the position
-once ratified. A proposal renders as its question and what
-it needs:
+`hale dna review` groups pending Reviews by family in proposal order: `purpose`, `design`, `operating`, `using`, `library`, `holes` (where each proposed position is immediately followed by its `mandate/<position>` Review so `hale dna review holes approve` ratifies and binds them in sequence), `practices`, `holds`, `positions`, `changes`, and `ingest`.
 
-```text
-$ hale dna review k:3870910f5de4
-review k:3870910f5de4 [pending]: ratify the declared purpose?
-  needs board · candidate sha256:3870910f5de44652ad0a9b91cedc50da02d81c3443181b6bed8fd50c0469bc8d
-decide: hale dna review k:3870910f5de4 approve|revise|reject|abstain [--as <you>] [--comment <c>]
-```
+### The Three Review Views
 
-A change renders its **three views**, always together, because each
-sees what the others cannot:
+When rendering a code mutation Review, `hale dna review <id>` displays the mutation metadata (class, author, grant disposition, and magnitude vector) followed by **three mandatory views** computed offline from the record and its receipts:
+1. **Source Diff (`git diff`):** Base-to-candidate line diff—the only view that exposes handler logic tweaks, literal changes, or unused struct fields.
+2. **Semantic Diff (`hale model diff`):** Structural summary of added, removed, renamed, or moved declarations, contract/effect class shifts, and constitutional claims whose verification status changed.
+3. **Evidence Table:** Pass/fail (`yes` / `NO`) table for every verification step executed by the toolchain (`fmt`, `check`, `verify`, `test`, `fleet`, `replay`, `rollback`), linked to its output receipt digest.
 
-- **the source diff**, git's, base to candidate: the only view that
-  sees handler behaviour, a changed literal, a field added and unread;
-- **the semantic diff**, `hale model diff` from its receipt:
-  declarations added, removed, renamed, moved; contracts and effect
-  classes that moved; claims whose result flipped;
-- **the evidence table**, one row per step the toolchain ran (`fmt`,
-  `check`, `verify`, `test`, …), `yes` or `NO`, with the receipt of
-  its output.
-
-Above them the render names the mutation, its class, its author, the
-disposition under the grant, and the magnitude. The render works
-offline, from the record and its receipts. The kill test behind the
-three views is in `dna/kill-test/WALKTHROUGH.md`.
-
-### Verdicts
+### Submitting Verdicts
 
 ```sh
 hale dna review <id> approve --comment "fine"
-hale dna review <id> approve --digest <sha>     # name the candidate you looked at
-hale dna review <id> reject --no-wait           # write it; the answer lands in the record
-hale dna review design approve                  # every pending Review in a group, each its own verdict
+hale dna review <id> approve --digest <sha>     # explicitly pin the candidate digest you inspected
+hale dna review <id> reject --no-wait           # write verdict row and return without waiting for settlement
+hale dna review design approve                  # approve every pending Review in the `design` group sequentially
 ```
 
-The verdicts are `approve`, `revise`, `reject` and `abstain`. `--as`
-names the reviewer (default: `$USER`), `--authority` the authority
-claimed (default: `board`), `--comment` the reasoning, and `--digest`
-the candidate you looked at (default: the one the Review pinned). The
-verdict is a `review.verdict` row; a node relays it, and the Review
-answers in the record. Unless you say `--no-wait`, the verb waits
-for the answer:
-
-```text
-review <id> settled: …
-review <id> signed by <who>; it awaits <positions>
-review <id> refused the verdict: …
-```
-
-The Review admits a verdict only if:
-
-1. **it names the pinned candidate** (else `digest mismatch: …`);
-2. **the reviewer stands to decide it**: with signers, a holder of a
-   required position; with none, a claimed authority that satisfies
-   the required one (else `authority <a> does not satisfy <required>`);
-3. **the reviewer did not author it** (`reviewer <who> authored the candidate`),
-   except on a governance proposal requiring the Board (a fill, an
-   opening, a graph proposal), which admits its author's verdict:
-   [Positions and `fill`](./shaping.md).
-
-| authority | rank |
+| Flag / Argument | Description |
 | --- | --- |
-| `board` (also `maintainer`) | 4 |
-| `leader` | 3 |
-| `supervisor` | 2 |
-| `reviewer` | 1 |
+| `approve\|revise\|reject\|abstain` | Verdict decision (`approve` on a code change also triggers genome application; `revise` and `reject` close the Review without touching the genome; `abstain` records a note and leaves the Review open). |
+| `--as <reviewer>` | Reviewer identity (defaults to `$USER`). |
+| `--authority <a>` | Claimed authority level (defaults to `board`). Ranks: `board` / `maintainer` (`4`) > `leader` (`3`) > `supervisor` (`2`) > `reviewer` (`1`). |
+| `--comment <c>` | Justification recorded in `review.reasoned`. |
+| `--digest <sha>` | Expected candidate digest (defaults to the Review's pinned digest). |
+| `--no-wait` | Do not block waiting for the organization to settle the `review.verdict` row. |
 
-A claimed authority satisfies a requirement of its rank or below. `revise` and
-`reject` settle the Review and leave the genome untouched; `abstain` is
-recorded and leaves it open. An `approve` on a change is also its apply
-([The heart and the body](./heart.md)).
+A Review admits a verdict only if all three conditions hold:
+1. **Candidate digest match:** `--digest` matches the Review's pinned candidate (otherwise refused with `digest mismatch: …`).
+2. **Sufficient authority or signer seat:** If the Review is routed to specific signer positions, the reviewer must hold one of those required positions; otherwise, the reviewer's claimed `--authority` rank must be greater than or equal to the Review's required authority (`authority <a> does not satisfy <required>`).
+3. **Author separation (two-person rule):** The reviewer must not be the author of the candidate (`reviewer <who> authored the candidate`). The sole exception is a Board-level governance proposal (filling or opening a position, or a graph proposal), where the proposer may also ratify as the Board ([Positions and `fill`](./shaping.md#positions-and-fill)).
 
-### Route and signers
+### Signer Routing (`hale dna route`)
 
-A change set goes to the positions that must sign it, read from the
-graph's `reviews` edges, never guessed:
+For code changes, required signers and CI gates are computed deterministically from `reviews` edges in the Postgres memory graph:
 
 ```sh
 hale dna route main.hl
@@ -339,90 +241,81 @@ hale dna route --diff main..HEAD
 hale dna route --json main.hl
 ```
 
-It lists who signs (each position with its holders and why), the gates
-the change is judged against, what no position reviews, and what is
-left to the fallback. The graph is memory's, so without memory it
-says so:
+`hale dna route` prints every position that must sign the change (with its current holders and the graph edge that triggered it), the required verification gates, any unreviewed paths, and the fallback authority. (Because routing queries the memory graph, running `hale dna route` without `HALE_DNA_MEMORY_DSN_HEAD` prints an error directing you to run `hale habitat migrate <organism>`.)
 
-```text
-$ hale dna route main.hl
-hale dna: route: the graph is memory's, and no memory is named (HALE_DNA_MEMORY_DSN_HEAD); `hale dna memory migrate` prints it
-```
+When a Review opens, it records this routing calculation as a `review.routed` row:
+- **With active signers:** The Review settles as approved only after **every** required position submits `approve` and **every** required gate records a passing run at the candidate digest (`gate.observed` from the forge). A single `reject` or `revise` from any required position settles the Review immediately. The Leader never decides a routed Review. (Passing `--evidence` on a verdict is refused; gate runs are observed directly from the forge.)
+- **Without signers** (no memory configured, or required positions are currently vacant): The Review falls back to its required authority rank (`board`, `leader`, etc.).
 
-A Review takes its signers and gates from the same computation when it
-opens, and records them as `review.routed`. With signers, approval
-settles only once every required position has approved and every gate
-has a passing run at the candidate, as the forge reports it
-(`gate.observed`); one rejection or revision from a required position
-settles it.
-With no signers (no memory, or no position the route names is held),
-the Review keeps its required authority, which the render shows as the
-fallback. The Leader never decides a routed Review. A verdict cites no
-gate run: `--evidence` is refused.
+---
 
-## The face and the surface
+## Browser Surfaces: Standard Face, `/index`, Named Faces, and `hale dna ui`
 
-**The face** (`dna/face`) is the browser shell the project head serves:
-the Projects workspace, where you create, initialize and attach
-projects and run their operations, and, for an attached project, its
-application controls, the organization, workflow definitions,
-Knowledge, practices and Reviews. It does not poll: the head tells it when to read
-again over an event stream (`GET /api/hale/v1/head/events`), when a
-receipt is journaled, a run or child starts or ends, or the organism
-lands a row.
+- **Standard Face (`dna/face` on port `8792`):** Serves the interactive Projects workspace and project controls, updating reactively via Server-Sent Events (`GET /api/hale/v1/head/events`) whenever receipts, runs, or record rows land. Always open the face's port (`8792`), not the internal head port (`8796`, which serves only API surfaces and returns `404` for `/app.js` or `/app/`).
+- **Project Index (`/index`):** A zero-JavaScript HTML summary generated fresh on each request via `Commands::index` (`HeadCommands`), displaying the project's purpose, parts, position holders, attached codebases, watched upstreams (with latest readings and timestamps), contracts, and external knowledge links. Under OIDC, `/index` requires an authenticated session.
+- **Buildless Application UI (`/app/`):** If an attached repository contains a static `ui/` directory (with no `package.json` or build manifest) that is referenced by `README.md` or mounted in `compose.yaml`, the standard face serves `ui/index.html` at `/app/` and confines all asset reads strictly inside `ui/`.
+- **Named Faces (`dna::Face`):** An organism's main locus can declare additional custom UI applications as parameters of type `dna::Face`:
+  ```hale,fragment
+  admin: dna::Face = dna::Face {
+      app: "faces/admin",
+      roles: "operator",
+      consumes: "Orders",
+      port: 8801,
+  };
+  ```
+  - `app`: Path to the face's seed directory.
+  - `roles`: Space-separated list of roles the face acts under.
+  - `consumes`: Space-separated list of API surfaces the face calls.
+  - `port`: Loopback port the face listens on.
+  `hale check` verifies that every consumed surface and role is declared by the program and that ports do not collide. `hale dna dev` and `hale dna run` compile each named face and launch `<binary> <port>` with `HALE_DNA_FACE` and `HALE_DNA_FACE_PORT` (with zero organism credentials). The standard face links to each named face on `/index`.
+- **Standalone Read-Only Server (`hale dna ui [project] [--port N]`):** Serves a read-only HTML projection of the record on port `8790` by executing offline CLI queries per request (status, Board queue, Reviews and 3-view diffs, fleet, pressure, and history). It rejects all `POST` requests and requires `dna.principal = oidc` (`dna.oidc.issuer`, `dna.oidc.client`, `dna.oidc.redirect`) to start.
 
-**The application's page.** A repository whose browser page is buildless —
-a `ui/` holding no `package.json` or other manifest — has no seed for it.
-When the repository references that directory (a README link to it, or
-the compose file mounting `./ui`), `hale dna init` says once that the head
-serves it, and the head answers it under `/app/` for the attached project:
-`/app/` is `ui/index.html`, `/app/seq.js` is `ui/seq.js`, and nothing
-outside `ui/` is reachable. A `ui/` nothing references is said once and
-ignored; one with a manifest is a seed like any other.
+---
 
-**`hale dna ui [project] [--port N]`** serves a page from the record
-alone (port 8790 by default). Every request runs one offline verb in
-the project root and returns what it printed: the status, the Board's
-queue, the pending Reviews and one Review's three views, the fleet,
-pressure, and the history. It reads, and takes no command: a POST is
-refused, because the record's commands are the head's surface.
-It serves under `dna.principal = oidc` (with `dna.oidc.issuer`,
-`dna.oidc.client` and `dna.oidc.redirect` set), a session in front of
-every page, and otherwise refuses to start, as any head does.
+## The forge mirror (`hale dna forge sync`)
 
-## The GitHub mirror
+The forge is a gate, not a store. Code goes out through it as branches and verdicts come back through it; the organism reads nothing from it that it did not already decide. A Review lives in the record, its candidate is a branch in git, and the pull request is a mirror of it. The record wins.
 
-GitHub is a projection of the record, and the record wins:
+Which forge stands in the gate is an allocation, a role the habitat allocates as it allocates memory. On your machine it is the habitat's own Forgejo: `hale habitat up` brings it up with memory and the nerves, and a graft gives the organism a Forgejo user and a repository there, its token in the vault (`forgejo-<id>`). Nothing to set up:
 
 ```sh
-git config dna.github acme/chat
-git config dna.github.board alice,bob     # whose GitHub reviews carry the Board's authority
-hale dna secret set FORGE_TOKEN
-hale dna github sync
+hale habitat graft chat
+hale dna forge sync          # the branch goes out; pending Reviews become pull requests
 ```
 
-`hale dna github sync` opens a pull request for every pending change
-Review (the candidate pushed to `dna/<id>`, the three views as the
-body, `github.pr` in the record), reads every GitHub review on it back
-as a `review.verdict` in the reviewer's login (`board` when
-`dna.github.board` lists the login, `reviewer` otherwise, each once),
-records the gate runs it finds at the candidate (`gate.observed`), and,
-once a change is applied, comments the settlement (`github.commented`)
-and pushes the genome on approval. A host under `hale dna dev` or
-`hale dna run` does the same on its tick. `gh` runs under the vault's
-forge token alone; with none, nothing runs, and `gh`'s own login is
-never used in its place.
+GitHub is the allocation when the Board names it:
 
-## How it breaks
+```sh
+git remote add origin git@github.com:acme/chat.git
+hale habitat forge chat github --repo acme/chat --key-vault forge-token
+git config dna.github.board alice,bob     # whose GitHub reviews carry the Board's authority
+hale dna secret set FORGE_TOKEN
+hale dna forge sync
+```
 
-- **The head refuses to start**: no principal source (the trusted-local
-  message above), an issuer that is not https or loopback, an issuer
-  whose keys cannot be read, or a loopback issuer with no pinned key.
-- **`not a member: subject … maps to no one`**: map the subject with
-  `dna.oidc.member`.
-- **A command refused `forbidden`**: the caller holds no position the
-  topic's gate names, or is a service.
-- **`commands_unavailable`**: the head was given no commands port.
-- **A verdict refused**: the reason is one of the three checks above;
-  `hale dna review <id>` shows it under `refused a verdict:`.
-- **`no forge token`**: `hale dna secret set FORGE_TOKEN`.
+Moving a project from the local forge to GitHub is exactly that: change the remote, change the allocation, sync. A Review still open reappears as a pull request on GitHub; nothing migrates, and the Forgejo pull request is left as it was. `none` (a bare remote, Reviews decided in the organism's own face or CLI) is there when there is no forge at all, and `hale dna forge sync` then says `forge: no forge allocated`.
+
+Against whichever forge is allocated, `hale dna forge sync` (or the host, on each tick under `hale dna dev` / `hale dna run`):
+1. Pushes each pending change Review's candidate commit to branch `dna/<id>`, opens a pull request with the three Review views as its description, and records `github.pr` in the record.
+2. Reads every review on it back as a `review.verdict` in the reviewer's login (`board` when `dna.github.board` lists the login, `reviewer` otherwise, each once).
+3. Records the gate runs it finds at the candidate as `gate.observed` rows.
+4. Once a change is applied, comments the settlement (`github.commented`) and pushes the genome on approval.
+
+A leg's review at an attached codebase comes back as `task.delivered` when merged and `task.refused` when closed, the comments on it as receipts. Each forge acts as its allocation's token alone, the vault slot it names. A practice never names a forge: "open a review" is the verb, and the allocation answers it.
+
+> [!NOTE]
+> `gh` executes strictly using the `forge-token` slot from the vault (`hale dna secret set FORGE_TOKEN`). If the vault slot is empty, `forge sync` runs nothing and never falls back to a developer's personal `gh auth` session.
+
+---
+
+## Troubleshooting the Head, Face, and Reviews
+
+| Diagnostic / Symptom | Cause & Resolution |
+| --- | --- |
+| **Head refuses to start** (`trusted-local is a fixture's mode…` or `the issuer … is not usable`) | Missing `dna.principal = oidc`, non-HTTPS external issuer, unreachable JWKS keys, or a loopback issuer without a pinned `dna.oidc.key`. Configure OIDC or start via `hale dna head` / `dna/face/start.sh`. |
+| `not a member: subject … maps to no one` | The authenticated OIDC `sub` claim is not mapped in git config. Run `git config --add dna.oidc.member "<subject>=<person>"`. |
+| **Command refused with `forbidden`** | The caller does not hold a position required by the `HeadCommands` gate (`owner`, `reviewer`, `position`), or the caller is a `service:` principal. |
+| `commands_unavailable` | The head process was started without a commands port (`--commands-port` / `HALE_DNA_COMMANDS_PORT`). |
+| **Read or command answered `503` as the head stops** (`head_api_unavailable`, `commands_unavailable`) | A head stopped while waiting on its API child answers in-flight requests immediately with `503` and exits rather than holding its shutdown; retry once the replacement head is up. |
+| **Verdict refused** (`digest mismatch`, `authority … does not satisfy …`, `reviewer … authored the candidate`) | Inspect `hale dna review <id>` under `refused a verdict:`. Re-render to check the current candidate digest, claim an authority rank that satisfies the Review, or have a second person review your code change. |
+| `no forge token` | Store a GitHub token in the vault with `hale dna secret set FORGE_TOKEN`. |

@@ -58,6 +58,7 @@ top_decl          = locus_decl
                   | target_decl
                   | group_decl
                   | role_decl             (* #1109 *)
+                  | fleet_decl            (* phase 4 *)
                   | claims_block          (* #392: library tier *)
                   | constitution_decl     (* #409 *)
                   | unit_decl             (* #1076 *)
@@ -124,9 +125,13 @@ unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
    `Locus::fn`. Surface names are never mangled. The `@rpc` annotation
    (`rpc_annotation`) contributes the same row to the seed's default
    surface. *)
-api_decl          = "api" , IDENTIFIER , "{" , { rpc_row } , "}" ;
+api_decl          = "api" , IDENTIFIER , [ requires_clause ] , "{" , { rpc_row } , "}" ;
 rpc_row           = "rpc" , IDENTIFIER , "::" , IDENTIFIER , { "::" , IDENTIFIER } ,
-                    [ requires_clause ] , ";" ;
+                    [ route_clause ] , [ requires_clause ] , ";" ;
+(* GH #1530 — `at "METHOD /path/{param}" [status: N]`: where `http::Rest`
+   serves the row (spec/api.md § The REST transport). `at` and `status`
+   are read only here. *)
+route_clause      = "at" , STRING_LIT , [ "status" , ":" , INT_LIT ] ;
 requires_clause   = "requires" , ":" , "[" , [ role_ref , { "," , role_ref } , [ "," ] ] , "]" ;
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
                   | [ INT_LIT , "/" ] , QUANTITY_LIT ;
@@ -299,6 +304,25 @@ locality_tier     = "L1" | "L2" | "L3" | "any" ;
 locus_decl        = { locus_decorator } , [ "main" ] , "locus" , IDENTIFIER ,
                     [ locus_annotations ] ,
                     "{" , { locus_member } , "}" ;
+(* Phase 4: a fleet locus is a deployment of other seeds' `main` loci,
+   a locus KIND beside `main`: it is checked as one graph (the routes
+   between its instances, the claims across them) and never runs, so it
+   holds no code, and its seed holds nothing beside it and its imports.
+   `fleet` is contextual, a word only before `locus` at
+   the top level. Each block at most once, in any order; `params` is
+   required. A param names an imported seed's main (`orders:
+   desk::Orders;`) and takes no value. A binding names a topic with a
+   declared `subject:` and the route's transport, as a main's binding
+   does; a claim is a fleet-tier form over instance params
+   (spec/verification.md § Fleet composition). *)
+fleet_decl        = "fleet" , "locus" , IDENTIFIER , "{" ,
+                    { params_block | fleet_placement | bindings_block
+                    | claims_block } , "}" ;
+fleet_placement   = "placement" , "{" , { IDENTIFIER , ":" ,
+                    ( fleet_host , { "," , fleet_host }
+                    | "replicas" , "(" , INT_LIT , ")" ) , ";" } , "}" ;
+(* one instance per host named, `<param>-0` on the first *)
+fleet_host        = "host" , "(" , STRING_LIT , ")" ;
 (* `@export locus` (export_annotation, defined in § 13) marks the
    persistent singleton "app" of a wasm program — instantiated once,
    never dissolved, its `fn` methods exported. See `spec/ffi.md`
@@ -375,7 +399,18 @@ locus_member      = params_block
                   | topology_block
                   | claims_block
                   | birth_check_decl
+                  | seam_decl                                   (* #1530 *)
                   ;
+
+(* GH #1530 step 2 — a seam (spec/semantics.md § Seams). `seam`, `end`
+   and `violate` are contextual words here. The closed flow (no name)
+   begins at a source call and is the locus's `run`; the callable form
+   begins at its parameter and is a method. *)
+seam_decl         = "seam" , [ IDENTIFIER , "(" , IDENTIFIER , ":" , type_expr , ")" ,
+                    [ "->" , type_expr ] ] ,
+                    "{" , expression , "->" , seam_hop , { "->" , seam_hop } , ";" ,
+                    [ "or" , ( "end" | "violate" , IDENTIFIER ) , ";" ] , "}" ;
+seam_hop          = "self" , { "." , IDENTIFIER } ;
 
 (* GH #756 — `type_decl` is NOT a locus member: a type is a
    top-level declaration (see `top_decl`), in scope everywhere in
@@ -445,14 +480,19 @@ via_clause        = "via" , "{" , via_relation ,
                     { "," , via_relation } , [ "," ] , "}" ;
 via_relation      = "calls" | "bus" ;
 during_clause     = "during" , IDENTIFIER ;
-avoiding_clause   = "avoiding" , IDENTIFIER ;
+(* `avoiding std::log::*` names a stdlib module inline: the implicit
+   group of that one member (spec/verification.md § Claims). *)
+avoiding_clause   = "avoiding" , ( IDENTIFIER
+                                 | "std" , "::" , IDENTIFIER ,
+                                   { "::" , IDENTIFIER } , "::" , "*" ) ;
 only_edges_form   = "only" , "edges" , IDENTIFIER , "->" ,
                     IDENTIFIER , "{" , { edge_grant } , "}" ;
 edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 require_form      = require_endpoint | require_sealed
-                  | require_attributed | require_no_silent_loss ;
+                  | require_attributed | require_no_silent_loss
+                  | require_separate_domains ;
 
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
@@ -465,6 +505,12 @@ require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
    whether every member holds. See `spec/verification.md` § Secrets. *)
 require_sealed    = "require" , "sealed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
+
+(* GH #1327 section 5: all arranged instances of the two groups
+   occupy distinct execution domains. See spec/verification.md. *)
+require_separate_domains
+                  = "require" , "separate_domains" , "(" ,
+                    "all" , IDENTIFIER , "," , "all" , IDENTIFIER , ")" ;
 
 (* GH #436: `require attributed(all syscall)` — every user fn that
    DIRECTLY performs an operation of the named BUILT-IN effect class
@@ -986,7 +1032,15 @@ type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "=" ,
                     "enum" , "{" , enum_variant , { "," , enum_variant } , "}" , ";"
                   | "type" , IDENTIFIER , "=" , scalar_body     (* #1076 *)
+                  | "type" , IDENTIFIER , "=" , qualified_name ,
+                    "|" , qualified_name , { "|" , qualified_name } , ";"
+                                                                (* #1530 set *)
                   ;
+
+(* GH #1530 step 1 — a set type: two or more members, each a named type
+   with no type arguments (a struct or an enum the program declares;
+   spec/types.md § Set types). A member is its own discriminant: a
+   `match` names it by its type's last segment, `Book(b)`. *)
 
 (* GH #1076 — the scalar form of the unit dialect (spec/units.md
    § Declarations). It is a scalar when it has a kind word, an `in`
@@ -1027,8 +1081,14 @@ scalar_clause     = "range" , ":" , range_expr
    concrete type expression (it may be a generic *instantiation*,
    `type Names = Vec<String>;`). GH #759. *)
 
-struct_field      = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ,
-                    [ field_tag ] , ";" ;
+struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER , [ "->" , IDENTIFIER ] ] ,
+                    [ "=" , expression ] , [ field_tag ] , ";" ;
+(* `indexed_by` on a `bounded[T; N]` of records names the `String` field
+   of `T` that keys a wire map: the api codecs carry the list as an object
+   keyed by it (spec/api.md § Codecs), the value-level projection of the
+   `@form(hashmap)` slot clause. `-> <field>` after it names `T`'s one
+   other field: a map of values, each element crossing as that field
+   alone. *)
 (* Go-style metadata tag: a backtick raw string of free-form `key:"value"`
    pairs that downstream features parse (the binary-pack layer reads a
    `wire:` key; ignored otherwise). Shares the backtick lexing with time
@@ -1634,9 +1694,12 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 (*                   suffix?                                     *)
 (* DECIMAL_LIT    = ?... 'd' suffix?                             *)
 (* STRING_LIT     = ?"..." with escapes?                         *)
-(*                   no raw r"..." and no """...""" form: the    *)
-(*                   lexer has neither (tokens.md § String       *)
-(*                   literals)                                   *)
+(*                 | ?block string: a fence of three or more    *)
+(*                   `"` ending its line, raw lines, and a line  *)
+(*                   of whitespace and the same fence; the      *)
+(*                   closing line's whitespace is stripped from *)
+(*                   every line, no escapes (tokens.md § Block  *)
+(*                   strings)?                                   *)
 (* FSTRING_LIT    = ?f"... {expr} ..."?                          *)
 (* BYTES_LIT      = ?b"..."?                                     *)
 (* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)

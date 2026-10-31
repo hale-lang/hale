@@ -150,3 +150,63 @@ fn reorder_preserves_field_writes() {
     assert!(stdout.contains("b=200"), "got: {}", stdout);
     assert!(stdout.contains("c=300"), "got: {}", stdout);
 }
+
+/// The reorder moves the fields a body touches most to the front of the
+/// struct, and a teardown's order is the declaration's whatever the
+/// layout (spec/runtime.md § Lifecycle obligations, line 12: an owner's
+/// fields drain in their declaration order, and each dissolve completes
+/// before the next). `last` is hammered in a loop, so the layout puts it
+/// first; the exposure between the two parts is a stdlib locus the
+/// lifecycle plan names no order for, which the cascade used to place by
+/// layout, after `last`. Read off the emitted cascade: the drains and the
+/// dissolves both walk `first`, `fixture`/`ex`, `last`.
+#[test]
+fn teardown_walks_fields_in_declaration_order_whatever_the_layout() {
+    let src = r#"
+type Req { n: Int; }
+locus Part {
+    params { name: String = ""; hits: Int = 0; }
+    fn ask(r: Req) -> Req { return r; }
+    drain() { println("drain " + self.name); }
+    dissolve() { println("dissolve " + self.name); }
+}
+api S { rpc Part::ask; }
+main locus Holder {
+    params {
+        first: Part = Part { name: "first" };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        ex: api::Exposure = api::serve(S, self.fixture, as: "ex", receivers: { Part: self.first }, bound: 4, on_full: refuse);
+        last: Part = Part { name: "last" };
+    }
+    run() {
+        let mut i = 0;
+        while i < 3 {
+            self.last.hits = self.last.hits + 1;
+            i = i + 1;
+        }
+    }
+}
+fn main() { Holder { }; }
+"#;
+    let bin = unique_path("teardown-order");
+    let ir = harness::build_source_ir_text(src, &bin).expect("build");
+    // `%Holder.<field>.<what>.gep`, in the order the IR emits them
+    let order = |what: &str| -> Vec<String> {
+        let suffix = format!(".{what}.gep");
+        let mut seen: Vec<String> = Vec::new();
+        for (at, _) in ir.match_indices("%Holder.") {
+            let rest = &ir[at + "%Holder.".len()..];
+            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if rest[name.len()..].starts_with(&suffix) && !seen.contains(&name) {
+                seen.push(name);
+            }
+        }
+        seen
+    };
+    assert_eq!(order("drain"), vec!["first", "ex", "last"], "the drain cascade, in declaration order");
+    assert_eq!(order("cascade"), vec!["first", "fixture", "ex", "last"], "the dissolve cascade, in declaration order");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text, "drain first\ndrain last\ndissolve first\ndissolve last\n", "{text}");
+}

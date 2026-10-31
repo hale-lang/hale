@@ -1,0 +1,308 @@
+// dna/core/placement.hl — where an allocation runs, as it was last applied
+// (phase 4).
+//
+// Placement is the record's: a `habitat.allocated <key>/<role>` row names
+// the host and the provider. What was last applied is kept beside the
+// allocation's files, `allocations/<key>/placed.<role>` (the local
+// profile's cache of the rows, as `allocation.json` is), so everything that
+// derives an address from an allocation follows it without reading the
+// record (which may itself live in the allocation that moved): the owner's
+// DSN, the head's, the nerves' URL. No file is the host `local`, where the
+// address is the loopback `docker compose port` gives. On any other host
+// the address is the host's name, resolved by the LAN's DNS, and the port
+// the allocation publishes there, on the host's interface: no TLS, the
+// LAN is plain. A password never travels in a render or a row: it reaches
+// the server through the secrets file compose mounts, copied beside the
+// render.
+
+// Where an allocation's role was last applied: the host, its provider, the
+// address the host is reached by, and the compose project it runs in.
+type AppliedOn {
+    host: String = "local";
+    provider: String = "compose";
+    address: String = "";
+    project: String = "";
+}
+
+fn placed_path(key: String, role: String) -> String {
+    return local_habitat_dir() + "/allocations/" + key + "/placed." + placed_role(role);
+}
+
+// The role whose server holds `role`: a heart's database is a tenant of the
+// memory server, its broker users the nerves server's.
+fn placed_role(role: String) -> String {
+    if role == "database" { return "memory"; }
+    if role == "broker" { return "nerves"; }
+    return role;
+}
+
+// The compose project an allocation runs in on `host`: the habitat's own on
+// this machine, and the habitat's named for the host elsewhere.
+fn placed_project(host: String) -> String {
+    if len(host) == 0 || host == "local" { return local_habitat_project(); }
+    return local_habitat_project() + "-" + std::str::replace(host, ".", "-");
+}
+
+// Where `role` of the organism keyed `key` was last applied (`local` when
+// nothing says otherwise).
+fn placed_on(key: String, role: String) -> AppliedOn {
+    let text = std::io::fs::read_file(placed_path(key, role)) or "";
+    if len(text) == 0 { return AppliedOn { project: local_habitat_project() }; }
+    let host = std::json::find_string_field(text, "host");
+    return AppliedOn {
+        host: host,
+        provider: std::json::find_string_field(text, "provider"),
+        address: std::json::find_string_field(text, "address"),
+        project: std::json::find_string_field(text, "project"),
+    };
+}
+
+// `p` kept as where `role` of `key` was applied: "" once it is, else why not.
+// A role on this machine needs no marker (it is there unless one says
+// otherwise), but an organism's own services do: applied here they are a
+// project of their own, and a marker that says so is what tells "applied
+// here" from "never applied", so a later move withdraws them from here.
+fn place_cache(key: String, role: String, p: AppliedOn) -> String {
+    let path = placed_path(key, role);
+    if (p.host == "local" || len(p.host) == 0) && role != "services" {
+        std::io::fs::unlink(path) or discard;
+        return "";
+    }
+    let dir = local_habitat_dir() + "/allocations/" + key;
+    if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 { return "cannot make " + dir; }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("host", if len(p.host) == 0 { "local" } else { p.host });
+    b.string_field("provider", p.provider);
+    b.string_field("address", p.address);
+    b.string_field("project", p.project);
+    b.end_object();
+    let mut ok = true;
+    std::io::fs::write_file(path, b.result() + "\n") or { ok = false; };
+    return if ok { "" } else { "cannot write " + path };
+}
+
+// The files a role's server mounts from beside its compose files.
+fn placed_files(role: String) -> String {
+    let r = placed_role(role);
+    if r == "memory" { return "postgres.secrets"; }
+    if r == "nerves" { return "nats.conf\nnerves.d"; }
+    if r == "senses" { return "senses.yml"; }
+    return "";
+}
+
+// The host port the allocation `service` publishes, as its `ports.yaml`
+// chose it once ("" when none is written).
+@bounded_by(key)
+fn allocation_port_of(key: String, service: String) -> String {
+    let text = std::io::fs::read_file(
+        local_habitat_dir() + "/allocations/" + key + "/ports.yaml",
+    ) or "";
+    let at = std::str::index_of(text, "  " + service + ":\n");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(service) + 4)..len(text)];
+    let open = std::str::index_of(rest, "[\"");
+    if open < 0 { return ""; }
+    let spec = rest[(open + 2)..len(rest)];
+    let close = std::str::index_of(spec, "\"");
+    let ports = if close < 0 { spec } else { spec[0..close] };
+    // `127.0.0.1:<port>:<inner>`
+    let first = std::str::index_of(ports, ":");
+    let tail = ports[(first + 1)..len(ports)];
+    let second = std::str::index_of(tail, ":");
+    return if second < 0 { "" } else { tail[0..second] };
+}
+
+// The render of `role` of the organism keyed `key` as placed at `p`: on
+// this machine its compose files as written; elsewhere the same, published
+// on the host's interface (`ports.remote.yaml`, written beside them), with
+// the files its server mounts. Its service alone is brought up.
+fn placed_render(key: String, role: String, p: AppliedOn) -> Render {
+    let dir = local_habitat_dir() + "/allocations/" + key;
+    let service = compose_service(placed_role(role), key);
+    if p.host == "local" || len(p.host) == 0 {
+        return Render {
+            project: local_habitat_project(),
+            dir: dir,
+            files: "compose.yaml\nports.yaml",
+            services: service,
+        };
+    }
+    let ports = std::io::fs::read_file(dir + "/ports.yaml") or "";
+    std::io::fs::write_file(
+        dir + "/ports.remote.yaml",
+        std::str::replace(ports, "\"127.0.0.1:", "\""),
+    )
+    or discard;
+    return Render {
+        project: p.project,
+        dir: dir,
+        files: "compose.yaml\nports.remote.yaml",
+        services: service,
+        mounted: placed_files(role),
+    };
+}
+
+// `role` of `key` brought up where it is placed, by that host's provider.
+fn placed_apply(key: String, role: String) -> RenderApplied {
+    // a part the habitat's own server holds for the organism (its record a
+    // schema of the habitat's memory, its organization an account of the
+    // habitat's nerves) has no server of its own to bring up: the
+    // habitat's is its, and up with it
+    if (role == "memory" || role == "nerves") && part_held_by_habitat(key, role) {
+        return RenderApplied { ok: true };
+    }
+    let p = placed_on(key, role);
+    let r = placed_render(key, role, p);
+    if p.host == "local" { return ComposeProvider { }.apply("local", r); }
+    return SshProvider { root: local_habitat_dir() + "/genome" }.apply(p.host, r);
+}
+
+// `role` of `key` taken down where `p` placed it.
+fn placed_withdraw(key: String, role: String, p: AppliedOn) -> RenderApplied {
+    let r = placed_render(key, role, p);
+    if p.host == "local" { return ComposeProvider { }.withdraw("local", r); }
+    return SshProvider { root: local_habitat_dir() + "/genome" }.withdraw(p.host, r);
+}
+
+// `role`'s data where `p` placed it, forgotten: its volume removed, so the
+// next apply there starts empty (a moved memory or nerves allocation
+// starts empty: there is no migration).
+fn placed_forget(key: String, role: String, p: AppliedOn) -> RunResult {
+    let volume = p.project + "_" + compose_service(placed_role(role), key);
+    if p.host == "local" { return run_tool("docker\nvolume\nrm\n-f\n" + volume); }
+    let h = recorded_host(local_habitat_dir() + "/genome", p.host);
+    return ssh_run(local_habitat_dir() + "/genome", h, "docker volume rm -f '" + volume + "'", "");
+}
+
+// `script` run by `sh -c` in the container of `role` of `key` where it is
+// placed (what reads a secrets file inside it, never on a command line).
+fn placed_exec(key: String, role: String, script: String) -> RunResult {
+    // one line: on this machine the script is an argument of a newline-
+    // separated argv (`run_tool`), where a newline would split it
+    if std::str::contains(script, "\n") {
+        return RunResult {
+            code: -1,
+            stderr: "placed_exec: a script is one line (it is an argument of a newline-separated argv)",
+        };
+    }
+    let p = placed_on(key, role);
+    let service = compose_service(placed_role(role), key);
+    if p.host == "local" {
+        return run_tool(
+            allocation_compose_key(key) + "\nexec\n-T\n" + service + "\nsh\n-c\n" + script,
+        );
+    }
+    let r = placed_render(key, role, p);
+    let h = recorded_host(local_habitat_dir() + "/genome", p.host);
+    let quoted = "'" + std::str::replace(script, "'", "'\"'\"'") + "'";
+    return ssh_run(
+        local_habitat_dir() + "/genome",
+        h,
+        ssh_compose(h, r, "exec -T " + service + " sh -c " + quoted),
+        "",
+    );
+}
+
+// `docker compose` on the allocations of the organism keyed `key` on this
+// machine (its files as `allocation_compose` writes them).
+fn allocation_compose_key(key: String) -> String {
+    let dir = local_habitat_dir() + "/allocations/" + key;
+    return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + local_habitat_project()
+        + "\n--project-directory\n" + dir + "\n-f\n" + dir + "/compose.yaml\n-f\n" + dir
+        + "/ports.yaml";
+}
+
+// The address `service` of `key` answers on where it is placed, as
+// `host:port`: the host's name and the port it publishes, off this machine
+// ("" on this machine, where compose answers it).
+fn placed_address(key: String, role: String) -> String {
+    let p = placed_on(key, role);
+    if p.host == "local" { return ""; }
+    let port = allocation_port_of(key, compose_service(placed_role(role), key));
+    if len(port) == 0 || len(p.address) == 0 { return ""; }
+    return p.address + ":" + port;
+}
+
+const LOOPBACK_HOST_ENV: String = "HALE_DNA_LOOPBACK_HOST";
+
+// The host this process reaches this machine's loopback at. An allocation
+// published on this machine is recorded where it is published,
+// `127.0.0.1:<port>`, and that is its address on the admin machine and in a
+// habitat service on the host's network (Linux, `network_mode: host`). A
+// habitat service on its compose project's network (macOS, where a
+// container cannot share the host's network) reaches the same port at the
+// host the compose render names, `HALE_DNA_LOOPBACK_HOST`
+// (`host.docker.internal`). A listener in the process's own container is
+// dialled at `127.0.0.1` always, never through this.
+fn loopback_host() -> String {
+    let named = std::str::trim(env_or_empty(LOOPBACK_HOST_ENV));
+    return if len(named) > 0 { named } else { "127.0.0.1" };
+}
+
+const LISTEN_HOST_ENV: String = "HALE_DNA_LISTEN_HOST";
+const FACE_HOME_ENV: String = "HALE_DNA_FACE_HOME";
+
+// The path a face lands a signed-in visitor on in place of the
+// organization shell at `/` (`HALE_DNA_FACE_HOME`): the habitat's compose
+// render sets its face's to the operator face, `/app/`; "" for every other
+// face. A path on the face only: a value that is not one (`//host`, a
+// scheme, a line break) is ignored.
+fn face_home() -> String {
+    let p = std::str::trim(env_or_empty(FACE_HOME_ENV));
+    if !std::str::starts_with(p, "/")
+        || std::str::starts_with(p, "//")
+        || std::str::contains(p, "\\")
+        || std::str::contains(p, "\r")
+        || std::str::contains(p, "\n")
+    {
+        return "";
+    }
+    return p;
+}
+
+// The address a listener a person reaches (the face, the head) binds:
+// `HALE_DNA_LISTEN_HOST`, which the habitat's compose render sets from the
+// address the habitat declares, else the loopback. Nothing binds every
+// interface unless the render says so (inside a container on its
+// project's network, published on the declared address alone).
+fn listen_host() -> String {
+    let named = std::str::trim(env_or_empty(LISTEN_HOST_ENV));
+    return if len(named) > 0 { named } else { "127.0.0.1" };
+}
+
+// Where a process dials a listener of its own container that binds
+// `listen_host()`: that address, or the loopback when it binds every
+// interface.
+fn listen_dial_host() -> String {
+    let h = listen_host();
+    return if h == "0.0.0.0" { "127.0.0.1" } else { h };
+}
+
+// `host` as this process reaches it: this machine's loopback (`127.0.0.1`,
+// `localhost`) is the host `HALE_DNA_LOOPBACK_HOST` names when it names
+// one; any other host, or any host where it names none, is itself.
+fn reach_host(host: String) -> String {
+    let named = std::str::trim(env_or_empty(LOOPBACK_HOST_ENV));
+    if len(named) == 0 || (host != "127.0.0.1" && host != "localhost") { return host; }
+    return named;
+}
+
+// A recorded `scheme://[user@]host[:port][/path]` as this process reaches
+// it: its host through `reach_host`, the rest as recorded.
+fn reach_url(url: String) -> String {
+    let sep = std::str::index_of(url, "://");
+    if sep < 0 { return url; }
+    let lead = url[0..(sep + 3)];
+    let rest = url[(sep + 3)..len(url)];
+    let slash = std::str::index_of(rest, "/");
+    let authority = if slash < 0 { rest } else { rest[0..slash] };
+    let tail = if slash < 0 { "" } else { rest[slash..len(rest)] };
+    let at = std::str::index_of(authority, "@");
+    let user = if at < 0 { "" } else { authority[0..(at + 1)] };
+    let hostport = if at < 0 { authority } else { authority[(at + 1)..len(authority)] };
+    let colon = std::str::index_of(hostport, ":");
+    let host = if colon < 0 { hostport } else { hostport[0..colon] };
+    let port = if colon < 0 { "" } else { hostport[colon..len(hostport)] };
+    return lead + user + reach_host(host) + port + tail;
+}

@@ -7,25 +7,25 @@
 //! "setting" is a constructor argument in a `.hl` file the project
 //! owns, and every generated fact carries its provenance.
 //!
-//!   hale dna init [app-dir] [--no-library]
-//!                               attach the DNA to an existing app
-//!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
 //!   hale dna run [project]      build, run under LOTUS_OBS, a node relaying onto the nerves; iris inspects the process
 //!   hale dna status [--json]    the status projection, from the Journal
 //!   hale dna task create <outcome…>  ask for an outcome: a Task, a row a node relays to the organism
 //!   hale dna history [<entity>] walk the Journal by causal links
+//!   hale dna record-rows [project]  the record's rows, one JSON object per line
 //!   hale dna show org|processes [--json] [project]  the graph's two perspectives, from memory
 //!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
-//! Layout after `init` (root = the workspace holding hale.toml):
+//! Layout after a graft (`hale habitat graft`; root = the workspace
+//! holding hale.toml):
 //!
 //!   vendor/dna/*.hl            toolchain-owned copy of dna/core, pinned in hale.lock
 //!   dna/assembly.hl            project-owned: the Genome constructor (editable)
 //!   <app>/dna_constitution.hl  project-owned: groups + `constitution Project` (in the app's seed)
 //!   dna/purpose.hl             project-owned: the declared purpose (ratified by the first Review)
-//!   refs/dna/journal           the record, seeded from the topology artifact
+//!   [dna] record in hale.toml  the record's identity; the record itself is memory's,
+//!                              born there and seeded from the topology artifact
 //!   .hale/dna/baseline.topology the artifact it was seeded from
 //!   hale.toml                  gains [claims] base = "Project" + [environments.local]
 //!   <app>/main.hl              gains the imports, the `genome` param, `adopt Project`,
@@ -44,12 +44,31 @@ use std::process::{Command, ExitCode};
 use serde_json::Value;
 
 /// `hale dna head`: the head started from the toolchain, no checkout.
+pub(crate) mod habitat;
 mod head;
 mod pack;
+mod provides;
+mod secrets;
+mod uis;
 
-/// The record (GH #566 F1): one commit per event on this ref, the events as
-/// `journal.jsonl` in its tree, receipts as blobs under `refs/dna/receipts/`.
+/// Where a toolchain before GH #1590 kept the record. Nothing reads it: a
+/// clone that still holds one is refused by `init` and `upgrade`, and its
+/// owner re-inits a fresh record (`git_era_refusal`).
 const RECORD_REF: &str = "refs/dna/journal";
+
+/// GH #1590: a record an earlier toolchain kept on git is not carried
+/// forward. Only its ref's presence is asked (`git show-ref`), never what
+/// it holds; `None` when the clone holds none.
+fn git_era_refusal(root: &Path) -> Option<String> {
+    let held = Command::new("git").arg("-C").arg(root).args(["show-ref", "--verify", "--quiet", RECORD_REF]).status().map(|s| s.success()).unwrap_or(false);
+    held.then(|| {
+        format!(
+            "this clone holds a record an earlier toolchain kept on git ({RECORD_REF}), and records are not carried forward: re-init a fresh record — delete the old refs (`git -C {} for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git -C {} update-ref -d`), remove the `[dna] record` line from hale.toml if it has one, and run `hale habitat graft`",
+            root.display(),
+            root.display()
+        )
+    })
+}
 /// The organization's seed (GH #566 F2): a program `init` generates and
 /// `hale dna run` runs; the application is never grafted.
 const ORG_SEED: &str = "dna/org";
@@ -62,7 +81,7 @@ const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
 /// GH #566 F8: the host is Hale (`dna/host`, embedded beside the core
 /// and built once into the toolchain cache). A verb that is DNA
 /// behaviour — a projection, a relay, supervision — execs it with the
-/// project resolved: `<program> <verb> <root> <seed> <fleet> <plan> …`,
+/// project resolved: `<program> <verb> <root> <seed> <fleet> <fleet seed> …`,
 /// with the toolchain and the toolchain version in the environment.
 /// This shim resolves the project (the manifest is the compiler's) and
 /// forwards the exit status.
@@ -78,7 +97,7 @@ const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
 fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     let (root, seed) = project(dir)?;
     let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
-    let (fleet, plan_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
+    let (fleet, fleet_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
         Some((name, path)) => (name, path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string()),
         None => (String::new(), String::new()),
     };
@@ -92,7 +111,7 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         .arg(&root)
         .arg(&seed_rel)
         .arg(&fleet)
-        .arg(&plan_rel)
+        .arg(&fleet_rel)
         .current_dir(&root)
         .env("HALE_BIN", &me)
         // GH #583: the genome a harness must never reach. The
@@ -104,6 +123,21 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         // outside `run`/`dev` (the review's second round, finding 2).
         .env("HALE_DNA_GENOME", &root)
         .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN);
+    // GH #1590: the record is memory's; a verb given no role's DSN reads
+    // and writes it as the head this clone migrated
+    let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    if !named("HALE_DNA_MEMORY_DSN_SPINE") && !named("HALE_DNA_MEMORY_DSN_HEAD") {
+        if let Some(head) = kept_head_dsn(&root)? {
+            cmd.env("HALE_DNA_MEMORY_DSN_HEAD", head);
+        }
+    }
+    if let Some(u) = habitat::head_flag() {
+        cmd.env("HALE_DNA_HEAD_URL", u);
+    } else if !named("HALE_DNA_HEAD_URL") {
+        if let Some(u) = habitat::head_flag_or_local_url() {
+            cmd.env("HALE_DNA_HEAD_URL", u);
+        }
+    }
     Ok((cmd, root))
 }
 
@@ -199,7 +233,7 @@ fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
 
 /// What `memory-migrate` found (GH #985): the spine's and the head's DSNs
 /// once the schema is applied, or no database to apply it to.
-enum MemoryPlan {
+pub(crate) enum MemoryPlan {
     Roles { spine: String, head: String, owners: Vec<String> },
     NoDatabase(String),
 }
@@ -209,19 +243,171 @@ enum MemoryPlan {
 const OWNER_DSN_ENV: &str = "HALE_DNA_MEMORY_DSN_OWNER";
 
 /// Apply memory's schema with the owner's DSN: HALE_DNA_MEMORY_DSN_OWNER,
-/// or the database dna/compose.yaml brings up. The host verb does it; a
-/// short-lived process, so the owner's DSN never reaches a host that
-/// runs the organism.
+/// or the organism's memory allocation in the local habitat, brought up.
+/// The host verb does it; a short-lived process, so the owner's DSN never
+/// reaches a host that runs the organism. GH #1653: a habitat's act alone
+/// (`hale habitat migrate`, and `init` and `upgrade` until graft and the
+/// habitat's upgrade take them): every other command derives.
 fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
-    let out = host_run("memory-migrate", dir, &[])?;
+    memory_roles(dir, &[])
+}
+
+/// GH #1653: the roles' DSNs derived from memory that is already there and
+/// migrated: nothing brought up, no schema applied. A schema that is behind
+/// is the store's refusal when it opens, naming `hale habitat migrate`.
+pub(crate) fn memory_derive(dir: &Path) -> Result<MemoryPlan, String> {
+    memory_roles(dir, &["--derive".to_string()])
+}
+
+fn memory_roles(dir: &Path, args: &[String]) -> Result<MemoryPlan, String> {
+    let out = host_run("memory-migrate", dir, args)?;
     let spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE="));
     let head = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD="));
     if let (Some(spine), Some(head)) = (spine, head) {
         let owners = out.lines().filter(|l| l.starts_with("HALE_DNA_MEMORY_DSN_HEAD_")).map(str::to_string).collect();
+        let (root, _) = project(dir)?;
+        // where it came from (GH #1653): the operator's database, or the
+        // organism's memory allocation in the local habitat
+        let from = if std::env::var(OWNER_DSN_ENV).is_ok_and(|v| !v.is_empty()) { "owner".to_string() } else { memory_allocation_name(&root).unwrap_or_default() };
+        write_memory_env(&root, head, &from)?;
+        // GH #1653: a migration into the habitat is recorded in the
+        // allocation's row, with the version it moved the schema to
+        if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
+            let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+            habitat::record_allocation(&root, "memory", v, slots, from == "owner")?;
+        }
         return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string(), owners });
     }
     let line = out.trim();
     Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
+}
+
+/// GH #1590: the head's DSN a migration answered is kept beside the
+/// clone's other local state, `.hale/dna/memory.env`, and handed to every
+/// host verb that is not given one. It is the head role's alone (never the
+/// owner's or the spine's), written mode 600 into a directory git ignores,
+/// and refused when anyone but its owner may read it. Its value is never
+/// printed.
+fn memory_env_file(root: &Path) -> PathBuf {
+    root.join(".hale/dna/memory.env")
+}
+
+/// The DSN's user, as `postgres://<user>[:<password>]@…` names it.
+fn dsn_user(dsn: &str) -> Option<&str> {
+    let rest = dsn.split_once("://")?.1;
+    let auth = rest.split_once('@')?.0;
+    Some(auth.split_once(':').map(|(u, _)| u).unwrap_or(auth))
+}
+
+/// Why `head` may not be kept as the clone's head DSN, or `None`: it must
+/// name a head role (`dna_<record>_head`), and never be the owner's.
+fn kept_dsn_refusal(head: &str, owner: Option<&str>) -> Option<String> {
+    let user = dsn_user(head).unwrap_or("");
+    if !(user.starts_with("dna_") && user.ends_with("_head")) {
+        return Some("the DSN to keep does not name a head role (dna_<record>_head); only the head's is kept in the clone".to_string());
+    }
+    if owner.is_some_and(|o| !o.is_empty() && (o == head || dsn_user(o) == Some(user))) {
+        return Some("the DSN to keep is the owner's; only the head's is kept in the clone".to_string());
+    }
+    None
+}
+
+fn write_memory_env(root: &Path, head: &str, from: &str) -> Result<(), String> {
+    if let Some(why) = kept_dsn_refusal(head, std::env::var(OWNER_DSN_ENV).ok().as_deref()) {
+        return Err(why);
+    }
+    let path = memory_env_file(root);
+    // a file git would track is never written: the clone's .gitignore keeps
+    // `/.hale/` (`init`, `upgrade`)
+    let tracked = Command::new("git").arg("-C").arg(root).args(["check-ignore", "-q"]).arg(&path).status().map(|s| !s.success()).unwrap_or(false);
+    if tracked && root.join(".git").exists() {
+        return Err(format!("{} is not ignored by git, and it would hold the head's DSN: add `/.hale/` to {} (`hale dna upgrade` does)", path.display(), root.join(".gitignore").display()));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // a file that existed keeps its mode through open: set it again
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    f.write_all(format!("HALE_DNA_MEMORY_DSN_HEAD={head}\n{MEMORY_FROM_KEY}={from}\n").as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// GH #1653: the line beside the kept DSN that says where it was derived:
+/// `owner`, or `habitat <project>/<service>`, the organism's memory
+/// allocation in the local habitat.
+const MEMORY_FROM_KEY: &str = "HALE_DNA_MEMORY_FROM";
+
+/// GH #1653: where the local habitat lives, as `dna::local_habitat_dir`
+/// spells it: `${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local`.
+fn local_habitat_dir() -> String {
+    // a habitat named outright (a test's, a slice's): HALE_DNA_HABITAT
+    if let Some(named) = std::env::var("HALE_DNA_HABITAT").ok().filter(|v| !v.is_empty()) {
+        return named;
+    }
+    let data = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+    let base = if data.is_empty() { format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()) } else { data };
+    format!("{base}/hale/habitat/local")
+}
+
+/// The local habitat's compose project, as `dna::local_habitat_project`
+/// derives it: its name and a short hash of where it lives.
+fn local_habitat_project() -> String {
+    let h = openssl::sha::sha256(local_habitat_dir().as_bytes());
+    format!("hale-habitat-local-{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// The organism's allocation for `role` in the local habitat, as
+/// `dna::allocation_service` names it: the role and the first twelve hex
+/// digits of the record's identity; `None` when the manifest pins none.
+fn allocation_service(root: &Path, role: &str) -> Option<String> {
+    let id = manifest_pin(&root.join("hale.toml")).ok().flatten()?;
+    (id.len() >= 12).then(|| format!("{role}-{}", &id[..12]))
+}
+
+/// The origin a DSN derived from the organism's memory allocation records,
+/// as `dna::memory_allocation_name` spells it.
+fn memory_allocation_name(root: &Path) -> Option<String> {
+    allocation_service(&habitat::memory_root(root), "memory").map(|s| format!("habitat {}/{s}", local_habitat_project()))
+}
+
+/// The head's DSN this clone keeps, when it keeps one; refused when the
+/// file may be read by anyone but its owner, or holds anything but a head
+/// role's DSN, or one derived from anything but the organism's memory.
+fn kept_head_dsn(root: &Path) -> Result<Option<String>, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = memory_env_file(root);
+    let Ok(meta) = fs::metadata(&path) else { return Ok(None) };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!("{} holds the head's DSN and is readable by others (mode {mode:o}): `chmod 600 {}`, or remove it and run `hale habitat migrate {}`", path.display(), path.display(), root.display()));
+    }
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let Some(head) = text.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).map(str::to_string).filter(|d| !d.is_empty()) else { return Ok(None) };
+    if let Some(why) = kept_dsn_refusal(&head, None) {
+        return Err(format!("{}: {why}; remove it and run `hale habitat migrate {}`", path.display(), root.display()));
+    }
+    // GH #1653: a DSN is the organism's memory only when it came from the
+    // operator's database or from its memory allocation in the local
+    // habitat. One derived elsewhere (a seed's database before memory was
+    // the habitat's, another habitat's allocation, or a file an older
+    // toolchain wrote with no origin) is dropped and refused, naming the
+    // habitat's act that derives it again: no command migrates as a side
+    // effect, so none re-derives it here
+    let from = text.lines().find_map(|l| l.strip_prefix(&format!("{MEMORY_FROM_KEY}="))).unwrap_or("").to_string();
+    let current = memory_allocation_name(root);
+    if from == "owner" || current.as_deref() == Some(from.as_str()) {
+        return Ok(Some(head));
+    }
+    let _ = fs::remove_file(&path);
+    let was = if from.is_empty() { "a database an older toolchain migrated".to_string() } else { from };
+    Err(format!(
+        "{} held a DSN derived from {was}, not from the organism's memory in the local habitat{} (GH #1653), and is removed: run `hale habitat migrate {}`, which brings the organism's memory up and migrates it",
+        path.display(),
+        current.map(|c| format!(" ({})", c.trim_start_matches("habitat "))).unwrap_or_default(),
+        root.display()
+    ))
 }
 
 /// What `nerves-migrate` found (GH #986): the organization's token and
@@ -243,10 +429,28 @@ const NODE_DRAIN_GRACE_MS: &str = "30000";
 const NOT_THE_HOSTS: [&str; 4] = [OWNER_DSN_ENV, "HALE_DNA_MEMORY_DSN_HEAD", NATS_OWNER_ENV, "HALE_DNA_NATS_URL_HEAD"];
 
 /// Create the organization's stream with the owner's NATS URL:
-/// HALE_DNA_NATS_URL_OWNER, or the server dna/compose.yaml brings up. A
-/// short-lived host verb does it, as with memory.
+/// HALE_DNA_NATS_URL_OWNER, or the organism's nerves allocation in the
+/// local habitat, brought up. A short-lived host verb does it, as with
+/// memory, and a habitat's act alone (GH #1653).
 fn nerves_migrate(dir: &Path) -> Result<NervesPlan, String> {
-    let out = host_run("nerves-migrate", dir, &[])?;
+    nerves_roles(dir, &[])
+}
+
+/// GH #1653: the roles' URLs on nerves that are already up: nothing
+/// brought up, no stream created.
+fn nerves_derive(dir: &Path) -> Result<NervesPlan, String> {
+    nerves_roles(dir, &["--derive".to_string()])
+}
+
+fn nerves_roles(dir: &Path, args: &[String]) -> Result<NervesPlan, String> {
+    let out = host_run("nerves-migrate", dir, args)?;
+    // GH #1653: a migration into the habitat is recorded in the
+    // allocation's row, with the version it moved the stream to
+    if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
+        let (root, _) = project(dir)?;
+        let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+        habitat::record_allocation(&root, "nerves", v, slots, std::env::var(NATS_OWNER_ENV).is_ok_and(|u| !u.is_empty()))?;
+    }
     let roles: Vec<(String, String)> = out
         .lines()
         .filter(|l| l.starts_with("HALE_DNA_NATS_"))
@@ -257,6 +461,22 @@ fn nerves_migrate(dir: &Path) -> Result<NervesPlan, String> {
     }
     let line = out.trim();
     Ok(NervesPlan::NoServer(line.strip_prefix("none: ").unwrap_or(line).to_string()))
+}
+
+/// `secret rotate <name> --member <label>` (`args` after `secret`) where
+/// the manifest here provides models keyed by the family `name`: the
+/// family and the label.
+fn provider_member_rotated(args: &[String]) -> Option<(String, String)> {
+    let (sub, name) = (args.first()?, args.get(1)?);
+    if sub != "rotate" {
+        return None;
+    }
+    let at = args.iter().position(|a| a == "--member")?;
+    let label = args.get(at + 1)?;
+    let root = project(Path::new(".")).ok()?.0;
+    let text = fs::read_to_string(root.join("hale.toml")).ok()?;
+    let m = provides::declared(&text).ok().flatten()?;
+    (m.key == *name).then(|| (name.clone(), label.clone()))
 }
 
 fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
@@ -317,9 +537,10 @@ fn host_exec_env(
 pub(crate) fn node_usage() -> &'static str {
     "usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]\n\
      \n\
-     The agent that expresses a fleet plan's instances on one machine,\n\
-     from the record: it reconciles what the plan says this node runs\n\
-     against what is running here (GH #566 F5). With HALE_DNA_NATS_URL_APP\n\
+     The agent that expresses a fleet's instances on one machine, from\n\
+     the record: it reconciles the instances the fleet places on this\n\
+     host (`host(\"<name>\")`) with what is running here\n\
+     (GH #566 F5). With HALE_DNA_NATS_URL_APP\n\
      and HALE_DNA_NATS_ORG set (`hale dna nerves migrate` prints them), it\n\
      hands both to every instance, which says what it says onto the\n\
      nerves itself (GH #986).\n"
@@ -381,91 +602,71 @@ fn project_arg(args: &[String], any_positional: bool) -> (PathBuf, Vec<String>) 
     (dir, rest)
 }
 
-pub fn run(args: &[String]) -> ExitCode {
+pub fn run(raw_args: &[String]) -> ExitCode {
     // `--help` / `-h` right after a verb asks what `hale dna` takes and
     // starts nothing: `hale dna dev --help` used to read the flag as the
     // project directory and bring the seed's compose up (GH #817's rule
     // — the first argument after a subcommand — at the verb level).
     // the head's own help, on stdout
-    if args.first().map(String::as_str) == Some("head") {
-        return head::head_cmd(&args[1..]);
+    if raw_args.first().map(String::as_str) == Some("head") {
+        return head::head_cmd(&raw_args[1..]);
     }
+    let mut cleaned = Vec::new();
+    let mut it = raw_args.iter();
+    while let Some(a) = it.next() {
+        if a == "--head" {
+            let Some(u) = it.next().filter(|s| !s.is_empty() && !s.starts_with('-')) else {
+                eprintln!("hale dna: `--head` takes a URL");
+                return ExitCode::from(2);
+            };
+            habitat::set_head_flag(u.clone());
+        } else if let Some(u) = a.strip_prefix("--head=") {
+            if u.is_empty() {
+                eprintln!("hale dna: `--head` takes a URL");
+                return ExitCode::from(2);
+            }
+            habitat::set_head_flag(u.to_string());
+        } else {
+            cleaned.push(a.clone());
+        }
+    }
+    let args = cleaned.as_slice();
     if matches!(args.first().map(String::as_str), Some(v) if !v.starts_with('-'))
         && matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h"))
     {
         return usage(0);
     }
     match args.first().map(String::as_str) {
+        // GH #1653: an organism is grafted from the habitat; the
+        // free-standing births are retired, each naming its graft spelling
         Some("init") => {
-            // the directory is the first argument that is neither a flag nor
-            // a flag's value; `--with <pack> [--set <param>=<value>]…
-            // [--as <who>]` then proposes a pack from the toolchain's nursery
-            // as one batch, planned on the holes init just proposed (the
-            // Board, each part's dev and reviewer …), so the pack may fill
-            // them and one `review all approve` ratifies the whole
-            let mut dir = None;
-            let mut with = None;
-            let mut who = None;
-            let mut sets = Vec::new();
+            let mut dir = ".".to_string();
+            let mut rest: Vec<String> = Vec::new();
             let mut i = 1;
+            let mut named = false;
             while i < args.len() {
-                match args[i].as_str() {
-                    "--with" | "--set" | "--as" => {
-                        let Some(v) = args.get(i + 1) else {
-                            eprintln!("hale dna init: `{}` takes a value\nusage: {INIT_USAGE}", args[i]);
-                            return ExitCode::from(2);
-                        };
-                        match args[i].as_str() {
-                            "--with" => with = Some(v.clone()),
-                            "--set" => sets.push(v.clone()),
-                            _ => who = Some(v.clone()),
-                        }
-                        i += 2;
+                let a = &args[i];
+                if matches!(a.as_str(), "--with" | "--set" | "--as") {
+                    rest.push(a.clone());
+                    if let Some(v) = args.get(i + 1) {
+                        rest.push(v.clone());
                     }
-                    a if a.starts_with("--") => i += 1,
-                    a => {
-                        dir.get_or_insert_with(|| PathBuf::from(a));
-                        i += 1;
-                    }
+                    i += 2;
+                    continue;
                 }
-            }
-            if with.is_none() && (!sets.is_empty() || who.is_some()) {
-                eprintln!("hale dna init: `--set` and `--as` go with a pack; name the pack with `--with <pack>`");
-                return ExitCode::from(2);
-            }
-            let dir = dir.unwrap_or_else(|| PathBuf::from("."));
-            match init(&dir, !args.iter().any(|a| a == "--no-library")) {
-                Ok(lines) => {
-                    for l in lines {
-                        println!("{l}");
-                    }
+                if a.starts_with("--") || named {
+                    rest.push(a.clone());
+                } else {
+                    dir = a.clone();
+                    named = true;
                 }
-                Err(e) => {
-                    eprintln!("hale dna: {e}");
-                    return ExitCode::from(1);
-                }
+                i += 1;
             }
-            let Some(pack) = with else { return ExitCode::SUCCESS };
-            let mut pack_args = vec!["apply".to_string(), pack, "--on-holes".to_string()];
-            for v in sets {
-                pack_args.push("--set".to_string());
-                pack_args.push(v);
-            }
-            if let Some(who) = who {
-                pack_args.push("--as".to_string());
-                pack_args.push(who);
-            }
-            pack_args.push(dir.to_string_lossy().to_string());
-            pack::pack_cmd(&pack_args)
+            retired("init", &format!("hale habitat graft {dir} --attach{}", spelled(&rest)))
         }
         Some("new") => match args.get(1) {
-            Some(name) if !name.starts_with("--") => {
-                // GH #617: `--profile local|remote-body [--remote <url>] [--body <user@host>]`
-                // sets the pieces the combination is detected from; nothing is stored as a label
-                let flag = |n: &str| args[2..].windows(2).find(|w| w[0] == n).map(|w| w[1].clone());
-                report(new_project(Path::new(name), flag("--profile").as_deref(), flag("--remote").as_deref(), flag("--body").as_deref(), !args.iter().any(|a| a == "--no-library")))
-            }
-            _ => usage(2),
+            Some(name) if !name.starts_with("--") => retired("new", &format!("hale habitat graft {name}{}", spelled(&args[2..]))),
+            _ => retired("new", "hale habitat graft <name>"),
         },
         Some("upgrade") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -514,7 +715,50 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
-        // GH #988: the senses' store, compose's `senses` service brought up
+        // GH #1653: the URLs of nerves that are up, the stream left as it
+        // is: what the head's launcher hands its reflexes
+        Some("nerves") if args.get(1).map(String::as_str) == Some("urls") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match nerves_derive(&dir) {
+                Ok(NervesPlan::Roles(roles)) => {
+                    for (k, v) in roles {
+                        println!("{k}={v}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Ok(NervesPlan::NoServer(why)) => {
+                    eprintln!("hale dna nerves urls: {why}");
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna nerves urls: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        // GH #1653: the read URL of a senses' store that is up, nothing
+        // brought up
+        Some("senses") if args.get(1).map(String::as_str) == Some("url") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match host_run("senses-up", &dir, &["--derive".to_string()]) {
+                Ok(out) if !out.starts_with("none: ") => {
+                    print!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Ok(out) => {
+                    eprintln!("hale dna senses url: {}", out.trim().strip_prefix("none: ").unwrap_or(out.trim()));
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna senses url: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        // GH #988: the senses' store, its allocation brought up. GH #1653:
+        // an explicit act, as `memory migrate` and `nerves migrate` are,
+        // kept beside `hale habitat migrate` until graft retires the
+        // free-standing verbs
         Some("senses") if args.get(1).map(String::as_str) == Some("up") => {
             let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             match host_run("senses-up", &dir, &[]) {
@@ -559,8 +803,12 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             // GH #985, #986: the host runs on the spine's DSN and the
             // spine's NATS URL alone; an owner's or a head's in this
-            // environment does not reach it
-            host_exec_env("run", &dir, &rest, &[], &NOT_THE_HOSTS)
+            // environment does not reach it. GH #1590: with none named,
+            // the spine's DSN this clone reaches with what it keeps
+            let named = std::env::var("HALE_DNA_MEMORY_DSN_SPINE").map(|v| !v.is_empty()).unwrap_or(false);
+            let kept = if named { None } else { host_run("spine-dsn", &dir, &[]).ok().map(|s| s.trim().to_string()).filter(|s| s.starts_with("postgres")) };
+            let env: Vec<(&str, &OsStr)> = kept.as_ref().map(|s| vec![("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(s.as_str()))]).unwrap_or_default();
+            host_exec_env("run", &dir, &rest, &env, &NOT_THE_HOSTS)
         }
         Some("dev") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -568,10 +816,11 @@ pub fn run(args: &[String]) -> ExitCode {
                 eprintln!("hale dna dev: {e}");
                 return ExitCode::from(2);
             }
-            // GH #985: memory's schema is applied here, with the owner's
-            // DSN, and the host that runs the organism is handed only the
-            // spine's: the owner's is taken out of its environment
-            let spine = match memory_migrate(&dir) {
+            // GH #985: the host that runs the organism is handed only the
+            // spine's DSN: the owner's is taken out of its environment.
+            // GH #1653: derived from memory that is up and migrated, never
+            // brought up or migrated here: `hale habitat migrate` does
+            let spine = match memory_derive(&dir) {
                 Ok(MemoryPlan::Roles { spine, .. }) => Some(spine),
                 Ok(MemoryPlan::NoDatabase(why)) => {
                     eprintln!("hale dna dev: {why}");
@@ -582,16 +831,17 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            // GH #986: the nerves' stream is created here, with the
-            // owner's URL, and the host is handed the spine's URL and the
-            // organization's token — never the owner's, nor the head's
-            let nerves: Vec<(String, String)> = match nerves_migrate(&dir) {
+            // GH #986: the host is handed the spine's URL and the
+            // organization's token — never the owner's, nor the head's.
+            // GH #1653: of nerves that are up, the stream created by
+            // `hale habitat migrate`, never here
+            let nerves: Vec<(String, String)> = match nerves_derive(&dir) {
                 // GH #986, #989: and the application's server and the vault
                 // name of its credential, which the host's application
                 // inherits (started without the spine's, the owner's and the
                 // head's) to say its own events. URLs carry no password; a
                 // part presents its credential from the vault by name
-                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_USER_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
+                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_USER_APP" || k == "HALE_DNA_NATS_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
                 Ok(NervesPlan::NoServer(why)) => {
                     eprintln!("hale dna dev: {why}");
                     Vec::new()
@@ -601,21 +851,38 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            // GH #988: the senses' store, with the rest of compose — when
-            // compose is where this machine's services come from: an
-            // environment that names its own memory or nerves (an owner's
-            // DSN or URL) names its own store too. No part is handed the
-            // store's URL (the store scrapes them), so one that cannot come
-            // up is said and nothing stops for it
+            // GH #988: the senses' store, with the rest of the habitat's
+            // allocations — when the habitat is where this machine's
+            // services come from: an environment that names its own memory
+            // or nerves (an owner's DSN or URL) names its own store too. No
+            // part is handed the store's URL (the store scrapes them), so
+            // one that is not up is said and nothing stops for it
             let own_servers = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().any(|k| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
             if !own_servers {
-                match host_run("senses-up", &dir, &[]) {
+                match host_run("senses-up", &dir, &["--derive".to_string()]) {
                     Ok(out) if !out.starts_with("none: ") => eprintln!("hale dna dev: senses: {}", out.trim()),
                     Ok(out) => eprintln!("hale dna dev: senses: {}", out.trim().strip_prefix("none: ").unwrap_or(out.trim())),
                     Err(e) => eprintln!("hale dna dev: senses: {e}"),
                 }
             }
+            // GH #1653: a heart whose genome declares the `database` role is
+            // handed its DSN (which names its vault slot), derived: nothing
+            // is provisioned here
+            // GH #1653: the attach handover, which the host's heart inherits:
+            // the head, the application, the issuer and its service client,
+            // and each heart role the genome declares (a secret only ever
+            // by its vault slot's name), derived: nothing is provisioned here
+            let handed: Vec<(String, String)> = match habitat::handover(&dir, true) {
+                Ok(lines) => lines,
+                Err(e) => {
+                    eprintln!("hale dna dev: handover: {e}");
+                    Vec::new()
+                }
+            };
             let mut env: Vec<(&str, &OsStr)> = Vec::new();
+            for (k, v) in &handed {
+                env.push((k.as_str(), OsStr::new(v.as_str())));
+            }
             if let Some(spine) = &spine {
                 env.push(("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(spine.as_str())));
             }
@@ -624,9 +891,9 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             host_exec_env("dev", &dir, &rest, &env, &NOT_THE_HOSTS)
         }
-        // the plan path a fleet name resolves to in this checkout's manifest
-        // (a node asks, at the revision it checked out)
-        Some("plan-of") => {
+        // the fleet seed a fleet name resolves to in this checkout's
+        // manifest (a node asks, at the revision it checked out)
+        Some("fleet-of") => {
             let root = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             let name = args.get(2).cloned().unwrap_or_default();
             let manifest = root.join("hale.toml");
@@ -817,8 +1084,44 @@ pub fn run(args: &[String]) -> ExitCode {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
         }
+        // GH #1590: the record's rows, one JSON object per line, for a test
+        // or a script that reads the record without reading its storage
+        Some("record-rows") => {
+            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            host_exec("record-rows", &dir, &[])
+        }
+        // GH #1590: a kept receipt's body, likewise
+        Some("record-body") => host_exec("record-body", Path::new("."), &args[1..]),
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
+        // a member of the habitat's models provider's key family rotated:
+        // its tenant's copy follows, and the provider's reader vault
+        Some("secret") if provider_member_rotated(&args[1..]).is_some() => {
+            let Some((family, label)) = provider_member_rotated(&args[1..]) else { return ExitCode::from(2) };
+            match host_run("secret", Path::new("."), &args[1..]) {
+                Ok(said) => {
+                    print!("{said}");
+                    let root = project(Path::new(".")).map(|(r, _)| r).unwrap_or_else(|_| PathBuf::from("."));
+                    for l in habitat::models_after_rotate(&root, &family, &label) {
+                        println!("{l}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("hale dna: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
+        // the secrets the seed declares ([dna.secrets.<name>]), a line each:
+        // what the DNA's own code reads the declaration through
+        Some("declared-secrets") => secrets::declared_cmd(&args[1..]),
+        // what the seed provides the habitat's other organisms
+        // ([dna.provides.<capability>]), a line each
+        Some("declared-provides") => provides::declared_cmd(&args[1..]),
+        // the web UIs the seed declares ([dna.ui.<name>]), a line each: what
+        // the habitat's head reads to list them on its home screen
+        Some("declared-uis") => uis::declared_cmd(&args[1..]),
         // GH #989: every secret the organism requires, and whether the vault holds it
         Some("secrets") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -847,8 +1150,11 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // #649: the candidates the record keeps, whatever the review decided
         Some("candidates") => host_exec("candidates", Path::new("."), &args[1..]),
-        // #650: the operational memory, adopted by an explicit step
         Some("ledger") => host_exec("ledger", Path::new("."), &args[1..]),
+        // GH #1590: the people the record admits signed rows from
+        // phase 3: a foreign codebase attached with a build and a test command
+        Some("codebase") => host_exec("codebase", Path::new("."), &args[1..]),
+        Some("signers") => host_exec("signers", Path::new("."), &args[1..]),
         // #652: requests kept while the service cannot be reached
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -861,7 +1167,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("pressure") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("raise", Path::new("."), &args[2..]),
         Some("pressure") => host_exec("pressure", Path::new("."), &args[1..]),
         Some("concern") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("concern-raise", Path::new("."), &args[2..]),
-        Some("github") => host_exec("github", Path::new("."), &args[1..]),
+        Some("forge") => host_exec("forge", Path::new("."), &args[1..]),
         Some("fleet") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("fleet", &dir, &rest)
@@ -924,6 +1230,14 @@ fn work_exec(dir: &Path, args: &[String]) -> ExitCode {
     };
     let mut cmd = Command::new(&leg);
     cmd.args(args).current_dir(dir);
+    let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    if let Some(u) = habitat::head_flag() {
+        cmd.env_remove("HALE_DNA_API").env("HALE_DNA_HEAD_URL", u);
+    } else if !named("HALE_DNA_API") && !named("HALE_DNA_HEAD_URL") {
+        if let Some(u) = habitat::head_flag_or_local_url() {
+            cmd.env("HALE_DNA_HEAD_URL", u);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -997,10 +1311,16 @@ fn embedded_digest_cmd(rest: &[String]) -> ExitCode {
 fn print_embedded_provenance(dir: &Path) {
     use std::io::Write as _;
     let mut line = format!("embedded dna: {} (hale {TOOLCHAIN})", hale_dna::embedded_short());
-    let root = dir
+    let mut root = dir
         .canonicalize()
         .map(|d| crate::shared::workspace::find_workspace_root_pub(&d).unwrap_or(d))
         .unwrap_or_else(|_| dir.to_path_buf());
+    if dir == Path::new(".") && (!root.join("dna").is_dir() || (!root.join(ORG_SEED).is_dir() && manifest_pin(&root.join("hale.toml")).ok().flatten().is_none())) {
+        let hgenome = PathBuf::from(local_habitat_dir()).join("genome");
+        if hgenome.join("hale.toml").is_file() {
+            root = hgenome;
+        }
+    }
     if let Some(was) = materialized_digest(&root) {
         if was != hale_dna::EMBEDDED_DIGEST {
             let short: String = was.chars().take(16).collect();
@@ -1011,32 +1331,38 @@ fn print_embedded_provenance(dir: &Path) {
     let _ = std::io::stdout().flush();
 }
 
-const INIT_USAGE: &str = "hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]… [--as <who>]]";
+/// GH #1653: a retired birth verb's answer: the graft that replaces it,
+/// and exit 2. Every organism but the habitat is grafted from the habitat.
+fn retired(verb: &str, graft: &str) -> ExitCode {
+    eprintln!("hale dna {verb}: retired (GH #1653): every organism but the habitat is grafted from the habitat; `hale habitat up` births the habitat once, then:\n  {graft}");
+    ExitCode::from(2)
+}
+
+/// `args` spelled after a command, each quoted when it holds a blank.
+fn spelled(args: &[String]) -> String {
+    args.iter().map(|a| if a.contains(char::is_whitespace) { format!(" '{a}'") } else { format!(" {a}") }).collect()
+}
 
 fn usage(code: u8) -> ExitCode {
-    eprintln!("usage: {INIT_USAGE}");
-    eprintln!("                                    attach the DNA to an existing application; the record starts with the language and system");
-    eprintln!("                                    nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the library, not the practices)");
-    eprintln!("                                    --with proposes a pack beside them, planned on the holes init opens, so it may fill them");
-    eprintln!("                                    (`--with founder --set founder=<you>` seats you everywhere): one `hale dna review all approve` ratifies it all");
-    eprintln!("       hale dna new <name> [--no-library]");
-    eprintln!("                                    a greenfield application with its DNA");
-    eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library");
+    eprintln!("usage: hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library");
     eprintln!("                                    (each changed practice, and the library as new families, supersede the active one once the Board approves)");
     eprintln!("       hale dna memory migrate [dir]");
-    eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)");
-    eprintln!("                                    and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)");
+    eprintln!("                                    apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or the organism's");
+    eprintln!("                                    memory allocation in the local habitat, brought up) and print the record's spine and head DSNs");
+    eprintln!("                                    (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD); `hale habitat migrate` does it with the nerves and senses");
     eprintln!("       hale dna nerves migrate [dir]");
     eprintln!("                                    create the organization's NATS JetStream stream with the owner's URL (HALE_DNA_NATS_URL_OWNER,");
-    eprintln!("                                    or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)");
+    eprintln!("                                    or the organism's nerves allocation, brought up) and print its token and each role's URL");
+    eprintln!("       hale dna nerves urls [dir]   the token and each role's URL of nerves that are up; nothing brought up or created");
     eprintln!("       hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL");
-    eprintln!("       hale dna senses up [dir]     bring up the senses' store (compose's `senses` service) and print its read URL");
+    eprintln!("       hale dna senses up [dir]     bring up the organism's senses' store in the local habitat and print its read URL");
+    eprintln!("       hale dna senses url [dir]    the read URL of a senses' store that is up; nothing brought up");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
-    eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]");
+    eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N] [--endpoint <url>] [--key-vault <slot>]");
     eprintln!("                                    which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs");
     eprintln!("                                    (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it");
     eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,");
@@ -1053,6 +1379,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
+    eprintln!("       hale dna record-rows [project]  the record's rows, one JSON object per line (for tests and scripts)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
     eprintln!("       hale dna ingest [project] [--at <rev>]");
@@ -1070,22 +1397,21 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
     eprintln!("                                    the org chart and the process model, as queries over memory");
-    eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
-    eprintln!("       hale dna ledger [status | rows | adopt | abandon --why <w>]");
-    eprintln!("                                    the operational memory: where the day's work lives, its rows as JSON lines, and the one-way");
-    eprintln!("                                    move of it into memory — adopt and abandon are asked in the record; a node carries them out on its tick");
-    eprintln!("                                    once the ledger is adopted, a head's write (a task done, a receipt filed …) goes straight into it");
+    eprintln!("       hale dna sync [project]      apply what the record says of this clone (a dropped candidate's branch deleted); the record is memory's");
+    eprintln!("       hale dna signers [list | enroll <who> --key <ssh key or file> | revoke <who>]");
+    eprintln!("                                    who the record admits signed rows from under dna.trust = signed (rows of the record)");
+    eprintln!("       hale dna ledger rows         the operational memory's rows as JSON lines: where the day's work lives;");
+    eprintln!("                                    a head's write (a task done, a receipt filed …) goes straight into the Ledger");
     eprintln!("                                    under the head's role: done when it lands, or refused by memory with the reason");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
     eprintln!("                                    the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one");
-    eprintln!("       hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]");
-    eprintln!("                                    the profile sets the pieces (a remote, a body host); the combination is always detected");
     eprintln!("       hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust");
     eprintln!("       hale dna body                who runs this record (the body lease); `body claim --force` takes it from a body that is gone;");
     eprintln!("                                    `body release [--force]` gives it up — both are rows in your name (--as <who>)");
     eprintln!("       hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path>] [--dry-run]");
     eprintln!("                                    over ssh: the toolchain hale.lock pins, the record's remote cloned, Postgres from");
-    eprintln!("                                    dna/compose.yaml or the DSN, a systemd user unit supervising the host; writes nothing");
+    eprintln!("                                    the body's local habitat or the DSN, migrated once (`hale habitat migrate .`), a systemd");
+    eprintln!("                                    user unit supervising the host; writes nothing");
     eprintln!("                                    when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`");
     eprintln!("       hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]");
     eprintln!("       hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>");
@@ -1103,14 +1429,28 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna secret set <NAME> [--body <user@host>]");
     eprintln!("                                    a credential from stdin (never argv, never the record) into its slot of the vault");
     eprintln!("                                    (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
+    eprintln!("                                    piped, the whole of stdin less one trailing newline; at a terminal, one typed line; none is refused");
+    eprintln!("                                    a secret the seed declares ([dna.secrets.<name>], a slot) by its own name; a family's member");
+    eprintln!("                                    with `--member <label>` (also `secret remove <name> --member <label>`); a drawn one is never set,");
+    eprintln!("                                    and `secret rotate <name>` draws it anew");
+    eprintln!("       hale dna secret show <name> [--member <label>]");
+    eprintln!("                                    the value of a secret the seed declares with person = \"read\" (any other is refused)");
     eprintln!("       hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)");
+    eprintln!("       hale dna declared-secrets [dir]");
+    eprintln!("                                    the secrets <dir>/hale.toml declares, a line each: name, kind, person, programs, host commands, family");
+    eprintln!("       hale dna declared-provides [dir]");
+    eprintln!("                                    what <dir>/hale.toml provides the habitat's organisms, a line each: capability, service, path, models_path, key");
+    eprintln!("       hale dna declared-uis [dir]");
+    eprintln!("                                    the web UIs <dir>/hale.toml declares, a line each: name, label, service, path, login");
     eprintln!("       hale dna application remove [project] [--as <who>]");
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
+    eprintln!("       hale dna codebase [list | attach <name> --repo <url> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--knowledge <dir>] [--branch <name>] | detach <name>]");
+    eprintln!("                                    a foreign codebase attached with no application (`codebase.attached` in the record): a");
+    eprintln!("                                    leg works a branch of its repository, verifies with the two commands, and its review opens there");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
-    eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
+    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--codebase <name>] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes, in the attached --codebase when one is named): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
     eprintln!("       hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)");
@@ -1118,7 +1458,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
     eprintln!("       hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]");
     eprintln!("                                    propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them");
-    eprintln!("       hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>");
+    eprintln!("       hale dna connect <nerves-url> --record <identity> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>");
     eprintln!("                                    propose a connection to another record (a Board Review); `hale dna connect` lists them;");
     eprintln!("                                    `hale dna disconnect <n> --why <w>` closes one");
     eprintln!("       hale dna handoff <n> task <id> | receipt <digest>");
@@ -1126,21 +1466,21 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    `handoff` lists, `handoff accept <id>` accepts one received, `handoff sync` reads acceptances back");
     eprintln!("       hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
-    eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");
-    eprintln!("                                    (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)");
+    eprintln!("       hale dna forge sync          mirror pending Reviews to the allocated forge and read its reviews back as verdicts");
+    eprintln!("                                    (the habitat's Forgejo by default; `hale habitat forge <organism> github --repo owner/repo` for GitHub, via `gh`; dna.github.board logins,…)");
     eprintln!("       hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state");
     eprintln!("       hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)");
     eprintln!("       hale dna rollback <mutation> express the base a Mutation was applied on, again");
-    eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the plan; `hale node <name>` runs a node)");
+    eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the fleet seed; `hale node <name>` runs a node)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
     eprintln!("                                    pressure raised and answered; `raise` writes one signal into the record, which a node relays");
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
-    eprintln!("       hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]");
+    eprintln!("       hale dna head [project] [--port P] [--head-port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]");
     eprintln!("                                    the head: the project service serving the browser face (8792), its API child, the stub");
     eprintln!("                                    OpenID provider and, with a project, the reflexes — built once into the toolchain cache,");
     eprintln!("                                    no checkout needed (from a checkout, dna/face/start.sh); with a project, the head's");
-    eprintln!("                                    memory DSN derived as `memory migrate` derives it (`hale dna head --help`)");
+    eprintln!("                                    memory DSN derived from memory that is up, never migrated (`hale dna head --help`)");
     eprintln!("       hale dna ui [project] [--port N]");
     eprintln!("                                    under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,");
     eprintln!("                                    subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;");
@@ -1245,7 +1585,7 @@ fn materialize_vendor(root: &Path) -> Result<(usize, usize), String> {
     // embedded set is written beside it and refreshed on `upgrade`.
     let readme = dir.join("README.md");
     let readme_text = format!(
-        "# vendor/dna — toolchain-owned\n\nThe DNA core (`dna/core` of the hale repository) as shipped by hale {TOOLCHAIN}.\nEmbedded source digest: {}\n(`hale dna --embedded-digest`; two builds of one version can embed different\nsource, so the digest is the provenance and the version is not.)\nRegenerated by `hale dna init` / `hale dna upgrade`; pinned in `hale.lock` as\n`[dna] toolchain`. Do not edit: project-owned source lives in `dna/`.\n",
+        "# vendor/dna — toolchain-owned\n\nThe DNA core (`dna/core` of the hale repository) as shipped by hale {TOOLCHAIN}.\nEmbedded source digest: {}\n(`hale dna --embedded-digest`; two builds of one version can embed different\nsource, so the digest is the provenance and the version is not.)\nRegenerated by `hale habitat graft` / `hale dna upgrade`; pinned in `hale.lock` as\n`[dna] toolchain`. Do not edit: project-owned source lives in `dna/`.\n",
         hale_dna::EMBEDDED_DIGEST
     );
     if fs::read_to_string(&readme).map(|s| s != readme_text).unwrap_or(true) {
@@ -1313,7 +1653,7 @@ fn locate(app_dir: &Path) -> Result<App, String> {
         .unwrap_or_else(|_| ".".to_string());
     let Some((main_file, main_name)) = main_of(&seed)? else {
         return Err(format!(
-            "{} declares no `main locus` — the DNA attaches to an application's entrypoint; run `hale dna new <name>` for a fresh one",
+            "{} declares no `main locus` — the DNA attaches to an application's entrypoint; run `hale habitat graft <name>` for a fresh one",
             seed.display()
         ));
     };
@@ -1372,7 +1712,31 @@ fn repository_root(dir: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
+/// The root of the organism born at `app_dir` (GH #1653), as its birth
+/// resolves it: a repository's own directory, or the workspace that holds
+/// an application's seed. Its manifest is the organism's: its pin and its
+/// needs.
+pub(super) fn organism_root(app_dir: &Path) -> Result<PathBuf, String> {
+    Ok(match repository_root(app_dir)? {
+        Some(r) => r,
+        None => locate(app_dir)?.root,
+    })
+}
+
+/// Who a record is born of (GH #1653): the habitat, the one organism
+/// born with no parent, or a child grafted from it, whose genesis names
+/// its parent. Only `habitat.rs` births either: the habitat at `up`, a
+/// child at `graft`.
+#[derive(Clone, Copy)]
+pub(crate) enum Lineage<'a> {
+    Habitat,
+    Child(&'a str),
+}
+
+/// The organism at `app_dir` born, or its birth finished where it
+/// stopped (each step keeps what is done): an application, or a
+/// repository with none at its root.
+fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<String>, String> {
     // an application, or (GH #1090) a repository with none at its root
     let app = match repository_root(app_dir)? {
         Some(_) => None,
@@ -1386,10 +1750,15 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         Some(a) => a.project.clone(),
         None => root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".to_string()),
     };
+    // GH #1590: a record an earlier toolchain kept on git is not carried
+    // forward; nothing is written before that is said
+    if let Some(why) = git_era_refusal(&root) {
+        return Err(why);
+    }
     let mut out: Vec<String> = Vec::new();
-    // 0. the record is a branch, so the project is a repository
+    // 0. the genome is a repository
     if ensure_repo(&root)? {
-        out.push(format!("git init {} (the record lives on {RECORD_REF})", root.display()));
+        out.push(format!("git init {} (the genome is a repository; the record is memory's)", root.display()));
     }
     let created = |out: &mut Vec<String>, p: &Path, content: &str| -> Result<bool, String> {
         if p.exists() {
@@ -1483,12 +1852,13 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     // the holes. One written before `init` is kept, and is what they read.
     created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
-    // GH #583 K1: dev's environment is compose — the knowledge graph's
-    // Postgres, a named volume per repository
-    if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project, &free_compose_ports(&project)))? {
-        out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
-    }
-    created(&mut out, &root.join("dna/senses.yml"), &senses_yml())?;
+    // GH #1653: a checkout owns no infrastructure. Its memory, nerves and
+    // senses' store are the local habitat's allocations for the organism,
+    // which birth (below) and `hale habitat migrate` bring up (docker
+    // compose on PATH) and `hale dna dev` runs on; `hale dna run` needs
+    // HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and
+    // HALE_DNA_NATS_ORG
+    out.push(format!("memory  the local habitat's allocations: `hale habitat migrate {}` brings this organism's memory, nerves and senses' store up and migrates them (docker compose on PATH), and `hale dna dev` runs on them; `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG", root.display()));
     let kept = match &app {
         Some(app) => format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED),
         None => format!("kept    {} (the repository is not modified; the organization oversees it from {})", root.display(), ORG_SEED),
@@ -1499,11 +1869,11 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     if !mtext.contains("[environments.") {
         let add = match &app {
             Some(app) => format!(
-                "\n# hale dna init: the two entrypoints and where each deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the application keeps its own.\n[claims]\nno_base = true\n\n[environments.local]\nsource_only = true\nentrypoints = [\"{}\"]\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
+                "\n# hale habitat graft: the two entrypoints and where each deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the application keeps its own.\n[claims]\nno_base = true\n\n[environments.local]\nsource_only = true\nentrypoints = [\"{}\"]\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
                 app.seed_rel, ORG_SEED
             ),
             None => format!(
-                "\n# hale dna init: the organization's entrypoint and where it deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the repository's seeds keep their own.\n[claims]\nno_base = true\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
+                "\n# hale habitat graft: the organization's entrypoint and where it deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the repository's seeds keep their own.\n[claims]\nno_base = true\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
                 ORG_SEED
             ),
         };
@@ -1512,55 +1882,29 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     } else {
         out.push(format!("kept    {} (declares environments already)", manifest.display()));
     }
-    // 7. the record, seeded from the artifact — or, for a repository, with
-    //    the purpose's Review and what the repository holds, as the graph
-    if record_exists(&root)? {
-        out.push(format!("kept    {RECORD_REF} (a record exists; not reseeded)"));
+    // 6b. GH #1590: the record is memory's, and a new one is born there. Its
+    //     first row is composed here, so its identity (that row's digest)
+    //     is pinned in the genome before anything is named after it; the
+    //     secrets, memory's schema and the row follow
+    let fresh = manifest_pin(&manifest)?.is_none();
+    let genesis_body = if fresh {
+        let (body, id) = genesis_row(&root, lineage)?;
+        pin_record_in_manifest(&manifest, &id)?;
+        out.push(format!("pinned  {} ([dna] record = {}…, the identity of the record born here)", manifest.display(), short_id(&id)));
+        // phase 4: a graft that names a host places the organism there
+        // before anything of it is brought up
+        if let Some(line) = habitat::place_for_graft(&id[..12])? {
+            out.push(line);
+        }
+        Some(body)
     } else {
-        match (&app, &cut) {
-            (Some(app), Some((art, _))) => {
-                let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
-                push_graph_lines(&mut out, &graph);
-                out.push(seat_initializer(&app.root, true)?);
-            }
-            _ => {
-                // the declared purpose's proposal and the graph in one
-                // checked seed: a repository the ingest refuses leaves no
-                // record behind, and one with nothing to ingest still has one
-                let graph = seed_repository(&root, &project, &purpose_text)?;
-                out.push(format!(
-                    "seeded  {RECORD_REF} (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
-                    app_account_name(&project)
-                ));
-                push_graph_lines(&mut out, &graph);
-                out.push(seat_initializer(&root, true)?);
-            }
-        }
-        // GH #995: the declared purpose was proposed in that seed, a
-        // proposal the Board ratifies like every other
-        out.push("seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)".to_string());
-        // GH #596 C, #994: the design and the operating practices, as
-        // proposals — one Review per practice, listed by family
-        for (family, practices) in SEEDED {
-            let (d, _, _) = design_upgrade(&root, practices)?;
-            out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
-        }
-        // seed/pull: the nodes knowledge is about, and the smallest library bound to them
-        if library {
-            out.extend(seed_library(&root, app.as_ref())?);
-        } else {
-            out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
-        }
-        // the starting model mapping, from the hosted models this machine
-        // has a key for
-        out.extend(seed_model_map(&root, &found)?);
-    }
-    // 8. .gitignore hygiene
+        None
+    };
+    // 6c. .gitignore hygiene
     let gi = root.join(".gitignore");
     let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
     let mut added = Vec::new();
-    for line in ["/vendor/", "/.hale/", SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
+    for line in ["/vendor/", LOCAL_STATE_IGNORE] {
         if !gtext.lines().any(|l| l.trim() == line) {
             if !gtext.is_empty() && !gtext.ends_with('\n') {
                 gtext.push('\n');
@@ -1574,18 +1918,116 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         fs::write(&gi, gtext).map_err(|e| e.to_string())?;
         out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
     }
-    // 8b. GH #989: the organism's secrets, provisioned in one place (the
-    // skin's list, dna/host/secrets.hl): drawn into the vault, the nerves'
-    // dna/nats.conf (tracked, no secret) written, and the servers'
-    // dna/nats.secrets.conf and dna/postgres.secrets (the only files with a
-    // password: mode 600, ignored) from the same draw. After the record (the
-    // vault names are its organization's) and after .gitignore (the writer
-    // refuses a file git would track).
+    // 6d. GH #989: the organism's secrets, provisioned in one place (the
+    // skin's list, dna/host/secrets.hl): drawn into the vault, and the
+    // allocations' nats.conf (no secret), nats.secrets.conf and
+    // postgres.secrets (the only files with a password: mode 600) written
+    // from the same draw beside the allocations in the local habitat, never
+    // in the checkout (GH #1653). After the pin (the vault names and the
+    // allocations are its record's); before memory, whose roles they are.
     out.push(organism_secrets(&root, true));
+    // 6e. GH #1590: memory, then the record's first row in it
+    match memory_migrate(&root)? {
+        MemoryPlan::Roles { .. } => out.push("memory  schema applied; this clone reads and writes the record as its head (.hale/dna/memory.env)".to_string()),
+        MemoryPlan::NoDatabase(why) => {
+            return Err(format!("the record is memory's, and there is no memory to keep it in: {why} (set {OWNER_DSN_ENV}, or put docker compose on PATH for the organism's memory allocation in the local habitat)"));
+        }
+    }
+    match &genesis_body {
+        Some(body) => {
+            let born = host_run("record-genesis", &root, &[body.clone()])?;
+            out.push(format!("born    {}", born.trim()));
+        }
+        // a manifest that pins a record memory holds none of belongs to
+        // another organism's genome, or to a memory this clone does not
+        // reach: init would start a second record beside it
+        None if !record_exists(&root)? => {
+            let pinned = manifest_pin(&manifest)?.unwrap_or_default();
+            return Err(format!(
+                "{}'s [dna] record pins record {pinned}, and the memory this clone reaches holds none of it: a clone of an existing organism is pointed at its memory ({OWNER_DSN_ENV}, or HALE_DNA_MEMORY_DSN_HEAD) rather than starting another record; a manifest copied from another project loses its `[dna] record` line first",
+                manifest.display()
+            ));
+        }
+        None => {}
+    }
+    // 7. the record, seeded from the artifact — or, for a repository, with
+    //    the purpose's Review and what the repository holds, as the graph
+    // each seed step checks its own completion against the record and
+    // runs when it is missing, so an init that stopped part way (a held
+    // `.git/config.lock`, a failed append) is finished by the next, a step
+    // at a time, never skipped whole because an earlier step ran (GH #1653)
+    let held = record_kinds(&root)?;
+    let has = |kind: &str, entity: Option<&str>| held.iter().any(|(k, e)| k == kind && entity.is_none_or(|x| x == e));
+    if has("application.attached", None) {
+        out.push("kept    the record (memory holds it; not reseeded)".to_string());
+    } else {
+        match (&app, &cut) {
+            (Some(app), Some((art, _))) => {
+                let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
+                out.push(format!("seeded  the record ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
+                push_graph_lines(&mut out, &graph);
+            }
+            _ => {
+                // the declared purpose's proposal and the graph in one
+                // checked seed: a repository the ingest refuses leaves no
+                // record behind, and one with nothing to ingest still has one
+                let graph = seed_repository(&root, &project, &purpose_text)?;
+                out.push(format!(
+                    "seeded  the record (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
+                    app_account_name(&project)
+                ));
+                push_graph_lines(&mut out, &graph);
+            }
+        }
+        // GH #995: the declared purpose was proposed in that seed, a
+        // proposal the Board ratifies like every other
+        out.push("seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)".to_string());
+    }
+    // the seat: git config, done when its keys are (it keeps what is there)
+    out.push(seat_initializer(app.as_ref().map(|a| a.root.as_path()).unwrap_or(&root), true)?);
+    // GH #596 C, #994: the design and the operating practices, as
+    // proposals — one Review per practice, listed by family; each family
+    // proposes only what the record does not hold already
+    for (family, practices) in SEEDED {
+        let (d, _, _) = design_upgrade(&root, practices)?;
+        out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
+    }
+    // seed/pull: the nodes knowledge is about, and the smallest library bound to them
+    if !library {
+        out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
+    } else if has("graph.node", Some("language:hale")) {
+        out.push("kept    the library (memory holds it)".to_string());
+    } else {
+        out.extend(seed_library(&root, app.as_ref())?);
+    }
+    // the starting model mapping, from the hosted models this machine
+    // has a key for
+    if has("model.rule", Some("default")) {
+        out.push("kept    the models map (memory holds it)".to_string());
+    } else {
+        out.extend(seed_model_map(&root, &found)?);
+    }
+    // 8. GH #1590: the secrets the seeded record names (the attached
+    //    application's nerves account), drawn now it names them; nothing
+    //    drawn before is drawn again
+    let late = organism_secrets(&root, false);
+    if late.lines().any(|l| l.contains("drawn")) {
+        out.push(late);
+    }
+    // 8b. GH #1653: the nerves' stream, created at birth as memory's
+    //    schema is: birth is a habitat's act (graft's, once it lands), and
+    //    no command that runs the organism creates it. One that cannot be
+    //    reached yet is said, and `hale habitat migrate` creates it later
+    match nerves_migrate(&root) {
+        Ok(NervesPlan::Roles(_)) => out.push("nerves  the organization's stream created".to_string()),
+        Ok(NervesPlan::NoServer(why)) => out.push(format!("note    the nerves are not migrated: {why}")),
+        Err(e) => out.push(format!("note    the nerves are not migrated: {e} (`hale habitat migrate {}` creates the stream)", root.display())),
+    }
     // 9. format what we generated and touched
     let mut fmt = Command::new(&me);
     fmt.arg("fmt").arg(root.join("dna"));
-    if let Some(app) = &app {
+    // a seed in a frozen directory (a recorded fixture) is left as written
+    if let Some(app) = app.as_ref().filter(|a| !crate::verbs::fmt::frozen(&a.seed, &root)) {
         fmt.arg(&app.seed);
     }
     let _ = fmt.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
@@ -1601,7 +2043,11 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     let start = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
     let root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
     if !root.join("vendor/dna").is_dir() && !root.join("dna").is_dir() {
-        return Err(format!("{} has no DNA (no vendor/dna or dna/); run `hale dna init` first", root.display()));
+        return Err(format!("{} has no DNA (no vendor/dna or dna/); run `hale habitat graft` first", root.display()));
+    }
+    // GH #1590: nothing an earlier toolchain kept on git is converted
+    if let Some(why) = git_era_refusal(&root) {
+        return Err(why);
     }
     let (w, same) = materialize_vendor(&root)?;
     let mut out = vec![format!(
@@ -1688,10 +2134,31 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("note    {}/main.hl: point the substrate at the catalog, `catalog: workflows()` on dna::Dna, to admit the project's own definitions beside the baseline", ORG_SEED));
         }
     }
+    // GH #1590: what follows needs the record, which is memory's, named by
+    // the genome's pin: a pin that does not read is refused, never taken
+    // for no record, and one memory holds nothing of is said
+    let in_memory = match manifest_pin(&root.join("hale.toml"))? {
+        None => {
+            out.push("note    hale.toml pins no record: `hale habitat graft` births one".to_string());
+            false
+        }
+        Some(pinned) => {
+            // a clone that keeps no head's DSN yet reaches the record through
+            // the owner's migration, which keeps it
+            let owner = std::env::var(OWNER_DSN_ENV).unwrap_or_default();
+            if owner.starts_with("postgres") && !memory_env_file(&root).is_file() && std::env::var_os("HALE_DNA_MEMORY_DSN_HEAD").is_none() {
+                memory_migrate(&root)?;
+            }
+            if !record_exists(&root)? {
+                return Err(format!("hale.toml's [dna] record pins record {pinned}, and the memory this clone reaches holds none of it: point the clone at its memory ({OWNER_DSN_ENV}, or HALE_DNA_MEMORY_DSN_HEAD)"));
+            }
+            true
+        }
+    };
     // GH #946, #1104 piece 5: a record from before the seat: this uid
     // mapped to its user, so the head's socket knows the peer; the trust
     // an existing record declares, or does not, is its own
-    if record_exists(&root)? {
+    if in_memory {
         out.push(seat_initializer(&root, false)?);
     }
     // GH #596: an organization from before the charter gets one, and
@@ -1757,18 +2224,20 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("note    {}: `dna::Ownership {{ path: \"dna/org/owners\" }}` no longer builds; delete the field — ownership is the graph's (GH #1123)", main_path.display()));
         }
     }
-    // GH #986, #988, #989: dev's environment. dna/compose.yaml is a
-    // generated seed file and is regenerated (a hard cut: its own compose
-    // project, `hale-dna-<name>`, the nerves and the senses beside memory,
-    // the servers' passwords from the vault's files); dna/senses.yml is
-    // created when missing. Then the organism's secrets, provisioned, and
-    // a regenerated seed rotates the nerves' passwords. The project's
-    // .gitignore gains the secrets files first.
+    // GH #1653: a checkout owns no infrastructure. The compose file, the
+    // servers' configuration and their secrets an older init wrote into the
+    // checkout go (the organism's memory, nerves and senses' store are the
+    // local habitat's allocations, made outside it); the containers they
+    // started are not used again. Then the organism's secrets, provisioned,
+    // the nerves' passwords drawn anew. The project's .gitignore keeps the
+    // clone's own state out first.
     if root.join("dna").is_dir() {
         let gi = root.join(".gitignore");
         let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
         let mut added = Vec::new();
-        for line in SECRETS_IGNORES {
+        // `/.hale/`: it holds the clone's own state, the head's DSN among it
+        // (GH #1590)
+        for line in [LOCAL_STATE_IGNORE] {
             if !gtext.lines().any(|l| l.trim() == line) {
                 if !gtext.is_empty() && !gtext.ends_with('\n') {
                     gtext.push('\n');
@@ -1782,51 +2251,37 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             fs::write(&gi, gtext).map_err(|e| e.to_string())?;
             out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
         }
-        // the seed's name is the one its compose file carries, so a clone in
-        // a directory of another name regenerates the same file
-        let compose = root.join("dna/compose.yaml");
-        let had = fs::read_to_string(&compose).unwrap_or_default();
-        let project = compose_seed_of(&had).unwrap_or_else(|| locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string()));
-        // and its ports the ones it publishes: another seed's are not taken
-        let ports = compose_ports_of(&had).unwrap_or_else(|| free_compose_ports(&project));
-        let want = compose_yaml(&project, &ports);
-        if had != want {
-            fs::write(&compose, &want).map_err(|e| format!("write {}: {e}", compose.display()))?;
-            out.push(format!("{} {} (its own compose project, hale-dna-{}; the servers' passwords from the vault)", if had.is_empty() { "created" } else { "rewrote" }, compose.display(), compose_name(&project)));
-            let stale = compose_containers_elsewhere(&compose, &format!("hale-dna-{}", compose_name(&project)));
-            if !stale.is_empty() {
-                out.push(format!("note    the services the previous dna/compose.yaml started are still up under another compose project, on the same ports: stop them (`docker stop {}`) before `hale dna dev`", stale.join(" ")));
+        for gone in ["dna/compose.yaml", "dna/senses.yml", "dna/nats.conf", "dna/nats.secrets.conf", "dna/postgres.secrets"] {
+            let path = root.join(gone);
+            if path.is_file() {
+                fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+                out.push(format!("removed {} (the organism's infrastructure is the local habitat's allocations, GH #1653)", path.display()));
             }
-        }
-        let senses = root.join("dna/senses.yml");
-        if !senses.is_file() {
-            fs::write(&senses, senses_yml()).map_err(|e| format!("write {}: {e}", senses.display()))?;
-            out.push(format!("created {}", senses.display()));
         }
         out.push(organism_secrets(&root, true));
     }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
     if main_text.contains("main locus Org") && main_text.contains("unix(") {
         out.push(format!(
-            "note    {}/main.hl binds its facts to unix sockets, which DNA no longer serves (GH #986): they arrive over the nerves. Replace its `bindings` with the ones `hale dna init` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
+            "note    {}/main.hl binds its facts to unix sockets, which DNA no longer serves (GH #986): they arrive over the nerves. Replace its `bindings` with the ones `hale habitat graft` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
             ORG_SEED
         ));
     }
     if main_text.contains("main locus Org") && main_text.contains("nats::NatsConn {") && !main_text.contains("credential:") {
         out.push(format!(
-            "note    {}/main.hl's `nerves` connection presents no credential (GH #989): no URL carries a password now, so it cannot connect. Add `user: \"spine\", credential: std::secret::Credential {{ vault: dna::nerves_role_vault(\"spine\") }},` to its `nats::NatsConn`, as `hale dna init` writes it; an application's own connection takes `user: \"app\"` and the vault entry HALE_DNA_NATS_VAULT_APP names",
+            "note    {}/main.hl's `nerves` connection presents no credential (GH #989): no URL carries a password now, so it cannot connect. Add `user: \"spine\", credential: std::secret::Credential {{ vault: dna::nerves_role_vault(\"spine\") }},` to its `nats::NatsConn`, as `hale habitat graft` writes it; an application's own connection takes `user: \"app\"` and the vault entry HALE_DNA_NATS_VAULT_APP names",
             ORG_SEED
         ));
     }
     if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkAllowanceAsk") {
         out.push(format!(
-            "note    {}/main.hl binds no `dna::WorkAllowanceAsk` (GH #1131): a leg asks the spine for its attempt's spend before its first model call, and the ask arrives over the nerves; unbound, a leg's attempt is declined with no answer. Add `dna::WorkAllowanceAsk: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
+            "note    {}/main.hl binds no `dna::WorkAllowanceAsk` (GH #1131): a leg asks the spine for its attempt's spend before its first model call, and the ask arrives over the nerves; unbound, a leg's attempt is declined with no answer. Add `dna::WorkAllowanceAsk: nats::NatsAdapter {{ }};` to its `bindings`, as `hale habitat graft` writes today",
             ORG_SEED
         ));
     }
     if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkSubmit") {
         out.push(format!(
-            "note    {}/main.hl binds no `dna::WorkSubmit` (GH #946): a leg's outcome, handed back at the head, arrives over the nerves. Add `dna::WorkSubmit: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
+            "note    {}/main.hl binds no `dna::WorkSubmit` (GH #946): a leg's outcome, handed back at the head, arrives over the nerves. Add `dna::WorkSubmit: nats::NatsAdapter {{ }};` to its `bindings`, as `hale habitat graft` writes today",
             ORG_SEED
         ));
     }
@@ -1836,9 +2291,9 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             ORG_SEED
         ));
     }
-    if main_text.contains("journal: dna::GitJournal {") {
+    if main_text.contains("dna::GitJournal") || main_text.contains("dna::GitReceipts") || main_text.contains("dna::GitLeases") {
         out.push(format!(
-            "note    {}/main.hl wires the record alone as its journal; the day's work can move to the ledger (GH #646) once it reads both: `journal: dna::RoutedJournal {{ record: dna::GitJournal {{ repo: \".\" }} }}` (the ledger is memory's, GH #985)",
+            "note    {}/main.hl wires the record over git; the record is memory's now (GH #1590): `dna::GitJournal` becomes `dna::RecordJournal`, `dna::GitReceipts` `dna::MemoryReceipts`, `dna::GitLeases` `dna::MemoryLeases` (the same fields)",
             ORG_SEED
         ));
     }
@@ -1860,7 +2315,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if law_text.contains("dna::KnowledgeClient") {
         out.push(format!("note    {}/law.hl groups dna::KnowledgeClient; it is dna::MemoryKnowledge now", ORG_SEED));
     }
-    if record_exists(&root)? {
+    if in_memory {
         for (family, practices) in SEEDED {
             let (proposed, superseded, waiting) = design_upgrade(&root, practices)?;
             if proposed > 0 {
@@ -1883,12 +2338,20 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         }
     }
     // GH #985: with the owner's DSN given, memory's schema moves to this
-    // toolchain's version here; without one, `dev` applies it at start
+    // toolchain's version here; without one, `hale habitat migrate` moves
+    // the organism's allocation (GH #1653: nothing else migrates it).
+    // A genome that pins no record names no schema to move (GH #1590).
     let owner = std::env::var(OWNER_DSN_ENV).unwrap_or_default();
-    if owner.starts_with("postgres") && record_exists(&root)? {
+    if in_memory && owner.starts_with("postgres") {
         if let MemoryPlan::Roles { .. } = memory_migrate(&root)? {
             out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
         }
+        // GH #1653: and the heart's own migrations whose declared version moved
+        out.extend(habitat::run_heart_migrations(&root)?);
+    } else if in_memory {
+        // GH #1653: the habitat's upgrade of this organism's allocation:
+        // each role recorded behind this toolchain's version is migrated
+        out.extend(habitat::upgrade_allocation(&root)?);
     }
     Ok(out)
 }
@@ -1897,195 +2360,9 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
 // the knowledge graph's environment (GH #583 K1)
 // ---------------------------------------------------------------
 
-/// `dna/compose.yaml`: memory's Postgres (with pgvector)
-/// for `hale dna dev`, a named volume per repository so the graph
-/// outlives the container. Part of the genome, project-owned.
-fn compose_yaml(project: &str, ports: &ComposePorts) -> String {
-    let name = compose_name(project);
-    format!(
-        r#"# dna/compose.yaml — the organism's environment for `hale dna dev`
-# (project-owned; generated by `hale dna init`). Memory: the organism
-# keeps its working memory in this Postgres — the ledger, the graph,
-# protected evidence — and the record (refs/dna/*) holds the decided
-# half. Nerves (GH #986): facts travel between the organism's parts over
-# this NATS JetStream server, one stream per organization, each part
-# with its own user (dna/nats.conf). `hale dna dev` runs `docker compose
-# -f dna/compose.yaml up -d`, applies memory's schema and creates the
-# stream as their owners, and hands the organism its own roles. Beyond
-# one machine, point HALE_DNA_MEMORY_DSN_OWNER at a Postgres of your own
-# and HALE_DNA_NATS_URL_OWNER at a NATS server configured like
-# dna/nats.conf. Senses (GH #988): the store keeps every part's readings
-# (dna/senses.yml says which), for the reflexes to read; `hale dna dev`
-# brings it up with the rest. All three listen on 127.0.0.1 only.
-# Secrets (GH #989): the database's superuser password and the nerves'
-# are the vault's, and reach the servers through dna/postgres.secrets
-# and dna/nats.secrets.conf, which `hale dna init` and `upgrade` write:
-# never tracked, mode 600. The project is this seed's alone, so two
-# seeds on one machine never share a container.
-name: hale-dna-{name}
-services:
-  knowledge-db:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: dna
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner
-      POSTGRES_DB: dna
-    ports:
-      - "127.0.0.1:{port}:5432"
-    volumes:
-      - ./postgres.secrets:/run/secrets/postgres-owner:ro
-      - knowledge-db:/var/lib/postgresql/data
-  nerves:
-    image: nats:2
-    command: ["-c", "/etc/nats/nats.conf"]
-    ports:
-      - "127.0.0.1:{nats_port}:4222"
-    volumes:
-      - ./nats.conf:/etc/nats/nats.conf:ro
-      - ./nats.secrets.conf:/etc/nats/nats.secrets.conf:ro
-      - nerves:/data
-  senses:
-    image: {image}
-    command: ["--config.file=/etc/prometheus/senses.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time={retention}"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "127.0.0.1:{senses_port}:9090"
-    volumes:
-      - ./senses.yml:/etc/prometheus/senses.yml:ro
-      - senses:/prometheus
-volumes:
-  knowledge-db:
-    name: hale-dna-{name}-knowledge
-  nerves:
-    name: hale-dna-{name}-nerves
-  senses:
-    name: hale-dna-{name}-senses
-"#,
-        port = ports.db,
-        nats_port = ports.nats,
-        senses_port = ports.senses,
-        image = PROMETHEUS_IMAGE,
-        retention = SENSES_RETENTION,
-    )
-}
-
-/// The senses' store (GH #988): Prometheus, kept this long.
-const PROMETHEUS_IMAGE: &str = "prom/prometheus:v3.5.0";
-const SENSES_RETENTION: &str = "7d";
-
-/// `dna/senses.yml`: what the senses' store scrapes (GH #988) — every
-/// long-running part's readings, on the ports `dna/core/senses.hl` names
-/// (`SENSES_PORT_SPINE`, `_NODE`, `_HEAD`), reached from the store's
-/// container over the host gateway. `honor_labels`: a part's own labels
-/// (a node's `instance`) are the readings', never the target's.
-fn senses_yml() -> String {
-    r#"# dna/senses.yml — what the senses' store scrapes (GH #988; project-owned,
-# generated by `hale dna init`). Every long-running part of the organism
-# serves its readings (std::metrics) on its own port, each series labelled
-# `part`: the spine (the node's host) on 9464, a node on 9465, the head on
-# 9466 — or on HALE_DNA_SENSES_PORT when its environment names one. The
-# store in dna/compose.yaml reaches them over the host gateway and keeps
-# what they said for its retention (--storage.tsdb.retention.time); the
-# reflexes read it. A part never learns where its readings go.
-global:
-  scrape_interval: 5s
-scrape_configs:
-  - job_name: spine
-    honor_labels: true
-    static_configs:
-      - targets: ["host.docker.internal:9464"]
-  - job_name: node
-    honor_labels: true
-    static_configs:
-      - targets: ["host.docker.internal:9465"]
-  - job_name: head
-    honor_labels: true
-    static_configs:
-      - targets: ["host.docker.internal:9466"]
-"#
-    .to_string()
-}
-
-/// The host ports a seed's compose publishes its services on: memory's
-/// Postgres in 54xx, the nerves' NATS in 42xx, the senses' store in 93xx.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ComposePorts {
-    db: u16,
-    nats: u16,
-    senses: u16,
-}
-
-/// The ports a seed's compose file already publishes, when it names all
-/// three: an upgrade, and a clone's, keep them, so a regenerated file is
-/// the file the seed already has.
-fn compose_ports_of(text: &str) -> Option<ComposePorts> {
-    let published = |inner: &str| {
-        text.lines().find_map(|l| {
-            let l = l.trim().trim_start_matches("- ").trim_matches('"');
-            let rest = l.strip_prefix("127.0.0.1:")?;
-            let (host, container) = rest.split_once(':')?;
-            (container == inner).then(|| host.parse::<u16>().ok()).flatten()
-        })
-    };
-    Some(ComposePorts { db: published("5432")?, nats: published("4222")?, senses: published("9090")? })
-}
-
-/// Free host ports for a new seed's compose, taken at seed time as
-/// `dna::free_port` takes a fixture's: each service's candidate comes from
-/// the seed's name, so a seed's ports are its own and stable, and one that
-/// something on this machine already listens on is stepped past. Hashed
-/// alone, two seeds, or a seed and a server the machine already runs (a CI
-/// runner's NATS on 4222), could be handed one port, and the second
-/// compose up fails.
-fn free_compose_ports(project: &str) -> ComposePorts {
-    let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
-    let pick = |base: u16| {
-        let first = (h % 100) as u16;
-        (0..100u16)
-            .map(|i| base + (first + i) % 100)
-            .find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
-            .unwrap_or(base + first)
-    };
-    ComposePorts { db: pick(5400), nats: pick(4200), senses: pick(9300) }
-}
-
-/// The seed's name a compose file carries: its project (`name:
-/// hale-dna-<seed>`) or, in a file from before each seed had one, its
-/// memory volume's (`name: hale-dna-<seed>-knowledge`).
-fn compose_seed_of(text: &str) -> Option<String> {
-    let names: Vec<&str> = text.lines().filter_map(|l| l.trim().strip_prefix("name: hale-dna-")).collect();
-    if let Some(top) = text.lines().find_map(|l| l.strip_prefix("name: hale-dna-")) {
-        return Some(top.trim().to_string());
-    }
-    names.iter().find_map(|n| n.trim().strip_suffix("-knowledge")).map(|n| n.to_string())
-}
-
-/// The project's name as compose's volumes carry it.
-fn compose_name(project: &str) -> String {
-    project.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-").to_lowercase()
-}
-
-/// The running containers that `compose` (its absolute path) started under
-/// a compose project other than `project`: what an older file, before
-/// each seed had its own project, left up.
-fn compose_containers_elsewhere(compose: &Path, project: &str) -> Vec<String> {
-    let file = compose.canonicalize().unwrap_or_else(|_| compose.to_path_buf());
-    let out = Command::new("docker")
-        .args(["ps", "--filter", &format!("label=com.docker.compose.project.config_files={}", file.display()), "--format", "{{.Names}}\t{{.Label \"com.docker.compose.project\"}}"])
-        .output();
-    let Ok(out) = out else { return Vec::new() };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_once('\t'))
-        .filter(|(_, p)| *p != project)
-        .map(|(n, _)| n.to_string())
-        .collect()
-}
-
-/// The lines the project's .gitignore carries for the servers' secrets
-/// (GH #989): the only files with a password are never tracked.
-const SECRETS_IGNORES: [&str; 2] = ["/dna/nats.secrets.conf", "/dna/postgres.secrets"];
+/// The clone's own state (sockets, worktrees, scratch, the head's DSN):
+/// never tracked.
+const LOCAL_STATE_IGNORE: &str = "/.hale/";
 
 /// GH #989: the organism's secrets, provisioned by its bootstrap through
 /// the host (`secrets-provision`, dna/host/secrets.hl, the skin's one
@@ -2194,23 +2471,27 @@ struct Hosted {
 }
 
 impl Discovery {
-    /// The provider the hosted backends speak to: Anthropic's native
-    /// Messages API when its key is present (the strongest models),
-    /// else OpenAI's chat shape (its key, or a placeholder until one is
-    /// set).
-    fn hosted(&self) -> (Hosted, Hosted, &'static str) {
+    /// The provider the hosted backends speak to, for a key actually in
+    /// the vault: Anthropic's native Messages API when its key is present
+    /// (the strongest models), else OpenAI's chat shape when its key is.
+    /// With neither, no hosted backend is written: the positions take a
+    /// harness on PATH or the desk, and the habitat's models (a provider it
+    /// has grafted, `hale habitat models`) fill the organism's model map.
+    fn hosted(&self) -> Option<(Hosted, Hosted, &'static str)> {
         if self.anthropic {
-            (
+            Some((
                 Hosted { adapter: "dna::AnthropicMessages", model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/messages", key: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
                 Hosted { adapter: "dna::AnthropicMessages", model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/messages", key: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
                 "ANTHROPIC_API_KEY",
-            )
-        } else {
-            (
+            ))
+        } else if self.openai {
+            Some((
                 Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
                 Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 150, output_micros_per_1k: 600 },
                 "OPENAI_API_KEY",
-            )
+            ))
+        } else {
+            None
         }
     }
     /// The harness the catalog writes, when one is on PATH: `claude`
@@ -2243,25 +2524,26 @@ impl Discovery {
     }
     /// What `init` prints: what each position was given.
     fn report(&self) -> Vec<String> {
-        let (frontier, fast, key) = self.hosted();
         let desk = self.ollama.clone().unwrap_or_else(|| "llama3".to_string());
-        let out = vec![
-            format!("found   {}", self.summary()),
-            format!(
-                "frontier = {} · fast = {} ({}{}) · desk = {} (ollama at 127.0.0.1:11434{})",
-                frontier.model,
-                fast.model,
-                key,
-                if self.anthropic || self.openai { "" } else { ", not in the vault: hosted backends are not permitted until it is" },
-                desk,
-                if self.ollama.is_some() { "" } else { ", not found" }
-            ),
-            match (self.harness(), self.anthropic || self.openai) {
-                (Some(h), true) => format!("editor, agent: quick = harness ({h}), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
-                (Some(h), false) => format!("editor, agent, leader: quick = harness ({h}), deep = harness ({h}) · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
-                (None, _) => "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
-            },
-        ];
+        let desk_line = format!("desk = {desk} (ollama at 127.0.0.1:11434{})", if self.ollama.is_some() { "" } else { ", not found" });
+        let mut out = vec![format!("found   {}", self.summary())];
+        match self.hosted() {
+            Some((frontier, fast, key)) => {
+                out.push(format!("frontier = {} · fast = {} ({key}) · {desk_line}", frontier.model, fast.model));
+                out.push(match self.harness() {
+                    Some(h) => format!("editor, agent: quick = harness ({h}), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
+                    None => "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+                });
+            }
+            None => {
+                out.push(format!("no hosted backend (no model key in the vault) · {desk_line}"));
+                out.push(match self.harness() {
+                    Some(h) => format!("editor, agent, leader: quick = harness ({h}), deep = harness ({h}) · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
+                    None => "leader, editor, agent: deep = desk, quick = desk, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+                });
+                out.push("the habitat's models fill the model map: a models provider it grafted (voice) is every tenant's model backend (`hale habitat models <organism>`)".to_string());
+            }
+        }
         out
     }
 }
@@ -2271,8 +2553,10 @@ impl Discovery {
 /// needs none of the three replaced; a program that performs a work
 /// kind deterministically is added here and wins for that kind; the
 /// model performer is the catalog's router behind the model leg when
-/// init found a backend, and `NoModel` — the work is a person's — when
-/// it found none, so a fresh project with no key burns no attempts.
+/// init found a backend; when it found none, the same router asks only
+/// where the model map names an endpoint (`mapped_only`: the habitat's
+/// models, once it maps them), and a Work the map names no endpoint for is
+/// given back unperformed, so a fresh project with no key burns no attempts.
 fn work_hl(found: &Discovery) -> String {
     let configured = found.openai || found.anthropic || found.ollama.is_some();
     let harness = found.harness().is_some();
@@ -2294,19 +2578,20 @@ fn model() -> legs::ModelPerformer {{
         )
     } else {
         String::from(
-            "// No backend was configured when this file was generated, so the
-// model takes nothing and agent work is a person's. With a backend in
-// dna/org/models.hl, put the catalog behind the leg (`effect_free` for
-// hosted backends that answer, `uncertain` for a harness with tools):
-//
-// fn model() -> legs::ModelPerformer { return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" }; }
-fn model() -> legs::NoModel {
-    return legs::NoModel { };
+            "// No backend was configured when this file was generated: the
+// model leg asks only where the model map names an endpoint (the
+// habitat's models, which `hale habitat graft` and `hale habitat models`
+// map), with that endpoint's key, and gives a Work it names none for back
+// unperformed, so agent work with no model mapped stays a person's. With
+// a backend in dna/org/models.hl, drop `mapped_only` (`effect_free` for
+// hosted backends that answer, `uncertain` for a harness with tools).
+fn model() -> legs::ModelPerformer {
+    return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\", mapped_only: true };
 }",
         )
     };
     let text = r#"// dna/org/work.hl — the performers (project-owned; generated by
-// `hale dna init`).
+// `hale habitat graft`).
 //
 // `hale dna work` builds this beside the toolchain's legs seed and runs
 // it as the project's leg. A leg is handed a brief — the hat as the
@@ -2356,9 +2641,9 @@ fn hands() -> legs::Hands {
 /// composed from them, one budget policy, and the probe `hale dna
 /// models` runs.
 fn models_hl(found: &Discovery) -> String {
-    let (frontier, fast, _) = found.hosted();
+    let hosted_pair = found.hosted();
     let desk_model = found.ollama.clone().unwrap_or_else(|| "llama3".to_string());
-    let keyed = found.anthropic || found.openai;
+    let keyed = hosted_pair.is_some();
     let has_harness = found.harness().is_some();
     // GH #583 M3: an installed harness edits in an export of the worktree
     // with its own tools; the editor imports the diff under the grant.
@@ -2416,9 +2701,38 @@ fn harness() -> dna::HarnessModel {
             h.adapter, h.model, h.endpoint, h.key, h.scheme, h.input_micros_per_1k, h.output_micros_per_1k
         )
     };
+    let hosted_section = match &hosted_pair {
+        Some((frontier, fast, _)) => format!(
+            "// The strongest model: the Leader's decisions, the editor's assessments.
+fn frontier() -> {adapter} {{
+    return {frontier};
+}}
+
+// A fast, cheap model: classification, drafts, retries.
+fn fast() -> {adapter} {{
+    return {fast};
+}}
+
+",
+            adapter = frontier.adapter,
+            frontier = hosted("deep", frontier),
+            fast = hosted("quick", fast),
+        ),
+        // no key in the vault: no hosted backend is written (no placeholder
+        // a person would have to fill), and the habitat's models fill the map
+        None => "// No hosted backend: no model key was in the vault when this was
+// generated. The habitat's models (a provider it grafted, voice) are
+// this organism's model backend through its map; a hosted provider is
+// one more function here, `dna::AnthropicMessages { … }` or
+// `dna::OpenAiChat { … }` with its hosted credential naming a key, which
+// `hale dna secret set <KEY>` then fills.
+
+"
+        .to_string(),
+    };
     format!(
         r#"// dna/org/models.hl — the model catalog (project-owned; generated by
-// `hale dna init` from what this machine had: {summary}).
+// `hale habitat graft` from what this machine had: {summary}).
 //
 // The catalog is source. A backend is a constructor function; a
 // position's router is a function composed from them; the budget is
@@ -2438,19 +2752,11 @@ import "vendor/dna" as dna;
 // bearer token). Either presents its key from a sealed locus that
 // never returns it; without the key it is not a permitted backend and
 // the router refuses before the wire. Prices are micro-dollars per
-// 1k tokens, for the evidence and the budget.
+// 1k tokens, for the evidence and the budget. Whatever the catalog
+// holds, a Work whose model the habitat's map names an endpoint for is
+// asked there, with that endpoint's key (`hale dna models map`).
 
-// The strongest model: the Leader's decisions, the editor's assessments.
-fn frontier() -> {adapter} {{
-    return {frontier};
-}}
-
-// A fast, cheap model: classification, drafts, retries.
-fn fast() -> {adapter} {{
-    return {fast};
-}}
-
-// A model on this machine: customer-classed data never leaves it. No
+{hosted_section}// A model on this machine: customer-classed data never leaves it. No
 // key, no `external_model` effect.
 fn desk() -> dna::LocalModel {{
     return dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "{desk}" }};
@@ -2490,19 +2796,18 @@ fn org_budget() -> dna::BudgetPolicy {{
 // ---- the probe (`hale dna models`) ---------------------------------
 
 fn probe_catalog() -> String {{
-    return dna::probe("frontier", frontier()) + dna::probe("fast", fast()) + dna::probe("desk", desk()){probe_harness};
+    return {probe_hosted}dna::probe("desk", desk()){probe_harness};
 }}
 "#,
         summary = found.summary(),
-        adapter = frontier.adapter,
-        frontier = hosted("deep", &frontier),
-        fast = hosted("quick", &fast),
+        hosted_section = hosted_section,
         desk = desk_model,
         harness_section = harness_section,
-        leader_quick = if keyed || !has_harness { "fast()" } else { "harness()" },
-        leader_deep = if keyed || !has_harness { "frontier()" } else { "harness()" },
-        editor_quick = if has_harness { "harness()" } else { "fast()" },
-        editor_deep = if keyed || !has_harness { "frontier()" } else { "harness()" },
+        leader_quick = if keyed { "fast()" } else if has_harness { "harness()" } else { "desk()" },
+        leader_deep = if keyed { "frontier()" } else if has_harness { "harness()" } else { "desk()" },
+        editor_quick = if has_harness { "harness()" } else if keyed { "fast()" } else { "desk()" },
+        editor_deep = if keyed { "frontier()" } else if has_harness { "harness()" } else { "desk()" },
+        probe_hosted = if keyed { "dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + " } else { "" },
         probe_harness = if has_harness { " + dna::probe(\"harness\", harness())" } else { "" },
     )
 }
@@ -2514,7 +2819,13 @@ fn probe_catalog() -> String {{
 /// The project root and its DNA entrypoint (from `[environments.local]`).
 fn project(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let start = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
+    let mut root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
+    if dir == Path::new(".") && (!root.join("dna").is_dir() || (!root.join(ORG_SEED).is_dir() && manifest_pin(&root.join("hale.toml")).ok().flatten().is_none())) {
+        let hgenome = PathBuf::from(local_habitat_dir()).join("genome");
+        if hgenome.join("hale.toml").is_file() {
+            root = hgenome;
+        }
+    }
     let manifest = root.join("hale.toml");
     let (envs, _) = crate::pkg::read_claims_config(&manifest)?;
     let seed = envs
@@ -2523,7 +2834,7 @@ fn project(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
         .map(|e| root.join(e))
         .unwrap_or_else(|| root.clone());
     if !root.join("dna").is_dir() {
-        return Err(format!("{} has no DNA (no dna/ seed); run `hale dna init` first", root.display()));
+        return Err(format!("{} has no DNA (no dna/ seed); run `hale habitat graft` first", root.display()));
     }
     Ok((root, seed))
 }
@@ -2627,7 +2938,8 @@ fn ui_cmd(args: &[String]) -> ExitCode {
 // new
 // ---------------------------------------------------------------
 
-fn new_project(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>, library: bool) -> Result<Vec<String>, String> {
+/// A new application at `dir`, born as `parent`'s child (GH #1653: graft).
+fn new_project_under(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>, library: bool, parent: &str) -> Result<Vec<String>, String> {
     match profile {
         None | Some("local") => {
             if remote.is_some() || body.is_some() {
@@ -2642,7 +2954,7 @@ fn new_project(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Op
         Some(other) => return Err(format!("unknown profile `{other}`; profiles are examples of combinations — `local` (everything in this clone) or `remote-body` (the record over a remote, the body on a server); `hale dna profile` detects the combination from the pieces")),
     }
     if dir.exists() && fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
-        return Err(format!("{} exists and is not empty; `hale dna init` attaches to an existing application", dir.display()));
+        return Err(format!("{} exists and is not empty; `hale habitat graft` attaches to an existing application", dir.display()));
     }
     fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     ensure_repo(dir)?;
@@ -2700,7 +3012,7 @@ fn main() {{
 }}
 "#
     );
-    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is refs/dna/*)\n/vendor/\n/.hale/\n");
+    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is memory's)\n/vendor/\n/.hale/\n");
     let mut out = Vec::new();
     for (f, c) in [("hale.toml", "[deps]\n".to_string()), ("main.hl", main_hl), ("tests/main_test.hl", test_hl), (".gitignore", gitignore)] {
         let p = dir.join(f);
@@ -2710,11 +3022,11 @@ fn main() {{
         fs::write(&p, c).map_err(|e| format!("write {}: {e}", p.display()))?;
         out.push(format!("created {}", p.display()));
     }
-    let mut rest = init(dir, library)?;
+    let mut rest = init_under(dir, library, Lineage::Child(parent))?;
     out.append(&mut rest);
     if let Some(url) = remote {
         git(dir, &["remote", "add", "origin", url])?;
-        out.push(format!("remote origin = {url} (the record is shared over it: `hale dna sync`, and a body on a server takes the lease there)"));
+        out.push(format!("remote origin = {url} (the genome is shared over it; the record is memory's)"));
     }
     if let Some(host) = body {
         git(dir, &["config", "dna.body", host])?;
@@ -2803,14 +3115,13 @@ import "vendor/dna/pond/realtime/nats" as nats;
 main locus Org {{
     params {{
         core: dna::Dna = dna::Dna {{
-            // Two memories read as one (GH #646): the record — one commit per
-            // event on refs/dna/journal, what changes this organization,
-            // synced to every clone — and the ledger, the day's work, in
-            // memory (Postgres, opened as this record's spine role) once
-            // `hale dna ledger adopt` has moved it there. Until then every
-            // row is the record's.
+            // Two memories read as one (GH #646): the record — what changes
+            // this organization, one chain of signed rows — and the ledger,
+            // the day's work, both in memory (Postgres, opened as this
+            // record's spine role), which every clone and body reads and
+            // writes alike (GH #1590).
             journal: dna::RoutedJournal {{
-                record: dna::GitJournal {{ repo: "." }}
+                record: dna::RecordJournal {{ repo: "." }}
             }},
             // Models: every position's router comes from the catalog in
             // models.hl (a backend is a constructor function there; a
@@ -2837,11 +3148,11 @@ main locus Org {{
             review_policy: dna::OrgPolicy {{ }},
             board: dna::Board {{ who: "board" }},
             gateway: dna::MutationGateway {{
-                leases: dna::GitLeases {{ repo: "." }},
+                leases: dna::MemoryLeases {{ repo: "." }},
                 workspaces: dna::IsolatedWorktrees {{ repo: ".", root: ".hale/dna/worktrees" }},
                 repo: dna::LocalGit {{ repo: "." }}
             }},
-            verification: dna::HaleVerification {{ receipts: dna::GitReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
+            verification: dna::HaleVerification {{ receipts: dna::MemoryReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
             // The editing position: read, edit, fmt and check inside one
             // worktree — the law says so.
             editor: dna::SourceEditor {{ name: "editor", models: editor_models() }},
@@ -2852,7 +3163,10 @@ main locus Org {{
             // GH #596 L: an ask is planned by the leader before it becomes a Mutation
             // (the optimize pass occurs on the cadence a ratified practice
             // declares, `operating/optimize-cadence`: GH #1143)
-            planned: true
+            planned: true,
+            // the solo path: with no model (none mapped, none the catalog
+            // reaches) every ask and every leg's Work is a person's
+            solo_without_model: true
         }};
         // The Leader: decides the Reviews inside the grant, with the deep
         // tier, reading the source diff and the semantic diff; every
@@ -2860,7 +3174,7 @@ main locus Org {{
         leader: dna::Leader = dna::Leader {{
             name: "leader",
             models: leader_models(),
-            receipts: dna::GitReceipts {{ repo: "." }},
+            receipts: dna::MemoryReceipts {{ repo: "." }},
             source: dna::SourceReader {{ repo: "." }},
             // GH #596 L: what the leader reads before it thinks — its
             // charter and the purpose from this program, the law from the
@@ -2941,7 +3255,7 @@ fn main() {{
 /// `upgrade`: the vendored toolchain's `dna::baseline_definitions()`, which
 /// an upgrade supersedes by revision, and the project's own definitions
 /// from `own_workflows.hl`.
-const WORKFLOWS_HL: &str = r#"// dna/org/workflows.hl — the workflow catalog (generated by `hale dna new`
+const WORKFLOWS_HL: &str = r#"// dna/org/workflows.hl — the workflow catalog (generated by `hale habitat graft`
 // and rewritten by `hale dna upgrade`; do not edit: your definitions go in
 // own_workflows.hl). The definitions this organization admits: DNA's
 // baseline, each a chain in which every step writes one store, and the
@@ -2968,8 +3282,8 @@ fn workflows() -> dna::WorkflowCatalog {
 /// the project's roles carried over.
 fn structure_hl(roles: &str) -> String {
     format!(
-        r#"// dna/org/structure.hl — the structure policy (generated by `hale dna new`
-// and `hale dna init`, rewritten by `hale dna upgrade`, which keeps the
+        r#"// dna/org/structure.hl — the structure policy (generated by `hale habitat graft`
+// and `hale habitat graft`, rewritten by `hale dna upgrade`, which keeps the
 // roles below).
 //
 // The holes `init` proposes follow the graph's edges: a reviewer for each
@@ -2978,7 +3292,7 @@ fn structure_hl(roles: &str) -> String {
 // edge implies is here: the operational roles each deployment also gets,
 // proposed empty for the Board to fill — none by default. Name them
 // space-separated, from `support accounts billing on-call`; any other word
-// is refused. They are read once, when `hale dna init` seeds the record:
+// is refused. They are read once, when `hale habitat graft` seeds the record:
 // to opt in, write this file before `init`, which keeps it.
 
 fn operational_roles() -> String {{
@@ -3002,7 +3316,7 @@ fn structure_roles(text: &str) -> String {
 /// #995). Project-owned: written at `new`, and at `upgrade` only where
 /// there is none.
 const OWN_WORKFLOWS_HL: &str = r#"// dna/org/own_workflows.hl — this organization's own workflow definitions
-// (project-owned; generated by `hale dna new`, never rewritten). They sit
+// (project-owned; generated by `hale habitat graft`, never rewritten). They sit
 // beside DNA's baseline in the catalog workflows.hl returns.
 //
 // A definition names the one store each step writes (`record`, `forge`,
@@ -3029,7 +3343,7 @@ fn own_workflows(catalog: dna::WorkflowCatalog) -> String {
 /// Project-owned: add clauses, don't weaken these.
 fn org_law_hl() -> String {
     r#"// dna/org/law.hl — the organization's law (project-owned; generated by
-// `hale dna init`). Adopted by the org's main (`adopt Org;`). Add
+// `hale habitat graft`). Adopted by the org's main (`adopt Org;`). Add
 // clauses; do not weaken these. Growth adds positions and routes that
 // still satisfy them: the compiler refuses the rest before anyone reviews.
 
@@ -3096,6 +3410,12 @@ fn seat_initializer(root: &Path, declare_trust: bool) -> Result<String, String> 
     let have = git(root, &["config", "--local", "--get-all", "dna.unix.member"]).unwrap_or_default();
     if !have.lines().any(|l| l.trim() == entry) {
         git(root, &["config", "--local", "--add", "dna.unix.member", &entry])?;
+    }
+    if uid != "0" {
+        let root_entry = format!("uid:0={name}");
+        if !have.lines().any(|l| l.trim() == root_entry) {
+            let _ = git(root, &["config", "--local", "--add", "dna.unix.member", &root_entry]);
+        }
     }
     // the trust the record declares, wherever git reads it from
     let trust = git(root, &["config", "--get", "dna.trust"]).unwrap_or_default().trim().to_string();
@@ -3322,6 +3642,89 @@ fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
 }
 
+/// The record's rows as `(kind, entity)`, each seed step's evidence of
+/// itself (GH #1653).
+fn record_kinds(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let rows = host_run("record-rows", root, &[])?;
+    Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| (v["kind"].as_str().unwrap_or("").to_string(), v["entity"].as_str().unwrap_or("").to_string())).collect())
+}
+
+
+/// GH #1590: the identity `hale.toml` pins, as a TOML parser reads it:
+/// `None` when the file, the `dna` table or its `record` key is absent;
+/// an error when the manifest does not parse or the pin is not a string,
+/// which is never taken for no pin.
+fn manifest_pin(path: &Path) -> Result<Option<String>, String> {
+    let Ok(text) = fs::read_to_string(path) else { return Ok(None) };
+    manifest_pin_in(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn manifest_pin_in(text: &str) -> Result<Option<String>, String> {
+    let table: toml::Table = text.parse().map_err(|e| format!("does not parse: {e}"))?;
+    match table.get("dna").and_then(|d| d.get("record")) {
+        None => Ok(None),
+        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(format!("[dna] record is {other}, not a string")),
+    }
+}
+
+/// GH #1590: `record = "<identity>"` in the manifest's `dna` table, wherever
+/// the manifest keeps that table — a `[dna]` header in any spelling, dotted
+/// keys (`dna.fleet = …`), an inline table — edited in the parsed document,
+/// so every other line, comment and layout survives; the table appended
+/// where there is none.
+fn pin_record_in_manifest(path: &Path, identity: &str) -> Result<(), String> {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let new = pinned_manifest(&text, identity).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::write(path, new).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn pinned_manifest(text: &str, identity: &str) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("does not parse: {e}"))?;
+    match doc.get_mut("dna") {
+        None => {
+            let mut t = toml_edit::Table::new();
+            t.insert("record", toml_edit::value(identity));
+            t.decor_mut().set_prefix("\n# hale dna: the record this genome belongs to, by its identity (GH #1590)\n");
+            doc.insert("dna", toml_edit::Item::Table(t));
+        }
+        Some(item) => match item.as_table_like_mut() {
+            Some(t) => {
+                t.insert("record", toml_edit::value(identity));
+            }
+            None => return Err("`dna` is not a table".to_string()),
+        },
+    }
+    let new = doc.to_string();
+    if manifest_pin_in(&new)?.as_deref() != Some(identity) {
+        return Err("the pin did not land in its [dna] table".to_string());
+    }
+    Ok(new)
+}
+
+/// GH #1590: a new record's first row, `record.genesis`, and its digest —
+/// the record's identity, as `dna::event_digest` makes it over no row
+/// before (`genesis`): the genome it is born on (the root commit, "" for a
+/// genome with none yet) and a nonce, so two projects made alike are two
+/// records.
+fn genesis_row(root: &Path, lineage: Lineage) -> Result<(String, String), String> {
+    let genome = Command::new("git").args(["-C", &root.to_string_lossy(), "rev-list", "--max-parents=0", "HEAD"]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string()).unwrap_or_default();
+    let mut nonce = [0u8; 16];
+    openssl::rand::rand_bytes(&mut nonce).map_err(|e| format!("a nonce for the record: {e}"))?;
+    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    // a grafted organism's first row names its parent, the habitat's record
+    let body = match lineage {
+        Lineage::Child(p) => serde_json::json!({ "genome": genome, "nonce": nonce, "parent": p }).to_string(),
+        Lineage::Habitat => serde_json::json!({ "genome": genome, "nonce": nonce }).to_string(),
+    };
+    let digest = openssl::sha::sha256(format!("genesis|record.genesis|record|{body}").as_bytes());
+    Ok((body, digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+fn short_id(id: &str) -> &str {
+    &id[..id.len().min(12)]
+}
+
 /// One seeded family, proposed where the record does not hold its current
 /// text (all of it at `init`; what changed, or a family the record has
 /// never seen, at `upgrade`): the
@@ -3402,7 +3805,7 @@ A software change is one outcome among several; say when an ask is a person's jo
     );
     format!(
         r#"// dna/org/charter.hl — the leader's brief (project-owned; generated by
-// `hale dna init`). The leader reads this, the purpose, the law and
+// `hale habitat graft`). The leader reads this, the purpose, the law and
 // the ratified design before it plans an ask and before it decides a
 // Review. Change it as you would any part of the organism: through a
 // reviewed change.
@@ -3577,11 +3980,10 @@ fn library_propose(root: &Path, upgrading: bool) -> Result<(usize, usize, usize,
 /// can reach would only be refused later. The rows are in `init`'s name
 /// and change like any other (`hale dna models rule|category`).
 fn seed_model_map(root: &Path, found: &Discovery) -> Result<Vec<String>, String> {
-    if !found.anthropic && !found.openai {
-        return Ok(vec!["skipped models map (no hosted model key in the vault: `hale dna models rule|category` set it by hand)".to_string()]);
-    }
-    let (frontier, fast, _) = found.hosted();
-    let by = "hale dna init";
+    let Some((frontier, fast, _)) = found.hosted() else {
+        return Ok(vec!["skipped models map (no hosted model key in the vault: the habitat's models map it once a provider is grafted, `hale habitat models`; `hale dna models rule|category` set it by hand)".to_string()]);
+    };
+    let by = "hale habitat graft";
     let mut text = String::new();
     let row = |kind: &str, entity: &str, body: serde_json::Value| serde_json::json!({"kind": kind, "entity": entity, "body": body.to_string()}).to_string() + "\n";
     text.push_str(&row("model.rule", "default", serde_json::json!({"size": "standard", "permit": "quick standard deep", "by": by})));
@@ -3663,5 +4065,189 @@ fn design_text(p: &SeededPractice) -> String {
     match std::env::var("HALE_DNA_DESIGN_SUFFIX") {
         Ok(s) if !s.is_empty() => format!("{}{s}", p.text),
         _ => p.text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod memory_env_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const HEAD: &str = "postgres://dna_4f1c0de4f1c0de4f1c0de4f1c0de4f1c0de4f1c0_head@127.0.0.1:5480/dna?sslmode=prefer&vault=postgres-dna_4f1c0de4f1c0de4f1c0de4f1c0de4f1c0de4f1c0_head";
+
+    fn clone_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hale_memory_env_{}_{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let ok = Command::new("git").arg("-C").arg(&d).args(["init", "-q"]).status().unwrap().success();
+        assert!(ok);
+        fs::write(d.join(".gitignore"), "/.hale/\n").unwrap();
+        d
+    }
+
+    /// GH #1590: the kept DSN is the head's alone, mode 600, and read back.
+    #[test]
+    fn the_head_dsn_is_kept_mode_600_and_read_back() {
+        let d = clone_dir("kept");
+        write_memory_env(&d, HEAD, "owner").unwrap();
+        let mode = fs::metadata(memory_env_file(&d)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(kept_head_dsn(&d).unwrap().as_deref(), Some(HEAD));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A file anyone else may read is refused, naming the fix.
+    #[test]
+    fn a_readable_kept_dsn_is_refused() {
+        let d = clone_dir("readable");
+        write_memory_env(&d, HEAD, "owner").unwrap();
+        fs::set_permissions(memory_env_file(&d), fs::Permissions::from_mode(0o644)).unwrap();
+        let err = kept_head_dsn(&d).unwrap_err();
+        assert!(err.contains("readable by others (mode 644)") && err.contains("chmod 600"), "{err}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Only a head role's DSN is kept: never the owner's, never the spine's.
+    #[test]
+    fn only_the_head_role_is_kept() {
+        let d = clone_dir("roles");
+        assert!(write_memory_env(&d, "postgres://dna:dna@127.0.0.1:5480/dna", "owner").unwrap_err().contains("does not name a head role"));
+        assert!(write_memory_env(&d, &HEAD.replace("_head", "_spine"), "owner").unwrap_err().contains("does not name a head role"));
+        assert!(kept_dsn_refusal(HEAD, Some(HEAD)).unwrap().contains("the owner's"));
+        assert!(!memory_env_file(&d).exists(), "nothing was written");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A clone whose git would track `.hale/` is never handed the file.
+    #[test]
+    fn a_tracked_location_is_refused() {
+        let d = clone_dir("tracked");
+        fs::write(d.join(".gitignore"), "").unwrap();
+        let err = write_memory_env(&d, HEAD, "owner").unwrap_err();
+        assert!(err.contains("is not ignored by git") && err.contains("/.hale/"), "{err}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// GH #1653: a DSN is kept for the organism's memory allocation in the
+    /// local habitat only. One migrated from anything else (the seed's
+    /// database before memory was the habitat's), or that names no origin,
+    /// is dropped and refused with the fix: never re-derived, since no
+    /// command migrates as a side effect.
+    #[test]
+    fn a_dsn_from_another_allocation_is_not_used() {
+        let d = clone_dir("allocation");
+        fs::write(d.join("hale.toml"), "[dna]\nrecord = \"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef\"\n").unwrap();
+        let current = memory_allocation_name(&d).unwrap();
+        assert!(current.starts_with("habitat hale-habitat-local-") && current.ends_with("/memory-1234567890ab"), "{current}");
+        // the organism's own allocation: kept
+        write_memory_env(&d, HEAD, &current).unwrap();
+        assert_eq!(kept_head_dsn(&d).unwrap().as_deref(), Some(HEAD));
+        // the seed's own database, as an earlier toolchain made it: dropped
+        write_memory_env(&d, HEAD, "compose hale-dna-demo").unwrap();
+        let err = kept_head_dsn(&d).unwrap_err();
+        assert!(err.contains("hale-dna-demo,") && err.contains("memory-1234567890ab") && err.contains("hale habitat migrate"), "{err}");
+        assert!(!memory_env_file(&d).exists(), "the stale DSN is removed");
+        // a file with no origin, as an older toolchain wrote it
+        fs::write(memory_env_file(&d), format!("HALE_DNA_MEMORY_DSN_HEAD={HEAD}\n")).unwrap();
+        fs::set_permissions(memory_env_file(&d), fs::Permissions::from_mode(0o600)).unwrap();
+        let err = kept_head_dsn(&d).unwrap_err();
+        assert!(err.contains("an older toolchain") && err.contains("hale habitat migrate"), "{err}");
+        let _ = fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    const ID: &str = "4f1c0de4f1c0de4f1c0de4f1c0de4f1c0de4f1c0";
+
+    /// GH #1590: the pin lands in the `dna` table wherever the manifest keeps
+    /// it, and every other line survives.
+    #[test]
+    fn the_pin_lands_in_every_valid_dna_table() {
+        let layouts = [
+            "[deps]\n",
+            "[dna]\nfleet = \"production\"\n",
+            "[dna] # deployment\nfleet = \"production\"\n",
+            "[\"dna\"]\nfleet = \"production\"\n",
+            "[ dna ]\nfleet = \"production\"\n",
+            "dna.fleet = \"production\"\n[deps]\n",
+            "dna = { fleet = \"production\" }\n",
+            "[dna]\nrecord = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n",
+        ];
+        for text in layouts {
+            let new = pinned_manifest(text, ID).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+            assert_eq!(manifest_pin_in(&new).unwrap().as_deref(), Some(ID), "{text:?} -> {new:?}");
+            let table: toml::Table = new.parse().unwrap();
+            if text.contains("fleet") {
+                assert_eq!(table["dna"]["fleet"].as_str(), Some("production"), "{text:?} keeps its fleet: {new:?}");
+            }
+            if text.contains("# deployment") {
+                assert!(new.contains("# deployment"), "a comment survives: {new:?}");
+            }
+        }
+    }
+
+    /// A pin the parser reads is read, whatever its string form; one that is
+    /// not a string is an error, never no pin.
+    #[test]
+    fn a_pin_reads_in_every_string_form_and_refuses_otherwise() {
+        let lit = format!("[dna]\nrecord = '{ID}'\n");
+        assert_eq!(manifest_pin_in(&lit).unwrap().as_deref(), Some(ID));
+        let commented = format!("[dna] # the record\nrecord = \"{ID}\"\n");
+        assert_eq!(manifest_pin_in(&commented).unwrap().as_deref(), Some(ID));
+        let dotted = format!("dna.record = \"{ID}\"\n");
+        assert_eq!(manifest_pin_in(&dotted).unwrap().as_deref(), Some(ID));
+        assert_eq!(manifest_pin_in("[deps]\n").unwrap(), None);
+        assert!(manifest_pin_in("[dna]\nrecord = 7\n").is_err());
+        assert!(pinned_manifest("dna = 3\n", ID).is_err());
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    fn found(openai: bool, anthropic: bool, harness: bool) -> Discovery {
+        Discovery { openai, anthropic, ollama: None, harnesses: if harness { vec!["claude".to_string()] } else { Vec::new() } }
+    }
+
+    /// No key in the vault: no hosted backend at all (no placeholder a
+    /// person must fill), every tier the desk, and the leg asks only where
+    /// the model map names an endpoint (the habitat's models).
+    #[test]
+    fn no_key_writes_no_hosted_placeholder() {
+        let none = found(false, false, false);
+        assert!(none.hosted().is_none());
+        let catalog = models_hl(&none);
+        for absent in ["fn frontier()", "fn fast()", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "gpt-4o", "HostedCredential {"] {
+            assert!(!catalog.contains(absent), "{absent:?} in:\n{catalog}");
+        }
+        assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: desk(), deep: desk(), private: desk() };"), "{catalog}");
+        assert!(catalog.contains("fn agent_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: desk(), deep: desk(), private: desk() };"), "{catalog}");
+        assert!(catalog.contains("    return dna::probe(\"desk\", desk());"), "{catalog}");
+        let work = work_hl(&none);
+        assert!(work.contains("return legs::ModelPerformer { router: agent_models(), effect: \"effect_free\", mapped_only: true };"), "{work}");
+        assert!(!work.contains("legs::NoModel"), "{work}");
+        let report = none.report().join("\n");
+        assert!(report.contains("no hosted backend (no model key in the vault)") && report.contains("the habitat's models fill the model map") && !report.contains("gpt-4o"), "{report}");
+        // a harness and no key: the harness on every model-backed tier
+        let h = models_hl(&found(false, false, true));
+        assert!(h.contains("return dna::ModelRouter { quick: harness(), deep: harness(), private: desk() };") && !h.contains("fn frontier()"), "{h}");
+        assert!(h.contains("dna::probe(\"desk\", desk()) + dna::probe(\"harness\", harness())"), "{h}");
+        assert!(work_hl(&found(false, false, true)).contains("effect: \"uncertain\" };"));
+    }
+
+    /// A key actually in the vault writes its hosted pair, as before.
+    #[test]
+    fn a_key_in_the_vault_writes_its_hosted_pair() {
+        let openai = models_hl(&found(true, false, false));
+        assert!(openai.contains("fn frontier() -> dna::OpenAiChat") && openai.contains("key: \"OPENAI_API_KEY\"") && openai.contains("quick: fast(), deep: frontier(), private: desk()"), "{openai}");
+        assert!(openai.contains("dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + dna::probe(\"desk\", desk())"), "{openai}");
+        let anthropic = models_hl(&found(true, true, true));
+        assert!(anthropic.contains("fn frontier() -> dna::AnthropicMessages") && !anthropic.contains("key: \"OPENAI_API_KEY\""), "{anthropic}");
+        assert!(anthropic.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{anthropic}");
+        assert!(!work_hl(&found(true, false, false)).contains("mapped_only"));
     }
 }

@@ -78,7 +78,10 @@ fn sleep_for_ms(ms: Int) {
 // Whether a refusal is the endpoint asking for time: HTTP 429, or the
 // words the adapters and gateways use for it.
 fn rate_limited(refused: String) -> Bool {
-    return std::str::contains(refused, "http 429") || std::str::contains(refused, "rate limit") || std::str::contains(refused, "rate-limit") || std::str::contains(refused, "too many requests");
+    return std::str::contains(refused, "http 429")
+        || std::str::contains(refused, "rate limit")
+        || std::str::contains(refused, "rate-limit")
+        || std::str::contains(refused, "too many requests");
 }
 
 // What a call is attributed by at the gateway: the attempt, the position and
@@ -94,7 +97,9 @@ fn call_metadata(brief: Brief) -> String {
 }
 
 // The loop's messages, in the chat API's shape, comma-joined.
-fn joined(list: String, item: String) -> String { return if len(list) > 0 { list + ", " + item } else { item }; }
+fn joined(list: String, item: String) -> String {
+    return if len(list) > 0 { list + ", " + item } else { item };
+}
 
 fn assistant_calls_message(text: String, calls: String) -> String {
     let b = std::json::Builder { };
@@ -145,6 +150,10 @@ fn tool_row(turn: Int, name: String, args: String, done: HandResult) -> String {
     b.begin_object();
     b.int_field("turn", turn);
     b.string_field("name", name);
+    // a read names its file: the sources an answer rests on are receipts
+    if name == "read" && len(std::json::find_string_field(args, "path")) > 0 {
+        b.string_field("path", std::json::find_string_field(args, "path"));
+    }
     b.string_field("arguments_digest", dna::digest_of(args));
     b.string_field("ok", if done.ok { "true" } else { "false" });
     b.string_field("output_digest", dna::digest_of(done.output));
@@ -169,6 +178,74 @@ fn tool_receipt_object(rows: String) -> String {
     return b.result();
 }
 
+// The sources an integration task's answer rests on, as receipts: the
+// architecture note and the reading's diff in full, then one manifest of
+// them and of every file the leg read through the hands (its path and the
+// digest of what it read). "" for a Work that answers no integration.
+fn integration_sources(hat: String, rows: String) -> String {
+    let brief = std::json::find_field_raw(hat, "integration");
+    if len(brief) == 0 { return ""; }
+    let note = std::json::find_string_field(brief, "note");
+    let diff = std::json::find_string_field(brief, "diff");
+    let m = std::json::Builder { };
+    m.begin_object();
+    m.begin_array_field("sources");
+    if len(std::json::find_string_field(brief, "note_digest")) > 0 {
+        m.begin_object();
+        m.string_field("kind", "note");
+        m.string_field("path", std::json::find_string_field(brief, "note_path"));
+        m.string_field("digest", std::json::find_string_field(brief, "note_digest"));
+        m.end_object();
+    }
+    m.begin_object();
+    m.string_field("kind", "diff");
+    m.string_field("reading", std::json::find_string_field(brief, "reading"));
+    m.string_field("digest", std::json::find_string_field(brief, "diff_receipt"));
+    m.end_object();
+    let mut it = std::json::array_first("[" + rows + "]");
+    while !it.done {
+        if std::json::find_string_field(it.element, "name") == "read"
+            && std::json::find_string_field(it.element, "ok") == "true"
+        {
+            m.begin_object();
+            m.string_field("kind", "file");
+            m.string_field("path", std::json::find_string_field(it.element, "path"));
+            m.string_field("digest", std::json::find_string_field(it.element, "output_digest"));
+            m.end_object();
+        }
+        it = std::json::array_next(it);
+    }
+    m.end_array();
+    m.end_object();
+    let mut out = "";
+    if len(note) > 0 { out = out + receipt_object(note) + ", "; }
+    if len(diff) > 0 { out = out + receipt_object(diff) + ", "; }
+    return out + receipt_object(m.result());
+}
+
+fn receipt_object(body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("class", "internal");
+    b.string_field("body", body);
+    b.end_object();
+    return b.result();
+}
+
+// Receipts (a JSON array of `{class, body}`) with more objects added at the end.
+fn receipts_plus(receipts: String, more: String) -> String {
+    if len(more) == 0 { return receipts; }
+    let t = std::str::trim(receipts);
+    if t == "[]" || len(t) < 3 { return "[" + more + "]"; }
+    return t[0..(len(t) - 1)] + ", " + more + "]";
+}
+
+// Whether a model's answer says that nothing needs to change: its first
+// line begins `NO IMPACT`.
+fn no_impact_answer(text: String) -> Bool {
+    return std::str::starts_with(std::str::lower(std::str::trim(text)), "no impact");
+}
+
 // A Patch's receipts: the commit's patch first (what the owner applies),
 // then the tool calls.
 fn patch_and_tools(patch: String, rows: String) -> String {
@@ -177,7 +254,8 @@ fn patch_and_tools(patch: String, rows: String) -> String {
     b.string_field("class", "internal");
     b.string_field("body", patch);
     b.end_object();
-    return "[" + b.result() + (if len(rows) > 0 { ", " + tool_receipt_object(rows) } else { "" }) + "]";
+    return "[" + b.result() + (if len(rows) > 0 { ", " + tool_receipt_object(rows) } else { "" })
+        + "]";
 }
 
 fn first_line(text: String) -> String {
@@ -200,6 +278,10 @@ locus ModelPerformer {
         kinds: String = "agent service software"; // the work kinds the model leg takes
         effect: String = ""; // the effect class declared for this leg: effect_free for a backend that answers, uncertain for one that works in place
         router: dna::ModelRouter = dna::ModelRouter { };
+        // asks only where the model map names an endpoint for the Work (the
+        // habitat's models): a catalog with no backend of its own, whose
+        // unmapped Work is given back unperformed, never failed
+        mapped_only: Bool = false;
         // a rate-limited call: up to `retries` more tries, the first after
         // `backoff_ms`, each wait double the last, each recorded
         backoff_ms: Int = 1000;
@@ -227,8 +309,11 @@ locus ModelPerformer {
         self.on_called(dna::ModelEvidence {
             attempt_id: brief.attempt_id, adapter: "legs", backend: self.router.last_backend,
             prompt_digest: prompt_digest(brief.rendered), context_digest: brief.hat_digest,
-            elapsed: to_string(ms) + "ms", retry_of: brief.attempt_id, data_class: std::json::find_string_field(brief.hat, "data_class"),
-            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused + renewed, waited_ms: ms
+            elapsed: to_string(ms) + "ms",
+            retry_of: brief.attempt_id,
+            data_class: std::json::find_string_field(brief.hat, "data_class"),
+            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused + renewed,
+            waited_ms: ms
         });
     }
     // Why the call `req` would make is not made, "" when it may be: its cost
@@ -238,7 +323,10 @@ locus ModelPerformer {
         if allowance < 0 { return ""; }
         let price = self.router.price_micros(req);
         if price < 0 || self.spent_micros + price <= allowance { return ""; }
-        return "the call would cost " + to_string(price) + " micro-dollars, past what is left of the attempt's allowance (" + to_string(allowance - self.spent_micros) + " of " + to_string(allowance) + "): no call was made";
+        return "the call would cost " + to_string(price)
+            + " micro-dollars, past what is left of the attempt's allowance ("
+            + to_string(allowance - self.spent_micros) + " of " + to_string(allowance)
+            + "): no call was made";
     }
     // One call through the router, its answer as evidence: the split of
     // tokens as the backend reported it (what its own `ModelCalled` says).
@@ -247,10 +335,29 @@ locus ModelPerformer {
         let r = self.router.ask(req);
         self.spent_micros = self.spent_micros + (if r.cost_micros > 0 { r.cost_micros } else { 0 });
         self.on_called(dna::ModelEvidence {
-            attempt_id: brief.attempt_id, adapter: self.router.last_adapter, backend: r.backend, requested_model: r.model, reported_model: r.model,
-            prompt_digest: req.prompt_digest, context_digest: brief.hat_digest, knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
-            response_digest: if r.ok { dna::digest_of(r.output + r.tool_calls) } else { "" }, input_tokens: r.input_tokens, output_tokens: r.output_tokens, cost_micros: r.cost_micros,
-            elapsed: to_string(std::time::monotonic() - t0), retry_of: req.retry_of, data_class: req.data_class, refused: r.refused
+            attempt_id: brief.attempt_id,
+            adapter: self.router.last_adapter,
+            backend: r.backend,
+            // where a mapped category's call went (never its key)
+            endpoint: req.endpoint,
+            requested_model: r.model,
+            reported_model: r.model,
+            prompt_digest: req.prompt_digest,
+            context_digest: brief.hat_digest,
+            knowledge_bindings: req.knowledge_bindings,
+            tool_grant: req.tool_grant,
+            response_digest: if r.ok {
+                dna::digest_of(r.output + r.tool_calls)
+            } else {
+                ""
+            },
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cost_micros: r.cost_micros,
+            elapsed: to_string(std::time::monotonic() - t0),
+            retry_of: req.retry_of,
+            data_class: req.data_class,
+            refused: r.refused
         });
         return r;
     }
@@ -261,38 +368,121 @@ locus ModelPerformer {
     // stands only once the hat's validators pass on every seed it touched,
     // and a `Patch` is handed back as one commit on that base with its
     // patch. Bounded by `max_turns` and the attempt's allowance.
-    fn perform_loop(brief: Brief, hands: Hands, first: dna::ModelRequest, allowance: Int, mode: String) -> Performance {
+    fn perform_loop(
+        brief: Brief,
+        hands: Hands,
+        first: dna::ModelRequest,
+        allowance: Int,
+        mode: String
+    ) -> Performance {
         let hat = brief.hat;
         let owed = std::json::find_string_field(hat, "output_contract");
         let validators = std::json::find_string_field(hat, "validators");
         let mut worktree = "";
         let mut base = "";
+        let cw = CodebaseWork { codebase: hat_codebase(hat), hands: hands };
         if mode == "do" {
-            let top = if len(self.repo) > 0 { dna::RunResult { code: 0, stdout: self.repo } } else { dna::run_tool("git\nrev-parse\n--show-toplevel") };
-            if top.code != 0 { return Performance { disposition: "declined", narrative: "a `do` Work needs its repository, and the leg runs outside one: " + dna::trim_nl(top.stderr), calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-            let wt = hands.git.worktree(dna::trim_nl(top.stdout), "HEAD");
-            if !wt.ok { return Performance { disposition: "declined", narrative: "the Work's worktree could not be made: " + wt.error, calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-            worktree = wt.output;
+            // a Work in an attached codebase is made in a clone of the codebase's repository
+            if cw.codebase.present {
+                let wt = cw.open(std::json::find_string_field(hat, "task_id"));
+                if !wt.ok {
+                    return Performance {
+                        disposition: "declined",
+                        narrative: "the codebase's worktree could not be made: " + wt.error,
+                        calls: "[]",
+                        prompt_digest: first.prompt_digest,
+                        renderer: RENDERER_VERSION,
+                    };
+                }
+                worktree = wt.output;
+            } else {
+                let top = if len(self.repo) > 0 {
+                    dna::RunResult { code: 0, stdout: self.repo }
+                } else {
+                    dna::run_tool("git\nrev-parse\n--show-toplevel")
+                };
+                if top.code != 0 {
+                    return Performance {
+                        disposition: "declined",
+                        narrative: "a `do` Work needs its repository, and the leg runs outside one: "
+                            + dna::trim_nl(top.stderr),
+                        calls: "[]",
+                        prompt_digest: first.prompt_digest,
+                        renderer: RENDERER_VERSION,
+                    };
+                }
+                let wt = hands.git.worktree(dna::trim_nl(top.stdout), "HEAD");
+                if !wt.ok {
+                    return Performance {
+                        disposition: "declined",
+                        narrative: "the Work's worktree could not be made: " + wt.error,
+                        calls: "[]",
+                        prompt_digest: first.prompt_digest,
+                        renderer: RENDERER_VERSION,
+                    };
+                }
+                worktree = wt.output;
+            }
             base = dna::trim_nl(dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD").stdout);
         }
-        let bench = ToolBench { worktree: worktree, base: base, grant: std::json::find_string_field(hat, "tool_grant"), api: hands.lease.api };
+        let bench = ToolBench {
+            worktree: worktree,
+            base: base,
+            grant: std::json::find_string_field(hat, "tool_grant"),
+            api: hands.lease.api,
+            codebase: cw.codebase,
+        };
         let mut req = first;
         req.tools = tools_for_model(std::json::find_field_raw(hat, "hands"));
+        // every turn of the loop is one conversation: the provider keeps its
+        // prompt's prefix warm in one place across turns (`prompt_cache_key`)
+        req.conversation = brief.attempt_id;
         let mut messages = "";
         let mut rows = "";
         let mut turn = 0;
         let mut answer = "";
         let mut refusals = 0;
+        let mut briefed = false;
         while turn < self.max_turns && len(answer) == 0 {
             turn = turn + 1;
             req.messages = "[" + messages + "]";
             req.idempotency_key = brief.attempt_id + ":call:" + to_string(turn);
-            let priced = if allowance >= 0 && self.spent_micros >= allowance { "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent (" + to_string(self.spent_micros) + ")" } else { self.priced_out(req, allowance) };
-            if len(priced) > 0 { return Performance { disposition: "declined", narrative: priced + " on turn " + to_string(turn), calls: "[" + self.calls + "]", receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            let priced = if allowance >= 0 && self.spent_micros >= allowance {
+                "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent ("
+                    + to_string(self.spent_micros) + ")"
+            } else {
+                self.priced_out(req, allowance)
+            };
+            if len(priced) > 0 {
+                return Performance {
+                    disposition: "declined",
+                    narrative: priced + " on turn " + to_string(turn),
+                    calls: "[" + self.calls + "]",
+                    receipts: tool_receipt(rows),
+                    prompt_digest: first.prompt_digest,
+                    renderer: RENDERER_VERSION,
+                };
+            }
             let r = self.asked_with_backoff(brief, hands, req, allowance);
             if !r.ok {
-                if self.effect == "uncertain" && r.made { return Performance { unresolved: "the call on turn " + to_string(turn) + " may have acted and no answer came back: " + r.refused, calls: "[" + self.calls + "]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-                return Performance { disposition: "failed", narrative: "the model did not answer on turn " + to_string(turn) + ": " + r.refused, calls: "[" + self.calls + "]", receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION };
+                if self.effect == "uncertain" && r.made {
+                    return Performance {
+                        unresolved: "the call on turn " + to_string(turn)
+                            + " may have acted and no answer came back: " + r.refused,
+                        calls: "[" + self.calls + "]",
+                        prompt_digest: first.prompt_digest,
+                        renderer: RENDERER_VERSION,
+                    };
+                }
+                return Performance {
+                    disposition: "failed",
+                    narrative: "the model did not answer on turn " + to_string(turn) + ": "
+                        + r.refused,
+                    calls: "[" + self.calls + "]",
+                    receipts: tool_receipt(rows),
+                    prompt_digest: first.prompt_digest,
+                    renderer: RENDERER_VERSION,
+                };
             }
             if len(std::str::trim(r.tool_calls)) > 2 {
                 messages = joined(messages, assistant_calls_message(r.output, r.tool_calls));
@@ -302,10 +492,27 @@ locus ModelPerformer {
                     let args = std::json::find_string_field(it.element, "arguments");
                     let done = bench.call(hands, name, args);
                     let text = if done.ok { done.output } else { "error: " + done.error };
-                    messages = joined(messages, tool_message(std::json::find_string_field(it.element, "id"), clipped(text)));
+                    messages = joined(
+                        messages,
+                        tool_message(std::json::find_string_field(it.element, "id"), clipped(text)),
+                    );
                     rows = joined(rows, tool_row(turn, name, args, done));
                     it = std::json::array_next(it);
                 }
+            } else if mode == "do"
+                && len(std::json::find_field_raw(hat, "integration")) > 0
+                && no_impact_answer(r.output)
+                && len(
+                    std::str::trim(
+                        dna::run_tool("git\n-C\n" + worktree + "\nstatus\n--porcelain").stdout,
+                    ),
+                ) == 0
+            {
+                // an integration's move that changes nothing in the codebase: the
+                // answer is a brief with its reasons, not a patch, and the tree
+                // is the one it was cloned as, so no validator has anything to judge
+                answer = r.output;
+                briefed = true;
             } else if mode == "do" {
                 // the answer stands once the validators pass on every seed touched
                 let refused = bench.validate(hands, validators);
@@ -314,54 +521,188 @@ locus ModelPerformer {
                 } else {
                     refusals = refusals + 1;
                     messages = joined(messages, text_message("assistant", r.output));
-                    messages = joined(messages, text_message("user", "The validators refused the change:\n" + clipped(refused) + "\nFix it, then answer again."));
+                    messages = joined(
+                        messages,
+                        text_message(
+                            "user",
+                            "The validators refused the change:\n" + clipped(refused)
+                                + "\nFix it, then answer again.",
+                        ),
+                    );
                 }
             } else {
                 answer = if len(r.output) > 0 { r.output } else { "(no text)" };
             }
         }
         let calls = "[" + self.calls + "]";
-        if len(answer) == 0 { return Performance { disposition: "failed", narrative: "no answer within " + to_string(self.max_turns) + " turns" + (if refusals > 0 { " (the validators refused " + to_string(refusals) + " time(s))" } else { "" }), calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-        if mode == "do" && owed == "Patch" {
-            // one commit on the base: everything the loop changed, squashed
-            let soft = dna::run_tool("git\n-C\n" + bench.worktree + "\nreset\n-q\n--soft\n" + bench.base);
-            let changed = dna::run_tool("git\n-C\n" + bench.worktree + "\nstatus\n--porcelain");
-            if soft.code != 0 || len(std::str::trim(changed.stdout)) == 0 { return Performance { disposition: "failed", narrative: "the answer changed no file", calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-            let sha = hands.git.commit(bench.worktree, first_line(answer));
-            if !sha.ok { return Performance { disposition: "failed", narrative: "the change could not be committed: " + sha.error, calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-            let patch = hands.git.patch(bench.worktree);
-            if !patch.ok { return Performance { disposition: "failed", narrative: "the commit's patch could not be read: " + patch.error, calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+        if len(answer) == 0 {
             return Performance {
-                disposition: "done", result: answer, result_ref: "commit:" + sha.output,
-                narrative: "the model drove the hands for " + to_string(turn) + " turn(s) and the validators passed" + self.waits_said(),
-                calls: calls, receipts: patch_and_tools(patch.output, rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION
+                disposition: "failed",
+                narrative: "no answer within " + to_string(self.max_turns) + " turns"
+                    + (
+                        if refusals > 0 {
+                            " (the validators refused " + to_string(refusals) + " time(s))"
+                        } else {
+                            ""
+                        }
+                    ),
+                calls: calls,
+                receipts: tool_receipt(rows),
+                prompt_digest: first.prompt_digest,
+                renderer: RENDERER_VERSION,
             };
         }
-        return Performance { disposition: "done", result: answer, narrative: "the model drove the hands for " + to_string(turn) + " turn(s)" + self.waits_said(), calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION };
+        let sources = integration_sources(hat, rows);
+        if briefed {
+            let kept = receipts_plus(tool_receipt(rows), sources);
+            return Performance {
+                disposition: "done", result: answer, result_ref: "brief:" + dna::digest_of(answer),
+                narrative: "the model read the integration's move against the codebase for "
+                    + to_string(turn) + " turn(s) and found no impact" + self.waits_said(),
+                calls: calls,
+                receipts: kept,
+                prompt_digest: first.prompt_digest,
+                renderer: RENDERER_VERSION
+            };
+        }
+        if mode == "do" && owed == "Patch" {
+            // one commit on the base: everything the loop changed, squashed
+            let soft = dna::run_tool(
+                "git\n-C\n" + bench.worktree + "\nreset\n-q\n--soft\n" + bench.base,
+            );
+            let changed = dna::run_tool("git\n-C\n" + bench.worktree + "\nstatus\n--porcelain");
+            if soft.code != 0 || len(std::str::trim(changed.stdout)) == 0 {
+                return Performance {
+                    disposition: "failed",
+                    narrative: "the answer changed no file",
+                    calls: calls,
+                    receipts: tool_receipt(rows),
+                    prompt_digest: first.prompt_digest,
+                    renderer: RENDERER_VERSION,
+                };
+            }
+            if cw.codebase.present {
+                // a codebase's change is not a Mutation of the genome: verified, its branch
+                // pushed to the codebase's repository and the review opened at its forge
+                let rev = cw.propose(
+                    bench.worktree,
+                    first_line(answer),
+                    std::json::find_string_field(hat, "objective"),
+                );
+                if !rev.ok {
+                    return Performance {
+                        disposition: "failed",
+                        narrative: "the change could not be proposed at the codebase: " + rev.error,
+                        calls: calls,
+                        receipts: tool_receipt(rows),
+                        prompt_digest: first.prompt_digest,
+                        renderer: RENDERER_VERSION,
+                    };
+                }
+                let shown = hands.git.patch(bench.worktree);
+                return Performance {
+                    disposition: "done", result: answer, result_ref: "review:" + rev.output,
+                    narrative: "the model drove the hands for " + to_string(turn)
+                        + " turn(s), the validators passed and the review opened at the codebase"
+                        + self.waits_said(),
+                    calls: calls,
+                    receipts: receipts_plus(
+                        if shown.ok {
+                            patch_and_tools(shown.output, rows)
+                        } else {
+                            tool_receipt(rows)
+                        },
+                        sources,
+                    ),
+                    prompt_digest: first.prompt_digest,
+                    renderer: RENDERER_VERSION
+                };
+            }
+            let sha = hands.git.commit(bench.worktree, first_line(answer));
+            if !sha.ok {
+                return Performance {
+                    disposition: "failed",
+                    narrative: "the change could not be committed: " + sha.error,
+                    calls: calls,
+                    receipts: tool_receipt(rows),
+                    prompt_digest: first.prompt_digest,
+                    renderer: RENDERER_VERSION,
+                };
+            }
+            let patch = hands.git.patch(bench.worktree);
+            if !patch.ok {
+                return Performance {
+                    disposition: "failed",
+                    narrative: "the commit's patch could not be read: " + patch.error,
+                    calls: calls,
+                    receipts: tool_receipt(rows),
+                    prompt_digest: first.prompt_digest,
+                    renderer: RENDERER_VERSION,
+                };
+            }
+            return Performance {
+                disposition: "done", result: answer, result_ref: "commit:" + sha.output,
+                narrative: "the model drove the hands for " + to_string(turn)
+                    + " turn(s) and the validators passed" + self.waits_said(),
+                calls: calls,
+                receipts: patch_and_tools(patch.output, rows),
+                prompt_digest: first.prompt_digest,
+                renderer: RENDERER_VERSION
+            };
+        }
+        return Performance {
+            disposition: "done",
+            result: answer,
+            narrative: "the model drove the hands for " + to_string(turn) + " turn(s)"
+                + self.waits_said(),
+            calls: calls,
+            receipts: tool_receipt(rows),
+            prompt_digest: first.prompt_digest,
+            renderer: RENDERER_VERSION,
+        };
     }
     // What the loop's rate limits cost in time, for its narrative.
     fn waits_said() -> String {
-        return if self.retried > 0 { ", after " + to_string(self.retried) + " backed-off retries, " + to_string(self.waited_ms) + "ms waited" } else { "" };
+        return if self.retried > 0 {
+            ", after " + to_string(self.retried) + " backed-off retries, "
+                + to_string(self.waited_ms) + "ms waited"
+        } else {
+            ""
+        };
     }
     // One turn's call, asked again after a backed-off wait while the
     // backend rate-limits a call it never made, as the single call is: the
     // lease renewed before each wait, each wait a row of evidence, none
     // once the allowance is spent. The retry is the same call (its key).
-    fn asked_with_backoff(brief: Brief, hands: Hands, first: dna::ModelRequest, allowance: Int) -> dna::ModelResult {
+    fn asked_with_backoff(
+        brief: Brief,
+        hands: Hands,
+        first: dna::ModelRequest,
+        allowance: Int
+    ) -> dna::ModelResult {
         let mut req = first;
         let mut r = self.asked(brief, req);
         let mut tries = 0;
         let mut wait = self.backoff_ms;
         while !r.ok && rate_limited(r.refused) && !r.made && tries < self.retries {
             let kept = hands.lease.renew(wait / 1000 + 60);
-            self.waited(brief, r.refused, wait, if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error });
+            self.waited(
+                brief,
+                r.refused,
+                wait,
+                if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error },
+            );
             sleep_for_ms(wait);
             self.waited_ms = self.waited_ms + wait;
             wait = wait * 2;
             tries = tries + 1;
             self.retried = self.retried + 1;
             req.retry_of = brief.attempt_id;
-            if allowance >= 0 && (self.spent_micros >= allowance || len(self.priced_out(req, allowance)) > 0) { return r; }
+            if allowance >= 0
+                && (self.spent_micros >= allowance || len(self.priced_out(req, allowance)) > 0)
+            {
+                return r;
+            }
             r = self.asked(brief, req);
         }
         return r;
@@ -375,13 +716,34 @@ locus ModelPerformer {
         // a model the mapping named and then refused (a `tools` or `do` Work
         // on a model that returns no tool calls) is never called
         let choice = std::json::find_field_raw(brief.hat, "model");
+        // a catalog with no backend of its own asks only the map's endpoint
+        if self.mapped_only && len(std::json::find_string_field(choice, "endpoint")) == 0 {
+            return Performance {
+                refused: "no model performs this Work: the catalog has no backend of its own and the model map names no endpoint for it (`hale habitat models <organism>` maps the habitat's; `hale dna models map` lists the map)",
+            };
+        }
         let named = std::json::find_string_field(choice, "model");
         if len(named) > 0 && std::str::trim(std::json::find_field_raw(choice, "ok")) == "false" {
-            return Performance { disposition: "declined", narrative: "the model mapping refused `" + named + "` for this Work: " + std::json::find_string_field(choice, "why"), calls: "[]", prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION };
+            return Performance {
+                disposition: "declined",
+                narrative: "the model mapping refused `" + named + "` for this Work: "
+                    + std::json::find_string_field(choice, "why"),
+                calls: "[]",
+                prompt_digest: prompt_digest(brief.rendered),
+                renderer: RENDERER_VERSION,
+            };
         }
         // the spine admits the spend before any call is made (GH #1131)
         let gate = hands.lease.allowance(ALLOWANCE_WAIT);
-        if !gate.ok { return Performance { disposition: "declined", narrative: "the budget gate admitted no spend for this attempt: " + gate.error, calls: "[]", prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION }; }
+        if !gate.ok {
+            return Performance {
+                disposition: "declined",
+                narrative: "the budget gate admitted no spend for this attempt: " + gate.error,
+                calls: "[]",
+                prompt_digest: prompt_digest(brief.rendered),
+                renderer: RENDERER_VERSION,
+            };
+        }
         let allowance = std::str::parse_int(gate.output) or - 1;
         let class = std::json::find_string_field(brief.hat, "data_class");
         // the render alone reaches the model; the hat stays structure
@@ -392,20 +754,49 @@ locus ModelPerformer {
             knowledge_bindings: std::json::find_string_field(brief.hat, "knowledge_bindings"),
             tool_grant: std::json::find_string_field(brief.hat, "tool_grant"),
             data_class: if len(class) > 0 { class } else { "internal" },
-            cost_ceiling_micros: std::str::parse_int(std::json::find_string_field(brief.hat, "cost_ceiling")) or 0,
+            cost_ceiling_micros: std::str::parse_int(
+                std::json::find_string_field(brief.hat, "cost_ceiling"),
+            ) or 0,
             // the model the Work's mapping resolved (the hat's `model`); none
             // resolved, the catalog's backend chooses as before
-            model: std::json::find_string_field(std::json::find_field_raw(brief.hat, "model"), "model"),
+            model: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "model",
+            ),
+            // and where the mapping says it is asked, with its key's slot
+            endpoint: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "endpoint",
+            ),
+            key_vault: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "key_vault",
+            ),
             metadata: call_metadata(brief),
             // one call of the attempt: a retry of it is the same call
             idempotency_key: brief.attempt_id + ":call:1"
         };
         let before = self.priced_out(req, allowance);
-        if len(before) > 0 { return Performance { disposition: "declined", narrative: before, calls: "[]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION }; }
+        if len(before) > 0 {
+            return Performance {
+                disposition: "declined",
+                narrative: before,
+                calls: "[]",
+                prompt_digest: req.prompt_digest,
+                renderer: RENDERER_VERSION,
+            };
+        }
         // a Work with hands, mapped to `tools` or `do`: the model drives
         // them and the leg runs every call (the harness's loop)
-        let mode = std::json::find_string_field(std::json::find_field_raw(brief.hat, "model"), "mode");
-        if len(std::str::trim(std::json::find_field_raw(brief.hat, "hands"))) > 2 && (mode == "tools" || mode == "do") { return self.perform_loop(brief, hands, req, allowance, mode); }
+        let mode = std::json::find_string_field(
+            std::json::find_field_raw(brief.hat, "model"),
+            "mode",
+        );
+        if len(std::str::trim(std::json::find_field_raw(brief.hat, "hands"))) > 2
+            && (mode == "tools" || mode == "do")
+        {
+            return self.perform_loop(brief, hands, req, allowance, mode);
+        }
         let mut r = self.asked(brief, req);
         let mut tries = 0;
         let mut wait = self.backoff_ms;
@@ -415,7 +806,12 @@ locus ModelPerformer {
         while !r.ok && rate_limited(r.refused) && !r.made && tries < self.retries {
             // the lease outlives the wait: renewed for the wait and a margin
             let kept = hands.lease.renew(wait / 1000 + 60);
-            self.waited(brief, r.refused, wait, if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error });
+            self.waited(
+                brief,
+                r.refused,
+                wait,
+                if kept.ok { "; lease renewed" } else { "; lease not renewed: " + kept.error },
+            );
             sleep_for_ms(wait);
             self.waited_ms = self.waited_ms + wait;
             wait = wait * 2;
@@ -426,9 +822,24 @@ locus ModelPerformer {
             if len(self.priced_out(req, allowance)) > 0 { break; }
             r = self.asked(brief, req);
         }
-        if !r.ok && rate_limited(r.refused) && allowance >= 0 && (self.spent_micros >= allowance || len(self.priced_out(req, allowance)) > 0) {
-            let why = if self.spent_micros >= allowance { "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent (" + to_string(self.spent_micros) + "); the budget gate admits no further call" } else { self.priced_out(req, allowance) };
-            return Performance { disposition: "declined", narrative: why, calls: "[" + self.calls + "]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+        if !r.ok
+            && rate_limited(r.refused)
+            && allowance >= 0
+            && (self.spent_micros >= allowance || len(self.priced_out(req, allowance)) > 0)
+        {
+            let why = if self.spent_micros >= allowance {
+                "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent ("
+                    + to_string(self.spent_micros) + "); the budget gate admits no further call"
+            } else {
+                self.priced_out(req, allowance)
+            };
+            return Performance {
+                disposition: "declined",
+                narrative: why,
+                calls: "[" + self.calls + "]",
+                prompt_digest: req.prompt_digest,
+                renderer: RENDERER_VERSION,
+            };
         }
         let calls = "[" + self.calls + "]";
         if !r.ok && self.effect == "uncertain" && r.made {
@@ -436,10 +847,30 @@ locus ModelPerformer {
             // anything past the pre-flight refusals): no retry, no failover,
             // nothing handed back — the attempt is marked unresolved and waits
             // for evidence or a person
-            return Performance { unresolved: "the call may have acted and no answer came back; the performer is uncertain: " + r.refused, calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+            return Performance {
+                unresolved: "the call may have acted and no answer came back; the performer is uncertain: "
+                    + r.refused,
+                calls: calls,
+                prompt_digest: req.prompt_digest,
+                renderer: RENDERER_VERSION,
+            };
         }
         if !r.ok {
-            return Performance { disposition: "failed", narrative: "the model did not answer: " + r.refused + (if tries > 0 { " (after " + to_string(tries) + " backed-off retries, " + to_string(self.waited_ms) + "ms)" } else { "" }), calls: calls, prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+            return Performance {
+                disposition: "failed",
+                narrative: "the model did not answer: " + r.refused
+                    + (
+                        if tries > 0 {
+                            " (after " + to_string(tries) + " backed-off retries, "
+                                + to_string(self.waited_ms) + "ms)"
+                        } else {
+                            ""
+                        }
+                    ),
+                calls: calls,
+                prompt_digest: req.prompt_digest,
+                renderer: RENDERER_VERSION,
+            };
         }
         // the prompt as sent is the attempt's receipt, when its class may be a git receipt
         let b = std::json::Builder { };
@@ -452,8 +883,21 @@ locus ModelPerformer {
         }
         b.end_array();
         return Performance {
-            disposition: "done", result: r.output, narrative: "the " + r.backend + " backend (" + r.model + ") answered" + (if tries > 0 { " after " + to_string(tries) + " backed-off retries, " + to_string(self.waited_ms) + "ms waited" } else { "" }),
-            calls: calls, receipts: b.result(), prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION
+            disposition: "done",
+            result: r.output,
+            narrative: "the " + r.backend + " backend (" + r.model + ") answered"
+                + (
+                    if tries > 0 {
+                        " after " + to_string(tries) + " backed-off retries, "
+                            + to_string(self.waited_ms) + "ms waited"
+                    } else {
+                        ""
+                    }
+                ),
+            calls: calls,
+            receipts: b.result(),
+            prompt_digest: req.prompt_digest,
+            renderer: RENDERER_VERSION
         };
     }
 }

@@ -1,0 +1,880 @@
+// Hale stdlib — std::http's streamed response body, read
+// (`std::http::BodyReader`, `std::http::SseReader`; GH #1698).
+//
+// Not part of the bundled stdlib (`AP_SOURCE`): every stdlib declaration
+// is lowered into every program, so these are appended only to a program
+// that names one (`hale_types::rpc_expand`, `inject_http_read`), and a
+// program that reads no stream carries none of them. They are built on
+// the client's own helpers in `http_client.hl` (the dial, the request,
+// the deadline, the header and chunk-size scans).
+
+// ---- a streamed response body ---------------------------------------
+//
+// 2026-10-21 — the client's mirror of the Server's streamed body
+// (http.hl § BodyWriter / SseWriter): a response whose body the program
+// reads as it arrives, as chunks or as Server-Sent Events, over http and
+// https alike. A `BodyReader`'s birth makes the exchange up to the end of
+// the response's head (the dial, the request, the status line and the
+// headers), so `status` and `headers` are there once it is built; each
+// `chunk()` then hands back the next piece of the body as it arrives and
+// `SseReader.event()` the next event. One `Connection: close` exchange,
+// never retried (a stream cannot be replayed once a piece of it was
+// handed on), the connection closed at dissolve. A `deferred` reader's
+// birth leaves the wire alone: `open_within(ms)` advances the opening a
+// bounded time at a time, and a read opens it first (`*_within` within its
+// own window, failing `idle` while the head has not come).
+//
+// Every read ends in one stated outcome, never a hang: a piece of the
+// body; the end (`HttpError { kind: "end" }`: the last chunk, the
+// Content-Length reached, or the close of a body framed by neither); or a
+// failure, the whole-body read's kinds: `connect_failed`, `send_failed`,
+// `recv_failed` (the deadline, the connection closed before the body
+// ended, a read error), `bad_response` (an unparseable head, malformed
+// chunk framing), `too_large`, `unsupported_scheme`, and for an opening
+// that follows redirects `too_many_redirects` and `redirect_refused`. Once a read has
+// ended or failed, every later one fails the same way.
+//
+// `timeout_ms` bounds the exchange whole, as the Client's does: the dial,
+// the request, the head and every read of the body, each armed with what
+// is left of one deadline; `0` leaves it unbounded, which a stream longer
+// than 30 s needs. Reads go into one `BytesBuilder` (no allocation per
+// read; https through `tls::__recv_into_until`, which takes the deadline
+// itself, as the whole-body read's `__recv_bytes_until` does).
+
+// One read into `rx` within `deadline`: the bytes read (> 0), 0 when the
+// peer closed, -2 when the deadline passed, -1 for a read error.
+fn __http_stream_fill(
+    handle: Int,
+    is_tls: Bool,
+    rx: std::bytes::BytesBuilder,
+    deadline: Int
+) -> Int {
+    if !__http_arm(handle, is_tls, deadline) {
+        return -2;
+    }
+    if is_tls {
+        return std::io::tls::__recv_into_until(handle, rx, 8192, deadline);
+    }
+    return std::io::tcp::recv_into(handle, rx, 8192);
+}
+
+// The deadline of a read that waits at most `ms`: now + `ms`, never
+// past the exchange's `deadline` (0: none).
+fn __http_within(deadline: Int, ms: Int) -> Int {
+    let wait = if ms < 0 { 0 } else { ms };
+    let until = std::time::monotonic_ns() + wait * 1000000;
+    if deadline != 0 && deadline < until {
+        return deadline;
+    }
+    return until;
+}
+
+// A copy of what `rx` holds, for the framing scans.
+fn __http_stream_held(rx: std::bytes::BytesBuilder) -> Bytes {
+    return rx.snapshot() or raise;
+}
+
+// The next chunk at the front of `raw`: `state` 0 needs more bytes, 1 a
+// chunk (its payload at [lo, hi), `used` bytes of framing and payload), 2
+// the last chunk, 3 malformed framing. A `state` 0 whose size line has
+// arrived says how much the whole chunk takes (`used`) and its payload's
+// size (`hi - lo`), so the reader reads to there without looking again.
+type __StdHttpChunkPeel { state: Int; lo: Int; hi: Int; used: Int; }
+
+fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
+    let end = len(raw);
+    let nl = __http_crlf_at(raw, 0, end);
+    if nl < 0 {
+        return __StdHttpChunkPeel { state: 0, lo: 0, hi: 0, used: 0 };
+    }
+    let size = __http_hex_size(raw, 0, nl);
+    if size < 0 {
+        return __StdHttpChunkPeel { state: 3, lo: 0, hi: 0, used: 0 };
+    }
+    if size == 0 {
+        // the trailer section after it is not read: the body has ended
+        return __StdHttpChunkPeel { state: 2, lo: 0, hi: 0, used: nl + 2 };
+    }
+    let lo = nl + 2;
+    let hi = lo + size;
+    if hi + 2 > end {
+        return __StdHttpChunkPeel { state: 0, lo: lo, hi: hi, used: hi + 2 };
+    }
+    let ca = std::bytes::at(raw, hi) or - 1;
+    let cb = std::bytes::at(raw, hi + 1) or - 1;
+    if ca != 13 || cb != 10 {
+        return __StdHttpChunkPeel { state: 3, lo: 0, hi: 0, used: 0 };
+    }
+    return __StdHttpChunkPeel { state: 1, lo: lo, hi: hi, used: hi + 2 };
+}
+
+// ---- redirects -------------------------------------------------------
+//
+// 2026-10-27 — a reader whose request sets `follow_redirects` follows a
+// 301, 302, 303, 307 or 308 that names a `Location`, at most that many
+// times under the one deadline, each hop a fresh `Connection: close`
+// exchange. Only the same scheme or an upgrade to https is followed,
+// never a downgrade; once the origin (scheme, host, port) changes, the
+// request's `Authorization` lines and the reader's `bearer` are dropped
+// for the rest of the chain.
+
+// Whether `status` is a redirect a reader follows.
+fn __http_is_redirect(status: Int) -> Bool {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+// Where a redirect's `location` leads from `from`: an absolute http or
+// https URL, a scheme-relative `//host/…`, an absolute path, or a path
+// relative to `from`'s directory (a fragment is dropped). Fails
+// `redirect_refused` for a scheme other than http / https and for a
+// downgrade from https to http, `bad_url` for a location that does not
+// parse.
+fn __http_redirect_target(
+    from: std::http::Url,
+    location: String
+) -> std::http::Url fallible(std::http::HttpError) {
+    let mut loc = std::str::trim(location);
+    let hash = std::str::index_of(loc, "#");
+    if hash >= 0 {
+        loc = loc[0..hash];
+    }
+    if len(loc) == 0 {
+        fail std::http::HttpError { kind: "bad_url", status: 0, detail: "an empty Location" };
+    }
+    let mut to = std::http::Url {
+        scheme: from.scheme,
+        host: from.host,
+        port: from.port,
+        path: from.path,
+    };
+    let sep = std::str::index_of(loc, "://");
+    let slash = std::str::index_of(loc, "/");
+    if std::str::starts_with(loc, "//") {
+        to = __http_parse_url(from.scheme + ":" + loc) or raise;
+    } else if sep > 0 && (slash < 0 || sep < slash) {
+        let scheme = std::str::lower(loc[0..sep]);
+        if scheme != "http" && scheme != "https" {
+            fail std::http::HttpError {
+                kind: "redirect_refused",
+                status: 0,
+                detail: "a redirect to " + scheme + ": only http / https are followed",
+            };
+        }
+        to = __http_parse_url(scheme + loc[sep..len(loc)]) or raise;
+    } else if std::str::starts_with(loc, "/") {
+        to.path = loc;
+    } else {
+        let mut base = from.path;
+        let q = std::str::index_of(base, "?");
+        if q >= 0 {
+            base = base[0..q];
+        }
+        let mut cut = 0;
+        let mut i = 0;
+        while i < len(base) {
+            if base[i..(i + 1)] == "/" {
+                cut = i + 1;
+            }
+            i = i + 1;
+        }
+        to.path = if cut == 0 { "/" + loc } else { base[0..cut] + loc };
+    }
+    if from.scheme == "https" && to.scheme != "https" {
+        fail std::http::HttpError {
+            kind: "redirect_refused",
+            status: 0,
+            detail: "a redirect from https to " + to.scheme + " is a downgrade: never followed",
+        };
+    }
+    return to;
+}
+
+// Whether `a` and `b` are one origin: scheme, host (any case) and port.
+fn __http_same_origin(a: std::http::Url, b: std::http::Url) -> Bool {
+    return a.scheme == b.scheme
+        && std::str::lower(a.host) == std::str::lower(b.host)
+        && a.port == b.port;
+}
+
+// A packed header block without its `Authorization` lines.
+fn __http_without_authorization(headers: String) -> String {
+    let mut out = "";
+    let mut rest = headers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\r\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 2)..len(rest)] };
+        let colon = std::str::index_of(line, ":");
+        let name = if colon < 0 { line } else { line[0..colon] };
+        if std::str::lower(std::str::trim(name)) != "authorization" {
+            out = if len(out) == 0 { line } else { out + "\r\n" + line };
+        }
+    }
+    return out;
+}
+
+/// A response body read as it arrives: the client's mirror of
+/// `BodyWriter`. Birth sends `req` (`Connection: close`) and reads the
+/// response's head into `status` and `headers`; `chunk()` returns the
+/// next piece of the body: one chunk of a chunked body, else what one
+/// read brought. The body's end fails `chunk()` with kind `end`; a failure
+/// is the whole-body read's (`recv_failed` for the deadline or a body cut
+/// off). `timeout_ms` bounds the whole exchange (`0`: none); `max_chunk`
+/// the head and any one chunk. Never retried; dissolve closes the
+/// connection. `chunk_within(ms)` waits at most `ms` for the next piece
+/// and fails with kind `idle` when none arrived, the stream left open.
+/// `deferred: true` leaves the wire alone at birth: `open_within(ms)`
+/// advances the opening a bounded time at a time, and the first read
+/// opens it (within its own window, for `chunk_within`). `bearer: c`
+/// presents the `std::secret::Credential` `c` as `Authorization: Bearer`:
+/// the credential writes that line onto the wire itself, so it is never
+/// a String here, in `req` or anywhere the program reads; a credential
+/// whose source resolves to nothing fails the opening `send_failed`
+/// with nothing sent. `req.follow_redirects: n` follows up to `n`
+/// redirects (301, 302, 303, 307, 308 with a `Location`), `status` and
+/// `headers` then the last target's: the same scheme or an upgrade to
+/// https only (`redirect_refused` otherwise), `Authorization` and the
+/// `bearer` dropped once the origin changes, and one more redirect than
+/// `n` fails `too_many_redirects`.
+locus __StdHttpBodyReader {
+    params {
+        req: std::http::ClientRequest;
+        // a credential the request presents as `Authorization: Bearer`,
+        // written onto the wire by the sealed side and never a value
+        // here; one that names no source presents none
+        bearer: std::secret::Credential = std::secret::Credential { };
+        timeout_ms: Int = 30000;
+        user_agent: String = "hale-std-http/0.11";
+        max_chunk: Int = 16777216;
+        // birth does nothing on the wire: `open_within` (or the first
+        // read) opens the exchange
+        deferred: Bool = false;
+        // the response's head, read at birth (or by the opening of a
+        // deferred reader): 0 and "" when there is none
+        status: Int = 0;
+        headers: String = "";
+        // how far the opening is: 0 not begun, 1 the request sent and the
+        // head awaited, 2 the head read
+        phase: Int = 0;
+        // the connection, and what is left of the one deadline
+        handle: Int = -1;
+        is_tls: Bool = false;
+        deadline: Int = 0;
+        // what frames the body: 0 the close, 1 Content-Length, 2 chunks
+        framing: Int = 0;
+        // a Content-Length body's bytes not yet read
+        left: Int = 0;
+        // "" while the body is open; once ended or failed, the HttpError
+        // kind every read fails with ("end" for the body's end)
+        outcome: String = "";
+        detail: String = "";
+        // what has arrived and not been handed on
+        rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 8192 };
+        // a bounded read's own deadline (0: the read waits as `chunk()`
+        // does), whether it passed with nothing read, and whether the
+        // socket's wait is still armed with it on a stream with no deadline
+        until: Int = 0;
+        idle: Bool = false;
+        short_armed: Bool = false;
+        // redirects followed so far, and whether the origin has changed
+        // (the `bearer` and `Authorization` dropped from then on)
+        redirects: Int = 0;
+        moved_origin: Bool = false;
+        // the bytes the chunk being read takes, framing and all, once its
+        // size line has arrived (0: not known yet)
+        chunk_need: Int = 0;
+    }
+    birth() {
+        // the one deadline runs from the reader's birth, deferred or not
+        self.deadline = __http_deadline(self.timeout_ms);
+        if !self.deferred {
+            self.__opening(0);
+        }
+    }
+    dissolve() {
+        __http_close_handle(self.handle, self.is_tls);
+    }
+
+    /// The next piece of the body, as it arrives (never empty). Fails
+    /// with kind `end` once the body has ended, else with what ended it.
+    fn chunk() -> Bytes fallible(std::http::HttpError) {
+        self.until = 0;
+        return self.__next() or raise;
+    }
+
+    /// The next piece of the body, waiting at most `ms` for it. Fails with
+    /// kind `idle` when nothing arrived in that time: the stream stays
+    /// open, and the next read carries on where this one stopped, nothing
+    /// lost. The exchange's `timeout_ms` still ends the stream; else as
+    /// `chunk()`.
+    fn chunk_within(ms: Int) -> Bytes fallible(std::http::HttpError) {
+        self.until = __http_within(self.deadline, ms);
+        return self.__next() or raise;
+    }
+
+    /// Advance a deferred reader's opening (the dial, the request, the
+    /// response's head) for at most `ms`: `true` once the head is read
+    /// (`status` and `headers` set), `false` when the time ran out first,
+    /// the exchange still opening. The dial and, for https, the handshake
+    /// are one step bounded by the exchange's deadline, not by `ms`; the
+    /// wait for the head is bounded by `ms`. Fails as a reader's birth
+    /// would: `connect_failed`, `send_failed`, `recv_failed` (the deadline),
+    /// `bad_response`. On a reader already open, `true` at once.
+    fn open_within(ms: Int) -> Bool fallible(std::http::HttpError) {
+        if self.phase == 2 {
+            return true;
+        }
+        if self.outcome == "" {
+            self.__opening(__http_within(self.deadline, ms));
+        }
+        if self.phase < 2 && self.outcome != "" {
+            fail std::http::HttpError {
+                kind: self.outcome,
+                status: self.status,
+                detail: self.detail,
+            };
+        }
+        return self.phase == 2;
+    }
+
+    // The opening, as far as `until` allows (0: to its end or the
+    // deadline), through each redirect it follows.
+    fn __opening(until: Int) {
+        while self.outcome == "" && self.phase < 2 {
+            if self.phase == 0 {
+                self.__start();
+            }
+            if self.outcome == "" && self.phase == 1 {
+                self.__head(until);
+                if self.phase == 1 {
+                    // the bounded wait passed before the head came
+                    return;
+                }
+            }
+        }
+    }
+
+    fn __next() -> Bytes fallible(std::http::HttpError) {
+        if self.phase < 2 && self.outcome == "" {
+            // a deferred reader opens on its first read, within its window
+            self.__opening(self.until);
+            if self.phase < 2 && self.outcome == "" {
+                fail std::http::HttpError { kind: "idle", status: 0, detail: "" };
+            }
+        }
+        while self.outcome == "" {
+            if self.framing == 2 && self.chunk_need > self.rx.len() {
+                // a chunk whose size is known and has not all arrived: read
+                // on without copying what is held (a copy per read made a
+                // chunk's memory and time quadratic in its size)
+                self.__more();
+                if self.idle {
+                    self.idle = false;
+                    fail std::http::HttpError { kind: "idle", status: self.status, detail: "" };
+                }
+            } else if self.framing == 2 {
+                // what is held is the next size line, or a whole chunk
+                let raw = __http_stream_held(self.rx);
+                let p = __http_chunk_peel(raw);
+                if p.state == 1 {
+                    self.chunk_need = 0;
+                    self.rx.shift_front(p.used);
+                    return std::bytes::slice(raw, p.lo, p.hi);
+                }
+                if p.state == 2 {
+                    self.rx.shift_front(p.used);
+                    self.__stop("end", "");
+                } else if p.state == 3 {
+                    self.__stop("bad_response", "malformed chunk framing");
+                } else if p.hi - p.lo > self.max_chunk
+                    || (p.used == 0 && len(raw) > self.max_chunk)
+                {
+                    self.__stop(
+                        "too_large",
+                        "a chunk over " + to_string(self.max_chunk) + " bytes",
+                    );
+                } else {
+                    self.chunk_need = p.used;
+                    self.__more();
+                    if self.idle {
+                        self.idle = false;
+                        fail std::http::HttpError { kind: "idle", status: self.status, detail: "" };
+                    }
+                }
+            } else {
+                let held = self.rx.len();
+                if held > 0 {
+                    let raw = __http_stream_held(self.rx);
+                    let mut take = held;
+                    if self.framing == 1 && self.left < take {
+                        take = self.left;
+                    }
+                    self.rx.clear();
+                    self.left = self.left - take;
+                    return std::bytes::slice(raw, 0, take);
+                }
+                if self.framing == 1 && self.left <= 0 {
+                    self.__stop("end", "");
+                } else {
+                    self.__more();
+                    if self.idle {
+                        self.idle = false;
+                        fail std::http::HttpError { kind: "idle", status: self.status, detail: "" };
+                    }
+                }
+            }
+        }
+        fail std::http::HttpError { kind: self.outcome, status: self.status, detail: self.detail };
+    }
+
+    // One more read into `rx`; a read that brings nothing ends the body:
+    // its end, for a body framed by the close, else a failure. A bounded
+    // read (`until`) whose own deadline passes first is `idle` instead,
+    // and ends nothing.
+    fn __more() {
+        let bounded = self.until != 0 && (self.deadline == 0 || self.until < self.deadline);
+        let wait = if bounded { self.until } else { self.deadline };
+        if !bounded && self.deadline == 0 && self.short_armed {
+            // a bounded read left its wait armed: this one waits unbounded
+            __http_disarm(self.handle, self.is_tls, 1);
+            self.short_armed = false;
+        }
+        if bounded && self.deadline == 0 {
+            self.short_armed = true;
+        }
+        let n = __http_stream_fill(self.handle, self.is_tls, self.rx, wait);
+        if n > 0 {
+            return;
+        }
+        if n == 0 - 2 || __http_expired(wait) {
+            if bounded && !__http_expired(self.deadline) {
+                self.idle = true;
+                return;
+            }
+            self.__timed_out();
+            return;
+        }
+        if n < 0 {
+            self.__stop("recv_failed", self.__at() + " read failed");
+            return;
+        }
+        if self.framing == 0 && self.status > 0 {
+            self.__stop("end", "");
+            return;
+        }
+        self.__stop(
+            "recv_failed",
+            self.__at() + " cut off: the connection closed before the body ended",
+        );
+    }
+
+    // The deadline has passed: the whole-body read's outcome.
+    fn __timed_out() {
+        self.__stop(
+            "recv_failed",
+            __http_timeout_detail(self.req.url.host, self.req.url.port, self.timeout_ms),
+        );
+    }
+
+    // `host:port`, for a detail.
+    fn __at() -> String {
+        return self.req.url.host + ":" + to_string(self.req.url.port);
+    }
+
+    // End the stream with `kind` (`end`, or a failure): every later read
+    // fails with it, and the connection closes now.
+    fn __stop(kind: String, detail: String) {
+        self.outcome = kind;
+        self.detail = detail;
+        self.req.headers = "";
+        self.req.body = b"";
+        __http_close_handle(self.handle, self.is_tls);
+        self.handle = -1;
+    }
+
+    // Dial and send the request; the dial (and, for https, the handshake)
+    // is bounded by the exchange's deadline.
+    fn __start() {
+        self.phase = 1;
+        let scheme = self.req.url.scheme;
+        if scheme != "http" && scheme != "https" {
+            self.__stop("unsupported_scheme", scheme + " — only http / https supported");
+            return;
+        }
+        self.is_tls = scheme == "https";
+        let mut failure = "";
+        let h = __http_dial_nd(
+            self.req.url.host,
+            self.req.url.port,
+            self.is_tls,
+            __http_left_ms(self.deadline),
+        ) or {
+            failure = __http_connect_detail(err, self.timeout_ms);
+                -1
+        };
+        if h < 0 {
+            self.__stop("connect_failed", self.__at() + " " + failure);
+            return;
+        }
+        self.handle = h;
+        // the head without its blank line: the bearer's line, when there
+        // is one, goes before it, written by the credential itself
+        let head = __http_build_request_headers(self.req, self.user_agent, false);
+        let mut sent = 0;
+        if self.moved_origin {
+            sent = __http_send_within(h, self.is_tls, std::bytes::from_string(head), self.deadline);
+        } else {
+            sent = self.bearer.__send_in_head(
+                h,
+                self.is_tls,
+                head[0..(len(head) - 2)],
+                "Authorization: Bearer ",
+                self.deadline,
+            );
+        }
+        if sent == 0 - 3 || sent == 0 - 4 {
+            let why = if sent == 0 - 3 { "resolved to nothing" } else { "holds a line break" };
+            self.__stop(
+                "send_failed",
+                self.__at() + " the bearer credential " + why + ": nothing was sent",
+            );
+            return;
+        }
+        if sent >= 0 && len(self.req.body) > 0 {
+            sent = __http_send_within(h, self.is_tls, self.req.body, self.deadline);
+        }
+        // The request is sent: its headers and body (where a revealed
+        // credential travels) are a consumed wire write, never kept — kept
+        // only while a redirect may send them again, to the end of the
+        // opening.
+        if self.req.follow_redirects <= 0 {
+            self.req.headers = "";
+            self.req.body = b"";
+        }
+        if sent < 0 {
+            if __http_expired(self.deadline) {
+                self.__timed_out();
+            } else {
+                self.__stop("send_failed", self.__at() + " the request could not be sent");
+            }
+        }
+    }
+
+    // Follow the redirect the head just read names: a fresh exchange to
+    // `location` from the start of the opening, or the outcome that
+    // refuses it.
+    fn __redirect(location: String) {
+        if self.redirects >= self.req.follow_redirects {
+            self.__stop(
+                "too_many_redirects",
+                self.__at() + " answered " + to_string(self.status) + " after "
+                    + to_string(self.redirects)
+                    + " redirect(s), the most `follow_redirects` allows",
+            );
+            return;
+        }
+        let mut refused = "";
+        let mut kind = "";
+        let to = __http_redirect_target(self.req.url, location) or {
+            kind = err.kind;
+            refused = err.detail;
+            self.req.url
+        };
+        if len(kind) > 0 {
+            self.__stop(kind, self.__at() + " " + refused);
+            return;
+        }
+        if !__http_same_origin(self.req.url, to) {
+            self.req.headers = __http_without_authorization(self.req.headers);
+            self.moved_origin = true;
+        }
+        let m = self.req.method;
+        if (self.status == 303 && m != "GET" && m != "HEAD")
+            || ((self.status == 301 || self.status == 302) && m == "POST")
+        {
+            self.req.method = "GET";
+            self.req.body = b"";
+        }
+        __http_close_handle(self.handle, self.is_tls);
+        self.handle = -1;
+        self.req.url = to;
+        self.redirects = self.redirects + 1;
+        self.rx.clear();
+        self.status = 0;
+        self.headers = "";
+        self.phase = 0;
+    }
+
+    // Read the response's head, waiting until `until` at most (0: the
+    // deadline); a bounded wait that passes first leaves the reader
+    // opening, what arrived of the head kept.
+    fn __head(until: Int) {
+        let bounded = until != 0 && (self.deadline == 0 || until < self.deadline);
+        let wait = if bounded { until } else { self.deadline };
+        if !bounded && self.deadline == 0 && self.short_armed {
+            __http_disarm(self.handle, self.is_tls, 1);
+            self.short_armed = false;
+        }
+        if bounded && self.deadline == 0 {
+            self.short_armed = true;
+        }
+        let mut raw = __http_stream_held(self.rx);
+        let mut hdr_end = if len(raw) > 0 { __http_find_hdr_end(raw) } else { -1 };
+        while hdr_end < 0 {
+            let n = __http_stream_fill(self.handle, self.is_tls, self.rx, wait);
+            if n <= 0 {
+                if n == 0 - 2 || __http_expired(wait) {
+                    if bounded && !__http_expired(self.deadline) {
+                        return;
+                    }
+                    self.__timed_out();
+                } else {
+                    self.__stop("bad_response", "unparseable response");
+                }
+                return;
+            }
+            raw = __http_stream_held(self.rx);
+            hdr_end = __http_find_hdr_end(raw);
+            if hdr_end < 0 && len(raw) > self.max_chunk {
+                self.__stop(
+                    "too_large",
+                    "a response head over " + to_string(self.max_chunk) + " bytes",
+                );
+                return;
+            }
+        }
+        let text = std::str::from_bytes(std::bytes::slice(raw, 0, hdr_end));
+        let line_end = std::str::index_of(text, "\r\n");
+        let status_line = if line_end < 0 { text } else { text[0..line_end] };
+        let status = __http_parse_status(status_line);
+        if status < 0 {
+            self.__stop("bad_response", "unparseable response");
+            return;
+        }
+        self.status = status;
+        if line_end >= 0 {
+            self.headers = text[(line_end + 2)..len(text)];
+        }
+        if self.req.follow_redirects > 0 && __http_is_redirect(status) {
+            let location = __http_client_header(self.headers, "location");
+            if len(location) > 0 {
+                self.__redirect(location);
+                return;
+            }
+        }
+        self.phase = 2;
+        self.req.headers = "";
+        self.req.body = b"";
+        self.rx.shift_front(hdr_end + 4);
+        let te = std::str::lower(__http_client_header(self.headers, "transfer-encoding"));
+        let cl = __http_client_header(self.headers, "content-length");
+        if std::str::index_of(te, "chunked") >= 0 {
+            self.framing = 2;
+        } else if status == 204 || status == 304 || self.req.method == "HEAD" {
+            self.framing = 1;
+            self.left = 0;
+        } else if len(cl) > 0 {
+            self.framing = 1;
+            self.left = std::str::parse_int(cl) or 0;
+        } else {
+            self.framing = 0;
+        }
+    }
+}
+
+// ---- Server-Sent Events, read ----------------------------------------
+
+// `req` asking for an event stream: `Accept: text/event-stream` before
+// its own headers.
+fn __http_sse_request(req: std::http::ClientRequest) -> std::http::ClientRequest {
+    let headers = if len(req.headers) > 0 {
+        "Accept: text/event-stream\r\n" + req.headers
+    } else {
+        "Accept: text/event-stream"
+    };
+    return std::http::ClientRequest {
+        method: req.method,
+        url: req.url,
+        headers: headers,
+        body: req.body,
+        follow_redirects: req.follow_redirects,
+    };
+}
+
+// The next event at the front of `raw`: `found` once a blank line ends
+// one (its fields and the blank line are `used` bytes); `dispatch` when it
+// carried data, since an event without a `data` line is not dispatched
+// (WHATWG HTML § 9.2.6). Lines end at CRLF, LF or CR; a line opening with
+// `:` is a comment; one space after a field's colon is dropped; an
+// unknown field is ignored.
+type __StdHttpSseTake { found: Bool; dispatch: Bool; used: Int; event: std::http::SseEvent; }
+
+fn __http_sse_take(raw: Bytes) -> __StdHttpSseTake {
+    let n = len(raw);
+    let mut pos = 0;
+    let mut data = "";
+    let mut has_data = false;
+    let mut name = "";
+    let mut id = "";
+    let mut retry_ms = 0;
+    while pos < n {
+        let mut e = pos;
+        let mut ch = -1;
+        while e < n {
+            ch = std::bytes::at(raw, e) or - 1;
+            if ch == 10 || ch == 13 {
+                break;
+            }
+            e = e + 1;
+        }
+        if e >= n {
+            break;
+        }
+        let mut next = e + 1;
+        if ch == 13 {
+            if e + 1 >= n {
+                // a CR last: wait for the byte that says whether an LF follows
+                break;
+            }
+            let after = std::bytes::at(raw, e + 1) or - 1;
+            if after == 10 {
+                next = e + 2;
+            }
+        }
+        let line = std::str::from_bytes(std::bytes::slice(raw, pos, e));
+        pos = next;
+        if len(line) == 0 {
+            return __StdHttpSseTake {
+                found: true,
+                dispatch: has_data,
+                used: pos,
+                event: std::http::SseEvent {
+                    data: data,
+                    event: name,
+                    id: id,
+                    retry: retry_ms * 1ms,
+                },
+            };
+        }
+        let colon = std::str::index_of(line, ":");
+        if colon != 0 {
+            let mut field = line;
+            let mut value = "";
+            if colon > 0 {
+                field = line[0..colon];
+                value = line[(colon + 1)..len(line)];
+                if std::str::starts_with(value, " ") {
+                    value = value[1..len(value)];
+                }
+            }
+            if field == "data" {
+                data = if has_data { data + "\n" + value } else { value };
+                has_data = true;
+            } else if field == "event" {
+                name = value;
+            } else if field == "id" {
+                id = value;
+            } else if field == "retry" {
+                let ms = std::str::parse_int(value) or - 1;
+                if ms >= 0
+                    && std::str::index_of(value, "-") < 0
+                    && std::str::index_of(value, "+") < 0
+                {
+                    retry_ms = ms;
+                }
+            }
+        }
+    }
+    return __StdHttpSseTake {
+        found: false,
+        dispatch: false,
+        used: 0,
+        event: std::http::SseEvent { data: "" },
+    };
+}
+
+/// A Server-Sent Events stream read as it arrives: the client's mirror
+/// of `SseWriter`, over a `BodyReader` whose request asks for
+/// `text/event-stream`. Built, `body.status` and `body.headers` hold the
+/// response's head; `event()` returns the next event (`data` its `data`
+/// lines joined by LF; `event`, `id` and `retry` its fields, empty or
+/// `0ns` when absent), fails with kind `end` once the body has ended
+/// (an unfinished last event is dropped), else as `chunk()` fails.
+/// `event_within(ms)` waits at most `ms` for the next event and fails with
+/// kind `idle` when none completed, the stream and a partial event kept.
+/// `deferred: true`, `open_within(ms)` and `bearer` as `BodyReader`'s.
+locus __StdHttpSseReader {
+    params {
+        req: std::http::ClientRequest;
+        // as `BodyReader`'s: presented as `Authorization: Bearer`
+        bearer: std::secret::Credential = std::secret::Credential { };
+        timeout_ms: Int = 30000;
+        // as `BodyReader`'s: the opening waits for `open_within` or the
+        // first read
+        deferred: Bool = false;
+        body: std::http::BodyReader = std::http::BodyReader {
+            req: __http_sse_request(self.req),
+            bearer: self.bearer,
+            timeout_ms: self.timeout_ms,
+            deferred: self.deferred
+        };
+        // the stream's text not yet parsed into an event
+        rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 8192 };
+    }
+    birth() {
+        // handed to `body`, which sent it: not kept here either
+        self.req.headers = "";
+        self.req.body = b"";
+    }
+    /// Advance a deferred reader's opening for at most `ms`, as
+    /// `BodyReader.open_within`: `true` once the head is read
+    /// (`body.status`, `body.headers`).
+    fn open_within(ms: Int) -> Bool fallible(std::http::HttpError) {
+        return self.body.open_within(ms) or raise;
+    }
+
+    /// The next event, as it arrives. Fails with kind `end` once the
+    /// body has ended, else with what ended it.
+    fn event() -> std::http::SseEvent fallible(std::http::HttpError) {
+        return self.__next(0) or raise;
+    }
+
+    /// The next event, waiting at most `ms` for it. Fails with kind `idle`
+    /// when no event completed in that time: the stream stays open, and a
+    /// partial event already read stays buffered for the next read. The
+    /// exchange's `timeout_ms` still ends the stream; else as `event()`.
+    fn event_within(ms: Int) -> std::http::SseEvent fallible(std::http::HttpError) {
+        return self.__next(__http_within(0, ms)) or raise;
+    }
+
+    // The next event; `until` bounds the wait for it (0: none).
+    fn __next(until: Int) -> std::http::SseEvent fallible(std::http::HttpError) {
+        while true {
+            let raw = __http_stream_held(self.rx);
+            let t = __http_sse_take(raw);
+            if t.found {
+                self.rx.shift_front(t.used);
+                if t.dispatch {
+                    return t.event;
+                }
+            } else {
+                if len(raw) > self.body.max_chunk {
+                    fail std::http::HttpError {
+                        kind: "too_large",
+                        status: self.body.status,
+                        detail: "an event over " + to_string(self.body.max_chunk) + " bytes",
+                    };
+                }
+                let mut piece = b"";
+                if until == 0 {
+                    piece = self.body.chunk() or raise;
+                } else {
+                    let left = (until - std::time::monotonic_ns()) / 1000000;
+                    piece = self.body.chunk_within(if left < 0 { 0 } else { left }) or raise;
+                }
+                self.rx.append(piece);
+            }
+        }
+        fail std::http::HttpError { kind: "end", status: self.body.status, detail: "" };
+    }
+}

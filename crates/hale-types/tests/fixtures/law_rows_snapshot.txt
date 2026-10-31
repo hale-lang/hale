@@ -1,3 +1,6 @@
+crates/hale-cli/tests/api_client_binding.rs#1	desk_offline	forbid reaches(desks, effects(client(Shelf)))	Violated	None
+crates/hale-cli/tests/api_client_binding.rs#1	no_client	forbid reaches(desks, effects(client(*)))	Violated	None
+crates/hale-cli/tests/api_client_binding.rs#1	quiet_offline	forbid reaches(quiet, effects(client(Shelf)))	Holds	None
 crates/hale-cli/tests/check_tcp_substrate.rs#0	handed_over	require no_silent_loss(topic __TcpAcceptedT)	Holds	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, sinks)	Violated	None
@@ -18,9 +21,8 @@ crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	wired	require subs
 crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl	iso_dg	forbid reaches(delta_wing, gamma_wing)	Invalid	None
 crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	single_settle	count subscribers(topic Charges) <= 1	Holds	None
 crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	wired	require subscribes(some settlers, topic Charges)	Holds	None
-crates/hale-cli/tests/fleet_compose.rs#23	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-cli/tests/fleet_cross_tier.rs#4	no_llm	forbid reaches(billing, effects(llm))	Invalid	Some("Core")
-crates/hale-cli/tests/fleet_cross_tier.rs#5	no_llm	forbid reaches(billing, effects(llm))	Holds	Some("Core")
+crates/hale-cli/tests/fleet_cross_tier.rs#3	no_llm	forbid reaches(billing, effects(llm))	Invalid	Some("Core")
+crates/hale-cli/tests/fleet_cross_tier.rs#4	no_llm	forbid reaches(billing, effects(llm))	Holds	Some("Core")
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0	isolation	forbid reaches(probes, workers)	Invalid	None
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#1	isolation	forbid reaches(probes, workers)	Invalid	None
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#2	isolation	forbid reaches(probes, workers)	Holds	None
@@ -30,6 +32,7 @@ crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#5	isolation	forbid r
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#6	isolation	forbid reaches(sources, targets) avoiding mask	Invalid	None
 crates/hale-cli/tests/model_cli.rs#0	wired	require subscribes(some subs, topic Evt)	Holds	None
 crates/hale-cli/tests/model_diff.rs#0	consumed	require subscribes(some workers, topic Evt)	Holds	None
+crates/hale-cli/tests/placement_artifact.rs#0	separated	require separate_domains(all left, all right)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#0	wired	require subscribes(some subs, topic Tk)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#1	wired	require subscribes(some subs, topic Tk)	Violated	None
 crates/hale-cli/tests/topology_artifact_contract.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	None
@@ -74,6 +77,8 @@ crates/hale-types/tests/claim_lowering.rs#1	quiet	count subscribers(topic Evt) =
 crates/hale-types/tests/claim_no_silent_loss.rs#2	loss	require no_silent_loss(topic Payments)	Holds	None
 crates/hale-types/tests/claim_no_silent_loss.rs#3	loss	require no_silent_loss(topic Payments)	Violated	None
 crates/hale-types/tests/claim_no_silent_loss.rs#6	loss	require no_silent_loss(all quiet)	Invalid	None
+crates/hale-types/tests/claim_placement.rs#0	separate	require separate_domains(all writers, all readers)	Holds	None
+crates/hale-types/tests/claim_placement.rs#1	separate	require separate_domains(all writers, all readers)	Invalid	None
 crates/hale-types/tests/claim_route_coverage.rs#1	route	cover keys(topic Orders in 0..=1): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#2	route	cover keys(topic Orders in 7..=7): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#3	route	cover keys(topic Orders in 0..=0): delivered_to(exactly_one workers)	Uncertified	None
@@ -87,6 +92,8 @@ crates/hale-types/tests/claims.rs#10	iso	forbid reaches(a_side, b_side) via { bu
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bus }	Violated	None
 crates/hale-types/tests/claims.rs#13	iso	forbid reaches(a_side, b_side)	Uncertified	None
 crates/hale-types/tests/claims.rs#2	read_only	forbid reaches(quote_api, effects(money))	Violated	None
+crates/hale-types/tests/claims.rs#20	c	forbid reaches(writers, effects(syscall))	Uncertified	None
+crates/hale-types/tests/claims.rs#22	logs_structured	forbid reaches(program, effects(stdio)) avoiding std::log::*	Holds	None
 crates/hale-types/tests/claims.rs#3	read_only	forbid reaches(quote_api, effects(money))	Holds	None
 crates/hale-types/tests/claims.rs#8	iso	forbid reaches(a_side, b_side)	Invalid	None
 crates/hale-types/tests/claims.rs#9	m	forbid reaches(a_side, effects(monye))	Invalid	None

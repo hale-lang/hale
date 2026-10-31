@@ -167,9 +167,9 @@ holds.
   graph` and the fleet tier *admit* an artifact by validating its
   JSON against the same rules; they do not reconstruct an
   `ApplicationModel`.
-- **No plan → model.** Fleet composition admits deployment plans
-  and reads artifacts; it does not elaborate a plan into an
-  application model. What it builds instead is instructive:
+- **No fleet → model.** Fleet composition derives a fleet seed's
+  `deployment` rows and reads artifacts; it does not elaborate a fleet
+  into an application model. What it builds instead is instructive:
   `ComponentModel`, a separate string-level structure reconstructed
   from artifact JSON — vertex names, `(from, to)` call pairs,
   name-level publish and subscribe relations, and the component's
@@ -891,6 +891,27 @@ Nothing is guessed. The rule about joins that make wrong
 hypotheses feel evidenced applies with full force to a tool whose
 output is a review view: a wrong "renamed" row would hide a
 removal and an addition behind one reassuring line.
+
+## Placement judgments
+
+`require separate_domains(all A, all B)` projects each group's locus
+declarations through `realizes` to every represented instance, then
+through `placed_in` to its execution domain. `model_query::instance_domains`
+is the shared query; it preserves instance and domain identity, source
+provenance, missing placement rows, unrepresented declarations, and
+selected declarations' placement/population holes as distinct facts.
+Selecting a declaration does not implicitly select its descendants.
+
+The `placement` judgment family declares `OWNS | PLACED | CARDINALITY`.
+It refuses invalid selectors and empty populations, reports a concrete
+shared-domain pair as `violated`, and fails closed as `uncertified` on
+relevant unknowns when no collision is known. The complete verdict
+contract is in `spec/verification.md`. Analysis semantics version 9
+adds this family; topology schema 1.20 adds its required adequacy entry
+and the typed `require_separate_domains` law with `left` and `right`
+group references. Artifact admission validates these operands, their
+rendered form, and the evidence account using the existing law reader.
+It does not reconstruct instance placement or evaluate a second model.
 
 ## Adding a judgment family
 

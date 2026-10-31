@@ -1,0 +1,30 @@
+type Beat {
+    n: Int;
+}
+
+topic Tick {
+    payload: Beat;
+    subject: "svc.tick";
+}
+
+locus Listener {
+    bus {
+        subscribe Tick as on_tick;
+    }
+    fn on_tick(b: Beat) {
+        println("beat ", b.n);
+    }
+}
+
+main locus App {
+    bindings {
+        Tick: unix("/tmp/svc.tick.sock", role: listen);
+    }
+    run() {
+        Listener { };
+    }
+}
+
+fn main() {
+    App { };
+}

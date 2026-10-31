@@ -1,0 +1,418 @@
+// The static engine (protocol.yaml `StaticConfig`): it answers every
+// request with its seat's configured text, as the standard's event stream.
+// Tokens are counted as one per four characters, rounded up, of the input
+// and of the text. A request whose `max_output_tokens` the text exceeds is
+// answered with the text cut there, as an incomplete response.
+
+/// A seat's static config. `problem` is why it is not one, "" when it is.
+type StaticConfig {
+    text: String = "";
+    chunk_chars: Int = 16;
+    first_output_ms: Int = 0;
+    chunk_interval_ms: Int = 0;
+    // fail every request this long after it is accepted, before any
+    // output, as a retryable engine failure; 0 for never (a drill)
+    fail_after_ms: Int = 0;
+    // answer every request by calling this tool with these arguments (a
+    // JSON text), instead of with `text`; "" for no tool (a drill)
+    tool_name: String = "";
+    tool_arguments: String = "{}";
+    problem: String = "";
+}
+
+/// A run, planned: `script` is its events in order, one JSON object a
+/// line, with a line `pause <ms>` where the engine waits; and what its
+/// result reports.
+type StaticRun {
+    script: String = "";
+    // served | incomplete | failed
+    outcome: String = "served";
+    // why, for failed
+    failure: String = "";
+    model: String = "";
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+}
+
+fn static_config(config: String) -> StaticConfig {
+    if !std::json::valid_object(config) {
+        return StaticConfig { problem: "config is not an object" };
+    }
+    let text = std::json::string_field(config, "text");
+    if text.kind != "string" || len(text.text) == 0 {
+        return StaticConfig { problem: "config needs text, a non-empty string" };
+    }
+    let mut c = StaticConfig { text: text.text };
+    if std::json::string_field(config, "chunk_chars").kind == "number" {
+        c.chunk_chars = std::json::find_int_field(config, "chunk_chars");
+    }
+    if std::json::string_field(config, "first_output_ms").kind == "number" {
+        c.first_output_ms = std::json::find_int_field(config, "first_output_ms");
+    }
+    if std::json::string_field(config, "chunk_interval_ms").kind == "number" {
+        c.chunk_interval_ms = std::json::find_int_field(config, "chunk_interval_ms");
+    }
+    if std::json::string_field(config, "fail_after_ms").kind == "number" {
+        c.fail_after_ms = std::json::find_int_field(config, "fail_after_ms");
+    }
+    let tool = std::json::string_field(config, "tool_call").kind;
+    if tool != "missing" && tool != "null" {
+        let call = std::str::trim(std::json::find_field_raw(config, "tool_call"));
+        let name = std::json::string_field(call, "name");
+        if tool != "object" || name.kind != "string" || len(name.text) == 0 {
+            return StaticConfig { problem: "config tool_call has a name" };
+        }
+        c.tool_name = name.text;
+        let args = std::json::string_field(call, "arguments");
+        if args.kind == "string" {
+            c.tool_arguments = args.text;
+        } else if args.kind != "missing" {
+            return StaticConfig { problem: "config tool_call arguments are a JSON text" };
+        }
+    }
+    if c.chunk_chars < 1 { return StaticConfig { problem: "config chunk_chars is at least 1" }; }
+    if c.first_output_ms < 0 || c.chunk_interval_ms < 0 || c.fail_after_ms < 0 {
+        return StaticConfig { problem: "config delays are at least 0" };
+    }
+    return c;
+}
+
+/// One token per four characters, rounded up.
+fn tokens_of(chars: Int) -> Int {
+    return (chars + 3) / 4;
+}
+
+/// The characters of a request's input: its text, or the text of its
+/// input items as JSON.
+fn input_chars(body: String) -> Int {
+    let input = std::json::string_field(body, "input");
+    if input.kind == "string" { return len(input.text); }
+    return len(std::str::trim(std::json::find_field_raw(body, "input")));
+}
+
+/// `i`, moved on past any UTF-8 continuation bytes so a cut there splits
+/// no character; at most the length.
+fn boundary(text: String, i: Int) -> Int {
+    let n = len(text);
+    if i >= n { return n; }
+    let v = std::str::bytes_view(text);
+    let mut at = i;
+    while at < n && std::str::byte_at(v, at) >= 128 && std::str::byte_at(v, at) < 192 {
+        at = at + 1;
+    }
+    return at;
+}
+
+fn q(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+/// A member of the request, as JSON, or `otherwise` when it is absent.
+fn member_or(body: String, name: String, otherwise: String) -> String {
+    let raw = std::str::trim(std::json::find_field_raw(body, name));
+    return if len(raw) > 0 { raw } else { otherwise };
+}
+
+fn message_item(item_id: String, status: String, text: String, done: Bool) -> String {
+    let content = if done {
+        "[{\"type\":\"output_text\",\"text\":" + q(text) + ",\"annotations\":[]}]"
+    } else {
+        "[]"
+    };
+    return "{\"type\":\"message\",\"id\":" + q(item_id) + ",\"status\":" + q(status)
+        + ",\"role\":\"assistant\",\"content\":" + content + "}";
+}
+
+/// A `function_call` output item.
+fn function_call_item(
+    id: String,
+    call_id: String,
+    name: String,
+    arguments: String,
+    status: String
+) -> String {
+    return "{\"type\":\"function_call\",\"id\":" + q(id) + ",\"call_id\":" + q(call_id)
+        + ",\"name\":" + q(name) + ",\"arguments\":" + q(arguments) + ",\"status\":" + q(status)
+        + "}";
+}
+
+/// The standard response object for the request, as it stands.
+fn response_object(
+    id: String,
+    created_at: Int,
+    status: String,
+    model: String,
+    body: String,
+    item: String,
+    usage: String
+) -> String {
+    let done = status != "in_progress";
+    return "{\"id\":" + q(id) + ",\"object\":\"response\",\"created_at\":" + to_string(created_at)
+        + ",\"completed_at\":"
+        + (if done { to_string(std::time::unix(std::time::current())) } else { "null" })
+        + ",\"status\":" + q(status)
+        + ",\"incomplete_details\":"
+        + (if status == "incomplete" { "{\"reason\":\"max_output_tokens\"}" } else { "null" })
+        + ",\"model\":" + q(model) + ",\"previous_response_id\":null,\"instructions\":"
+        + member_or(body, "instructions", "null")
+        + ",\"output\":" + (if len(item) > 0 { "[" + item + "]" } else { "[]" })
+        + ",\"error\":null,\"tools\":[],\"tool_choice\":\"auto\""
+        + ",\"truncation\":\"disabled\",\"parallel_tool_calls\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"top_p\":"
+        + member_or(body, "top_p", "1")
+        + ",\"presence_penalty\":0,\"frequency_penalty\":0,\"top_logprobs\":0,\"temperature\":"
+        + member_or(body, "temperature", "1")
+        + ",\"reasoning\":null,\"usage\":" + usage + ",\"max_output_tokens\":"
+        + member_or(body, "max_output_tokens", "null")
+        + ",\"max_tool_calls\":null,\"store\":false,\"background\":false,\"service_tier\":\"default\",\"metadata\":"
+        + member_or(body, "metadata", "{}")
+        + ",\"safety_identifier\":null,\"prompt_cache_key\":null}";
+}
+
+fn usage_object(input: Int, output: Int) -> String {
+    return "{\"input_tokens\":" + to_string(input) + ",\"output_tokens\":" + to_string(output)
+        + ",\"total_tokens\":" + to_string(input + output)
+        + ",\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}";
+}
+
+/// Answer one request: its events in order, numbered from 0. `id` is the
+/// coordinator's request id and `model` the catalog's, which the response
+/// carries; `served` is the model as the engine names it, which the result
+/// reports.
+@bounded_by(text)
+fn run_static(
+    id: String,
+    model: String,
+    served: String,
+    body: String,
+    c: StaticConfig
+) -> StaticRun {
+    let script = std::bytes::BytesBuilder { initial_cap: 4096 };
+    let created = std::time::unix(std::time::current());
+    let item_id = "msg_" + (if std::str::starts_with(id, "resp_") { id[5..len(id)] } else { id });
+    let input = tokens_of(input_chars(body));
+    let mut text = c.text;
+    let mut status = "completed";
+    let cap = if std::json::string_field(body, "max_output_tokens").kind == "number" {
+        std::json::find_int_field(body, "max_output_tokens")
+    } else {
+        0
+    };
+    if cap > 0 && tokens_of(len(text)) > cap {
+        text = text[0..boundary(text, cap * 4)];
+        status = "incomplete";
+    }
+    let output = tokens_of(len(text));
+    let mut seq = 0;
+    let pending = response_object(id, created, "in_progress", model, body, "", "null");
+    script.append_str(
+        line(
+            "{\"type\":\"response.created\",\"response\":" + pending + ",\"sequence_number\":"
+                + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    script.append_str(
+        line(
+            "{\"type\":\"response.in_progress\",\"response\":" + pending + ",\"sequence_number\":"
+                + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    if c.fail_after_ms > 0 {
+        // a drill: the engine fails before any output
+        script.append_str("pause " + to_string(c.fail_after_ms) + "\n");
+        let failed = script.snapshot() or b"";
+        return StaticRun {
+            script: std::str::from_bytes(failed),
+            outcome: "failed",
+            failure: "the seat is configured to fail (fail_after_ms)",
+            model: served,
+            input_tokens: input,
+        };
+    }
+    if len(c.tool_name) > 0 {
+        // a drill: the answer is a call to the configured tool
+        let call_id = "call_"
+            + (if std::str::starts_with(id, "resp_") { id[5..len(id)] } else { id });
+        let fc_id = "fc_" + (if std::str::starts_with(id, "resp_") { id[5..len(id)] } else { id });
+        let pending_call = function_call_item(fc_id, call_id, c.tool_name, "", "in_progress");
+        script.append_str(
+            line(
+                "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":"
+                    + pending_call + ",\"sequence_number\":" + to_string(seq) + "}",
+            ),
+        );
+        seq = seq + 1;
+        if c.first_output_ms > 0 {
+            script.append_str("pause " + to_string(c.first_output_ms) + "\n");
+        }
+        script.append_str(
+            line(
+                "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":" + q(fc_id)
+                    + ",\"output_index\":0,\"delta\":" + q(c.tool_arguments)
+                    + ",\"sequence_number\":" + to_string(seq) + "}",
+            ),
+        );
+        seq = seq + 1;
+        script.append_str(
+            line(
+                "{\"type\":\"response.function_call_arguments.done\",\"item_id\":" + q(fc_id)
+                    + ",\"output_index\":0,\"arguments\":" + q(c.tool_arguments)
+                    + ",\"sequence_number\":" + to_string(seq) + "}",
+            ),
+        );
+        seq = seq + 1;
+        let call = function_call_item(fc_id, call_id, c.tool_name, c.tool_arguments, "completed");
+        script.append_str(
+            line(
+                "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":" + call
+                    + ",\"sequence_number\":" + to_string(seq) + "}",
+            ),
+        );
+        seq = seq + 1;
+        let called = tokens_of(len(c.tool_arguments));
+        script.append_str(
+            line(
+                "{\"type\":\"response.completed\",\"response\":"
+                    + response_object(
+                        id,
+                        created,
+                        "completed",
+                        model,
+                        body,
+                        call,
+                        usage_object(input, called),
+                    )
+                    + ",\"sequence_number\":" + to_string(seq) + "}",
+            ),
+        );
+        let answered = script.snapshot() or b"";
+        return StaticRun {
+            script: std::str::from_bytes(answered),
+            outcome: "served",
+            model: served,
+            input_tokens: input,
+            output_tokens: called,
+        };
+    }
+    script.append_str(
+        line(
+            "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":"
+                + message_item(item_id, "in_progress", "", false) + ",\"sequence_number\":"
+                + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    script.append_str(
+        line(
+            "{\"type\":\"response.content_part.added\",\"item_id\":" + q(item_id)
+                + ",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":"
+                + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    if c.first_output_ms > 0 { script.append_str("pause " + to_string(c.first_output_ms) + "\n"); }
+    let mut at = 0;
+    while at < len(text) {
+        if at > 0 && c.chunk_interval_ms > 0 {
+            script.append_str("pause " + to_string(c.chunk_interval_ms) + "\n");
+        }
+        let end = boundary(text, at + c.chunk_chars);
+        script.append_str(
+            line(
+                "{\"type\":\"response.output_text.delta\",\"item_id\":" + q(item_id)
+                    + ",\"output_index\":0,\"content_index\":0,\"delta\":" + q(text[at..end])
+                    + ",\"logprobs\":[],\"sequence_number\":" + to_string(seq) + "}",
+            ),
+        );
+        seq = seq + 1;
+        at = end;
+    }
+    script.append_str(
+        line(
+            "{\"type\":\"response.output_text.done\",\"item_id\":" + q(item_id)
+                + ",\"output_index\":0,\"content_index\":0,\"text\":" + q(text)
+                + ",\"logprobs\":[],\"sequence_number\":" + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    script.append_str(
+        line(
+            "{\"type\":\"response.content_part.done\",\"item_id\":" + q(item_id)
+                + ",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":"
+                + q(text) + ",\"annotations\":[]},\"sequence_number\":" + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    let item_status = if status == "completed" { "completed" } else { "incomplete" };
+    let item = message_item(item_id, item_status, text, true);
+    script.append_str(
+        line(
+            "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":" + item
+                + ",\"sequence_number\":" + to_string(seq) + "}",
+        ),
+    );
+    seq = seq + 1;
+    let terminal = if status == "completed" { "response.completed" } else { "response.incomplete" };
+    script.append_str(
+        line(
+            "{\"type\":" + q(terminal) + ",\"response\":"
+                + response_object(
+                    id,
+                    created,
+                    status,
+                    model,
+                    body,
+                    item,
+                    usage_object(input, output),
+                )
+                + ",\"sequence_number\":" + to_string(seq) + "}",
+        ),
+    );
+    let played = script.snapshot() or b"";
+    return StaticRun {
+        script: std::str::from_bytes(played),
+        outcome: if status == "completed" { "served" } else { "incomplete" },
+        model: served,
+        input_tokens: input,
+        output_tokens: output
+    };
+}
+
+/// Where the line that starts at byte `start` of `v` ends: its newline's
+/// index, or `v.n` for a last line without one. A loop that slices the
+/// rest of a text off after each line copies the whole rest every time,
+/// so a text's lines are read by index instead.
+fn line_end(v: std::str::ByteView, start: Int) -> Int {
+    let mut i = start;
+    while i < v.n {
+        if std::str::byte_at(v, i) == 10 { return i; }
+        i = i + 1;
+    }
+    return v.n;
+}
+
+/// One line of a script.
+fn line(event: String) -> String {
+    return event + "\n";
+}
+
+/// The `result` that ends a run, with its timing as the session saw it.
+fn result_message(id: String, r: StaticRun, first_output_ms: Int, engine_ms: Int) -> String {
+    return "{\"type\":\"result\",\"request_id\":" + q(id) + ",\"outcome\":" + q(r.outcome)
+        + ",\"served\":{\"model\":" + q(r.model)
+        + ",\"quantization\":null,\"provider\":null},\"timing\":{\"first_output_ms\":"
+        + to_string(first_output_ms) + ",\"engine_ms\":" + to_string(engine_ms) + "}}";
+}
+
+/// The `result` of a request the coordinator cancelled.
+fn cancelled_result(id: String) -> String {
+    return "{\"type\":\"result\",\"request_id\":" + q(id) + ",\"outcome\":\"cancelled\"}";
+}
+
+/// A `result` for a request that failed before it ran.
+fn failed_result(id: String, code: String, message: String, retryable: Bool) -> String {
+    return "{\"type\":\"result\",\"request_id\":" + q(id)
+        + ",\"outcome\":\"failed\",\"error\":{\"code\":" + q(code) + ",\"message\":" + q(message)
+        + ",\"retryable\":" + (if retryable { "true" } else { "false" }) + "}}";
+}

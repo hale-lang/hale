@@ -1,0 +1,7 @@
+{
+  "why": "When both sides have an enum, a value set that differs must fail.",
+  "side": "bundle",
+  "set": ["components", "schemas", "Health", "properties", "status"],
+  "value": { "type": "string", "enum": ["ok", "down"] },
+  "expect": "Health.status (enum values)"
+}

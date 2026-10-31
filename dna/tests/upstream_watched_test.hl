@@ -1,0 +1,830 @@
+// dna/tests/upstream_watched_test.hl — a watched upstream is a practice
+// (phase 3).
+//
+// A grafted organism adopts the standard pack's template once per upstream
+// integration: `standard/upstream-watched/<name>`, bound to the position that
+// owns it, its text naming the source, its kind and its cadence, and an idea
+// beside it, the source, bound to the same position. The Board ratifies each
+// adoption, and the practice declares the schedule its text names, of
+// `source-check`, convened by its position. The fixture convenes the
+// occurrences itself rather than waiting on the wall clock. Each occurrence
+// runs the step with the practice as its parameters: the first takes the
+// baseline (its outcome names the snapshot) and lands nothing; a moved
+// source lands one reading, the unified diff its receipt, and one concern
+// routed to the owning position; an unmoved one lands nothing. A source that
+// cannot be read fails its occurrence, and the third failure in a row lands
+// an `unreachable` reading and no concern; a practice whose terms cannot
+// stand fails each occurrence saying why, and lands nothing.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+const CHANGELOG: String = "<!doctype html>
+<html><head><title>Changelog</title><script>var built = 1790558458;</script></head>
+<body><h1>Changelog</h1>
+<!-- rendered at 2026-10-20T10:00:00Z -->
+<ul><li>v1.2.0: charges take an idempotency key</li><li>v1.1.0: refunds are partial</li></ul>
+</body></html>
+";
+
+const CHANGELOG_MOVED: String = "<!doctype html>
+<html><head><title>Changelog</title><script>var built = 1790559999;</script></head>
+<body><h1>Changelog</h1>
+<!-- rendered at 2026-10-21T10:00:00Z -->
+<ul><li>v1.3.0: the charge's <b>currency</b> is required &amp; validated</li><li>v1.2.0: charges take an idempotency key</li><li>v1.1.0: refunds are partial</li></ul>
+</body></html>
+";
+
+const PAY: String = "openapi: 3.0.3
+info:
+  title: Pay
+  version: 1.0.0
+paths:
+  /charges:
+    post:
+      operationId: createCharge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewCharge'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charge'
+components:
+  schemas:
+    NewCharge:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: integer
+    Charge:
+      type: object
+      required: [id, amount]
+      properties:
+        id:
+          type: string
+        amount:
+          type: integer
+";
+
+// The document moved upstream: a refund operation added.
+const PAY_REFUNDS: String = "  /refunds:
+    post:
+      operationId: createRefund
+      responses:
+        '200':
+          description: ok
+";
+
+// The refund operation changed again: it takes a body now.
+const PAY_REFUND_BODY: String = "      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewCharge'
+";
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(script: String, dir: String) -> dna::RunResult {
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && eval \"$2\"\nsh\n"
+            + dir + "\n" + script,
+    );
+}
+
+fn dna_cli(repo: String, args: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off && shift && exec \"$@\"\nsh\n"
+            + repo + "\n" + toolchain() + "\ndna\n" + args,
+    );
+}
+
+fn journal(repo: String) -> dna::RoutedJournal {
+    return dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
+}
+
+// A practice's name, from the integration it watches.
+fn watched(name: String) -> String { return "standard/upstream-watched/" + name; }
+
+main locus App {
+    params {
+        repo: String = "";
+        upstream: String = "";
+        scratch: String = "";
+        d: dna::Dna = dna::Dna { };
+    }
+    // The rows of `kind` whose entity starts with `prefix`.
+    fn rows(kind: String, prefix: String) -> Int {
+        let j = journal(self.repo);
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && std::str::starts_with(e.entity, prefix) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn last_body(kind: String, prefix: String) -> String {
+        let j = journal(self.repo);
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && std::str::starts_with(e.entity, prefix) { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // source-check's and concern-escalate's executions still open.
+    fn open_executions() -> Int {
+        let j = journal(self.repo);
+        let mut admitted = "\n";
+        let mut open = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            let def = std::json::find_string_field(e.body, "definition");
+            if e.kind == "workflow.admitted"
+                && (def == "source-check" || def == "concern-escalate")
+            {
+                admitted = admitted + e.entity + "\n";
+                open = open + 1;
+            }
+            if e.kind == "workflow.settled"
+                && std::str::contains(admitted, "\n" + e.entity + "\n")
+            {
+                open = open - 1;
+            }
+            i = i + 1;
+        }
+        return open;
+    }
+    fn admitted_checks() -> Int {
+        let j = journal(self.repo);
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "workflow.admitted"
+                && std::json::find_string_field(e.body, "definition") == "source-check"
+            {
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+    // Wait until `checks` source-check executions have been admitted and
+    // every one of them, and every concern they raised, has settled.
+    fn settle(checks: Int, what: String) {
+        let mut tries = 0;
+        while tries < 600 && (self.admitted_checks() < checks || self.open_executions() > 0) {
+            std::time::sleep(100ms);
+            tries = tries + 1;
+        }
+        std::test::assert(
+            self.admitted_checks() >= checks && self.open_executions() == 0,
+            what + ": " + to_string(self.admitted_checks()) + " check(s) admitted, "
+                + to_string(self.open_executions()) + " still open",
+        );
+    }
+    // What the occurrences of practice `name` came to, as the next one
+    // reads them: the baseline and the failures since.
+    fn history(name: String) -> dna::SourceHistory {
+        return dna::source_history(journal(self.repo), watched(name), "");
+    }
+    // The last outcome of an occurrence of practice `name`.
+    fn last_outcome(name: String) -> String {
+        let j = journal(self.repo);
+        let mut tasks = "\n";
+        let mut attempts = "\n";
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "workflow.admitted"
+                && std::json::find_string_field(
+                    std::json::find_string_field(e.body, "inputs"),
+                    "name",
+                ) == watched(name)
+            {
+                tasks = tasks + e.entity + "\n";
+            }
+            if e.kind == "attempt.admitted"
+                && std::str::contains(
+                    tasks,
+                    "\n" + std::json::find_string_field(e.body, "task_id") + "\n",
+                )
+            {
+                attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\n";
+            }
+            if e.kind == "attempt.outcome" && std::str::contains(attempts, "\n" + e.entity + "\n") {
+                out = e.body;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The occurrence the schedule was declared at.
+    fn from(name: String) -> Int {
+        return std::json::find_int_field(
+            self.last_body("schedule.declared", watched(name)),
+            "from",
+        );
+    }
+    // The Board's ratification of the last batch proposed; whether the
+    // family it is was ratified.
+    fn ratify_last() -> Bool {
+        let review = std::json::find_string_field(
+            self.last_body("batch.proposed", ""),
+            "review_id",
+        );
+        let digest = std::json::find_string_field(self.last_body("batch.proposed", ""), "digest");
+        let v = self.d.journal.append(
+            self.d.journal.revision(),
+            "review.settled",
+            review,
+            "approve by ada",
+        );
+        self.d.ratify_through(review);
+        let mut waited = 0;
+        while self.rows("library.family.ratified", digest) == 0 && waited < 300 {
+            std::time::sleep(100ms);
+            waited = waited + 1;
+        }
+        return v.ok && self.rows("library.family.ratified", digest) > 0;
+    }
+    // The standard pack's template adopted for one upstream, and the
+    // Board's ratification of it; the schedule it declares.
+    fn adopt(name: String, position: String, source: String, kind: String) {
+        let applied = dna_cli(
+            self.repo,
+            "pack\napply\nstandard\n--set\nintegration=" + name + "\n--set\nposition=" + position
+                + "\n--set\nsource=" + source + "\n--set\nkind=" + kind
+                + "\n--set\nevery=1h\n--as\nada",
+        );
+        std::test::assert(
+            applied.code == 0
+                && std::str::contains(applied.stdout, "+ practice " + watched(name) + "\n"),
+            "the template is proposed for " + name + ": " + applied.stdout + applied.stderr,
+        );
+        let review = std::json::find_string_field(
+            self.last_body("batch.proposed", ""),
+            "review_id",
+        );
+        std::test::assert(
+            len(review) > 0,
+            "as one Review: " + self.last_body("batch.proposed", ""),
+        );
+        let v = self.d.journal.append(
+            self.d.journal.revision(),
+            "review.settled",
+            review,
+            "approve by ada",
+        );
+        std::test::assert(v.ok, "the Board approves it");
+        self.d.ratify_through(review);
+        let mut waited = 0;
+        while self.rows("schedule.declared", watched(name)) == 0
+            && self.rows("schedule.refused", watched(name)) == 0
+            && waited < 300
+        {
+            std::time::sleep(100ms);
+            waited = waited + 1;
+        }
+    }
+    // What a check reads of a feed and of a plain page, with no organism.
+    fn normalized() {
+        let rss = "<?xml version=\"1.0\"?><rss><channel><title>Pay releases</title><lastBuildDate>Tue, 20 Oct 2026 10:00:00 GMT</lastBuildDate>"
+            + "<item><title>v1.3.0</title><link>https://example.invalid/r/1.3.0</link><pubDate>Tue, 20 Oct 2026 09:00:00 GMT</pubDate></item>"
+            + "<item><title><![CDATA[v1.2.0 & more]]></title><guid>tag:1.2.0</guid></item></channel></rss>";
+        std::test::assert_eq_str(
+            dna::feed_entries(rss),
+            "v1.3.0 | https://example.invalid/r/1.3.0\nv1.2.0 & more | tag:1.2.0\n",
+            "an RSS feed is its items, a line each, its dates left out",
+        );
+        let atom = "<feed xmlns=\"http://www.w3.org/2005/Atom\"><updated>2026-10-20T10:00:00Z</updated><entry><title type=\"text\">v2.0</title><link rel=\"alternate\" href=\"https://example.invalid/v2\"/><id>urn:v2</id><updated>2026-10-20T09:00:00Z</updated></entry></feed>";
+        std::test::assert_eq_str(
+            dna::feed_entries(atom),
+            "v2.0 | https://example.invalid/v2\n",
+            "an Atom feed is its entries",
+        );
+        std::test::assert_eq_str(
+            dna::page_text("# Changelog\r\n\r\n## 1.2.0   \n- refunds\n"),
+            "# Changelog\n## 1.2.0\n- refunds\n",
+            "a page that is not HTML keeps its lines, made plain",
+        );
+        // a practice's terms are its words `<key>=<value>`
+        let text = "Watched. source=https://example.invalid/a?b=c kind=feed every=1d step=source-check";
+        std::test::assert(
+            dna::practice_term(text, "source") == "https://example.invalid/a?b=c"
+                && dna::practice_term(text, "every") == "1d"
+                && len(dna::practice_term(text, "cron")) == 0,
+            "a practice's terms are read from its text",
+        );
+        let as_practice = dna::knowledge_document(
+            dna::Idea { kind: "practice", text: text, name: "x/watched" },
+            "position:app/dev",
+        );
+        let as_idea = dna::knowledge_document(
+            dna::Idea { kind: "idea", text: text, name: "x/watched" },
+            "position:app/dev",
+        );
+        std::test::assert(
+            dna::practice_schedule(
+                dna::digest_of(as_practice),
+                as_practice,
+            ).definition == "source-check"
+                && len(dna::practice_schedule(dna::digest_of(as_idea), as_idea).definition) == 0,
+            "the same terms schedule a practice's step, and an idea's nothing",
+        );
+    }
+    run() {
+        self.normalized();
+        // ---- each upstream adopted from the standard pack, bound to the
+        // position that owns it, and ratified: its schedule declared,
+        // convened by that position
+        self.adopt(
+            "changelog",
+            "app/dev",
+            "file://" + self.upstream + "/changelog.html",
+            "changelog",
+        );
+        let decl = self.last_body("schedule.declared", watched("changelog"));
+        std::test::assert(
+            std::str::contains(decl, "\"definition\": \"source-check\"")
+                && std::str::contains(decl, "\"convener\": \"position:app/dev\""),
+            "the changelog's practice is convened by app/dev: " + decl,
+        );
+        let practice = std::json::find_string_field(
+            std::json::find_string_field(decl, "args"),
+            "practice",
+        );
+        let doc = dna::MemoryReceipts { repo: self.repo }.read(practice);
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(doc, "text"),
+                "kind=changelog every=1h codebase=none step=source-check",
+            )
+                && std::json::find_string_field(doc, "target") == "position:app/dev",
+            "its occurrences name the practice, whose text is their parameters, bound to app/dev: "
+                + doc,
+        );
+        self.adopt("pay-api", "position:app/ops", "integrations/pay.hl", "openapi");
+        std::test::assert(
+            std::str::contains(
+                self.last_body("schedule.declared", watched("pay-api")),
+                "\"convener\": \"position:app/ops\"",
+            ),
+            "the API's by app/ops: " + self.last_body("schedule.declared", watched("pay-api")),
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last_body("batch.proposed", ""),
+                "standard/upstream-source/pay-api",
+            )
+                && !std::str::contains(self.last_body("batch.proposed", ""), "logs-are-structured"),
+            "adopted again, the pack proposes only what it adds, the source's idea with it: "
+                + self.last_body("batch.proposed", ""),
+        );
+        self.adopt("status", "app/dev", "file://" + self.upstream + "/status.html", "docs");
+        self.adopt("bad", "app/dev", "https://example.invalid/feed", "rss");
+        std::test::assert_eq_int(
+            self.rows("schedule.declared", "standard/upstream-watched/"),
+            4,
+            "four practices, four schedules",
+        );
+        // an idea whose text shows the same terms, an example, is knowledge
+        // and runs nothing once ratified
+        let batch = self.scratch + "/example.batch";
+        std::io::fs::write_file(
+            batch,
+            "idea notes/watch-example for app/dev | Example: source=file://" + self.upstream
+                + "/changelog.html kind=changelog every=1h step=source-check\n",
+        ) or discard;
+        let noted = dna_cli(self.repo, "apply\n" + batch + "\n--as\nada");
+        std::test::assert(noted.code == 0, "the idea is proposed: " + noted.stdout + noted.stderr);
+        std::test::assert(self.ratify_last(), "and ratified");
+        std::test::assert_eq_int(
+            self.rows("schedule.declared", "notes/") + self.rows("schedule.refused", "notes/"),
+            0,
+            "an idea's terms schedule nothing",
+        );
+        let again = dna_cli(
+            self.repo,
+            "pack\napply\nstandard\n--set\nintegration=changelog\n--set\nposition=app/dev\n--set\nsource=file://"
+                + self.upstream
+                + "/changelog.html\n--set\nkind=changelog\n--set\nevery=1h\n--as\nada",
+        );
+        std::test::assert(
+            again.code != 0
+                && std::str::contains(
+                    again.stdout + again.stderr,
+                    "every step is in force already",
+                ),
+            "a practice adopted again unchanged proposes nothing: " + again.stdout + again.stderr,
+        );
+        let every = 3600000;
+        let mut t = self.from("changelog");
+        std::test::assert(t > 0, "declared at an occurrence");
+        t = t + every;
+        std::test::assert(
+            self.from("pay-api") < t && self.from("status") < t && self.from("bad") < t,
+            "the four were declared before the next one",
+        );
+
+        // ---- the first check is the baseline: nothing lands
+        self.d.tick(t);
+        self.settle(4, "the baseline checks settle");
+        let snapshot = self.history("changelog").baseline;
+        std::test::assert(
+            std::str::starts_with(snapshot, "sha256:"),
+            "the changelog's outcome names its snapshot: " + self.last_outcome("changelog"),
+        );
+        let page = dna::MemoryReceipts { repo: self.repo }.read(snapshot);
+        std::test::assert_eq_str(
+            page,
+            "Changelog\nv1.2.0: charges take an idempotency key\nv1.1.0: refunds are partial\n",
+            "the snapshot is the page's text, its head, script and comment stripped",
+        );
+        std::test::assert(
+            std::str::starts_with(self.history("pay-api").baseline, "sha256:"),
+            "the API's baseline too",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/"),
+            0,
+            "a baseline lands no reading",
+        );
+        std::test::assert_eq_int(self.rows("concern.raised", "app/"), 0, "and no concern");
+        std::test::assert_eq_int(
+            self.history("status").streak,
+            1,
+            "the status page was not reached, once",
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last_outcome("bad"),
+                "its `kind=` is one of changelog docs feed openapi",
+            )
+                && std::json::find_string_field(self.last_outcome("bad"), "result") == "refused",
+            "a practice whose terms cannot stand fails saying why: " + self.last_outcome("bad"),
+        );
+
+        // ---- both sources move upstream: one reading and one concern each
+        std::io::fs::write_file(self.upstream + "/changelog.html", CHANGELOG_MOVED) or discard;
+        std::io::fs::write_file(
+            self.upstream + "/pay.yaml",
+            std::str::replace(PAY, "components:\n", PAY_REFUNDS + "components:\n"),
+        ) or discard;
+        t = t + every;
+        self.d.tick(t);
+        self.settle(8, "the moved checks settle");
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/changelog.changed/"),
+            1,
+            "one reading of the changelog's move",
+        );
+        let moved = self.last_body("reading.recorded", "sources/changelog.changed/");
+        let payload = std::json::find_string_field(moved, "payload");
+        let diff = std::json::find_string_field(payload, "diff");
+        std::test::assert(
+            std::str::contains(diff, "--- " + watched("changelog") + " " + snapshot[7..19])
+                && std::str::contains(
+                    diff,
+                    "\n+v1.3.0: the charge's currency is required & validated\n",
+                ),
+            "its diff is the page's text, unified: " + diff,
+        );
+        std::test::assert(
+            !std::str::contains(diff, "1790559999") && !std::str::contains(diff, "rendered at"),
+            "and the volatile parts are not in it: " + diff,
+        );
+        let receipt = std::json::find_string_field(payload, "receipt");
+        std::test::assert_eq_str(
+            dna::MemoryReceipts { repo: self.repo }.read(receipt),
+            diff,
+            "the diff is the reading's receipt, kept in memory",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(payload, "position"),
+            "position:app/dev",
+            "the reading names the owning position",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(payload, "practice"),
+            practice,
+            "and the practice that watches it",
+        );
+        std::test::assert(
+            self.history("changelog").baseline != snapshot,
+            "the move's outcome names the new snapshot, the next one's baseline",
+        );
+        let api = std::json::find_string_field(
+            self.last_body("reading.recorded", "sources/pay-api.changed/"),
+            "payload",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/pay-api.changed/"),
+            1,
+            "one reading of the API's move",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(api, "drift"),
+            "drift Pay added create_refund\n",
+            "its drift lines summarize the move",
+        );
+        let api_diff = std::json::find_string_field(api, "diff");
+        std::test::assert(
+            std::str::starts_with(
+                api_diff,
+                "drift Pay added create_refund\n--- " + watched("pay-api") + " ",
+            )
+                && std::str::contains(api_diff, "\n+    \"/refunds\": {\n"),
+            "and lead its receipt, a diff of the canonical document: " + api_diff,
+        );
+        // the concerns, routed to the positions the practices are bound to
+        std::test::assert_eq_int(
+            self.rows("concern.raised", "app/dev/changelog"),
+            1,
+            "one concern from the changelog's watch",
+        );
+        let c = self.last_body("concern.raised", "app/dev/changelog");
+        std::test::assert_eq_str(
+            std::json::find_string_field(c, "parent"),
+            "app/dev",
+            "routed to app/dev",
+        );
+        let reading = "sources/changelog.changed/" + std::json::find_string_field(moved, "id");
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(c, "what"),
+                "reading " + reading + ", its diff the receipt " + receipt,
+            ),
+            "its words point at the reading and its receipt: " + c,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(c, "request"),
+            reading,
+            "and its request is the reading: one move, one concern",
+        );
+        std::test::assert_eq_int(
+            self.rows("concern.raised", "app/ops/pay-api"),
+            1,
+            "one concern from the API's watch",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(
+                self.last_body("concern.raised", "app/ops/pay-api"),
+                "parent",
+            ),
+            "app/ops",
+            "routed to app/ops",
+        );
+
+        // ---- unchanged: nothing lands; the status page's third failure is
+        // its one unreachable reading, with no concern
+        let readings = self.rows("reading.recorded", "");
+        t = t + every;
+        self.d.tick(t);
+        self.settle(12, "the unchanged checks settle");
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/changelog."),
+            1,
+            "an unmoved changelog lands no reading",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/pay-api."),
+            1,
+            "nor an unmoved API",
+        );
+        std::test::assert_eq_int(self.rows("concern.raised", "app/"), 2, "and raises no concern");
+        std::test::assert_eq_int(
+            self.history("status").streak,
+            3,
+            "the status page failed three times in a row",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/status.unreachable/"),
+            1,
+            "its third failure is one unreachable reading",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", ""),
+            readings + 1,
+            "and that is the only reading the occurrences wrote",
+        );
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(
+                    self.last_body("reading.recorded", "sources/status.unreachable/"),
+                    "payload",
+                ),
+                "no file at ",
+            ),
+            "naming why",
+        );
+        std::test::assert_eq_int(
+            self.rows("concern.raised", "app/dev/status"),
+            0,
+            "and raises no concern",
+        );
+
+        // ---- the same operation changes again upstream: its drift line
+        // reads the same, and the document still tells the revisions apart
+        std::io::fs::write_file(
+            self.upstream + "/pay.yaml",
+            std::str::replace(
+                PAY,
+                "components:\n",
+                PAY_REFUNDS + PAY_REFUND_BODY + "components:\n",
+            ),
+        ) or discard;
+        t = t + every;
+        self.d.tick(t);
+        self.settle(16, "the second change's checks settle");
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/pay-api.changed/"),
+            2,
+            "a second reading of the API",
+        );
+        let second = std::json::find_string_field(
+            self.last_body("reading.recorded", "sources/pay-api.changed/"),
+            "payload",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(second, "drift"),
+            "drift Pay added create_refund\n",
+            "whose drift lines are the first's",
+        );
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(second, "diff"),
+                "+        \"requestBody\": {",
+            ),
+            "and whose diff is the second change: " + second,
+        );
+        std::test::assert_eq_int(
+            self.rows("concern.raised", "app/ops/pay-api"),
+            2,
+            "a second concern, under the second reading",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/changelog."),
+            1,
+            "the unmoved changelog lands nothing",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/status.unreachable/"),
+            1,
+            "and a fourth failure no second unreachable reading",
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/bad."),
+            0,
+            "a practice whose terms cannot stand lands nothing",
+        );
+
+        // ---- a restart between a reading and its outcome: the occurrence
+        // landed its move to B, the source moved on to C, and the step is
+        // asked again; it answers the move it committed, never one to C
+        let w = dna::source_watch(practice, doc);
+        let receipts = dna::MemoryReceipts { repo: self.repo };
+        let first = dna::source_check(
+            self.d.journal,
+            receipts,
+            "replayed",
+            w,
+            dna::SourceSeen { ok: true, text: "Changelog\nv1.4.0: B\n" },
+        );
+        std::test::assert(
+            first.disposition == "done" && len(first.reading) > 0,
+            "the occurrence lands its move to B: " + first.narrative,
+        );
+        let retried = dna::source_check(
+            self.d.journal,
+            receipts,
+            "replayed",
+            w,
+            dna::SourceSeen { ok: true, text: "Changelog\nv1.5.0: C\n" },
+        );
+        std::test::assert(
+            retried.result == first.result
+                && retried.reading == first.reading
+                && retried.what == first.what,
+            "asked again with the source at C, it answers B, its reading and its receipt: "
+                + retried.narrative,
+        );
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/changelog.changed/replayed"),
+            1,
+            "and lands nothing more",
+        );
+        std::test::assert(
+            !std::str::contains(
+                std::json::find_string_field(
+                    std::json::find_string_field(
+                        self.last_body("reading.recorded", "sources/changelog.changed/replayed"),
+                        "payload",
+                    ),
+                    "diff",
+                ),
+                "v1.5.0",
+            ),
+            "C is no part of the committed move",
+        );
+
+        dna::scratch_done(self.scratch);
+    }
+}
+
+fn main() {
+    let scratch = dna::scratch_root("upstream-watched");
+    let made = dna::grafted(scratch, "app");
+    std::test::assert_eq_int(made.code, 0, "an organism grafted: " + made.stdout + made.stderr);
+    let repo = scratch + "/app";
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    // the positions that own the integrations, each held by a person the
+    // record knows, and memory's graph caught up with them
+    let as_ada = dna::RecordJournal { repo: repo, author: "ada" };
+    std::test::assert(
+        as_ada.append(as_ada.revision(), "note.kept", "n-ada", "ada was here").ok,
+        "ada is a person the record knows",
+    );
+    let as_bo = dna::RecordJournal { repo: repo, author: "bo" };
+    std::test::assert(
+        as_bo.append(as_bo.revision(), "note.kept", "n-bo", "bo was here").ok,
+        "bo too",
+    );
+    std::test::assert_eq_str(
+        ops::graph_seat(journal(repo), "position:app/dev", "ada"),
+        "",
+        "ada holds app/dev",
+    );
+    std::test::assert_eq_str(
+        ops::graph_seat(journal(repo), "position:app/ops", "bo"),
+        "",
+        "bo holds app/ops",
+    );
+    let spine = dna::kept_spine_dsn(repo);
+    std::test::assert(len(spine) > 0, "the clone reaches memory as the spine");
+    let projected = ops::MemoryProjection { root: repo, dsn_env: spine }.apply();
+    std::test::assert_eq_str(projected.error, "", "the record projects into memory");
+
+    // upstream: a changelog page and an OpenAPI document, read from files
+    let upstream = scratch + "/upstream";
+    std::io::fs::mkdir(upstream) or discard;
+    std::io::fs::write_file(upstream + "/changelog.html", CHANGELOG) or discard;
+    std::io::fs::write_file(upstream + "/pay.yaml", PAY) or discard;
+    // the genome: the imported surface committed, the source the API's
+    // practice names
+    let imported = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && mkdir -p integrations && exec \"$2\" api import \"$3\" --as Pay --out integrations/pay.hl\nsh\n"
+            + repo + "\n" + toolchain() + "\n" + upstream + "/pay.yaml",
+    );
+    std::test::assert_eq_int(
+        imported.code,
+        0,
+        "the API's surface is imported: " + imported.stdout + imported.stderr,
+    );
+    let committed = sh(
+        "git add -A && git -c user.name=ada -c user.email=ada@dna commit -qm 'the imported surface'",
+        repo,
+    );
+    std::test::assert_eq_int(committed.code, 0, "the genome commits it: " + committed.stderr);
+
+    App {
+        repo: repo, upstream: upstream, scratch: scratch,
+        d: dna::Dna {
+            // the organization writes as the spine, as a body's would
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: spine },
+            },
+            knowledge_client: dna::MemoryKnowledge { repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo } },
+            gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: repo } },
+            org_id: "watch"
+        }
+    };
+}

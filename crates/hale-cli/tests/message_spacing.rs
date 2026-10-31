@@ -34,7 +34,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     (
         "crates/hale-cli/src/dna.rs",
         "push_graph_lines",
-        "`hale dna init` prints its report as label-aligned lines (`graph   …`, \
+        "`hale habitat graft` prints its report as label-aligned lines (`graph   …`, \
          `note    …`), the same column as the init report's other lines",
     ),
     (
@@ -70,6 +70,18 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     (
         "crates/hale-syntax/src/json_gen.rs",
         "json_list_read",
+        "generated Hale source keeps its indentation so the expanded \
+         codec is readable in a dump",
+    ),
+    (
+        "crates/hale-types/src/rpc_expand.rs",
+        "mirror_seam",
+        "generated Hale source keeps its indentation so the expanded \
+         adapter is readable in a dump",
+    ),
+    (
+        "crates/hale-syntax/src/json_gen.rs",
+        "json_map_read",
         "generated Hale source keeps its indentation so the expanded \
          codec is readable in a dump",
     ),
@@ -110,7 +122,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-cli/src/dna.rs",
-        "init",
+        "init_under",
         "the `kept    <path>` / `cut     <path>` outcome column, and \
          the `hale check --matrix <dir>   # …` next-step lines",
     ),

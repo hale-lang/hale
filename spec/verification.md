@@ -175,11 +175,48 @@ main locus Org {
   sinks (the conservative direction). Edges are the resolved call
   graph (stdlib bodies merged, handle-method calls resolved) and the
   declared bus graph (a publish site composes with every subscriber
-  of its subject, wildcard subscribers included). `via { calls }` /
+  of its subject, wildcard subscribers included). A publish inside a
+  stdlib body composes the same way, with the program's subscribers and
+  with every stdlib subscriber the program instantiates (2026-10-19:
+  `Logger.info` → `log.**` → `StdoutSink::on_event` → `println` is a
+  path; the walk used to stop at the logger's publish, and a `forbid`
+  over a program that only logged held). The program's own publish
+  reaches a stdlib subscriber the program builds the same way, as a bus
+  step from the publish (`App::run -(publishes "log.app")->
+  std::log::StdoutSink::on_event`). A stdlib subscriber the program
+  never builds receives nothing and is no path. A computed subject inside a
+  stdlib body, bounded by its locus's declared `**` patterns, composes
+  with every subscriber whose subscription overlaps one; an unbounded
+  one fails closed. A publish through a local binding
+  (`let s = "x." + k; s <- v`) is a computed subject, never a topic
+  named after the binding. `via { calls }` /
   `via { bus }` restricts which relations compose; the default is
   the **full composition** — more edges, conservative. `bus`
   composes publish sites in the visited fn's own body; the default
   (with `calls`) is the sound transitive closure.
+- **The built-in group `program`** (2026-10-19, for the
+  standard-practices pack, #1591): every fn-bearing declaration (locus,
+  free fn) of the closing entrypoint's own seed, and none of an
+  imported seed's. It needs no declaration and resolves in the world
+  that evaluates the clause, so a constitution naming it reads each
+  adopting entrypoint's own declarations. A program declaring a group
+  named `program` is an error: a second meaning under the name would
+  change every law that cites it.
+- **A stdlib module as a member** (same date): `std::m::*` names every
+  fn-bearing declaration of the stdlib seed files that declare one of
+  `std::m`'s public names, file-private helpers included (`std::log::*`
+  is the whole of `log.hl`). A namespace the stdlib does not declare in
+  Hale source is refused with a did-you-mean. Its bodies are absorbed
+  stdlib interiors of the walk, not entities, so a group holding one
+  may stand only as a `forbid reaches` target (a walk entering one of
+  its bodies hits) or an `avoiding` gate (a walk never enters one); in
+  any other position it is refused. `avoiding std::m::*` writes the gate
+  inline: the implicit group of that one member, named by its
+  spelling. The structured-logs law,
+  `forbid reaches(program, effects(stdio)) avoiding std::log::*`, so
+  means **no terminal write that bypasses `std::log`'s sinks**: a
+  program that publishes a `std::log::LogEvent` to `log.**` itself is
+  logging through a sink, and holds it.
 - **`effects(<class>)`** in target position: the declared carriers
   of an effect class (an `@effects(is: {…})` frontier entry or a
   classified leaf), composed-class masks included. An undeclared
@@ -350,6 +387,31 @@ The remaining verbs (#382 phases 2–5):
   the reader wants the whole list. Without it, sealing is per-locus
   discipline, and one unsealed member of a vault group is the whole
   hole.
+- **`require separate_domains(all A, all B)`** (GH #1327 § 5) —
+  every arranged instance of a locus selected by `A` is assigned an
+  execution domain distinct from every arranged instance selected by
+  `B`. The claim reads the model's `realizes` and `placed_in` rows:
+  declaration groups select all their instances, including replicas,
+  without implicitly selecting descendants. Domain identity is the
+  scheduler domain: the main domain, a named pool, or a pinned instance
+  and the children inheriting its domain. Distinct pinned instances or
+  pools are separate even when their CPU affinity overlaps; this makes
+  no CPU-isolation or timing guarantee. This checks the declared
+  execution arrangement; backend placement approximations and the
+  scheduling of lifecycle callbacks retain their existing contracts.
+
+  Both groups must select loci, and every selected locus must have a
+  represented instance or a recorded unknown population. An empty
+  selection (even `may_be_empty`), a function-only selection, or a
+  selected declaration with an exact zero population is `invalid`.
+  A known pair sharing a domain is `violated`, including one instance
+  selected on both sides; the evidence names both instance paths and
+  their shared domain with source provenance. Relevant placement or
+  population holes, or a missing placement row, make the result
+  `uncertified` when no such pair is known. Unknowns outside the
+  selected declarations do not withdraw this proof. Invalid selectors
+  take precedence over evaluation; otherwise a concrete collision
+  takes precedence over uncertainty.
 - **`require no_silent_loss(topic T | all G)`** (GH #1327 § 2) — no
   modeled boundary on a named route is configured to discard
   silently. A route is a wire subject; `all G` takes every route a
@@ -1020,7 +1082,9 @@ as if written there. Authoring is shared, evaluation is not.
 - **Cycles** in `extends`, unknown constitution names (with a
   did-you-mean), and duplicate constitution declarations are errors.
 - **Groups are not implied.** A constitution names group vocabulary,
-  and every adopting entrypoint must DECLARE those groups. An
+  and every adopting entrypoint must DECLARE those groups — but for the
+  built-in `program` and an inline `avoiding std::m::*`, which no one
+  declares (§ Claims). An
   undeclared name is an unknown-name error, not an empty set;
   `may_be_empty` applies only to a group that is declared and
   resolves to zero members. An entrypoint lacking a component
@@ -1053,6 +1117,34 @@ The distinction is load-bearing across entrypoints: two seeds may
 each declare `Core` with different clauses, so a binding by bare name
 proves only that each entrypoint had *some* constitution called
 `Core`, not that all were evaluated against one claimset.
+
+### Adopting from outside the source
+
+`hale check --adopt <constitution>` (and `hale build`, `hale run`;
+`BuildOptions::adopt` for a library caller) adopts a constitution into
+the entry's `main locus` for that command, exactly as `--env` adopts an
+environment's: the same injection, evaluated in the same closed world,
+in union with what the source and the environment already adopt. The
+flag repeats. Adoption is by name, so one constitution adopted by the
+flag and by `hale.toml` or by an `adopt` in the source is adopted once,
+and its clauses are checked once. A name nothing declares is refused as
+an unknown constitution, as a misspelt `adopt` is. A seed with no entry
+(no top-level `main locus` of its own) is refused: `adopt` is legal only
+in a main locus's `claims { }`, because a constitution is evaluated in
+the world a main closes, and a seed that closes none would otherwise
+pass with the law never applied.
+
+**`std::law`** holds the stdlib's standard constitutions. One is adopted
+by its path (`--adopt std::law::Standard`, or `constitution =
+"std::law::Standard"` in an environment) with no import, and its source
+(`crates/hale-stdlib/hl/law.hl`) is loaded only when one is adopted, so a
+program that adopts none loads and checks nothing more. A `std::…`
+name the module does not declare is refused by name, with the ones it
+does. Its diagnostics point into that source as `/<stdlib>/law.hl`.
+
+| Constitution | Clauses |
+|---|---|
+| `std::law::Standard` | `logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;`: a program writes to standard output or standard error only through its logger (#1591). The stdlib's own lines are written through `std::log` (a binding that cannot be realized before the process exits, a role naming nobody, a listener's `ready_signal`), so a served program is judged by its own writes. |
 
 ### Deployment environments
 
@@ -1123,7 +1215,8 @@ section into the program: a served surface's role source is the one its
 serve site names (`spec/api.md` § Identity sources), and the stdlib's
 `std::api::StaticRoles` takes its table as a param or, at run time, from
 `LOTUS_API_ROLES`. `hale check --env <name>`, `hale build --env <name>`
-and `hale run --env <name>` adopt the environment's constitution.
+and `hale run --env <name>` adopt the environment's constitution, a
+stdlib one (`constitution = "std::law::Standard"`) included.
 
 Combinations that cannot be honoured are rejected rather than
 ignored. `--matrix` runs many evaluations, so a per-evaluation
@@ -1221,8 +1314,9 @@ than assume equivalence.
 ## Fleet composition (GH #408 Phase 1)
 
 A **fleet** is a named deployed system of application *instances* —
-not "every main in a repository". `hale fleet check|dump <plan.json>`
-composes **artifacts**, never source.
+not "every main in a repository". It is declared in source, as a
+`fleet locus` in a seed of its own (below); `hale fleet check|dump
+<fleet seed>` composes the instances' **artifacts**, never source.
 
 That distinction is the design. A source-merged "super-main" would be
 unsound in both directions: an unbound topic is in-process by
@@ -1231,22 +1325,11 @@ subscribers look locally connected when no deployed route joins them;
 deploy-time routes that exist only in configuration would not appear
 at all; and calls, which cannot cross a process boundary, would
 become ordinary reachability. So **matching wire identities establish
-compatibility; only an explicit route creates a fleet edge.**
+compatibility; only a fleet's binding creates a fleet edge.**
 
-A plan names exact, finite instances and routes. Autoscaling ranges
-and wildcard discovery are elaborator inputs, not sealed-plan
-contents: a bounded range is not one truth value for a cardinality
-claim.
-
-```json
-{
-  "schema": "1.1", "name": "prod",
-  "instances": [{"id": "oms-0", "artifact": "artifacts/oms.json", "labels": ["oms"]}],
-  "routes": [{"id": "request", "transport": "unix",
-              "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
-              "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}]
-}
-```
+A fleet names exact, finite instances. Autoscaling ranges and wildcard
+discovery are not its contents: a bounded range is not one truth value
+for a cardinality claim.
 
 Composition:
 
@@ -1263,7 +1346,7 @@ Composition:
    there is no cross-process call to invent.
 4. **Join on the wire identity** — `(subject, payload_hash)`, never
    the local topic name, which can mean different shapes in different
-   applications. Endpoints that disagree are a plan that cannot be
+   applications. Endpoints that disagree are a fleet that cannot be
    formed. A topic with no declared `subject:` is not portable and is
    rejected on a route.
 5. **Insert route edges explicitly**, so a cross-process hop keeps
@@ -1278,19 +1361,125 @@ it, mirroring the application artifact's split: moving source must not
 change the identity of a deployment, but a changed transport or a
 second instance must.
 
-Unknown keys in a plan are rejected, for the reason they are rejected
-in the environment manifest: a misspelled field and an omitted one
-look identical to a verifier.
+### The fleet locus
+
+A fleet seed declares one `fleet locus`, a locus KIND beside `main`:
+
+```text
+import "../desk" as desk;
+import "../venue" as venue;
+import "../shared" as t;
+
+fleet locus Prod {
+    params {
+        orders: desk::Orders;
+        gw: venue::Gateway;
+    }
+    placement {
+        orders: host("box-a");
+        gw: replicas(2);
+    }
+    bindings {
+        t::OrderRequest: unix("/run/orders.sock");
+    }
+    claims {
+        one_desk: count publishers(topic t::OrderRequest) == 1;
+        no_return: forbid reaches(gw, orders);
+    }
+}
+```
+
+It is a locus kind and not a typed param because a fleet is checked as
+one graph (the routes between its instances, the claims across them)
+and never runs itself; a param is a thing a running program holds.
+`hale check` judges its laws and `hale build` refuses it (`fleet locus
+Prod` is checked, never built) before it chooses any entry path, a
+`fn main` or an export-only wasm module alike: a fleet runs as its
+instances, each built from its own seed. So a fleet seed holds its
+fleet and its imports and nothing else: the check refuses any other
+declaration of the seed's own (a `fn`, an `@export fn`, a `locus`, a
+`main locus`, a `type`, a `target`, …), since nothing in it is ever
+built; a program to build is a seed of its own. The fleet seed is
+never merged with the seeds it imports: those are its instances, so its
+laws are judged over its own source and what each import declares (its
+`main locus`, its loci, its topics and their subjects), read from that
+seed's own files; `hale check <fleet seed>` reports them, and `hale
+fleet check` checks each instance's seed as it cuts its artifact.
+
+- **params** are the instances: each names another seed's `main locus`
+  through the fleet seed's import (`alias::Main`) and takes no value. A
+  param naming a locus that is not its seed's main, a locus of the
+  fleet seed itself, or nothing an import declares is refused. A seed
+  declares at most one fleet.
+- **placement** is a default per param: `host("<name>")`, one instance
+  on each of several hosts (`host("a"), host("b")`), or `replicas(<n>)`
+  (n ≥ 1) on no named host. A host is one name of letters, digits,
+  `.`, `_` and `-`, not starting with `.`, never a path (a render
+  writes each host's description into a directory of its name). An
+  instance is a process, and its id is
+  `<param>-<i>`: `orders-0`, `gw-0` … `gw-(n-1)`. The habitat's
+  allocation rows bind instances to hosts; the placement block is what
+  they default to (`hale deploy render --placement`, below).
+- **bindings** wire the instances, in a main binding's shape: each
+  names a topic with a declared `subject:` (a local wire name joins
+  nothing) and the route's transport. Constraints, codecs and hubs are
+  the instances' own bindings and are refused here.
+- **claims** are the fleet tier's forms, each group operand an instance
+  param (a group of every instance of it): `forbid reaches(A, B)
+  [avoiding G]`, `only edges A -> B { … }`, `require publishes|subscribes(some
+  G, topic T)` and `count publishers|subscribers(topic T) == | <= | >=
+  N`, which counts deployed instances. The other forms quantify inside
+  one program and belong in its main; `adopt` is refused.
+
+**The `deployment` rows.** `hale fleet check <fleet seed>` checks the
+seed, cuts each instance seed's artifact into the workspace's cache
+(`.hale/fleet/<the fleet seed's directory>/<param>.topology.json`,
+under the nearest `hale.toml`), and derives the
+deployment as rows (spec/registry.md, `deployment`): the components
+(each param's main, its seed, its artifact and shape), the instances,
+each component's placement default, the endpoints each artifact
+records (topic, wire subject, direction, and the transport its own main
+binds the subject to), and the routes. A route is derived, never
+written: one per binding, from every instance whose artifact publishes
+the subject to every instance that subscribes it, each end named by its
+own artifact's local topic. The fleet's binding is the deployment's
+configuration of the route; an end whose own main binds the subject
+too must bind it over the transport kind the fleet's binding names. A
+binding with no publisher or no subscriber among the instances wires
+nothing, and is refused. Composition reads the rows as its one input —
+the steps above, the claims below — so the seeds stay artifacts and the
+fleet is never a merged super-main.
+
+**The plan document is an export.** `hale fleet export <fleet seed>`
+writes the rows as JSON, for whoever reads one: the fleet's name, each
+instance (`id`, `labels`, `seed` relative to the fleet seed, `node`: its
+host, `app_shape_hash`: its component's shape), each derived route,
+the groups (one per param) and the claims. The same source exports the
+same bytes. Nothing reads it back: no verb, manifest entry or DNA part
+takes a plan as input.
+
+```json
+{
+  "schema": "1.2", "name": "Prod",
+  "instances": [{"id": "orders-0", "labels": ["orders"], "seed": "../desk",
+                 "node": "box-a", "app_shape_hash": "df797a198bf3ff2d"}],
+  "routes": [{"id": "t::OrderRequest", "transport": "unix",
+              "publishers":  [{"instance": "orders-0", "topic": "t::OrderRequest"}],
+              "subscribers": [{"instance": "gw-0",     "topic": "t::OrderRequest"}]}]
+}
+```
 
 ### The workspace's deployments
 
 ```toml
 [fleets]
-production = "ops/fleet/prod.plan.json"
-staging    = "ops/fleet/staging.plan.json"
+production = "fleets/prod"
+staging    = "fleets/staging"
 ```
 
-`hale fleet check` with no plan checks every declared deployment.
+Each entry names a fleet seed; an entry naming a `.json` plan is
+refused. `hale fleet check` with no seed checks every declared
+deployment.
 A repository usually has more than one, and checking whichever one
 somebody remembered to name is the same partial-coverage problem
 `--matrix` solves for entrypoints. Every fleet runs even when an
@@ -1299,15 +1488,7 @@ earlier one fails, and the exit status is the worst of them.
 candidate's worktree); `--if-declared` makes a workspace that declares
 none a success that says so, for a step that runs on every workspace.
 
-**Schema 1.2 (GH #566 F5): seeds and nodes.** An instance may name a
-`seed` — a directory relative to the plan — instead of an `artifact`;
-composition then cuts the artifact from the seed first (`hale check
-<seed> --dump-topology`, into `.hale/fleet/<plan>/<id>.topology.json`
-beside the plan), so the plan can describe the workspace's own
-services and a change is checked as the fleet it would deploy. A seed
-that does not check is an instance with no admissible artifact; an
-instance with neither is a plan that cannot be formed. An instance may
-also name the `node` that expresses it (`hale node <name>`,
+An instance's host is the node that expresses it (`hale node <name>`,
 `spec/dna.md`); composition ignores it. `[dna] fleet = "<name>"` in
 `hale.toml` names which declared fleet the DNA expresses.
 
@@ -1318,31 +1499,71 @@ application tier; a fleet is an ARRANGEMENT of deployed instances.
 collapsing them would force every entrypoint's law to be a function
 of some deployment it may not even appear in.
 
-There is deliberately no coverage check over plans — unlike
-entrypoints, which are discoverable seeds, a plan is an arbitrary
-file path, so "every plan in the repository is declared" is not a
-question that can be asked without guessing.
+### Rendering a deployment (GH #1477)
+
+`hale deploy render <path> --backend compose|kubernetes [--env <name>]
+[--placement <file>] [--out <dir>]` writes a platform description of a
+program's own placement, to stdout or to `<dir>/compose.yaml` /
+`kubernetes.yaml`. `<path>` is a seed or a fleet seed. It is a pure
+function of what the program already declares and of the allocation
+it is handed, and it never builds, applies or contacts anything:
+
+- the seed's checked topology (`hale check --dump-topology`): the
+  `std::observe::Scrape` endpoint (host, port, path) and the bindings;
+- the main locus's `std::observe::Probes` param, when its port is
+  literal, defaulted, or `self.<param>` of a param whose default is a
+  literal (the port the program runs on when nothing overrides it);
+- a fleet seed's `deployment` rows: its instances, their placement
+  defaults and the derived routes. Placement is the record's: the
+  source declares each instance's default host, and `--placement
+  <file>`, the allocation the habitat passes, binds instances to hosts
+  over those defaults. The file is a JSON array of `{"instance",
+  "host"}` rows (`"provider"` and `"role"` beside them, as the
+  habitat's allocation rows export them, are accepted and not read); an
+  instance the fleet does not deploy, and a host that is no single name,
+  are refused, and an instance with
+  no host in either is rendered for the host `local`, with a note. The
+  render is **one description per host**, since the habitat applies
+  each host on its own: a compose project per host (its `name:` the
+  host; with `--out`, `<dir>/<host>/compose.yaml`; on stdout, one YAML
+  document per host). Within a host, one compose service per instance,
+  one Kubernetes Deployment per program with `replicas` the number of
+  its instances there, and a compose `depends_on` from a route's
+  subscriber to its publishers on the same host (`service_healthy` when
+  the publisher holds probes, else `service_started`). A route that
+  leaves the host is no dependency: each description it touches
+  declares it, by its endpoints `instance@host` (compose's top-level
+  `x-hale-routes`, a comment for Kubernetes);
+- `[environments.<name>]`: `backend = "compose" | "kubernetes"` (the
+  `--backend` flag overrides it) and `[environments.<name>.env]`, string
+  values every rendered workload carries.
+
+Probes render the compose `healthcheck` (GET `/healthz`) and the
+Kubernetes `livenessProbe` (`/healthz`) and `readinessProbe` (`/readyz`);
+a Scrape renders the published port and the `prometheus.io/*` pod
+annotations. A program without the param renders no probe section and a
+note says so on stderr; nothing is invented. A binding over a unix socket
+or a ring names a local path, not a port, and publishes nothing. No
+`HorizontalPodAutoscaler` is rendered: no environment key declares a
+scale policy. Output is ordered by instance id and program name, so it
+diffs. A directory with no `.hl` source (a repository) is refused: a
+backend renders an organism's own programs, never a foreign heart's.
 
 ### Fleet claims (GH #408 Phase 2)
 
-Claims over the composed model, carried in the plan as normalized
-rows rather than source grammar — the plan is an IR, so a generator
-can produce one without Hale syntax committing to a deployment
-format.
+Claims over the composed model are written in the fleet locus's
+`claims` block and lowered to normalized rows (the export carries
+them):
 
-```json
-"groups": { "strategies": {"labels": ["strategy"]}, "oms": {"instances": ["oms-0"]} },
-"claims": [
-  {"name": "orders_pass_oms",
-   "forbid_reaches": {"from": "strategies", "to": "gateways", "avoiding": "oms"}},
-  {"name": "one_order_authority",
-   "count_publisher_instances": {"subject": "svc.order.request", "eq": 1}},
-  {"name": "gw_receives_orders",
-   "require_subscribes": {"group": "gateways", "subject": "svc.order.request"}}
-]
+```text
+claims {
+    orders_pass_oms: forbid reaches(strategy, gw) avoiding oms;
+    one_order_authority: count publishers(topic t::OrderRequest) == 1;
+    gw_receives_orders: require subscribes(some gw, topic t::OrderRequest);
+}
 ```
 
-A fleet group quantifies over **instances**, by id or by label; its
+A fleet group is a param, and quantifies over its **instances**; its
 vertices are every vertex of those instances — the same projection an
 application group makes from a locus to its methods, one altitude up.
 An unknown name or an empty resolution is an error, never an empty
@@ -1350,7 +1571,7 @@ set.
 
 - **`forbid_reaches`** walks the composed edge set: interior calls
   **including the through-stdlib contracted edges**
-  (`calls_via_stdlib`), interior bus hops, and explicit routes.
+  (`calls_via_stdlib`), interior bus hops, and the derived routes.
   Reading only `calls` loses a path the component's own claims can
   see — a handler reaching its publisher through `std::http::Router`
   contributes no direct edge at all. `avoiding` masks a group's
@@ -1364,23 +1585,19 @@ set.
   address. There are no cross-process calls to grant.
 - **`require_subscribes` / `require_publishes`** are structural
   deployment statements: some instance in the group exposes the
-  endpoint **and the plan connects it**. Both halves are load-bearing
-  — checking only that the endpoint exists lets a plan where nothing
+  endpoint **and a route connects it**. Both halves are load-bearing
+  — checking only that the endpoint exists lets a fleet where nothing
   publishes a subject satisfy "the ledger receives fills", which is
   the one thing that claim is for. "Ledger listens for fills" is
   provable; "every fill is durably booked" is not implied by it.
-- **`count_publisher_instances` / `count_subscriber_instances`**
-  count instance-qualified **endpoints**, which is a different sort
-  from the application tier's declaration count — hence the different
-  spelling. Two components can each be individually legal while the
-  deployment has two publishers. A count must name at least one of
-  `eq`, `min`, `max`: with none of them a claim compares nothing and
-  holds against every fleet while reading like law.
+- **`count publishers|subscribers`** in a fleet counts
+  instance-qualified **endpoints**, a different sort from the
+  application tier's declaration count: two components can each be
+  individually legal while the deployment has two publishers, and
+  `replicas(2)` of one publisher is two.
 
-A claim names **exactly one** verb. Several verbs under one name
-would be judged one at a time and recorded under that name as though
-the whole sentence held, so the shape is refused: split it, and each
-half gets its own name and verdict.
+A claim names **exactly one** verb, and its row carries one: the
+source grammar has no way to write two.
 
 Fleet composition decodes each admitted component ONCE into a
 typed interior (GH #476 Change 7) — the vertex universe, both
@@ -1388,7 +1605,7 @@ call relations unioned, the publish/subscribe rows, the topics
 join surface, the component's own unknowns, decl provenance, and
 the hashed endpoint identity — and composes from those typed rows
 exclusively; no modeled fact is recovered from generic JSON after
-admission. Route identity is ONE grain (round 2): a plan endpoint
+admission. Route identity is ONE grain (round 2): a route endpoint
 names a local topic, so the role check AND the edge builder both
 read the typed rows carrying that topic identity — a literal end
 on the same wire is a different endpoint and satisfies neither —
@@ -1402,7 +1619,7 @@ their withdrawn capability flags, scoped by the
 unreachable-unknown rule. The endpoint and count forms handle
 completeness INSIDE their evaluators: a known, routed `require_*`
 witness is a positive fact no incomplete set can erase, and a
-route-backed structural failure is definite (the plan's route
+route-backed structural failure is definite (the fleet's route
 table is complete). Counts follow the canonical monotone rule
 over a [known, known+hidden] interval — known endpoint rows are
 the lower bound; an uncounted component that withdraws the
@@ -1445,15 +1662,15 @@ walk (`scan_top_level`) yields the top-level entries, and both
 top-level field the parsed document consumes, so a nested decoy
 in some other section is data, never the verified value.
 
-Route admission validates **roles**, not just topic identity. A
-publisher endpoint must publish the subject and a subscriber endpoint
-must subscribe it, as its own artifact records — declaring a topic is
-not using it, and any component importing a topic module declares
-every topic in it. Without this a plan could name a producer that
-does not exist and satisfy a law about the consumer side with nothing
-feeding it. A plan that misdescribes its components is an invalid
-model, refused before any claim is evaluated rather than reported as
-a law failure.
+Route derivation reads **roles**, not just topic identity. A
+publisher end is an instance whose artifact has a send site on the
+subject's topic, a subscriber end one that subscribes it — declaring a
+topic is not using it, and any component importing a topic module
+declares every topic in it. So no route can name a producer that does
+not exist and satisfy a law about the consumer side with nothing
+feeding it: a binding no instance publishes wires nothing, and is
+refused before any claim is evaluated rather than reported as a law
+failure.
 
 **Uncertainty propagates.** A component's `unknowns` are part of the
 composed model, not a footnote beside it. A prohibition whose source
@@ -1483,86 +1700,69 @@ fleet claim `orders_pass_oms` violated — witness:
   gw-0::Gateway::on_order  [gw/main.hl]
 ```
 
-### Signed components & attestation (GH #408 Phase 7)
+### A signed fleet (GH #408 Phase 7)
 
-A composition proves a world against artifacts it can read; a
-signature proves those artifacts are the ones a key-holder meant.
-It certifies **provenance and integrity, never behavior** — the
-artifact never claims a message will arrive, and a signature never
-claims the code is good. Out of scope, deliberately: a compromised
-builder, a malicious compiler, runtime memory tampering.
+A composition proves a world against the rows and artifacts it reads;
+a signature proves those rows are the ones a key-holder meant. It
+certifies **provenance and integrity, never behavior** — the rows never
+claim a message will arrive, and a signature never claims the code is
+good. Out of scope, deliberately: a compromised builder, a malicious
+compiler, runtime memory tampering.
 
 The scheme is **ES256** (ECDSA P-256 over SHA-256), because the
 system already speaks it: it is `std::crypto`'s signature suite,
 OpenSSL-backed in the runtime, PEM keys, raw `r‖s` 64-byte
 signatures. One algorithm end to end means a Hale program — a
-supervisor, a deploy gate — verifies the same sidecar with the
+supervisor, a deploy gate — verifies the same signature with the
 language's own stdlib.
 
-Signatures cover the artifact's **exact bytes**. That is sound
-because artifacts are byte-reproducible (schema 1.8), and it is
-necessary because the in-band `artifact_digest` is FNV-1a — an
-integrity tripwire, not a trust anchor. Nothing signs a digest.
-The sidecar is `<artifact>.sig`, one line, `es256:<128 hex>`; an
-unknown prefix is a refusal, not a skip.
+A signature covers the fleet's `deployment` rows: the **exact bytes**
+`hale fleet export <seed>` writes — each instance's seed, host and
+component shape hash, the derived routes, the claims. That is sound
+because the rows re-derive byte for byte from the same source, and a
+component whose model changes moves its shape hash. Nothing signs a
+digest. The signature lives beside the fleet seed's source, in
+`fleet.sig`, one line, `es256:<128 hex>`; an unknown prefix is a
+refusal, not a skip.
 
 ```sh
-hale fleet keygen ops                      # ops.pem (0600) + ops.pub.pem
-hale fleet sign app.topo.json --key ops.pem
-hale fleet check prod.plan.json --trust ops.pub.pem
+hale fleet keygen ops                     # ops.pem (0600) + ops.pub.pem
+hale fleet sign fleets/prod --key ops.pem # fleets/prod/fleet.sig
+hale fleet check fleets/prod --trust ops.pub.pem
 ```
 
 **Trust is strict when declared.** Passing `--trust` (repeatable),
-or declaring keys in the manifest, makes an unsigned or
-unverifiable component a composition **error**:
+or declaring keys in the manifest, makes unsigned or unverifiable rows
+a composition **error**:
 
 ```toml
 [fleet_trust]
 keys = ["keys/ops.pub.pem"]    # SPKI PEM, manifest-relative
 ```
 
-There is no `require = true` knob, for the reason `no_base` exists
-in `[claims]`: a trust set that quietly admits unsigned artifacts
-is law that looks bound and binds nothing. An absent section means
-signatures are not checked — the pre-Phase-7 meaning of a
-composition, unchanged. Signature verification runs **before** the
-integrity digest: provenance before integrity before meaning, each
-check covering the bytes the next one reads. The all-fleets form
-(`hale fleet check` with no plan) takes trust from the manifest
-only; `--trust` there is an error, so one flag cannot quietly
-rebind every declared deployment.
+There is no `require = true` knob, for the reason `no_base` exists in
+`[claims]`: a trust set that quietly admits unsigned rows is law that
+looks bound and binds nothing. An absent section means signatures are
+not checked. The signature is verified before anything is composed,
+over the rows just derived. The all-fleets form (`hale fleet check`
+with no seed) takes trust from the manifest only; `--trust` there is an
+error, so one flag cannot quietly rebind every declared deployment.
 
 The fleet artifact records what admitted each component — unhashed
 provenance, like the rest of the `components` section:
 
 ```json
-{"id": "app-0", "artifact": "artifacts/app.json",
+{"id": "app-0", "artifact": ".hale/fleet/fleets/prod/app.topology.json",
  "sha256": "59ad65d4…", "signed_by": "a88ca61a96ffa055"}
 ```
 
-`sha256` is the admitted bytes; `signed_by` is the key's identity
-(first 8 bytes of SHA-256 over the SPKI DER) or `null` when trust
+`sha256` is the admitted artifact's bytes; `signed_by` is the rows'
+key (first 8 bytes of SHA-256 over the SPKI DER) or `null` when trust
 was not declared — a fact, not an omission, so a reader can tell
-"unsigned admission" from "verified under this key".
-
-**Attestation** answers the remaining question: are the executables
-this plan deploys the ones the operator hashed? Plan schema 1.1
-adds two optional rows per instance, and `hale fleet attest` is
-all-or-nothing over them:
-
-```json
-{"id": "app-0", "artifact": "artifacts/app.json",
- "binary": "bin/app", "binary_sha256": "de55ee70…"}
-```
-
-A missing row is a refusal, not a skip — a partial attestation
-would report coverage it does not have. `binary_sha256` is
-cryptographic where `artifact_digest` deliberately is not: this
-hash is the thing an operator asserts across a trust boundary.
-Attestation checks bytes at rest at deploy time; whether a
-*running* process is still that binary is runtime territory
-(sent/delivered observation, 7b), and the artifact never claims
-otherwise.
+"unsigned admission" from "verified under this key". A fleet seed
+names no binaries, so there is no binary attestation: whether a
+running process is the binary its seed builds is runtime territory
+(sent/delivered observation), and the rows never claim otherwise.
 
 ## Secrets — confine, classify, claim (GH #436)
 
@@ -1759,7 +1959,7 @@ state), and zeroization.
 | **Birth-order trap** | a params field of the deployed root whose `run()` runs inline on the main thread and statically never returns, with params declared after it, which are then never born. Reported once, at the first such field, listing the fields it starves; read from the placement table's rows and the flow rows | warning | `check_birth_order` |
 | **Dropped scope-local delivery** | a bus subscriber — or a locus that keeps one for its whole life: one its params defaults build, transitively, or its bodies build and `accept` or store in a field — built and dissolved inside one call (a `let` or a bare statement, neither stored in a field nor returned, with no `accept` owning it) whose enclosing scope runs on a classic cooperative pool (not `where async_io`; a free fn's domains are its callers'): its subscription registers with that pool, and the call holds the pool's worker for the subscriber's whole life, so a delivery to it waits for a park point of a `run()` on that worker (a sleep or a yield there delivers the pool's queued cells; one in a handler delivers nothing) and is dropped at its dissolve when none comes first (`spec/runtime.md` § "Subscriptions follow the tower"). The advisory does not look for the park point: it fires at every such literal. Reported at the literal, naming the locus, the call and the pool, and saying to place the pool `where async_io` or keep the subscriber beyond the call; a literal in a bus handler is type-check rule 20's, and a scope whose domains are unknown proves nothing. Read from the allocation summary's rows, the ownership graph and the placement table's dynamic sites | warning | `check_scope_local_subscriber_on_classic_pool` |
 | **Publish before its subscriber** | a send written, in one body, before a literal building a locus that subscribes to its subject — the literal's own locus, or a locus its params build (by their declared types), a `**` subscription covering the subject included, keyed or not — where the literal is a statement, a `let`'s value or an assignment's, and "before" is the order written (a send after the literal inside one loop is the next iteration's, which the built instance receives). A cell reaches the subscribers registered when it is published (`spec/runtime.md` § "Lifecycle obligations", line 6), so that subscriber never receives it. Reported at the send, the literal its witness, saying to build the subscriber first or publish once it exists. Read from the bundle's bodies, the scope and the bus graph. What a statically built tree publishes to itself while it is built is not this rule's (2026-10-12) | warning | `check_publish_before_subscriber` |
-| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound, an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` or `@bounded_by(<name>)` silences | warning / error | `check_hot_path_alloc` |
+| **Hot-path allocation** | an allocation per loop iteration or per bus message in the program's own fns: a locus instantiated, a factory's result bound (the factory is the free fn the summary resolved the call to, by declaration: an imported seed's through its alias, never a stdlib call; until 2026-10-17 a path's last segment was matched against the tail of every imported fn's mangled name, so an imported `one_arg` returning a locus made each `std::env::arg(i)` a finding, downstream handoff), an allocating receive in a loop; under `@hot` also `snapshot()` / `finish()` and a whole-struct `self.<field> =` replace. Read from the allocation summary's rows; an error under `@hot`, otherwise a warning that `@unbounded` or `@bounded_by(<name>)` silences | warning / error | `check_hot_path_alloc` |
 | **Unit declared once** | a `unit` declared twice (`spec/units.md` § "Declarations"): a unit is one node of the catalogue. Reported at the second declaration's name, with the first as its witness; a unit of a name the stdlib's time catalogue declares (`ms`, U4) is that unit declared again, the message naming the catalogue | error | `declared_twice` (units) |
 | **Declared unit** | an equation's target, a denomination or an origin that names no declared unit, at the name, suggesting the nearest declared one, a program's own before the stdlib's; a retired time unit (`m`) says what it is now instead (minutes are `min`) | error | `undeclared_units` (units) |
 | **Unit cycles multiply to one** | a cycle of unit equations whose product is not one, at the equation the closure found inconsistent, stating what it claims and what the other equations imply; the witness is the other path, each step at its declaration | error | `inconsistent_cycles` (units) |
@@ -1849,8 +2049,11 @@ assume the others in a build:
     calls into imported seeds and into the stdlib's Hale-source bodies
     are followed, so a site reached unboundedly through them (a stdlib
     loop the program starts that dispatches to its handler through an
-    interface) is reported; a stdlib loop the program never starts
-    invokes nothing. Warnings print but
+    interface) is reported; a stdlib body the program never reaches
+    runs nothing: it invokes nothing, passes nothing to a parameter
+    (a call it makes neither taints a method of the name nor any fn's
+    parameters), seeds no long-lived frame and consumes no returned
+    value. Warnings print but
     never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;
     `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
     spelling).
@@ -1932,7 +2135,11 @@ assume the others in a build:
   `i + 1` is never a concatenation. So `out = out + piece(i)` and `out =
   wrap(out) + sep` are the accumulator `out = out + "x"` is, judged by the
   same rules (the returned-accumulator rule below included), and so is
-  `self.buf = self.buf + chunk`. Before, an operand counted only as a
+  `self.buf = self.buf + chunk`. `out += x` is `out = out + x`, and an
+  interpolation (`f"{out}{x}"`) lowers to the same chain: each takes the
+  escape of the binding it extends (returned, or stored to a field of
+  `self` and flagged as before). An insert into a returned collection is
+  judged as it was, stored to its locus. Before, an operand counted only as a
   literal or a name declared `String`, and a declared `String` never
   matched (the type is a primitive), so a chain with no literal in it was
   no site at all: an under-report, now closed. `@budget` and the hot-path
@@ -1991,6 +2198,44 @@ assume the others in a build:
   called 10k times adds nothing over the runtime floor consumed in a
   method (4.6 MB), and ~96 MB consumed directly in `run`'s loop
   (`alloc_model_rss.rs::a_returned_loop_accumulator_reclaims_with_its_activation`).
+
+  **A write through a parameter is the owner's.** A value a body stores
+  through a parameter of caller storage (a record, an enum, a tuple, an
+  array: `x.b = v`, `x.inner.b = v`, `xs[i] = v`, `x.b += v`, or a binding
+  of a value written so) lands in the arena that owns the caller's
+  value, not in the body's frame, and nothing recycles it when the body
+  returns (`spec/memory.md` § invariant 3 of the method scratch): its
+  sites escape as `escaping=param-store`, never `local`. Which writes
+  these are is the owned-view column's (`OwnedViews::writes_param`: an
+  assignment rooted at such a parameter, the writes its positional write
+  summaries start from), so a local bound from the parameter, which the
+  local-place rule copies, is the frame's own, a handle's store is
+  its locus's, and a write into a slot laid out inline (a fixed array of
+  scalars: `x.nums = [1, 2]`, `[1; 2]`, a local holding one) takes the
+  value's bytes, so the literal keeps its frame's lifetime. Within the body a `param-store` site is judged as any
+  escaping one: in an unbounded loop of the body's own it accumulates
+  (the record outlives the loop). Across calls the owner decides, so the
+  writer's own site is not judged invoked unboundedly; each call that
+  hands a writer is. A callee stores through its parameters when it has
+  such a site, or hands a parameter on (by name or through a carrier) to
+  a callee that does, to a fixpoint over the resolved calls; a call
+  handing one any argument it may write through (the column's
+  hand-offs, fresh ones included) is a site of its own, `store through
+  `<callee>(..)``, placed at the call (the dump's `store` lines, which
+  the leak survey reads and `@budget` does not: the callee's own sites
+  are counted there). Its escape is the arena lowering publishes for the
+  call (`call_site_arena`): `escaping=held-store` when every argument
+  that is not fresh may only be a record `self` holds — the locus's own
+  arena, until the locus dissolves, and not retired as a `self.bag.b =
+  v` store is, so it persists across calls as a store to `self` does;
+  `escaping=param-store` when one may be a parameter or a place the
+  pass cannot name — the caller's, judged again where that caller is
+  called; `local` when all are fresh — this frame's. So a handler or a
+  `run()` loop handing a writer `self.bag` is reported at the call, and
+  the same call handed a record its iteration builds is not. A write of
+  a value the body did not allocate (`x.b = s`) is copied into the
+  owner's arena by lowering but is no site, as a `self.b = s` store's
+  copy is none.
 
   **A flow's `run()` is one activation when nothing in it repeats
   without a bound.** A flow child's arena is reclaimed when its `run()`
@@ -2054,7 +2299,19 @@ assume the others in a build:
   `none: {…}` forbids effect classes; `publish: {…}` declares the
   allowed publish set (exact, because the topic set is closed). The
   classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
-  `publish`, `spawn`, `recursion`.
+  `publish`, `spawn`, `recursion`, `alloc`, `secret_use` and `stdio`.
+
+  `stdio` (2026-10-19) is a write to standard output or standard error:
+  `println`, `print`, `eprintln`, `eprint`,
+  `std::io::stdout::write_bytes`, and the `std::process` residency
+  dumps, with every Hale-source stdlib body that reaches one. It is a
+  **sub-class of `syscall`**: every carrier of it carries `syscall`, so
+  `none: {syscall}` and `forbid reaches(G, effects(syscall))` see it as
+  before, and a closed set naming `syscall` (`only:`, `@phase_effects`,
+  `causes:`) admits it. `std::test`'s assertions keep their pure rows
+  (a test's verdict, not the program's output). The effects manifest
+  and the topology artifact's derived effects name it beside
+  `syscall`.
 
   The `@no_*` family is **documented sugar**, desugared at parse time
   so the checker has exactly one shape to interpret (a flag can never
@@ -2742,9 +2999,9 @@ assume the others in a build:
   cannot resolve passing such an argument makes every method of that
   name, or (through a function value) every free fn, carry every
   field. A parameter a call leaves takes its default, which Hale
-  evaluates in the caller's scope, so the call passes what the default
-  reads there (`= old` with the caller's `let old = self.log` carries
-  `log`); a call resolved only after the walk (an interface's
+  evaluates where the call is written. A default reads only constants
+  and the module's items (`spec/types.md` § Locus params), so it
+  carries nothing of the caller's `self`. A call resolved only after the walk (an interface's
   conformer, a function value) leaves its defaults unknown, and they
   carry every field. A struct or locus literal's left fields likewise
   take their defaults where the literal is written. A parameter no call

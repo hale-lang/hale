@@ -43,12 +43,17 @@ fn jq(s: String) -> String {
 
 /// `t` as a JSON object.
 fn todo_json(t: TodoItem) -> String {
-    return "{\"id\":" + to_string(t.id) + ",\"title\":" + jq(t.title) + ",\"done\":" + (if t.done { "true" } else { "false" })
-        + ",\"due\":" + jq(t.due) + ",\"overdue\":" + (if t.overdue { "true" } else { "false" }) + "}";
+    return "{\"id\":" + to_string(t.id) + ",\"title\":" + jq(t.title) + ",\"done\":"
+        + (if t.done { "true" } else { "false" })
+        + ",\"due\":" + jq(t.due) + ",\"overdue\":" + (if t.overdue { "true" } else { "false" })
+        + "}";
 }
 
 fn add_to(list: TodoList, t: TodoItem) -> TodoList {
-    return TodoList { count: list.count + 1, json: list.json + (if list.count > 0 { "," } else { "" }) + todo_json(t) };
+    return TodoList {
+        count: list.count + 1,
+        json: list.json + (if list.count > 0 { "," } else { "" }) + todo_json(t),
+    };
 }
 
 /// The list's own record of an item.
@@ -78,16 +83,29 @@ locus Todos {
     }
 
     fn add(a: AddTodo) -> TodoItem fallible(TodoError) {
-        if len(a.title) == 0 { fail TodoError { code: "empty_title", reason: "a todo needs a title" }; }
+        if len(a.title) == 0 {
+            fail TodoError { code: "empty_title", reason: "a todo needs a title" };
+        }
         let mut item = Item { id: self.next, title: a.title };
         if len(a.due) > 0 {
             // a Time is nanoseconds in an i64: it ends in 2262, and parses past it wrap
-            if len(a.due) < 4 || (std::str::parse_int(a.due[0..4]) or 0) > 2200 { fail TodoError { code: "bad_due", reason: "due is a year up to 2200, got " + a.due }; }
-            let t = std::time::parse_time(a.due) or fail TodoError { code: "bad_due", reason: "due is an ISO-8601 UTC time such as 2026-10-09T09:00:00Z, got " + a.due };
+            if len(a.due) < 4 || (std::str::parse_int(a.due[0..4]) or 0) > 2200 {
+                fail TodoError {
+                    code: "bad_due",
+                    reason: "due is a year up to 2200, got " + a.due,
+                };
+            }
+            let t = std::time::parse_time(a.due) or fail TodoError {
+                code: "bad_due",
+                reason: "due is an ISO-8601 UTC time such as 2026-10-09T09:00:00Z, got " + a.due,
+            };
             item.due = t;
             item.has_due = true;
         }
-        push(self.items, item) or fail TodoError { code: "full", reason: "the list holds 128 items" };
+        push(self.items, item) or fail TodoError {
+            code: "full",
+            reason: "the list holds 128 items",
+        };
         self.next = self.next + 1;
         let seen = self.view(item);
         TodoChanged <- Change { what: "added", item: seen };
@@ -96,8 +114,13 @@ locus Todos {
 
     fn complete(r: TodoRef) -> TodoItem fallible(TodoError) {
         let pos = self.find(r.todo);
-        if pos < 0 { fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) }; }
-        let mut item = at(self.items, pos) or fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
+        if pos < 0 {
+            fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
+        }
+        let mut item = at(self.items, pos) or fail TodoError {
+            code: "unknown_item",
+            reason: "no item " + to_string(r.todo),
+        };
         item.done = true;
         set(self.items, pos, item) or discard;
         let seen = self.view(item);
@@ -107,8 +130,13 @@ locus Todos {
 
     fn remove(r: TodoRef) -> TodoItem fallible(TodoError) {
         let pos = self.find(r.todo);
-        if pos < 0 { fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) }; }
-        let gone = at(self.items, pos) or fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
+        if pos < 0 {
+            fail TodoError { code: "unknown_item", reason: "no item " + to_string(r.todo) };
+        }
+        let gone = at(self.items, pos) or fail TodoError {
+            code: "unknown_item",
+            reason: "no item " + to_string(r.todo),
+        };
         // close the gap, then drop the last slot
         let mut i = pos;
         while i + 1 < count(self.items) {

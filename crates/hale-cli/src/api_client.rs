@@ -119,6 +119,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// A classed handler error's `Hale-Error-Class` (spec/api.md § Error
+    /// classes).
+    pub error_class: Option<String>,
 }
 
 /// One request on one connection (`Connection: close`, as the listener
@@ -156,7 +159,11 @@ pub fn http_request(
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse::<u16>().ok())
         .ok_or_else(|| format!("{} sent a response that is not HTTP", hp))?;
-    Ok(HttpResponse { status, body: body.to_string() })
+    let error_class = head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case("hale-error-class").then(|| v.trim().to_string())
+    });
+    Ok(HttpResponse { status, body: body.to_string(), error_class })
 }
 
 pub(crate) fn bearer(token: Option<&str>) -> Vec<(&'static str, String)> {
@@ -392,6 +399,10 @@ pub struct Reply {
     pub body: String,
     pub status: Option<u16>,
     pub raw: String,
+    /// A handler error's class (spec/api.md § Error classes), when the
+    /// transport says it: a Unix line's `class`, or an HTTP status only a
+    /// class answers with (422 is also an unclassed error's, so it says none).
+    pub class: Option<String>,
 }
 
 impl Reply {
@@ -399,7 +410,10 @@ impl Reply {
     pub fn failure_text(&self) -> String {
         match self.kind {
             Kind::Result => String::new(),
-            Kind::HandlerError => format!("handler error: {}", self.body),
+            Kind::HandlerError => match &self.class {
+                Some(c) => format!("handler error ({c}): {}", self.body),
+                None => format!("handler error: {}", self.body),
+            },
             Kind::Refusal => format!("refused: {}", refusal_text(&self.body)),
             Kind::ServerError => "server error: the handler violated a structural limit".to_string(),
         }
@@ -421,14 +435,20 @@ pub(crate) fn outcome_of_line(line: &str) -> Result<Reply, String> {
     } else {
         return Err(format!("the exposure sent a reply that is no outcome: {}", line));
     };
-    Ok(Reply { kind, body, status: None, raw: line.to_string() })
+    let class = if kind == Kind::HandlerError { v.get("class").and_then(|c| c.as_str()).map(str::to_string) } else { None };
+    Ok(Reply { kind, body, status: None, raw: line.to_string(), class })
 }
 
 /// An HTTP response as an outcome, by § Outcomes' HTTP column.
 pub(crate) fn outcome_of_http(r: HttpResponse) -> Result<Reply, String> {
     let body = r.body.trim().to_string();
+    // a classed handler error names its class in `Hale-Error-Class`, since
+    // its status may be a refusal's too; a refusal never carries it
+    let class = r.error_class.clone();
     let (kind, shown) = match r.status {
-        200 => (Kind::Result, body.clone()),
+        // an `http::Rest` row answers its own success status (201, 204)
+        200..=299 => (Kind::Result, body.clone()),
+        _ if class.is_some() => (Kind::HandlerError, body.clone()),
         422 => (Kind::HandlerError, body.clone()),
         _ => {
             let obj = raw_field(&body, "refusal").ok_or_else(|| format!("HTTP {} with a body that is no refusal: {}", r.status, body))?;
@@ -439,7 +459,7 @@ pub(crate) fn outcome_of_http(r: HttpResponse) -> Result<Reply, String> {
             }
         }
     };
-    Ok(Reply { kind, body: shown, status: Some(r.status), raw: body })
+    Ok(Reply { kind, body: shown, status: Some(r.status), raw: body, class })
 }
 
 /// Calls `member` with `payload` (JSON text) on the exposure, naming the
@@ -485,7 +505,7 @@ pub fn call(ep: &Endpoint, token: Option<&str>, member: &str, payload: &str, dig
                 match v.get("type").and_then(Value::as_str) {
                     Some("reply") => return outcome_of_line(&msg),
                     Some("refusal") => {
-                        return Ok(Reply { kind: Kind::Refusal, body: raw_field(&msg, "refusal").unwrap_or_default(), status: None, raw: msg });
+                        return Ok(Reply { kind: Kind::Refusal, body: raw_field(&msg, "refusal").unwrap_or_default(), status: None, raw: msg, class: None });
                     }
                     _ => {}
                 }

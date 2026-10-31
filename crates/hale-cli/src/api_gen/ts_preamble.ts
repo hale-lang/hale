@@ -2,8 +2,9 @@
 //
 // Depends on `fetch` and `WebSocket` and nothing else. An endpoint is
 // `http://host:port` for a member's call and `ws://host:port` (a hub) for a
-// stream; a socket is not spoken (`fetch` has none). A call sends the
-// surface's digest in `Hale-Surface-Digest` and answers one of four outcomes;
+// stream; a socket is not spoken (`fetch` has none). A call sends its
+// member's digest in `Hale-Surface-Digest` (which a surface that has since
+// gained members still admits) and answers one of four outcomes;
 // the fifth, a connection that never answered, is thrown as a TransportError,
 // because a request that may have been accepted is not a refusal.
 
@@ -55,13 +56,13 @@ export class TransportError extends Error {
   }
 }
 
-export type Outcome<T, E> =
+export type __Outcome<T, E> =
   | { kind: "result"; value: T }
   | { kind: "handler_error"; error: E }
   | { kind: "refusal"; refusal: Refusal }
   | { kind: "server_error" };
 
-function apiRefusal(body: unknown): Refusal {
+function __apiRefusal(body: unknown): Refusal {
   const r = (body as { refusal?: __Record<string, unknown> } | null)?.refusal ?? {};
   const out: Refusal = {
     kind: typeof r.kind === "string" ? r.kind : "malformed",
@@ -72,16 +73,17 @@ function apiRefusal(body: unknown): Refusal {
   return out;
 }
 
-async function apiCall<T, E>(
+async function __apiCall<T, E>(
   opts: ClientOptions,
   member: string,
+  digest: string,
   payload: string,
   decodeValue: (json: unknown) => T,
   decodeError: (json: unknown) => E,
-): __Promise<Outcome<T, E>> {
+): __Promise<__Outcome<T, E>> {
   const headers: __Record<string, string> = {
     "Content-Type": "application/json",
-    "Hale-Surface-Digest": SURFACE_DIGEST,
+    "Hale-Surface-Digest": digest,
   };
   if (opts.bearer) headers["Authorization"] = "Bearer " + opts.bearer;
   let res: __Response;
@@ -100,7 +102,9 @@ async function apiCall<T, E>(
   }
   if (res.status === 200) return { kind: "result", value: decodeValue(body) };
   if (res.status === 422) return { kind: "handler_error", error: decodeError(body) };
-  const refusal = apiRefusal(body);
+  // a classed handler error names its class (spec/api.md § Error classes)
+  if (res.headers.get("Hale-Error-Class") !== null) return { kind: "handler_error", error: decodeError(body) };
+  const refusal = __apiRefusal(body);
   if ((body as { refusal?: unknown } | null)?.refusal === undefined) {
     throw new TransportError("the endpoint answered " + res.status + " with no outcome: " + text);
   }
@@ -123,7 +127,7 @@ export async function describe(opts: ClientOptions): __Promise<unknown> {
 // ---- streams over a hub ----
 
 /** What a subscription yields; it ends after `refusal`, `expired`, `revoked` or `closed`. */
-export type StreamEvent<P> =
+export type __StreamEvent<P> =
   | { kind: "subscribed" }
   | { kind: "event"; seq: number; payload: P }
   | { kind: "refusal"; refusal: Refusal }
@@ -131,16 +135,16 @@ export type StreamEvent<P> =
   | { kind: "revoked" }
   | { kind: "closed" };
 
-export interface Subscription<P> extends __AsyncIterable<StreamEvent<P>> {
+export interface __Subscription<P> extends __AsyncIterable<__StreamEvent<P>> {
   /** Ends the subscription and closes the connection. */
   close(): void;
 }
 
-function apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unknown) => P): Subscription<P> {
-  const queue: __Array<StreamEvent<P> | TransportError | null> = [];
+function __apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unknown) => P): __Subscription<P> {
+  const queue: __Array<__StreamEvent<P> | TransportError | null> = [];
   let wake: (() => void) | undefined;
   let ended = false;
-  const push = (item: StreamEvent<P> | TransportError | null): void => {
+  const push = (item: __StreamEvent<P> | TransportError | null): void => {
     queue.push(item);
     if (wake) {
       const w = wake;
@@ -183,7 +187,7 @@ function apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unkn
       case "event":
         return push({ kind: "event", seq: Number(frame.seq), payload: decode(frame.payload) });
       case "refusal":
-        push({ kind: "refusal", refusal: apiRefusal(frame) });
+        push({ kind: "refusal", refusal: __apiRefusal(frame) });
         return finish();
       case "unauthorized":
         push({ kind: frame.reason === "expired" ? "expired" : "revoked" });
@@ -199,7 +203,7 @@ function apiSubscribe<P>(opts: StreamOptions, topic: string, decode: (json: unkn
   ws.onclose = () => lose("the hub ended the connection with no closed frame");
   return {
     close: finish,
-    async *[Symbol.asyncIterator](): __AsyncGenerator<StreamEvent<P>> {
+    async *[Symbol.asyncIterator](): __AsyncGenerator<__StreamEvent<P>> {
       for (;;) {
         while (queue.length === 0) await new Promise<void>((resolve) => (wake = resolve));
         const item = queue.shift();

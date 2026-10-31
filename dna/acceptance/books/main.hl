@@ -31,7 +31,9 @@ fn field(text: String, key: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if std::str::starts_with(line, key + ":") { return std::str::trim(line[(len(key) + 1)..len(line)]); }
+        if std::str::starts_with(line, key + ":") {
+            return std::str::trim(line[(len(key) + 1)..len(line)]);
+        }
     }
     return "";
 }
@@ -46,7 +48,12 @@ fn parse_bill(text: String) -> Bill {
 
 // A bill names what capture needs.
 fn readable(b: Bill) -> Bool {
-    return len(b.id) > 0 && len(b.supplier) > 0 && len(b.payer) > 0 && len(b.date) == 10 && len(b.amount) > 0 && len(b.currency) > 0;
+    return len(b.id) > 0
+        && len(b.supplier) > 0
+        && len(b.payer) > 0
+        && len(b.date) == 10
+        && len(b.amount) > 0
+        && len(b.currency) > 0;
 }
 
 fn has_suffix(s: String, suffix: String) -> Bool {
@@ -55,7 +62,9 @@ fn has_suffix(s: String, suffix: String) -> Bool {
 
 // What the organization is asked when a bill came without its receipt.
 fn follow_up(b: Bill, evidence: String) -> String {
-    return "obtain the receipt for bill " + b.id + " from " + b.supplier + ": " + b.amount + " " + b.currency + " for " + b.purpose + ", paid by " + b.payer + " on " + b.date + ", treatment pending, bill " + evidence;
+    return "obtain the receipt for bill " + b.id + " from " + b.supplier + ": " + b.amount + " "
+        + b.currency + " for " + b.purpose + ", paid by " + b.payer + " on " + b.date
+        + ", treatment pending, bill " + evidence;
 }
 
 fn hale_bin() -> String {
@@ -70,12 +79,6 @@ fn not_run(e: IoError) -> std::process::ProcessOutput {
 // `hale <args>`, argv newline-separated.
 fn hale(args: String) -> std::process::ProcessOutput {
     return std::process::run(hale_bin() + "\n" + args) or not_run(err);
-}
-
-// `git <args>`'s output, "" when it failed.
-fn git(args: String) -> String {
-    let out = std::process::run("git\n" + args) or not_run(err);
-    return if out.code == 0 { out.stdout } else { "" };
 }
 
 fn hex_of(b: Bytes) -> String {
@@ -103,7 +106,11 @@ fn journal_has(journal: String, kind: String, needle: String) -> Bool {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if std::json::find_string_field(line, "kind") != kind { continue; }
-        if std::json::find_string_field(line, "entity") == needle || std::str::contains(std::json::find_string_field(line, "body"), needle) { return true; }
+        if std::json::find_string_field(line, "entity") == needle
+            || std::str::contains(std::json::find_string_field(line, "body"), needle)
+        {
+            return true;
+        }
     }
     return false;
 }
@@ -122,8 +129,14 @@ fn requested_standing(journal: String, evidence: String) -> Bool {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let kind = std::json::find_string_field(line, "kind");
-        if kind == "intent.requested" && std::str::contains(std::json::find_string_field(line, "body"), evidence) { asked = asked + std::json::find_string_field(line, "entity") + "\n"; }
-        if kind == "intent.refused" { refused = refused + std::json::find_string_field(line, "entity") + "\n"; }
+        if kind == "intent.requested"
+            && std::str::contains(std::json::find_string_field(line, "body"), evidence)
+        {
+            asked = asked + std::json::find_string_field(line, "entity") + "\n";
+        }
+        if kind == "intent.refused" {
+            refused = refused + std::json::find_string_field(line, "entity") + "\n";
+        }
     }
     let mut ids = asked[1..len(asked)];
     while len(ids) > 0 {
@@ -146,27 +159,44 @@ fn requested_standing(journal: String, evidence: String) -> Bool {
 fn capture(path: String) -> String {
     let text = std::io::fs::read_file(path) or "";
     let b = parse_bill(text);
-    if !readable(b) { return "rejected: books: " + path + " is not a bill this intake reads (bill, supplier, payer, date, amount, currency)"; }
-    let journal = git("show\nrefs/dna/journal:journal.jsonl");
+    if !readable(b) {
+        return "rejected: books: " + path
+            + " is not a bill this intake reads (bill, supplier, payer, date, amount, currency)";
+    }
+    // the record and its Ledger (GH #1590: a receipt's rows are the Ledger's)
+    let journal = record_rows() + "\n" + ledger_rows();
     let mut evidence = digest_of(text);
     if !journal_has(journal, "receipt.filed", evidence) {
         let filed = hale("dna\nreceipt\nfile\n" + path + "\n--as\nintake");
         let at = std::str::index_of(filed.stdout, "sha256:");
-        if filed.code != 0 || at < 0 { return "retry: books: " + b.id + " not filed: " + filed.stdout + filed.stderr; }
+        if filed.code != 0 || at < 0 {
+            return "retry: books: " + b.id + " not filed: " + filed.stdout + filed.stderr;
+        }
         evidence = filed.stdout[at..(at + 71)];
     }
-    if b.receipt == "attached" { return "ok: books: " + b.id + " captured with its receipt, as " + evidence; }
+    if b.receipt == "attached" {
+        return "ok: books: " + b.id + " captured with its receipt, as " + evidence;
+    }
     // each step is its own: a follow-through already born, offered or
     // standing as a request is not asked again, nor a concern already
     // requested or raised raised again
     let concern = "bill " + b.id + " from " + b.supplier + " arrived without its receipt";
-    let followed = journal_has(journal, "intent.offered", evidence) || journal_has(journal, "task.born", evidence) || requested_standing(journal, evidence);
-    let raised_already = journal_has(journal, "concern.requested", concern) || journal_has(journal, "concern.raised", concern);
-    if followed && raised_already { return "ok: books: " + b.id + " was captured and followed up already, as " + evidence; }
+    let followed = journal_has(journal, "intent.offered", evidence)
+        || journal_has(journal, "task.born", evidence)
+        || requested_standing(journal, evidence);
+    let raised_already = journal_has(journal, "concern.requested", concern)
+        || journal_has(journal, "concern.raised", concern);
+    if followed && raised_already {
+        return "ok: books: " + b.id + " was captured and followed up already, as " + evidence;
+    }
     let mut asked_text = "";
     if !followed {
         let asked = hale("dna\ntask\ncreate\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
-        if asked.code != 0 { return "retry: books: " + b.id + " filed as " + evidence + ", but its follow-through was not asked: " + std::str::trim(asked.stdout + asked.stderr); }
+        if asked.code != 0 {
+            return "retry: books: " + b.id + " filed as " + evidence
+                + ", but its follow-through was not asked: "
+                + std::str::trim(asked.stdout + asked.stderr);
+        }
         asked_text = std::str::trim(asked.stdout + asked.stderr);
     }
     let mut raised_text = "its concern was raised already";
@@ -176,9 +206,20 @@ fn capture(path: String) -> String {
         // the concern is the signal the practice learns from: a bill whose
         // concern was not raised stays in the inbox, to be tried again (the
         // third review of #634)
-        if raised.code != 0 { return "retry: books: " + b.id + " captured as " + evidence + ", but its concern was not raised: " + raised_text; }
+        if raised.code != 0 {
+            return "retry: books: " + b.id + " captured as " + evidence
+                + ", but its concern was not raised: " + raised_text;
+        }
     }
-    return "ok: books: " + b.id + " captured as " + evidence + "; " + (if followed { "follow-through asked already" } else { "follow-through asked: " + asked_text }) + "; " + raised_text;
+    return "ok: books: " + b.id + " captured as " + evidence + "; "
+        + (
+            if followed {
+                "follow-through asked already"
+            } else {
+                "follow-through asked: " + asked_text
+            }
+        )
+        + "; " + raised_text;
 }
 
 // Whether `a` sorts before `b` (lowercase names, digits, `-`, `.`).
@@ -203,7 +244,12 @@ fn next_bill(skip: String) -> String {
     let mut i = 0;
     while i < n {
         let name = std::io::fs::list_dir_at("inbox", i) or "";
-        if has_suffix(name, ".bill") && !std::str::contains(skip, "\n" + name + "\n") && (len(next) == 0 || name_before(name, next)) { next = name; }
+        if has_suffix(name, ".bill")
+            && !std::str::contains(skip, "\n" + name + "\n")
+            && (len(next) == 0 || name_before(name, next))
+        {
+            next = name;
+        }
         i = i + 1;
     }
     return next;
@@ -216,7 +262,9 @@ fn day_number(d: String) -> Int {
 }
 
 fn csv_field(s: String) -> String {
-    if std::str::contains(s, ",") || std::str::contains(s, "\"") { return "\"" + std::str::replace(s, "\"", "\"\"") + "\""; }
+    if std::str::contains(s, ",") || std::str::contains(s, "\"") {
+        return "\"" + std::str::replace(s, "\"", "\"\"") + "\"";
+    }
     return s;
 }
 
@@ -228,7 +276,11 @@ fn last_body(journal: String, kind: String, entity: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { out = std::json::find_string_field(line, "body"); }
+        if std::json::find_string_field(line, "kind") == kind
+            && std::json::find_string_field(line, "entity") == entity
+        {
+            out = std::json::find_string_field(line, "body");
+        }
     }
     return out;
 }
@@ -240,7 +292,11 @@ fn task_of(journal: String, evidence: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::json::find_string_field(line, "kind") == "task.born" && std::str::contains(std::json::find_string_field(line, "body"), evidence) { return std::json::find_string_field(line, "entity"); }
+        if std::json::find_string_field(line, "kind") == "task.born"
+            && std::str::contains(std::json::find_string_field(line, "body"), evidence)
+        {
+            return std::json::find_string_field(line, "entity");
+        }
     }
     return "";
 }
@@ -253,7 +309,13 @@ fn state_of(journal: String, task: String) -> String {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let kind = std::json::find_string_field(line, "kind");
-        if std::json::find_string_field(line, "entity") == task && std::str::starts_with(kind, "task.") && kind != "task.born" && kind != "task.planned" { out = kind[5..len(kind)]; }
+        if std::json::find_string_field(line, "entity") == task
+            && std::str::starts_with(kind, "task.")
+            && kind != "task.born"
+            && kind != "task.planned"
+        {
+            out = kind[5..len(kind)];
+        }
     }
     return out;
 }
@@ -327,9 +389,16 @@ fn completion_of(journal: String, task: String, state: String) -> String {
     let linked = last_body(journal, "completion.linked", task);
     if len(linked) > 0 { return "evidence " + std::json::find_string_field(linked, "evidence"); }
     let excepted = last_body(journal, "completion.excepted", task);
-    if len(excepted) > 0 { return "exception: " + std::json::find_string_field(excepted, "why") + " (authorized by " + std::json::find_string_field(excepted, "authorized_by") + ")"; }
+    if len(excepted) > 0 {
+        return "exception: " + std::json::find_string_field(excepted, "why") + " (authorized by "
+            + std::json::find_string_field(excepted, "authorized_by") + ")";
+    }
     let decided = last_body(journal, "decision.reported", task);
-    if len(decided) > 0 { return "decision by " + std::json::find_string_field(decided, "decider") + " via " + std::json::find_string_field(decided, "channel") + " (evidence " + std::json::find_string_field(decided, "evidence") + ")"; }
+    if len(decided) > 0 {
+        return "decision by " + std::json::find_string_field(decided, "decider") + " via "
+            + std::json::find_string_field(decided, "channel") + " (evidence "
+            + std::json::find_string_field(decided, "evidence") + ")";
+    }
     if state == "done" { return "human-reported"; }
     return "open";
 }
@@ -338,18 +407,29 @@ fn completion_of(journal: String, task: String, state: String) -> String {
 // obligation as the record has it; totals by currency; the record's head.
 // The ledger's rows, when memory is named here (GH #646 stage 4; GH #985):
 // the export is a supported ledger query, `hale dna ledger rows`, never SQL
-// of its own; with no memory the record alone is read, as before adoption.
+// of its own; with no memory named it reads nothing.
 fn ledger_rows() -> String {
     let out = hale("dna\nledger\nrows");
     return if out.code == 0 { out.stdout } else { "" };
 }
 
+// The record's rows, in its line format (GH #1590: the record is memory's,
+// read with the clone's kept head DSN).
+fn record_rows() -> String {
+    let out = hale("dna\nrecord-rows");
+    return if out.code == 0 { out.stdout } else { "" };
+}
+
 fn export_week(from: String, to: String) -> String {
-    // the journal at the head the export names, read once: a live organism
-    // moving the ref in between cannot make the rows and the head disagree;
-    // the day's work that lives in the ledger is read beside it
-    let head = std::str::trim(git("rev-parse\nrefs/dna/journal"));
-    let journal = git("show\n" + head + ":journal.jsonl") + "\n" + ledger_rows();
+    // the rows of the record and its Ledger, and the head the export names
+    // (the merged head `status` verified); a live organism may append
+    // after it, which the export does not read
+    let status = hale("dna\nstatus\n--json");
+    let head = std::json::find_string_field(
+        std::json::find_field_raw(status.stdout, "journal"),
+        "chain_head",
+    );
+    let journal = record_rows() + "\n" + ledger_rows();
     let lo = day_number(from);
     let hi = day_number(to);
     let mut out = "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n";
@@ -363,12 +443,17 @@ fn export_week(from: String, to: String) -> String {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if std::json::find_string_field(line, "kind") != "receipt.filed" { continue; }
-        if !has_suffix(std::json::find_string_field(std::json::find_string_field(line, "body"), "name"), ".bill") { continue; }
+        if !has_suffix(
+            std::json::find_string_field(std::json::find_string_field(line, "body"), "name"),
+            ".bill",
+        ) {
+            continue;
+        }
         let evidence = std::json::find_string_field(line, "entity");
         // a document filed twice is one bill
         if std::str::contains(seen, "\n" + evidence + "\n") { continue; }
         seen = seen + evidence + "\n";
-        let b = parse_bill(git("cat-file\n-p\nrefs/dna/receipts/" + evidence[7..len(evidence)]));
+        let b = parse_bill(hale("dna\nrecord-body\n" + evidence).stdout);
         let day = day_number(b.date);
         if day < lo || day > hi { continue; }
         bills = bills + 1;
@@ -376,7 +461,11 @@ fn export_week(from: String, to: String) -> String {
         let task = task_of(journal, evidence);
         let mut assignee = "";
         let mut state = "captured";
-        let mut completion = if b.receipt == "attached" { "receipt attached" } else { "no follow-through" };
+        let mut completion = if b.receipt == "attached" {
+            "receipt attached"
+        } else {
+            "no follow-through"
+        };
         let mut practice = "";
         if len(task) > 0 {
             let handed = last_body(journal, "task.handed", task);
@@ -386,7 +475,10 @@ fn export_week(from: String, to: String) -> String {
             completion = completion_of(journal, task, state);
             if state != "done" && state != "decided" { open = open + 1; }
         }
-        out = out + csv_field(b.id) + "," + csv_field(b.supplier) + "," + csv_field(b.payer) + "," + csv_field(b.purpose) + "," + b.date + "," + b.amount + "," + b.currency + ",pending," + evidence + "," + task + "," + assignee + "," + state + "," + csv_field(completion) + "," + practice + "\n";
+        out = out + csv_field(b.id) + "," + csv_field(b.supplier) + "," + csv_field(b.payer) + ","
+            + csv_field(b.purpose) + "," + b.date + "," + b.amount + "," + b.currency + ",pending,"
+            + evidence + "," + task + "," + assignee + "," + state + "," + csv_field(completion)
+            + "," + practice + "\n";
     }
     let mut trest = totals;
     while len(trest) > 0 {
@@ -394,7 +486,9 @@ fn export_week(from: String, to: String) -> String {
         out = out + "total " + trest[0..nl] + "\n";
         trest = trest[(nl + 1)..len(trest)];
     }
-    return out + "bills: " + to_string(bills) + "; open obligations: " + to_string(open) + "\nfrom the record at " + head + " (" + from + " to " + to + "); capture only, nothing posted\n";
+    return out + "bills: " + to_string(bills) + "; open obligations: " + to_string(open)
+        + "\nfrom the record at " + head + " (" + from + " to " + to
+        + "); capture only, nothing posted\n";
 }
 
 main locus Intake {

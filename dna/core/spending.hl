@@ -49,7 +49,12 @@ locus SpendRecord {
         let now = std::time::now();
         b.int_field("at", now);
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "model.called", ev.attempt_id, b.result());
+        let x = self.journal.append(
+            self.journal.revision(),
+            "model.called",
+            ev.attempt_id,
+            b.result(),
+        );
         budget.account(ev.cost_micros, now);
     }
     // The window's allowance is spent: journaled once per window; the
@@ -66,7 +71,12 @@ locus SpendRecord {
         b.string_field("window", budget.policy.window);
         b.int_field("at", now);
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "budget.exhausted", "budget", b.result());
+        let x = self.journal.append(
+            self.journal.revision(),
+            "budget.exhausted",
+            "budget",
+            b.result(),
+        );
         return BudgetState { exhausted: true, announced: true };
     }
     // The one gate for a model call's spend, in process and out (GH #1131),
@@ -79,11 +89,23 @@ locus SpendRecord {
     // is a row too (it reads its answer at the head); in process the grant
     // is the call going ahead. `request` names the ask a row answers ("" in
     // process); `holder` and `token` are the lease's, when there is one.
-    fn gate(entity: String, ceiling_micros: Int, request: String, holder: String, token: Int, now: Int, budget: Budget) -> SpendAdmission {
+    fn gate(
+        entity: String,
+        ceiling_micros: Int,
+        request: String,
+        holder: String,
+        token: Int,
+        now: Int,
+        budget: Budget
+    ) -> SpendAdmission {
         let a = budget.admit(ceiling_micros, now);
         let b = std::json::Builder { };
         b.begin_object();
-        if a.ok { b.int_field("allowance_micros", a.allowance_micros); } else { b.string_field("why", a.why); }
+        if a.ok {
+            b.int_field("allowance_micros", a.allowance_micros);
+        } else {
+            b.string_field("why", a.why);
+        }
         b.int_field("ceiling_micros", ceiling_micros);
         b.int_field("spent_micros", budget.spent_micros);
         b.int_field("window_micros", budget.policy.allowance_micros);
@@ -94,8 +116,22 @@ locus SpendRecord {
         b.end_object();
         // a refusal in process is landed once a window for what it was for:
         // a Review routed again on a spent window is refused by the row it has
-        if !a.ok && (len(request) > 0 || !self.refused_in_window(entity, now, budget)) { let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", entity, b.result()); }
-        else if len(request) > 0 { let y = self.journal.append(self.journal.revision(), "attempt.allowance_granted", entity, b.result()); }
+        if !a.ok && (len(request) > 0 || !self.refused_in_window(entity, now, budget)) {
+            let x = self.journal.append(
+                self.journal.revision(),
+                "attempt.allowance_refused",
+                entity,
+                b.result(),
+            );
+        }
+        else if len(request) > 0 {
+            let y = self.journal.append(
+                self.journal.revision(),
+                "attempt.allowance_granted",
+                entity,
+                b.result(),
+            );
+        }
         return a;
     }
     // Whether the gate refused a spend for `entity` in the window `now` is in.
@@ -105,7 +141,12 @@ locus SpendRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "attempt.allowance_refused" && e.entity == entity && budget.window_of(std::json::find_int_field(e.body, "at")) == w { return true; }
+            if e.kind == "attempt.allowance_refused"
+                && e.entity == entity
+                && budget.window_of(std::json::find_int_field(e.body, "at")) == w
+            {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -119,8 +160,15 @@ locus SpendRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "attempt.allowance_granted" && e.entity == attempt_id && std::json::find_string_field(e.body, "holder") == holder && std::json::find_int_field(e.body, "token") == token {
-                g = SpendAdmission { ok: true, allowance_micros: std::json::find_int_field(e.body, "allowance_micros") };
+            if e.kind == "attempt.allowance_granted"
+                && e.entity == attempt_id
+                && std::json::find_string_field(e.body, "holder") == holder
+                && std::json::find_int_field(e.body, "token") == token
+            {
+                g = SpendAdmission {
+                    ok: true,
+                    allowance_micros: std::json::find_int_field(e.body, "allowance_micros"),
+                };
             }
             i = i + 1;
         }
@@ -134,7 +182,12 @@ locus SpendRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if (e.kind == "attempt.allowance_granted" || e.kind == "attempt.allowance_refused") && e.entity == a.attempt_id && request_named(e.body) == a.request { return true; }
+            if (e.kind == "attempt.allowance_granted" || e.kind == "attempt.allowance_refused")
+                && e.entity == a.attempt_id
+                && request_named(e.body) == a.request
+            {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -150,7 +203,12 @@ locus SpendRecord {
         b.string_field("request", a.request);
         b.int_field("at", std::time::now());
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", a.attempt_id, b.result());
+        let x = self.journal.append(
+            self.journal.revision(),
+            "attempt.allowance_refused",
+            a.attempt_id,
+            b.result(),
+        );
     }
     // A spend is admitted against the child's grant as it binds now
     // (through the ceiling), and the admission is a row. A window's
@@ -162,24 +220,67 @@ locus SpendRecord {
     // it, so two children cannot each spend the same remainder.
     // `g` is the grant as it binds now (through the ceiling), `own` and
     // `above` the child's and the ceiling's own, as the assembly read them.
-    fn reserve(s: Spend, g: Grant, own: Grant, above: Grant, child: String, parent: String, now: Int) -> Admission {
+    fn reserve(
+        s: Spend,
+        g: Grant,
+        own: Grant,
+        above: Grant,
+        child: String,
+        parent: String,
+        now: Int
+    ) -> Admission {
         let why = permits(g, s, now);
         if len(why) > 0 { return self.refuse(child, s, why); }
         let amt = dec(s.amount);
         let own_limit = amount_of(own.window_amounts, s.currency);
-        let above_limit = if len(parent) > 0 { amount_of(above.window_amounts, s.currency) } else { "" };
+        let above_limit = if len(parent) > 0 {
+            amount_of(above.window_amounts, s.currency)
+        } else {
+            ""
+        };
         let mut tries = 0;
         while tries < 20 {
             let moved = self.journal.refresh();
             let rev = self.journal.revision();
-            if self.spend_reserved(child, s.id, rev) { return self.refuse(child, s, "operation: `" + s.id + "` is already reserved"); }
+            if self.spend_reserved(child, s.id, rev) {
+                return self.refuse(child, s, "operation: `" + s.id + "` is already reserved");
+            }
             if len(own_limit) > 0 {
-                let used = self.window_used(false, child, s.currency, own.window, window_start_of(own.window, now), rev);
-                if used + amt > dec(own_limit) { return self.refuse(child, s, "window: " + s.amount + " " + s.currency + " would bring " + child + "'s " + own.window + " to " + ("" + (used + amt)) + " of " + own_limit); }
+                let used = self.window_used(
+                    false,
+                    child,
+                    s.currency,
+                    own.window,
+                    window_start_of(own.window, now),
+                    rev,
+                );
+                if used + amt > dec(own_limit) {
+                    return self.refuse(
+                        child,
+                        s,
+                        "window: " + s.amount + " " + s.currency + " would bring " + child + "'s "
+                            + own.window + " to " + ("" + (used + amt)) + " of " + own_limit,
+                    );
+                }
             }
             if len(above_limit) > 0 {
-                let used_above = self.window_used(true, parent, s.currency, above.window, window_start_of(above.window, now), rev);
-                if used_above + amt > dec(above_limit) { return self.refuse(child, s, "window: " + s.amount + " " + s.currency + " would bring the ceiling `" + parent + "`'s " + above.window + " to " + ("" + (used_above + amt)) + " of " + above_limit + " (shared by its children)"); }
+                let used_above = self.window_used(
+                    true,
+                    parent,
+                    s.currency,
+                    above.window,
+                    window_start_of(above.window, now),
+                    rev,
+                );
+                if used_above + amt > dec(above_limit) {
+                    return self.refuse(
+                        child,
+                        s,
+                        "window: " + s.amount + " " + s.currency + " would bring the ceiling `"
+                            + parent + "`'s " + above.window + " to " + ("" + (used_above + amt))
+                            + " of " + above_limit + " (shared by its children)",
+                    );
+                }
             }
             let b = std::json::Builder { };
             b.begin_object();
@@ -198,26 +299,65 @@ locus SpendRecord {
             b.string_field("account", funder_account(g.funder));
             b.end_object();
             let r = self.journal.append_exact(rev, "spend.reserved", s.id, b.result());
-            if r.ok { return Admission { ok: true, op: s.id, amount: s.amount, currency: s.currency, authority_epoch: g.authority_epoch }; }
-            if r.error == "claimed" { return self.refuse(child, s, "operation: `" + s.id + "` is already reserved (the store holds the claim)"); }
-            if r.error != "stale_revision" { return Admission { op: s.id, refused: "the record refused the reservation: " + r.error }; }
+            if r.ok {
+                return Admission {
+                    ok: true,
+                    op: s.id,
+                    amount: s.amount,
+                    currency: s.currency,
+                    authority_epoch: g.authority_epoch,
+                };
+            }
+            if r.error == "claimed" {
+                return self.refuse(
+                    child,
+                    s,
+                    "operation: `" + s.id + "` is already reserved (the store holds the claim)",
+                );
+            }
+            if r.error != "stale_revision" {
+                return Admission {
+                    op: s.id,
+                    refused: "the record refused the reservation: " + r.error,
+                };
+            }
             tries = tries + 1;
         }
-        return self.refuse(child, s, "contention: the record moved under twenty attempts to reserve");
+        return self.refuse(
+            child,
+            s,
+            "contention: the record moved under twenty attempts to reserve",
+        );
     }
     // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
     // Authority — a grant born wider than its ceiling — is `grant.refused`, the record's.
     fn refuse(child: String, s: Spend, why: String) -> Admission {
-        let x = self.journal.append(self.journal.revision(), "grant.reservation_refused", child, "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty + " via " + s.route + "): " + why);
+        let x = self.journal.append(
+            self.journal.revision(),
+            "grant.reservation_refused",
+            child,
+            "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty
+                + " via " + s.route + "): " + why,
+        );
         return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: why };
     }
     fn spend_reserved(child: String, op: String, upto: Int) -> Bool {
         let mut i = 0;
         while i < upto {
             let e = self.journal.read(i);
-            if e.kind == "spend.reserved" && e.entity == op && std::json::find_string_field(e.body, "child") == child { return true; }
+            if e.kind == "spend.reserved"
+                && e.entity == op
+                && std::json::find_string_field(e.body, "child") == child
+            {
+                return true;
+            }
             // a reservation from before GH #668: keyed by the child, the op in its body
-            if e.kind == "grant.reserved" && e.entity == child && std::json::find_string_field(e.body, "op") == op { return true; }
+            if e.kind == "grant.reserved"
+                && e.entity == child
+                && std::json::find_string_field(e.body, "op") == op
+            {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -234,9 +374,20 @@ locus SpendRecord {
         let mut i = 0;
         while i < upto {
             let e = self.journal.read(i);
-            if e.kind == "spend.settled" && e.entity == op { settled = true; total = total + dec(std::json::find_string_field(e.body, "spent")); }
-            if e.kind == "spend.compensated" && e.entity == op { total = total - dec(std::json::find_string_field(e.body, "amount")); }
-            if e.kind == "grant.released" && e.entity == child && std::json::find_string_field(e.body, "op") == op { settled = true; total = dec(std::json::find_string_field(e.body, "spent")); }
+            if e.kind == "spend.settled" && e.entity == op {
+                settled = true;
+                total = total + dec(std::json::find_string_field(e.body, "spent"));
+            }
+            if e.kind == "spend.compensated" && e.entity == op {
+                total = total - dec(std::json::find_string_field(e.body, "amount"));
+            }
+            if e.kind == "grant.released"
+                && e.entity == child
+                && std::json::find_string_field(e.body, "op") == op
+            {
+                settled = true;
+                total = dec(std::json::find_string_field(e.body, "spent"));
+            }
             i = i + 1;
         }
         return if settled { "" + total } else { "" };
@@ -264,20 +415,50 @@ locus SpendRecord {
     }
     // A window's use: every reservation in it (one child's, or every
     // child's under a ceiling), at what was actually spent once settled.
-    fn window_used(by_ceiling: Bool, who: String, currency: String, window: String, start: Int, upto: Int) -> Decimal {
+    fn window_used(
+        by_ceiling: Bool,
+        who: String,
+        currency: String,
+        window: String,
+        start: Int,
+        upto: Int
+    ) -> Decimal {
         let mut used = 0.0d;
         let mut i = 0;
         while i < upto {
             let e = self.journal.read(i);
             let reserved_now = e.kind == "spend.reserved";
             let reserved_then = e.kind == "grant.reserved";
-            if (reserved_now || reserved_then) && std::json::find_string_field(e.body, "currency") == currency {
-                let child = if reserved_now { std::json::find_string_field(e.body, "child") } else { e.entity };
-                let op = if reserved_now { e.entity } else { std::json::find_string_field(e.body, "op") };
-                let mine = if by_ceiling { std::json::find_string_field(e.body, "ceiling") == who } else { child == who };
-                if mine && window_start_of(window, std::json::find_int_field(e.body, "at")) == start {
+            if (reserved_now || reserved_then)
+                && std::json::find_string_field(e.body, "currency") == currency
+            {
+                let child = if reserved_now {
+                    std::json::find_string_field(e.body, "child")
+                } else {
+                    e.entity
+                };
+                let op = if reserved_now {
+                    e.entity
+                } else {
+                    std::json::find_string_field(e.body, "op")
+                };
+                let mine = if by_ceiling {
+                    std::json::find_string_field(e.body, "ceiling") == who
+                } else {
+                    child == who
+                };
+                if mine
+                    && window_start_of(window, std::json::find_int_field(e.body, "at")) == start
+                {
                     let spent = self.spent_of(child, op, upto);
-                    used = used + dec(if len(spent) > 0 { spent } else { std::json::find_string_field(e.body, "amount") });
+                    used = used
+                        + dec(
+                            if len(spent) > 0 {
+                                spent
+                            } else {
+                                std::json::find_string_field(e.body, "amount")
+                            },
+                        );
                 }
             }
             i = i + 1;
@@ -298,9 +479,15 @@ locus SpendRecord {
         while tries < 20 {
             let moved = self.journal.refresh();
             let rev = self.journal.revision();
-            if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+            if !self.spend_reserved(child, op, rev) {
+                return "no reservation `" + op + "` for " + child;
+            }
             let last = self.last_settled_seq(op, rev);
-            if read_at >= 0 && last >= read_at { return "`" + op + "` is already settled (attempt " + to_string(self.attempts_of(op, rev)) + " landed while this one was being written)"; }
+            if read_at >= 0 && last >= read_at {
+                return "`" + op + "` is already settled (attempt "
+                    + to_string(self.attempts_of(op, rev))
+                    + " landed while this one was being written)";
+            }
             read_at = rev;
             let b = std::json::Builder { };
             b.begin_object();
@@ -310,7 +497,9 @@ locus SpendRecord {
             b.end_object();
             let x = self.journal.append_exact(rev, "spend.settled", op, b.result());
             if x.ok { return ""; }
-            if x.error != "stale_revision" { return "the record refused the settlement: " + x.error; }
+            if x.error != "stale_revision" {
+                return "the record refused the settlement: " + x.error;
+            }
             tries = tries + 1;
         }
         return "contention: the record moved under twenty attempts to settle `" + op + "`";
@@ -324,8 +513,12 @@ locus SpendRecord {
         if len(by) == 0 { return "a compensation names who authorized it"; }
         let moved = self.journal.refresh();
         let rev = self.journal.revision();
-        if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
-        if len(self.spent_of(child, op, rev)) == 0 { return "`" + op + "` has settled nothing to compensate"; }
+        if !self.spend_reserved(child, op, rev) {
+            return "no reservation `" + op + "` for " + child;
+        }
+        if len(self.spent_of(child, op, rev)) == 0 {
+            return "`" + op + "` has settled nothing to compensate";
+        }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("child", child);

@@ -24,7 +24,11 @@ main locus App {
         subscribe dna::ReviewSettled as on_settled;
     }
     fn on_settled(s: dna::ReviewSettlement) {
-        if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
+        if s.refusal != "" {
+            self.refused_seen = self.refused_seen + 1;
+        } else {
+            self.settled_seen = self.settled_seen + 1;
+        }
     }
     fn rows(j: dna::Journal, kind: String) -> Int {
         let mut n = 0;
@@ -50,100 +54,274 @@ main locus App {
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
+            verification: dna::HaleVerification {
+                receipts: dna::MemoryReceipts { repo: repo },
+                repo: repo,
+            },
             board: dna::Board { who: "board" }
         };
 
         // 1. a practice proposed by the worker's supervisor for the worker: a goal
         let digest = self.dna.propose_knowledge(
-            dna::Idea { id: "p1", kind: "practice", text: "retry a mail send once before raising pressure", author: "org/worker-supervisor" },
+            dna::Idea {
+                id: "p1",
+                kind: "practice",
+                text: "retry a mail send once before raising pressure",
+                author: "org/worker-supervisor",
+            },
             "org/worker-supervisor/worker");
         std::test::assert(std::str::starts_with(digest, "sha256:"), "a digest: " + digest);
         let proposed = self.last(self.dna.journal, "knowledge.proposed");
         std::test::assert_eq_str(proposed.entity, digest, "the row names the digest");
-        std::test::assert(std::str::contains(proposed.body, "\"class\": \"goal\"") && std::str::contains(proposed.body, "\"review_id\": \"" + dna::knowledge_review_id(digest) + "\""), proposed.body);
+        std::test::assert(
+            std::str::contains(proposed.body, "\"class\": \"goal\"")
+                && std::str::contains(
+                    proposed.body,
+                    "\"review_id\": \"" + dna::knowledge_review_id(digest) + "\"",
+                ),
+            proposed.body,
+        );
         // the document is a receipt, recoverable by the digest alone
         let doc = self.dna.verification.receipts.read(digest[7..len(digest)]);
-        std::test::assert(std::str::contains(doc, "\"text\": \"retry a mail send once before raising pressure\"") && std::str::contains(doc, "\"target\": \"org/worker-supervisor/worker\""), "the receipt is the document: " + doc);
+        std::test::assert(
+            std::str::contains(doc, "\"text\": \"retry a mail send once before raising pressure\"")
+                && std::str::contains(doc, "\"target\": \"org/worker-supervisor/worker\""),
+            "the receipt is the document: " + doc,
+        );
         let req = self.last(self.dna.journal, "review.requested");
-        std::test::assert_eq_str(req.entity, "review:" + dna::knowledge_review_id(digest), "a Review pinned to the digest");
-        std::test::assert(std::str::contains(req.body, "\"required_authority\": \"board\"") && std::str::contains(req.body, "\"knowledge_digest\": \"" + digest + "\""), req.body);
+        std::test::assert_eq_str(
+            req.entity,
+            "review:" + dna::knowledge_review_id(digest),
+            "a Review pinned to the digest",
+        );
+        std::test::assert(
+            std::str::contains(req.body, "\"required_authority\": \"board\"")
+                && std::str::contains(req.body, "\"knowledge_digest\": \"" + digest + "\""),
+            req.body,
+        );
 
         // 2. a verdict naming another digest is refused by the Review
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: "sha256:0000", verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: "sha256:0000",
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(100ms);
         std::test::assert_eq_int(self.refused_seen, 1, "refused: wrong digest");
-        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 0, "nothing ratified");
+        std::test::assert_eq_int(
+            self.rows(self.dna.journal, "knowledge.ratified"),
+            0,
+            "nothing ratified",
+        );
         // a leader's verdict does not satisfy the Board's requirement
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "leader", authority: "leader" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "leader",
+            authority: "leader",
+        };
         std::time::sleep(100ms);
         std::test::assert_eq_int(self.refused_seen, 2, "refused: the Board's");
 
         // 3. a second Dna over the same record re-births the pending Review
         self.again = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
+            verification: dna::HaleVerification {
+                receipts: dna::MemoryReceipts { repo: repo },
+                repo: repo,
+            },
             board: dna::Board { who: "board" }
         };
-        std::test::assert_eq_int(self.again.rehydrated, 1, "the pending knowledge Review is re-born");
+        std::test::assert_eq_int(
+            self.again.rehydrated,
+            1,
+            "the pending knowledge Review is re-born",
+        );
 
         // 4. the Board approves: knowledge.ratified rows naming the digest.
         //    (Two assemblies share this program's bus here — the first
         //    and the re-born one — so each hears each settlement; a
         //    governed repository has one organization, so one row.)
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(200ms);
         std::test::assert(self.settled_seen >= 1, "settled");
         let ratified = self.rows(self.again.journal, "knowledge.ratified");
         std::test::assert(ratified >= 1, "ratified");
         let rat = self.last(self.again.journal, "knowledge.ratified");
         std::test::assert_eq_str(rat.entity, digest, "the ratification names the digest");
-        std::test::assert(std::str::contains(rat.body, "\"decided_by\": \"riley\"") && std::str::contains(rat.body, "\"target\": \"org/worker-supervisor/worker\""), rat.body);
+        std::test::assert(
+            std::str::contains(rat.body, "\"decided_by\": \"riley\"")
+                && std::str::contains(rat.body, "\"target\": \"org/worker-supervisor/worker\""),
+            rat.body,
+        );
 
         // 5. a declined proposal: knowledge.declined, nothing ratified
-        let d2 = self.again.propose_knowledge(dna::Idea { id: "p2", kind: "concern", text: "the api drops orders under load", author: "org/worker-supervisor/worker" }, "org/worker-supervisor");
-        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"class\": \"concern\""), "child-authored, bound upward: a concern");
-        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(d2), subject_digest: d2, verdict: "reject", reviewer: "riley", authority: "board" };
+        let d2 = self.again.propose_knowledge(
+            dna::Idea {
+                id: "p2",
+                kind: "concern",
+                text: "the api drops orders under load",
+                author: "org/worker-supervisor/worker",
+            },
+            "org/worker-supervisor",
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last(self.again.journal, "knowledge.proposed").body,
+                "\"class\": \"concern\"",
+            ),
+            "child-authored, bound upward: a concern",
+        );
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: dna::knowledge_review_id(d2),
+            subject_digest: d2,
+            verdict: "reject",
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(200ms);
         std::test::assert(self.rows(self.again.journal, "knowledge.declined") >= 1, "declined");
-        std::test::assert_eq_int(self.rows(self.again.journal, "knowledge.ratified"), ratified, "nothing more ratified");
+        std::test::assert_eq_int(
+            self.rows(self.again.journal, "knowledge.ratified"),
+            ratified,
+            "nothing more ratified",
+        );
 
         // 6. a lateral proposal is refused before any Review
-        let d3 = self.again.propose_knowledge(dna::Idea { id: "p3", kind: "idea", text: "siblings coordinating", author: "org/a" }, "org/b");
+        let d3 = self.again.propose_knowledge(
+            dna::Idea { id: "p3", kind: "idea", text: "siblings coordinating", author: "org/a" },
+            "org/b",
+        );
         std::test::assert_eq_str(d3, "", "refused");
-        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "lateral"), "the reason");
+        std::test::assert(
+            std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "lateral"),
+            "the reason",
+        );
 
         // 7. a node target must be one the record holds (seed/pull): refused
         //    naming the node until a graph.node row states it
-        let d4 = self.again.propose_knowledge(dna::Idea { id: "p4", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
+        let d4 = self.again.propose_knowledge(
+            dna::Idea { id: "p4", kind: "idea", text: "a locus owns its state", author: "org" },
+            "language:hale",
+        );
         std::test::assert_eq_str(d4, "", "no node, refused");
-        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "unknown node") && std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "language:hale"), "naming it: " + self.last(self.again.journal, "knowledge.refused").body);
-        let stated = self.again.journal.append(self.again.journal.revision(), "graph.node", "language:hale", "{\"kind\": \"language\", \"text\": \"Hale\"}");
+        std::test::assert(
+            std::str::contains(
+                self.last(self.again.journal, "knowledge.refused").body,
+                "unknown node",
+            )
+                && std::str::contains(
+                    self.last(self.again.journal, "knowledge.refused").body,
+                    "language:hale",
+                ),
+            "naming it: " + self.last(self.again.journal, "knowledge.refused").body,
+        );
+        let stated = self.again.journal.append(
+            self.again.journal.revision(),
+            "graph.node",
+            "language:hale",
+            "{\"kind\": \"language\", \"text\": \"Hale\"}",
+        );
         std::test::assert(stated.ok, "the record states the node");
-        let d5 = self.again.propose_knowledge(dna::Idea { id: "p5", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
+        let d5 = self.again.propose_knowledge(
+            dna::Idea { id: "p5", kind: "idea", text: "a locus owns its state", author: "org" },
+            "language:hale",
+        );
         std::test::assert(len(d5) > 0, "the node stated, the proposal stands");
-        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"class\": \"goal\"") && std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"target\": \"language:hale\""), self.last(self.again.journal, "knowledge.proposed").body);
+        std::test::assert(
+            std::str::contains(
+                self.last(self.again.journal, "knowledge.proposed").body,
+                "\"class\": \"goal\"",
+            )
+                && std::str::contains(
+                    self.last(self.again.journal, "knowledge.proposed").body,
+                    "\"target\": \"language:hale\"",
+                ),
+            self.last(self.again.journal, "knowledge.proposed").body,
+        );
 
         // 8. the graph the record states includes a ratified hole's nodes: a
         //    hole creating position:api/dev takes a binding, as the projection
         //    sees it; a retired node refuses, a stated one still accepts
         let hole = "{\"kind\": \"graph\", \"rows\": [{\"kind\": \"graph.node\", \"entity\": \"position:api/dev\", \"body\": \"{\\\"kind\\\": \\\"position\\\", \\\"name\\\": \\\"api/dev\\\"}\"}]}";
         let raw = self.again.verification.receipts.store(hole);
-        let d6 = self.again.propose_knowledge(dna::Idea { id: "p6", kind: "idea", text: "the api developer keeps the surface small", author: "org" }, "position:api/dev");
+        let d6 = self.again.propose_knowledge(
+            dna::Idea {
+                id: "p6",
+                kind: "idea",
+                text: "the api developer keeps the surface small",
+                author: "org",
+            },
+            "position:api/dev",
+        );
         std::test::assert_eq_str(d6, "", "the hole is not ratified yet: refused");
-        let ratified_hole = self.again.journal.append(self.again.journal.revision(), "knowledge.ratified", "sha256:" + raw, "{\"class\": \"goal\"}");
+        let ratified_hole = self.again.journal.append(
+            self.again.journal.revision(),
+            "knowledge.ratified",
+            "sha256:" + raw,
+            "{\"class\": \"goal\"}",
+        );
         std::test::assert(ratified_hole.ok, "the hole is ratified");
-        let d7 = self.again.propose_knowledge(dna::Idea { id: "p7", kind: "idea", text: "the api developer keeps the surface small", author: "org" }, "position:api/dev");
+        let d7 = self.again.propose_knowledge(
+            dna::Idea {
+                id: "p7",
+                kind: "idea",
+                text: "the api developer keeps the surface small",
+                author: "org",
+            },
+            "position:api/dev",
+        );
         std::test::assert(len(d7) > 0, "a position a ratified hole created takes a binding");
-        let gone = self.again.journal.append(self.again.journal.revision(), "graph.retired", "language:hale", "{}");
+        let gone = self.again.journal.append(
+            self.again.journal.revision(),
+            "graph.retired",
+            "language:hale",
+            "{}",
+        );
         std::test::assert(gone.ok, "the record retires the stated node");
-        let d8 = self.again.propose_knowledge(dna::Idea { id: "p8", kind: "idea", text: "a locus owns its state", author: "org" }, "language:hale");
+        let d8 = self.again.propose_knowledge(
+            dna::Idea { id: "p8", kind: "idea", text: "a locus owns its state", author: "org" },
+            "language:hale",
+        );
         std::test::assert_eq_str(d8, "", "a retired node refuses");
-        let gone_hole = self.again.journal.append(self.again.journal.revision(), "graph.retired", "position:api/dev", "{}");
+        let gone_hole = self.again.journal.append(
+            self.again.journal.revision(),
+            "graph.retired",
+            "position:api/dev",
+            "{}",
+        );
         std::test::assert(gone_hole.ok, "and a hole's node can be retired");
-        let d9 = self.again.propose_knowledge(dna::Idea { id: "p9", kind: "idea", text: "the api developer keeps the surface small", author: "org" }, "position:api/dev");
+        let d9 = self.again.propose_knowledge(
+            dna::Idea {
+                id: "p9",
+                kind: "idea",
+                text: "the api developer keeps the surface small",
+                author: "org",
+            },
+            "position:api/dev",
+        );
         std::test::assert_eq_str(d9, "", "retired, the hole's node refuses too");
         dna::scratch_done(repo);
     }

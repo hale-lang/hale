@@ -1,187 +1,104 @@
-# The organism, part by part
+# DNA Architecture & Runtime Overview
 
-The product is the **organism**: your Hale application, plus the parts
-that let it be governed, changed, run and watched. Someone asks for an
-outcome; the organism turns it into work, proposes a change in a
-sandbox, proves it with the toolchain, asks whoever holds the authority,
-applies exactly what was approved, runs it, and watches that it works.
-Every decision is a row in a record that lives in your git repository.
+In Hale, an **organism** combines your application with a self-governing runtime control plane (`dna/org`), an append-only event log and operational state store in PostgreSQL (`memory`), a NATS JetStream event broker (`nerves`), a Prometheus metrics store (`senses`), and a credential boundary (`skin`). When you submit a request, the runtime plans the work, proposes code changes in a sandboxed Git worktree, verifies the candidate with the Hale toolchain, routes the diff and evidence for review, applies approved commits, and monitors the deployed process.
 
-This page is the map. Each part has one job, one place in the tree, and
-one chapter that covers it.
+```sh
+hale habitat up
+hale habitat graft demo
+hale dna dev demo
+hale dna task create --as alice "document the Echo locus in main.hl"
+```
 
-## How to read this section
+## System Components
 
-- Start with [Getting started](./getting-started.md): make an
-  organism, fill its vault, start it, answer the first Review.
-- Then [One task, end to end](./workflow.md): one request from the
-  terminal to a change kept or rolled back, with the record's rows
-  beside each step.
-- The part chapters follow, one per group of parts. Read the one you
-  need when you need it.
-- [Shaping and governing it](./shaping.md) is how you change what the
-  organism is: its purpose, practices, grant and law.
-- [DNA, the building block](./dna.md) comes last on purpose. DNA
-  (`vendor/dna`, the `dna::Dna` locus, the `hale dna` commands) is what
-  every part is assembled from. It is the inside view, and you do not
-  need it to run an organism.
-- [Troubleshooting](./troubleshooting.md) and the
-  [Reference](./reference.md) are for looking things up.
+Every DNA component maps to a specific software service or source module in your repository and local habitat:
 
-## The parts
-
-| part | its one job | where it lives | chapter |
+| Component | Infrastructure / Role | Source / Habitat Location | Chapter |
 | --- | --- | --- | --- |
-| **genome** | what the organism is made of: the application's source, the org chart and catalogs under `dna/org`, and the vendored core in `vendor/dna`; a node pulls it from the forge's default branch | your repository; the host's git for it is `dna/host/genome.hl` | [Shaping](./shaping.md) |
-| **record** | long-term memory: every decision, in order, never rewound, as one commit per row under `refs/dna/*` | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the record](./memory.md) |
-| **memory** | working memory: the ledger of the day's work, claims, the graph, protected evidence; Postgres, a role per client | `dna/core/memory_spine.hl`, `dna/host/memory.hl` | [Memory and the record](./memory.md) |
-| **nerves** | carry facts between parts after their row has landed: NATS JetStream, one stream per organization, one user per part | `dna/core/nerves.hl`, `dna/host/nerves.hl`, `dna/nats.conf` | [The nerves](./nerves.md) |
-| **face** | where the organism shows itself to people and takes their intent: a browser surface the head serves | `dna/face/` | [The head and the face](./head.md) |
-| **head** | the edge API: sessions, principals, commands answered with a receipt; it never performs work | `dna/api/` | [The head and the face](./head.md) |
-| **body** | the hosts the organism runs on, and the lease that says which body runs the record | `dna/core/infrastructure.hl`, `dna/host/infra.hl` | [The heart and the body](./heart.md) |
-| **spine** | the program every node runs: it relays the record's requests, projects the record into memory, admits and settles work, runs the workflows | `dna/host/host.hl` over the organization in `dna/org/main.hl` | [The spine](./spine.md) |
-| **legs** | the workers: each claims an attempt through the head, wears its hat, hands the outcome back, and holds nothing between tasks | `dna/core/legs/`, performers in `dna/org/work.hl` | [Legs, hands and voice](./legs.md) |
-| **hat** | one content-addressed context per unit of work | `dna/core/hat.hl` | [Legs, hands and voice](./legs.md) |
-| **hands** | the tools a Work's output contract gives a performer, and what runs them: git, the forge, the toolchain, the record's reads | `dna/core/contracts.hl`, `dna/core/tools.hl`, `dna/core/legs/hands.hl` | [Legs, hands and voice](./legs.md) |
-| **voice** | the one seam to any model: the catalog, the model mapping, the adapters, the tape | `dna/core/models.hl`, `dna/core/model_map.hl`, `dna/core/tape.hl`, the catalog in `dna/org/models.hl` | [Legs, hands and voice](./legs.md) |
-| **heart** | the application itself; its pulse is the events it publishes on its own subjects, each landed as a reading row | your application's seed; the host lands its events in `dna/host/pulse.hl` | [The heart and the body](./heart.md) |
-| **senses** | the readings every long-running part serves, kept in one store | `dna/core/senses.hl`, the store's config in `dna/senses.yml` | [Senses and reflexes](./senses.md) |
-| **reflexes** | reactions that need no plan: an instance that is down is restarted | `dna/reflexes/main.hl`; the node acts in `dna/host/reflex.hl` | [Senses and reflexes](./senses.md) |
-| **skin** | the trust boundary: the vault, roles and accounts, OIDC, sealed credentials, closures recorded as violations | `dna/host/secrets.hl`, `dna/core/principal.hl`, `dna/oidc/stub.hl` | [The skin](./skin.md) |
+| **Habitat** | Local or hosted control plane (Docker Compose) that provisions and supervises organisms | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local` | [The Habitat](../habitat.md) |
+| **Genome** | Git repository containing application source, organization config (`dna/org/`), and vendored core (`vendor/dna`); nodes pull from the forge's default branch | Repository root; host Git wrapper in `dna/host/genome.hl` | [Shaping and Governing](./shaping.md) |
+| **Record** | Append-only audit log (`record_rows` table in PostgreSQL schema `dna_<identity>`), storing one signed row per governance or mutation event | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the Record](./memory.md) |
+| **Memory** | Operational PostgreSQL state store (schema `dna_<identity>`, with `owner`, `spine`, and `head` DB roles) holding the daily `ledger`, organizational `graph`, and sealed `receipt` evidence | `dna/core/memory_spine.hl`, `dna/host/memory.hl`; habitat service `memory-<id>` | [Memory and the Record](./memory.md) |
+| **Nerves** | NATS JetStream broker (`DNA_<ID>` stream, one user per role) relaying durable events between host, spine, heart, and reflexes after rows land in PostgreSQL | `dna/core/nerves.hl`, `dna/host/nerves.hl`; habitat service `nerves-<id>` | [The Nerves](./nerves.md) |
+| **Face** | Browser web UI served in front of the edge API for viewing state and submitting intent | `dna/face/` | [The Head and the Face](./head.md) |
+| **Head** | Edge HTTP and Unix socket API handling sessions, principals, and command submissions answered with receipts; never executes workflows | `dna/api/` | [The Head and the Face](./head.md) |
+| **Body** | Host supervisor holding the active record lease in PostgreSQL and expressing code changes (via local restart, `ShellDeployment`, or `hale node` fleet) | `dna/core/infrastructure.hl`, `dna/host/infra.hl` | [The Heart and the Body](./heart.md) |
+| **Spine** | Node runtime (`hale dna dev` or `hale dna run`) that relays unanswered requests onto NATS, projects the record into the PostgreSQL graph, enforces budgets/leases, and executes workflows | `dna/host/host.hl` supervising `dna/org/main.hl` | [The Spine](./spine.md) |
+| **Legs** | Stateless worker processes (`hale dna work`) that claim workflow attempts through the head, load a context `hat`, run tools, and submit outcomes | `dna/core/legs/`, performers in `dna/org/work.hl` | [Legs, Hands, and Voice](./legs.md) |
+| **Hat** | Content-addressed context bundle assembled per unit of work | `dna/core/hat.hl` | [Legs, Hands, and Voice](./legs.md) |
+| **Hands** | Sandboxed tool capabilities granted by a work's output contract: Git, Forge, Hale toolchain, and record reads | `dna/core/contracts.hl`, `dna/core/tools.hl`, `dna/core/legs/hands.hl` | [Legs, Hands, and Voice](./legs.md) |
+| **Voice** | Model routing layer, catalog, provider adapters, and call recording tape | `dna/core/models.hl`, `dna/core/model_map.hl`, `dna/core/tape.hl`, `dna/org/models.hl` | [Legs, Hands, and Voice](./legs.md) |
+| **Heart** | The supervised Hale application publishing `<org>.app.<name>.<event>` over NATS, persisted by the host as `reading.recorded` rows | Application seed; host ingestion in `dna/host/pulse.hl` | [The Heart and the Body](./heart.md) |
+| **Senses** | Prometheus metrics store scraping `/metrics` from long-running DNA components | `dna/core/senses.hl`; habitat service `senses-<id>` | [Senses and Reflexes](./senses.md) |
+| **Reflexes** | Automated health daemon querying Prometheus for `instance.down` (`dna_instance_up == 0`) and triggering instance restarts | `dna/reflexes/main.hl`, node handler in `dna/host/reflex.hl` | [Senses and Reflexes](./senses.md) |
+| **Skin** | Security boundary: Vault secret slots (`~/.cache/hale/vault` or `HALE_VAULT_ADDR` + `std::secret::Credential`), DB/NATS role grants, OIDC authentication, and absorbed closure violations (`violation.recorded`) | `dna/host/secrets.hl`, `dna/core/principal.hl`, `dna/oidc/stub.hl` | [The Skin](./skin.md) |
 
-Schedules, which say when a workflow runs and who convenes it, have
-their own chapter: [Schedules](./schedules.md).
+Recurring workflow triggers and conveners are covered in [Schedules](./schedules.md).
 
-## Two rules
+## Documentation Map
 
-Every part keeps two rules. They are why nothing is half-written and
-why a restart loses nothing.
+- **[Getting Started](./getting-started.md)**: Provision an organism with `hale habitat graft`, populate its vault slots, start `hale dna dev`, ratify the initial Board reviews, and submit a task.
+- **[One Task, End to End](./workflow.md)**: Trace a single task from terminal submission through sandbox editing, toolchain verification, review, fast-forward merge, observation window, and retention or rollback.
+- **Component Guides**: Read the individual chapters in the table above for operational details on storage, NATS subjects, workflows, workers, deployment, metrics, and secrets.
+- **[Shaping and Governing](./shaping.md)**: Configure the organism's purpose, practices, autonomy grants, and compile-time architectural laws (`dna/org/law.hl`).
+- **[DNA, the Building Block](./dna.md)**: Reference for the internal `vendor/dna` library, the `dna::Dna` locus, and generated source files.
+- **[Troubleshooting](./troubleshooting.md)** and **[CLI & Row Reference](./reference.md)**: Lookup tables for common errors, CLI flags, environment variables, and record row schemas.
 
-**One store per step.** A workflow step writes to exactly one store,
-by that store's one writer, and the next step reads what the previous
-one made durable. A workflow definition names the store of each step
-in one word (`record`, `forge`, `genome`, `heart`, `graph`, `nerves`,
-`memory`, `vault` or `host`), and a step that names none, or two, is
-refused before anything runs. A write whose subject moved since it was
-read is refused and decided again. There is no transaction spanning
-two stores, and none is needed. [The spine](./spine.md) has the
-engine.
+## Core Execution Invariants
 
-**Row first.** Every live signal is a row before it is sent. When you
-ask for something, the command writes a row and stops; a node relays
-that row onto the nerves until the record holds the answer. Events
-name a row by id, arrive at least once, and are consumed once by that
-id. An event from outside, such as the application's own, is a
-signal, not a fact: it lands as a `reading.recorded` row before
-anything acts on it. [The nerves](./nerves.md) has the relay.
+Every component in the DNA runtime enforces two persistence rules so that crashes and restarts never leave partial state or lost work:
 
-## Trust tiers
+1. **One store per workflow step**: Every workflow step declares a single target store (`record`, `forge`, `genome`, `heart`, `graph`, `nerves`, `memory`, `vault`, or `host`) and writes exclusively through that store's designated writer. The next step reads what the previous step made durable. Workflow definitions that name zero or multiple stores for a step are rejected before execution. Concurrent writes whose target state moved since being read are rejected and re-evaluated, avoiding distributed transactions across stores. See [The Spine](./spine.md).
+2. **Row-first persistence**: Every state transition or user command writes a durable row to PostgreSQL before any live notification is sent. CLI commands write a request row and wait; a running node relays unanswered rows onto NATS JetStream until an answering row lands in the record. NATS messages carry row IDs, deliver at least once, and are deduplicated idempotently by ID. External application events from the `heart` are persisted as `reading.recorded` rows before any workflow or reflex acts on them. See [The Nerves](./nerves.md).
 
-Each part sits in one tier. A tier is defined by what it is handed and
-what it is never handed.
+## Trust Tiers & Credential Isolation
 
-| tier | who | is handed | is never handed |
+Components are partitioned into eight trust tiers defined by which credentials they receive and which resources they cannot access:
+
+| Tier | Component / Actor | Credentials & Access Granted | Access Explicitly Denied |
 | --- | --- | --- | --- |
-| devices | a person's browser | a session cookie from the head | keys, git, a shell, the broker |
-| identity and the forge | an OpenID provider; the forge (GitHub through `gh`, behind the core's `Forge` interface) | who a person is; where the genome and the record are pushed, and the verdicts on pull requests | anything operational |
-| the head | the edge API and the face it serves | sessions; the mapping from a principal to positions; its own checkout of the record; memory's head role (take and fence a claim, read, write the ledger in its people's names); a broker user that may subscribe and never publish | the spine's database role |
-| the body | the spine, run by `hale dna run` or `dev` on each node | memory's spine role; the nerves' spine user; the body lease | the owner's and the head's credentials, for memory and for the nerves |
-| the body's legs | `hale dna work` | the lease on the attempt it claimed; the model keys in the vault of the machine it runs on | a database role: everything goes through the head |
-| the heart | your application | its own store and secrets; a broker user that may publish only on its own subjects, `<org>.app.<name>.>` | the record, DNA's database, DNA's other credentials, DNA's subjects |
-| private services | memory (Postgres), nerves (NATS), the vault, the senses' store (Prometheus), the reflexes | servers that listen on `127.0.0.1` only; the reflexes hold the store's read URL and a publish-only user | reachability from a device |
-| external | a model's API | one prompt and one key, per call | anything it was not sent |
+| **Devices** | User's web browser | Session cookie from the head | Private keys, Git access, shell access, NATS broker |
+| **Identity & Forge** | OpenID provider; GitHub (`gh` via core `Forge` interface) | User identity assertions; genome/record Git pushes and pull request verdicts | Operational runtime credentials or databases |
+| **The Head** | Edge API (`dna/api/`) and web UI (`dna/face/`) | User sessions; principal-to-position mappings; local record checkout; PostgreSQL `head` role (claim fencing, reads, ledger appends on behalf of users); subscribe-only NATS user | PostgreSQL `spine` role; NATS publish permissions |
+| **The Body** | Spine runtime (`hale dna run` or `hale dna dev`) | PostgreSQL `spine` role; NATS `spine` user; active body lease | PostgreSQL and NATS `owner` and `head` credentials |
+| **The Body's Legs** | Worker processes (`hale dna work`) | Lease on the claimed attempt; model API keys from the local machine's vault | Direct PostgreSQL role (all reads and writes go through the head API) |
+| **The Heart** | Supervised Hale application | Application-owned database and secrets; NATS `app-<name>` user restricted to publishing on `<org>.app.<name>.>` | DNA record, DNA PostgreSQL schema, DNA vault entries, `<org>.dna.>` NATS subjects |
+| **Private Services** | PostgreSQL (`memory`), NATS (`nerves`), Vault, Prometheus (`senses`), `dna/reflexes` | Loopback-only listeners (`127.0.0.1`); reflexes receive Prometheus read URL and NATS `reflexes` publish-only user | Direct network reachability from external user devices |
+| **External APIs** | Hosted LLM providers | Single prompt and API key per HTTP request | Any repository files or state not explicitly included in the prompt |
 
-The local vault is one directory per user. Any program that user runs
-could read any entry by name, so what keeps a part to its own
-credential is what it is handed, not what it could read.
-[The skin](./skin.md) covers the vault and the accounts.
+> [!NOTE]
+> The local vault is a single directory per OS user (`~/.cache/hale/vault` with mode `0600` files). Because any process running under that OS user could theoretically read the filesystem, component isolation on a single machine relies on passing each process only the vault entry names it is authorized to resolve. See [The Skin](./skin.md).
 
-## What it will and won't do
+## Capabilities & Non-Goals
 
-Plainly, so you can decide whether it fits.
+### What DNA Does
 
-### It will
+- **Turns requests into durable workflows**: Accepts natural-language tasks from the CLI (`hale dna task create`) or web UI (`face`) and executes them as tracked workflow runs in PostgreSQL.
+- **Proposes code changes in a sandbox**: Opens an isolated Git worktree where the editor agent is restricted to four tools: `read`, `edit`, `format`, and `check`.
+- **Verifies candidates with sealed receipts**: Runs base artifact cutting, `hale fmt`, `hale check`, `hale verify`, `hale test`, fleet composition checks, rollback rehearsal, and semantic diffing. Every step's output is stored as a content-addressed receipt in PostgreSQL.
+- **Presents unified review evidence**: Displays the source diff, structural semantic diff, and verification receipts pinned to the exact candidate commit in the CLI, Iris, `hale dna ui`, and mirrored GitHub pull requests.
+- **Delegates bounded reviews to the Leader**: Allows the Leader model to approve changes that fall strictly within the Board's `AutonomyBoundary` grant (`dna/org/main.hl`), logging its reasoning in the record, while escalating everything else to human Board members.
+- **Expresses, observes, and rolls back changes**: Fast-forwards the repository to the approved commit, restarts or deploys the application, monitors health over an observation window, and automatically resets to the base commit if the process exits or fails fitness checks.
+- **Governs its own organization code**: Applies changes to `dna/org/` through the same review and verification pipeline (always requiring human Board approval) and restarts the organization process upon application.
+- **Routes human tasks**: Assigns human work items as tracked `case` tasks and waits across restarts until the assignee completes them with `hale dna task done`.
+- **Resumes cleanly across restarts**: Reconstructs all active workflow executions, steps, and attempts from PostgreSQL under their original IDs.
 
-- Take a request in a sentence, from the terminal
-  (`hale dna task create`) or from the face, and turn it into one
-  execution of a workflow the record keeps.
-- Make a proposed change in a sandbox worktree of your repository.
-  The editor holds four tools there: read, edit, format and check.
-- Prove the candidate: its base artifact, format, check, verify,
-  tests, the fleet it would deploy, a rehearsed rollback, and the
-  structural diff. Each result is a receipt in the record.
-- Show the source diff, the semantic diff and the evidence together,
-  pinned to one commit: in the terminal, in iris, on the read-only
-  page `hale dna ui` serves, and as a pull request when GitHub is
-  configured.
-- Let the Leader, a model, decide inside a grant the Board gave, with
-  its reasoning on the record, and ask the Board for everything else.
-- Apply exactly the approved commit, express it (a restart under
-  `hale dna dev`, a deploy row every node of a fleet answers, or your
-  own deployment command), watch it for a window, and keep it or roll
-  it back.
-- Grow its own org chart through the same door: a change to the
-  organization is the Board's to review, and applying it restarts the
-  organization.
-- Hand a person's job to that person as a Task, and wait for them.
-- Run work as workflow definitions written in code, and resume every
-  execution after a restart under the same ids.
-- Record all of it in order: in git under `refs/dna/*`, and, once you
-  adopt the ledger, the day's work in memory.
+### What DNA Refuses to Do
 
-### It won't
+- **Never applies unreviewed code**: Every code change requires a recorded `approve` verdict from either a human Board member or the Leader operating within a Board-ratified grant.
+- **Never grants the editor commit or deploy access**: Compile-time architectural claims in `dna/org/law.hl` forbid the editor from committing directly to the genome, opening arbitrary worktrees, applying mutations, or reading protected knowledge. Breaking these rules fails `hale check` with a witness path.
+- **Never relies on structural diff alone for runtime behavior**: Semantic diffs verify topology and architectural claims, not expression-level handler logic; source diffs are always presented alongside semantic diffs. (See `dna/kill-test/WALKTHROUGH.md` for the empirical evaluation behind this requirement.)
+- **Never expands the org chart autonomously**: Repeated `pressure` signals generate an `appendage.proposed` review item, but no new component joins the organization without human Board approval.
+- **Never migrates in-memory process state**: Application restarts terminate the old OS process and launch the new binary from its constructors.
+- **Never computes a single cross-seed semantic diff**: A review's semantic diff covers the edited seed; `fleet.deploy` rows track which fleet instances are affected.
+- **Never auto-generates pressure from application metrics**: Pressure signals must be explicitly submitted via `hale dna pressure raise` or `hale dna ui`.
+- **Never executes complex remediation in reflexes**: The `dna/reflexes` daemon implements a single rule (`instance.down` triggers an instance restart). It does not perform rollbacks or backoff policies.
+- **Never accepts write commands on `hale dna ui`**: `hale dna ui` is a read-only record viewer (except for the pressure signal form); interactive commands go through `hale dna head` and `face`.
+- **Never admits workflows that write to `heart`, `vault`, or `host`**: Workflow definitions with steps targeting those stores—and leg `HeartHand` or `DeployHand` calls—are rejected at admission (`hale dna definitions` lists the refusal reason).
+- **Never reads model API keys from shell environment variables**: Model keys must be stored in vault slots (`model-<NAME>`) via `hale dna secret set`.
+- **Never runs without Git**: Candidate branches, base commits, and rollbacks rely on a Git repository.
+- **Never guarantees exactly-once external side effects across crashes**: Record state transitions happen once, but external adapter calls interrupted by a crash require either an idempotent adapter or manual resolution via `hale dna effect resolve`.
+- **Never auto-closes human cases**: Tasks handed to a person remain open until that assignee runs `hale dna task done` (or the person is retired to a successor via `hale dna retire`).
+- **Never exposes CLI workflow cancellation**: While the workflow engine supports `WorkflowCancelRequested` internally, no `hale dna` CLI command issues cancellations.
 
-- **Apply anything without a verdict.** The Leader's verdict is a
-  model's, inside a grant only the Board writes; the Board's is a
-  person's.
-- **Let the editor commit, open worktrees, apply, or read memory's
-  knowledge.** The law in `dna/org/law.hl` forbids each, and a wiring
-  that breaks it fails to build, with a witness path.
-- **See behaviour in the structural view.** The semantic diff sees
-  structure and rules and is blind to what a handler computes. That is
-  why the source diff is always beside it.
-- **Grow without the Board.** Persistent pressure becomes a proposal;
-  nothing joins the org chart until the Board approves the commit.
-- **Migrate live state.** A restart is a restart. State the
-  application keeps only in memory is gone across a change, as it
-  would be across any deploy.
-- **Diff the fleet as a whole.** A Review's semantic diff is the edited
-  seed's. The deploy row names the instances it reaches.
-- **Raise pressure from your metrics on its own.**
-  `hale dna pressure raise` writes a pressure signal; nothing raises
-  one from a service's metrics.
-- **React beyond one reflex.** The reflexes have one rule: an instance
-  its node reads as down is restarted. They do not roll back or back
-  off.
-- **Take commands on `hale dna ui`.** That page reads the record and
-  refuses every form. Commands go through the head, which serves the
-  face.
-- **Run a definition whose step writes the heart, the vault or a
-  host.** Such a definition is refused at admission, and
-  `hale dna definitions` says why. A leg's deploy and heart hands
-  refuse too.
-- **Read a model key from the environment.** A model key is a vault
-  slot, `model-<NAME>`, filled with `hale dna secret set`.
-- **Run without git.** The record is refs in your repository, changes
-  are commits, rollbacks are resets. Teammates and nodes share it
-  through a remote.
-- **Promise an external effect happened once.** A transition happens
-  once in the record. Whether a performer's effect ran once across a
-  restart is its adapter's to say; one that cannot say leaves the
-  attempt for a person (`hale dna effect resolve`).
-- **Close a person's job for them.** A case waits for its person's
-  `hale dna task done`, through any restart.
-- **Cancel an execution from the terminal.** The engine can cancel;
-  no `hale dna` verb asks it to.
-
-### What the evidence supports
-
-Before the apply path was built, reviewers decided planted changes
-from the structural diff alone, the source diff alone, and both. The
-source diff and the combined view decided every case; the structural
-view alone decided the rule-backed cases and correctly held on the
-rest. So the combined view is what you get, and what the Leader gets.
-The write-up is `dna/kill-test/WALKTHROUGH.md` in the hale repository.
-
-The contract behind every statement on these pages is
-`spec/dna.md`.
+The formal specification for the DNA runtime is maintained in `spec/dna.md`.

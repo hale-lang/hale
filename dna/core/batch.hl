@@ -7,7 +7,9 @@
 //   open <name> [under <node>] | <mandate>
 //   fill <name> <holder>                fill * <holder>   (every vacant seat)
 //   vacate <name> <holder>
-//   practice <name> | <text>
+//   practice <name> [for <position>] | <text>
+//   law <name> [for <position>] | <text>   (a practice proposed as law, GH #1591)
+//   idea <name> [for <position>] | <text>  (knowledge, e.g. an external source)
 //   assign <name> reviews <node>        unassign <name> reviews <node>
 //   close <name>
 //   merge <name> into <name>            split <name> into <name> <name>
@@ -17,7 +19,10 @@
 //   nursery <source>                    (a nursery the Board trusts for packs)
 //
 // `#` starts a comment, and blank lines are skipped. A name is a position's,
-// with or without its `position:` prefix.
+// with or without its `position:` prefix. A practice or an idea `for` a
+// position is bound to it (its target), and is otherwise bound to `org`; one
+// already in force with the same text and target is kept, not proposed
+// again, so a pack adopted again proposes only what it adds.
 //
 // A batch is checked whole before it is proposed (`batch_plan`): each step
 // against the graph the record states and the steps beside it, and the
@@ -37,7 +42,7 @@
 // refused whole as stale, never half applied.
 //
 // A batch may be planned on proposals still pending (`batch_plan_on`, what
-// `hale dna init --with <pack>` does with the holes init just proposed):
+// `hale habitat graft --with <pack>` does with the holes init just proposed):
 // planned as though they were ratified, it names those it stands on
 // (`planned_on`), and its ratification waits until each of them is decided —
 // ratified, it is planned again against the record and applied; one of them
@@ -45,7 +50,9 @@
 
 // A planned batch. `steps` are the normalized steps, one a line:
 // `open\t<position>\t<under>\t<mandate>`, `fill\t<position>\t<holder>` or
-// `vacate\t<position>\t<holder>` or `practice\t<name>\t<text>`.
+// `vacate\t<position>\t<holder>`, `practice\t<name>\t<text>[\t<law>[\t<target>]]`
+// or `idea\t<name>\t<text>[\t\t<target>]` (`<law>` is `law` or empty, and
+// with no target it is bound to `org`).
 // `before` and `after` are org charts as `org_chart` writes them.
 type BatchPlan {
     ok: Bool = false;
@@ -109,7 +116,10 @@ fn batch_position(name: String) -> String {
 
 // Whether `w` is one word a position or holder can be named by.
 fn batch_word(w: String) -> Bool {
-    return len(w) > 0 && !std::str::contains(w, " ") && !std::str::contains(w, "|") && !std::str::contains(w, "\t");
+    return len(w) > 0
+        && !std::str::contains(w, " ")
+        && !std::str::contains(w, "|")
+        && !std::str::contains(w, "\t");
 }
 
 // A line's words, one a line.
@@ -151,7 +161,12 @@ fn batch_count(lines: String) -> Int {
 }
 
 // Whether `verb` is a step of a batch, and how it is written.
-fn dna_batch_verb(verb: String) -> Bool { return word_in(verb, "assign unassign close merge split expose depend externalize internalize retire-practice nursery"); }
+fn dna_batch_verb(verb: String) -> Bool {
+    return word_in(
+        verb,
+        "assign unassign close merge split expose depend externalize internalize retire-practice nursery",
+    );
+}
 
 fn batch_usage(verb: String) -> String {
     if verb == "assign" || verb == "unassign" { return verb + " <name> reviews <kind>:<node>"; }
@@ -182,40 +197,106 @@ fn batch_steps(text: String) -> BatchPlan {
         let at = "line " + to_string(n) + " (`" + line + "`): ";
         if std::str::starts_with(line, "open ") {
             let bar = std::str::index_of(line, "|");
-            if bar < 0 { out.why = at + "a position is opened with its mandate: `open <name> | <mandate>`"; return out; }
+            if bar < 0 {
+                out.why = at + "a position is opened with its mandate: `open <name> | <mandate>`";
+                return out;
+            }
             let head = std::str::trim(line[5..bar]);
             let mandate = std::str::trim(line[(bar + 1)..len(line)]);
             let under_at = std::str::index_of(head, " under ");
             let name = if under_at < 0 { head } else { std::str::trim(head[0..under_at]) };
-            let under = if under_at < 0 { "" } else { std::str::trim(head[(under_at + 7)..len(head)]) };
-            if !batch_word(name) { out.why = at + "a position is named by one word, with no space or `|`"; return out; }
-            if under_at >= 0 && !batch_word(under) { out.why = at + "`under` names one node (`seed:<name>`, a position, a work part)"; return out; }
-            if len(mandate) == 0 { out.why = at + "a position is opened with its mandate: what it decides, may not do, cites and escalates"; return out; }
-            if std::str::contains(mandate, "\t") { out.why = at + "a mandate is one line of text, with no tab"; return out; }
-            out.steps = out.steps + "open\t" + batch_position(name) + "\t" + under + "\t" + mandate + "\n";
+            let under = if under_at < 0 {
+                ""
+            } else {
+                std::str::trim(head[(under_at + 7)..len(head)])
+            };
+            if !batch_word(name) {
+                out.why = at + "a position is named by one word, with no space or `|`";
+                return out;
+            }
+            if under_at >= 0 && !batch_word(under) {
+                out.why = at + "`under` names one node (`seed:<name>`, a position, a work part)";
+                return out;
+            }
+            if len(mandate) == 0 {
+                out.why = at
+                    + "a position is opened with its mandate: what it decides, may not do, cites and escalates";
+                return out;
+            }
+            if std::str::contains(mandate, "\t") {
+                out.why = at + "a mandate is one line of text, with no tab";
+                return out;
+            }
+            out.steps = out.steps + "open\t" + batch_position(name) + "\t" + under + "\t" + mandate
+                + "\n";
             continue;
         }
-        if std::str::starts_with(line, "practice ") {
+        // GH #1591: `law` is a practice its document proposes as law, which
+        // the Board ratifies as law or as advice; a step's fourth field says
+        // so (`practice\t<name>\t<text>\tlaw`)
+        if std::str::starts_with(line, "practice ")
+            || std::str::starts_with(line, "law ")
+            || std::str::starts_with(line, "idea ")
+        {
+            let law = std::str::starts_with(line, "law ");
+            let verb = line[0..std::str::index_of(line, " ")];
+            let what = if verb == "idea" { "an idea" } else { "a " + verb };
             let bar = std::str::index_of(line, "|");
-            if bar < 0 { out.why = at + "a practice is proposed with its text: `practice <name> | <text>`"; return out; }
-            let name = std::str::trim(line[9..bar]);
+            if bar < 0 {
+                out.why = at + what + " is proposed with its text: `" + verb
+                    + " <name> [for <position>] | <text>`";
+                return out;
+            }
+            let head = std::str::trim(line[(len(verb) + 1)..bar]);
             let text = std::str::trim(line[(bar + 1)..len(line)]);
-            if !batch_word(name) { out.why = at + "a practice is named by one word, with no space or `|`"; return out; }
-            if len(text) == 0 || std::str::contains(text, "\t") { out.why = at + "a practice is one line of text, with no tab"; return out; }
-            out.steps = out.steps + "practice\t" + name + "\t" + text + "\n";
+            let for_at = std::str::index_of(head, " for ");
+            let name = if for_at < 0 { head } else { std::str::trim(head[0..for_at]) };
+            let target = if for_at < 0 {
+                ""
+            } else {
+                std::str::trim(head[(for_at + 5)..len(head)])
+            };
+            if !batch_word(name) {
+                out.why = at + what + " is named by one word, with no space or `|`";
+                return out;
+            }
+            if for_at >= 0 && !batch_word(target) {
+                out.why = at + "`for` names the one position it is bound to";
+                return out;
+            }
+            if len(text) == 0 || std::str::contains(text, "\t") {
+                out.why = at + what + " is one line of text, with no tab";
+                return out;
+            }
+            let kind = if verb == "idea" { "idea" } else { "practice" };
+            // the law mark and the target only when given: `practice\t<name>\t<text>`
+            out.steps = out.steps + kind + "\t" + name + "\t" + text
+                + (if law || for_at >= 0 { "\t" + (if law { "law" } else { "" }) } else { "" })
+                + (if for_at >= 0 { "\t" + batch_position(target) } else { "" }) + "\n";
             continue;
         }
         if std::str::starts_with(line, "fill ") || std::str::starts_with(line, "vacate ") {
             let verb = line[0..std::str::index_of(line, " ")];
             let args = std::str::trim(line[(len(verb) + 1)..len(line)]);
             let sp = std::str::index_of(args, " ");
-            if sp < 0 { out.why = at + "a " + verb + " names the position and its holder: `" + verb + " <name> <holder>`"; return out; }
+            if sp < 0 {
+                out.why = at + "a " + verb + " names the position and its holder: `" + verb
+                    + " <name> <holder>`";
+                return out;
+            }
             let name = args[0..sp];
             let holder = std::str::trim(args[(sp + 1)..len(args)]);
-            if !batch_word(name) || !batch_word(holder) { out.why = at + "a " + verb + " names the position and its holder, one word each"; return out; }
+            if !batch_word(name) || !batch_word(holder) {
+                out.why = at + "a " + verb + " names the position and its holder, one word each";
+                return out;
+            }
             // `fill * <holder>`: every seat the batch leaves vacant (`batch_plan`)
-            if name == "*" && verb == "vacate" { out.why = at + "a vacate names the position it empties"; return out; }
-            out.steps = out.steps + verb + "\t" + (if name == "*" { name } else { batch_position(name) }) + "\t" + holder + "\n";
+            if name == "*" && verb == "vacate" {
+                out.why = at + "a vacate names the position it empties";
+                return out;
+            }
+            out.steps = out.steps + verb + "\t"
+                + (if name == "*" { name } else { batch_position(name) }) + "\t" + holder + "\n";
             continue;
         }
         let words = batch_words(line);
@@ -226,32 +307,70 @@ fn batch_steps(text: String) -> BatchPlan {
         let a3 = batch_nth(words, 3);
         let a4 = batch_nth(words, 4);
         if (verb == "assign" || verb == "unassign") && n == 4 && a2 == "reviews" {
-            if !std::str::contains(a3, ":") { out.why = at + "a position reviews a node, named `<kind>:<name>` (a contract, a document, a seed or a deployment)"; return out; }
+            if !std::str::contains(a3, ":") {
+                out.why = at
+                    + "a position reviews a node, named `<kind>:<name>` (a contract, a document, a seed or a deployment)";
+                return out;
+            }
             out.steps = out.steps + verb + "\t" + batch_position(a1) + "\t" + a3 + "\n";
             continue;
         }
-        if verb == "close" && n == 2 { out.steps = out.steps + "close\t" + batch_position(a1) + "\n"; continue; }
-        if verb == "retire-practice" && n == 2 && batch_word(a1) { out.steps = out.steps + "retire-practice\t" + a1 + "\n"; continue; }
-        if verb == "nursery" && n == 2 && batch_word(a1) { out.steps = out.steps + "nursery\t" + a1 + "\n"; continue; }
-        if verb == "merge" && n == 4 && a2 == "into" { out.steps = out.steps + "merge\t" + batch_position(a1) + "\t" + batch_position(a3) + "\n"; continue; }
-        if verb == "split" && n == 5 && a2 == "into" { out.steps = out.steps + "split\t" + batch_position(a1) + "\t" + batch_position(a3) + "\t" + batch_position(a4) + "\n"; continue; }
-        if (verb == "expose" && n == 4 && a2 == "as") || (verb == "depend" && n == 4 && a2 == "on") {
-            if !std::str::contains(a1, ":") || !std::str::starts_with(a3, "contract:") { out.why = at + "`" + verb + "` names a node (`<kind>:<name>`) and a contract (`contract:<name>`)"; return out; }
+        if verb == "close" && n == 2 {
+            out.steps = out.steps + "close\t" + batch_position(a1) + "\n";
+            continue;
+        }
+        if verb == "retire-practice" && n == 2 && batch_word(a1) {
+            out.steps = out.steps + "retire-practice\t" + a1 + "\n";
+            continue;
+        }
+        if verb == "nursery" && n == 2 && batch_word(a1) {
+            out.steps = out.steps + "nursery\t" + a1 + "\n";
+            continue;
+        }
+        if verb == "merge" && n == 4 && a2 == "into" {
+            out.steps = out.steps + "merge\t" + batch_position(a1) + "\t" + batch_position(a3)
+                + "\n";
+            continue;
+        }
+        if verb == "split" && n == 5 && a2 == "into" {
+            out.steps = out.steps + "split\t" + batch_position(a1) + "\t" + batch_position(a3)
+                + "\t" + batch_position(a4) + "\n";
+            continue;
+        }
+        if (verb == "expose" && n == 4 && a2 == "as")
+            || (verb == "depend" && n == 4 && a2 == "on")
+        {
+            if !std::str::contains(a1, ":") || !std::str::starts_with(a3, "contract:") {
+                out.why = at + "`" + verb
+                    + "` names a node (`<kind>:<name>`) and a contract (`contract:<name>`)";
+                return out;
+            }
             out.steps = out.steps + verb + "\t" + a1 + "\t" + a3 + "\n";
             continue;
         }
         if verb == "externalize" && n == 2 {
-            if !std::str::starts_with(a1, "seed:") { out.why = at + "a part is externalized by its seed: `externalize seed:<name>`"; return out; }
+            if !std::str::starts_with(a1, "seed:") {
+                out.why = at + "a part is externalized by its seed: `externalize seed:<name>`";
+                return out;
+            }
             out.steps = out.steps + "externalize\t" + a1 + "\n";
             continue;
         }
         if verb == "internalize" && n == 4 && a2 == "as" {
-            if !std::str::starts_with(a1, "contract:") || !std::str::starts_with(a3, "seed:") { out.why = at + "a contract is internalized as a seed: `internalize contract:<name> as seed:<name>`"; return out; }
+            if !std::str::starts_with(a1, "contract:") || !std::str::starts_with(a3, "seed:") {
+                out.why = at
+                    + "a contract is internalized as a seed: `internalize contract:<name> as seed:<name>`";
+                return out;
+            }
             out.steps = out.steps + "internalize\t" + a1 + "\t" + a3 + "\n";
             continue;
         }
-        if dna_batch_verb(verb) { out.why = at + "`" + verb + "` is written `" + batch_usage(verb) + "`"; return out; }
-        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, retire-practice, nursery, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
+        if dna_batch_verb(verb) {
+            out.why = at + "`" + verb + "` is written `" + batch_usage(verb) + "`";
+            return out;
+        }
+        out.why = at + "`" + verb
+            + "` is no step a batch takes (open, fill, vacate, practice, law, idea, retire-practice, nursery, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -291,13 +410,25 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "mandate" { mandates = mandates + e.entity + " " + native_json_string(e.body, "target") + "\n"; }
+        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "mandate" {
+            mandates = mandates + e.entity + " " + native_json_string(e.body, "target") + "\n";
+        }
         if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
         if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
         if e.kind == "hold.refused" { refused = refused + e.entity + "\n"; }
         if e.kind == "person.retired" { gone = gone + e.entity + "\n"; }
-        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "practice" && len(native_json_string(e.body, "name")) > 0 { named = named + e.entity + " " + native_json_string(e.body, "name") + "\n"; }
-        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "nursery" && len(native_json_string(e.body, "name")) > 0 { sources = sources + e.entity + " " + native_json_string(e.body, "name") + "\n"; }
+        if e.kind == "knowledge.proposed"
+            && native_json_string(e.body, "kind") == "practice"
+            && len(native_json_string(e.body, "name")) > 0
+        {
+            named = named + e.entity + " " + native_json_string(e.body, "name") + "\n";
+        }
+        if e.kind == "knowledge.proposed"
+            && native_json_string(e.body, "kind") == "nursery"
+            && len(native_json_string(e.body, "name")) > 0
+        {
+            sources = sources + e.entity + " " + native_json_string(e.body, "name") + "\n";
+        }
         i = i + 1;
     }
     let mut lines = "";
@@ -309,7 +440,9 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         rest = body[nl..len(body)];
         if !std::str::starts_with(id, "position:") { continue; }
         lines = lines + "position " + id + "\n";
-        if batch_mandated(mandates, ratified, retired, id) { lines = lines + "mandate " + id + "\n"; }
+        if batch_mandated(mandates, ratified, retired, id) {
+            lines = lines + "mandate " + id + "\n";
+        }
     }
     rest = g.edges;
     while len(rest) > 1 {
@@ -317,7 +450,9 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         let nl = std::str::index_of(body, "\n");
         let id = body[0..nl];
         rest = body[nl..len(body)];
-        if !std::str::starts_with(id, "holds:") || std::str::contains(refused, "\n" + id + "\n") { continue; }
+        if !std::str::starts_with(id, "holds:") || std::str::contains(refused, "\n" + id + "\n") {
+            continue;
+        }
         let bar = std::str::index_of(id, "|");
         if bar < 0 { continue; }
         let holder = id[(bar + 1)..len(id)];
@@ -333,7 +468,9 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         rest = body[nl..len(body)];
         if !std::str::starts_with(id, "reviews:") { continue; }
         let bar = std::str::index_of(id, "|");
-        if bar > 0 { lines = lines + "reviews " + id[8..bar] + " " + id[(bar + 1)..len(id)] + "\n"; }
+        if bar > 0 {
+            lines = lines + "reviews " + id[8..bar] + " " + id[(bar + 1)..len(id)] + "\n";
+        }
     }
     rest = g.nodes;
     while len(rest) > 1 {
@@ -354,7 +491,12 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         let sp = std::str::index_of(line, " ");
         let d = line[0..sp];
         let pname = line[(sp + 1)..len(line)];
-        if std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") && !std::str::contains("\n" + lines, "\npractice " + pname + "\n") { lines = lines + "practice " + pname + "\n"; }
+        if std::str::contains(ratified, "\n" + d + "\n")
+            && !std::str::contains(retired, "\n" + d + "\n")
+            && !std::str::contains("\n" + lines, "\npractice " + pname + "\n")
+        {
+            lines = lines + "practice " + pname + "\n";
+        }
     }
     // the nurseries the Board trusts
     rest = sources;
@@ -366,7 +508,12 @@ fn org_chart(j: Journal, receipts: Receipts) -> String {
         let sp = std::str::index_of(line, " ");
         let d = line[0..sp];
         let src = line[(sp + 1)..len(line)];
-        if std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") && !std::str::contains("\n" + lines, "\nnursery " + src + "\n") { lines = lines + "nursery " + src + "\n"; }
+        if std::str::contains(ratified, "\n" + d + "\n")
+            && !std::str::contains(retired, "\n" + d + "\n")
+            && !std::str::contains("\n" + lines, "\nnursery " + src + "\n")
+        {
+            lines = lines + "nursery " + src + "\n";
+        }
     }
     return lines;
 }
@@ -381,7 +528,12 @@ fn batch_mandated(mandates: String, ratified: String, retired: String, position:
         rest = body[nl..len(body)];
         let sp = std::str::index_of(line, " ");
         let d = line[0..sp];
-        if line[(sp + 1)..len(line)] == position && std::str::contains(ratified, "\n" + d + "\n") && !std::str::contains(retired, "\n" + d + "\n") { return true; }
+        if line[(sp + 1)..len(line)] == position
+            && std::str::contains(ratified, "\n" + d + "\n")
+            && !std::str::contains(retired, "\n" + d + "\n")
+        {
+            return true;
+        }
     }
     return false;
 }
@@ -410,8 +562,14 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         rest = rest[(nl + 1)..len(rest)];
         if batch_field(step, 0) != "open" { continue; }
         let p = batch_field(step, 1);
-        if record_graph_has(g.nodes, p) { out.why = "`" + p + "` is a position the graph already states"; return out; }
-        if std::str::contains(opened, "\n" + p + "\n") { out.why = "`" + p + "` is opened twice in the batch"; return out; }
+        if record_graph_has(g.nodes, p) {
+            out.why = "`" + p + "` is a position the graph already states";
+            return out;
+        }
+        if std::str::contains(opened, "\n" + p + "\n") {
+            out.why = "`" + p + "` is opened twice in the batch";
+            return out;
+        }
         opened = opened + p + "\n";
     }
     rest = out.steps;
@@ -424,22 +582,61 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         let under = batch_field(step, 2);
         // the part it unfolds from is a node the graph states, or one the
         // batch opens: an edge to anything else is no edge
-        if len(under) > 0 && !record_graph_has(g.nodes, under) && !std::str::contains(opened, "\n" + under + "\n") { out.why = "`under " + under + "` (opening `" + p + "`) names no node the graph states or the batch opens"; return out; }
+        if len(under) > 0
+            && !record_graph_has(g.nodes, under)
+            && !std::str::contains(opened, "\n" + under + "\n")
+        {
+            out.why = "`under " + under + "` (opening `" + p
+                + "`) names no node the graph states or the batch opens";
+            return out;
+        }
         st = plan_open(st, p, under, batch_field(step, 3));
     }
-    // the practices it proposes: one of a name, never one in force
+    // the practices and ideas it proposes: one of a name, bound to a
+    // position the graph states or the batch opens; one in force with the
+    // same text and target is kept, and one in force otherwise is refused
     let mut practices = "\n";
+    let mut kept = "";
     rest = out.steps;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if batch_field(step, 0) != "practice" { continue; }
+        let kind = batch_field(step, 0);
+        if kind != "practice" && kind != "idea" { kept = kept + step + "\n"; continue; }
         let name = batch_field(step, 1);
-        if std::str::contains(practices, "\n" + name + "\n") { out.why = "the practice `" + name + "` is proposed twice in the batch"; return out; }
-        if chart_has(out.before, "practice " + name) { out.why = "the practice `" + name + "` is in force already; propose a new version of it on its own"; return out; }
-        practices = practices + name + "\n";
-        st.after = st.after + "practice " + name + "\n";
+        let target = batch_field(step, 4);
+        if std::str::contains(practices, "\n" + kind + " " + name + "\n") {
+            out.why = "the " + kind + " `" + name + "` is proposed twice in the batch";
+            return out;
+        }
+        practices = practices + kind + " " + name + "\n";
+        if len(target) > 0 && !chart_has(st.after, "position " + target) {
+            out.why = "the " + kind + " `" + name + "` is for `" + target
+                + "`, no position the graph states or the batch opens";
+            return out;
+        }
+        let held = batch_knowledge_digest(j, kind, name);
+        if len(held) > 0 {
+            let doc = receipts.read(held[7..len(held)]);
+            if native_json_string(doc, "text") == batch_field(step, 2)
+                && native_json_string(doc, "target") == (
+                    if len(target) > 0 { target } else { "org" }
+                )
+            {
+                continue;
+            }
+            out.why = "the " + kind + " `" + name
+                + "` is in force already; propose a new version of it on its own";
+            return out;
+        }
+        kept = kept + step + "\n";
+        if kind == "practice" { st.after = st.after + "practice " + name + "\n"; }
+    }
+    out.steps = kept;
+    if len(out.steps) == 0 {
+        out.why = "nothing to propose: every step is in force already";
+        return out;
     }
     rest = out.steps;
     while len(rest) > 0 {
@@ -447,42 +644,72 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let verb = batch_field(step, 0);
-        if verb == "open" || verb == "practice" { continue; }
+        if verb == "open" || verb == "practice" || verb == "idea" { continue; }
         let p = batch_field(step, 1);
         let q = batch_field(step, 2);
         // every vacant seat is known once every other step is taken
         if verb == "fill" && p == "*" { continue; }
         if verb == "fill" {
             let stated = chart_has(out.before, "position " + p);
-            if !chart_has(st.after, "position " + p) { st.why = "`fill " + p + " " + q + "`: no position the graph states or the batch opens"; }
-            else if stated && !chart_has(out.before, "mandate " + p) { st.why = "`fill " + p + " " + q + "`: the position has no ratified mandate; a hold sits on a mandated position"; }
-            else if chart_has(st.after, "holds " + p + " " + q) { st.why = "`fill " + p + " " + q + "`: " + q + " holds it already"; }
+            if !chart_has(st.after, "position " + p) {
+                st.why = "`fill " + p + " " + q
+                    + "`: no position the graph states or the batch opens";
+            }
+            else if stated && !chart_has(out.before, "mandate " + p) {
+                st.why = "`fill " + p + " " + q
+                    + "`: the position has no ratified mandate; a hold sits on a mandated position";
+            }
+            else if chart_has(st.after, "holds " + p + " " + q) {
+                st.why = "`fill " + p + " " + q + "`: " + q + " holds it already";
+            }
             else { st = plan_fill(st, p, q); }
         } else if verb == "vacate" {
             // a hold the record states, left once, never one the batch fills
-            if !chart_has(out.before, "holds " + p + " " + q) { st.why = "`vacate " + p + " " + q + "`: the record states no such hold"; }
-            else if std::str::contains(out.steps, "fill\t" + p + "\t" + q + "\n") { st.why = "`vacate " + p + " " + q + "`: the batch fills the same hold"; }
-            else if !chart_has(st.after, "holds " + p + " " + q) { st.why = "`vacate " + p + " " + q + "` is asked twice"; }
+            if !chart_has(out.before, "holds " + p + " " + q) {
+                st.why = "`vacate " + p + " " + q + "`: the record states no such hold";
+            }
+            else if std::str::contains(out.steps, "fill\t" + p + "\t" + q + "\n") {
+                st.why = "`vacate " + p + " " + q + "`: the batch fills the same hold";
+            }
+            else if !chart_has(st.after, "holds " + p + " " + q) {
+                st.why = "`vacate " + p + " " + q + "` is asked twice";
+            }
             else { st = plan_vacate(st, p, q); }
         } else if verb == "assign" {
             let kind = q[0..std::str::index_of(q, ":")];
-            if !chart_has(st.after, "position " + p) { st.why = "`assign " + p + " reviews " + q + "`: no position the graph states or the batch opens"; }
-            else if !record_graph_has(g.nodes, q) { st.why = "`assign " + p + " reviews " + q + "`: the graph states no such node"; }
-            else if !word_in(kind, "contract document seed deployment") { st.why = "`assign " + p + " reviews " + q + "`: a position reviews a contract, a document, a seed or a deployment"; }
-            else if chart_has(st.after, "reviews " + p + " " + q) { st.why = "`assign " + p + " reviews " + q + "`: it reviews it already"; }
+            if !chart_has(st.after, "position " + p) {
+                st.why = "`assign " + p + " reviews " + q
+                    + "`: no position the graph states or the batch opens";
+            }
+            else if !record_graph_has(g.nodes, q) {
+                st.why = "`assign " + p + " reviews " + q + "`: the graph states no such node";
+            }
+            else if !word_in(kind, "contract document seed deployment") {
+                st.why = "`assign " + p + " reviews " + q
+                    + "`: a position reviews a contract, a document, a seed or a deployment";
+            }
+            else if chart_has(st.after, "reviews " + p + " " + q) {
+                st.why = "`assign " + p + " reviews " + q + "`: it reviews it already";
+            }
             else { st = plan_assign(st, p, q); }
         } else if verb == "unassign" {
-            if !chart_has(st.after, "reviews " + p + " " + q) { st.why = "`unassign " + p + " reviews " + q + "`: it does not review it"; }
+            if !chart_has(st.after, "reviews " + p + " " + q) {
+                st.why = "`unassign " + p + " reviews " + q + "`: it does not review it";
+            }
             else { st = plan_unassign(st, p, q); }
         } else if verb == "retire-practice" {
             let d = batch_practice_digest(j, p);
-            if !chart_has(st.after, "practice " + p) || len(d) == 0 { st.why = "`retire-practice " + p + "`: no practice of that name is in force"; }
+            if !chart_has(st.after, "practice " + p) || len(d) == 0 {
+                st.why = "`retire-practice " + p + "`: no practice of that name is in force";
+            }
             else {
                 st.retirements = st.retirements + p + "\t" + d + "\n";
                 st.after = chart_without(st.after, "practice " + p);
             }
         } else if verb == "nursery" {
-            if chart_has(st.after, "nursery " + p) { st.why = "`nursery " + p + "`: the Board trusts it already"; }
+            if chart_has(st.after, "nursery " + p) {
+                st.why = "`nursery " + p + "`: the Board trusts it already";
+            }
             else {
                 st.nurseries = st.nurseries + p + "\n";
                 st.after = st.after + "nursery " + p + "\n";
@@ -490,8 +717,12 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         } else if verb == "close" {
             st = plan_close(st, g, opened, p);
         } else if verb == "merge" {
-            if p == q { st.why = "`merge " + p + " into " + q + "`: a position merges into another"; }
-            else if !chart_has(st.after, "position " + q) { st.why = "`merge " + p + " into " + q + "`: no position `" + q + "` to merge into"; }
+            if p == q {
+                st.why = "`merge " + p + " into " + q + "`: a position merges into another";
+            }
+            else if !chart_has(st.after, "position " + q) {
+                st.why = "`merge " + p + " into " + q + "`: no position `" + q + "` to merge into";
+            }
             else {
                 // its holders and what it reviews carry over, then it closes
                 let mut held = chart_with(st.after, "holds " + p + " ");
@@ -506,17 +737,32 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
                     let rn = std::str::index_of(reviewed, "\n");
                     let r = reviewed[0..rn];
                     reviewed = reviewed[(rn + 1)..len(reviewed)];
-                    if !chart_has(st.after, "reviews " + q + " " + r) { st = plan_assign(st, q, r); }
+                    if !chart_has(st.after, "reviews " + q + " " + r) {
+                        st = plan_assign(st, q, r);
+                    }
                 }
                 st = plan_close(st, g, opened, p);
             }
         } else if verb == "split" {
             let r2 = batch_field(step, 3);
             let mandate = batch_mandate_text(j, receipts, p);
-            if !chart_has(st.after, "position " + p) { st.why = "`split " + p + "`: no such position"; }
-            else if q == r2 || q == p || r2 == p { st.why = "`split " + p + " into " + q + " " + r2 + "`: one position becomes two others"; }
-            else if chart_has(st.after, "position " + q) || chart_has(st.after, "position " + r2) || record_graph_has(g.nodes, q) || record_graph_has(g.nodes, r2) { st.why = "`split " + p + "`: a position it splits into is stated already"; }
-            else if len(mandate) == 0 { st.why = "`split " + p + "`: it has no ratified mandate to divide"; }
+            if !chart_has(st.after, "position " + p) {
+                st.why = "`split " + p + "`: no such position";
+            }
+            else if q == r2 || q == p || r2 == p {
+                st.why = "`split " + p + " into " + q + " " + r2
+                    + "`: one position becomes two others";
+            }
+            else if chart_has(st.after, "position " + q)
+                || chart_has(st.after, "position " + r2)
+                || record_graph_has(g.nodes, q)
+                || record_graph_has(g.nodes, r2)
+            {
+                st.why = "`split " + p + "`: a position it splits into is stated already";
+            }
+            else if len(mandate) == 0 {
+                st.why = "`split " + p + "`: it has no ratified mandate to divide";
+            }
             else {
                 // two positions, each with its mandate to start from (the
                 // Board amends either later), its holders and what it reviews
@@ -545,29 +791,58 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
             }
         } else if verb == "expose" {
             let met = plan_body(st, bodies, "meets:" + q);
-            if !record_graph_has(g.nodes, p) { st.why = "`expose " + p + " as " + q + "`: the graph states no such node"; }
-            else if len(met) > 0 { st.why = "`expose " + p + " as " + q + "`: the contract is met already (`depend` on it, or `internalize` it)"; }
+            if !record_graph_has(g.nodes, p) {
+                st.why = "`expose " + p + " as " + q + "`: the graph states no such node";
+            }
+            else if len(met) > 0 {
+                st.why = "`expose " + p + " as " + q
+                    + "`: the contract is met already (`depend` on it, or `internalize` it)";
+            }
             else {
-                if !record_graph_has(g.nodes, q) { st.order = st.order + "node\t" + q + "\t" + batch_node_body("contract", q[9..len(q)]) + "\n"; }
+                if !record_graph_has(g.nodes, q) {
+                    st.order = st.order + "node\t" + q + "\t"
+                        + batch_node_body("contract", q[9..len(q)]) + "\n";
+                }
                 st = plan_meets(st, q, "server\t" + p + "\n", "");
             }
         } else if verb == "depend" {
             let met = plan_body(st, bodies, "meets:" + q);
-            if !record_graph_has(g.nodes, p) { st.why = "`depend " + p + " on " + q + "`: the graph states no such node"; }
-            else if len(met) == 0 { st.why = "`depend " + p + " on " + q + "`: nothing meets at that contract; `expose` it first"; }
-            else if std::str::contains(batch_meets_members(met), "\t" + p + "\n") { st.why = "`depend " + p + " on " + q + "`: it meets there already"; }
-            else { st = plan_meets(st, q, batch_meets_members(met) + "consumer\t" + p + "\n", batch_meets_outside(met)); }
+            if !record_graph_has(g.nodes, p) {
+                st.why = "`depend " + p + " on " + q + "`: the graph states no such node";
+            }
+            else if len(met) == 0 {
+                st.why = "`depend " + p + " on " + q
+                    + "`: nothing meets at that contract; `expose` it first";
+            }
+            else if std::str::contains(batch_meets_members(met), "\t" + p + "\n") {
+                st.why = "`depend " + p + " on " + q + "`: it meets there already";
+            }
+            else {
+                st = plan_meets(
+                    st,
+                    q,
+                    batch_meets_members(met) + "consumer\t" + p + "\n",
+                    batch_meets_outside(met),
+                );
+            }
         } else if verb == "externalize" {
             st = plan_externalize(st, g, bodies, opened, p);
         } else if verb == "internalize" {
             let met = plan_body(st, bodies, "meets:" + p);
             let name = q[5..len(q)];
             if len(met) == 0 { st.why = "`internalize " + p + "`: nothing meets at that contract"; }
-            else if record_graph_has(g.nodes, q) { st.why = "`internalize " + p + " as " + q + "`: the graph states that part already"; }
+            else if record_graph_has(g.nodes, q) {
+                st.why = "`internalize " + p + " as " + q + "`: the graph states that part already";
+            }
             else {
                 st.order = st.order + "node\t" + q + "\t" + batch_node_body("seed", name) + "\n";
                 st.after = st.after + "part " + q + "\n";
-                st = plan_meets(st, p, "server\t" + q + "\n" + batch_meets_members(met), batch_lines_without(batch_meets_outside(met), name));
+                st = plan_meets(
+                    st,
+                    p,
+                    "server\t" + q + "\n" + batch_meets_members(met),
+                    batch_lines_without(batch_meets_outside(met), name),
+                );
             }
         }
         if len(st.why) > 0 { out.why = st.why; return out; }
@@ -594,7 +869,9 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         restated = restated + "edge\t" + line + "\n";
     }
     out.graph = batch_rows(st.order, restated, g);
-    out.effects = digest_of(out.graph + "\n" + out.mandates + "\n" + out.retirements + "\n" + out.nurseries);
+    out.effects = digest_of(
+        out.graph + "\n" + out.mandates + "\n" + out.retirements + "\n" + out.nurseries,
+    );
     out.ok = true;
     return out;
 }
@@ -613,7 +890,10 @@ fn batch_fill_vacant(st: PlanState, steps: String) -> PlanState {
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if batch_field(step, 0) != "fill" || batch_field(step, 1) != "*" { kept = kept + step + "\n"; continue; }
+        if batch_field(step, 0) != "fill" || batch_field(step, 1) != "*" {
+            kept = kept + step + "\n";
+            continue;
+        }
         let h = batch_field(step, 2);
         let before = len(seated);
         let mut ps = chart_with(out.after, "position ");
@@ -621,11 +901,19 @@ fn batch_fill_vacant(st: PlanState, steps: String) -> PlanState {
             let pn = std::str::index_of(ps, "\n");
             let p = ps[0..pn];
             ps = ps[(pn + 1)..len(ps)];
-            if len(chart_with(out.after, "holds " + p + " ")) > 0 || !chart_has(out.after, "mandate " + p) || std::str::contains(steps, "vacate\t" + p + "\t") { continue; }
+            if len(chart_with(out.after, "holds " + p + " ")) > 0
+                || !chart_has(out.after, "mandate " + p)
+                || std::str::contains(steps, "vacate\t" + p + "\t")
+            {
+                continue;
+            }
             out = plan_fill(out, p, h);
             seated = seated + "fill\t" + p + "\t" + h + "\n";
         }
-        if len(seated) == before { out.why = "`fill * " + h + "`: no position is left vacant to fill"; return out; }
+        if len(seated) == before {
+            out.why = "`fill * " + h + "`: no position is left vacant to fill";
+            return out;
+        }
     }
     out.steps = kept + seated;
     return out;
@@ -651,9 +939,15 @@ fn batch_rows(order: String, restated: String, g: RecordGraph) -> String {
         let what = batch_field(line, 0);
         let id = batch_field(line, 1);
         // a later write of the same id is the one that stands
-        if std::str::contains(rest, "\t" + id + "\t") || std::str::contains(rest, "\t" + id + "\n") { continue; }
+        if std::str::contains(rest, "\t" + id + "\t")
+            || std::str::contains(rest, "\t" + id + "\n")
+        {
+            continue;
+        }
         if what == "retire" {
-            if record_graph_has(g.nodes, id) || record_graph_has(g.edges, id) { retires = retires + line + "\n"; }
+            if record_graph_has(g.nodes, id) || record_graph_has(g.edges, id) {
+                retires = retires + line + "\n";
+            }
         } else if what == "node" { nodes = nodes + line + "\n"; }
         else if what == "edge" { edges = edges + line + "\n"; }
         else { holds = holds + line + "\n"; }
@@ -663,7 +957,9 @@ fn batch_rows(order: String, restated: String, g: RecordGraph) -> String {
 
 // Whether the chart holds `line`, and the last words of every line that
 // begins with `prefix`, one a line.
-fn chart_has(chart: String, line: String) -> Bool { return std::str::contains("\n" + chart, "\n" + line + "\n"); }
+fn chart_has(chart: String, line: String) -> Bool {
+    return std::str::contains("\n" + chart, "\n" + line + "\n");
+}
 
 @bounded_by(chart)
 fn chart_with(chart: String, prefix: String) -> String {
@@ -693,7 +989,10 @@ fn batch_lines_without(lines: String, x: String) -> String {
 fn plan_open(st: PlanState, p: String, under: String, mandate: String) -> PlanState {
     let mut out = st;
     out.order = out.order + "node\t" + p + "\t" + batch_position_body(p[9..len(p)]) + "\n";
-    if len(under) > 0 { out.order = out.order + "edge\tunfold:" + under + "|" + p + "\t" + batch_pair_body("unfold", "parent", under, "child", p) + "\n"; }
+    if len(under) > 0 {
+        out.order = out.order + "edge\tunfold:" + under + "|" + p + "\t"
+            + batch_pair_body("unfold", "parent", under, "child", p) + "\n";
+    }
     out.mandates = out.mandates + p + "\t" + mandate + "\n";
     out.after = out.after + "position " + p + "\nmandate " + p + "\n";
     return out;
@@ -701,7 +1000,8 @@ fn plan_open(st: PlanState, p: String, under: String, mandate: String) -> PlanSt
 
 fn plan_fill(st: PlanState, p: String, h: String) -> PlanState {
     let mut out = st;
-    out.order = out.order + "hold\tholds:" + p + "|" + h + "\t" + batch_pair_body("holds", "position", p, "holder", h) + "\n";
+    out.order = out.order + "hold\tholds:" + p + "|" + h + "\t"
+        + batch_pair_body("holds", "position", p, "holder", h) + "\n";
     out.after = out.after + "holds " + p + " " + h + "\n";
     return out;
 }
@@ -715,7 +1015,8 @@ fn plan_vacate(st: PlanState, p: String, h: String) -> PlanState {
 
 fn plan_assign(st: PlanState, p: String, subject: String) -> PlanState {
     let mut out = st;
-    out.order = out.order + "edge\treviews:" + p + "|" + subject + "\t" + batch_pair_body("reviews", "position", p, "subject", subject) + "\n";
+    out.order = out.order + "edge\treviews:" + p + "|" + subject + "\t"
+        + batch_pair_body("reviews", "position", p, "subject", subject) + "\n";
     out.after = out.after + "reviews " + p + " " + subject + "\n";
     return out;
 }
@@ -733,9 +1034,18 @@ fn plan_unassign(st: PlanState, p: String, subject: String) -> PlanState {
 @bounded_by(g)
 fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanState {
     let mut out = st;
-    if !chart_has(out.after, "position " + p) { out.why = "`close " + p + "`: no such position"; return out; }
-    if p == "position:board" { out.why = "`close position:board`: the Board is the organization's to keep"; return out; }
-    if std::str::contains(opened, "\n" + p + "\n") { out.why = "`close " + p + "`: the batch opens it"; return out; }
+    if !chart_has(out.after, "position " + p) {
+        out.why = "`close " + p + "`: no such position";
+        return out;
+    }
+    if p == "position:board" {
+        out.why = "`close position:board`: the Board is the organization's to keep";
+        return out;
+    }
+    if std::str::contains(opened, "\n" + p + "\n") {
+        out.why = "`close " + p + "`: the batch opens it";
+        return out;
+    }
     let mut held = chart_with(out.after, "holds " + p + " ");
     while len(held) > 0 {
         let nl = std::str::index_of(held, "\n");
@@ -754,7 +1064,9 @@ fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanS
         let nl = std::str::index_of(body, "\n");
         let id = body[0..nl];
         rest = body[nl..len(body)];
-        if std::str::starts_with(id, "unfold:") && std::str::ends_with(id, "|" + p) { out.order = out.order + "retire\t" + id + "\n"; }
+        if std::str::starts_with(id, "unfold:") && std::str::ends_with(id, "|" + p) {
+            out.order = out.order + "retire\t" + id + "\n";
+        }
     }
     out.order = out.order + "retire\t" + p + "\n";
     out.after = chart_without(chart_without(out.after, "position " + p), "mandate " + p);
@@ -765,9 +1077,18 @@ fn plan_close(st: PlanState, g: RecordGraph, opened: String, p: String) -> PlanS
 // party outside instead (each must have a consumer left, or it would meet
 // no one), every position unfolding from it closes, and its node retires.
 @bounded_by(g)
-fn plan_externalize(st: PlanState, g: RecordGraph, bodies: String, opened: String, seed: String) -> PlanState {
+fn plan_externalize(
+    st: PlanState,
+    g: RecordGraph,
+    bodies: String,
+    opened: String,
+    seed: String
+) -> PlanState {
     let mut out = st;
-    if !record_graph_has(g.nodes, seed) { out.why = "`externalize " + seed + "`: the graph states no such part"; return out; }
+    if !record_graph_has(g.nodes, seed) {
+        out.why = "`externalize " + seed + "`: the graph states no such part";
+        return out;
+    }
     let name = seed[5..len(seed)];
     let mut served = 0;
     let mut rest = bodies;
@@ -784,10 +1105,18 @@ fn plan_externalize(st: PlanState, g: RecordGraph, bodies: String, opened: Strin
         if !std::str::contains("\n" + members, "\nserver\t" + seed + "\n") { continue; }
         served = served + 1;
         let left = batch_lines_without(members, "server\t" + seed);
-        if !std::str::contains(left, "consumer\t") { out.why = "`externalize " + seed + "`: nothing in the organism depends on " + id[6..len(id)] + ", which it serves"; return out; }
+        if !std::str::contains(left, "consumer\t") {
+            out.why = "`externalize " + seed + "`: nothing in the organism depends on "
+                + id[6..len(id)] + ", which it serves";
+            return out;
+        }
         out = plan_meets(out, id[6..len(id)], left, batch_meets_outside(body) + name + "\n");
     }
-    if served == 0 { out.why = "`externalize " + seed + "`: it serves no contract; `expose` one, for the organism to depend on once it leaves"; return out; }
+    if served == 0 {
+        out.why = "`externalize " + seed
+            + "`: it serves no contract; `expose` one, for the organism to depend on once it leaves";
+        return out;
+    }
     let mut edges = g.edges;
     while len(edges) > 1 {
         let body = edges[1..len(edges)];
@@ -796,9 +1125,13 @@ fn plan_externalize(st: PlanState, g: RecordGraph, bodies: String, opened: Strin
         edges = body[nl..len(body)];
         if !std::str::starts_with(id, "unfold:" + seed + "|") { continue; }
         let child = id[(len(seed) + 8)..len(id)];
-        if std::str::starts_with(child, "position:") && chart_has(out.after, "position " + child) { out = plan_close(out, g, opened, child); }
+        if std::str::starts_with(child, "position:") && chart_has(out.after, "position " + child) {
+            out = plan_close(out, g, opened, child);
+        }
         if len(out.why) > 0 { return out; }
-        if !std::str::contains(out.order, "retire\t" + id + "\n") { out.order = out.order + "retire\t" + id + "\n"; }
+        if !std::str::contains(out.order, "retire\t" + id + "\n") {
+            out.order = out.order + "retire\t" + id + "\n";
+        }
     }
     out.order = out.order + "retire\t" + seed + "\n";
     out.after = chart_without(out.after, "part " + seed);
@@ -819,7 +1152,9 @@ fn plan_meets(st: PlanState, met: String, members: String, outside: String) -> P
     let mut out = st;
     let id = "meets:" + met;
     let old = graph_body_of(out.restated, id);
-    if len(old) > 0 { out.restated = std::str::replace(out.restated, "\n" + id + "\t" + old + "\n", "\n"); }
+    if len(old) > 0 {
+        out.restated = std::str::replace(out.restated, "\n" + id + "\t" + old + "\n", "\n");
+    }
     out.restated = out.restated + id + "\t" + batch_meets_body(met, members, outside) + "\n";
     // the chart's lines for the met, again
     let mut kept = "";
@@ -828,11 +1163,20 @@ fn plan_meets(st: PlanState, met: String, members: String, outside: String) -> P
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if (std::str::starts_with(line, "serves ") || std::str::starts_with(line, "consumes ") || std::str::starts_with(line, "carries ")) && std::str::ends_with(line, " " + met) { continue; }
+        if (
+            std::str::starts_with(line, "serves ")
+                || std::str::starts_with(line, "consumes ")
+                || std::str::starts_with(line, "carries ")
+        )
+            && std::str::ends_with(line, " " + met)
+        {
+            continue;
+        }
         if std::str::starts_with(line, "outside " + met + " ") { continue; }
         kept = kept + line + "\n";
     }
-    out.after = kept + batch_meets_lines("\n" + id + "\t" + batch_meets_body(met, members, outside) + "\n");
+    out.after = kept
+        + batch_meets_lines("\n" + id + "\t" + batch_meets_body(met, members, outside) + "\n");
     return out;
 }
 
@@ -859,7 +1203,13 @@ fn batch_meets_lines(bodies: String) -> String {
             members = members[(mn + 1)..len(members)];
             let t = std::str::index_of(m, "\t");
             let role = m[0..t];
-            let verb = if role == "server" { "serves" } else if role == "consumer" { "consumes" } else { "carries" };
+            let verb = if role == "server" {
+                "serves"
+            } else if role == "consumer" {
+                "consumes"
+            } else {
+                "carries"
+            };
             out = out + verb + " " + m[(t + 1)..len(m)] + " " + met + "\n";
         }
         let mut outside = batch_meets_outside(body);
@@ -880,7 +1230,9 @@ fn batch_meets_members(body: String) -> String {
     let mut it = std::json::array_first(std::json::find_field_raw(body, "members"));
     while !it.done {
         let role = std::json::find_string_field(it.element, "role");
-        if role != "contract" { out = out + role + "\t" + std::json::find_string_field(it.element, "node") + "\n"; }
+        if role != "contract" {
+            out = out + role + "\t" + std::json::find_string_field(it.element, "node") + "\n";
+        }
         it = std::json::array_next(it);
     }
     return out;
@@ -904,14 +1256,20 @@ fn batch_meets_body(met: String, members: String, outside: String) -> String {
     e.begin_object();
     e.string_field("kind", "meets");
     e.begin_array_field("members");
-    e.begin_object(); e.string_field("role", "contract"); e.string_field("node", met); e.end_object();
+    e.begin_object();
+    e.string_field("role", "contract");
+    e.string_field("node", met);
+    e.end_object();
     let mut rest = members;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let m = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let t = std::str::index_of(m, "\t");
-        e.begin_object(); e.string_field("role", m[0..t]); e.string_field("node", m[(t + 1)..len(m)]); e.end_object();
+        e.begin_object();
+        e.string_field("role", m[0..t]);
+        e.string_field("node", m[(t + 1)..len(m)]);
+        e.end_object();
     }
     e.end_array();
     if len(outside) > 0 {
@@ -981,8 +1339,17 @@ fn batch_mandate_text(j: Journal, receipts: Receipts, position: String) -> Strin
     i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "mandate" && native_json_string(e.body, "target") == position && std::str::contains(ratified, "\n" + e.entity + "\n") && !std::str::contains(retired, "\n" + e.entity + "\n") {
-            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+        if e.kind == "knowledge.proposed"
+            && native_json_string(e.body, "kind") == "mandate"
+            && native_json_string(e.body, "target") == position
+            && std::str::contains(ratified, "\n" + e.entity + "\n")
+            && !std::str::contains(retired, "\n" + e.entity + "\n")
+        {
+            let raw = if std::str::starts_with(e.entity, "sha256:") {
+                e.entity[7..len(e.entity)]
+            } else {
+                e.entity
+            };
             text = native_json_string(receipts.read(raw), "text");
         }
         i = i + 1;
@@ -1017,10 +1384,13 @@ fn batch_render(plan: BatchPlan) -> String {
             out = out + "- " + line + "\n";
         }
     }
-    out = out + to_string(added) + " line(s) added to the organization, " + to_string(gone) + " taken out, " + to_string(kept) + " unchanged\n";
+    out = out + to_string(added) + " line(s) added to the organization, " + to_string(gone)
+        + " taken out, " + to_string(kept) + " unchanged\n";
     if len(plan.planned_on) == 0 { return out; }
     // the chart before counts the pending proposals the batch stands on
-    return out + "planned on " + to_string(batch_count(plan.planned_on)) + " pending Review(s) (" + batch_review_ids(plan.planned_on) + "): ratified after them, refused whole if any is not\n";
+    return out + "planned on " + to_string(batch_count(plan.planned_on)) + " pending Review(s) ("
+        + batch_review_ids(plan.planned_on)
+        + "): ratified after them, refused whole if any is not\n";
 }
 
 // The review ids of `<review id> <digest>` lines, comma-separated.
@@ -1032,7 +1402,8 @@ fn batch_review_ids(lines: String) -> String {
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let sp = std::str::index_of(line, " ");
-        out = out + (if len(out) > 0 { ", " } else { "" }) + (if sp < 0 { line } else { line[0..sp] });
+        out = out + (if len(out) > 0 { ", " } else { "" })
+            + (if sp < 0 { line } else { line[0..sp] });
     }
     return out;
 }
@@ -1055,14 +1426,20 @@ fn batch_diff(plan: BatchPlan) -> BatchDiff {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if std::str::contains("\n" + plan.before, "\n" + line + "\n") { unchanged = unchanged + line + "\n"; } else { added = added + line + "\n"; }
+        if std::str::contains("\n" + plan.before, "\n" + line + "\n") {
+            unchanged = unchanged + line + "\n";
+        } else {
+            added = added + line + "\n";
+        }
     }
     rest = plan.before;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if !std::str::contains("\n" + plan.after, "\n" + line + "\n") { removed = removed + line + "\n"; }
+        if !std::str::contains("\n" + plan.after, "\n" + line + "\n") {
+            removed = removed + line + "\n";
+        }
     }
     return BatchDiff { added: added, removed: removed, unchanged: unchanged };
 }
@@ -1075,7 +1452,9 @@ fn batch_pending(j: Journal, steps: String) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "batch.proposed" && native_json_string(e.body, "steps") == steps { proposed = proposed + native_json_string(e.body, "review_id") + "\n"; }
+        if e.kind == "batch.proposed" && native_json_string(e.body, "steps") == steps {
+            proposed = proposed + native_json_string(e.body, "review_id") + "\n";
+        }
         i = i + 1;
     }
     while len(proposed) > 0 {
@@ -1100,14 +1479,24 @@ fn batch_row(kind: String, entity: String, body: String) -> String {
 
 // A member's proposal row: proposed with no Review of its own, the family's
 // being its Review.
-fn batch_member_row(digest: String, kind: String, by: String, target: String, name: String, at: Int) -> String {
+fn batch_member_row(
+    digest: String,
+    kind: String,
+    by: String,
+    target: String,
+    name: String,
+    at: Int
+) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("digest", digest);
     b.string_field("kind", kind);
     b.string_field("author", by);
     b.string_field("target", target);
-    b.string_field("class", if kind == "practice" { classify_binding(by, target) } else { "initiative" });
+    b.string_field(
+        "class",
+        if kind == "practice" { classify_binding(by, target) } else { "initiative" },
+    );
     b.string_field("name", name);
     b.int_field("at", at);
     b.end_object();
@@ -1125,10 +1514,19 @@ fn batch_member_row(digest: String, kind: String, by: String, target: String, na
 // family.
 // Grows by the plan's rows and the ideas it files.
 @bounded_by(plan)
-fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: String) -> BatchFiling {
+fn batch_filing(
+    plan: BatchPlan,
+    by: String,
+    request_id: String,
+    at: Int,
+    pack: String
+) -> BatchFiling {
     let mut out = BatchFiling { };
     if !plan.ok { out.why = plan.why; return out; }
-    if !batch_word(by) { out.why = "a batch is proposed by someone: the Review's author"; return out; }
+    if !batch_word(by) {
+        out.why = "a batch is proposed by someone: the Review's author";
+        return out;
+    }
     if !batch_word(request_id) { out.why = "a batch is asked under one id"; return out; }
     // a pack (`hale dna pack apply`) names itself: `<name>@<version>`, then
     // its digest and where it came from
@@ -1151,15 +1549,34 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         rest = rest[(nl + 1)..len(rest)];
         let what = batch_field(line, 0);
         g.begin_object();
-        g.string_field("kind", if what == "node" { "graph.node" } else if what == "retire" { "graph.retired" } else { "graph.edge" });
+        g.string_field(
+            "kind",
+            if what == "node" {
+                "graph.node"
+            } else if what == "retire" {
+                "graph.retired"
+            } else {
+                "graph.edge"
+            },
+        );
         g.string_field("entity", batch_field(line, 1));
         g.string_field("body", if what == "retire" { "{}" } else { batch_field(line, 2) });
         g.end_object();
     }
     g.end_array();
-    let what = if len(pack) > 0 { "adopting the pack " + pack_id } else { "the batch " + request_id };
-    let ground = if len(plan.planned_on) > 0 { "; planned on " + to_string(batch_count(plan.planned_on)) + " pending Review(s), it is ratified after them" } else { "" };
-    let question = "ratify " + what + " as " + by + " proposes it: " + batch_summary(plan.steps) + ground;
+    let what = if len(pack) > 0 {
+        "adopting the pack " + pack_id
+    } else {
+        "the batch " + request_id
+    };
+    let ground = if len(plan.planned_on) > 0 {
+        "; planned on " + to_string(batch_count(plan.planned_on))
+            + " pending Review(s), it is ratified after them"
+    } else {
+        ""
+    };
+    let question = "ratify " + what + " as " + by + " proposes it: " + batch_summary(plan.steps)
+        + ground;
     g.string_field("question", question);
     g.string_field("target", "org");
     g.string_field("text", question + ".");
@@ -1175,13 +1592,25 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if batch_field(step, 0) != "practice" { continue; }
+        let pk = batch_field(step, 0);
+        if pk != "practice" && pk != "idea" { continue; }
         let pn = batch_field(step, 1);
-        let pdoc = knowledge_document(Idea { kind: "practice", text: batch_field(step, 2), author: by, name: pn, provenance: "proposed by " + by + " in " + name }, "org");
+        let pt = if len(batch_field(step, 4)) > 0 { batch_field(step, 4) } else { "org" };
+        let pdoc = knowledge_document(
+            Idea {
+                kind: pk,
+                text: batch_field(step, 2),
+                author: by,
+                name: pn,
+                provenance: "proposed by " + by + " in " + name,
+                law: batch_field(step, 3) == "law",
+            },
+            pt,
+        );
         let pd = digest_of(pdoc);
         docs = docs + pdoc + "\n";
-        members = members + batch_member_row(pd, "practice", by, "org", pn, at);
-        ideas = ideas + "practice/" + pn + " " + pd + "\n";
+        members = members + batch_member_row(pd, pk, by, pt, pn, at);
+        ideas = ideas + pk + "/" + pn + " " + pd + "\n";
         count = count + 1;
     }
     // a retirement per practice it retires: ratified, it retires the
@@ -1192,7 +1621,17 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         let line = rs[0..nl];
         rs = rs[(nl + 1)..len(rs)];
         let rn = batch_field(line, 0);
-        let rdoc = knowledge_document(Idea { kind: "retirement", text: "retired in " + name, author: by, name: rn, supersedes: batch_field(line, 1), provenance: "proposed by " + by + " in " + name }, "org");
+        let rdoc = knowledge_document(
+            Idea {
+                kind: "retirement",
+                text: "retired in " + name,
+                author: by,
+                name: rn,
+                supersedes: batch_field(line, 1),
+                provenance: "proposed by " + by + " in " + name,
+            },
+            "org",
+        );
         let rd = digest_of(rdoc);
         docs = docs + rdoc + "\n";
         members = members + batch_member_row(rd, "retirement", by, "org", rn, at);
@@ -1205,7 +1644,16 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         let nl = std::str::index_of(ns, "\n");
         let src = ns[0..nl];
         ns = ns[(nl + 1)..len(ns)];
-        let ndoc = knowledge_document(Idea { kind: "nursery", text: "packs from " + src + " may be adopted", author: by, name: src, provenance: "proposed by " + by + " in " + name }, "org");
+        let ndoc = knowledge_document(
+            Idea {
+                kind: "nursery",
+                text: "packs from " + src + " may be adopted",
+                author: by,
+                name: src,
+                provenance: "proposed by " + by + " in " + name,
+            },
+            "org",
+        );
         let nd = digest_of(ndoc);
         docs = docs + ndoc + "\n";
         members = members + batch_member_row(nd, "nursery", by, "org", src, at);
@@ -1282,7 +1730,9 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
     rq.string_field("by", by);
     rq.end_object();
     out.docs = docs;
-    out.rows = members + batch_row("review.requested", "review:" + review_id, q.result()) + batch_row("batch.proposed", request_id, a.result()) + batch_row("graph.requested", request_id, rq.result());
+    out.rows = members + batch_row("review.requested", "review:" + review_id, q.result())
+        + batch_row("batch.proposed", request_id, a.result())
+        + batch_row("graph.requested", request_id, rq.result());
     out.digest = family;
     out.review_id = review_id;
     out.ok = true;
@@ -1290,8 +1740,14 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
 }
 
 // The digest of the practice named `name` in force, "" when none.
-@bounded_by(j)
 fn batch_practice_digest(j: Journal, name: String) -> String {
+    return batch_knowledge_digest(j, "practice", name);
+}
+
+// The digest of the knowledge of `kind` named `name` in force (ratified,
+// not retired), "" when none.
+@bounded_by(j)
+fn batch_knowledge_digest(j: Journal, kind: String, name: String) -> String {
     let mut ratified = "\n";
     let mut retired = "\n";
     let mut i = 0;
@@ -1305,7 +1761,14 @@ fn batch_practice_digest(j: Journal, name: String) -> String {
     i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "practice" && native_json_string(e.body, "name") == name && std::str::contains(ratified, "\n" + e.entity + "\n") && !std::str::contains(retired, "\n" + e.entity + "\n") { found = e.entity; }
+        if e.kind == "knowledge.proposed"
+            && native_json_string(e.body, "kind") == kind
+            && native_json_string(e.body, "name") == name
+            && std::str::contains(ratified, "\n" + e.entity + "\n")
+            && !std::str::contains(retired, "\n" + e.entity + "\n")
+        {
+            found = e.entity;
+        }
         i = i + 1;
     }
     return found;
@@ -1327,7 +1790,10 @@ fn batch_inverse(j: Journal, receipts: Receipts, steps: String) -> String {
         rest = rest[(nl + 1)..len(rest)];
         let verb = batch_field(step, 0);
         let p = batch_field(step, 1);
-        if verb == "open" && chart_has(chart, "position " + p) { opened = opened + p + "\n"; out = out + "close " + p + "\n"; }
+        if verb == "open" && chart_has(chart, "position " + p) {
+            opened = opened + p + "\n";
+            out = out + "close " + p + "\n";
+        }
     }
     rest = steps;
     while len(rest) > 0 {
@@ -1338,9 +1804,15 @@ fn batch_inverse(j: Journal, receipts: Receipts, steps: String) -> String {
         let p = batch_field(step, 1);
         let q = batch_field(step, 2);
         if std::str::contains(opened, "\n" + p + "\n") { continue; }
-        if verb == "fill" && chart_has(chart, "holds " + p + " " + q) { out = out + "vacate " + p + " " + q + "\n"; }
-        if verb == "assign" && chart_has(chart, "reviews " + p + " " + q) { out = out + "unassign " + p + " reviews " + q + "\n"; }
-        if verb == "practice" && chart_has(chart, "practice " + p) { out = out + "retire-practice " + p + "\n"; }
+        if verb == "fill" && chart_has(chart, "holds " + p + " " + q) {
+            out = out + "vacate " + p + " " + q + "\n";
+        }
+        if verb == "assign" && chart_has(chart, "reviews " + p + " " + q) {
+            out = out + "unassign " + p + " reviews " + q + "\n";
+        }
+        if verb == "practice" && chart_has(chart, "practice " + p) {
+            out = out + "retire-practice " + p + "\n";
+        }
     }
     return out;
 }
@@ -1352,7 +1824,12 @@ fn pack_adopted_steps(j: Journal, name: String) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "batch.proposed" && std::str::starts_with(native_json_string(e.body, "pack"), name + "@") && row_exists(j, "library.family.ratified", native_json_string(e.body, "digest")) { found = native_json_string(e.body, "steps"); }
+        if e.kind == "batch.proposed"
+            && std::str::starts_with(native_json_string(e.body, "pack"), name + "@")
+            && row_exists(j, "library.family.ratified", native_json_string(e.body, "digest"))
+        {
+            found = native_json_string(e.body, "steps");
+        }
         i = i + 1;
     }
     return found;
@@ -1362,7 +1839,7 @@ fn pack_adopted_steps(j: Journal, name: String) -> String {
 @bounded_by(steps)
 fn batch_summary(steps: String) -> String {
     let mut out = "";
-    let mut verbs = "open fill vacate practice retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
+    let mut verbs = "open fill vacate practice idea retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
     while len(verbs) > 0 {
         let sp = std::str::index_of(verbs, " ");
         let v = verbs[0..sp];
@@ -1387,7 +1864,9 @@ fn batch_stale(j: Journal, receipts: Receipts, steps: String, effects: String) -
     // the same steps, planned now, must still do what the Board was shown:
     // a contract that gained a consumer since would lose it to the older
     // `meets` this batch carries
-    if len(effects) > 0 && p.effects != effects { return "the organization changed what the batch would do (" + batch_summary(p.steps) + ")"; }
+    if len(effects) > 0 && p.effects != effects {
+        return "the organization changed what the batch would do (" + batch_summary(p.steps) + ")";
+    }
     return "";
 }
 
@@ -1402,17 +1881,28 @@ fn batch_text(steps: String) -> String {
         let verb = batch_field(step, 0);
         if verb == "open" {
             let under = batch_field(step, 2);
-            out = out + "open " + batch_field(step, 1) + (if len(under) > 0 { " under " + under } else { "" }) + " | " + batch_field(step, 3) + "\n";
-        } else if verb == "practice" {
-            out = out + "practice " + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
+            out = out + "open " + batch_field(step, 1)
+                + (if len(under) > 0 { " under " + under } else { "" }) + " | "
+                + batch_field(step, 3) + "\n";
+        } else if verb == "practice" || verb == "idea" {
+            let target = batch_field(step, 4);
+            out = out + (if batch_field(step, 3) == "law" { "law " } else { verb + " " })
+                + batch_field(step, 1) + (if len(target) > 0 { " for " + target } else { "" })
+                + " | " + batch_field(step, 2) + "\n";
         } else if verb == "assign" || verb == "unassign" {
-            out = out + verb + " " + batch_field(step, 1) + " reviews " + batch_field(step, 2) + "\n";
-        } else if verb == "close" || verb == "externalize" || verb == "retire-practice" || verb == "nursery" {
+            out = out + verb + " " + batch_field(step, 1) + " reviews " + batch_field(step, 2)
+                + "\n";
+        } else if verb == "close"
+            || verb == "externalize"
+            || verb == "retire-practice"
+            || verb == "nursery"
+        {
             out = out + verb + " " + batch_field(step, 1) + "\n";
         } else if verb == "merge" {
             out = out + "merge " + batch_field(step, 1) + " into " + batch_field(step, 2) + "\n";
         } else if verb == "split" {
-            out = out + "split " + batch_field(step, 1) + " into " + batch_field(step, 2) + " " + batch_field(step, 3) + "\n";
+            out = out + "split " + batch_field(step, 1) + " into " + batch_field(step, 2) + " "
+                + batch_field(step, 3) + "\n";
         } else if verb == "expose" || verb == "internalize" {
             out = out + verb + " " + batch_field(step, 1) + " as " + batch_field(step, 2) + "\n";
         } else if verb == "depend" {
@@ -1426,7 +1916,7 @@ fn batch_text(steps: String) -> String {
 
 // ---- a batch planned on pending proposals ---------------------------------
 //
-// `hale dna init --with <pack>` proposes the pack in the same breath as the
+// `hale habitat graft --with <pack>` proposes the pack in the same breath as the
 // holes init opens: the Board, each part's dev and reviewer, each operator.
 // Planned against the record alone, a pack that fills one of those seats is
 // refused (no position the graph states), since a hole is a proposal until
@@ -1448,18 +1938,29 @@ locus PlannedOn {
     fn revision() -> Int { return self.record.revision() + self.count; }
     fn head() -> String { return self.record.head(); }
     fn refresh() -> Bool { return self.record.refresh(); }
-    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return AppendResult { error: "io", expected: expected, actual: self.revision() }; }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append(expected, kind, entity, body); }
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return self.append(expected, "", "", ""); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return AppendResult { error: "io", expected: expected, actual: self.revision() };
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.append(expected, kind, entity, body);
+    }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return self.append(expected, "", "", "");
+    }
     fn read(i: Int) -> Event {
         let n = self.record.revision();
         if i < n { return self.record.read(i); }
-        return Event { seq: i, kind: "knowledge.ratified", entity: batch_nth(self.assumed, i - n), body: "{\"planned_on\": true}" };
+        return Event {
+            seq: i,
+            kind: "knowledge.ratified",
+            entity: batch_nth(self.assumed, i - n),
+            body: "{\"planned_on\": true}",
+        };
     }
     fn verify_chain() -> Bool { return self.record.verify_chain(); }
 }
 
-// The holes `hale dna init` proposed that are not decided yet, one
+// The holes `hale habitat graft` proposed that are not decided yet, one
 // `<review id> <digest>` a line in the record's order: what `init --with`
 // plans its pack on.
 fn batch_init_holes(j: Journal) -> String {
@@ -1468,10 +1969,20 @@ fn batch_init_holes(j: Journal) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "review.requested" && native_json_string(e.body, "group") == "holes" && native_json_string(e.body, "author") == "hale dna init" && std::str::starts_with(e.entity, "review:") {
-            asked = asked + e.entity[7..len(e.entity)] + " " + native_json_string(e.body, "knowledge_digest") + "\n";
+        if e.kind == "review.requested"
+            && native_json_string(e.body, "group") == "holes"
+            && native_json_string(e.body, "author") == "hale habitat graft"
+            && std::str::starts_with(e.entity, "review:")
+        {
+            asked = asked + e.entity[7..len(e.entity)] + " "
+                + native_json_string(e.body, "knowledge_digest") + "\n";
         }
-        if e.kind == "knowledge.ratified" || e.kind == "knowledge.declined" || e.kind == "knowledge.refused" { decided = decided + e.entity + "\n"; }
+        if e.kind == "knowledge.ratified"
+            || e.kind == "knowledge.declined"
+            || e.kind == "knowledge.refused"
+        {
+            decided = decided + e.entity + "\n";
+        }
         i = i + 1;
     }
     let mut out = "";
@@ -1546,7 +2057,9 @@ fn batch_names(text: String, id: String) -> Bool {
         let before = if at > 0 { rest[(at - 1)..at] } else { prev };
         let end = at + len(id);
         let after = if end < len(rest) { rest[end..(end + 1)] } else { "\n" };
-        if std::str::contains("\t\n \"|:", before) && std::str::contains("\t\n \"|", after) { return true; }
+        if std::str::contains("\t\n \"|:", before) && std::str::contains("\t\n \"|", after) {
+            return true;
+        }
         prev = rest[at..(at + 1)];
         rest = rest[(at + 1)..len(rest)];
     }
@@ -1567,7 +2080,11 @@ fn batch_ground(planned_on: String, ratified: String, refused: String, declined:
         rest = rest[(nl + 1)..len(rest)];
         let sp = std::str::index_of(line, " ");
         let d = line[(sp + 1)..len(line)];
-        if std::str::contains(declined, "\n" + d + "\n") || std::str::contains(refused, "\n" + d + " ") { return "the proposal it was planned on, " + line[0..sp] + ", was not ratified"; }
+        if std::str::contains(declined, "\n" + d + "\n")
+            || std::str::contains(refused, "\n" + d + " ")
+        {
+            return "the proposal it was planned on, " + line[0..sp] + ", was not ratified";
+        }
         if !std::str::contains(ratified, "\n" + d + "\n") { waits = true; }
     }
     return if waits { "wait" } else { "" };

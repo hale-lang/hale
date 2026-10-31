@@ -967,6 +967,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         rhs: BasicValueEnum<'ctx>,
         slot_ty: &CodegenTy,
     ) -> Result<(), CodegenError> {
+        // A method with a scratch: the value lives in the scratch and is
+        // owned into `self.__arena`. Without one (a synthesized closure
+        // body), the value is already in `self.__arena` or static.
+        let owner = match (&self.current_method_scratch, &self.current_self) {
+            (Some(_), Some(cs)) => Some((cs.self_ptr, cs.locus_name.clone())),
+            _ => None,
+        };
+        self.emit_locus_field_store(slot_ptr, rhs, slot_ty, owner)
+    }
+
+    /// GH #1561: a store into a locus's field, owned by the locus
+    /// `owner` names (its pointer and name) — the self-field store of
+    /// `spec/memory.md` rules 6 and 7, with that locus's `__arena` as
+    /// the destination: the value deep-copied or anchored in, the
+    /// replaced value retired. `self.f = v` in a method passes `self`;
+    /// a store from outside the locus's methods (`l.name = s` in a free
+    /// fn, `h.loc.f = v`, `ls[i].f = v`) passes the LAST locus on the
+    /// lvalue's path, the one whose storage holds the slot. `None` (no
+    /// owner to copy into) stores the value as it is.
+    pub(crate) fn emit_locus_field_store(
+        &mut self,
+        slot_ptr: PointerValue<'ctx>,
+        rhs: BasicValueEnum<'ctx>,
+        slot_ty: &CodegenTy,
+        owner: Option<(PointerValue<'ctx>, String)>,
+    ) -> Result<(), CodegenError> {
         // 2026-07-01 inline fixed arrays: the slot IS the [N x T]
         // storage (not a pointer to it), so whole-array assignment
         // is a memcpy of the element bytes into the slot — in every
@@ -1006,6 +1032,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // "existing buffer" — see the in-place-assign branch
             // below for the per-delta-leak fix.
             CodegenTy::String | CodegenTy::Bytes => false,
+            // A payload-free enum is its i32 tag, stored like any
+            // scalar; one with payloads is a pointer to its cell.
+            CodegenTy::Enum(name) => self
+                .user_enums
+                .get(name.as_str())
+                .map(|i| i.has_payload)
+                .unwrap_or(true),
             _ => true,
         };
 
@@ -1025,16 +1058,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => None,
         };
         if let Some(helper_name) = inplace_helper_name {
-            if self.current_method_scratch.is_some() {
-                let cs = self
-                    .current_self
-                    .clone()
-                    .expect("scratch active implies current_self");
+            if let Some((owner_ptr, owner_locus)) = owner.clone() {
                 let info = self
                     .user_loci
-                    .get(&cs.locus_name)
+                    .get(&owner_locus)
                     .cloned()
-                    .expect("current_self points to a declared locus");
+                    .expect("a field's owner is a declared locus");
                 let ptr_t = self
                     .context
                     .ptr_type(AddressSpace::default());
@@ -1042,7 +1071,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_struct_gep(
                         info.struct_ty,
-                        cs.self_ptr,
+                        owner_ptr,
                         info.arena_field_idx,
                         "self.__arena.for_heap_assign_ptr",
                     )
@@ -1102,7 +1131,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         if !compound {
-            let value = self.maybe_self_field_heap_copy(rhs, slot_ty)?;
+            let value = if matches!(slot_ty, CodegenTy::Enum(_)) || owner.is_some() {
+                // the tag itself, or (with an owner, String and Bytes
+                // done above) a scalar: nothing on a heap to copy
+                rhs
+            } else {
+                self.maybe_self_field_heap_copy(rhs, slot_ty)?
+            };
             self.builder
                 .build_store(slot_ptr, value)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1114,29 +1149,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // — no anchoring needed. Preserve the legacy store-the-
         // pointer behavior; mutating in place isn't a meaningful
         // optimization in those contexts.
-        if self.current_method_scratch.is_none() {
+        let Some((owner_ptr, owner_locus)) = owner else {
             self.builder
                 .build_store(slot_ptr, rhs)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             return Ok(());
-        }
+        };
 
         // In-place compound mutation.
-        let cs = self
-            .current_self
-            .clone()
-            .expect("scratch active implies current_self");
         let info = self
             .user_loci
-            .get(&cs.locus_name)
+            .get(&owner_locus)
             .cloned()
-            .expect("current_self points to a declared locus");
+            .expect("a field's owner is a declared locus");
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let arena_field_ptr = self
             .builder
             .build_struct_gep(
                 info.struct_ty,
-                cs.self_ptr,
+                owner_ptr,
                 info.arena_field_idx,
                 "self.__arena.for_inplace_ptr",
             )
@@ -1287,7 +1318,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the field already holds at that place (`cell_compound_owner`
         // with the existing value — `self.f = F { n: i, inner:
         // self.f.inner }` keeps `inner` and copies nothing).
-        let owns_retiring_cells = self.locus_retires_cell_blocks(&cs.locus_name);
+        let owns_retiring_cells = self.locus_retires_cell_blocks(&owner_locus);
         let nested_desc = self.self_field_retire_desc(slot_ty);
         let prev_owned = self.cell_owned_clone;
         let mut rhs = rhs;
@@ -1299,8 +1330,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if owns_retiring_cells { Some(None) } else { Some(Some(existing_ptr)) };
             }
             self.cell_owned_clone = true;
-            if let CodegenTy::TypeRef(tn) = slot_ty {
-                if let Some(tinfo) = self.user_types.get(tn).cloned() {
+        }
+        // The anchor walk rewrites the record it walks, field by field:
+        // walked in place, the rhs itself — a parameter's record, the
+        // caller's (`fn set(x: R) { self.r = x; }`, `l.r = q` from a free
+        // fn) — would be left pointing at the clones the field now owns,
+        // which the next store into the field retires under it. It walks
+        // a stack snapshot instead, whenever the record has a field the
+        // walk rewrites (GH #1561).
+        if let CodegenTy::TypeRef(tn) = slot_ty {
+            if let Some(tinfo) = self.user_types.get(tn).cloned() {
+                let rewrites = owns_retiring_cells
+                    || nested_desc.is_some()
+                    || tinfo.fields.values().any(|(_, f)| self.field_needs_anchor(f));
+                if rewrites {
                     let snap = self.alloca_in_entry(tinfo.struct_ty.into(), "self_field.snap")?;
                     let snap_size = tinfo.struct_ty.size_of().expect("struct has known size");
                     self.builder
@@ -1344,9 +1387,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
 
         if let Some(desc) = nested_desc {
-            // A tuple or array value was deep-copied whole into a fresh
-            // block of this arena, and its bytes now live in the
-            // field's block: the fresh block is scrap.
+            // A tuple, array or payload enum value was deep-copied whole
+            // into a fresh block of this arena, and its bytes now live
+            // in the field's block: the fresh block is scrap.
             let scrap = if matches!(slot_ty, CodegenTy::TypeRef(_)) {
                 ptr_t.const_null()
             } else {
@@ -1366,10 +1409,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.self_field_retire_desc_global(&desc).as_pointer_value()
             };
             let old_ptr = old_snap.unwrap_or_else(|| ptr_t.const_null());
+            // A payload enum's descriptor is its variant table: the
+            // runtime picks each value's variant by its tag.
+            let retire_name = if matches!(slot_ty, CodegenTy::Enum(_)) {
+                "lotus_self_field_retire_replaced_enum"
+            } else {
+                "lotus_self_field_retire_replaced"
+            };
             let retire_fn = self
                 .module
-                .get_function("lotus_self_field_retire_replaced")
-                .expect("lotus_self_field_retire_replaced declared");
+                .get_function(retire_name)
+                .expect("self-field retire declared");
             self.builder
                 .build_call(
                     retire_fn,

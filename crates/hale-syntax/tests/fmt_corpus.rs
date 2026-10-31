@@ -190,3 +190,80 @@ fn main() {
 "#;
     assert_eq!(once, expected);
 }
+
+/// Every `.hl` file `hale fmt .` visits from the repository root:
+/// `vendor/`, dot-directories and build output skipped.
+fn tree_files() -> Vec<PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                if name == "vendor" || name == "target" || name.starts_with('.') {
+                    continue;
+                }
+                walk(&p, out);
+            } else if name.ends_with(".hl") {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&repo_root(), &mut out);
+    out.sort();
+    out
+}
+
+/// `hale fmt` over every file in the tree and every program
+/// embedded in a Rust test, at its width and at a narrow one that
+/// reaches every wrapping shape they hold: the gate holds (the trailing
+/// commas it adds are the only new tokens), wrapping is a fixed point
+/// (fmt of fmt output is a no-op), a program that parsed still parses,
+/// and no trailing comma ever lands where the grammar takes none (the
+/// fallback that drops them is never needed).
+#[test]
+fn wrapping_is_a_fixed_point_over_the_corpus() {
+    use hale_syntax::fmt::{wrap_report, FmtError, WRAP_WIDTH};
+    let files = tree_files();
+    assert!(files.len() > 900, "tree discovery broke: only {} files", files.len());
+    let mut programs: Vec<(String, String)> = files
+        .iter()
+        .map(|f| {
+            let name = f.strip_prefix(repo_root()).unwrap_or(f).display().to_string();
+            (name, fs::read_to_string(f).expect("read"))
+        })
+        .collect();
+    programs.extend(
+        hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
+            .into_iter()
+            .map(|p| (p.origin, p.source)),
+    );
+    let mut failures = Vec::new();
+    for width in [WRAP_WIDTH, 40] {
+        for (name, src) in &programs {
+            let (once, fell_back) = match wrap_report(src, Some(width)) {
+                Ok(r) => r,
+                Err(FmtError::Parse(_)) => continue,
+                Err(e) => {
+                    failures.push(format!("{name} @{width}: gate: {e:?}"));
+                    continue;
+                }
+            };
+            if fell_back {
+                failures.push(format!("{name} @{width}: a trailing comma went where none parses"));
+            }
+            match wrap_report(&once, Some(width)) {
+                Ok((twice, _)) if twice != once => {
+                    failures.push(format!("{name} @{width}: not a fixed point"))
+                }
+                Ok(_) => {}
+                Err(e) => failures.push(format!("{name} @{width}: 2nd pass: {e:?}")),
+            }
+            if hale_syntax::parse_source(src).is_ok() && hale_syntax::parse_source(&once).is_err() {
+                failures.push(format!("{name} @{width}: parsed before wrapping, not after"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} wrapping failures:\n{}", failures.len(), failures.join("\n"));
+}

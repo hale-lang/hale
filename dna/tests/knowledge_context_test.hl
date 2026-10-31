@@ -53,7 +53,13 @@ main locus App {
         // repository is named once the record exists)
         leader: dna::Leader = dna::Leader {
             // the quick tier answers a plan; the deep tier a review
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "Kind: appendage\nclass: docs\ntarget: main.hl\ncount: 1\nA comment on the pings is documentation of the application." }, deep: dna::FakeModel { name: "deep", answer: "approve: fine" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "Kind: appendage\nclass: docs\ntarget: main.hl\ncount: 1\nA comment on the pings is documentation of the application.",
+                },
+                deep: dna::FakeModel { name: "deep", answer: "approve: fine" },
+            },
             charter: "You are the architect.",
             knowledge: dna::MemoryKnowledge { dsn_env: OWNER_ENV }
         };
@@ -85,13 +91,34 @@ main locus App {
     }
     run() {
         let owner = if std::env::var_exists(OWNER_ENV) { std::env::var(OWNER_ENV) } else { "" };
-        if len(owner) == 0 { eprintln("knowledge_context_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
-        std::test::assert_eq_str(dna::knowledge_target("application", "app", "."), "org/app", "an application's path");
-        std::test::assert_eq_str(dna::knowledge_target("application", "app", "api"), "org/app/api", "a seed inside it");
-        std::test::assert_eq_str(dna::knowledge_target("organization", "app", "dna/org"), "org", "the organization's own");
+        if len(owner) == 0 {
+            eprintln(
+                "knowledge_context_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)",
+            );
+            return;
+        }
+        std::test::assert_eq_str(
+            dna::knowledge_target("application", "app", "."),
+            "org/app",
+            "an application's path",
+        );
+        std::test::assert_eq_str(
+            dna::knowledge_target("application", "app", "api"),
+            "org/app/api",
+            "a seed inside it",
+        );
+        std::test::assert_eq_str(
+            dna::knowledge_target("organization", "app", "dna/org"),
+            "org",
+            "the organization's own",
+        );
         std::test::assert_eq_str(dna::parent_path("org/app/echo"), "org/app", "a parent");
         std::test::assert_eq_str(dna::parent_path("root"), "", "a root has none");
-        std::test::assert_eq_str(dna::url_encode("org/app main&x=1.0"), "org%2Fapp%20main%26x%3D1.0", "encoded for a query string");
+        std::test::assert_eq_str(
+            dna::url_encode("org/app main&x=1.0"),
+            "org%2Fapp%20main%26x%3D1.0",
+            "encoded for a query string",
+        );
 
         // ---- the genome, its record and the record's memory
         let repo = dna::scratch_root("ctx");
@@ -101,13 +128,29 @@ main locus App {
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
-        let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
+        let c0 = sh(
+            "git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
+        let cut = sh(
+            toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo
+                + "/.hale/dna/baseline.topology",
+        );
         std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
         // the record's first row gives it its identity, and memory its schema
-        let born = dna::GitJournal { repo: repo };
-        std::test::assert(born.append(0, "application.observed", "org", "{}").ok, "the record's first row");
-        let record = dna::GitRecord { repo: repo };
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let born = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: repo },
+            ledger: dna::MemoryLedger { repo: repo },
+        };
+        std::test::assert(
+            born.append(born.revision(), "application.observed", "org", "{}").ok,
+            "the record's first row",
+        );
+        let record = dna::MemoryRecord { repo: repo };
         let identity = record.identity();
         std::test::assert(len(identity) > 0, "the record has an identity");
         let spine = dna::migrated(owner, identity);
@@ -116,89 +159,383 @@ main locus App {
         // organization's practice (row 3) and the application's (row 5)
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
         std::test::assert(store.open(), "the record's memory opens: " + store.last_error());
-        std::test::assert(store.upsert(dna::Idea { id: DESIGN, kind: "practice", text: DESIGN_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 3 }, 3), "the organization's practice");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: DESIGN, target: "org", author: "org", class: dna::classify_binding("org", "org") }), "bound to the organization");
-        std::test::assert(store.upsert(dna::Idea { id: IDEA, kind: "practice", text: IDEA_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 5 }, 5), "the application's practice");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: IDEA, target: "org/app", author: "org", class: dna::classify_binding("org", "org/app") }), "bound to the application");
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: DESIGN,
+                    kind: "practice",
+                    text: DESIGN_TEXT,
+                    author: "org",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 3,
+                },
+                3,
+            ),
+            "the organization's practice",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding {
+                    idea: DESIGN,
+                    target: "org",
+                    author: "org",
+                    class: dna::classify_binding("org", "org"),
+                },
+            ),
+            "bound to the organization",
+        );
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: IDEA,
+                    kind: "practice",
+                    text: IDEA_TEXT,
+                    author: "org",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 5,
+                },
+                5,
+            ),
+            "the application's practice",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding {
+                    idea: IDEA,
+                    target: "org/app",
+                    author: "org",
+                    class: dna::classify_binding("org", "org/app"),
+                },
+            ),
+            "bound to the application",
+        );
         // the stamp as a projector leaves it after row 7 (GH #1026: a row
         // and its stamp land together, so the fixture writes both)
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '7' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = 'fixture-row-6' WHERE key = 'graph_projection_head'").ok, "applied through row 7");
+        std::test::assert(
+            store.conn.exec(
+                "UPDATE knowledge_meta SET value = '7' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = 'fixture-row-6' WHERE key = 'graph_projection_head'",
+            ).ok,
+            "applied through row 7",
+        );
         self.leader.knowledge.repo = repo;
 
         // ---- a reader alone: a budget of one keeps what the query is about
         let client = dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV, budget: 1 };
         let p = client.package_for("org/app/main", "document the pings & things");
         std::test::assert_eq_int(p.included_n, 1, "one idea for a path under the app: " + p.error);
-        std::test::assert_eq_str(p.included, IDEA, "the practice about the pings, ranked by the query");
-        std::test::assert_eq_str(p.digest, dna::digest_of("org/app/main:" + IDEA), "the package's digest names its target and ideas");
+        std::test::assert_eq_str(
+            p.included,
+            IDEA,
+            "the practice about the pings, ranked by the query",
+        );
+        std::test::assert_eq_str(
+            p.digest,
+            dna::digest_of("org/app/main:" + IDEA),
+            "the package's digest names its target and ideas",
+        );
         std::test::assert_eq_int(p.revision, 7, "memory's revision");
-        std::test::assert_eq_str(p.text, "- practice: " + IDEA_TEXT + " (org)\n", "rendered for an objective");
-        std::test::assert(std::str::contains(dna::objective_with("document it", p), "PRACTICES (ratified knowledge for org/app/main, package " + p.digest + "):\n- practice: keep every comment"), "folded into the objective");
-        std::test::assert_eq_str(dna::bindings_of(p), "package:" + p.digest + " " + IDEA, "what the evidence names");
+        std::test::assert_eq_str(
+            p.text,
+            "- practice: " + IDEA_TEXT + " (org)\n",
+            "rendered for an objective",
+        );
+        std::test::assert(
+            std::str::contains(
+                dna::objective_with("document it", p),
+                "PRACTICES (ratified knowledge for org/app/main, package " + p.digest
+                    + "):\n- practice: keep every comment",
+            ),
+            "folded into the objective",
+        );
+        std::test::assert_eq_str(
+            dna::bindings_of(p),
+            "package:" + p.digest + " " + IDEA,
+            "what the evidence names",
+        );
         let none = client.package_for("other", "document the pings");
         let unasked = client.package_for("org/app/main", "");
-        std::test::assert_eq_str(unasked.included, DESIGN, "no query is ratification order: the budget keeps the first ratified, not the practice the work is about");
-        std::test::assert(none.included_n == 0 && dna::objective_with("x", none) == "x" && dna::bindings_of(none) == "", "nothing for a target no practice is bound to or above, the objective untouched");
-        let blind = dna::MemoryKnowledge { repo: repo, dsn_env: "HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY" };
+        std::test::assert_eq_str(
+            unasked.included,
+            DESIGN,
+            "no query is ratification order: the budget keeps the first ratified, not the practice the work is about",
+        );
+        std::test::assert(
+            none.included_n == 0
+                && dna::objective_with("x", none) == "x"
+                && dna::bindings_of(none) == "",
+            "nothing for a target no practice is bound to or above, the objective untouched",
+        );
+        // a clone that kept no head DSN (GH #1590): the repository here
+        // keeps one, which any unnamed role would fall back to
+        let blind = dna::MemoryKnowledge {
+            repo: repo + "/no-clone",
+            dsn_env: "HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY",
+        };
         let off = blind.package_for("org/app", "x");
-        std::test::assert(!blind.ready() && off.included_n == 0 && off.error == "no memory (HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY is not set)", "no memory: an empty package that says so: " + off.error);
+        std::test::assert(
+            !blind.ready()
+                && off.included_n == 0
+                && off.error == "no memory (HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY is not set)",
+            "no memory: an empty package that says so: " + off.error,
+        );
 
         // ---- targets are paths or graph nodes: a set of them is one read
-        std::test::assert(store.upsert(dna::Idea { id: LANG, kind: "idea", text: LANG_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 6 }, 6), "an idea about the language");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: LANG, target: "language:hale", author: "org", class: dna::classify_binding("org", "language:hale") }), "bound to the language node");
-        std::test::assert(store.upsert(dna::Idea { id: LANGX, kind: "idea", text: "another language", author: "org", provenance: "ratified", accepted: true, revision: 6 }, 6), "an idea about a node named like it");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: LANGX, target: "language:hale-x", author: "org", class: dna::classify_binding("org", "language:hale-x") }), "bound to the other node");
-        std::test::assert_eq_str(dna::classify_binding("org", "language:hale"), "goal", "knowledge about a node flows down to what it describes");
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: LANG,
+                    kind: "idea",
+                    text: LANG_TEXT,
+                    author: "org",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 6,
+                },
+                6,
+            ),
+            "an idea about the language",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding {
+                    idea: LANG,
+                    target: "language:hale",
+                    author: "org",
+                    class: dna::classify_binding("org", "language:hale"),
+                },
+            ),
+            "bound to the language node",
+        );
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: LANGX,
+                    kind: "idea",
+                    text: "another language",
+                    author: "org",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 6,
+                },
+                6,
+            ),
+            "an idea about a node named like it",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding {
+                    idea: LANGX,
+                    target: "language:hale-x",
+                    author: "org",
+                    class: dna::classify_binding("org", "language:hale-x"),
+                },
+            ),
+            "bound to the other node",
+        );
+        std::test::assert_eq_str(
+            dna::classify_binding("org", "language:hale"),
+            "goal",
+            "knowledge about a node flows down to what it describes",
+        );
         let wide = dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV, budget: 8 };
         let with_node = wide.package_for("org/app/main language:hale", "the locus");
-        std::test::assert(std::str::contains(with_node.included, LANG) && !std::str::contains(with_node.included, LANGX), "a set holding the node has the idea bound to it, not its look-alike: " + with_node.included + " " + with_node.error);
-        std::test::assert(std::str::contains(with_node.included, IDEA) && std::str::contains(with_node.included, DESIGN), "and the paths still reach what is bound above them: " + with_node.included);
+        std::test::assert(
+            std::str::contains(with_node.included, LANG)
+                && !std::str::contains(with_node.included, LANGX),
+            "a set holding the node has the idea bound to it, not its look-alike: "
+                + with_node.included + " " + with_node.error,
+        );
+        std::test::assert(
+            std::str::contains(with_node.included, IDEA)
+                && std::str::contains(with_node.included, DESIGN),
+            "and the paths still reach what is bound above them: " + with_node.included,
+        );
         let path_only = wide.package_for("org/app/main", "the locus");
-        std::test::assert(!std::str::contains(path_only.included, LANG) && std::str::contains(path_only.included, IDEA), "a set holding only a path never gets a node's ideas: " + path_only.included);
+        std::test::assert(
+            !std::str::contains(path_only.included, LANG)
+                && std::str::contains(path_only.included, IDEA),
+            "a set holding only a path never gets a node's ideas: " + path_only.included,
+        );
         let org_only = wide.package_for("org", "the locus");
-        std::test::assert(!std::str::contains(org_only.included, LANG), "nor does the organization's own: " + org_only.included);
+        std::test::assert(
+            !std::str::contains(org_only.included, LANG),
+            "nor does the organization's own: " + org_only.included,
+        );
         let node_only = wide.package_for("language:hale", "");
-        std::test::assert_eq_str(node_only.included, LANG, "a node alone matches exactly its bindings, and no path binding");
+        std::test::assert_eq_str(
+            node_only.included,
+            LANG,
+            "a node alone matches exactly its bindings, and no path binding",
+        );
         let two_nodes = wide.package_for("language:hale-x language:hale", "");
-        std::test::assert(std::str::contains(two_nodes.included, LANG) && std::str::contains(two_nodes.included, LANGX), "two nodes, two ideas, each once: " + two_nodes.included);
-        std::test::assert_eq_str(wide.package_for("language:hale-x", "").included, LANGX, "language:hale does not match language:hale-x, nor the other way");
-        std::test::assert_eq_str(wide.package_for("language:hal", "").included, "", "and a prefix of a node id is nothing");
-        std::test::assert_eq_str(store.ranked_ids("org/app/main language:hale", 8, ""), store.context_ids("org/app/main language:hale", 8), "the set through the store: ranked with no query is ratification order");
+        std::test::assert(
+            std::str::contains(two_nodes.included, LANG)
+                && std::str::contains(two_nodes.included, LANGX),
+            "two nodes, two ideas, each once: " + two_nodes.included,
+        );
+        std::test::assert_eq_str(
+            wide.package_for("language:hale-x", "").included,
+            LANGX,
+            "language:hale does not match language:hale-x, nor the other way",
+        );
+        std::test::assert_eq_str(
+            wide.package_for("language:hal", "").included,
+            "",
+            "and a prefix of a node id is nothing",
+        );
+        std::test::assert_eq_str(
+            store.ranked_ids("org/app/main language:hale", 8, ""),
+            store.context_ids("org/app/main language:hale", 8),
+            "the set through the store: ranked with no query is ratification order",
+        );
 
         // ---- the hat's target set (seed/pull): the Work's path, the codebase's
         //      languages (the attached application's written_in edges), system:dna
         //      for an organization change, the performer's position
-        std::test::assert(store.upsert(dna::Idea { id: SHAPE, kind: "idea", text: SHAPE_TEXT, author: "org", provenance: "ratified", accepted: true, revision: 6 }, 6), "an idea about the design");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: SHAPE, target: "system:dna", author: "org", class: dna::classify_binding("org", "system:dna") }), "bound to the system node");
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: SHAPE,
+                    kind: "idea",
+                    text: SHAPE_TEXT,
+                    author: "org",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 6,
+                },
+                6,
+            ),
+            "an idea about the design",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding {
+                    idea: SHAPE,
+                    target: "system:dna",
+                    author: "org",
+                    class: dna::classify_binding("org", "system:dna"),
+                },
+            ),
+            "bound to the system node",
+        );
         let hale_app = dna::MemJournal { };
         let x1 = hale_app.append(0, "application.attached", ".", "{\"name\": \"app\"}");
-        let x2 = hale_app.append(1, "graph.node", "application:app", "{\"kind\": \"application\", \"name\": \"app\"}");
-        let x3 = hale_app.append(2, "graph.node", "language:hale", "{\"kind\": \"language\", \"name\": \"hale\"}");
-        let x4 = hale_app.append(3, "graph.edge", "written_in:application:app|language:hale", "{\"kind\": \"written_in\"}");
+        let x2 = hale_app.append(
+            1,
+            "graph.node",
+            "application:app",
+            "{\"kind\": \"application\", \"name\": \"app\"}",
+        );
+        let x3 = hale_app.append(
+            2,
+            "graph.node",
+            "language:hale",
+            "{\"kind\": \"language\", \"name\": \"hale\"}",
+        );
+        let x4 = hale_app.append(
+            3,
+            "graph.edge",
+            "written_in:application:app|language:hale",
+            "{\"kind\": \"written_in\"}",
+        );
         let bare_app = dna::MemJournal { };
         let y1 = bare_app.append(0, "application.attached", ".", "{\"name\": \"app\"}");
-        let work_set = dna::hat_knowledge_targets(hale_app, dna::FileReceipts { }, "org/app", false, "position:agent");
-        std::test::assert_eq_str(work_set, "org/app language:hale position:agent", "a Work on the application: its path, its language, the performer's position");
-        let org_set = dna::hat_knowledge_targets(hale_app, dna::FileReceipts { }, "org", true, "position:agent");
-        std::test::assert_eq_str(org_set, "org system:dna position:agent", "an organization change: the design, and not the application's language");
-        let bare_set = dna::hat_knowledge_targets(bare_app, dna::FileReceipts { }, "org/app", false, "position:agent");
-        std::test::assert_eq_str(bare_set, "org/app position:agent", "an application with no written_in edge: no language");
-        std::test::assert_eq_str(dna::hat_knowledge_targets(hale_app, dna::FileReceipts { }, "main.hl", false, "position:editor"), "org language:hale position:editor", "a target that is no path is the organization's own");
-        let api_work = wide.package_for(work_set, "serve the rpc rows of an api surface to callers by role");
-        std::test::assert(std::str::contains(api_work.included, LANG) && !std::str::contains(api_work.included, SHAPE), "a Work about the api surface has the api idea and not the design's: " + api_work.included + " " + api_work.error);
+        let work_set = dna::hat_knowledge_targets(
+            hale_app,
+            dna::FileReceipts { },
+            "org/app",
+            false,
+            "position:agent",
+        );
+        std::test::assert_eq_str(
+            work_set,
+            "org/app language:hale position:agent",
+            "a Work on the application: its path, its language, the performer's position",
+        );
+        let org_set = dna::hat_knowledge_targets(
+            hale_app,
+            dna::FileReceipts { },
+            "org",
+            true,
+            "position:agent",
+        );
+        std::test::assert_eq_str(
+            org_set,
+            "org system:dna position:agent",
+            "an organization change: the design, and not the application's language",
+        );
+        let bare_set = dna::hat_knowledge_targets(
+            bare_app,
+            dna::FileReceipts { },
+            "org/app",
+            false,
+            "position:agent",
+        );
+        std::test::assert_eq_str(
+            bare_set,
+            "org/app position:agent",
+            "an application with no written_in edge: no language",
+        );
+        std::test::assert_eq_str(
+            dna::hat_knowledge_targets(
+                hale_app,
+                dna::FileReceipts { },
+                "main.hl",
+                false,
+                "position:editor",
+            ),
+            "org language:hale position:editor",
+            "a target that is no path is the organization's own",
+        );
+        let api_work = wide.package_for(
+            work_set,
+            "serve the rpc rows of an api surface to callers by role",
+        );
+        std::test::assert(
+            std::str::contains(api_work.included, LANG)
+                && !std::str::contains(api_work.included, SHAPE),
+            "a Work about the api surface has the api idea and not the design's: "
+                + api_work.included + " " + api_work.error,
+        );
         let org_work = wide.package_for(org_set, "shape the genome by a proposal to the Board");
-        std::test::assert(std::str::contains(org_work.included, SHAPE) && !std::str::contains(org_work.included, LANG), "an organization change has the design's idea and not the api's: " + org_work.included + " " + org_work.error);
-        let bare_work = wide.package_for(bare_set, "serve the rpc rows of an api surface to callers by role");
-        std::test::assert(!std::str::contains(bare_work.included, LANG) && !std::str::contains(bare_work.included, SHAPE), "no written_in edge, no organization change: neither: " + bare_work.included);
+        std::test::assert(
+            std::str::contains(org_work.included, SHAPE)
+                && !std::str::contains(org_work.included, LANG),
+            "an organization change has the design's idea and not the api's: " + org_work.included
+                + " " + org_work.error,
+        );
+        let bare_work = wide.package_for(
+            bare_set,
+            "serve the rpc rows of an api surface to callers by role",
+        );
+        std::test::assert(
+            !std::str::contains(bare_work.included, LANG)
+                && !std::str::contains(bare_work.included, SHAPE),
+            "no written_in edge, no organization change: neither: " + bare_work.included,
+        );
 
         // ---- the organization, reading memory
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
             gateway: dna::MutationGateway {
-                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: repo,
+                    root: repo + "/.hale/dna/worktrees",
+                    base_exec_digest: "exec:base",
+                },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification {
+                hale_bin: toolchain(),
+                receipts: dna::MemoryReceipts { repo: repo },
+                scratch: repo + "/.hale/dna/scratch",
+                repo: repo,
+            },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {
@@ -209,7 +546,15 @@ main locus App {
             },
             knowledge_client: dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV, budget: 1 },
             board: dna::Board { who: "board" },
-            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } }
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "docs refactor",
+                    max_magnitude: 8,
+                    review: "pre",
+                },
+            }
         };
         // the owner asks for the hat's target set (seed/pull): the application's
         // path, then the editor's position (this record attaches no application
@@ -218,73 +563,195 @@ main locus App {
         let app_package = dna::digest_of(app_targets + ":" + IDEA);
         let org_package = dna::digest_of("org:" + DESIGN);
         let out = self.dna.mutate("t1", "docs", "document the pings", "main.hl", 1);
-        std::test::assert(std::str::contains(out, ": review"), "the mutation reaches its Review: " + out);
+        std::test::assert(
+            std::str::contains(out, ": review"),
+            "the mutation reaches its Review: " + out,
+        );
         self.await_rows("knowledge.consulted", 1);
         // the owner consulted memory, and the record says what it got
         let consulted = self.last("knowledge.consulted", "m1");
-        std::test::assert(std::str::contains(consulted, "\"target\": \"" + app_targets + "\"") && std::str::contains(consulted, "\"digest\": \"" + app_package + "\"") && std::str::contains(consulted, "\"included_n\": 1") && std::str::contains(consulted, "\"revision\": 7"), "consulted: " + consulted);
+        std::test::assert(
+            std::str::contains(consulted, "\"target\": \"" + app_targets + "\"")
+                && std::str::contains(consulted, "\"digest\": \"" + app_package + "\"")
+                && std::str::contains(consulted, "\"included_n\": 1")
+                && std::str::contains(consulted, "\"revision\": 7"),
+            "consulted: " + consulted,
+        );
         // the ask stays the ask (GH #946 hardening): the practice reaches the
         // editor as its brief, under the objective in what a model is shown…
-        std::test::assert_eq_str(self.dna.editor.last.rationale, "document the pings", "the objective the editor got is the ask itself");
-        std::test::assert(std::str::contains(self.dna.editor.practices, "PRACTICES (ratified knowledge for " + app_targets + ", package " + app_package + ")") && std::str::contains(self.dna.editor.practices, IDEA_TEXT), "the brief the editor got: " + self.dna.editor.practices);
-        std::test::assert(std::str::starts_with(self.dna.editor.with_practices("document the pings"), "document the pings\n\nPRACTICES"), "the objective first, the brief under it");
+        std::test::assert_eq_str(
+            self.dna.editor.last.rationale,
+            "document the pings",
+            "the objective the editor got is the ask itself",
+        );
+        std::test::assert(
+            std::str::contains(
+                self.dna.editor.practices,
+                "PRACTICES (ratified knowledge for " + app_targets + ", package " + app_package
+                    + ")",
+            )
+                && std::str::contains(self.dna.editor.practices, IDEA_TEXT),
+            "the brief the editor got: " + self.dna.editor.practices,
+        );
+        std::test::assert(
+            std::str::starts_with(
+                self.dna.editor.with_practices("document the pings"),
+                "document the pings\n\nPRACTICES",
+            ),
+            "the objective first, the brief under it",
+        );
         // …and the attempt carries the hat by its digest, which memory keeps
         let hat_digest = std::json::find_string_field(consulted, "hat");
-        std::test::assert(std::str::starts_with(hat_digest, "sha256:"), "the consultation names the hat by its digest: " + consulted);
+        std::test::assert(
+            std::str::starts_with(hat_digest, "sha256:"),
+            "the consultation names the hat by its digest: " + consulted,
+        );
         let memory = dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV };
         let kept = memory.hat(hat_digest);
-        std::test::assert(std::str::contains(kept, "\"work_id\"") && std::str::contains(kept, IDEA), "memory keeps the hat under its digest, practices as structure: " + kept);
+        std::test::assert(
+            std::str::contains(kept, "\"work_id\"") && std::str::contains(kept, IDEA),
+            "memory keeps the hat under its digest, practices as structure: " + kept,
+        );
         // …and its evidence names the package and the practice
         let ev = self.last("model.called", "m1/a0");
-        std::test::assert(std::str::contains(ev, "\"knowledge_bindings\": \"package:" + app_package + " " + IDEA + "\""), "the evidence names the package: " + ev);
+        std::test::assert(
+            std::str::contains(
+                ev,
+                "\"knowledge_bindings\": \"package:" + app_package + " " + IDEA + "\"",
+            ),
+            "the evidence names the package: " + ev,
+        );
         // ---- the leader's review reads the organization's package (GH #596 L)
-        dna::ReviewRequested <- dna::ReviewRequest { review_id: "r9", question: "apply r9: a change?", subject_digest: "sha256:cand", required_authority: "leader", change_class: "docs", disposition: "review", evidence: "fmt=0", magnitude: "1" };
+        dna::ReviewRequested <- dna::ReviewRequest {
+            review_id: "r9",
+            question: "apply r9: a change?",
+            subject_digest: "sha256:cand",
+            required_authority: "leader",
+            change_class: "docs",
+            disposition: "review",
+            evidence: "fmt=0",
+            magnitude: "1",
+        };
         let mut waited = 0;
-        while waited < 400 && self.leader.decisions < 1 { std::time::sleep(20ms); waited = waited + 1; }
+        while waited < 400 && self.leader.decisions < 1 {
+            std::time::sleep(20ms);
+            waited = waited + 1;
+        }
         std::test::assert_eq_int(self.leader.decisions, 1, "the leader decided");
-        std::test::assert_eq_str(self.leader.last_package, org_package, "its brief read the package for org");
-        std::test::assert(std::str::contains(self.leader.last_brief, "CHARTER\nYou are the architect.") && std::str::contains(self.leader.last_brief, "PRACTICES (ratified knowledge for org, package " + org_package + "):\n- practice: " + DESIGN_TEXT + " (org)"), "charter, then the practices: " + self.leader.last_brief);
+        std::test::assert_eq_str(
+            self.leader.last_package,
+            org_package,
+            "its brief read the package for org",
+        );
+        std::test::assert(
+            std::str::contains(self.leader.last_brief, "CHARTER\nYou are the architect.")
+                && std::str::contains(
+                    self.leader.last_brief,
+                    "PRACTICES (ratified knowledge for org, package " + org_package
+                        + "):\n- practice: " + DESIGN_TEXT + " (org)",
+                ),
+            "charter, then the practices: " + self.leader.last_brief,
+        );
         waited = 0;
-        while waited < 400 && len(self.last("model.called", "r9/review")) == 0 { std::time::sleep(20ms); waited = waited + 1; }
+        while waited < 400 && len(self.last("model.called", "r9/review")) == 0 {
+            std::time::sleep(20ms);
+            waited = waited + 1;
+        }
         let lev = self.last("model.called", "r9/review");
-        std::test::assert(std::str::contains(lev, "\"knowledge_bindings\": \"package:" + org_package + " " + DESIGN + "\""), "the decision's evidence names the package: " + lev);
+        std::test::assert(
+            std::str::contains(
+                lev,
+                "\"knowledge_bindings\": \"package:" + org_package + " " + DESIGN + "\"",
+            ),
+            "the decision's evidence names the package: " + lev,
+        );
         std::test::assert(self.dna.knowledge_client.answered >= 1, "the owner's reader answered");
         std::test::assert_eq_int(self.dna.editor.attempts, 1, "one attempt");
         // the record's objective is the asked one, not the folded one
-        std::test::assert(std::str::contains(self.last("mutation.proposed", "m1"), "docs: document the pings (main.hl)") && !std::str::contains(self.last("mutation.proposed", "m1"), "PRACTICES"), "the record keeps the ask");
+        std::test::assert(
+            std::str::contains(
+                self.last("mutation.proposed", "m1"),
+                "docs: document the pings (main.hl)",
+            )
+                && !std::str::contains(self.last("mutation.proposed", "m1"), "PRACTICES"),
+            "the record keeps the ask",
+        );
 
         // ---- concerns: three from one source become a proposal
         let mut k = 0;
         while k < 3 {
-            dna::ConcernRaised <- dna::Concern { source: "org/app/echo", what: "pings arrive twice under load", severity: 2 };
+            dna::ConcernRaised <- dna::Concern {
+                source: "org/app/echo",
+                what: "pings arrive twice under load",
+                severity: 2,
+            };
             self.await_rows("concern.raised", k + 1);
             k = k + 1;
         }
         self.await_rows("concern.proposed", 1);
         std::test::assert_eq_int(self.rows("concern.raised"), 3, "three raised");
-        std::test::assert(dna::concern_severity(self.last("concern.raised", "org/app/echo")) == 2 && std::str::contains(self.last("concern.raised", "org/app/echo"), "\"occurrence\": 3"), self.last("concern.raised", "org/app/echo"));
+        std::test::assert(
+            dna::concern_severity(self.last("concern.raised", "org/app/echo")) == 2
+                && std::str::contains(
+                    self.last("concern.raised", "org/app/echo"),
+                    "\"occurrence\": 3",
+                ),
+            self.last("concern.raised", "org/app/echo"),
+        );
         std::test::assert_eq_int(self.rows("concern.proposed"), 1, "proposed once");
         let proposed = self.last("knowledge.proposed", "");
-        std::test::assert(std::str::contains(proposed, "\"class\": \"concern\"") && std::str::contains(proposed, "\"author\": \"org/app/echo\"") && std::str::contains(proposed, "\"target\": \"org/app\""), "a concern by the tower rule, bound to the parent: " + proposed);
-        std::test::assert(std::str::contains(self.last("review.requested", ""), "\"required_authority\": \"board\"") && std::str::contains(self.last("review.requested", ""), "pings arrive twice under load"), "the Board's to ratify");
-        dna::ConcernRaised <- dna::Concern { source: "org/app/echo", what: "pings arrive twice under load", severity: 2 };
+        std::test::assert(
+            std::str::contains(proposed, "\"class\": \"concern\"")
+                && std::str::contains(proposed, "\"author\": \"org/app/echo\"")
+                && std::str::contains(proposed, "\"target\": \"org/app\""),
+            "a concern by the tower rule, bound to the parent: " + proposed,
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last("review.requested", ""),
+                "\"required_authority\": \"board\"",
+            )
+                && std::str::contains(
+                    self.last("review.requested", ""),
+                    "pings arrive twice under load",
+                ),
+            "the Board's to ratify",
+        );
+        dna::ConcernRaised <- dna::Concern {
+            source: "org/app/echo",
+            what: "pings arrive twice under load",
+            severity: 2,
+        };
         self.await_rows("concern.raised", 4);
         std::test::assert_eq_int(self.rows("concern.raised"), 4, "a fourth raise is recorded");
-        std::test::assert_eq_int(self.rows("concern.proposed"), 1, "a fourth raise does not propose again");
+        std::test::assert_eq_int(
+            self.rows("concern.proposed"),
+            1,
+            "a fourth raise does not propose again",
+        );
         // a root source has no parent to bind to
         let mut r = 0;
         while r < 3 {
-            dna::ConcernRaised <- dna::Concern { source: "root", what: "nowhere to bind", severity: 1 };
+            dna::ConcernRaised <- dna::Concern {
+                source: "root",
+                what: "nowhere to bind",
+                severity: 1,
+            };
             self.await_rows("concern.raised", 5 + r);
             r = r + 1;
         }
         self.await_rows("knowledge.refused", 1);
-        std::test::assert(std::str::contains(self.last("knowledge.refused", "concern:root"), "has none"), "refused, saying so: " + self.last("knowledge.refused", "concern:root"));
+        std::test::assert(
+            std::str::contains(self.last("knowledge.refused", "concern:root"), "has none"),
+            "refused, saying so: " + self.last("knowledge.refused", "concern:root"),
+        );
         // ---- an ask is planned before it becomes a Mutation (GH #596 L):
         //      the leader names the kind and the class, the record keeps
         //      the plan, and the Mutation carries the planned class
         self.dna.planned = true;
-        let asked2 = self.dna.ask(dna::Intent { id: "i2", outcome: "document the pings in main.hl", from: "riley" });
+        let asked2 = self.dna.ask(
+            dna::Intent { id: "i2", outcome: "document the pings in main.hl", from: "riley" },
+        );
         std::test::assert_eq_str(asked2, "planning", "the leader's word comes first (card 18)");
         let mut t2 = "";
         let mut tries = 0;
@@ -292,7 +759,11 @@ main locus App {
             let mut k = 0;
             while k < self.dna.journal.revision() {
                 let e = self.dna.journal.read(k);
-                if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == "i2" { t2 = e.entity; }
+                if e.kind == "workflow.admitted"
+                    && std::json::find_string_field(e.body, "request") == "i2"
+                {
+                    t2 = e.entity;
+                }
                 k = k + 1;
             }
             std::time::sleep(20ms);
@@ -300,13 +771,32 @@ main locus App {
         }
         std::test::assert(len(t2) > 0, "the ask was admitted under the leader's word");
         tries = 0;
-        while tries < 400 && len(self.last("workflow.settled", t2)) == 0 { std::time::sleep(20ms); tries = tries + 1; }
+        while tries < 400 && len(self.last("workflow.settled", t2)) == 0 {
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
         let plan = self.dna.ask_plan_of(t2);
-        std::test::assert(plan.parsed && plan.kind == "appendage" && plan.change_class == "docs", "kind and class from the leader's answer, bound in the admission: " + plan.kind + "/" + plan.change_class);
-        std::test::assert(plan.package == org_package && plan.by == "leader", "the plan names the package it read: " + plan.package);
-        std::test::assert(std::str::contains(self.last("mutation.proposed", ""), "docs"), "the Mutation carries the planned class: " + self.last("mutation.proposed", ""));
+        std::test::assert(
+            plan.parsed && plan.kind == "appendage" && plan.change_class == "docs",
+            "kind and class from the leader's answer, bound in the admission: " + plan.kind + "/"
+                + plan.change_class,
+        );
+        std::test::assert(
+            plan.package == org_package && plan.by == "leader",
+            "the plan names the package it read: " + plan.package,
+        );
+        std::test::assert(
+            std::str::contains(self.last("mutation.proposed", ""), "docs"),
+            "the Mutation carries the planned class: " + self.last("mutation.proposed", ""),
+        );
         let pev = self.last("model.called", "i2/plan");
-        std::test::assert(std::str::contains(pev, "\"knowledge_bindings\": \"package:" + org_package + " " + DESIGN + "\""), "the plan's evidence names the package: " + pev);
+        std::test::assert(
+            std::str::contains(
+                pev,
+                "\"knowledge_bindings\": \"package:" + org_package + " " + DESIGN + "\"",
+            ),
+            "the plan's evidence names the package: " + pev,
+        );
         // ---- GH #1225: a quiet organism reads its record no more per tick.
         // The knowledge client asks memory whether it caught up on every
         // tick; the record is read again only when the organism's journal
@@ -315,19 +805,39 @@ main locus App {
         let rev = self.dna.journal.revision();
         let mut k = 0;
         while k < 50 { let asked = quiet.caught_up(rev); k = k + 1; }
-        std::test::assert_eq_int(quiet.record_reads, 2, "fifty asks at one revision read the record twice: its identity and its last knowledge row");
+        std::test::assert_eq_int(
+            quiet.record_reads,
+            2,
+            "fifty asks at one revision read the record twice: its identity and its last knowledge row",
+        );
         let moved = quiet.caught_up(rev + 1);
-        std::test::assert_eq_int(quiet.record_reads, 3, "a revision that moved reads its last knowledge row again, once");
+        std::test::assert_eq_int(
+            quiet.record_reads,
+            3,
+            "a revision that moved reads its last knowledge row again, once",
+        );
         // and the organization itself, ticking while nothing happens
         self.dna.tick(std::time::nanos(std::time::current()) / 1000000);
         let settled_rev = self.dna.journal.revision();
         let settled_reads = self.dna.knowledge_client.record_reads;
         let mut t = 0;
         while t < 20 { self.dna.tick(std::time::nanos(std::time::current()) / 1000000); t = t + 1; }
-        std::test::assert_eq_int(self.dna.journal.revision(), settled_rev, "twenty quiet ticks append nothing");
-        std::test::assert_eq_int(self.dna.knowledge_client.record_reads, settled_reads, "and read the record not once");
+        std::test::assert_eq_int(
+            self.dna.journal.revision(),
+            settled_rev,
+            "twenty quiet ticks append nothing",
+        );
+        std::test::assert_eq_int(
+            self.dna.knowledge_client.record_reads,
+            settled_reads,
+            "and read the record not once",
+        );
         store.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "the record's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, identity),
+            "",
+            "the record's schema and roles dropped",
+        );
         dna::scratch_done(repo);
     }
 }

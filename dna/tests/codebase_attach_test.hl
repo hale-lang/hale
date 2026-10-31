@@ -1,0 +1,170 @@
+// dna/tests/codebase_attach_test.hl — a foreign codebase attached with no
+// application (phase 3, heart-protocol item 4).
+//
+// The record states a codebase with `codebase.attached {name, repo, build,
+// test, branch, by}` and revokes it with `codebase.detached`; a re-attach
+// states it anew, a detach removes it, and no application row is written.
+// A leg working it clones its repository (here a local bare repository),
+// branches from the codebase's default branch, verifies with the
+// codebase's own build and test commands run in the worktree, pushes the
+// branch to the codebase's repository and has its review opened at the
+// codebase's forge (here the memory forge). The organism's own repository
+// is never touched.
+
+import "../core" as dna;
+import "../core/legs" as legs;
+
+fn sh(script: String, dir: String) -> dna::RunResult {
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && eval \"$2\"\nsh\n"
+            + dir + "\n" + script,
+    );
+}
+
+fn attach(j: dna::MemJournal, c: dna::Codebase) {
+    std::test::assert(
+        j.append(j.revision(), "codebase.attached", "codebase:" + c.name, dna::codebase_body(c)).ok,
+        "the row is taken",
+    );
+}
+
+fn check() {
+    let root = dna::scratch_root("codebase-attach");
+    // the foreign codebase: a bare repository holding a trunk with a
+    // `build.sh` and a `test.sh` of its own
+    let seed = root + "/seed";
+    let bare = root + "/foreign.git";
+    let made = sh(
+        "mkdir seed && cd seed && git init -q -b trunk && git config user.name f && git config user.email f@f && printf 'echo built > built.txt\\n' > build.sh && printf 'test -f built.txt && grep -q leg greeting.txt\\n' > test.sh && printf 'hello\\n' > greeting.txt && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed foreign.git",
+        root,
+    );
+    std::test::assert_eq_int(made.code, 0, "the foreign repository is made: " + made.stderr);
+
+    // the record: attached, listed, no application row, re-attached, detached
+    let j = dna::MemJournal { };
+    std::test::assert_eq_str(dna::codebase_names(j), "", "none attached");
+    attach(
+        j,
+        dna::Codebase {
+            present: true,
+            name: "ledger-svc",
+            repo: bare,
+            build: "sh build.sh",
+            test: "sh test.sh",
+            branch: "trunk",
+            by: "ada",
+        },
+    );
+    attach(
+        j,
+        dna::Codebase {
+            present: true,
+            name: "other",
+            repo: "https://example.invalid/o.git",
+            build: "make",
+            test: "make test",
+            by: "ada",
+        },
+    );
+    std::test::assert_eq_str(
+        dna::codebase_names(j),
+        "ledger-svc\nother\n",
+        "both are listed in the order attached",
+    );
+    let c = dna::codebase_of(j, "ledger-svc");
+    std::test::assert(
+        c.present
+            && c.repo == bare
+            && c.build == "sh build.sh"
+            && c.test == "sh test.sh"
+            && c.branch == "trunk",
+        "the codebase reads back as attached",
+    );
+    std::test::assert_eq_str(
+        dna::codebase_of(j, "other").branch,
+        "main",
+        "the default branch is main",
+    );
+    let mut i = 0;
+    while i < j.revision() {
+        std::test::assert(
+            j.read(i).kind != "application.attached",
+            "a codebase writes no application row",
+        );
+        i = i + 1;
+    }
+    std::test::assert(
+        !dna::codebase_name_ok("Bad Name") && dna::codebase_name_ok("ledger-svc"),
+        "a name is a token",
+    );
+    std::test::assert(
+        j.append(
+            j.revision(),
+            "codebase.detached",
+            "codebase:other",
+            "{\"name\": \"other\", \"by\": \"ada\"}",
+        ).ok,
+        "detached",
+    );
+    std::test::assert_eq_str(dna::codebase_names(j), "ledger-svc\n", "a detached codebase is gone");
+    std::test::assert(!dna::codebase_of(j, "other").present, "and reads as absent");
+
+    // a leg at work on it
+    let forge = dna::MemForge { };
+    let work = legs::CodebaseWork {
+        codebase: c,
+        hands: legs::Hands { forge: legs::ForgeBridge { forge: forge } },
+    };
+    let wt = work.open("t-1/w0");
+    std::test::assert(wt.ok, "the worktree opens: " + wt.error);
+    std::test::assert_eq_str(
+        work.branch,
+        "leg/ledger-svc/t-1-w0",
+        "the leg's branch is named for the codebase and the task",
+    );
+    let on = sh("git rev-parse --abbrev-ref HEAD && git rev-parse HEAD", wt.output);
+    std::test::assert(
+        std::str::starts_with(on.stdout, "leg/ledger-svc/t-1-w0\n"),
+        "the worktree is on the leg's branch: " + on.stdout,
+    );
+
+    // verify: the codebase's commands, in the worktree
+    let red = work.verify(wt.output);
+    std::test::assert(
+        !red.ok && std::str::starts_with(red.error, "test failed"),
+        "the test command runs after the build and refuses a tree that fails it: " + red.error,
+    );
+    std::test::assert(
+        std::io::fs::file_exists(wt.output + "/built.txt"),
+        "the build ran in the worktree",
+    );
+    std::io::fs::write_file(wt.output + "/greeting.txt", "hello, leg\n") or discard;
+    std::test::assert(work.verify(wt.output).ok, "the verify step passes once the change is made");
+
+    // propose: committed, pushed to the codebase's repository, reviewed at its forge
+    let rev = work.propose(wt.output, "greet the leg", "the leg's change");
+    std::test::assert(rev.ok, "the review opens: " + rev.error);
+    std::test::assert_eq_str(rev.output, "#1", "the memory forge named it");
+    let held = forge.reviews.get("#1") or dna::MemReview { };
+    std::test::assert_eq_str(
+        held.candidate,
+        "leg/ledger-svc/t-1-w0",
+        "the review is of the pushed branch",
+    );
+    std::test::assert_eq_str(held.title, "greet the leg", "with the leg's title");
+    let there = sh(
+        "git --git-dir foreign.git show leg/ledger-svc/t-1-w0:greeting.txt && git --git-dir foreign.git rev-parse trunk",
+        root,
+    );
+    std::test::assert(
+        there.code == 0 && std::str::starts_with(there.stdout, "hello, leg\n"),
+        "the branch is in the codebase's repository: " + there.stderr,
+    );
+    let base = sh("git --git-dir foreign.git show trunk:greeting.txt", root);
+    std::test::assert_eq_str(base.stdout, "hello\n", "and its default branch is untouched");
+
+    work.hands.git.clean();
+    dna::scratch_done(root);
+}
+main locus App { run() { check(); } }
+fn main() { App { }; }

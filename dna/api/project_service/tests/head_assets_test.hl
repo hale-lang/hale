@@ -1,51 +1,101 @@
 // dna/api/project_service/tests/head_assets_test.hl — the attached
-// project's buildless page, served whole (ruling 11b, 2026-10-12).
+// project's buildless page, served whole (ruling 11b, 2026-10-12), by the
+// standard face.
 //
 // The project holds a `ui/` with no manifest that its README links, so it
-// is no seed and the head serves it as the application's static assets
-// under `/app/`. A PNG holds NUL bytes, which a `String` body would cut at
-// the first one: the head writes an asset's bytes as they are, with their
-// length, so `/app/logo.png` comes back byte for byte, as `image/png`.
-// `/app/` is the page's `index.html`; a path that climbs out of `ui/` and
-// a file that is not there are 404s.
+// is no seed and the standard face serves it as the application's static
+// assets under `/app/`; the head serves surfaces only and owns no page. A
+// PNG holds NUL bytes, which a `String` body would cut at the first one:
+// the face writes an asset's bytes as they are, with their length, so
+// `/app/logo.png` comes back byte for byte, as `image/png`. `/app/` is the
+// page's `index.html`; a path that climbs out of `ui/` and a file that is
+// not there are 404s. The same paths on the head are no route.
 
 import "./fixture" as fixture;
 import "../../../core" as dna;
 
 // `curl` the head's `path` into `out`: the status on stdout, the headers in `out.h`.
 fn fetch(url: String, out: String) -> String {
-    return dna::trim_nl(dna::run_tool("curl\n-s\n--path-as-is\n-o\n" + out + "\n-D\n" + out + ".h\n-w\n%{http_code}\n" + url).stdout);
+    return dna::trim_nl(
+        dna::run_tool(
+            "curl\n-s\n--path-as-is\n-o\n" + out + "\n-D\n" + out + ".h\n-w\n%{http_code}\n" + url,
+        ).stdout,
+    );
 }
 
 fn main() {
     let root = dna::scratch_root("head-assets");
-    let f = fixture::HeadFixture { root: root };
+    let f = fixture::HeadFixture { root: root, face_port: dna::free_port(8) };
     // a PNG's signature and a chunk with NULs in it, and a page that links it
     std::io::fs::mkdir(f.project + "/ui") or discard;
-    std::io::fs::write_file(f.project + "/ui/index.html", "<!doctype html>\n<img src=\"logo.png\">\n") or discard;
-    std::io::fs::write_bytes(f.project + "/ui/logo.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\xff\x00") or discard;
-    std::io::fs::write_file(f.project + "/README.md", "# head fixture\n\nIts page is [ui/](./ui/).\n") or discard;
+    std::io::fs::write_file(
+        f.project + "/ui/index.html",
+        "<!doctype html>\n<img src=\"logo.png\">\n",
+    ) or discard;
+    std::io::fs::write_bytes(
+        f.project + "/ui/logo.png",
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\xff\x00",
+    ) or discard;
+    std::io::fs::write_file(
+        f.project + "/README.md",
+        "# head fixture\n\nIts page is [ui/](./ui/).\n",
+    ) or discard;
     let added = f.git("add\n-A");
     let committed = f.git("commit\n-q\n-m\nthe page");
     f.start_with_project(f.project, 0);
+    f.start_face();
     let scratch = root + "/fetched";
     std::io::fs::mkdir(scratch) or discard;
 
-    let png = fetch(f.url() + "/app/logo.png", scratch + "/logo.png");
+    let png = fetch(f.face_url() + "/app/logo.png", scratch + "/logo.png");
     std::test::assert_eq_str(png, "200", "the image is served: " + f.log());
     let same = dna::run_tool("cmp\n" + f.project + "/ui/logo.png\n" + scratch + "/logo.png");
-    std::test::assert_eq_int(same.code, 0, "byte for byte, NULs and all: " + same.stdout + same.stderr);
+    std::test::assert_eq_int(
+        same.code,
+        0,
+        "byte for byte, NULs and all: " + same.stdout + same.stderr,
+    );
     let headers = std::io::fs::read_file(scratch + "/logo.png.h") or "";
-    std::test::assert(std::str::contains(headers, "Content-Type: image/png\r\n") && std::str::contains(headers, "Content-Length: 36\r\n"), "as image/png, with its length: " + headers);
+    std::test::assert(
+        std::str::contains(headers, "Content-Type: image/png\r\n")
+            && std::str::contains(headers, "Content-Length: 36\r\n"),
+        "as image/png, with its length: " + headers,
+    );
 
-    let index = fetch(f.url() + "/app/", scratch + "/index.html");
+    let index = fetch(f.face_url() + "/app/", scratch + "/index.html");
     std::test::assert_eq_str(index, "200", "/app/ is the page");
     let page = dna::run_tool("cmp\n" + f.project + "/ui/index.html\n" + scratch + "/index.html");
     std::test::assert_eq_int(page.code, 0, "its index.html: " + page.stdout);
-    std::test::assert(std::str::contains(std::io::fs::read_file(scratch + "/index.html.h") or "", "Content-Type: text/html; charset=utf-8\r\n"), "as HTML");
+    std::test::assert(
+        std::str::contains(
+            std::io::fs::read_file(scratch + "/index.html.h") or "",
+            "Content-Type: text/html; charset=utf-8\r\n",
+        ),
+        "as HTML",
+    );
 
-    std::test::assert_eq_str(fetch(f.url() + "/app/../README.md", scratch + "/up"), "404", "nothing above ui/");
-    std::test::assert_eq_str(fetch(f.url() + "/app/missing.png", scratch + "/missing"), "404", "nor a file that is not there");
+    std::test::assert_eq_str(
+        fetch(f.face_url() + "/app/../README.md", scratch + "/up"),
+        "404",
+        "nothing above ui/",
+    );
+    std::test::assert_eq_str(
+        fetch(f.face_url() + "/app/missing.png", scratch + "/missing"),
+        "404",
+        "nor a file that is not there",
+    );
+
+    // the head itself serves no page: the same paths are no route
+    std::test::assert_eq_str(
+        fetch(f.url() + "/app/", scratch + "/head-app"),
+        "404",
+        "the head has no /app/",
+    );
+    std::test::assert_eq_str(
+        fetch(f.url() + "/app.js", scratch + "/head-js"),
+        "404",
+        "nor a static file",
+    );
 
     f.stop();
     dna::scratch_done(root);

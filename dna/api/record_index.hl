@@ -1,0 +1,483 @@
+// dna/api/record_index.hl — the record as the standard face's index reads it
+// (faces slice 2).
+//
+// One row of the head's surface, `Commands::index`, answers what the face's
+// static index shows: the declared purpose, the positions and who holds
+// them, the attached codebases, the upstreams the organism watches (each
+// `standard/upstream-watched/<name>` practice with its source, its kind, its
+// last reading and when that was taken), the contracts, and every outside
+// link the record holds as knowledge, and, in a record that grafted any, the
+// organisms it grafted (`habitat.grafted` rows): the habitat's index lists
+// its organisms with their state and their face's and head's addresses. It reads the record's rows, the graph
+// they state (`dna::record_graph_bodies`) and the ratified practices, and
+// writes nothing. Each section is a JSON array the face renders.
+//
+// A row of a surface is its member name and the shapes of its request and
+// response: the face declares the same two records and calls this member
+// through an `api::client`.
+import "../core" as dna;
+
+// What the face asks: at most `limit` entries of each section.
+type IndexAsk { limit: Int = 200; }
+
+type RecordIndex {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    name: String = ""; // the habitat's name (its `habitat.profile` row's), "" for any other record
+    purpose: String = "";
+    positions: String = "[]";
+    codebases: String = "[]";
+    watched: String = "[]";
+    contracts: String = "[]";
+    links: String = "[]";
+    organisms: String = "[]";
+    faces: String = "[]";
+}
+
+// The named faces: each `application:face/<name>` node the graph states,
+// with the application, port and roles on its row, and the contracts whose
+// `meets` edge holds it as a consumer (a surface's contract is `api:<Surface>`).
+@bounded_by(graph)
+fn index_faces(graph: String, cap: Int) -> String {
+    let faces = std::json::Builder { };
+    faces.begin_array();
+    let mut n = 0;
+    let mut rest = graph;
+    while len(rest) > 0 && n < cap {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 || !std::str::starts_with(line, "application:face/") { continue; }
+        let id = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let mut consumes = "";
+        let mut scan = graph;
+        while len(scan) > 0 {
+            let e = std::str::index_of(scan, "\n");
+            let row = if e < 0 { scan } else { scan[0..e] };
+            scan = if e < 0 { "" } else { scan[(e + 1)..len(scan)] };
+            if std::str::starts_with(row, "meets:contract:")
+                && std::str::contains(row, "\"role\": \"consumer\", \"node\": \"" + id + "\"")
+            {
+                let contract = row[15..std::str::index_of(row, "\t")];
+                consumes = consumes + (if len(consumes) > 0 { "\n" } else { "" })
+                    + (
+                        if std::str::starts_with(contract, "api:") {
+                            contract[4..len(contract)]
+                        } else {
+                            contract
+                        }
+                    );
+            }
+        }
+        let mut roles = "";
+        let mut it = std::json::array_first(std::json::find_field_raw(body, "roles"));
+        while !it.done {
+            let r = std::str::trim(it.element);
+            if len(r) >= 3 && std::str::starts_with(r, "\"") {
+                roles = roles + (if len(roles) > 0 { "\n" } else { "" })
+                    + std::json::unescape_string(r[1..(len(r) - 1)]);
+            }
+            it = std::json::array_next(it);
+        }
+        faces.begin_object();
+        faces.string_field("name", id[17..len(id)]);
+        faces.string_field("app", std::json::find_string_field(body, "face"));
+        faces.int_field("port", std::json::find_int_field(body, "port"));
+        faces.string_field("roles", index_joined(roles + "\n"));
+        faces.string_field("consumes", index_joined(consumes + "\n"));
+        faces.end_object();
+        n = n + 1;
+    }
+    faces.end_array();
+    return faces.result();
+}
+
+const INDEX_WATCHED: String = "standard/upstream-watched/";
+
+fn index_url_stop(c: String) -> Bool {
+    return c == " "
+        || c == "\n"
+        || c == "\t"
+        || c == "\r"
+        || c == "\""
+        || c == "<"
+        || c == ">"
+        || c == "`";
+}
+
+fn index_url_trail(c: String) -> Bool {
+    return c == "."
+        || c == ","
+        || c == ";"
+        || c == ")"
+        || c == "]"
+        || c == "}"
+        || c == "'"
+        || c == ":";
+}
+
+// Every http(s) URL in `text`, one a line, each once, at most `cap`.
+@bounded_by(text)
+fn index_urls(text: String, cap: Int) -> String {
+    let mut out = "";
+    let mut found = 0;
+    let mut rest = text;
+    while found < cap && len(rest) > 0 {
+        let a = std::str::index_of(rest, "http://");
+        let b = std::str::index_of(rest, "https://");
+        let at = if a < 0 { b } else if b < 0 { a } else if a < b { a } else { b };
+        if at < 0 { return out; }
+        let mut end = at;
+        while end < len(rest) && !index_url_stop(rest[end..(end + 1)]) { end = end + 1; }
+        let mut url = rest[at..end];
+        while len(url) > 0 && index_url_trail(url[(len(url) - 1)..len(url)]) {
+            url = url[0..(len(url) - 1)];
+        }
+        rest = rest[end..len(rest)];
+        if (
+            std::str::starts_with(url, "http://") && len(url) > 7
+                || std::str::starts_with(url, "https://") && len(url) > 8
+        )
+            && !std::str::contains(out, url + "\n")
+        {
+            out = out + url + "\n";
+            found = found + 1;
+        }
+    }
+    return out;
+}
+
+// The holders of `position` (`position:<name>`), one a line, from the
+// `holds` edges the graph states.
+@bounded_by(lines)
+fn index_holders(lines: String, position: String) -> String {
+    let key = "\nholds:" + position + "|";
+    let mut out = "";
+    let mut from = 0;
+    while from < len(lines) {
+        let at = std::str::index_of(lines[from..len(lines)], key);
+        if at < 0 { return out; }
+        let start = from + at + len(key);
+        let rest = lines[start..len(lines)];
+        let tab = std::str::index_of(rest, "\t");
+        if tab < 0 { return out; }
+        out = out + rest[0..tab] + "\n";
+        from = start + tab;
+    }
+    return out;
+}
+
+// `lines` (one a line) on one line, `, ` between.
+fn index_joined(lines: String) -> String {
+    let mut out = "";
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { rest = ""; } else {
+            out = out + (if len(out) > 0 { ", " } else { "" }) + rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+        }
+    }
+    return out;
+}
+
+// The text after the last `needle` in `s`, "0" when it holds none.
+@bounded_by(s)
+fn index_after_last(s: String, needle: String) -> String {
+    let mut last = -1;
+    let mut from = 0;
+    while from < len(s) {
+        let i = std::str::index_of(s[from..len(s)], needle);
+        if i < 0 { break; }
+        last = from + i;
+        from = from + i + 1;
+    }
+    return if last < 0 { "0" } else { s[(last + len(needle))..len(s)] };
+}
+
+// What the last occurrence of the watch `name` came to: its result (the
+// snapshot it saw, or `unreached`, or `refused`) and the instant of the
+// occurrence in milliseconds, 0 when none ran.
+type IndexReading { result: String = ""; at: Int = 0; }
+
+@bounded_by(j)
+fn index_last_reading(j: dna::Journal, name: String) -> IndexReading {
+    let mut tasks = "\n";
+    let mut attempts = "\n";
+    let mut out = IndexReading { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted"
+            && std::json::find_string_field(e.body, "definition") == "source-check"
+            && std::json::find_string_field(
+                std::json::find_string_field(e.body, "inputs"),
+                "name",
+            ) == name
+        {
+            let request = std::json::find_string_field(e.body, "request");
+            tasks = tasks + e.entity + "\t" + index_after_last(request, "@") + "\n";
+        }
+        if e.kind == "attempt.admitted" {
+            let task = std::json::find_string_field(e.body, "task_id");
+            if std::str::contains(tasks, "\n" + task + "\t") {
+                attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\t"
+                    + task + "\n";
+            }
+        }
+        if e.kind == "attempt.outcome" && std::str::contains(attempts, "\n" + e.entity + "\t") {
+            let rest = attempts[(std::str::index_of(attempts, "\n" + e.entity + "\t") + len(e.entity) + 2)..len(attempts)];
+            let task = rest[0..std::str::index_of(rest, "\n")];
+            let row = tasks[(std::str::index_of(tasks, "\n" + task + "\t") + len(task) + 2)..len(tasks)];
+            out = IndexReading {
+                result: std::json::find_string_field(e.body, "result"),
+                at: std::str::parse_int(row[0..std::str::index_of(row, "\n")]) or 0,
+            };
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Whether something accepts connections on the loopback `url`
+// (`http://127.0.0.1:<port>`): an organism whose face answers is `up`.
+fn index_answers(url: String) -> Bool {
+    let port = std::str::parse_int(index_after_last(url, ":")) or 0;
+    if port < 1 || port > 65535 { return false; }
+    let fd = std::io::tcp::connect(dna::loopback_host(), port) or - 1;
+    if fd < 0 { return false; }
+    std::io::tcp::close_fd(fd);
+    return true;
+}
+
+// The organisms a record grafted, as the `habitat.grafted` rows give them:
+// the name, the state (`up` while its face answers, else `grafted`), the
+// face's address and the head's, its declared purpose and its pulse (the
+// worst state its allocations' providers observe now: `up`, `degraded` or
+// `down`; "" when none is observed).
+@bounded_by(j)
+fn index_organisms(root: String, j: dna::Journal, cap: Int) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let allocated = habitat_latest(j, "habitat.allocated");
+    let grafted = habitat_latest(j, "habitat.grafted");
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted" && habitat_holds(grafted, e.entity, i) {
+            let face = std::json::find_string_field(e.body, "face");
+            let name = std::json::find_string_field(e.body, "name");
+            out.begin_object();
+            out.string_field("name", if len(name) > 0 { name } else { e.entity });
+            out.string_field("key", e.entity);
+            out.string_field(
+                "state",
+                if len(face) > 0 && index_answers(face) { "up" } else { "grafted" },
+            );
+            out.string_field("face", face);
+            out.string_field("head", std::json::find_string_field(e.body, "head"));
+            // phase 4: its declared purpose, taken at its graft, and its
+            // pulse, the worst its allocations' providers observe now
+            out.string_field("purpose", std::json::find_string_field(e.body, "purpose"));
+            out.string_field("pulse", organism_pulse(root, j, allocated, e.entity));
+            out.end_object();
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    out.end_array();
+    return out.result();
+}
+
+fn index_taken(ms: Int) -> String {
+    if ms <= 0 { return ""; }
+    return std::time::iso8601(std::time::time_from_unix(ms / 1000));
+}
+
+fn index_reading(result: String) -> String {
+    if std::str::starts_with(result, "sha256:") {
+        return dna::short_digest(result[7..len(result)]);
+    }
+    return result;
+}
+
+fn record_index(root: String, limit: Int) -> RecordIndex {
+    let cap = if limit < 1 { 1 } else if limit > 1000 { 1000 } else { limit };
+    let j = dna::RecordJournal { repo: root, author: "api" };
+    let moved = j.refresh();
+    // the occurrences of a watch are rows of the Ledger beside the record: the
+    // last reading is read from the two as one
+    let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+    let held = ledger.ready();
+    if held { let caught_up = ledger.refresh(); }
+    let routed = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root, author: "api" },
+        ledger: ledger,
+    };
+    let receipts = dna::MemoryReceipts { repo: root };
+    let graph = dna::record_graph_bodies(j, receipts);
+
+    // the graph: the purpose, the positions with their holders, the
+    // contracts, and the links its nodes carry
+    let mut purpose = "";
+    let positions = std::json::Builder { };
+    positions.begin_array();
+    let contracts = std::json::Builder { };
+    contracts.begin_array();
+    let links = std::json::Builder { };
+    links.begin_array();
+    let mut n_positions = 0;
+    let mut n_contracts = 0;
+    let mut n_links = 0;
+    let mut rest = graph;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let tab = std::str::index_of(line, "\t");
+        if len(line) == 0 || tab < 0 { continue; }
+        let id = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let text = std::json::find_string_field(body, "text");
+        let source = std::json::find_string_field(body, "source");
+        if std::str::starts_with(id, "purpose:") && len(purpose) == 0 {
+            purpose = if len(text) > 0 { text } else { std::json::find_string_field(body, "name") };
+        }
+        if std::str::starts_with(id, "position:") && n_positions < cap {
+            positions.begin_object();
+            positions.string_field("name", id[9..len(id)]);
+            positions.string_field("holders", index_joined(index_holders(graph, id)));
+            positions.end_object();
+            n_positions = n_positions + 1;
+        }
+        if std::str::starts_with(id, "contract:") && n_contracts < cap {
+            contracts.begin_object();
+            contracts.string_field("name", std::json::find_string_field(body, "name"));
+            contracts.string_field("text", text);
+            contracts.string_field("source", source);
+            contracts.end_object();
+            n_contracts = n_contracts + 1;
+        }
+        if len(id) > 0 {
+            let mut urls = index_urls(source + "\n" + text, 8);
+            while len(urls) > 0 && n_links < cap {
+                let u = std::str::index_of(urls, "\n");
+                links.begin_object();
+                links.string_field("held_by", id);
+                links.string_field("url", urls[0..u]);
+                links.end_object();
+                n_links = n_links + 1;
+                urls = urls[(u + 1)..len(urls)];
+            }
+        }
+    }
+    positions.end_array();
+    contracts.end_array();
+
+    // the codebases
+    let codebases = std::json::Builder { };
+    codebases.begin_array();
+    let mut names = dna::codebase_names(j);
+    let mut n_codebases = 0;
+    while len(names) > 0 && n_codebases < cap {
+        let nl = std::str::index_of(names, "\n");
+        let c = dna::codebase_of(j, names[0..nl]);
+        names = names[(nl + 1)..len(names)];
+        codebases.begin_object();
+        codebases.string_field("name", c.name);
+        codebases.string_field("repo", c.repo);
+        codebases.string_field("branch", c.branch);
+        codebases.string_field("build", c.build);
+        codebases.string_field("test", c.test);
+        codebases.string_field("toolchain", c.toolchain);
+        codebases.end_object();
+        n_codebases = n_codebases + 1;
+    }
+    codebases.end_array();
+
+    // the ratified practices: the watched upstreams, and the links any of
+    // their text holds
+    let mut ratified = "\n";
+    let mut retired = "\n";
+    let mut proposed = "";
+    let mut habitat_name = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.profile" {
+            let named = std::json::find_string_field(e.body, "name");
+            habitat_name = if len(named) > 0 { named } else { "local" };
+        }
+        if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
+        if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
+        if e.kind == "knowledge.proposed" && len(std::json::find_string_field(e.body, "name")) > 0 {
+            proposed = proposed + e.entity + "\n";
+        }
+        i = i + 1;
+    }
+    let watched = std::json::Builder { };
+    watched.begin_array();
+    let mut n_watched = 0;
+    let mut digests = proposed;
+    while len(digests) > 0 {
+        let nl = std::str::index_of(digests, "\n");
+        let digest = digests[0..nl];
+        digests = digests[(nl + 1)..len(digests)];
+        if !std::str::contains(ratified, "\n" + digest + "\n")
+            || std::str::contains(retired, "\n" + digest + "\n")
+        {
+            continue;
+        }
+        let doc = receipts.read(
+            if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest },
+        );
+        if len(doc) == 0 { continue; }
+        let name = dna::native_json_string(doc, "name");
+        let text = dna::native_json_string(doc, "text");
+        if std::str::starts_with(name, INDEX_WATCHED) && n_watched < cap {
+            let w = dna::source_watch(digest, doc);
+            let last = if held { index_last_reading(routed, name) } else { IndexReading { } };
+            watched.begin_object();
+            watched.string_field("name", w.watch);
+            watched.string_field("practice", name);
+            watched.string_field("position", w.position);
+            watched.string_field("source", w.source);
+            watched.string_field("kind", w.kind);
+            watched.string_field("codebase", w.codebase);
+            watched.string_field("why", w.why);
+            watched.string_field("reading", index_reading(last.result));
+            watched.string_field("taken", index_taken(last.at));
+            watched.end_object();
+            n_watched = n_watched + 1;
+        }
+        let mut urls = index_urls(text, 8);
+        while len(urls) > 0 && n_links < cap {
+            let u = std::str::index_of(urls, "\n");
+            links.begin_object();
+            links.string_field("held_by", "knowledge:" + name);
+            links.string_field("url", urls[0..u]);
+            links.end_object();
+            n_links = n_links + 1;
+            urls = urls[(u + 1)..len(urls)];
+        }
+    }
+    watched.end_array();
+    links.end_array();
+    return RecordIndex {
+        ok: true,
+        revision: j.revision(),
+        name: habitat_name,
+        purpose: purpose,
+        positions: positions.result(),
+        codebases: codebases.result(),
+        watched: watched.result(),
+        contracts: contracts.result(),
+        links: links.result(),
+        organisms: index_organisms(root, j, cap),
+        faces: index_faces(graph, cap),
+    };
+}

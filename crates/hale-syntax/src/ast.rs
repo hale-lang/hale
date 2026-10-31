@@ -135,6 +135,58 @@ pub enum TopDecl {
     /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }`
     /// — a surface. Seed-global, as `role` is.
     Api(ApiDecl),
+    /// Phase 4 (C2): `fleet locus NAME { params { … } placement { … }
+    /// bindings { … } claims { … } }` — a deployment of other seeds'
+    /// `main` loci. A locus KIND, not a typed param: a fleet is checked
+    /// as one graph (the routes between its instances, the claims across
+    /// them) and never runs itself, where a param is a thing a running
+    /// program holds. It lowers to nothing; the `deployment` family's
+    /// rows are derived from it (spec/verification.md § Fleet
+    /// composition).
+    Fleet(FleetDecl),
+}
+
+/// Phase 4 (C2): `fleet locus NAME { … }`. `fleet` is contextual, a
+/// word only in front of `locus` at the top level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetDecl {
+    pub name: Ident,
+    /// The instances: each param's type names another seed's `main
+    /// locus` through an import alias (`oms: oms::Oms;`). A param takes
+    /// no value; the instance is built from its own seed.
+    pub params: ParamsBlock,
+    /// Each param's placement default: the host it names or its replica
+    /// count. A default only: the habitat's allocation rows bind
+    /// instances to hosts.
+    pub placement: Vec<FleetPlacement>,
+    /// The topics the instances are wired by, each with the route's
+    /// transport: the shape of a `main locus` binding.
+    pub bindings: Option<BindingsBlock>,
+    /// The law across the instances, each group operand an instance
+    /// param.
+    pub claims: Option<ClaimsBlock>,
+    pub span: Span,
+    /// The param names as written, before the import renames rewrite
+    /// their types: `(param, alias, main locus)` for `oms: oms::Oms`.
+    pub written: Vec<(String, String, String)>,
+}
+
+/// One fleet placement entry: `oms: host("box-a");`, one instance per
+/// host `gw: host("box-a"), host("box-b");`, or `gw: replicas(2);`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetPlacement {
+    pub instance: Ident,
+    pub spec: FleetPlacementSpec,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FleetPlacementSpec {
+    /// `host("a")` or `host("a"), host("b"), …`: one instance per host
+    /// named, on that host (`name-0` … for more than one).
+    Hosts(Vec<String>),
+    /// `replicas(n)`: n instances of the one seed, `name-0` … `name-(n-1)`.
+    Replicas(u64),
 }
 
 impl TopDecl {
@@ -156,6 +208,7 @@ impl TopDecl {
             TopDecl::Constitution(c) => c.span,
             TopDecl::Unit(u) => u.span,
             TopDecl::Api(a) => a.span,
+            TopDecl::Fleet(f) => f.span,
         }
     }
 }
@@ -284,6 +337,45 @@ pub struct ApiDecl {
     /// so `alias::Name` names this block and no other seed's.
     /// `None` for a block of the entry seed, which no alias reaches.
     pub origin: Option<String>,
+    /// `from openapi "…"` / `from mcp "…"`: the document or endpoint an
+    /// imported surface was read from, which the drift check reads again
+    /// (spec/api.md § Imported surfaces). `None` for a surface the program
+    /// declares itself.
+    pub source: Option<ApiSource>,
+}
+
+/// Where an imported surface came from: the kind of document and its
+/// location as `hale api import` wrote it (a URL, or a path relative to
+/// the file that holds the block).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiSource {
+    /// `openapi` or `mcp`.
+    pub kind: Ident,
+    pub location: String,
+    pub span: Span,
+}
+
+/// A row that names its operation's shape and no handler: `rpc
+/// name(Request) -> Response wire: "…";`, a row of a surface the program
+/// consumes (spec/api.md § Imported surfaces).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcSignature {
+    pub request: Option<TypeExpr>,
+    pub response: Option<TypeExpr>,
+    /// The operation as its endpoint names it: an OpenAPI operation's
+    /// `METHOD /path`, an MCP tool's name.
+    pub wire: Option<String>,
+}
+
+/// The `at "METHOD /path" [status: N]` of an `rpc` row: the HTTP route
+/// `http::Rest` serves it at (spec/api.md § The REST transport).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcRoute {
+    /// `METHOD /path/{param}`, as written.
+    pub text: String,
+    /// The success status, when the row states one.
+    pub status: Option<i64>,
+    pub span: Span,
 }
 
 /// One `rpc` line of an `api` block.
@@ -301,6 +393,11 @@ pub struct RpcRow {
     /// The roles a caller must hold, as written.
     pub requires: Vec<Ident>,
     pub span: Span,
+    /// A signature row's shape: `locus` is then empty and `method` is the
+    /// row's name.
+    pub signature: Option<RpcSignature>,
+    /// The route the row is served at over `http::Rest`.
+    pub route: Option<RpcRoute>,
 }
 
 /// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn: the
@@ -630,6 +727,10 @@ pub enum ClaimForm {
     /// `require no_silent_loss(all G);` — the same policy over every
     /// route a member of G publishes or subscribes.
     RequireNoSilentLossGroup { group: Ident },
+    /// `require separate_domains(all A, all B);` — every realized
+    /// member of A executes in a different domain from every member
+    /// of B. Both groups must have a known, nonempty population.
+    RequireSeparateDomains { left: Ident, right: Ident },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.
@@ -711,6 +812,38 @@ pub enum ClaimSet {
         name: String,
         span: Span,
     },
+}
+
+impl ClaimForm {
+    /// Every operand of the clause that names a group, in source
+    /// order: the sets of `forbid reaches` (an `effects(C)` operand is
+    /// no group), its `avoiding` gate, and each group the other forms
+    /// quantify over. A `cover`'s alias names a seed, not a group.
+    pub fn group_operands(&self) -> Vec<&Ident> {
+        match self {
+            ClaimForm::ForbidReaches { src, dst, avoiding, .. } => {
+                let mut out = Vec::new();
+                for s in [src, dst] {
+                    if let ClaimSet::Group(g) = s {
+                        out.push(g);
+                    }
+                }
+                out.extend(avoiding.iter());
+                out
+            }
+            ClaimForm::OnlyEdges { src, dst, .. } => vec![src, dst],
+            ClaimForm::Bound { from, .. } => vec![from],
+            ClaimForm::Require { group, .. }
+            | ClaimForm::RequireSealed { group }
+            | ClaimForm::Cover { group, .. }
+            | ClaimForm::RouteCoverage { group, .. }
+            | ClaimForm::RequireNoSilentLossGroup { group } => vec![group],
+            ClaimForm::RequireSeparateDomains { left, right } => vec![left, right],
+            ClaimForm::RequireAttributed { .. }
+            | ClaimForm::RequireNoSilentLossTopic { .. }
+            | ClaimForm::Count { .. } => Vec::new(),
+        }
+    }
 }
 
 impl ClaimSet {
@@ -1055,6 +1188,12 @@ pub struct LocusDecl {
     /// ordinary configuration without buying a guarantee — the value
     /// is already in the parent's hands either way.
     pub sealed: bool,
+    /// GH #1530 (fourth pass, section 3): `@repo(T) locus L { … }` —
+    /// the locus is where `T`'s important state lives. The checker
+    /// (`hale-types::repo_check`) holds it to the method set and the
+    /// state classes; the effect family `reads(T)` … is declared by
+    /// `repo_expand`.
+    pub repo: Option<RepoAnnotation>,
     pub members: Vec<LocusMember>,
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
@@ -1118,6 +1257,13 @@ pub struct FfiAnnotation {
 pub struct FormArg {
     pub name: Ident,
     pub value: Expr,
+    pub span: Span,
+}
+
+/// `@repo(T)` on a locus: the type whose state it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoAnnotation {
+    pub ty: Ident,
     pub span: Span,
 }
 
@@ -1436,6 +1582,62 @@ pub enum LocusMember {
     /// locus are evaluated in declaration order; the first to
     /// fire short-circuits the rest.
     BirthCheck(BirthCheckDecl),
+    /// GH #1530 step 2: `seam { source -> hop -> … -> sink; or end; }`, or
+    /// the callable `seam name(x: T) -> R { x -> hop -> …; }`. The desugar
+    /// sequence expands a seam into ordinary methods (`seam_expand`); one
+    /// that stays is one the expansion refused, which the checker reports.
+    Seam(SeamDecl),
+}
+
+/// The spelling of a seam, in one place (GH #1530 step 2; the RFC leaves
+/// it open). The words are contextual.
+pub mod seam_words {
+    /// The member's introducer: `seam { … }`.
+    pub const SEAM: &str = "seam";
+    /// The failure clause's introducer: `or end;`.
+    pub const OR: &str = "or";
+    /// Uncovered failures end the flow, as `run` ends.
+    pub const END: &str = "end";
+    /// Uncovered failures violate the named closure of the locus.
+    pub const VIOLATE: &str = "violate";
+}
+
+/// GH #1530 step 2: a seam, a chain of hops the compiler stitches into
+/// direct calls, with a dispatch wherever a set meets a locus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeamDecl {
+    /// The callable form's name (`seam route(b: Bytes) { … }`); `None` for
+    /// the closed flow, which is the locus's `run`.
+    pub name: Option<Ident>,
+    /// The callable form's entry parameter.
+    pub param: Option<Param>,
+    /// The callable form's declared result, if written.
+    pub ret: Option<TypeExpr>,
+    /// The chain's head: the closed flow's source (a call making the entry
+    /// value), or the callable form's parameter, by name.
+    pub head: Expr,
+    /// Each `-> hop`, as written: `self`, `self.child`, `self.method`,
+    /// `self.child.method`.
+    pub hops: Vec<SeamHop>,
+    /// Where a failure no later hop takes goes.
+    pub on_failure: Option<SeamFailure>,
+    pub span: Span,
+}
+
+/// One hop of a seam: the path after `self`, empty for `self` itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeamHop {
+    pub path: Vec<Ident>,
+    pub span: Span,
+}
+
+/// A seam's failure clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SeamFailure {
+    /// `or end;`: the flow ends as `run` ends (a callable seam fails).
+    End(Span),
+    /// `or violate NAME;`: the locus's closure `NAME` is violated.
+    Violate(Ident),
 }
 
 /// F.27 v2: declarative birth-time invariant check. The locus
@@ -1915,6 +2117,13 @@ pub struct ParamDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1565: the `api::serve(…)` call an exposure param was declared
+    /// with (`web: api::Exposure = api::serve(…);`), kept as written once
+    /// the serve expansion (`rpc_expand`) has rewritten `init` to the
+    /// exposure it builds. The serve-site laws and the description read
+    /// the site here; nothing lowers it. `None` for every other param, and
+    /// for an exposure param the expansion has not built.
+    pub serve: Option<Box<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2461,6 +2670,16 @@ pub struct StructField {
     /// only occur in expression position; in field-declaration position
     /// it's a tag.
     pub tag: Option<String>,
+    /// `checks: bounded[Check; 16] indexed_by name;` — a wire map (the
+    /// api codecs carry the list as an object keyed by the element's
+    /// `name`), the value-level projection of `@form(hashmap)`'s
+    /// `indexed_by` (spec/api.md § Codecs, spec/forms.md).
+    pub indexed_by: Option<Ident>,
+    /// `checks: bounded[Check; 16] indexed_by name -> status;` — a wire map
+    /// of scalars: each element crosses as its `status` alone, keyed by its
+    /// `name` (`{"db": "ok"}`), the element a record of the key and that
+    /// one value (spec/api.md § Codecs).
+    pub map_value: Option<Ident>,
     pub span: Span,
 }
 
@@ -2468,7 +2687,24 @@ pub struct StructField {
 pub struct EnumVariant {
     pub name: Ident,
     pub fields: Vec<TypeExpr>,
+    /// GH #1417 (spec/api.md § Error classes): `@not_found Missing`, the
+    /// transport-neutral class a handler error of this variant is, which
+    /// each transport maps to its status. The word as written; the checker
+    /// refuses one that is not a class.
+    pub class: Option<Ident>,
     pub span: Span,
+    /// A member of a set type (`type Inbound = Book | Trade;`, GH #1530
+    /// step 1): the variant is named for its one field's type, which is
+    /// the discriminant. A set is an enum whose every variant is one.
+    pub member: bool,
+}
+
+impl TypeDecl {
+    /// A set type (`type S = A | B;`): an enum whose variants are its
+    /// member types, each named for its type.
+    pub fn is_set(&self) -> bool {
+        matches!(&self.body, TypeDeclBody::Enum(vs) if !vs.is_empty() && vs.iter().all(|v| v.member))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2584,6 +2820,15 @@ pub enum EffectClass {
     /// over the class. Applications do not write `effect secret_use;`
     /// — and may not, since the name now resolves to a built-in.
     SecretUse,
+    /// A write to the process's standard output or standard error
+    /// (`println`, `print`, `eprintln`, `eprint`, and every stdlib
+    /// leaf writing fd 1 or 2). A SUB-CLASS of `syscall`: every
+    /// carrier of it carries `syscall` too, so a contract over
+    /// `syscall` covers it and one admitting `syscall` admits it. It
+    /// exists so a law can single out the unstructured channel
+    /// (`forbid reaches(program, effects(stdio)) avoiding
+    /// std::log::*`) without forbidding every other syscall.
+    Stdio,
 }
 
 impl EffectClass {
@@ -2611,6 +2856,7 @@ impl EffectClass {
             "recursion" => EffectClass::Recursion,
             "alloc" => EffectClass::Alloc,
             "secret_use" => EffectClass::SecretUse,
+            "stdio" => EffectClass::Stdio,
             _ => return None,
         })
     }
@@ -2627,6 +2873,7 @@ impl EffectClass {
             EffectClass::Recursion => "recursion",
             EffectClass::Alloc => "alloc",
             EffectClass::SecretUse => "secret_use",
+            EffectClass::Stdio => "stdio",
             // resolved against `Program::effect_names` by the checker
             EffectClass::User(_) => "<user effect>",
         }
@@ -3600,6 +3847,22 @@ pub fn unscoped_alias(head: &str) -> &str {
 /// keyed off real renames and would have nothing to say about one).
 pub fn unbound_group_sentinel(seed_id: &str, name: &str) -> String {
     format!("__unbound${}${}", name, seed_id)
+}
+
+/// The built-in group: every fn-bearing declaration of the closing
+/// entrypoint's own seed, resolved in the world that evaluates the
+/// clause (an adopting entrypoint's, for a constitution's). It needs
+/// no declaration, and a program may not declare a group of its own
+/// under the name.
+pub const PROGRAM_GROUP: &str = "program";
+
+/// Whether a group operand names a group nobody declares: the built-in
+/// [`PROGRAM_GROUP`], or a stdlib module written inline
+/// (`avoiding std::log::*`), which stands for the group of that one
+/// member. Neither is a name the rename table or the unbound sentinel
+/// may touch.
+pub fn is_implicit_group_name(name: &str) -> bool {
+    name == PROGRAM_GROUP || name.starts_with("std::")
 }
 
 /// The author's spelling inside an [`unbound_group_sentinel`], or

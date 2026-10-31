@@ -53,7 +53,7 @@ locus RecordRoles {
         services: String = ""; // `<subject>=<service>` per line: the record's `git config --local dna.oidc.service`, re-read when the record moves
         memory: Bool = false; // a fixture's record: the rows `remember` was given, never git
         rows: EventRows = EventRows { };
-        git: GitJournal = GitJournal { };
+        git: RecordJournal = RecordJournal { };
         opened: Bool = false;
         given: Bool = false; // the mapping was handed in, not read from the record
         oidc_given: Bool = false;
@@ -69,10 +69,12 @@ locus RecordRoles {
         self.given = len(self.mapping) > 0;
         self.oidc_given = len(self.oidc) > 0;
         if len(self.root) == 0 { self.root = "."; }
-        if !self.memory { self.git = GitJournal { repo: self.root }; }
+        if !self.memory { self.git = RecordJournal { repo: self.root }; }
     }
     fn revision() -> Int { return if self.memory { self.rows.len() } else { self.git.revision() }; }
-    fn row(i: Int) -> Event { return if self.memory { self.rows.get(i) or Event { } } else { self.git.read(i) }; }
+    fn row(i: Int) -> Event {
+        return if self.memory { self.rows.get(i) or Event { } } else { self.git.read(i) };
+    }
     // A fixture's row: the record in memory grows by what the fixture
     // writes, which is its domain bound.
     fn remember(kind: String, entity: String, body: String) {
@@ -83,7 +85,7 @@ locus RecordRoles {
     // record moves.
     // The mapping, and the trust the record declares: a record that
     // declares `dna.trust = local` — one person holding every authority,
-    // as `hale dna new` declares for the record it makes — is that
+    // as `hale habitat graft` declares for the record it makes — is that
     // person's: whoever a peer maps to holds every position, the board
     // included, so a fresh record is its maker's to work as soon as the
     // socket knows them. A record that declares nothing, or any other
@@ -95,16 +97,22 @@ locus RecordRoles {
             return;
         }
         if !self.given {
-            let r = self.git.record.git("config\n--local\n--get-all\ndna.unix.member");
+            let r = MemoryRecord { repo: self.git.repo }.git(
+                "config\n--local\n--get-all\ndna.unix.member",
+            );
             self.mapping = if r.code == 0 { r.stdout } else { "" };
         }
         if !self.oidc_given {
-            let o = self.git.record.git("config\n--local\n--get-all\ndna.oidc.member");
+            let o = MemoryRecord { repo: self.git.repo }.git(
+                "config\n--local\n--get-all\ndna.oidc.member",
+            );
             self.oidc = if o.code == 0 { o.stdout } else { "" };
         }
-        let sv = self.git.record.git("config\n--local\n--get-all\ndna.oidc.service");
+        let sv = MemoryRecord { repo: self.git.repo }.git(
+            "config\n--local\n--get-all\ndna.oidc.service",
+        );
         self.services = if sv.code == 0 { sv.stdout } else { "" };
-        let t = self.git.record.git("config\n--get\ndna.trust");
+        let t = MemoryRecord { repo: self.git.repo }.git("config\n--get\ndna.trust");
         self.local_trust = trim_nl(if t.code == 0 { t.stdout } else { "" }) == "local";
     }
     // The live holds edges and the retired people, as of the record now.
@@ -144,7 +152,14 @@ locus RecordRoles {
         if len(person) == 0 || self.seats.is_retired(person) { return false; }
         if self.local_trust { return true; }
         if r == "position" { return self.seats.holds_any(person); }
-        return self.seats.holds(person, if r == "owner" { "position:board" } else { "position:" + std::str::replace(r, "_", "/") });
+        return self.seats.holds(
+            person,
+            if r == "owner" {
+                "position:board"
+            } else {
+                "position:" + std::str::replace(r, "_", "/")
+            },
+        );
     }
     // The person the record maps `p` to ("" when it maps nobody, or the
     // person was retired): who a command is recorded as coming from.
@@ -224,19 +239,40 @@ locus HoldsReader {
     }
     @bounded_by(record)
     fn take(e: Event) {
-        if e.kind == "graph.edge" && std::json::find_string_field(e.body, "kind") == "holds" { self.add(e.entity, e.body); return; }
-        if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" { self.proposed = self.proposed + e.entity + "\n"; return; }
-        if e.kind == "knowledge.ratified" && std::str::contains(self.proposed, "\n" + e.entity + "\n") && len(self.location) > 0 {
-            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
-            let mut rest = proposal_rows(GitRecord { repo: self.location }.body(raw).text);
+        if e.kind == "graph.edge" && std::json::find_string_field(e.body, "kind") == "holds" {
+            self.add(e.entity, e.body);
+            return;
+        }
+        if e.kind == "knowledge.proposed"
+            && std::json::find_string_field(e.body, "kind") == "graph"
+        {
+            self.proposed = self.proposed + e.entity + "\n";
+            return;
+        }
+        if e.kind == "knowledge.ratified"
+            && std::str::contains(self.proposed, "\n" + e.entity + "\n")
+            && len(self.location) > 0
+        {
+            let raw = if std::str::starts_with(e.entity, "sha256:") {
+                e.entity[7..len(e.entity)]
+            } else {
+                e.entity
+            };
+            let mut rest = proposal_rows(MemoryRecord { repo: self.location }.body(raw).text);
             while len(rest) > 0 {
                 let nl = std::str::index_of(rest, "\n");
                 let row = if nl < 0 { rest } else { rest[0..nl] };
                 rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
                 let body = std::json::find_string_field(row, "body");
-                if std::json::find_string_field(row, "kind") == "graph.edge" && std::json::find_string_field(body, "kind") == "holds" { self.add(std::json::find_string_field(row, "entity"), body); }
+                if std::json::find_string_field(row, "kind") == "graph.edge"
+                    && std::json::find_string_field(body, "kind") == "holds"
+                {
+                    self.add(std::json::find_string_field(row, "entity"), body);
+                }
                 // a hold left (a batch's `vacate`, a re-ingest's retirement)
-                if std::json::find_string_field(row, "kind") == "graph.retired" { self.drop(std::json::find_string_field(row, "entity"), false); }
+                if std::json::find_string_field(row, "kind") == "graph.retired" {
+                    self.drop(std::json::find_string_field(row, "entity"), false);
+                }
             }
             return;
         }
@@ -251,7 +287,12 @@ locus HoldsReader {
     fn add(id: String, body: String) {
         let position = graph_member(body, "position");
         let holder = graph_member(body, "holder");
-        if len(position) == 0 || len(holder) == 0 || std::str::contains(self.retired, "\n" + holder + "\n") { return; }
+        if len(position) == 0
+            || len(holder) == 0
+            || std::str::contains(self.retired, "\n" + holder + "\n")
+        {
+            return;
+        }
         self.live = self.live + id + "\t" + position + "\t" + holder + "\n";
     }
     // Every live edge `what` names: its id, or (`nodes`) its position or holder.
@@ -266,7 +307,8 @@ locus HoldsReader {
             let t1 = std::str::index_of(line, "\t");
             let tail = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(tail, "\t");
-            let gone = line[0..t1] == what || (nodes && (tail[0..t2] == what || tail[(t2 + 1)..len(tail)] == what));
+            let gone = line[0..t1] == what
+                || (nodes && (tail[0..t2] == what || tail[(t2 + 1)..len(tail)] == what));
             if !gone { kept = kept + line + "\n"; }
         }
         self.live = kept;
@@ -280,12 +322,16 @@ locus HoldsReader {
         let mut firms = self.memberships(person);
         while len(firms) > 0 {
             let nl = std::str::index_of(firms, "\n");
-            if std::str::contains(self.live, "\t" + position + "\t" + firms[0..nl] + "\n") { return true; }
+            if std::str::contains(self.live, "\t" + position + "\t" + firms[0..nl] + "\n") {
+                return true;
+            }
             firms = firms[(nl + 1)..len(firms)];
         }
         return false;
     }
-    fn is_retired(person: String) -> Bool { return std::str::contains(self.retired, "\n" + person + "\n"); }
+    fn is_retired(person: String) -> Bool {
+        return std::str::contains(self.retired, "\n" + person + "\n");
+    }
     // Whether `person` holds any position at all, in their own name or
     // through an organization: never by a membership alone.
     fn holds_any(person: String) -> Bool {
@@ -299,7 +345,11 @@ locus HoldsReader {
             let t1 = std::str::index_of(line, "\t");
             let tail = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(tail, "\t");
-            if std::str::starts_with(tail, "position:") && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n") { return true; }
+            if std::str::starts_with(tail, "position:")
+                && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n")
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -314,7 +364,9 @@ locus HoldsReader {
             let t1 = std::str::index_of(line, "\t");
             let tail = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(tail, "\t");
-            if std::str::starts_with(tail, "organization:") && tail[(t2 + 1)..len(tail)] == person { out = out + tail[0..t2] + "\n"; }
+            if std::str::starts_with(tail, "organization:") && tail[(t2 + 1)..len(tail)] == person {
+                out = out + tail[0..t2] + "\n";
+            }
         }
         return out;
     }
@@ -334,7 +386,12 @@ locus HoldsReader {
             let tail = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(tail, "\t");
             let position = tail[0..t2];
-            if std::str::starts_with(position, "position:") && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n") && !word_in(position, out) { out = out + (if len(out) > 0 { " " } else { "" }) + position; }
+            if std::str::starts_with(position, "position:")
+                && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n")
+                && !word_in(position, out)
+            {
+                out = out + (if len(out) > 0 { " " } else { "" }) + position;
+            }
         }
         return out;
     }
@@ -344,7 +401,7 @@ locus HoldsReader {
 // holding every position (unset is not local).
 fn record_trust_local(repo: String) -> Bool {
     if len(repo) == 0 { return false; }
-    let t = GitRecord { repo: repo }.git("config\n--get\ndna.trust");
+    let t = MemoryRecord { repo: repo }.git("config\n--get\ndna.trust");
     return t.code == 0 && trim_nl(t.stdout) == "local";
 }
 
@@ -361,12 +418,14 @@ fn graph_member(body: String, role: String) -> String {
         if close < open { return ""; }
         let obj = rest[open..(close + 1)];
         rest = rest[(close + 1)..len(rest)];
-        if std::json::find_string_field(obj, "role") == role { return std::json::find_string_field(obj, "node"); }
+        if std::json::find_string_field(obj, "role") == role {
+            return std::json::find_string_field(obj, "node");
+        }
     }
     return "";
 }
 
-// The graph rows a hole proposal carries (`hale dna init`: a
+// The graph rows a hole proposal carries (`hale habitat graft`: a
 // `knowledge.proposed` of kind `graph` whose stored document holds
 // `rows`), one `{"kind", "entity", "body"}` object per line: what the
 // record gains when the Board ratifies it. Read by `hale dna fill` and

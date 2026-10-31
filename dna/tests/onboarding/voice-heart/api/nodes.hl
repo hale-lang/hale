@@ -1,0 +1,1005 @@
+// Nodes and their seats, configured on the admin plane. A node is created
+// here, which issues its enrollment token; a seat is one of the node's
+// engines, spending one account, serving some catalog models.
+//
+// A node is `pending` until it first registers on the node plane
+// (fleet.hl), then `up` or `down` by its heartbeat; a seat shows the state
+// its node reported for it, and the problems the coordinator can see.
+// A change to a node or its seats is a new assignment, published to the
+// node over the link.
+
+type NodeRef { node: String; }
+
+/// `NodeCreate`. No `max_in_flight` (or `null`) is no cap of its own.
+type NodeCreate {
+    id: String;
+    name: String = "";
+    has_max_in_flight: Bool = false;
+    max_in_flight: Int = -1;
+}
+
+/// `NodeUpdate`, for the node the path names.
+type NodeUpdate {
+    node: String;
+    has_name: Bool = false;
+    name: String = "";
+    // a three-way field: left out (kept), null (no cap of the node's own,
+    // -1) or a value
+    has_max_in_flight: Bool = false;
+    max_in_flight: Int = -1;
+    clear_max_in_flight: Bool = false;
+}
+
+/// What the coordinator sees wrong with a seat.
+type Problems { items: bounded[String; 8]; }
+
+type SeatRef { node: String; seat: String; }
+
+/// `Seat`, as created on the node the path names. `config` is the engine's
+/// JSON object, free-form: its `config_schema` says it.
+type SeatCreate {
+    node: String;
+    id: String;
+    engine: String;
+    account: String;
+    serves: bounded[st::SeatModel; 16];
+    // empty is the default, `[internal]`
+    data_classes: bounded[String; 32];
+    concurrency: Int = 1;
+    enabled: Bool = true;
+    config: std::json::Value = std::json::Value::null();
+}
+
+/// `SeatUpdate`, for the seat the path names.
+type SeatUpdate {
+    node: String;
+    seat: String;
+    has_engine: Bool = false;
+    engine: String = "";
+    has_account: Bool = false;
+    account: String = "";
+    has_serves: Bool = false;
+    serves: bounded[st::SeatModel; 16];
+    has_data_classes: Bool = false;
+    data_classes: bounded[String; 32];
+    has_concurrency: Bool = false;
+    concurrency: Int = 1;
+    has_enabled: Bool = false;
+    enabled: Bool = true;
+    has_config: Bool = false;
+    config: std::json::Value = std::json::Value::null();
+}
+
+/// A seat as the REST router answers it: `SeatView`, its config the text
+/// the store holds, written as it is (never parsed on the way out).
+type SeatRead {
+    ref: String = "";
+    node: String = "";
+    id: String = "";
+    engine: String = "";
+    account: String = "";
+    serves: bounded[st::SeatModel; 16];
+    data_classes: bounded[String; 32];
+    concurrency: Int = 1;
+    enabled: Bool = true;
+    config: String = "{}";
+    status: SeatStatus;
+    // the node's reason
+    has_reason: Bool = false;
+    reason: String = "";
+    in_flight: Int = 0;
+    problems: bounded[String; 8];
+}
+
+type SeatReads { items: bounded[SeatRead; 16]; }
+
+type SeatReadList { data: bounded[SeatRead; 16]; }
+
+/// `SeatView`, as the surface describes it: its config a `std::json::Value`
+/// (seat_view_of).
+type SeatView {
+    ref: String = "";
+    node: String = "";
+    id: String = "";
+    engine: String = "";
+    account: String = "";
+    serves: bounded[st::SeatModel; 16];
+    data_classes: bounded[String; 32];
+    concurrency: Int = 1;
+    enabled: Bool = true;
+    config: std::json::Value = std::json::Value::null();
+    status: SeatStatus;
+    has_reason: Bool = false;
+    reason: String = "";
+    in_flight: Int = 0;
+    problems: bounded[String; 8];
+}
+
+type SeatList { data: bounded[SeatView; 16]; }
+
+/// `Node`, and `NodeWithToken` when `enrollment_token` is set (only the
+/// answers to its creation and to a rotation). A field whose flag is false
+/// is `null`.
+type NodeRead {
+    id: String = "";
+    name: String = "";
+    status: NodeStatus;
+    // the node software's version, its capabilities and local controls as
+    // it last declared them, until it first registers
+    has_version: Bool = false;
+    version: String = "";
+    has_capabilities: Bool = false;
+    // as the store holds them
+    capabilities: String = "";
+    has_local: Bool = false;
+    local: LocalControls = LocalControls { paused: false };
+    has_max_in_flight: Bool = false;
+    max_in_flight: Int = -1;
+    // until it first registers
+    has_effective_max_in_flight: Bool = false;
+    effective_max_in_flight: Int = -1;
+    in_flight: Int = 0;
+    assignment_version: Int = 0;
+    has_applied_version: Bool = false;
+    applied_version: Int = -1;
+    seats: bounded[SeatRead; 16];
+    has_connected_at: Bool = false;
+    connected_at: Time = `1970-01-01T00:00:00Z`;
+    has_last_heartbeat_at: Bool = false;
+    last_heartbeat_at: Time = `1970-01-01T00:00:00Z`;
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    has_revoked_at: Bool = false;
+    revoked_at: Time = `1970-01-01T00:00:00Z`;
+    enrollment_token: String = "";
+}
+
+type NodeReadList { data: bounded[NodeRead; 64]; }
+
+/// `Node`, as the surface describes it: its capabilities a typed record,
+/// its seats `SeatView`s (node_of_read).
+type Node {
+    id: String = "";
+    name: String = "";
+    status: NodeStatus;
+    // the node software's version, its capabilities and local controls as
+    // it last declared them, until it first registers
+    has_version: Bool = false;
+    version: String = "";
+    has_capabilities: Bool = false;
+    capabilities: NodeCapabilities = NodeCapabilities { max_in_flight: 0 };
+    has_local: Bool = false;
+    local: LocalControls = LocalControls { paused: false };
+    has_max_in_flight: Bool = false;
+    max_in_flight: Int = -1;
+    // until it first registers
+    has_effective_max_in_flight: Bool = false;
+    effective_max_in_flight: Int = -1;
+    in_flight: Int = 0;
+    assignment_version: Int = 0;
+    has_applied_version: Bool = false;
+    applied_version: Int = -1;
+    seats: bounded[SeatView; 16];
+    has_connected_at: Bool = false;
+    connected_at: Time = `1970-01-01T00:00:00Z`;
+    has_last_heartbeat_at: Bool = false;
+    last_heartbeat_at: Time = `1970-01-01T00:00:00Z`;
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    has_revoked_at: Bool = false;
+    revoked_at: Time = `1970-01-01T00:00:00Z`;
+    enrollment_token: String = "";
+}
+
+type NodeList { data: bounded[Node; 64]; }
+
+locus Nodes {
+    params {
+        store: st::Store;
+        link: Link;
+    }
+
+    // The surface's rows (surface.hl) answer the typed `Node`; the REST
+    // router answers the `_read` methods' `NodeRead`, its stored JSON as
+    // stored.
+
+    /// `listNodes`.
+    fn list() -> NodeList fallible(ApiError) {
+        let l = self.list_read() or raise;
+        let mut out = NodeList { };
+        for n in l.data {
+            push(out.data, node_of_read(n) or raise) or discard;
+        }
+        return out;
+    }
+
+    /// `createNode`.
+    fn create(c: NodeCreate) -> Node fallible(ApiError) {
+        return node_of_read(self.create_read(c) or raise) or raise;
+    }
+
+    /// `getNode`.
+    fn get(r: NodeRef) -> Node fallible(ApiError) {
+        return node_of_read(self.get_read(r) or raise) or raise;
+    }
+
+    /// `updateNode`.
+    fn update(u: NodeUpdate) -> Node fallible(ApiError) {
+        return node_of_read(self.update_read(u) or raise) or raise;
+    }
+
+    /// `revokeNode`.
+    fn revoke(r: NodeRef) -> Node fallible(ApiError) {
+        return node_of_read(self.revoke_read(r) or raise) or raise;
+    }
+
+    /// `rotateNodeToken`.
+    fn rotate_token(r: NodeRef) -> Node fallible(ApiError) {
+        return node_of_read(self.rotate_token_read(r) or raise) or raise;
+    }
+
+    /// `listNodes`.
+    fn list_read() -> NodeReadList fallible(ApiError) {
+        let rows = self.store.nodes() or fail store_failed(err);
+        let mut out = NodeReadList { };
+        for r in rows.rows {
+            let v = self.view(r) or raise;
+            push(out.data, v) or discard;
+        }
+        return out;
+    }
+
+    /// `createNode`: the token is in this answer and nowhere else; the
+    /// store keeps its digest.
+    fn create_read(c: NodeCreate) -> NodeRead fallible(ApiError) {
+        if !is_slug(c.id) {
+            fail invalid(
+                "`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63",
+                "id"
+            );
+        }
+        if len(c.name) > 128 { fail invalid("`name` is at most 128 characters", "name"); }
+        let cap = if c.has_max_in_flight { c.max_in_flight } else { -1 };
+        check_cap(cap) or raise;
+        let token_hex = random_hex(20) or fail entropy_failed(err.message);
+        let token = "vn-" + token_hex;
+        let mut row = st::NodeRow {
+            id: c.id,
+            name: c.name,
+            token_digest: secret_digest(token),
+            max_in_flight: cap,
+            created_at: now_seconds(),
+        };
+        row.assignment_version = 1;
+        let mut v = self.view(row) or raise;
+        let added = self.store.insert_node(
+            row,
+            change("create", "nodes/" + c.id, "", node_change_json(v)),
+        ) or fail store_failed(err);
+        if !added { fail conflict("node " + c.id + " exists; a node id is never reused"); }
+        v.enrollment_token = token;
+        return v;
+    }
+
+    /// `getNode`.
+    fn get_read(r: NodeRef) -> NodeRead fallible(ApiError) {
+        let row = self.known(r.node) or raise;
+        return self.view(row) or raise;
+    }
+
+    /// `updateNode`: the fields the request sets; a new assignment.
+    fn update_read(u: NodeUpdate) -> NodeRead fallible(ApiError) {
+        self.store.hold("nodes/" + u.node) or fail store_failed(err);
+        let out = self.update_held(u) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `update`, holding the resource from its read to its write.
+    fn update_held(u: NodeUpdate) -> NodeRead fallible(ApiError) {
+        let mut row = self.known(u.node) or raise;
+        let before = self.view(row) or raise;
+        if u.has_name {
+            if len(u.name) > 128 { fail invalid("`name` is at most 128 characters", "name"); }
+            row.name = u.name;
+        }
+        if u.has_max_in_flight || u.clear_max_in_flight {
+            let cap = if u.has_max_in_flight { u.max_in_flight } else { -1 };
+            check_cap(cap) or raise;
+            row.max_in_flight = cap;
+        }
+        row.assignment_version = row.assignment_version + 1;
+        let after = self.view(row) or raise;
+        self.store.update_node(
+            row,
+            change("update", "nodes/" + row.id, node_change_json(before), node_change_json(after)),
+        ) or fail store_failed(err);
+        tell_assignment(self.store, self.link, row.id) or raise;
+        return after;
+    }
+
+    /// `revokeNode`: its token no longer admits it and its seats stop
+    /// serving. The id stays taken; revoking a revoked node changes nothing.
+    fn revoke_read(r: NodeRef) -> NodeRead fallible(ApiError) {
+        self.store.hold("nodes/" + r.node) or fail store_failed(err);
+        let out = self.revoke_held(r) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `revoke`, holding the resource from its read to its write.
+    fn revoke_held(r: NodeRef) -> NodeRead fallible(ApiError) {
+        let mut row = self.known(r.node) or raise;
+        if row.revoked { return self.view(row) or raise; }
+        let before = self.view(row) or raise;
+        row.revoked = true;
+        row.revoked_at = now_seconds();
+        row.assignment_version = row.assignment_version + 1;
+        let after = self.view(row) or raise;
+        self.store.update_node(
+            row,
+            change("revoke", "nodes/" + row.id, node_change_json(before), node_change_json(after)),
+        ) or fail store_failed(err);
+        return after;
+    }
+
+    /// `rotateNodeToken`: the old token stops admitting the node at once.
+    fn rotate_token_read(r: NodeRef) -> NodeRead fallible(ApiError) {
+        self.store.hold("nodes/" + r.node) or fail store_failed(err);
+        let out = self.rotate_token_held(r) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `rotate_token`, holding the resource from its read to its write.
+    fn rotate_token_held(r: NodeRef) -> NodeRead fallible(ApiError) {
+        let mut row = self.known(r.node) or raise;
+        if row.revoked {
+            fail conflict("node " + r.node + " is revoked; a revoked node gets no token");
+        }
+        let token_hex = random_hex(20) or fail entropy_failed(err.message);
+        let token = "vn-" + token_hex;
+        let before = self.view(row) or raise;
+        row.token_digest = secret_digest(token);
+        row.assignment_version = row.assignment_version + 1;
+        let mut after = self.view(row) or raise;
+        self.store.update_node(
+            row,
+            change("rotate", "nodes/" + row.id, node_change_json(before), node_change_json(after)),
+        ) or fail store_failed(err);
+        after.enrollment_token = token;
+        return after;
+    }
+
+    fn known(id: String) -> st::NodeRow fallible(ApiError) {
+        let row = self.store.node(id) or fail store_failed(err);
+        if !row.present { fail not_found("no node " + id); }
+        return row;
+    }
+
+    /// The row with its seats.
+    fn view(r: st::NodeRow) -> NodeRead fallible(ApiError) {
+        let seats = self.store.seats() or fail store_failed(err);
+        let f = self.store.fleet(r.id) or fail store_failed(err);
+        let b = self.store.beat(r.id) or fail store_failed(err);
+        let effective = effective_cap(self.store, r) or raise;
+        let mut v = NodeRead {
+            id: r.id,
+            name: r.name,
+            status: node_state_of(node_status(self.store, r, now_seconds()) or raise),
+            has_version: len(f.version) > 0,
+            version: f.version,
+            has_capabilities: len(f.capabilities) > 0,
+            capabilities: f.capabilities,
+            has_local: len(f.local) > 0,
+            local: local_of(f.local),
+            has_max_in_flight: r.max_in_flight >= 0,
+            max_in_flight: r.max_in_flight,
+            has_effective_max_in_flight: effective >= 0,
+            effective_max_in_flight: effective,
+            in_flight: b.in_flight,
+            assignment_version: r.assignment_version,
+            has_applied_version: f.applied_version >= 0,
+            applied_version: f.applied_version,
+            has_connected_at: f.present,
+            connected_at: f.registered_at,
+            has_last_heartbeat_at: b.present,
+            last_heartbeat_at: b.at,
+            created_at: r.created_at,
+            has_revoked_at: r.revoked,
+            revoked_at: r.revoked_at
+        };
+        for s in seats.rows {
+            if s.node == r.id {
+                let sv = seat_view(self.store, s, r) or raise;
+                push(v.seats, sv) or discard;
+            }
+        }
+        return v;
+    }
+}
+
+locus Seats {
+    params {
+        store: st::Store;
+        link: Link;
+    }
+
+    // The surface's rows answer the typed `SeatView`; the REST router
+    // answers the `_read` methods' `SeatRead`, its config as stored.
+
+    /// `listSeats`.
+    fn list(r: NodeRef) -> SeatList fallible(ApiError) {
+        let l = self.list_read(r) or raise;
+        let mut out = SeatList { };
+        for v in l.data {
+            push(out.data, seat_view_of(v) or raise) or discard;
+        }
+        return out;
+    }
+
+    /// `createSeat`.
+    fn create(c: SeatCreate) -> SeatView fallible(ApiError) {
+        return seat_view_of(self.create_read(c) or raise) or raise;
+    }
+
+    /// `getSeat`.
+    fn get(r: SeatRef) -> SeatView fallible(ApiError) {
+        return seat_view_of(self.get_read(r) or raise) or raise;
+    }
+
+    /// `updateSeat`.
+    fn update(u: SeatUpdate) -> SeatView fallible(ApiError) {
+        return seat_view_of(self.update_read(u) or raise) or raise;
+    }
+
+    /// `removeSeat`.
+    fn remove(r: SeatRef) -> SeatView fallible(ApiError) {
+        return seat_view_of(self.remove_read(r) or raise) or raise;
+    }
+
+    /// `listSeats`.
+    fn list_read(r: NodeRef) -> SeatReadList fallible(ApiError) {
+        let n = self.node_of(r.node) or raise;
+        let seats = self.store.seats() or fail store_failed(err);
+        let mut out = SeatReadList { };
+        for s in seats.rows {
+            if s.node == r.node {
+                let v = seat_view(self.store, s, n) or raise;
+                push(out.data, v) or discard;
+            }
+        }
+        return out;
+    }
+
+    /// `createSeat`. The node has declared no engines yet, so the engine
+    /// and the config are taken as written and the seat carries the problem
+    /// until the node connects and takes it or refuses it.
+    fn create_read(c: SeatCreate) -> SeatRead fallible(ApiError) {
+        self.store.hold("nodes/" + c.node) or fail store_failed(err);
+        let out = self.create_held(c) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `create`, holding the resource from its read to its write.
+    fn create_held(c: SeatCreate) -> SeatRead fallible(ApiError) {
+        let n = self.node_of(c.node) or raise;
+        if n.revoked { fail conflict("node " + c.node + " is revoked"); }
+        if !is_slug(c.id) {
+            fail invalid(
+                "`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63",
+                "id"
+            );
+        }
+        let mut row = st::SeatRow {
+            node: c.node,
+            id: c.id,
+            engine: c.engine,
+            account: c.account,
+            concurrency: c.concurrency,
+            enabled: c.enabled,
+            config: c.config.text
+        };
+        row.serves.items = c.serves;
+        row.data_classes.items = c.data_classes;
+        if count(row.data_classes.items) == 0 {
+            push(row.data_classes.items, "internal") or discard;
+        }
+        self.check(row) or raise;
+        let held = self.store.seats() or fail store_failed(err);
+        let mut on_node = 0;
+        for s in held.rows {
+            if s.node == c.node { on_node = on_node + 1; }
+        }
+        if on_node >= 16 { fail invalid("a node holds at most 16 seats", ""); }
+        row.ref = c.node + "/" + c.id;
+        let v = seat_view(self.store, row, n) or raise;
+        let added = self.store.insert_seat(
+            row,
+            change("create", seat_target(row), "", seat_json(v)),
+        ) or fail store_failed(err);
+        if !added { fail conflict("node " + c.node + " has a seat " + c.id); }
+        tell_assignment(self.store, self.link, c.node) or raise;
+        return seat_view(self.store, row, n) or raise;
+    }
+
+    /// `getSeat`.
+    fn get_read(r: SeatRef) -> SeatRead fallible(ApiError) {
+        let n = self.node_of(r.node) or raise;
+        let s = self.known(r.node, r.seat) or raise;
+        return seat_view(self.store, s, n) or raise;
+    }
+
+    /// `updateSeat`: the fields the request sets; a new assignment.
+    fn update_read(u: SeatUpdate) -> SeatRead fallible(ApiError) {
+        self.store.hold("nodes/" + u.node) or fail store_failed(err);
+        let out = self.update_held(u) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `update`, holding the resource from its read to its write.
+    fn update_held(u: SeatUpdate) -> SeatRead fallible(ApiError) {
+        let n = self.node_of(u.node) or raise;
+        let mut row = self.known(u.node, u.seat) or raise;
+        let before = seat_view(self.store, row, n) or raise;
+        if u.has_engine { row.engine = u.engine; }
+        if u.has_account { row.account = u.account; }
+        if u.has_serves { row.serves.items = u.serves; }
+        if u.has_data_classes { row.data_classes.items = u.data_classes; }
+        if u.has_concurrency { row.concurrency = u.concurrency; }
+        if u.has_enabled { row.enabled = u.enabled; }
+        if u.has_config { row.config = u.config.text; }
+        self.check(row) or raise;
+        let after = seat_view(self.store, row, n) or raise;
+        self.store.update_seat(
+            row,
+            change("update", seat_target(row), seat_json(before), seat_json(after)),
+        ) or fail store_failed(err);
+        tell_assignment(self.store, self.link, row.node) or raise;
+        return seat_view(self.store, row, n) or raise;
+    }
+
+    /// `removeSeat`: it takes no new requests.
+    fn remove_read(r: SeatRef) -> SeatRead fallible(ApiError) {
+        self.store.hold("nodes/" + r.node) or fail store_failed(err);
+        let out = self.remove_held(r) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `remove`, holding the resource from its read to its write.
+    fn remove_held(r: SeatRef) -> SeatRead fallible(ApiError) {
+        let n = self.node_of(r.node) or raise;
+        let row = self.known(r.node, r.seat) or raise;
+        let before = seat_view(self.store, row, n) or raise;
+        self.store.delete_seat(
+            row,
+            change("delete", seat_target(row), seat_json(before), ""),
+        ) or fail store_failed(err);
+        tell_assignment(self.store, self.link, row.node) or raise;
+        return before;
+    }
+
+    /// A seat names an engine and an account that exists, serves at least
+    /// one model, and serves at least one request at once.
+    fn check(s: st::SeatRow) -> Bool fallible(ApiError) {
+        if len(s.engine) == 0 {
+            fail invalid("`engine` names one of the node's engines", "engine");
+        }
+        if count(s.serves.items) == 0 {
+            fail invalid("`serves` names at least one model", "serves");
+        }
+        if s.concurrency < 1 { fail invalid("`concurrency` is at least 1", "concurrency"); }
+        let a = self.store.account(s.account) or fail store_failed(err);
+        if !a.present { fail invalid("no account " + s.account, "account"); }
+        return true;
+    }
+
+    fn node_of(id: String) -> st::NodeRow fallible(ApiError) {
+        let n = self.store.node(id) or fail store_failed(err);
+        if !n.present { fail not_found("no node " + id); }
+        return n;
+    }
+
+    fn known(node: String, id: String) -> st::SeatRow fallible(ApiError) {
+        let s = self.store.seat(node, id) or fail store_failed(err);
+        if !s.present { fail not_found("no seat " + id + " on node " + node); }
+        return s;
+    }
+}
+
+/// Stored JSON as a `std::json::Value`, for an answer that must carry one
+/// (the surface's typed rows). A value holds at most 64 KiB and 64 levels;
+/// stored JSON past that is never replaced by `null`: it is an error naming
+/// what it is and its size. The REST router writes stored JSON as it is
+/// and never comes here.
+fn stored_value(text: String, what: String) -> std::json::Value fallible(ApiError) {
+    return std::json::Value::parse(text) or fail ApiError {
+        status: 500,
+        kind: "server_error",
+        code: ErrorCode::internal_error,
+        message: what + " is " + to_string(len(text))
+            + " bytes of stored JSON, which a JSON value cannot hold (at most 65536 bytes and 64 levels); the REST answer carries it as stored",
+    };
+}
+
+/// A `SeatRead` as the surface's typed `SeatView`.
+fn seat_view_of(r: SeatRead) -> SeatView fallible(ApiError) {
+    let mut v = SeatView {
+        ref: r.ref,
+        node: r.node,
+        id: r.id,
+        engine: r.engine,
+        account: r.account,
+        concurrency: r.concurrency,
+        enabled: r.enabled,
+        config: stored_value(r.config, "seat " + r.ref + "'s config") or raise,
+        status: r.status,
+        has_reason: r.has_reason,
+        reason: r.reason,
+        in_flight: r.in_flight,
+    };
+    v.serves = r.serves;
+    v.data_classes = r.data_classes;
+    v.problems = r.problems;
+    return v;
+}
+
+/// A `NodeRead` as the surface's typed `Node`.
+fn node_of_read(r: NodeRead) -> Node fallible(ApiError) {
+    let caps = if r.has_capabilities {
+        NodeCapabilities::api_decode(r.capabilities) or fail ApiError {
+            status: 500,
+            kind: "server_error",
+            code: ErrorCode::internal_error,
+            message: "node " + r.id + "'s capabilities are " + to_string(len(r.capabilities))
+                + " bytes of stored JSON that are not a node's capabilities (`" + err.field
+                + "` is " + err.kind + "); the REST answer carries them as stored",
+        }
+    } else {
+        no_capabilities()
+    };
+    let mut n = Node {
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        has_version: r.has_version,
+        version: r.version,
+        has_capabilities: r.has_capabilities,
+        capabilities: caps,
+        has_local: r.has_local,
+        local: r.local,
+        has_max_in_flight: r.has_max_in_flight,
+        max_in_flight: r.max_in_flight,
+        has_effective_max_in_flight: r.has_effective_max_in_flight,
+        effective_max_in_flight: r.effective_max_in_flight,
+        in_flight: r.in_flight,
+        assignment_version: r.assignment_version,
+        has_applied_version: r.has_applied_version,
+        applied_version: r.applied_version,
+        has_connected_at: r.has_connected_at,
+        connected_at: r.connected_at,
+        has_last_heartbeat_at: r.has_last_heartbeat_at,
+        last_heartbeat_at: r.last_heartbeat_at,
+        created_at: r.created_at,
+        has_revoked_at: r.has_revoked_at,
+        revoked_at: r.revoked_at,
+        enrollment_token: r.enrollment_token,
+    };
+    for s in r.seats {
+        push(n.seats, seat_view_of(s) or raise) or discard;
+    }
+    return n;
+}
+
+/// A seat with its state and its problems: `offline` while its node is
+/// not up, `pending` until the node reports on the assignment that
+/// carries it, then what the node reported.
+fn seat_view(store: st::Store, s: st::SeatRow, n: st::NodeRow) -> SeatRead fallible(ApiError) {
+    let mut v = SeatRead {
+        ref: s.node + "/" + s.id,
+        status: SeatStatus::offline,
+        node: s.node,
+        id: s.id,
+        engine: s.engine,
+        account: s.account,
+        concurrency: s.concurrency,
+        enabled: s.enabled,
+        config: s.config
+    };
+    v.serves = s.serves.items;
+    v.data_classes = s.data_classes.items;
+    let f = store.fleet(n.id) or fail store_failed(err);
+    let status = node_status(store, n, now_seconds()) or raise;
+    if status == "up" {
+        v.status = SeatStatus::pending;
+        if f.applied_version >= n.assignment_version {
+            let states = store.seat_states(n.id) or fail store_failed(err);
+            for st in states.rows {
+                if st.seat == s.id {
+                    v.status = seat_status_of(st.status);
+                    v.has_reason = len(st.reason) > 0;
+                    v.reason = st.reason;
+                    v.in_flight = st.in_flight;
+                }
+            }
+        }
+    }
+    if n.revoked {
+        push(v.problems, "node " + n.id + " is revoked") or discard;
+    } else if !f.present {
+        push(
+            v.problems,
+            "node " + n.id + " has not connected, so it has declared no engines to check engine "
+                + s.engine + " against",
+        ) or discard;
+    } else {
+        let engines = declared_engines(f.capabilities) or DeclaredEngines { };
+        let mut offered = false;
+        for e in engines.items {
+            if e.id == s.engine {
+                offered = true;
+                for field in e.required.items {
+                    if kind_of(s.config, field) == "missing" {
+                        push(
+                            v.problems,
+                            "config has no " + field + ", which engine " + s.engine + " requires",
+                        ) or discard;
+                    }
+                }
+            }
+        }
+        if !offered {
+            push(v.problems, "node " + n.id + " does not offer engine " + s.engine) or discard;
+        }
+    }
+    let a = store.account(s.account) or fail store_failed(err);
+    if !a.present {
+        push(v.problems, "no account " + s.account) or discard;
+    } else if a.archived {
+        push(v.problems, "account " + s.account + " is archived") or discard;
+    }
+    for m in s.serves.items {
+        let row = store.model(m.model) or fail store_failed(err);
+        if !row.present || row.removed {
+            push(v.problems, "model " + m.model + " is not in the catalog") or discard;
+        }
+    }
+    return v;
+}
+
+/// True when the seat serves `model`.
+fn seat_serves(s: st::SeatRow, model: String) -> Bool {
+    for m in s.serves.items {
+        if m.model == model { return true; }
+    }
+    return false;
+}
+
+fn check_cap(n: Int) -> Bool fallible(ApiError) {
+    if n != -1 && n < 1 { fail invalid("`max_in_flight` is at least 1, or null", "max_in_flight"); }
+    return true;
+}
+
+// ---- the wire ----------------------------------------------------------
+
+/// A count of at least 1, or `null` (-1); -1 when absent.
+fn cap_field(body: String, name: String) -> Int fallible(ApiError) {
+    let kind = kind_of(body, name);
+    if kind == "missing" || kind == "null" { return -1; }
+    return count_or(body, name, -1) or raise;
+}
+
+/// `serves`: a list of `SeatModel` objects.
+fn serves_field(body: String) -> st::SeatModels fallible(ApiError) {
+    let kind = kind_of(body, "serves");
+    if kind == "missing" { return st::SeatModels { }; }
+    if kind != "array" { fail invalid("`serves` is a list of models", "serves"); }
+    let mut out = st::SeatModels { };
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "serves"));
+    while !it.done {
+        let e = std::str::trim(it.element);
+        if !std::json::valid_object(e) {
+            fail invalid("each of `serves` is an object naming its `model`", "serves");
+        }
+        let engine_name = nullable_string(e, "as") or raise;
+        let m = st::SeatModel {
+            model: required_string(e, "model") or raise,
+            has_engine_name: len(engine_name) > 0,
+            engine_name: engine_name,
+        };
+        push(out.items, m) or fail invalid("`serves` holds at most 16 models", "serves");
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+/// `config`: a JSON object, kept as written; `{}` when absent.
+fn config_field(body: String) -> std::json::Value fallible(ApiError) {
+    let kind = kind_of(body, "config");
+    if kind == "missing" { return empty_object(); }
+    if kind != "object" { fail invalid("`config` is an object", "config"); }
+    return std::json::Value::parse(
+        std::str::trim(std::json::find_field_raw(body, "config")),
+    ) or fail invalid(
+        "`config` is at most 64 KiB (65536 bytes) and 64 levels deep",
+        "config"
+    );
+}
+
+fn bool_or(body: String, name: String, otherwise: Bool) -> Bool fallible(ApiError) {
+    let kind = kind_of(body, name);
+    if kind == "missing" { return otherwise; }
+    if kind != "bool" { fail invalid("`" + name + "` is true or false", name); }
+    return std::json::find_bool_field(body, name);
+}
+
+fn read_node_create(body: String) -> NodeCreate fallible(ApiError) {
+    object_body(body) or raise;
+    let cap = cap_field(body, "max_in_flight") or raise;
+    return NodeCreate {
+        id: required_string(body, "id") or raise,
+        name: string_or(body, "name", "") or raise,
+        has_max_in_flight: cap >= 0,
+        max_in_flight: cap,
+    };
+}
+
+fn read_node_update(body: String, node: String) -> NodeUpdate fallible(ApiError) {
+    object_body(body) or raise;
+    if sets(body, "id") { fail invalid("a node's `id` cannot change", "id"); }
+    return NodeUpdate {
+        node: node,
+        has_name: sets(body, "name"),
+        name: string_or(body, "name", "") or raise,
+        has_max_in_flight: kind_of(body, "max_in_flight") != "missing"
+            && kind_of(body, "max_in_flight") != "null",
+        max_in_flight: cap_field(body, "max_in_flight") or raise,
+        clear_max_in_flight: kind_of(body, "max_in_flight") == "null"
+    };
+}
+
+fn read_seat_create(body: String, node: String) -> SeatCreate fallible(ApiError) {
+    object_body(body) or raise;
+    if kind_of(body, "serves") != "array" {
+        fail invalid("`serves` is a required list of models", "serves");
+    }
+    let serves = serves_field(body) or raise;
+    let data_classes = names_field(body, "data_classes") or raise;
+    let mut c = SeatCreate {
+        node: node,
+        id: required_string(body, "id") or raise,
+        engine: required_string(body, "engine") or raise,
+        account: required_string(body, "account") or raise,
+        concurrency: count_or(body, "concurrency", 1) or raise,
+        enabled: bool_or(body, "enabled", true) or raise,
+        config: config_field(body) or raise
+    };
+    c.serves = serves.items;
+    c.data_classes = data_classes.items;
+    return c;
+}
+
+fn read_seat_update(body: String, node: String, seat: String) -> SeatUpdate fallible(ApiError) {
+    object_body(body) or raise;
+    if sets(body, "id") { fail invalid("a seat's `id` cannot change", "id"); }
+    let serves = serves_field(body) or raise;
+    let data_classes = names_field(body, "data_classes") or raise;
+    let mut u = SeatUpdate {
+        node: node,
+        seat: seat,
+        has_engine: sets(body, "engine"),
+        engine: string_or(body, "engine", "") or raise,
+        has_account: sets(body, "account"),
+        account: string_or(body, "account", "") or raise,
+        has_serves: sets(body, "serves"),
+        has_data_classes: sets(body, "data_classes"),
+        has_concurrency: sets(body, "concurrency"),
+        concurrency: count_or(body, "concurrency", 1) or raise,
+        has_enabled: sets(body, "enabled"),
+        enabled: bool_or(body, "enabled", true) or raise,
+        has_config: sets(body, "config"),
+        config: config_field(body) or raise
+    };
+    u.serves = serves.items;
+    u.data_classes = data_classes.items;
+    return u;
+}
+
+fn seat_json(s: SeatRead) -> String {
+    let problems_list = st::JsonList { };
+    for p in s.problems {
+        problems_list.add(jq(p));
+    }
+    let problems = problems_list.text();
+    return "{\"id\": " + jq(s.id) + ", \"engine\": " + jq(s.engine) + ", \"account\": "
+        + jq(s.account) + ", \"serves\": " + st::serves_json(s.serves)
+        + ", \"data_classes\": " + st::jnames(s.data_classes) + ", \"concurrency\": "
+        + to_string(s.concurrency) + ", \"enabled\": " + jbool(s.enabled)
+        + ", \"config\": " + s.config + ", \"ref\": " + jq(s.ref) + ", \"node\": " + jq(s.node)
+        + ", \"status\": " + jq(seat_status_name(s.status))
+        + ", \"reason\": " + jstring_or_null(s.has_reason, s.reason) + ", \"in_flight\": "
+        + to_string(s.in_flight) + ", \"problems\": [" + problems + "]}";
+}
+
+fn seat_list_json(l: SeatReadList) -> String {
+    let entries_list = st::JsonList { };
+    for s in l.data {
+        entries_list.add(seat_json(s));
+    }
+    let entries = entries_list.text();
+    return jdata(entries);
+}
+
+/// `Node`, or `NodeWithToken` when it carries its token.
+fn node_json(n: NodeRead) -> String {
+    let seats_list = st::JsonList { };
+    for s in n.seats {
+        seats_list.add(seat_json(s));
+    }
+    let seats = seats_list.text();
+    let mut out = "{\"id\": " + jq(n.id) + ", \"name\": " + jq(n.name) + ", \"status\": "
+        + jq(node_state_name(n.status))
+        + ", \"version\": " + jstring_or_null(n.has_version, n.version) + ", \"capabilities\": "
+        + jraw_if(n.has_capabilities, n.capabilities)
+        + ", \"local\": " + jraw_if(n.has_local, local_json(n.local)) + ", \"max_in_flight\": "
+        + jcount_or_null(n.has_max_in_flight, n.max_in_flight)
+        + ", \"effective_max_in_flight\": "
+        + jcount_or_null(n.has_effective_max_in_flight, n.effective_max_in_flight)
+        + ", \"in_flight\": " + to_string(n.in_flight) + ", \"assignment_version\": "
+        + to_string(n.assignment_version)
+        + ", \"applied_version\": " + jcount_or_null(n.has_applied_version, n.applied_version)
+        + ", \"seats\": [" + seats + "], \"connected_at\": "
+        + jtime_or_null(n.has_connected_at, n.connected_at)
+        + ", \"last_heartbeat_at\": " + jtime_or_null(n.has_last_heartbeat_at, n.last_heartbeat_at)
+        + ", \"created_at\": " + jtime(n.created_at) + ", \"revoked_at\": "
+        + jtime_or_null(n.has_revoked_at, n.revoked_at);
+    if len(n.enrollment_token) > 0 {
+        out = out + ", \"enrollment_token\": " + jq(n.enrollment_token);
+    }
+    return out + "}";
+}
+
+/// A node as its change records hold it: its own fields, not its seats.
+/// A seat's change records the seat; repeating every seat in every node
+/// change would make the log grow with the fleet on each node edit.
+fn node_change_json(n: NodeRead) -> String {
+    return "{\"id\": " + jq(n.id) + ", \"name\": " + jq(n.name) + ", \"status\": "
+        + jq(node_state_name(n.status))
+        + ", \"max_in_flight\": " + jcount_or_null(n.has_max_in_flight, n.max_in_flight)
+        + ", \"assignment_version\": " + to_string(n.assignment_version)
+        + ", \"created_at\": " + jtime(n.created_at) + ", \"revoked_at\": "
+        + jtime_or_null(n.has_revoked_at, n.revoked_at) + "}";
+}
+
+fn node_list_json(l: NodeReadList) -> String {
+    let entries_list = st::JsonList { };
+    for n in l.data {
+        entries_list.add(node_json(n));
+    }
+    let entries = entries_list.text();
+    return jdata(entries);
+}
+
+/// Where a seat is, under /admin/v1.
+fn seat_target(s: st::SeatRow) -> String {
+    return "nodes/" + s.node + "/seats/" + s.id;
+}

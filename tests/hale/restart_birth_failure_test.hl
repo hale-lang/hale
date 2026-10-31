@@ -71,32 +71,72 @@ main locus App {
     run() {
         std::test::assert_eq_int(self.held.births, 2, "a held birth failure re-ran birth()");
         std::test::assert_eq_int(self.held.runs, 1, "then run(), once");
-        std::test::assert_eq_int(self.held_twice.births, 3, "a re-birth that fails again is restarted again");
-        std::test::assert_eq_int(self.held_twice.runs, 1, "and run() starts after the birth that passed");
-        std::test::assert_eq_int(self.checked.births, 2, "a held birth_check failure re-ran birth()");
+        std::test::assert_eq_int(
+            self.held_twice.births,
+            3,
+            "a re-birth that fails again is restarted again",
+        );
+        std::test::assert_eq_int(
+            self.held_twice.runs,
+            1,
+            "and run() starts after the birth that passed",
+        );
+        std::test::assert_eq_int(
+            self.checked.births,
+            2,
+            "a held birth_check failure re-ran birth()",
+        );
         std::test::assert_eq_int(self.checked.runs, 1, "then run()");
-        std::test::assert_eq_int(self.fresh_failures, 3, "restart_in_place re-ran a held failed birth, which failed again from its built params");
+        std::test::assert_eq_int(
+            self.fresh_failures,
+            3,
+            "restart_in_place re-ran a held failed birth, which failed again from its built params",
+        );
         std::test::assert_eq_int(self.fresh.births, 1, "each re-birth started from births 0");
         std::test::assert_eq_int(self.fresh.runs, 1, "and past the cap the child runs");
 
         let late = Kid { tag: "late" };
-        std::test::assert_eq_int(late.births, 2, "a birth failure delivered in place re-runs birth()");
+        std::test::assert_eq_int(
+            late.births,
+            2,
+            "a birth failure delivered in place re-runs birth()",
+        );
         std::test::assert_eq_int(late.runs, 1, "then run()");
         let late_twice = Kid { tag: "late_twice", fail_until: 2 };
         std::test::assert_eq_int(late_twice.births, 3, "and again when the re-birth fails too");
         std::test::assert_eq_int(late_twice.runs, 1, "run() after the birth that passed");
         let late_bounded = Kid { tag: "late_bounded", fail_until: 9 };
         std::test::assert_eq_int(late_bounded.births, 4, "`for 3` admits three restarts");
-        std::test::assert_eq_int(late_bounded.runs, 0, "and the failure after them quarantines: no run()");
+        std::test::assert_eq_int(
+            late_bounded.runs,
+            0,
+            "and the failure after them quarantines: no run()",
+        );
         let late_checked = Checked { };
-        std::test::assert_eq_int(late_checked.births, 2, "a birth_check failure delivered in place re-runs birth()");
+        std::test::assert_eq_int(
+            late_checked.births,
+            2,
+            "a birth_check failure delivered in place re-runs birth()",
+        );
         std::test::assert_eq_int(late_checked.runs, 1, "then run()");
         let late_fresh = Fresh { };
-        std::test::assert_eq_int(self.fresh_failures, 6, "restart_in_place re-runs a birth failed in place");
+        std::test::assert_eq_int(
+            self.fresh_failures,
+            6,
+            "restart_in_place re-runs a birth failed in place",
+        );
         std::test::assert_eq_int(late_fresh.births, 1, "from its built params");
         std::test::assert_eq_int(late_fresh.runs, 1, "then run()");
-        std::test::assert_eq_int(self.kid_failures, 1 + 2 + 1 + 2 + 4, "every Kid failure reached the handler");
-        std::test::assert_eq_int(self.checked_failures, 2, "every Checked failure reached the handler");
+        std::test::assert_eq_int(
+            self.kid_failures,
+            1 + 2 + 1 + 2 + 4,
+            "every Kid failure reached the handler",
+        );
+        std::test::assert_eq_int(
+            self.checked_failures,
+            2,
+            "every Checked failure reached the handler",
+        );
     }
 }
 

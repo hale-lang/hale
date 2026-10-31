@@ -1,0 +1,78 @@
+// A local bound from a place is yours (spec/types.md): writing into it
+// never changes the field, element, local or parameter it was read from,
+// and writing that place never changes the local.
+//
+// Before, an array, a payload or a `for` element bound from a place was
+// the place's own block: `let mut a = self.r.names; a[0] = x;` changed
+// `self.r.names`. The local is now copied at its first write; a
+// get-modify-store of a self field still writes the field.
+
+type Item { k: Int = 0; s: String = ""; }
+type Shape = enum { One(Item), Zero };
+type Rec {
+    names: [String; 2] = ["", ""];
+    cells: [Item; 2] = [Item { }, Item { }];
+    shape: Shape = Shape::Zero;
+}
+
+fn heap(s: String) -> String { return std::str::upper(s) + "!"; }
+
+fn shape_k(s: Shape) -> Int {
+    return match s { Shape::One(c) -> c.k, Shape::Zero -> -1, };
+}
+
+fn write_locals(r: Rec) -> Int {
+    let mut a = r.names;
+    a[0] = heap("x");
+    let mut b = r.cells;
+    b[1].k = 70;
+    for c in r.cells { c.k = c.k + 100; }
+    match r.shape { Shape::One(c) -> { c.k = 9; }, Shape::Zero -> { }, }
+    return b[1].k + len(a[0]);
+}
+
+locus App {
+    params {
+        r: Rec = Rec { };
+        cells: [Item; 2] = [Item { }, Item { }];
+    }
+    run {
+        self.r = Rec {
+            names: [heap("n"), heap("m")],
+            cells: [Item { k: 1 }, Item { k: 2 }],
+            shape: Shape::One(Item { k: 3 }),
+        };
+
+        // From a field.
+        let got = write_locals(self.r);
+        std::test::assert(got == 72, "the locals hold their writes");
+        std::test::assert(
+            self.r.names[0] == "N!",
+            "an array local's write never reaches the field",
+        );
+        std::test::assert(self.r.cells[1].k == 2, "an element's write never reaches the field");
+        std::test::assert(self.r.cells[0].k == 1, "a for element's write never reaches the field");
+        std::test::assert(shape_k(self.r.shape) == 3, "a payload's write never reaches the field");
+
+        // From a local, both ways.
+        let r = self.r;
+        let held = r.cells;
+        r.cells[0].k = 50;
+        std::test::assert(held[0].k == 1, "writing the source never reaches a local bound from it");
+        let mut c = held;
+        c[0].k = 60;
+        std::test::assert(held[0].k == 1 && c[0].k == 60, "a local bound from a local is its own");
+
+        // Get-modify-store: the field takes the write.
+        let mut v = self.cells;
+        v[0].k = 11;
+        v[1].s = heap("s");
+        self.cells = v;
+        std::test::assert(
+            self.cells[0].k == 11 && self.cells[1].s == "S!",
+            "a get-modify-store writes the field",
+        );
+    }
+}
+
+fn main() { let app = App { }; }

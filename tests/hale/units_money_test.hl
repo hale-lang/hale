@@ -36,12 +36,24 @@ fn rate(n: Int) -> Ratio {
 fn main() {
     let fee = 1_250_000USD * 3bp; // 375 USD, q = 1, exact
     std::test::assert(fee == 375USD, "375 USD");
-    std::test::assert_eq_str(to_string(fee), "375000000 Money in 1/10000 cent", "exact, at the product of cent and bp");
+    std::test::assert_eq_str(
+        to_string(fee),
+        "375000000 Money in 1/10000 cent",
+        "exact, at the product of cent and bp",
+    );
     let odd = 1_234_567USD * 3bp; // 370.3701 USD: narrowing
-    std::test::assert_eq_str(to_string(odd), "370370100 Money in 1/10000 cent", "370.3701 USD, exact here");
+    std::test::assert_eq_str(
+        to_string(odd),
+        "370370100 Money in 1/10000 cent",
+        "370.3701 USD, exact here",
+    );
     std::test::assert(odd > 37_037cent && odd < 37_038cent, "between two whole cents");
     let paid: Ledger = odd; // policy from the type
-    std::test::assert_eq_str(to_string(paid), "37037cent", "Ledger's half_even: 37037.01 cents to 37037");
+    std::test::assert_eq_str(
+        to_string(paid),
+        "37037cent",
+        "Ledger's half_even: 37037.01 cents to 37037",
+    );
     std::test::assert_eq_int(paid / 1cent, 37_037, "a count of cents");
 
     // What `let bad: Money = odd;` means instead, said at the site.
@@ -61,7 +73,11 @@ fn main() {
     let runtime_fee = amount(1_250_000) * rate(3);
     std::test::assert(runtime_fee == fee, "375 USD either way");
     let runtime = amount(1_234_567) * rate(3);
-    std::test::assert_eq_str(to_string(runtime), "370370100 Money in 1/10000 cent", "the product's denomination");
+    std::test::assert_eq_str(
+        to_string(runtime),
+        "370370100 Money in 1/10000 cent",
+        "the product's denomination",
+    );
     std::test::assert(runtime == odd, "exact either way");
     let paid_runtime: Ledger = runtime;
     std::test::assert(paid_runtime == paid, "rounded where the policy is");

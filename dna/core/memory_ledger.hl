@@ -12,33 +12,31 @@
 // a unique constraint on (kind, entity): the exclusive claim is the
 // database's, not a scan's. Every row keeps its sha256 chain as the
 // memory journal does, so a reader verifies the Ledger the same way.
-//
-// Adoption (`hale dna ledger adopt`) copies the record's operational rows
-// here keyed by their commit, so a copy interrupted anywhere is rerun,
-// never repaired; the cutover row names the record head it was taken at.
-
-// What the Ledger says about its adoption.
-type Cutover {
-    adopted: Bool = false;
-    checkpoint: String = ""; // the record head the operational rows were copied at
-    copied: Int = 0;
-    routing: Int = 0;
-}
 
 // What a reader of the ledger needs — the graph's visibility, a head's
-// status: the rows, their head and the adoption checkpoint (GH #985).
+// status: the rows and their head (GH #985).
 interface LedgerView {
     fn revision() -> Int;
     fn head() -> String;
     fn refresh() -> Bool;
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
-    fn checkpoint() -> Cutover;
     fn last_error() -> String;
 }
 
+// A Ledger with no rows, for a reader handed none (an in-process
+// fixture's record alone): read, it is empty, and it never dials anything.
+locus EmptyLedger {
+    fn revision() -> Int { return 0; }
+    fn head() -> String { return "genesis"; }
+    fn refresh() -> Bool { return false; }
+    fn read(i: Int) -> Event { return Event { seq: -1 }; }
+    fn verify_chain() -> Bool { return true; }
+    fn last_error() -> String { return ""; }
+}
+
 // The Ledger as memory holds it: a `Journal`, scoped to a record, opened
-// before use, with the adoption steps.
+// before use.
 interface Ledger {
     fn kind() -> String;
     fn scope(record: String);
@@ -53,13 +51,6 @@ interface Ledger {
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
     fn author_of(i: Int) -> String;
-    // ---- adoption
-    // One record row copied in, keyed by its commit: true when it is
-    // here (already or now).
-    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool;
-    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool;
-    fn checkpoint() -> Cutover;
-    fn abandon() -> Bool;
 }
 
 // The row as it is served: the event plus its author, and the role that
@@ -197,16 +188,25 @@ locus PqLedger {
     fn load() {
         let a = db::Args { };
         a.add(to_string(self.rows.len()));
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, writer FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        let rows = self.run_q(
+            "SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, writer FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t",
+            a,
+        );
         if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
-        let mut rest = rows.csv;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        // scanned by offset: a tail re-sliced per row copies the rest of the
+        // answer each time, and a record of thousands of rows held gigabytes
+        let v = std::str::bytes_view(rows.csv);
+        let mut at = 0;
+        while at < v.n {
+            let end = line_end(v, at);
+            let line = std::str::slice(v, at, end);
+            at = end + 1;
             if len(trim_nl(line)) == 0 { continue; }
             let seq = std::json::find_int_field(line, "seq");
-            if seq != self.rows.len() { self.error = "load: Ledger sequence is not contiguous"; return; }
+            if seq != self.rows.len() {
+                self.error = "load: Ledger sequence is not contiguous";
+                return;
+            }
             self.rows.push(Event {
                 seq: seq,
                 kind: std::json::find_string_field(line, "kind"),
@@ -234,58 +234,41 @@ locus PqLedger {
         if !self.opened { self.error = "refresh: Ledger is not open"; return false; }
         // Count alone misses a deletion paired with another append. Inspect
         // density and the authoritative tail in the same database statement.
-        let n = self.run_one("SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM ledger_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM ledger_rows");
+        let n = self.run_one(
+            "SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM ledger_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM ledger_rows",
+        );
         if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
         let row = trim_nl(n.data);
         let count = std::str::parse_int(tab_field(row, 0)) or - 1;
         let first = std::str::parse_int(tab_field(row, 1)) or - 1;
         let last = std::str::parse_int(tab_field(row, 2)) or - 2;
         let head = tab_field(row, 3);
-        if count < 0 || first != 0 || last != count - 1 { self.error = "refresh: Ledger sequence is not contiguous"; return false; }
-        if count < self.rows.len() { self.error = "refresh: Ledger row count moved backwards"; return false; }
+        if count < 0 || first != 0 || last != count - 1 {
+            self.error = "refresh: Ledger sequence is not contiguous";
+            return false;
+        }
+        if count < self.rows.len() {
+            self.error = "refresh: Ledger row count moved backwards";
+            return false;
+        }
         if count == self.rows.len() {
-            if head != self.head() { self.error = "refresh: Ledger history changed at the same revision"; }
+            if head != self.head() {
+                self.error = "refresh: Ledger history changed at the same revision";
+            }
             return false;
         }
         self.load();
         if len(self.error) > 0 { return false; }
-        if self.rows.len() != count || self.head() != head { self.error = "refresh: Ledger changed during read or rows are incomplete"; return false; }
+        if self.rows.len() != count || self.head() != head {
+            self.error = "refresh: Ledger changed during read or rows are incomplete";
+            return false;
+        }
         return true;
     }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
     fn writer_of(i: Int) -> String { return self.writers.get(i) or ""; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
-    // One insert conditioned on the tail: zero rows means another writer
-    // got there first (or a claim is taken: a unique violation). The row
-    // joins the mirror of the Ledger.
-    @bounded_by(ledger_rows)
-    fn insert(seq: Int, kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> String {
-        let prev = self.head();
-        let digest = event_digest(prev, kind, entity, body);
-        let a = db::Args { };
-        a.add(to_string(seq));
-        a.add(kind);
-        a.add(entity);
-        a.add(body);
-        a.add(author);
-        a.add(prev);
-        a.add(digest);
-        a.add(if record_seq < 0 { "" } else { to_string(record_seq) });
-        a.add(commit);
-        let r = self.run_q("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit, writer) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, ''), session_user WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING writer", a);
-        if !r.ok {
-            if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; } // ledger_rows_claims
-            if std::str::contains(r.err.detail, "ledger_rows_commit") { return "duplicate"; }
-            self.error = "append: " + r.err.kind + " " + r.err.detail;
-            return "io";
-        }
-        if r.n == 0 { return "stale"; }
-        self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: prev, digest: digest });
-        self.authors.push(author);
-        self.writers.push(trim_nl(line_one(r.csv)));
-        return "";
-    }
     // One row through memory's insert function (GH #1026), which is the
     // Ledger's gate: `expected` the revision a decision was read at, -1 for
     // the tail. The rows since the last read are loaded either way.
@@ -302,16 +285,38 @@ locus PqLedger {
         a.add(self.lease);
         a.add(to_string(self.lease_token));
         a.add(self.request);
-        let r = self.run_q("SELECT ledger_append($1::bigint, $2, $3, $4, $5, $6, $7::bigint, $8)", a);
-        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        let r = self.run_q(
+            "SELECT ledger_append($1::bigint, $2, $3, $4, $5, $6, $7::bigint, $8)",
+            a,
+        );
+        if !r.ok {
+            self.error = "append: " + r.err.kind + " " + r.err.detail;
+            return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        }
         let out = trim_nl(line_one(r.csv));
         let err = std::json::find_string_field(out, "error");
         self.load();
-        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
-        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        if len(err) == 0 {
+            return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 };
+        }
+        if err == "stale_revision" {
+            return AppendResult {
+                error: "stale_revision",
+                expected: expected,
+                actual: std::json::find_int_field(out, "actual"),
+            };
+        }
         // a claim conflict reads back as `claimed`, as it always has
-        self.error = if err == "claimed" { "claimed" } else { std::json::find_string_field(out, "why") };
-        return AppendResult { error: if err == "claimed" { "claimed" } else { "refused" }, expected: expected, actual: self.rows.len() };
+        self.error = if err == "claimed" {
+            "claimed"
+        } else {
+            std::json::find_string_field(out, "why")
+        };
+        return AppendResult {
+            error: if err == "claimed" { "claimed" } else { "refused" },
+            expected: expected,
+            actual: self.rows.len(),
+        };
     }
     // At the tail, once the in-process check against `expected` holds: the
     // insert function serializes appends, so a lost race is not a refusal.
@@ -320,61 +325,24 @@ locus PqLedger {
     @bounded_by(script)
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         return self.gate(-1, kind, entity, body);
     }
     // The Ledger takes a batch as its rows, one by one: a Ledger row is
     // its own fact, and nothing batches across it (the record batches
     // only when no row is the Ledger's).
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return append_rows(self, expected, rows);
+    }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let moved = self.refresh();
         let rev = self.rows.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        return self.gate(expected, kind, entity, body);
-    }
-    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
-        let mut attempt = 0;
-        while attempt < 200 {
-            let out = self.insert(self.rows.len(), kind, entity, body, author, record_seq, commit);
-            if len(out) == 0 || out == "duplicate" { return true; }
-            if out != "stale" { return false; }
-            self.load();
-            attempt = attempt + 1;
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
         }
-        return false;
-    }
-    fn put_meta(key: String, value: String) -> Bool {
-        let a = db::Args { };
-        a.add(key);
-        a.add(value);
-        let r = self.run_x("INSERT INTO ledger_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", a);
-        if !r.ok { return self.fail("meta " + key, r.err); }
-        return true;
-    }
-    fn meta(key: String) -> String {
-        let a = db::Args { };
-        a.add(key);
-        let rows = self.run_q("SELECT value FROM ledger_meta WHERE key = $1", a);
-        if !rows.ok { self.error = "meta " + key + ": " + rows.err.kind + " " + rows.err.detail; return ""; }
-        if rows.n == 0 { return ""; }
-        return trim_nl(line_one(rows.csv));
-    }
-    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
-        return self.put_meta("checkpoint", checkpoint) && self.put_meta("copied", to_string(copied)) && self.put_meta("routing", to_string(routing)) && self.put_meta("record", self.record_id);
-    }
-    fn checkpoint() -> Cutover {
-        let at = self.meta("checkpoint");
-        if len(at) == 0 { return Cutover { }; }
-        return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
-    }
-    fn abandon() -> Bool {
-        let r = self.run_sql("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");
-        if !r.ok { return self.fail("abandon", r.err); }
-        while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
-        while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
-        while self.writers.len() > 0 { let gone = self.writers.pop() or ""; }
-        return true;
+        return self.gate(expected, kind, entity, body);
     }
 }
 
@@ -393,7 +361,14 @@ interface LeaseStore {
     fn last_error() -> String;
     // `known` false when no lease was ever put under the key.
     fn current(key: String) -> StoredLease;
-    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool;
+    fn put(
+        key: String,
+        holder: String,
+        token: Int,
+        expires: Int,
+        present: Bool,
+        expected: Int
+    ) -> Bool;
 }
 
 type StoredLease {
@@ -450,7 +425,14 @@ locus PqLeaseStore {
         if !st.ok { return self.fail("open", st.err); }
         // the schema is the owner's to create (GH #985): checked here
         let sch = schema_for(self.record_id);
-        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
+        // GH #1590: a lease read or swap is bounded, so a call memory holds
+        // up (a locked row, a partition) can never outlast the lease the
+        // body fence renews: it fails, and is tried again once, within the
+        // fence's margin
+        let ns = self.conn.exec(
+            "SET search_path TO " + sch
+                + ", public; SET statement_timeout = '4s'; SET lock_timeout = '4s'",
+        );
         if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
@@ -478,18 +460,38 @@ locus PqLeaseStore {
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, until AS expires, present FROM claims WHERE key = $1) t", a);
-        if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
+        let rows = self.run_q(
+            "SELECT row_to_json(t) FROM (SELECT key, holder, token, until AS expires, present FROM claims WHERE key = $1) t",
+            a,
+        );
+        if !rows.ok {
+            self.error = "current: " + rows.err.kind + " " + rows.err.detail;
+            return StoredLease { key: key };
+        }
         if rows.n == 0 { return StoredLease { key: key }; }
         let row = trim_nl(line_one(rows.csv));
-        return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
+        return StoredLease {
+            known: true,
+            key: key,
+            holder: std::json::find_string_field(row, "holder"),
+            token: std::json::find_int_field(row, "token"),
+            expires: std::json::find_int_field(row, "expires"),
+            present: std::json::find_bool_field(row, "present"),
+        };
     }
     // One statement: insert when nothing is there and 0 was expected,
     // else update where the stored token is the one expected.
     // `self.error` holds only the last failure, replaced whole (the old text is
     // retired); the survey cannot prove the new text independent of it.
     @bounded_by(self.error)
-    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
+    fn put(
+        key: String,
+        holder: String,
+        token: Int,
+        expires: Int,
+        present: Bool,
+        expected: Int
+    ) -> Bool {
         let a = db::Args { };
         a.add(key);
         a.add(holder);
@@ -497,10 +499,16 @@ locus PqLeaseStore {
         a.add(to_string(expires));
         a.add(if present { "true" } else { "false" });
         a.add(to_string(expected));
-        let r = self.run_q("INSERT INTO claims (key, holder, token, until, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM claims WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
+        let r = self.run_q(
+            "INSERT INTO claims (key, holder, token, until, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM claims WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key",
+            a,
+        );
         if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
         if r.n > 0 { return true; }
-        let u = self.run_q("UPDATE claims SET holder = $2, token = $3::bigint, until = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
+        let u = self.run_q(
+            "UPDATE claims SET holder = $2, token = $3::bigint, until = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key",
+            a,
+        );
         if !u.ok { self.error = "put: " + u.err.kind + " " + u.err.detail; return false; }
         return u.n > 0;
     }
@@ -519,11 +527,24 @@ locus PqLeaseStore {
         a.add(key);
         a.add(holder);
         a.add(to_string(ttl));
-        let r = self.run_q("WITH clock AS (SELECT extract(epoch FROM now())::bigint AS t) INSERT INTO claims AS c (key, holder, token, until, present) SELECT $1, $2, 1, clock.t + $3::bigint, true FROM clock ON CONFLICT (key) DO UPDATE SET token = CASE WHEN c.present AND c.holder = EXCLUDED.holder AND c.until > EXCLUDED.until - $3::bigint THEN c.token ELSE c.token + 1 END, holder = EXCLUDED.holder, until = EXCLUDED.until, present = true, at = now() WHERE NOT c.present OR c.until <= EXCLUDED.until - $3::bigint OR c.holder = EXCLUDED.holder RETURNING row_to_json((SELECT t FROM (SELECT c.key, c.holder, c.token, c.until AS expires, c.present) t))", a);
-        if !r.ok { self.error = "claim: " + r.err.kind + " " + r.err.detail; return StoredLease { key: key }; }
+        let r = self.run_q(
+            "WITH clock AS (SELECT extract(epoch FROM now())::bigint AS t) INSERT INTO claims AS c (key, holder, token, until, present) SELECT $1, $2, 1, clock.t + $3::bigint, true FROM clock ON CONFLICT (key) DO UPDATE SET token = CASE WHEN c.present AND c.holder = EXCLUDED.holder AND c.until > EXCLUDED.until - $3::bigint THEN c.token ELSE c.token + 1 END, holder = EXCLUDED.holder, until = EXCLUDED.until, present = true, at = now() WHERE NOT c.present OR c.until <= EXCLUDED.until - $3::bigint OR c.holder = EXCLUDED.holder RETURNING row_to_json((SELECT t FROM (SELECT c.key, c.holder, c.token, c.until AS expires, c.present) t))",
+            a,
+        );
+        if !r.ok {
+            self.error = "claim: " + r.err.kind + " " + r.err.detail;
+            return StoredLease { key: key };
+        }
         if r.n == 0 { return self.current(key); }
         let row = trim_nl(line_one(r.csv));
-        return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
+        return StoredLease {
+            known: true,
+            key: key,
+            holder: std::json::find_string_field(row, "holder"),
+            token: std::json::find_int_field(row, "token"),
+            expires: std::json::find_int_field(row, "expires"),
+            present: std::json::find_bool_field(row, "present"),
+        };
     }
     // Give `key` back if `holder` holds it: its token kept, so a late
     // renewal of the old claim lands nothing. True when it was theirs.
@@ -534,7 +555,10 @@ locus PqLeaseStore {
         let a = db::Args { };
         a.add(key);
         a.add(holder);
-        let r = self.run_q("UPDATE claims SET present = false, until = 0, at = now() WHERE key = $1 AND holder = $2 AND present RETURNING key", a);
+        let r = self.run_q(
+            "UPDATE claims SET present = false, until = 0, at = now() WHERE key = $1 AND holder = $2 AND present RETURNING key",
+            a,
+        );
         if !r.ok { self.error = "give back: " + r.err.kind + " " + r.err.detail; return false; }
         return r.n > 0;
     }

@@ -47,12 +47,15 @@ main locus Desk {
     params {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
-    }
-
-    // Never called: the serve site is what makes the compiler write the codecs.
-    fn serving() {
-        let h = api::serve(PbLists, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
-        h.stop();
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbLists,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
 
     // JSON in, protobuf through, JSON out: the same text.
@@ -62,7 +65,10 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Page(__api_pb_encode_Page(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert_eq_str(__api_encode_Page(back), json, what);
@@ -74,7 +80,10 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Mixed(__api_pb_encode_Mixed(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert_eq_str(__api_encode_Mixed(back), json, what);
@@ -108,41 +117,99 @@ main locus Desk {
 
     // A packed run of varints: field `no`, wire type 2, the varints one after another.
     fn packed(no: Int, a: Int, b: Int, c: Int) -> Bytes {
-        let run = std::bytes::concat(std::bytes::concat(__api_pb_uvarint(a), __api_pb_uvarint(b)), __api_pb_uvarint(c));
+        let run = std::bytes::concat(
+            std::bytes::concat(__api_pb_uvarint(a), __api_pb_uvarint(b)),
+            __api_pb_uvarint(c),
+        );
         return __api_pb_put_msg(no, run);
     }
 
     run() {
         // ---- encode then decode is identity ----
-        self.page_round("{\"items\":[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"b\"}],\"total\":2}", "a list of records");
+        self.page_round(
+            "{\"items\":[{\"id\":1,\"name\":\"a\"},{\"id\":2,\"name\":\"b\"}],\"total\":2}",
+            "a list of records",
+        );
         self.page_round("{\"items\":[],\"total\":0}", "an empty list, no occurrence at all");
-        self.mixed_round("{\"tags\":[\"x\",\"\"],\"ids\":[41,0,-7],\"prices\":[125,0],\"flags\":[false,true],\"ratios\":[1.5,-0.25]}", "lists of every scalar, zeros among them");
+        self.mixed_round(
+            "{\"tags\":[\"x\",\"\"],\"ids\":[41,0,-7],\"prices\":[125,0],\"flags\":[false,true],\"ratios\":[1.5,-0.25]}",
+            "lists of every scalar, zeros among them",
+        );
 
         // ---- the packed form, and a mix of the two ----
-        self.mixed_reads(self.packed(2, 41, 42, 43), "{\"tags\":[],\"ids\":[41,42,43],\"prices\":[],\"flags\":[],\"ratios\":[]}", "a packed run of identities");
-        let mix = std::bytes::concat(__api_pb_put_int(2, 9), __api_pb_put_msg(2, __api_pb_uvarint(8)));
-        self.mixed_reads(mix, "{\"tags\":[],\"ids\":[9,8],\"prices\":[],\"flags\":[],\"ratios\":[]}", "one occurrence, then a packed run of one");
+        self.mixed_reads(
+            self.packed(2, 41, 42, 43),
+            "{\"tags\":[],\"ids\":[41,42,43],\"prices\":[],\"flags\":[],\"ratios\":[]}",
+            "a packed run of identities",
+        );
+        let mix = std::bytes::concat(
+            __api_pb_put_int(2, 9),
+            __api_pb_put_msg(2, __api_pb_uvarint(8)),
+        );
+        self.mixed_reads(
+            mix,
+            "{\"tags\":[],\"ids\":[9,8],\"prices\":[],\"flags\":[],\"ratios\":[]}",
+            "one occurrence, then a packed run of one",
+        );
         let f1 = std::bytes::slice(__api_pb_put_f64(5, 0.5), 1, 9);
         let f2 = std::bytes::slice(__api_pb_put_f64(5, 2.0), 1, 9);
-        self.mixed_reads(__api_pb_put_msg(5, std::bytes::concat(f1, f2)), "{\"tags\":[],\"ids\":[],\"prices\":[],\"flags\":[],\"ratios\":[0.5,2]}", "a packed run of doubles");
-        self.mixed_reads(__api_pb_put_msg(4, std::bytes::concat(__api_pb_uvarint(1), __api_pb_uvarint(0))), "{\"tags\":[],\"ids\":[],\"prices\":[],\"flags\":[true,false],\"ratios\":[]}", "a packed run of bools");
+        self.mixed_reads(
+            __api_pb_put_msg(5, std::bytes::concat(f1, f2)),
+            "{\"tags\":[],\"ids\":[],\"prices\":[],\"flags\":[],\"ratios\":[0.5,2]}",
+            "a packed run of doubles",
+        );
+        self.mixed_reads(
+            __api_pb_put_msg(4, std::bytes::concat(__api_pb_uvarint(1), __api_pb_uvarint(0))),
+            "{\"tags\":[],\"ids\":[],\"prices\":[],\"flags\":[true,false],\"ratios\":[]}",
+            "a packed run of bools",
+        );
 
         // ---- what a message gets wrong ----
-        self.mixed_fails(std::bytes::concat(__api_pb_put_int(2, 1), self.packed(2, 2, 3, 4)), "too_long", "ids", "four ids of three");
-        let three = std::bytes::concat(__api_pb_put_str(1, "a"), std::bytes::concat(__api_pb_put_str(1, "b"), __api_pb_put_str(1, "c")));
+        self.mixed_fails(
+            std::bytes::concat(__api_pb_put_int(2, 1), self.packed(2, 2, 3, 4)),
+            "too_long",
+            "ids",
+            "four ids of three",
+        );
+        let three = std::bytes::concat(
+            __api_pb_put_str(1, "a"),
+            std::bytes::concat(__api_pb_put_str(1, "b"), __api_pb_put_str(1, "c")),
+        );
         self.mixed_fails(three, "too_long", "tags", "three strings of two");
-        self.mixed_fails(__api_pb_put_int(1, 5), "wrong_type", "tags", "a varint where a string is");
-        self.mixed_fails(__api_pb_put_f64(2, 1.0), "wrong_type", "ids", "a double where a varint is");
+        self.mixed_fails(
+            __api_pb_put_int(1, 5),
+            "wrong_type",
+            "tags",
+            "a varint where a string is",
+        );
+        self.mixed_fails(
+            __api_pb_put_f64(2, 1.0),
+            "wrong_type",
+            "ids",
+            "a double where a varint is",
+        );
         let short_run = __api_pb_put_msg(2, std::bytes::slice(__api_pb_uvarint(300), 0, 1));
         self.mixed_fails(short_run, "wrong_type", "payload", "a packed run cut inside a varint");
-        self.point_fails(std::bytes::concat(__api_pb_put_int(1, 1), __api_pb_put_int(1, 2)), "too_short", "two of three");
-        self.point_fails(std::bytes::concat(self.packed(1, 1, 2, 3), __api_pb_put_int(1, 4)), "too_long", "four of three");
+        self.point_fails(
+            std::bytes::concat(__api_pb_put_int(1, 1), __api_pb_put_int(1, 2)),
+            "too_short",
+            "two of three",
+        );
+        self.point_fails(
+            std::bytes::concat(self.packed(1, 1, 2, 3), __api_pb_put_int(1, 4)),
+            "too_long",
+            "four of three",
+        );
         self.point_fails(std::bytes::from_string(""), "missing_field", "a fixed array absent");
         let p = __api_pb_decode_Point(self.packed(1, 7, 0, 0 - 7)) or {
             std::test::assert(false, "a packed fixed array: " + err.kind + " " + err.field);
             return;
         };
-        std::test::assert_eq_str(__api_encode_Point(p), "{\"xyz\":[7,0,-7]}", "a packed fixed array");
+        std::test::assert_eq_str(
+            __api_encode_Point(p),
+            "{\"xyz\":[7,0,-7]}",
+            "a packed fixed array",
+        );
     }
 }
 

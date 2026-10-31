@@ -651,9 +651,20 @@ fn the_digests_are_the_ones_digest_md_folds() {
             let expect = if req.is_empty() { "-".to_string() } else { req.join(",") };
             assert_eq!(requires, expect, "{name} {member}: the requires slot");
         }
+        // each member's own digest: the header `hale-api-member 1` and its
+        // line of the surface's input, alone
+        for (row, m) in rows.iter().zip(members) {
+            let input = format!("hale-api-member 1\n{row}\n");
+            let digest = format!("fnv1a64:{:016x}", hale_graph::identity::fnv64(input.as_bytes()));
+            assert_eq!(m["digest"], json!(digest), "{name} {}: the member's digest is the fold of its line alone", m["name"]);
+        }
         folded += 1;
     }
     assert_eq!(folded, 2, "both surfaces are folded");
+    let bytes = hex_bytes(&block_after(&md, "input: member Public Orders::place"));
+    let digest = format!("fnv1a64:{:016x}", hale_graph::identity::fnv64(&bytes));
+    assert_eq!(digest, "fnv1a64:03c08c25c690f01f", "digest.md's member input folds to the digest it states");
+    assert!(md.contains(&digest));
 
     // The stream digest of each hub (spec/api.md § Streams).
     for h in inv["hubs"].as_array().unwrap() {
@@ -962,7 +973,7 @@ fn the_compiler_prints_every_description_byte_for_byte() {
 #[test]
 fn a_grpc_exposure_is_described_with_the_grpc_outcomes() {
     let program = std::fs::read_to_string(contract_dir().join("program.hl")).expect("program.hl");
-    let swapped = program.replacen("http::Rpc { bind: \"127.0.0.1:8080\"", "grpc::Rpc { bind: \"127.0.0.1:8080\"", 1);
+    let swapped = program.replacen("http::Rpc {\n                bind: \"127.0.0.1:8080\"", "grpc::Rpc {\n                bind: \"127.0.0.1:8080\"", 1);
     assert_ne!(swapped, program, "the contract still serves public over http::Rpc at :8080");
     let got = hale_over("grpc_described", &swapped, &["--api", "--exposure", "public", "--caller", "alice", "--holds", "trader"]);
     assert!(errors_against_schema(&got).is_empty(), "{:?}", errors_against_schema(&got));
@@ -1145,6 +1156,67 @@ fn main() { }
     assert_eq!(r(&op["responses"]["503"]), json!("#/components/schemas/hale.Refusal"));
 }
 
+/// spec/api.md § Error classes: an enum error type whose variants declare
+/// classes carries them in its schema (`x-hale-error-classes`, only there),
+/// the OpenAPI form answers each class with its status (beside a refusal's
+/// where they share one), and the digest holds the classes: the same
+/// surface without them has another digest, and one whose enum declares
+/// none has the digest it always had.
+#[test]
+fn a_classed_error_type_carries_its_classes() {
+    let src = |classes: bool| {
+        let (nf, cf) = if classes { ("@not_found ", "@conflict ") } else { ("", "") };
+        format!(
+            "type OrderError = enum {{ {nf}Missing, {cf}Taken(String), Closed }};\n\
+             locus S {{ fn get(id: Int) -> Int fallible(OrderError) {{ return id; }} fn other(id: Int) -> Int {{ return id; }} }}\n\
+             api Public {{ rpc S::get; rpc S::other; }}\nfn main() {{ }}\n"
+        )
+    };
+    let doc = hale_over("classes_openapi", &src(true), &["--api", "--surface", "Public", "--openapi"]);
+    let get = &doc["paths"]["/call/S::get"]["post"]["responses"];
+    let keys: Vec<&str> = get.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["200", "400", "401", "403", "404", "409", "422", "429", "503"], "{get}");
+    let error = &get["422"]["content"]["application/json"]["schema"];
+    assert_eq!(error["x-hale-error-classes"], json!({"Missing": "not_found", "Taken": "conflict"}), "{error}");
+    assert_eq!(get["404"]["content"]["application/json"]["schema"], *error, "404 is the error alone");
+    assert_eq!(
+        get["409"]["content"]["application/json"]["schema"]["anyOf"],
+        json!([{"$ref": "#/components/schemas/hale.Refusal"}, error.clone()]),
+        "409 is a digest mismatch's or the conflict's"
+    );
+    let other = &doc["paths"]["/call/S::other"]["post"]["responses"];
+    assert!(other.get("404").is_none(), "a member with no error answers no class: {other}");
+    let digest = |src: &str| hale_over("classes_digest", src, &["--api", "--surface", "Public", "--openapi"])["info"]["x-hale-digest"].clone();
+    let (classed, plain) = (digest(&src(true)), digest(&src(false)));
+    assert_ne!(classed, plain, "the classes are in the digest");
+    let unclassed = hale_over("classes_none", &src(false), &["--api", "--surface", "Public", "--openapi"]);
+    let none = &unclassed["paths"]["/call/S::get"]["post"]["responses"];
+    assert!(none.get("404").is_none() && none["422"]["content"]["application/json"]["schema"].get("x-hale-error-classes").is_none(), "{none}");
+}
+
+/// Review of #1619: a classed handler error's body may also match the
+/// refusal's schema (a variant `refusal` carrying `{"kind": "server"}`), so
+/// the response a status shares with a refusal admits either body
+/// (`anyOf`); `Hale-Error-Class` tells them apart on the wire. The body the
+/// server sends for it validates against the exported 409 schema.
+#[test]
+fn a_shared_status_admits_a_body_both_schemas_match() {
+    let src = r#"
+type Reason { kind: String; }
+type E = enum { @conflict refusal(Reason) };
+locus S { fn go(id: Int) -> Int fallible(E) { fail E::refusal(Reason { kind: "server" }); } }
+api Public { rpc S::go; }
+fn main() { }
+"#;
+    let doc = hale_over("classes_overlap", src, &["--api", "--surface", "Public", "--openapi"]);
+    let schema = &doc["paths"]["/call/S::go"]["post"]["responses"]["409"]["content"]["application/json"]["schema"];
+    for body in [json!({"refusal": {"kind": "server"}}), json!({"refusal": {"kind": "digest_mismatch", "reason": "r", "served": "fnv1a64:0"}})] {
+        let mut errs = Vec::new();
+        validate(&doc, schema, &body, "409", &mut errs);
+        assert!(errs.is_empty(), "{body}: {errs:?}\n{schema}");
+    }
+}
+
 #[test]
 fn an_mcp_input_is_an_object() {
     let src = r#"
@@ -1290,12 +1362,16 @@ fn check_refuses_a_bundle_after_a_row_is_edited() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An imported type is named by its declared path under the import alias,
-/// never by the mangled name that embeds the library's location.
+/// An imported type is named by the name it is declared with, never by the
+/// mangled name that embeds the library's location, nor by the importer's
+/// `lib::Item` (`::` is not a schema key OpenAPI admits). Only when another
+/// type of the program is declared with the same name is the imported one
+/// qualified, by its importer's path joined with `.` (`lib.Item`); the
+/// program's own type keeps the bare name.
 #[test]
-fn an_imported_type_is_named_by_its_path_under_the_alias() {
+fn an_imported_type_is_named_by_its_declared_name() {
     let root = scratch("imported");
-    let write = |dir: &Path| {
+    let write = |dir: &Path, own_item: bool| {
         let lib = dir.join("lib");
         let app = dir.join("app");
         std::fs::create_dir_all(&lib).unwrap();
@@ -1305,46 +1381,478 @@ fn an_imported_type_is_named_by_its_path_under_the_alias() {
             "type Item { name: String; count: Int; }\ntype Tag = distinct Int;\ntype Stamped { item: Item; tag: Tag; }\n",
         )
         .unwrap();
-        let main = [
+        let mut main = vec![
             "import \"../lib\" as lib;",
             "locus Shelf { fn put(i: lib::Item) -> lib::Stamped { return lib::Stamped { item: i, tag: lib::Tag(1) }; } }",
-            "api Store { rpc Shelf::put; }",
+        ];
+        if own_item {
+            main.push("type Item { sku: String; }");
+            main.push("locus Own { fn get(i: Item) -> Item { return i; } }");
+            main.push("api Store { rpc Shelf::put; rpc Own::get; }");
+        } else {
+            main.push("api Store { rpc Shelf::put; }");
+        }
+        let serve = if own_item {
+            "    params { shelf: Shelf = Shelf { }; own: Own = Own { }; h: api::Exposure = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8a-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf, Own: self.own }, bound: 8, on_full: refuse); }"
+        } else {
+            "    params { shelf: Shelf = Shelf { }; h: api::Exposure = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8a-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse); }"
+        };
+        main.extend([
             "main locus App {",
-            "    params { shelf: Shelf = Shelf { }; }",
+            serve,
             "    run() {",
-            "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8a-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
             "        while !self.draining { std::time::sleep(100ms); }",
-            "        h.stop();",
+            "        self.h.stop();",
             "    }",
             "}",
             "fn main() { App { }; }",
             "",
-        ]
-        .join("\n");
-        std::fs::write(app.join("main.hl"), main).unwrap();
+        ]);
+        std::fs::write(app.join("main.hl"), main.join("\n")).unwrap();
         app.join("main.hl")
     };
-    let one = write(&root.join("one"));
-    let two = write(&root.join("a/much/deeper/checkout"));
+    let one = write(&root.join("one"), false);
+    let two = write(&root.join("a/much/deeper/checkout"), false);
     let (a, b) = (root.join("out_a"), root.join("out_b"));
     export_to(&one, "Store", &a);
     export_to(&two, "Store", &b);
     for n in ["Store.description.json", "Store.openapi.json", "Store.json-schema.json", "Store.mcp.json", "Store.proto", "DIGEST"] {
         let text = std::fs::read_to_string(a.join(n)).unwrap();
         assert!(!text.contains("__lib_"), "{n} embeds a mangled name:\n{text}");
+        assert!(!text.contains("lib::"), "{n} names a type by its importer's path:\n{text}");
         assert_eq!(text, std::fs::read_to_string(b.join(n)).unwrap(), "{n} differs between two checkouts");
     }
     let js: Value = serde_json::from_str(&std::fs::read_to_string(a.join("Store.json-schema.json")).unwrap()).unwrap();
     let defs = js["$defs"].as_object().unwrap();
-    assert!(defs.contains_key("lib::Item") && defs.contains_key("lib::Stamped"), "{:?}", defs.keys().collect::<Vec<_>>());
-    assert_eq!(defs["lib::Stamped"]["properties"]["item"]["$ref"], json!("#/$defs/lib::Item"));
-    assert_eq!(defs["lib::Stamped"]["properties"]["tag"]["x-hale-type"], json!("lib::Tag"));
-    // the protobuf form spells the `::` of an imported type `_`, and says what it was
+    assert!(defs.contains_key("Item") && defs.contains_key("Stamped"), "{:?}", defs.keys().collect::<Vec<_>>());
+    assert_eq!(defs["Stamped"]["properties"]["item"]["$ref"], json!("#/$defs/Item"));
+    assert_eq!(defs["Stamped"]["properties"]["tag"]["x-hale-type"], json!("Tag"));
+    let openapi: Value = serde_json::from_str(&std::fs::read_to_string(a.join("Store.openapi.json")).unwrap()).unwrap();
+    for key in openapi["components"]["schemas"].as_object().unwrap().keys() {
+        assert!(
+            key.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')),
+            "`{key}` is not an OpenAPI component key"
+        );
+    }
     let proto = std::fs::read_to_string(a.join("Store.proto")).unwrap();
-    assert!(proto.contains("message lib_Stamped {\n  lib_Item item = 1;\n"), "{proto}");
-    assert!(proto.contains("// Hale: lib::Item"), "{proto}");
-    assert!(proto.contains("optional int64 tag = 2; // Hale: lib::Tag"), "{proto}");
-    assert!(proto.contains("rpc Shelf__put(lib_Item) returns (lib_Stamped);"), "{proto}");
+    assert!(proto.contains("message Stamped {\n  Item item = 1;\n"), "{proto}");
+    assert!(proto.contains("optional int64 tag = 2; // Hale: Tag"), "{proto}");
+    assert!(proto.contains("rpc Shelf__put(Item) returns (Stamped);"), "{proto}");
+
+    // the program declares an `Item` of its own: that one is `Item`, the
+    // library's `lib.Item`, in every form, and still the same bytes in two
+    // checkouts
+    let three = write(&root.join("three"), true);
+    let four = write(&root.join("an/other/four"), true);
+    let (c, d) = (root.join("out_c"), root.join("out_d"));
+    export_to(&three, "Store", &c);
+    export_to(&four, "Store", &d);
+    for n in ["Store.description.json", "Store.openapi.json", "Store.json-schema.json", "Store.mcp.json", "Store.proto", "DIGEST"] {
+        let text = std::fs::read_to_string(c.join(n)).unwrap();
+        assert!(!text.contains("__lib_") && !text.contains("lib::"), "{n}:\n{text}");
+        assert_eq!(text, std::fs::read_to_string(d.join(n)).unwrap(), "{n} differs between two checkouts");
+    }
+    let js: Value = serde_json::from_str(&std::fs::read_to_string(c.join("Store.json-schema.json")).unwrap()).unwrap();
+    let defs = js["$defs"].as_object().unwrap();
+    assert!(defs.contains_key("Item") && defs.contains_key("lib.Item") && defs.contains_key("Stamped"), "{:?}", defs.keys().collect::<Vec<_>>());
+    assert_eq!(defs["Item"]["properties"]["sku"]["type"], json!("string"), "the program's own `Item` keeps the name");
+    assert_eq!(defs["Stamped"]["properties"]["item"]["$ref"], json!("#/$defs/lib.Item"));
+    let proto = std::fs::read_to_string(c.join("Store.proto")).unwrap();
+    assert!(proto.contains("message lib_Item {"), "{proto}");
+    assert!(proto.contains("// Hale: lib.Item"), "{proto}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An imported type named as a generated form names its own declaration
+/// (the `.proto`'s `HaleRefusal`, the Hale client's `ApiRefusal`) is
+/// qualified, as on a collision with another type, so the export and every
+/// client still generate: a bare name would declare the message or the
+/// client type twice (review of #1605).
+#[test]
+fn an_imported_type_named_as_a_generated_declaration_is_qualified() {
+    // the fixed names, and a member's own generated ones: the `.proto`'s
+    // one-field wrapper of `Echo::echo`'s request and a client's outcome
+    for (ty, expect) in [
+        ("HaleRefusal", "lib.HaleRefusal"),
+        ("ApiRefusal", "lib.ApiRefusal"),
+        ("Refusal", "lib.Refusal"),
+        ("Echo__echoRequest", "lib.Echo__echoRequest"),
+        ("Echo__echoError", "lib.Echo__echoError"),
+        ("EchoEchoOutcome", "lib.EchoEchoOutcome"),
+    ] {
+        let root = scratch(&format!("generated_{ty}"));
+        let lib = root.join("lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(lib.join("lib.hl"), format!("type {ty} {{ value: Int; }}\n")).unwrap();
+        let main = [
+            "import \"../lib\" as lib;".to_string(),
+            format!("locus Echo {{ fn echo(v: Int) -> lib::{ty} {{ return lib::{ty} {{ value: v }}; }} }}"),
+            "api Public { rpc Echo::echo; }".to_string(),
+            "main locus App {".to_string(),
+            "    params { echo: Echo = Echo { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \"/tmp/hale-generated-names.sock\" }, as: \"pub\", receivers: { Echo: self.echo }, bound: 8, on_full: refuse); }".to_string(),
+            "    run() {".to_string(),
+            "        while !self.draining { std::time::sleep(100ms); }".to_string(),
+            "        self.h.stop();".to_string(),
+            "    }".to_string(),
+            "}".to_string(),
+            "fn main() { App { }; }".to_string(),
+            String::new(),
+        ]
+        .join("\n");
+        let program = app.join("main.hl");
+        std::fs::write(&program, main).unwrap();
+        let out = root.join("out");
+        export_to(&program, "Public", &out);
+        let js: Value = serde_json::from_str(&std::fs::read_to_string(out.join("Public.json-schema.json")).unwrap()).unwrap();
+        assert!(js["$defs"].as_object().unwrap().contains_key(expect), "{ty}: {:?}", js["$defs"]);
+        let proto = std::fs::read_to_string(out.join("Public.proto")).unwrap();
+        assert!(proto.contains(&format!("message {} {{", expect.replace('.', "_"))), "{ty}:\n{proto}");
+        for lang in ["hale", "ts", "js"] {
+            let made = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+                .args(["api", "client", "--surface", "Public", "--lang", lang])
+                .arg(&program)
+                .env("HALE_SKIP_STALE_CHECK", "1")
+                .output()
+                .expect("run hale");
+            assert!(made.status.success(), "{ty}, {lang} client:\n{}", String::from_utf8_lossy(&made.stderr));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// The program of `an_imported_stream_payload_named_as_its_event_is_qualified`:
+/// an imported type `FillsEvent`, the payload of the topic `Fills` a hub
+/// streams, which every client declares its own `FillsEvent` for.
+fn imported_event_program(root: &Path) -> PathBuf {
+    let lib = root.join("lib");
+    let app = root.join("app");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(lib.join("lib.hl"), "type FillsEvent { value: Int; }\n").unwrap();
+    let main = r#"import "../lib" as lib;
+topic Fills { payload: lib::FillsEvent; subject: "desk.fills"; }
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: token }; }
+    fn refused() -> String { return "no such token"; }
+}
+locus Grants { fn holds(p: std::api::Principal, r: String) -> Bool { return true; } }
+locus Echo {
+    bus { publish Fills; }
+    fn echo(v: Int) -> lib::FillsEvent {
+        Fills <- lib::FillsEvent { value: v };
+        return lib::FillsEvent { value: v };
+    }
+}
+api Public { rpc Echo::echo; }
+main locus App {
+    params {
+        bearer: Tokens = Tokens { };
+        grants: Grants = Grants { };
+        echo: Echo = Echo { };
+        hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.grants, as: "fills" };
+        h: api::Exposure = api::serve(Public, unix::Rpc { path: "/tmp/hale-generated-names.sock" }, as: "pub", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+    }
+    bindings { Fills: self.hub bound: 8, on_full: drop_old; }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+        self.h.stop();
+    }
+}
+fn main() { App { }; }
+"#;
+    std::fs::write(app.join("main.hl"), main).unwrap();
+    app.join("main.hl")
+}
+
+/// The program of the second review's probe: two libraries each declaring
+/// `Shape = enum { Pair(Int, String), None }`, qualified `a.Shape` and
+/// `b.Shape` (whose `.proto` variants are `a_Shape_Pair` and
+/// `b_Shape_Pair`), and a third declaring a record `a_Shape_Pair`, which a
+/// generated helper of `a.Shape` is named, so it is `c.a_Shape_Pair`.
+fn enum_helper_program(root: &Path) -> (PathBuf, Vec<PathBuf>) {
+    let mut libs = Vec::new();
+    for (lib, text) in [
+        ("a", "type Shape = enum { Pair(Int, String), None };\n"),
+        ("b", "type Shape = enum { Pair(Int, String), None };\n"),
+        ("c", "type a_Shape_Pair { n: Int; }\n"),
+    ] {
+        std::fs::create_dir_all(root.join(lib)).unwrap();
+        std::fs::write(root.join(lib).join("lib.hl"), text).unwrap();
+        libs.push(root.join(lib).join("lib.hl"));
+    }
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    let main = r#"import "../a" as a;
+import "../b" as b;
+import "../c" as c;
+type Both { x: a::Shape; y: b::Shape; z: c::a_Shape_Pair; }
+locus E { fn echo(v: Both) -> Both { return v; } }
+api S { rpc E::echo; }
+main locus App {
+    params {
+        e: E = E { };
+        h: api::Exposure = api::serve(S, unix::Rpc { path: "/tmp/hale-enum-helpers.sock" }, as: "s", receivers: { E: self.e }, bound: 8, on_full: refuse);
+    }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+        self.h.stop();
+    }
+}
+fn main() { App { }; }
+"#;
+    let program = root.join("app").join("main.hl");
+    std::fs::write(&program, main).unwrap();
+    (program, libs)
+}
+
+/// The program of the third review's probe: a record whose list field's
+/// JSON key is a keyword (`json:"type"`), and a second library's record
+/// named as the Hale client's list helper for it once was
+/// (`api_enc_Box__type_`); the client's codecs are the types' own methods
+/// now, so both keep their names and every client generates.
+fn keyword_key_program(root: &Path) -> (PathBuf, Vec<PathBuf>) {
+    let mut libs = Vec::new();
+    for (lib, text) in [("a", "type Box { items: bounded[Int; 4] `json:\"type\"`; }\n"), ("b", "type api_enc_Box__type_ { n: Int; }\n")] {
+        std::fs::create_dir_all(root.join(lib)).unwrap();
+        std::fs::write(root.join(lib).join("lib.hl"), text).unwrap();
+        libs.push(root.join(lib).join("lib.hl"));
+    }
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    let main = r#"import "../a" as a;
+import "../b" as b;
+type Both { x: a::Box; y: b::api_enc_Box__type_; }
+locus E { fn echo(v: Both) -> Both { return v; } }
+api K { rpc E::echo; }
+main locus App {
+    params {
+        e: E = E { };
+        h: api::Exposure = api::serve(K, unix::Rpc { path: "/tmp/hale-keyword-key.sock" }, as: "k", receivers: { E: self.e }, bound: 8, on_full: refuse);
+    }
+    run() {
+        while !self.draining { std::time::sleep(100ms); }
+        self.h.stop();
+    }
+}
+fn main() { App { }; }
+"#;
+    let program = root.join("app").join("main.hl");
+    std::fs::write(&program, main).unwrap();
+    (program, libs)
+}
+
+fn client_text(program: &Path, surface: &str, lang: &str) -> String {
+    try_client_text(program, surface, lang).unwrap_or_else(|e| panic!("{surface}, {lang} client:\n{e}"))
+}
+
+fn try_client_text(program: &Path, surface: &str, lang: &str) -> Result<String, String> {
+    let made = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["api", "client", "--surface", surface, "--lang", lang])
+        .arg(program)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("run hale");
+    if !made.status.success() {
+        return Err(String::from_utf8_lossy(&made.stderr).into_owned());
+    }
+    Ok(String::from_utf8(made.stdout).unwrap())
+}
+
+/// The first identifier of `s`.
+fn ident_at(s: &str) -> Option<String> {
+    let s = s.trim_start();
+    let n: String = s.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    (!n.is_empty()).then_some(n)
+}
+
+/// The names a generated form declares at its top level, read off its text:
+/// a Hale client's `type`/`fn`/`locus`/`const`, a TypeScript or JavaScript
+/// client's declarations and JSDoc `@typedef`s, and a `.proto`'s messages,
+/// enums and their values, service and rpcs.
+fn declared_names(form: &str, text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut in_enum = false;
+    for line in text.lines() {
+        match form {
+            "hale" => {
+                for kw in ["type ", "fn ", "locus ", "const "] {
+                    if let Some(rest) = line.strip_prefix(kw) {
+                        out.extend(ident_at(rest));
+                    }
+                }
+            }
+            "ts" | "js" => {
+                let mut rest = line.strip_prefix("export ").unwrap_or(line);
+                rest = rest.strip_prefix("async ").unwrap_or(rest);
+                for kw in ["type ", "interface ", "function ", "const ", "class "] {
+                    if let Some(r) = rest.strip_prefix(kw) {
+                        out.extend(ident_at(r));
+                    }
+                }
+            }
+            _ => {
+                if let Some(r) = line.strip_prefix("enum ") {
+                    out.extend(ident_at(r));
+                    in_enum = true;
+                    continue;
+                }
+                if line.starts_with('}') {
+                    in_enum = false;
+                }
+                for kw in ["message ", "service "] {
+                    if let Some(r) = line.strip_prefix(kw) {
+                        out.extend(ident_at(r));
+                    }
+                }
+                if let Some(r) = line.trim_start().strip_prefix("rpc ") {
+                    out.extend(ident_at(r));
+                }
+                let t = line.trim();
+                if in_enum && t.split_whitespace().nth(1) == Some("=") {
+                    out.extend(ident_at(t));
+                }
+            }
+        }
+    }
+    if form == "js" {
+        // `@typedef {T} Name`, the type possibly spanning lines
+        let mut rest = text;
+        while let Some(at) = rest.find("@typedef {") {
+            let body = &rest[at + "@typedef ".len()..];
+            let mut depth = 0usize;
+            let mut end = 0;
+            for (i, c) in body.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.extend(ident_at(&body[end..]));
+            rest = &body[end..];
+        }
+    }
+    out
+}
+
+/// GH #1605: the naming of imported types reserves every name a generated
+/// form may declare (`hale_types::api_names::reserved_for`), so a generator
+/// that comes to declare a kind of name the reservation does not know would
+/// let an imported type of that name collide with it again. Over the
+/// contract's program (two surfaces, members with and without a handler
+/// error, a hub's stream) and a program streaming an imported payload, every
+/// name the `.proto` and the three clients declare is reserved or is a
+/// schema's own type name, or a codec named after one.
+#[test]
+fn every_generated_name_is_reserved_or_a_schema_name() {
+    let root = scratch("generated_names");
+    let probe = imported_event_program(&root.join("probe"));
+    let (shapes, mut shape_libs) = enum_helper_program(&root.join("shapes"));
+    shape_libs.insert(0, shapes.clone());
+    let (keyed, mut keyed_libs) = keyword_key_program(&root.join("keyed"));
+    keyed_libs.insert(0, keyed.clone());
+    let contract = contract_dir().join("program.hl");
+    let mut seen = BTreeSet::new();
+    for (program, sources, surfaces, every_client) in [
+        (&contract, vec![contract.clone()], vec!["Public", "Admin"], true),
+        (&probe, vec![probe.clone(), root.join("probe/lib/lib.hl")], vec!["Public"], true),
+        // no client carries an enum field yet: its form is the `.proto`
+        (&shapes, shape_libs, vec!["S"], false),
+        (&keyed, keyed_libs, vec!["K"], true),
+    ] {
+        let parsed: Vec<_> = sources
+            .iter()
+            .map(|p| hale_syntax::parse_source(&std::fs::read_to_string(p).unwrap()).expect("the program parses"))
+            .collect();
+        let slices: Vec<&[hale_syntax::ast::TopDecl]> = parsed.iter().map(|p| p.items.as_slice()).collect();
+        let reserved = hale_types::api_names::reserved_for(&slices);
+        for surface in surfaces {
+            let out = root.join(format!("out_{}_{surface}", seen.len()));
+            export_to(program, surface, &out);
+            // the description's schemas: a stream's payload as well as the rows' shapes
+            let doc = read_json(&out.join(format!("{surface}.description.json")));
+            // every schema the document names (an enum inline, by its
+            // `x-hale-type`), by its final name, and what the forms
+            // generate after it (`api_names::schema_names`, which the
+            // naming reserves): its declaration is the one whose declared
+            // name is the final name's last segment
+            let mut finals: BTreeSet<String> = doc["schemas"].as_object().unwrap().keys().cloned().collect();
+            fn hale_types_in(v: &Value, out: &mut BTreeSet<String>) {
+                match v {
+                    Value::Object(m) => {
+                        if let Some(Value::String(t)) = m.get("x-hale-type") {
+                            out.insert(t.clone());
+                        }
+                        m.values().for_each(|x| hale_types_in(x, out));
+                    }
+                    Value::Array(a) => a.iter().for_each(|x| hale_types_in(x, out)),
+                    _ => {}
+                }
+            }
+            hale_types_in(&doc["schemas"], &mut finals);
+            let mut schema: BTreeSet<String> = BTreeSet::new();
+            for f in &finals {
+                schema.insert(hale_types::api_names::type_ident(f));
+                let bare = f.split('.').filter(|seg| !seg.chars().all(|c| c.is_ascii_digit())).last().unwrap_or(f);
+                for p in &parsed {
+                    for item in &p.items {
+                        if let hale_syntax::ast::TopDecl::Type(t) = item {
+                            if t.name.name == bare {
+                                hale_types::api_names::schema_names(f, t, &mut schema);
+                            }
+                        }
+                    }
+                }
+            }
+            let derived = |name: &str| schema.contains(name);
+            let mut forms = vec![("proto".to_string(), std::fs::read_to_string(out.join(format!("{surface}.proto"))).unwrap())];
+            for lang in ["hale", "ts", "js"] {
+                match try_client_text(program, surface, lang) {
+                    Ok(text) => forms.push((lang.to_string(), text)),
+                    Err(e) => assert!(!every_client && e.contains("a client cannot express"), "{surface}, {lang} client:\n{e}"),
+                }
+            }
+            for (form, text) in &forms {
+                let names = declared_names(form, text);
+                let stray: Vec<&String> = names.iter().filter(|n| !reserved.contains(*n) && !derived(n)).collect();
+                assert!(stray.is_empty(), "{surface}'s {form} declares names the naming does not reserve: {stray:?}\n{text}");
+                seen.extend(names.into_iter().map(|n| format!("{form}:{n}")));
+            }
+        }
+    }
+    // the reading of each form found what it declares
+    for n in [
+        "proto:Orders__place",
+        "proto:Public",
+        "proto:HaleRefusal",
+        "hale:OrdersPlaceOutcome",
+        "hale:orders_place",
+        "hale:FillsEvent",
+        "hale:FillsSubscription",
+        "hale:ApiWs",
+        "hale:lib_FillsEvent",
+        "ts:FillsEvent",
+        "ts:subscribeFills",
+        "ts:ordersPlace",
+        "ts:__Record",
+        "js:FillsEvent",
+        "js:OrdersCancelOutcome",
+        "js:StreamOptions",
+        "js:subscribeFills",
+        "proto:a_Shape_Pair",
+        "proto:b_Shape_Pair",
+        "proto:c_a_Shape_Pair",
+        "hale:Box",
+        "hale:api_enc_Box__type_",
+    ] {
+        assert!(seen.contains(n), "{n} is not among the names read: {seen:?}");
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1362,7 +1870,7 @@ fn the_dna_head_commands_surface_exports_a_proto() {
     assert!(proto.contains("service HeadCommands {"), "{proto}");
     let json: Value = serde_json::from_str(&std::fs::read_to_string(a.join("HeadCommands.json-schema.json")).unwrap()).unwrap();
     for name in json["$defs"].as_object().unwrap().keys() {
-        assert!(proto.contains(&format!("\nmessage {} {{", name.replace("::", "_"))), "a message for {name}");
+        assert!(proto.contains(&format!("\nmessage {} {{", name.replace('.', "_"))), "a message for {name}");
     }
     for name in json["x-hale-members"].as_object().unwrap().keys() {
         assert!(proto.contains(&format!("  rpc {}(", name.replace("::", "__"))), "an rpc for {name}");
@@ -1394,11 +1902,10 @@ fn the_protobuf_form_follows_the_rules_over_shapes_of_its_own() {
             "}",
             "api Store { rpc Shelf::size; rpc Shelf::nothing; rpc Shelf::name_of; rpc Shelf::plain; }",
             "main locus App {",
-            "    params { shelf: Shelf = Shelf { }; }",
+            "    params { shelf: Shelf = Shelf { }; h: api::Exposure = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse); }",
             "    run() {",
-            "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-store.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
             "        while !self.draining { std::time::sleep(100ms); }",
-            "        h.stop();",
+            "        self.h.stop();",
             "    }",
             "}",
             "fn main() { App { }; }",
@@ -1458,11 +1965,10 @@ fn a_surface_named_as_its_record_exports_a_proto() {
             "}",
             "api Todo { rpc Board::add; rpc Board::first; }",
             "main locus App {",
-            "    params { board: Board = Board { }; }",
+            "    params { board: Board = Board { }; h: api::Exposure = api::serve(Todo, unix::Rpc { path: \"/tmp/hale-proto-todo.sock\" }, as: \"todo\", receivers: { Board: self.board }, bound: 8, on_full: refuse); }",
             "    run() {",
-            "        let h = api::serve(Todo, unix::Rpc { path: \"/tmp/hale-proto-todo.sock\" }, as: \"todo\", receivers: { Board: self.board }, bound: 8, on_full: refuse);",
             "        while !self.draining { std::time::sleep(100ms); }",
-            "        h.stop();",
+            "        self.h.stop();",
             "    }",
             "}",
             "fn main() { App { }; }",
@@ -1500,10 +2006,9 @@ fn a_record_whose_fields_share_a_json_name_has_no_proto() {
                 "locus Shelf { fn put(d: Data) -> Data { return d; } }",
                 "api Store { rpc Shelf::put; }",
                 "main locus App {",
-                "    params { shelf: Shelf = Shelf { }; }",
+                "    params { shelf: Shelf = Shelf { }; h: api::Exposure = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-names.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse); }",
                 "    run() {",
-                "        let h = api::serve(Store, unix::Rpc { path: \"/tmp/hale-r8b-names.sock\" }, as: \"store\", receivers: { Shelf: self.shelf }, bound: 8, on_full: refuse);",
-                "        h.stop();",
+                "        self.h.stop();",
                 "    }",
                 "}",
                 "fn main() { App { }; }",

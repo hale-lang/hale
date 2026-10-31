@@ -1,0 +1,20 @@
+{
+  "why": "A map's values are compared: an enum whose values differ from the contract's must fail.",
+  "side": "bundle",
+  "set": [
+    "components",
+    "schemas",
+    "Health",
+    "properties",
+    "checks",
+    "additionalProperties"
+  ],
+  "value": {
+    "type": "string",
+    "enum": [
+      "ok",
+      "down"
+    ]
+  },
+  "expect": "Health.checks{} (enum values)"
+}

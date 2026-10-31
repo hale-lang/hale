@@ -24,6 +24,7 @@
   "members": [
     {
       "name": "Ledger::rebalance",
+      "digest": "fnv1a64:9ff4eb32deb78542",
       "request": {
         "$ref": "#/schemas/Rebalance"
       },
@@ -37,6 +38,7 @@
     },
     {
       "name": "Orders::cancel",
+      "digest": "fnv1a64:7afdd54c76ae5a54",
       "request": {
         "$ref": "#/schemas/CancelOrder"
       },

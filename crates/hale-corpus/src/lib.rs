@@ -53,22 +53,94 @@ pub fn repo_root() -> PathBuf {
     p
 }
 
-fn collect_hl(dir: &Path, out: &mut Vec<Program>) {
+/// The source files under `dir`, sorted: the files git would commit —
+/// tracked, or new and not ignored — so what a local run leaves in an
+/// ignored directory (a browser lane's `test-results`, a package
+/// manager's tree) never reaches a golden or a pin keyed by content.
+/// Outside a checkout (an export such as `git archive`) there is nothing
+/// ignored to leave out, and every file on disk under `dir` is listed.
+pub fn source_files(dir: &Path) -> Vec<PathBuf> {
+    let root = repo_root();
+    if let Some(listed) = git_listed(&root, dir) {
+        return listed;
+    }
+    let mut out = Vec::new();
+    walk_files(dir, &mut out);
+    out.sort();
+    out
+}
+
+/// The `.hl` source files under `dir` ([`source_files`]).
+pub fn source_hl(dir: &Path) -> Vec<PathBuf> {
+    source_files(dir)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "hl"))
+        .collect()
+}
+
+/// Whether `dir` itself holds a `.hl` source file ([`source_files`]).
+pub fn holds_hl(dir: &Path) -> bool {
+    source_hl(dir).iter().any(|p| p.parent() == Some(dir))
+}
+
+// What git lists under `dir`, spelled from `dir` as given, when the
+// repository root is the top of a checkout git can read; `None` otherwise.
+fn git_listed(root: &Path, dir: &Path) -> Option<Vec<PathBuf>> {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+    };
+    let top = git(&["rev-parse", "--show-toplevel"])?;
+    let top = PathBuf::from(String::from_utf8_lossy(&top.stdout).trim()).canonicalize().ok()?;
+    if top != root.canonicalize().ok()? {
+        return None;
+    }
+    let rel = dir.canonicalize().ok()?.strip_prefix(&top).ok()?.to_path_buf();
+    let spec = if rel.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        rel.to_string_lossy().to_string()
+    };
+    let listed =
+        git(&["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", &spec])?;
+    let mut out: BTreeSet<PathBuf> = BTreeSet::new();
+    for name in listed.stdout.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        let name = PathBuf::from(String::from_utf8_lossy(name).as_ref());
+        let Ok(under) = name.strip_prefix(&rel) else { continue };
+        // a tracked file deleted in the working tree is not a source
+        let p = dir.join(under);
+        if p.is_file() {
+            out.insert(p);
+        }
+    }
+    Some(out.into_iter().collect())
+}
+
+fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for p in paths {
+    for p in entries.flatten().map(|e| e.path()) {
         if p.is_dir() {
-            collect_hl(&p, out);
-        } else if p.extension().is_some_and(|e| e == "hl") {
-            if let Ok(source) = std::fs::read_to_string(&p) {
-                let origin = p
-                    .strip_prefix(repo_root())
-                    .unwrap_or(&p)
-                    .display()
-                    .to_string();
-                out.push(Program { origin, source });
-            }
+            walk_files(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+fn collect_hl(dir: &Path, out: &mut Vec<Program>) {
+    for p in source_hl(dir) {
+        if let Ok(source) = std::fs::read_to_string(&p) {
+            let origin = p
+                .strip_prefix(repo_root())
+                .unwrap_or(&p)
+                .display()
+                .to_string();
+            out.push(Program { origin, source });
         }
     }
 }
@@ -161,21 +233,18 @@ where
 }
 
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            // `target/` is build output and `.claude/` holds agent
-            // worktrees — both would double-count the whole tree.
-            let skip = p
-                .file_name()
-                .map(|n| n == "target" || n == ".claude")
-                .unwrap_or(false);
-            if !skip {
-                collect_rs(&p, out);
-            }
-        } else if p.extension().is_some_and(|e| e == "rs")
-            && p.components().any(|c| c.as_os_str() == "tests")
+    // `target/` is build output and `.claude/` holds agent worktrees —
+    // both would double-count the whole tree (git ignores them; an
+    // export's walk does not)
+    let root = repo_root();
+    for p in source_files(dir) {
+        let rel = p.strip_prefix(&root).unwrap_or(&p).to_path_buf();
+        let skip = rel
+            .components()
+            .any(|c| c.as_os_str() == "target" || c.as_os_str() == ".claude");
+        if !skip
+            && p.extension().is_some_and(|e| e == "rs")
+            && rel.components().any(|c| c.as_os_str() == "tests")
         {
             out.push(p);
         }

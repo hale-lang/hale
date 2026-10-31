@@ -14,7 +14,18 @@ fn child_primitives() -> Int fallible(IoError) {
     let wrote = std::process::__pipe_write(h.stdin_fd, "x") or raise;
     // The SpawnOptions primitives `run_with` / `spawn_with` / a deadline
     // `wait` are written over.
-    let ran = std::process::__run_with("true", "/", "A=1", "B", false, 1000000000, 0, 0, 0, 0) or raise;
+    let ran = std::process::__run_with(
+        "true",
+        "/",
+        "A=1",
+        "B",
+        false,
+        1000000000,
+        0,
+        0,
+        0,
+        0,
+    ) or raise;
     let hw = std::process::__spawn_with("true", "", "", "", true, 0, 1, 0, 16, 0) or raise;
     let dl = std::process::__wait_deadline(hw.pid, hw.deadline_ns, 0) or raise;
     return waited.code + polled.code + len(out) + wrote + ran.code + dl.code;

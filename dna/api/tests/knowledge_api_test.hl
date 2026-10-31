@@ -8,40 +8,103 @@ import "../../operations" as ops;
 import "../../ui" as ui;
 import "./fixture" as fixture;
 
+const LEDGER_HEAD: String = "ledger-head-of-the-fixture";
 const NODE: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 locus KnowledgeHost {
-    params { calls: Int = 0; reader: String = ""; request_body: String = ""; override_body: String = ""; status: Int = 200; }
+    params {
+        calls: Int = 0;
+        reader: String = "";
+        request_body: String = "";
+        override_body: String = "";
+        status: Int = 200;
+    }
     fn supported() -> Bool { return true; }
     fn ownership() -> String { return ""; }
     fn read(request: api::KnowledgeRequest) -> api::KnowledgeUpstream {
         self.calls = self.calls + 1; self.reader = request.reader;
         let wire = api::KnowledgeWire { };
         self.request_body = wire.request_json(request);
-        return api::KnowledgeUpstream { transport_ok: true, status: self.status, body: if len(self.override_body) > 0 { self.override_body } else { self.document(request) } };
+        return api::KnowledgeUpstream {
+            transport_ok: true,
+            status: self.status,
+            body: if len(self.override_body) > 0 {
+                self.override_body
+            } else {
+                self.document(request)
+            },
+        };
     }
     fn document(request: api::KnowledgeRequest) -> String {
         let wire = api::KnowledgeWire { };
         let basis = std::json::Builder { };
         basis.begin_object();
-        basis.string_field("record_id", request.source.identity); basis.string_field("projection_record_head", request.source.head);
-        basis.string_field("projection_record_revision", to_string(request.source.revision)); basis.string_field("projection_watermark", to_string(request.source.revision));
-        basis.string_field("store_generation", "1"); basis.string_field("routing_version", "0");
-        basis.string_field("visibility_record_head", request.source.head); basis.string_field("visibility_record_revision", to_string(request.source.revision));
-        basis.field("visibility_ledger_head", "null"); basis.field("visibility_ledger_revision", "null");
-        basis.string_field("reader_scope", dna::digest_of("knowledge-reader/1\n" + request.reader)); basis.string_field("target", request.query.target); basis.string_field("coverage", "native_ideas_edges_bindings"); basis.end_object();
+        basis.string_field("record_id", request.source.identity);
+        basis.string_field("projection_record_head", request.source.head);
+        basis.string_field("projection_record_revision", to_string(request.source.revision));
+        basis.string_field("projection_watermark", to_string(request.source.revision));
+        basis.string_field("store_generation", "1");
+        basis.string_field("visibility_record_head", request.source.head);
+        basis.string_field("visibility_record_revision", to_string(request.source.revision));
+        basis.string_field("visibility_ledger_head", LEDGER_HEAD);
+        basis.string_field("visibility_ledger_revision", "0");
+        basis.string_field("reader_scope", dna::digest_of("knowledge-reader/1\n" + request.reader));
+        basis.string_field("target", request.query.target);
+        basis.string_field("coverage", "native_ideas_edges_bindings");
+        basis.end_object();
         let b = std::json::Builder { }; b.begin_object(); b.begin_array_field("items");
         if request.kind == "nodes" {
             b.begin_object(); b.string_field("id", NODE); b.string_field("kind", "principle");
-            b.field("text", "\"Native \\u0061 \\u00e9 \\ud83e\\udded\""); b.string_field("author", "alice"); b.string_field("projection_state", "ratified");
-            b.string_field("revision", "-9223372036854775808"); b.bool_field("accepted", true); b.string_field("name", ""); b.string_field("supersedes", ""); b.string_field("ratified_seq", "9223372036854775807"); b.field("source_provenance", "null"); b.end_object();
+            b.field("text", "\"Native \\u0061 \\u00e9 \\ud83e\\udded\"");
+            b.string_field("author", "alice");
+            b.string_field("projection_state", "ratified");
+            b.string_field("revision", "-9223372036854775808");
+            b.bool_field("accepted", true);
+            b.string_field("name", "");
+            b.string_field("supersedes", "");
+            b.string_field("ratified_seq", "9223372036854775807");
+            b.field("source_provenance", "null");
+            b.end_object();
         } else if request.kind == "edges" {
-            b.begin_object(); b.string_field("id", NODE); b.string_field("from_id", NODE); b.string_field("to_id", NODE); b.string_field("rel", "supports"); b.end_object();
+            b.begin_object();
+            b.string_field("id", NODE);
+            b.string_field("from_id", NODE);
+            b.string_field("to_id", NODE);
+            b.string_field("rel", "supports");
+            b.end_object();
         } else {
-            b.begin_object(); b.string_field("id", NODE); b.string_field("idea_id", NODE); b.string_field("target", "org"); b.string_field("author", "alice"); b.string_field("class", "principle"); b.string_field("applicability", if len(request.query.target) == 0 { "unfiltered" } else if request.query.target == "org" { "exact" } else { "ancestor" }); b.end_object();
+            b.begin_object();
+            b.string_field("id", NODE);
+            b.string_field("idea_id", NODE);
+            b.string_field("target", "org");
+            b.string_field("author", "alice");
+            b.string_field("class", "principle");
+            b.string_field(
+                "applicability",
+                if len(request.query.target) == 0 {
+                    "unfiltered"
+                } else if request.query.target == "org" {
+                    "exact"
+                } else {
+                    "ancestor"
+                },
+            );
+            b.end_object();
         }
-        b.end_array(); b.begin_object_field("page"); b.int_field("limit", request.query.limit); b.int_field("returned", 1); b.bool_field("has_more", false); b.field("next_cursor", "null"); b.string_field("snapshot", wire.basis_snapshot(basis.result())); b.end_object();
-        b.field("basis", basis.result()); b.field("coverage", "{\"bindings\":\"complete\",\"runs\":\"unavailable\",\"definitions\":\"unavailable\",\"practices\":\"unavailable\"}"); b.end_object();
+        b.end_array();
+        b.begin_object_field("page");
+        b.int_field("limit", request.query.limit);
+        b.int_field("returned", 1);
+        b.bool_field("has_more", false);
+        b.field("next_cursor", "null");
+        b.string_field("snapshot", wire.basis_snapshot(basis.result()));
+        b.end_object();
+        b.field("basis", basis.result());
+        b.field(
+            "coverage",
+            "{\"bindings\":\"complete\",\"runs\":\"unavailable\",\"definitions\":\"unavailable\",\"practices\":\"unavailable\"}",
+        );
+        b.end_object();
         let http = api::Http { };
         return http.success(request.source, b.result()).body;
     }
@@ -60,63 +123,222 @@ locus KnowledgeCases {
         b.field(key, value); b.end_object(); return b.result();
     }
     fn get(service: api::Api, suffix: String, status: Int) -> String {
-        let response = service.handle(std::http::Request { method: "GET", path: self.f.prefix + suffix, headers: "X-Reader: attacker\r\nAuthorization: Bearer browser-secret" });
+        let response = service.handle(
+            std::http::Request {
+                method: "GET",
+                path: self.f.prefix + suffix,
+                headers: "X-Reader: attacker\r\nAuthorization: Bearer browser-secret",
+            },
+        );
         std::test::assert_eq_int(response.status, status, response.body);
         return response.body;
     }
     fn reject(request: api::KnowledgeRequest, body: String, status: Int) {
         let wire = api::KnowledgeWire { };
-        let response = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 200, body: body });
+        let response = wire.response(
+            request,
+            api::KnowledgeUpstream { transport_ok: true, status: 200, body: body },
+        );
         std::test::assert_eq_int(response.status, status, "upstream validation: " + response.body);
-        std::test::assert(!std::str::contains(response.body, "private-secret"), "never expose upstream payload");
+        std::test::assert(
+            !std::str::contains(response.body, "private-secret"),
+            "never expose upstream payload",
+        );
     }
     fn run_cases() {
         let wire = api::KnowledgeWire { };
         let source = api::SourceReader { root: self.f.root };
         let captured = source.read();
-        let request = api::KnowledgeRequest { source: captured, reader: "alice", kind: "nodes", query: api::KnowledgeQuery { ok: true } };
+        let request = api::KnowledgeRequest {
+            source: captured,
+            reader: "alice",
+            kind: "nodes",
+            query: api::KnowledgeQuery { ok: true },
+        };
         let body = self.host.document(request);
-        let success = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 200, body: body });
+        let success = wire.response(
+            request,
+            api::KnowledgeUpstream { transport_ok: true, status: 200, body: body },
+        );
         std::test::assert_eq_int(success.status, 200, success.body);
-        let data = wire.raw(body, "data"); let page = wire.raw(data, "page"); let basis = wire.raw(data, "basis"); let items = std::json::array_first(wire.raw(data, "items"));
-        std::test::assert_eq_str(wire.string(items.element, "text"), "Native a é 🧭", "strict shared Unicode decoder");
-        std::test::assert_eq_str(wire.string(items.element, "revision"), "-9223372036854775808", "minimum Int64 stays exact");
-        self.reject(request, self.field(body, "source", self.field(wire.raw(body, "source"), "record_id", "\"private-secret\"")), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "reader_scope", "\"private-secret\""))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "projection_watermark", "\"0\""))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "routing_version", "\"1\""))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "target", "\"other\""))), 503);
+        let data = wire.raw(body, "data");
+        let page = wire.raw(data, "page");
+        let basis = wire.raw(data, "basis");
+        let items = std::json::array_first(wire.raw(data, "items"));
+        std::test::assert_eq_str(
+            wire.string(items.element, "text"),
+            "Native a é 🧭",
+            "strict shared Unicode decoder",
+        );
+        std::test::assert_eq_str(
+            wire.string(items.element, "revision"),
+            "-9223372036854775808",
+            "minimum Int64 stays exact",
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "source",
+                self.field(wire.raw(body, "source"), "record_id", "\"private-secret\""),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "basis", self.field(basis, "reader_scope", "\"private-secret\"")),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "basis", self.field(basis, "projection_watermark", "\"0\"")),
+            ),
+            503,
+        );
+        // the Ledger is part of every basis (GH #1590): a basis without it is refused
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "basis", self.field(basis, "visibility_ledger_head", "null")),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "basis", self.field(basis, "target", "\"other\"")),
+            ),
+            503,
+        );
         let long_head = std::bytes::BytesBuilder { };
         let mut h = 0;
         while h < 129 { long_head.append_u8(97); h = h + 1; }
-        let ledger = self.field(self.field(self.field(basis, "routing_version", "\"1\""), "visibility_ledger_revision", "\"1\""), "visibility_ledger_head", "\"" + std::str::from_bytes(long_head.snapshot() or raise) + "\"");
+        let ledger = self.field(
+            self.field(basis, "visibility_ledger_revision", "\"1\""),
+            "visibility_ledger_head",
+            "\"" + std::str::from_bytes(long_head.snapshot() or raise) + "\"",
+        );
         self.reject(request, self.field(body, "data", self.field(data, "basis", ledger)), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "snapshot", "\"private-secret\""))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "returned", "0"))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "has_more", "true"))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "limit", "\"25\""))), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "items", "[" + self.field(items.element, "revision", "\"9223372036854775808\"") + "]")), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "items", "[" + self.field(items.element, "text", "7") + "]")), 503);
-        self.reject(request, self.field(body, "data", self.field(data, "items", "[" + self.field(items.element, "source_provenance", "\"invented\"") + "]")), 503);
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "page", self.field(page, "snapshot", "\"private-secret\"")),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(body, "data", self.field(data, "page", self.field(page, "returned", "0"))),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "page", self.field(page, "has_more", "true")),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(body, "data", self.field(data, "page", self.field(page, "limit", "\"25\""))),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(
+                    data,
+                    "items",
+                    "[" + self.field(items.element, "revision", "\"9223372036854775808\"") + "]",
+                ),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(data, "items", "[" + self.field(items.element, "text", "7") + "]"),
+            ),
+            503,
+        );
+        self.reject(
+            request,
+            self.field(
+                body,
+                "data",
+                self.field(
+                    data,
+                    "items",
+                    "[" + self.field(items.element, "source_provenance", "\"invented\"") + "]",
+                ),
+            ),
+            503,
+        );
         self.reject(request, self.field(body, "actor", "\"private-secret\""), 503);
         self.reject(request, "{\"api_version\":\"hale.v1\",\"api_version\":\"hale.v1\"}", 503);
         self.reject(request, "{\"api_vers\\u0069on\":\"hale.v1\"}", 503);
         self.reject(request, "private-secret", 503);
-        let moved = api::KnowledgeRequest { source: captured, reader: "alice", kind: "nodes", query: api::KnowledgeQuery { ok: true, snapshot: NODE } };
+        let moved = api::KnowledgeRequest {
+            source: captured,
+            reader: "alice",
+            kind: "nodes",
+            query: api::KnowledgeQuery { ok: true, snapshot: NODE },
+        };
         self.reject(moved, body, 409);
         let http = api::Http { };
         let error = http.error(404, "knowledge_not_found", "private-secret DSN sql", false);
-        let safe = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 404, body: error.body });
+        let safe = wire.response(
+            request,
+            api::KnowledgeUpstream { transport_ok: true, status: 404, body: error.body },
+        );
         std::test::assert_eq_int(safe.status, 404, safe.body);
-        std::test::assert(!std::str::contains(safe.body, "private-secret"), "error text recreated locally");
-        let private_error = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 401, body: error.body });
+        std::test::assert(
+            !std::str::contains(safe.body, "private-secret"),
+            "error text recreated locally",
+        );
+        let private_error = wire.response(
+            request,
+            api::KnowledgeUpstream { transport_ok: true, status: 401, body: error.body },
+        );
         std::test::assert_eq_int(private_error.status, 503, "private auth becomes unavailable");
         let unknown = http.error(503, "sql-error-private-secret", "private-secret", true);
-        std::test::assert(!std::str::contains(wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 503, body: unknown.body }).body, "private-secret"), "unknown errors not proxied");
+        std::test::assert(
+            !std::str::contains(
+                wire.response(
+                    request,
+                    api::KnowledgeUpstream { transport_ok: true, status: 503, body: unknown.body },
+                ).body,
+                "private-secret",
+            ),
+            "unknown errors not proxied",
+        );
 
         let service = api::Api { root: self.f.root, local_name: "alice", knowledge: self.host };
         let cap = self.get(service, "/capabilities", 200);
-        std::test::assert_eq_str(wire.raw(wire.raw(wire.raw(cap, "data"), "reads"), "knowledge"), "true", "supported capability");
+        std::test::assert_eq_str(
+            wire.raw(wire.raw(wire.raw(cap, "data"), "reads"), "knowledge"),
+            "true",
+            "supported capability",
+        );
         std::test::assert_eq_int(self.host.calls, 0, "capability does not call upstream");
         let locked = api::Api { root: self.f.root, mode: "oidc", knowledge: self.host };
         self.get(locked, "/dna/knowledge/nodes?actor=attacker", 401);
@@ -133,7 +355,11 @@ locus KnowledgeCases {
         self.get(service, "/dna/knowledge/nodes?target=%00", 400);
         std::test::assert_eq_int(self.host.calls, 0, "all invalid queries stop before transport");
         self.get(service, "/dna/knowledge/nodes", 200);
-        std::test::assert_eq_str(self.host.reader, "alice", "reader derived locally, ignoring browser headers");
+        std::test::assert_eq_str(
+            self.host.reader,
+            "alice",
+            "reader derived locally, ignoring browser headers",
+        );
         std::test::assert_eq_int(self.host.calls, 1, "one upstream call per graph read");
         self.get(service, "/dna/knowledge/edges?id=" + NODE, 200);
         self.get(service, "/dna/knowledge/bindings?id=" + NODE, 200);
@@ -143,11 +369,24 @@ locus KnowledgeCases {
         self.get(service, "/dna/knowledge/bindings?id=" + NODE + "&target=unrelated", 503);
         let absent = api::Api { root: self.f.root };
         self.get(absent, "/dna/knowledge/nodes", 503);
+        // the clone's kept head DSN set aside: it is the memory DSN here too
+        let kept = self.f.root + "/.hale/dna/memory.env";
+        let aside = dna::run_tool("mv\n" + kept + "\n" + kept + ".aside");
         let local = api::LocalKnowledge { root: self.f.root };
-        std::test::assert(!local.supported(), "without the head's memory DSN Knowledge reads are unsupported");
+        let unsupported = !local.supported();
+        let back = dna::run_tool("mv\n" + kept + ".aside\n" + kept);
+        std::test::assert(aside.code == 0 && back.code == 0, "the kept DSN set aside and back");
+        std::test::assert(
+            unsupported,
+            "without the head's memory DSN Knowledge reads are unsupported",
+        );
         let unconfigured = api::Api { root: self.f.root, local_name: "alice", knowledge: local };
         let refused = self.get(unconfigured, "/dna/knowledge/nodes", 503);
-        std::test::assert_eq_str(wire.string(wire.raw(refused, "error"), "code"), "knowledge_unsupported", "no memory is unsupported, not unavailable");
+        std::test::assert_eq_str(
+            wire.string(wire.raw(refused, "error"), "code"),
+            "knowledge_unsupported",
+            "no memory is unsupported, not unavailable",
+        );
     }
 }
 
@@ -159,55 +398,157 @@ locus MemoryCases {
     fn project(spine: dna::Dsn, id: String) -> String {
         // The tail's journal is handed in whole: `MemoryProjection.birth` points
         // `j.repo` at the root but leaves `j.record` on the cwd.
-        let tail = ops::MemoryProjection { root: self.f.root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: id }, j: dna::GitJournal { repo: self.f.root, author: "spine" }, receipts: dna::GitReceipts { repo: self.f.root } };
+        let tail = ops::MemoryProjection {
+            root: self.f.root,
+            dsn_env: "",
+            store: dna::Pq { conn: dna::pq_conn(spine), record_id: id },
+            j: dna::RecordJournal { repo: self.f.root, author: "spine" },
+            receipts: dna::MemoryReceipts { repo: self.f.root },
+        };
         let applied = tail.apply();
         tail.store.close();
         return applied.error;
     }
-    fn read(head: dna::Dsn, phase: String, current: String, earlier: String, hidden: String) -> dna::RunResult {
-        return dna::run_tool("env\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\nHALE_DNA_MEMORY_DSN_HEAD=" + dna::dsn_text(head) + "\n" + std::env::arg_or(0, "") + "\nmemory-read\n" + self.f.root + "\n" + phase + "\n" + current + "\n" + earlier + "\n" + hidden);
+    fn read(
+        head: dna::Dsn,
+        phase: String,
+        current: String,
+        earlier: String,
+        hidden: String
+    ) -> dna::RunResult {
+        return dna::run_tool(
+            "env\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\nHALE_DNA_MEMORY_DSN_HEAD="
+                + dna::dsn_text(head) + "\n" + std::env::arg_or(0, "") + "\nmemory-read\n"
+                + self.f.root + "\n" + phase + "\n" + current + "\n" + earlier + "\n" + hidden,
+        );
     }
     fn run_cases(owner: String) {
-        let earlier = self.f.knowledge("Earlier support goal", "Earlier accepted knowledge", "org", "", true);
-        let current = self.f.knowledge("Support knowledge — équipe", "Première ligne — ✓\n第二行 / preserve", "org/support", earlier, true);
-        let proposed = self.f.knowledge("Proposed knowledge", "Still proposed, not accepted", "org/finance", "", false);
-        let hidden = self.f.knowledge("Protected knowledge title", "Protected knowledge body", "org/support", "", true);
+        let earlier = self.f.knowledge(
+            "Earlier support goal",
+            "Earlier accepted knowledge",
+            "org",
+            "",
+            true,
+        );
+        let current = self.f.knowledge(
+            "Support knowledge — équipe",
+            "Première ligne — ✓\n第二行 / preserve",
+            "org/support",
+            earlier,
+            true,
+        );
+        let proposed = self.f.knowledge(
+            "Proposed knowledge",
+            "Still proposed, not accepted",
+            "org/finance",
+            "",
+            false,
+        );
+        let hidden = self.f.knowledge(
+            "Protected knowledge title",
+            "Protected knowledge body",
+            "org/support",
+            "",
+            true,
+        );
         self.f.append("receipt.classified", hidden, "{\"class\":\"confidential\"}");
-        let j = dna::GitJournal { repo: self.f.root };
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.f.root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RecordJournal { repo: self.f.root };
         let id = j.genesis();
         let spine = dna::migrated(owner, id);
         let head = dna::migrated_head(owner, id);
-        let mut why = if !spine.ok { "migrate (spine): " + spine.why } else if !head.ok { "migrate (head): " + head.why } else { "" };
+        let mut why = if !spine.ok {
+            "migrate (spine): " + spine.why
+        } else if !head.ok {
+            "migrate (head): " + head.why
+        } else {
+            ""
+        };
         if len(why) == 0 { why = self.project(spine, id); }
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: id };
-        if len(why) == 0 && !(store.open() && store.link(dna::KnowledgeEdge { from: current, to: earlier, rel: "supports <stored relationship>" }) && store.link(dna::KnowledgeEdge { from: current, to: hidden, rel: "protected-endpoint relationship" })) { why = "the spine links: " + store.last_error(); }
+        if len(why) == 0
+            && !(
+                store.open()
+                    && store.link(
+                        dna::KnowledgeEdge {
+                            from: current,
+                            to: earlier,
+                            rel: "supports <stored relationship>",
+                        },
+                    )
+                    && store.link(
+                        dna::KnowledgeEdge {
+                            from: current,
+                            to: hidden,
+                            rel: "protected-endpoint relationship",
+                        },
+                    )
+            )
+        {
+            why = "the spine links: " + store.last_error();
+        }
         store.close();
         // the head's role reads; it never writes the graph
         let reader = dna::Pq { conn: dna::pq_conn(head), record_id: id };
         let head_open = len(why) == 0 && reader.open();
-        let head_wrote = head_open && reader.link(dna::KnowledgeEdge { from: earlier, to: current, rel: "written by the head" });
+        let head_wrote = head_open
+            && reader.link(
+                dna::KnowledgeEdge { from: earlier, to: current, rel: "written by the head" },
+            );
         reader.close();
-        let projected = if len(why) == 0 { self.read(head, "projected", current, earlier, hidden) } else { dna::RunResult { code: -1 } };
+        let projected = if len(why) == 0 {
+            self.read(head, "projected", current, earlier, hidden)
+        } else {
+            dna::RunResult { code: -1 }
+        };
         // the record moves and nobody projects: the head reads, it never projects
-        if len(why) == 0 { self.f.append("browser.fixture", "refresh", "another writer advanced the Record"); }
-        let behind = if len(why) == 0 { self.read(head, "behind", current, earlier, hidden) } else { dna::RunResult { code: -1 } };
+        if len(why) == 0 {
+            self.f.append("browser.fixture", "refresh", "another writer advanced the Record");
+        }
+        let behind = if len(why) == 0 {
+            self.read(head, "behind", current, earlier, hidden)
+        } else {
+            dna::RunResult { code: -1 }
+        };
         let caught_up = if len(why) == 0 { self.project(spine, id) } else { "" };
-        let after = if len(why) == 0 && len(caught_up) == 0 { self.read(head, "projected", current, earlier, hidden) } else { dna::RunResult { code: -1 } };
+        let after = if len(why) == 0 && len(caught_up) == 0 {
+            self.read(head, "projected", current, earlier, hidden)
+        } else {
+            dna::RunResult { code: -1 }
+        };
         let dropped = dna::unmigrate(owner, id);
         std::test::assert_eq_str(why, "", "memory for the record");
         std::test::assert(head_open, "the head's role opens the record's memory");
         std::test::assert(!head_wrote, "the head's role cannot write the graph");
-        std::test::assert_eq_int(projected.code, 0, "reads from the projection: " + projected.stdout + projected.stderr);
-        std::test::assert_eq_int(behind.code, 0, "a projection behind the record: " + behind.stdout + behind.stderr);
+        std::test::assert_eq_int(
+            projected.code,
+            0,
+            "reads from the projection: " + projected.stdout + projected.stderr,
+        );
+        std::test::assert_eq_int(
+            behind.code,
+            0,
+            "a projection behind the record: " + behind.stdout + behind.stderr,
+        );
         std::test::assert_eq_str(caught_up, "", "the spine's tick catches the projection up");
-        std::test::assert_eq_int(after.code, 0, "reads after the tick: " + after.stdout + after.stderr);
+        std::test::assert_eq_int(
+            after.code,
+            0,
+            "reads after the tick: " + after.stdout + after.stderr,
+        );
         std::test::assert(len(proposed) == 71, "a proposed item is recorded too");
         std::test::assert_eq_str(dropped, "", "the record's memory is dropped");
     }
 }
 
 fn memory_get(service: api::Api, prefix: String, suffix: String, status: Int) -> String {
-    let response = service.handle(std::http::Request { method: "GET", path: prefix + suffix, headers: "X-Reader: attacker" });
+    let response = service.handle(
+        std::http::Request { method: "GET", path: prefix + suffix, headers: "X-Reader: attacker" },
+    );
     std::test::assert_eq_int(response.status, status, suffix + ": " + response.body);
     return response.body;
 }
@@ -215,41 +556,105 @@ fn memory_get(service: api::Api, prefix: String, suffix: String, status: Int) ->
 // The child half of `MemoryCases`: only HALE_DNA_MEMORY_DSN_HEAD is set.
 fn memory_read(root: String, phase: String, current: String, earlier: String, hidden: String) {
     let wire = api::KnowledgeWire { };
-    let record = dna::GitRecord { repo: root };
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let record = dna::MemoryRecord { repo: root };
     let prefix = "/api/hale/v1/applications/" + record.identity();
-    let service = api::Api { root: root, local_name: "alice", knowledge: api::LocalKnowledge { root: root } };
+    let service = api::Api {
+        root: root,
+        local_name: "alice",
+        knowledge: api::LocalKnowledge { root: root },
+    };
     let caps = memory_get(service, prefix, "/capabilities", 200);
-    std::test::assert_eq_str(wire.raw(wire.raw(wire.raw(caps, "data"), "reads"), "knowledge"), "true", "the head's DSN makes Knowledge reads supported");
+    std::test::assert_eq_str(
+        wire.raw(wire.raw(wire.raw(caps, "data"), "reads"), "knowledge"),
+        "true",
+        "the head's DSN makes Knowledge reads supported",
+    );
     if phase == "behind" {
         let stale = memory_get(service, prefix, "/dna/knowledge/nodes", 503);
-        std::test::assert_eq_str(wire.string(wire.raw(stale, "error"), "code"), "knowledge_projection_unavailable", "a projection behind the record is unavailable, not stale data");
+        std::test::assert_eq_str(
+            wire.string(wire.raw(stale, "error"), "code"),
+            "knowledge_projection_unavailable",
+            "a projection behind the record is unavailable, not stale data",
+        );
         return;
     }
     let nodes = memory_get(service, prefix, "/dna/knowledge/nodes", 200);
-    std::test::assert(std::str::contains(nodes, current) && std::str::contains(nodes, earlier), "ratified knowledge is listed");
-    std::test::assert(!std::str::contains(nodes, hidden) && !std::str::contains(nodes, "Protected knowledge"), "protected knowledge is not listed");
+    std::test::assert(
+        std::str::contains(nodes, current) && std::str::contains(nodes, earlier),
+        "ratified knowledge is listed",
+    );
+    std::test::assert(
+        !std::str::contains(nodes, hidden) && !std::str::contains(nodes, "Protected knowledge"),
+        "protected knowledge is not listed",
+    );
     let node = memory_get(service, prefix, "/dna/knowledge/nodes?id=" + current, 200);
     let item = std::json::array_first(wire.raw(wire.raw(node, "data"), "items")).element;
-    std::test::assert_eq_str(wire.string(item, "text"), "Première ligne — ✓\n第二行 / preserve", "text is exact");
-    std::test::assert_eq_str(wire.string(item, "supersedes"), earlier, "a visible predecessor is named");
-    let missing = memory_get(service, prefix, "/dna/knowledge/nodes?id=sha256:0000000000000000000000000000000000000000000000000000000000000000", 404);
+    std::test::assert_eq_str(
+        wire.string(item, "text"),
+        "Première ligne — ✓\n第二行 / preserve",
+        "text is exact",
+    );
+    std::test::assert_eq_str(
+        wire.string(item, "supersedes"),
+        earlier,
+        "a visible predecessor is named",
+    );
+    let missing = memory_get(
+        service,
+        prefix,
+        "/dna/knowledge/nodes?id=sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        404,
+    );
     let protected = memory_get(service, prefix, "/dna/knowledge/nodes?id=" + hidden, 404);
-    std::test::assert_eq_str(wire.raw(protected, "error"), wire.raw(missing, "error"), "protected and missing share one 404");
+    std::test::assert_eq_str(
+        wire.raw(protected, "error"),
+        wire.raw(missing, "error"),
+        "protected and missing share one 404",
+    );
     let edges = memory_get(service, prefix, "/dna/knowledge/edges?id=" + current, 200);
-    std::test::assert(std::str::contains(edges, "supports <stored relationship>"), "a stored relationship is read");
-    std::test::assert(!std::str::contains(edges, hidden) && !std::str::contains(edges, "protected-endpoint relationship"), "a relationship to protected knowledge is not read");
-    let bindings = memory_get(service, prefix, "/dna/knowledge/bindings?id=" + current + "&target=org/support/intake", 200);
-    std::test::assert(std::str::contains(bindings, "\"ancestor\""), "the binding applies to a descendant target");
+    std::test::assert(
+        std::str::contains(edges, "supports <stored relationship>"),
+        "a stored relationship is read",
+    );
+    std::test::assert(
+        !std::str::contains(edges, hidden)
+            && !std::str::contains(edges, "protected-endpoint relationship"),
+        "a relationship to protected knowledge is not read",
+    );
+    let bindings = memory_get(
+        service,
+        prefix,
+        "/dna/knowledge/bindings?id=" + current + "&target=org/support/intake",
+        200,
+    );
+    std::test::assert(
+        std::str::contains(bindings, "\"ancestor\""),
+        "the binding applies to a descendant target",
+    );
 }
 
 fn main() {
     if std::env::arg_or(1, "") == "memory-read" {
-        memory_read(std::env::arg_or(2, ""), std::env::arg_or(3, ""), std::env::arg_or(4, ""), std::env::arg_or(5, ""), std::env::arg_or(6, ""));
+        memory_read(
+            std::env::arg_or(2, ""),
+            std::env::arg_or(3, ""),
+            std::env::arg_or(4, ""),
+            std::env::arg_or(5, ""),
+            std::env::arg_or(6, ""),
+        );
         return;
     }
     // Keep temporary Record writes isolated from inherited Git plumbing.
     if std::env::var("HALE_KNOWLEDGE_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_VAULT_ADDR\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool(
+            "env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_VAULT_ADDR\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_API_TEST_CLEAN=1\n"
+                + std::env::arg_or(0, ""),
+        );
         print(clean.stdout);
         if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
@@ -259,8 +664,17 @@ fn main() {
     let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
     let cases = KnowledgeCases { f: f };
     cases.run_cases();
-    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-    if len(owner) == 0 { eprintln("knowledge_api_test: memory reads not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+        std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+    } else {
+        ""
+    };
+    if len(owner) == 0 {
+        eprintln(
+            "knowledge_api_test: memory reads not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)",
+        );
+        return;
+    }
     let seeded = dna::run_tool("mktemp\n-d\n/tmp/hale-knowledge-memory.XXXXXX");
     std::test::assert_eq_int(seeded.code, 0, seeded.stderr);
     let memory = MemoryCases { f: fixture::Fixture { root: dna::trim_nl(seeded.stdout), port: 1 } };

@@ -1,0 +1,294 @@
+// dna/tests/habitat_face_test.hl — the habitat's face: the standard face,
+// grafted for the habitat, listing its organisms.
+//
+// `hale habitat up` starts the habitat's face beside its body: the same
+// application every organism fronts itself with (`dna/face/standard`), over
+// the head of the habitat's own genome, at an address the habitat keeps in
+// the genome's `dna.head.url`. `hale habitat status` prints it. The face's
+// index reads the habitat's record through the head's surface, and a record
+// that grafted organisms lists them (the `habitat.grafted` rows): name, state,
+// the address of the organism's face and of its head, each taken at its graft.
+// The same surface reads the habitat's placement: the host the compose
+// provider produced, the policy, and each allocation with its provider, its
+// host and what that provider observes of it.
+// The habitat is this test file's own (`hale test` gives each file one).
+// Without docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations and
+// the head a fixture's trusted-local one (no provider to sign in through).
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
+fn face_of(status: String) -> String {
+    let at = std::str::index_of(status, "face    http://");
+    if at < 0 { return ""; }
+    let rest = status[(at + 8)..len(status)];
+    let end = std::str::index_of(rest, "/ (");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+// The address `hale habitat graft` kept in the organism's own config.
+fn head_url(dir: String) -> String {
+    return dna::trim_nl(dna::run_tool("git\n-C\n" + dir + "\nconfig\n--get\ndna.head.url").stdout);
+}
+
+// The face's `/index` once it lists `needle`, within `secs`.
+fn index_with(face: String, needle: String, secs: Int) -> String {
+    let mut page = "";
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline && !std::str::contains(page, needle) {
+        page = dna::run_tool("curl\n-s\n" + face + "/index").stdout;
+        if !std::str::contains(page, needle) { std::time::sleep(500ms); }
+    }
+    return page;
+}
+
+// The JSON array `field` of what the head's surface answers `member`, read
+// through the face as the operator face reads it (the head relays the
+// surface's reads to its API child).
+fn surface_read(face: String, member: String, field: String) -> String {
+    let r = dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n--data\n{\"limit\": 50}\n" + face
+            + "/api/hale/v1/head/surface/call/" + member,
+    ).stdout;
+    return std::json::find_string_field(r, field);
+}
+
+// The element of the JSON `array` whose `key` is `value`, "" for none.
+fn element(array: String, key: String, value: String) -> String {
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        if std::json::find_string_field(it.element, key) == value { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_face_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_face_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("habitat-face");
+    dna::reap_on_exit(scratch);
+
+    // ---- a graft made before the face is first started holds its ports: the
+    // habitat's own block is assigned beside it, never over it
+    let born = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body");
+    std::test::assert_eq_int(born.code, 0, "born, no body: " + born.stdout + born.stderr);
+    let early = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ngamma\n--no-library");
+    std::test::assert_eq_int(early.code, 0, "gamma is grafted: " + early.stdout + early.stderr);
+    let gamma = head_url(scratch + "/gamma");
+
+    // ---- up starts the body and the face; status prints the face's address
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
+    );
+    std::test::assert(
+        std::str::contains(started.stdout, "face    up (compose service face, http://127.0.0.1:"),
+        "up starts the habitat's face: " + started.stdout + started.stderr,
+    );
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    let face = face_of(status);
+    std::test::assert(
+        std::str::starts_with(face, "http://127.0.0.1:")
+            && std::str::contains(status, "/ (up, compose service face,"),
+        "status prints the face's address: " + status,
+    );
+
+    let near = (std::str::parse_int(face[17..len(face)]) or 0)
+        - (std::str::parse_int(gamma[17..len(gamma)]) or 0);
+    std::test::assert(
+        near >= 8 || near <= -8,
+        "the habitat's block and gamma's do not overlap: " + face + " " + gamma,
+    );
+
+    // ---- two organisms grafted: each is given an address of its own
+    let a = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nalpha\n--no-library");
+    let b = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbeta\n--no-library");
+    std::test::assert(
+        a.code == 0 && b.code == 0,
+        "both are grafted: " + a.stdout + a.stderr + b.stdout + b.stderr,
+    );
+    let alpha = head_url(scratch + "/alpha");
+    let beta = head_url(scratch + "/beta");
+    std::test::assert(
+        std::str::starts_with(alpha, "http://127.0.0.1:")
+            && std::str::starts_with(beta, "http://127.0.0.1:")
+            && alpha != beta
+            && alpha != face
+            && beta != face,
+        "three addresses, one each: " + face + " " + alpha + " " + beta,
+    );
+
+    // ---- the habitat's face lists them: name, state, face and head
+    let page = index_with(face, "<code>beta</code>", 900);
+    std::test::assert(
+        std::str::contains(page, "Organisms")
+            && std::str::contains(page, "<code>alpha</code>")
+            && std::str::contains(page, "<code>beta</code>"),
+        "the index lists both organisms: " + page + text_of(dna::local_habitat_dir() + "/face.log"),
+    );
+    std::test::assert(
+        std::str::contains(page, "<a href=\"" + alpha + "/\"")
+            && std::str::contains(page, "<a href=\"" + beta + "/\""),
+        "with the address of each face: " + page,
+    );
+    let alpha_head = "http://127.0.0.1:"
+        + to_string((std::str::parse_int(alpha[17..len(alpha)]) or 0) + 1);
+    let beta_head = "http://127.0.0.1:"
+        + to_string((std::str::parse_int(beta[17..len(beta)]) or 0) + 1);
+    std::test::assert(
+        std::str::contains(page, "<code>" + alpha_head + "</code>")
+            && std::str::contains(page, "<code>" + beta_head + "</code>"),
+        "and of each head: " + page,
+    );
+    std::test::assert(
+        std::str::contains(page, "<td>grafted</td>"),
+        "neither organism's face is running: " + page,
+    );
+    std::test::assert(
+        std::str::contains(page, "href=\"/styles.css\"") && !std::str::contains(page, "<script"),
+        "the same page as every organism's: the shell's stylesheet, no script",
+    );
+
+    // ---- the habitat's placement (phase 4): `up` went through the compose
+    // provider, which produced this machine as the host `local` with what it
+    // offers; the `local` profile's policy gives every role that provider;
+    // and every allocation, the habitat's own memory, nerves, head and face
+    // and each tenant's, is a row naming its provider and its host, with
+    // what the provider observes of it. Each is a read of the head's
+    // surface, through the face.
+    let hosts = surface_read(face, "Commands::hosts", "hosts");
+    let local = element(hosts, "name", "local");
+    std::test::assert(
+        std::json::find_string_field(local, "provider") == "compose"
+            && dna::has_word(std::json::find_string_field(local, "offers"), "compose"),
+        "the compose provider produced the host `local`, offering compose: " + hosts,
+    );
+    let policy = surface_read(face, "Commands::policy", "policy");
+    std::test::assert(
+        std::json::find_string_field(element(policy, "role", "memory"), "provider") == "compose"
+            && std::json::find_string_field(element(policy, "role", "face"), "provider")
+            == "compose"
+            && std::json::find_string_field(element(policy, "role", "memory"), "profile")
+            == "local",
+        "the local profile's policy: compose for every role: " + policy,
+    );
+    let allocations = surface_read(face, "Commands::allocations", "allocations");
+    let key = dna::allocation_key(dna::local_habitat_dir() + "/genome");
+    let mut roles = "memory nerves head face ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        let role = roles[0..sp];
+        roles = roles[(sp + 1)..len(roles)];
+        let a = element(allocations, "allocation", key + "/" + role);
+        std::test::assert(
+            std::json::find_string_field(a, "provider") == "compose"
+                && std::json::find_string_field(a, "host") == "local"
+                && std::json::find_string_field(a, "state") == "up",
+            "the habitat's " + role + " is placed by compose on local, and up: " + allocations,
+        );
+    }
+    std::test::assert_eq_str(
+        std::json::find_string_field(element(allocations, "allocation", key + "/face"), "address"),
+        face,
+        "the face's allocation answers at the face's address",
+    );
+    let tenant = element(
+        allocations,
+        "allocation",
+        dna::allocation_key(scratch + "/alpha") + "/memory",
+    );
+    std::test::assert(
+        std::json::find_string_field(tenant, "provider") == "compose"
+            && std::json::find_string_field(tenant, "host") == "local"
+            && std::json::find_string_field(tenant, "state") == "up",
+        "a tenant's memory is the compose provider's too: " + allocations,
+    );
+    // forge and identity are roles the habitat allocates too: the forge the
+    // habitat's own Forgejo (the local profile's, phase 4 ruling) until the
+    // Board allocates another, the identity the habitat's stub
+    let akey = dna::allocation_key(scratch + "/alpha");
+    let forge = element(allocations, "allocation", akey + "/forge");
+    let identity = element(allocations, "allocation", akey + "/identity");
+    std::test::assert(
+        std::json::find_string_field(forge, "provider") == "forgejo"
+            && std::json::find_string_field(identity, "provider") == "oidc-stub"
+            && std::json::find_string_field(
+                element(allocations, "allocation", key + "/forge"),
+                "provider",
+            )
+            == "forgejo",
+        "the allocations list forge and identity with their providers: " + allocations,
+    );
+    let unset = in_dir(scratch, toolchain() + "\nhabitat\nforge\nalpha\nnone");
+    std::test::assert(
+        unset.code == 0 && std::str::contains(unset.stdout, "alpha's forge: none"),
+        "the Board may allocate no forge at all: " + unset.stdout + unset.stderr,
+    );
+    let synced = in_dir(scratch + "/alpha", toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        synced.code == 0 && std::str::contains(synced.stdout, "forge: no forge allocated"),
+        "with no forge, forge sync says so: " + synced.stdout + synced.stderr,
+    );
+    let allocated = in_dir(scratch, toolchain() + "\nhabitat\nforge\nalpha\nfile");
+    std::test::assert(
+        allocated.code == 0 && std::str::contains(allocated.stdout, "alpha's forge: file"),
+        "the Board allocates alpha a forge (Commands::allocate_forge): " + allocated.stdout
+            + allocated.stderr,
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(
+            element(
+                surface_read(face, "Commands::allocations", "allocations"),
+                "allocation",
+                akey + "/forge",
+            ),
+            "provider",
+        ),
+        "file",
+        "and the allocations say so",
+    );
+    let resynced = in_dir(scratch + "/alpha", toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        resynced.code == 0 && !std::str::contains(resynced.stdout, "no forge allocated"),
+        "forge sync goes through the allocated forge: " + resynced.stdout + resynced.stderr,
+    );
+
+    // ---- down stops the face with the body
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    std::test::assert(
+        down.code == 0 && std::str::contains(down.stdout, "stopped the habitat's face"),
+        "down stops the face: " + down.stdout + down.stderr,
+    );
+    std::test::assert(
+        dna::run_tool("curl\n-s\n-o\n/dev/null\n" + face + "/index").code != 0,
+        "nothing answers at the face's address",
+    );
+    dna::scratch_done(scratch);
+}

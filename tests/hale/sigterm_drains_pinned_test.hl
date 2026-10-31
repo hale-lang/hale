@@ -126,7 +126,11 @@ fn main() {
         "under hale run, main's run() waits while the pinned loop runs: " + r.out);
     r.term();
     let run_code = r.exit_code();
-    std::test::assert_eq_int(run_code, 0, "hale run forwards SIGTERM and reports the drain: " + r.out);
+    std::test::assert_eq_int(
+        run_code,
+        0,
+        "hale run forwards SIGTERM and reports the drain: " + r.out,
+    );
     std::test::assert(std::str::contains(r.out, "child dissolve"),
         "under hale run, the pinned child dissolved: " + r.out);
 

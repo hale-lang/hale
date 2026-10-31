@@ -1,11 +1,14 @@
 name: tests
 
 # Runs the workspace test suite on every pull request targeting
-# main and on every push to main. A pull request runs the DNA and
-# face jobs only when its diff can reach DNA (`scope.dna`, from
-# scripts/ci-scope.sh); the merge group runs every job, and a push to
-# main runs the DNA and face jobs whatever its diff, so a stack is
-# tested as the combination it becomes. Linux-only at v1; the macos
+# main and on every push to main. A pull request runs the compiler
+# suites (quick, codegen, the sanitizers); the DNA and face jobs only
+# when its diff reaches DNA (`scope.dna`), the cli jobs only when it
+# reaches the cli family or DNA (`scope.cli`), both from
+# scripts/ci-scope.sh; parity and cross never. The merge group runs
+# every job, and so does a push to main whatever its diff, so a change
+# is tested whole before it lands and a stack is tested as the
+# combination it becomes. Linux-only at v1; the macos
 # workflow and the release workflow cover macOS.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
@@ -109,7 +112,7 @@ jobs:
   # `before` sha, a diff it cannot compute — runs everything.
   scope:
     name: scope
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       substrate: ${{ steps.classify.outputs.substrate }}
       # The same verdict under the name the test partitions read it
@@ -120,12 +123,15 @@ jobs:
       # those tests live in hale-syntax, hale-types and one hale-cli
       # binary, and `quick` + `docs` run exactly those.
       code: ${{ steps.classify.outputs.substrate }}
-      # Whether the diff can reach what the DNA and face jobs run
-      # (scripts/ci-scope.sh lists the paths). Those jobs run on a
-      # pull request only when this is true.
+      # Whether the diff reaches DNA (its tree, its host code, what its
+      # jobs run) and whether it reaches the cli family or DNA
+      # (scripts/ci-scope.sh lists the paths): the DNA and face jobs,
+      # and the cli jobs, run on a pull request only when these are true.
       dna: ${{ steps.classify.outputs.dna }}
+      cli: ${{ steps.classify.outputs.cli }}
       # The diff only touches the README and its art (assets/): no test
-      # job runs, on a pull request or in the merge queue.
+      # job runs, on a pull request, in the merge queue or on main's push.
+      # `required` still passes.
       assets: ${{ steps.classify.outputs.assets }}
     steps:
       - uses: actions/checkout@v4
@@ -135,13 +141,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "merge_group" ]; then
+            # The group's own diff decides one thing only: whether it is
+            # README art alone. Anything else runs every job.
             verdict="$(bash scripts/ci-scope.sh "${{ github.event.merge_group.base_sha }}" HEAD)"
             if printf '%s\n' "$verdict" | grep -qx 'assets=true'; then
               echo "merge group only touches README art: no test job runs"
-              { echo "substrate=false"; echo "dna=false"; echo "assets=true"; } >> "$GITHUB_OUTPUT"
+              { echo "substrate=false"; echo "dna=false"; echo "cli=false"; echo "assets=true"; } >> "$GITHUB_OUTPUT"
             else
               echo "merge group: every job runs"
-              { echo "substrate=true"; echo "dna=true"; echo "assets=false"; } >> "$GITHUB_OUTPUT"
+              { echo "substrate=true"; echo "dna=true"; echo "cli=true"; echo "assets=false"; } >> "$GITHUB_OUTPUT"
             fi
             exit 0
           fi
@@ -178,25 +186,29 @@ jobs:
           else
             echo "substrate=true" >> "$GITHUB_OUTPUT"
           fi
-          printf '%s\n' "$verdict" | grep -E '^(dna|assets)=' >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$verdict" | grep -E '^(dna|cli|assets)=' >> "$GITHUB_OUTPUT"
 
   # The fast lane: everything that needs no LLVM. hale-syntax,
   # hale-types, hale-model, hale-graph, hale-stdlib and hale-corpus have
   # no dependency on inkwell, so these jobs skip the LLVM install and the
-  # codegen build entirely. They run on every diff, prose included.
+  # codegen build entirely. They run on every diff, prose included, but
+  # not on one that only touches README art (`assets` above).
   #
   # `quick-build` compiles their ~180 test binaries (about six minutes:
   # each is a bin crate, which sccache cannot cache) and archives them;
   # the six `quick` jobs run a hash sixth each of their ~2,500 tests
   # (about 2,150 test-seconds; the ten corpus sweeps of hale-types take
-  # 60-260 s each, and three of them on one four-core runner made a part
+  # 60-390 s each, and three of them on one four-core runner made a part
   # of four run 5.5 minutes). One job building and running all of it was
-  # the workflow's longest, at 16 minutes (2026-10-12).
+  # the workflow's longest, at 16 minutes (2026-10-12). Not `count:`: it
+  # restarts its round-robin at each of the ~180 binaries, and most
+  # sweeps sort first in theirs, so part 1 took seven of them and ran 15
+  # minutes (2026-10-16).
   quick-build:
     name: quick build (LLVM-free test archive)
     needs: scope
     if: needs.scope.outputs.assets != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-quick
     steps:
@@ -252,7 +264,7 @@ jobs:
   quick:
     name: quick ${{ matrix.part }}/6 (parse, typecheck, model)
     needs: quick-build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -309,7 +321,7 @@ jobs:
     name: docs (embedded spec)
     needs: scope
     if: needs.scope.outputs.assets != 'true' && (github.event_name == 'merge_group' || needs.scope.outputs.code != 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -370,8 +382,10 @@ jobs:
   build-cli:
     name: build (cli + dna test archive)
     needs: scope
-    if: needs.scope.outputs.assets != 'true' && (needs.scope.outputs.code == 'true' || github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
-    runs-on: ubuntu-latest
+    # The cli and dna jobs' archive: on a pull request only when one of
+    # them runs there (`scope.cli` is true whenever `scope.dna` is).
+    if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true')
+    runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-cli
       # What this job archives: the workspace less the LLVM-free crates
@@ -429,6 +443,24 @@ jobs:
         # so the archive is a few hundred MB, not ~100MB per test binary.
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      - name: Build the habitat toolchain image
+        # From the hale this job just built, never compiled again inside
+        # docker: the Dockerfile's `artifact` source copies `hale` and
+        # `libhale_ts_shim.a` from a context holding only them. This
+        # runner is the image base's release (ubuntu 24.04), so its glibc
+        # runs there; the image's build refuses a binary it cannot load.
+        run: |
+          set -eux
+          ctx="$RUNNER_TEMP/habitat-image"
+          mkdir -p "$ctx"
+          cp target/release/hale target/release/libhale_ts_shim.a "$ctx/"
+          tag="hale-habitat:ci-${GITHUB_SHA::12}"
+          DOCKER_BUILDKIT=1 docker build --build-arg HALE_FROM=artifact -t "$tag" -f Dockerfile "$ctx"
+          rm -rf "$ctx"
+          printf '%s\n' "$tag" > target/release/habitat-image.tag
+          docker save "$tag" | zstd -T0 -o target/release/habitat-image.tar.zst
+          ls -lh target/release/habitat-image.tar.zst
+
       - &build-archive
         name: cargo nextest archive
         # The test binaries, the binaries they run (`hale`, through
@@ -451,7 +483,7 @@ jobs:
     name: build (codegen test archive)
     needs: scope
     if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-codegen
       ARCHIVE_SCOPE: -p hale-codegen
@@ -464,6 +496,20 @@ jobs:
       - *build-llvm
       - *build-nextest
       - *build-workspace
+      - name: hale fmt --check (canonical-form gate)
+        # The styleguide's §5 fmt tier: the repo's own .hl surface must
+        # be canonical. Here, not in a cli job: this build runs on every
+        # code diff, a pull request's included, and has just built
+        # `hale`; the cli jobs skip a PR that reaches neither the cli
+        # family nor DNA (2026-10-16). Whole repo, not an enumerated
+        # list. The list form silently excluded tests/hale (the
+        # in-language suite), which drifted out of canonical form
+        # unnoticed — an enumerated scope is a scope that goes stale
+        # every time a directory is added. The price of running it here:
+        # a formatting slip fails this build, so the codegen jobs that
+        # need its archive are skipped until it is fixed (in a cli job
+        # it failed that job alone).
+        run: ./target/release/hale fmt --check .
       - *build-archive
       - *archive-upload
       - *build-sccache-stats
@@ -471,10 +517,12 @@ jobs:
   cli:
     name: cli ${{ matrix.part }}/5
     needs: [scope, build-cli]
-    if: needs.scope.outputs.code == 'true'
+    # On a pull request only when the diff reaches the cli family or DNA
+    # (`scope.cli`); every PR's merge-queue run has it.
+    if: needs.scope.outputs.code == 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true')
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Don't short-circuit other partitions on first failure —
       # we want to see the full failure picture across the suite.
@@ -557,18 +605,6 @@ jobs:
       - *install-nextest
       - *archive-download
       - *archive-extract
-
-      - name: hale fmt --check (canonical-form gate)
-        # The styleguide's §5 fmt tier: the repo's own .hl surface
-        # must be canonical. Partition 1 only — the check is
-        # whole-repo and takes <1s; running it 3× adds nothing.
-        if: matrix.part == 1
-        run: |
-          # Whole repo, not an enumerated list. The list form silently
-          # excluded tests/hale (the in-language suite), which drifted
-          # out of canonical form unnoticed — an enumerated scope is a
-          # scope that goes stale every time a directory is added.
-          ./target/release/hale fmt --check .
 
       # The compiler's identity and the host's, for the toolchain cache
       # below and the face's builds cache in face-browser. A cached output
@@ -723,7 +759,7 @@ jobs:
     name: codegen ${{ matrix.part }}/5
     needs: [scope, build-codegen]
     if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -760,19 +796,21 @@ jobs:
         # this step named half of them with `--test`. nextest deals the
         # TESTS between the parts by hash, the lib's unit tests included
         # (about 3,450 test-seconds in all, none longer than ~85 s).
+        # Not `count:`: it restarts its round-robin at each binary, so
+        # every binary's first test lands on part 1 (2026-10-16).
         run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/5
 
   dna:
-    name: dna ${{ matrix.part }}/5
+    name: dna ${{ matrix.part }}/6
     needs: [scope, build-cli]
     if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4, 5]
+        part: [1, 2, 3, 4, 5, 6]
     services:
       knowledge-db:
         image: ghcr.io/hale-lang/ci-pgvector:pg16
@@ -857,15 +895,15 @@ jobs:
 
       - *toolchain-save
 
-      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/5)
-        # The suite alone on its runner: twenty slice tests split across
-        # five jobs, four slices each, two at a time (`--profile small`,
+      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/6)
+        # The suite alone on its runner: twenty-four slice tests split across
+        # six jobs, four slices each, two at a time (`--profile small`,
         # the `dna-fixtures-small` group in .config/nextest.toml).
         # `count:` deals the alphabetical test list out round-robin, so
         # the split is the same every run, and the slice tests are named
         # `dna_fixtures_slice_<ii>` (zero-padded) so that list is slice
         # order: `HEAVY` in dna_native_suite.rs places the heavy fixtures
-        # so the five parts' slice minutes come out level and each part
+        # so the six parts' slice minutes come out level and each part
         # starts its longest slices first. Change the job count only
         # with HEAVY.
         env:
@@ -877,7 +915,7 @@ jobs:
           cargo nextest run $NEXTEST_ARCHIVE \
             -E 'binary_id(hale-cli::dna_native_suite)' \
             --profile small \
-            --partition count:${{ matrix.part }}/5
+            --partition count:${{ matrix.part }}/6
 
       - &tree-is-clean
         name: The run left the source tree as it found it
@@ -922,7 +960,7 @@ jobs:
     name: face (DNA API + head)
     needs: scope
     if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GH #985: the API's Knowledge tests migrate a record into this
     # Postgres with the owner's DSN and read it as the head; without it
     # they say so and exercise nothing.
@@ -1010,7 +1048,7 @@ jobs:
           restore-keys: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
 
       - name: Warm the DNA toolchain cache and build the DNA API and the head
-        # The head fixtures create fresh projects with hale dna new under
+        # The head fixtures graft fresh projects (hale habitat graft) under
         # their own budgets; the first host build of this binary is paid
         # once here, not inside one of them. Nothing here runs the
         # observer, so its build is skipped.
@@ -1026,7 +1064,7 @@ jobs:
           HALE_WARM_SKIP_IRIS: "1"
         run: |
           scripts/warm-and-build.sh ./target/release/hale --check \
-            dna/api dna/api/practice_review dna/api/project_service
+            dna/api dna/api/practice_review dna/api/project_service dna/face/standard
 
       # Only when neither entry was there (`cache-matched-key` is empty on
       # a miss); after the warm, as in the cli job. The builds beside the
@@ -1054,10 +1092,12 @@ jobs:
             ./target/release/hale test dna/api/tests
           # The practice-review adapter over a stub provider: no service.
           ./target/release/hale test dna/api/practice_review/tests
-          # The head (GH #965): its fixtures spawn the built head over
-          # the plain API and exec this compiler's `hale dna` verbs detached.
+          # The head (GH #965): its fixtures spawn the built head over its
+          # configured API child (the composed practice_review,
+          # hale_dna::HEAD_API) and exec this compiler's `hale dna` verbs detached.
           HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" \
-            HALE_API_BIN="$PWD/target/seeds/api/api" \
+            HALE_FACE_BIN="$PWD/target/seeds/standard/standard" \
+            HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" \
             ./target/release/hale test dna/api/project_service/tests
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
@@ -1085,7 +1125,7 @@ jobs:
     name: face (browser, ${{ matrix.shard }}/2)
     needs: scope
     if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -1192,12 +1232,13 @@ jobs:
           path: |
             target/seeds/api
             target/seeds/project_service
+            target/seeds/standard
             target/seeds/knowledge
           key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
 
       - name: Warm the DNA toolchain cache and build the DNA API and the head
-        # The warm: the face's browser fixtures create fresh projects with
-        # hale dna new under their own budgets; the first host build of
+        # The warm: the face's browser fixtures graft fresh projects (hale
+        # habitat graft) under their own budgets; the first host build of
         # this binary is paid once here, not inside one of them. Nothing
         # here runs the observer, so its build is skipped.
         #
@@ -1220,10 +1261,10 @@ jobs:
           set -euo pipefail
           hit=${{ steps.face-builds.outputs.cache-hit == 'true' }}
           seeds=()
-          [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
+          [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/face/standard dna/api/tests/knowledge)
           # the native command lanes start the composed head (GH #1029)
           [ -x target/seeds/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
-          built=(target/seeds/api/api target/seeds/project_service/project_service
+          built=(target/seeds/api/api target/seeds/project_service/project_service target/seeds/standard/standard
             target/seeds/knowledge/knowledge target/seeds/practice_review/practice_review)
           scripts/warm-and-build.sh ./target/release/hale --target-cpu baseline "${seeds[@]}"
           for b in "${built[@]}"; do
@@ -1244,6 +1285,7 @@ jobs:
           path: |
             target/seeds/api
             target/seeds/project_service
+            target/seeds/standard
             target/seeds/knowledge
           key: ${{ steps.face-builds.outputs.cache-primary-key }}
 
@@ -1312,6 +1354,7 @@ jobs:
             HALE_API_BIN="$GITHUB_WORKSPACE/target/seeds/api/api" \
             HALE_NATIVE_COMMAND_API="$GITHUB_WORKSPACE/target/seeds/practice_review/practice_review" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/target/seeds/project_service/project_service" \
+            HALE_NATIVE_FACE_BIN="$GITHUB_WORKSPACE/target/seeds/standard/standard" \
             env "${knowledge[@]}" npm test -- "${select[@]}" || result=$?
           exit "${result:-0}"
 
@@ -1380,8 +1423,9 @@ jobs:
   cross:
     name: cross (x86_64 → aarch64 gnu + musl, x86_64 musl; runs them)
     needs: scope
-    if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # The merge queue's run, not the pull request's (2026-10-16).
+    if: needs.scope.outputs.code == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
     env:
       ZIG_VERSION: 0.16.0
       CROSS_TRIPLE: aarch64-unknown-linux-gnu
@@ -1513,8 +1557,9 @@ jobs:
   parity:
     name: parity (cargo test + doctests)
     needs: scope
-    if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # The merge queue's run, not the pull request's (2026-10-16).
+    if: needs.scope.outputs.code == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1612,7 +1657,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.substrate == 'true'
     name: tsan (form_hashmap_lockfree)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1687,7 +1732,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.substrate == 'true'
     name: sanitizers (asan corpus + ubsan foreign-ring)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1794,7 +1839,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.substrate == 'true'
     name: genmc (substrate race-completeness)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1832,12 +1877,13 @@ jobs:
   # under its template name ("cli ${{ matrix.part }}/5"), so the expanded
   # names cannot be required one by one: a docs-only pull request would
   # wait forever for "cli 1/5". This job runs always, and is green when
-  # scope and the quick jobs succeeded and every other job succeeded or was
-  # scoped out, red when any failed or was cancelled. The merge queue's
-  # run, where every job runs, gates the merge through the same check.
+  # scope and the quick jobs succeeded (on README art alone, scope) and
+  # every other job succeeded or was scoped out, red when any failed or
+  # was cancelled. The merge queue's run, where every job runs, gates the
+  # merge through the same check.
   required:
     name: required
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [scope, quick-build, quick, docs, build-cli, build-codegen, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
     if: always()
     steps:
@@ -1846,8 +1892,8 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
-          # quick must pass, except on a diff that only touches README art,
-          # where nothing runs
+          # the quick jobs must pass, except on a diff that only touches
+          # README art, where no test job runs
           must=$(echo "$RESULTS" | jq -r --arg assets "${{ needs.scope.outputs.assets }}" '(["scope"] + (if $assets == "true" then [] else ["quick-build","quick"] end))[] as $k | select(.[$k].result != "success") | $k')
           bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
           if [ -n "$must$bad" ]; then echo "::error::not green: $must $bad"; exit 1; fi

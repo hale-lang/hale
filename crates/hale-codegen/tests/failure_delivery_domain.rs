@@ -194,7 +194,17 @@ fn build(file: &str, asan: bool, no_bus_devirt: bool) -> PathBuf {
 
 fn build_with(file: &str, asan: bool, lifecycle_trace: bool, no_bus_devirt: bool) -> PathBuf {
     let bin = harness::unique_bin(&format!("hale_fd_{}", file.trim_end_matches(".hl")));
-    let options = hale_codegen::BuildOptions { asan, lifecycle_trace, no_bus_devirt, ..build_opts::options() };
+    // the fixtures fail a child off its owner's domain through the one
+    // escape the checker does not follow, a call through a fn value; F.31's
+    // runtime backstop would refuse that call, so it is off here
+    // (GH #1566)
+    let options = hale_codegen::BuildOptions {
+        asan,
+        lifecycle_trace,
+        no_bus_devirt,
+        no_xpool_backstop: true,
+        ..build_opts::options()
+    };
     build_opts::build_source(&checked_source(file), &bin, &options).unwrap_or_else(|e| panic!("{file}: build: {e:?}"));
     if asan {
         let image = std::fs::read(&bin).expect("read the ASan binary");

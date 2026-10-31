@@ -20,18 +20,34 @@ main locus App {
         one: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "one", planned: true };
         lead_one: dna::Leader = dna::Leader {
             name: "leader", org: "one", charter: "You are the architect.",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: CLEAN },
+                deep: dna::FakeModel { name: "deep", answer: CLEAN },
+            }
         };
         two: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "two", planned: true };
         // an allowance one pass exhausts: the first pass is paid for, the second is refused
-        three: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "three", planned: true, budget: dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 1 } } };
+        three: dna::Dna = dna::Dna {
+            journal: dna::MemJournal { },
+            org_id: "three",
+            planned: true,
+            budget: dna::Budget {
+                policy: dna::BudgetPolicy { window: "none", allowance_micros: 1 },
+            },
+        };
         lead_three: dna::Leader = dna::Leader {
             name: "leader", org: "three", charter: "You are the architect.",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: CLEAN },
+                deep: dna::FakeModel { name: "deep", answer: CLEAN },
+            }
         };
         lead_two: dna::Leader = dna::Leader {
             name: "leader", org: "two", charter: "You are the architect.",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: SECRETARY }, deep: dna::FakeModel { name: "deep", answer: SECRETARY } }
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: SECRETARY },
+                deep: dna::FakeModel { name: "deep", answer: SECRETARY },
+            }
         };
     }
     fn last(j: dna::Journal, kind: String) -> String {
@@ -57,12 +73,28 @@ main locus App {
     // by the leader here (a seeded operating practice declares the
     // organization's own); the occurrence it was declared at.
     fn cadence(d: dna::Dna, every_ms: Int) -> Int {
-        std::test::assert_eq_str(d.scheduler.declare(dna::Schedule { id: "optimize", every_ms: every_ms, definition: "optimize-walk", args: "{}", convener: "position:leader" }, d.catalog, d.knowledge_client), "", "the optimize cadence is declared");
+        std::test::assert_eq_str(
+            d.scheduler.declare(
+                dna::Schedule {
+                    id: "optimize",
+                    every_ms: every_ms,
+                    definition: "optimize-walk",
+                    args: "{}",
+                    convener: "position:leader",
+                },
+                d.catalog,
+                d.knowledge_client,
+            ),
+            "",
+            "the optimize cadence is declared",
+        );
         let mut out = 0;
         let mut i = 0;
         while i < d.journal.revision() {
             let e = d.journal.read(i);
-            if e.kind == "schedule.declared" && e.entity == "optimize" { out = std::json::find_int_field(e.body, "from"); }
+            if e.kind == "schedule.declared" && e.entity == "optimize" {
+                out = std::json::find_int_field(e.body, "from");
+            }
             i = i + 1;
         }
         return out;
@@ -75,16 +107,44 @@ main locus App {
         let t3 = self.cadence(self.three, 60000);
         self.three.tick(t3 + 60000);
         std::time::sleep(300ms);
-        std::test::assert_eq_int(self.three.optimizations, 1, "the first pass ran within the allowance");
-        std::test::assert_eq_int(self.count(self.three.journal, "org.reviewed"), 1, "and was answered");
+        std::test::assert_eq_int(
+            self.three.optimizations,
+            1,
+            "the first pass ran within the allowance",
+        );
+        std::test::assert_eq_int(
+            self.count(self.three.journal, "org.reviewed"),
+            1,
+            "and was answered",
+        );
         self.three.tick(t3 + 120000);
         std::time::sleep(300ms);
-        std::test::assert_eq_int(self.three.optimizations, 1, "the second pass was not taken: the window is spent");
-        std::test::assert_eq_int(self.count(self.three.journal, "org.reviewed"), 1, "nothing was asked of the leader");
-        std::test::assert_eq_int(self.lead_three.optimizations, 1, "the leader was not walked again");
+        std::test::assert_eq_int(
+            self.three.optimizations,
+            1,
+            "the second pass was not taken: the window is spent",
+        );
+        std::test::assert_eq_int(
+            self.count(self.three.journal, "org.reviewed"),
+            1,
+            "nothing was asked of the leader",
+        );
+        std::test::assert_eq_int(
+            self.lead_three.optimizations,
+            1,
+            "the leader was not walked again",
+        );
         let refused = self.last(self.three.journal, "optimize.refused");
-        std::test::assert(std::str::contains(refused, "budget exhausted") && std::str::contains(refused, "waits for the next occurrence"), "the record says why: " + refused);
-        std::test::assert_eq_int(self.count(self.three.journal, "budget.exhausted"), 1, "the window's exhaustion was announced once");
+        std::test::assert(
+            std::str::contains(refused, "budget exhausted")
+                && std::str::contains(refused, "waits for the next occurrence"),
+            "the record says why: " + refused,
+        );
+        std::test::assert_eq_int(
+            self.count(self.three.journal, "budget.exhausted"),
+            1,
+            "the window's exhaustion was announced once",
+        );
 
         // ---- the cadence: nothing fires with no schedule declared
         self.one.tick(1000);
@@ -98,32 +158,107 @@ main locus App {
         self.one.tick(t1 + 60000);
         self.one.tick(t1 + 90000);
         std::time::sleep(300ms);
-        std::test::assert_eq_int(self.one.optimizations, 1, "one pass after the window, none within the next");
-        std::test::assert_eq_int(self.lead_one.optimizations, 1, "the leader walked the machinery once");
+        std::test::assert_eq_int(
+            self.one.optimizations,
+            1,
+            "one pass after the window, none within the next",
+        );
+        std::test::assert_eq_int(
+            self.lead_one.optimizations,
+            1,
+            "the leader walked the machinery once",
+        );
         // ---- clean: the record says so, and nothing is born
         let r1 = self.last(self.one.journal, "org.reviewed");
-        std::test::assert(std::str::contains(r1, "\"outcome\": \"clean\"") && std::str::contains(r1, "\"proposal\": \"\""), "clean is recorded: " + r1);
-        std::test::assert(std::str::contains(r1, "asks planned: 0") && std::str::contains(r1, "record rows: "), "the signals the leader read are in the row: " + r1);
+        std::test::assert(
+            std::str::contains(r1, "\"outcome\": \"clean\"")
+                && std::str::contains(r1, "\"proposal\": \"\""),
+            "clean is recorded: " + r1,
+        );
+        std::test::assert(
+            std::str::contains(r1, "asks planned: 0") && std::str::contains(r1, "record rows: "),
+            "the signals the leader read are in the row: " + r1,
+        );
         // the pass is an execution of optimize-walk (GH #995): its own Task,
         // and nothing asked
-        std::test::assert_eq_int(self.count(self.one.journal, "workflow.admitted"), 1, "the pass is one execution");
-        std::test::assert(std::str::contains(self.last(self.one.journal, "workflow.admitted"), "\"definition\": \"optimize-walk\""), "of optimize-walk: " + self.last(self.one.journal, "workflow.admitted"));
-        std::test::assert_eq_int(self.count(self.one.journal, "intent.offered"), 0, "no work for the sake of activity");
-        std::test::assert_eq_int(self.lead_two.optimizations, 0, "the other organism's leader heard nothing: keyed apart");
+        std::test::assert_eq_int(
+            self.count(self.one.journal, "workflow.admitted"),
+            1,
+            "the pass is one execution",
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last(self.one.journal, "workflow.admitted"),
+                "\"definition\": \"optimize-walk\"",
+            ),
+            "of optimize-walk: " + self.last(self.one.journal, "workflow.admitted"),
+        );
+        std::test::assert_eq_int(
+            self.count(self.one.journal, "intent.offered"),
+            0,
+            "no work for the sake of activity",
+        );
+        std::test::assert_eq_int(
+            self.lead_two.optimizations,
+            0,
+            "the other organism's leader heard nothing: keyed apart",
+        );
 
         // ---- a proposal: one small change, entering as an ask in the leader's name
-        let walked = self.two.run_workflow(dna::WorkflowAsk { id: "two-walk", definition: "optimize-walk", revision: 1, inputs: "{}" });
+        let walked = self.two.run_workflow(
+            dna::WorkflowAsk {
+                id: "two-walk",
+                definition: "optimize-walk",
+                revision: 1,
+                inputs: "{}",
+            },
+        );
         std::time::sleep(600ms);
         let r2 = self.last(self.two.journal, "org.reviewed");
-        std::test::assert(std::str::contains(r2, "\"outcome\": \"proposed\"") && std::str::contains(r2, "\"proposal\": \"add a secretary position that triages asks before the leader plans them\"") && std::str::contains(r2, "\"by\": \"leader\""), "the proposal is recorded: " + r2);
-        std::test::assert_eq_int(self.count(self.two.journal, "workflow.admitted"), 2, "and became one ask beside the pass (card 18: admitted as a workflow)");
-        std::test::assert(std::str::contains(self.last(self.two.journal, "workflow.admitted"), "add a secretary position"), "the ask is the proposal: " + self.last(self.two.journal, "workflow.admitted"));
-        std::test::assert(std::str::contains(self.last(self.two.journal, "intent.offered"), "add a secretary position"), "offered as intent");
+        std::test::assert(
+            std::str::contains(r2, "\"outcome\": \"proposed\"")
+                && std::str::contains(
+                    r2,
+                    "\"proposal\": \"add a secretary position that triages asks before the leader plans them\"",
+                )
+                && std::str::contains(r2, "\"by\": \"leader\""),
+            "the proposal is recorded: " + r2,
+        );
+        std::test::assert_eq_int(
+            self.count(self.two.journal, "workflow.admitted"),
+            2,
+            "and became one ask beside the pass (card 18: admitted as a workflow)",
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last(self.two.journal, "workflow.admitted"),
+                "add a secretary position",
+            ),
+            "the ask is the proposal: " + self.last(self.two.journal, "workflow.admitted"),
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last(self.two.journal, "intent.offered"),
+                "add a secretary position",
+            ),
+            "offered as intent",
+        );
         // the ask took the road every ask takes: planned by the leader —
         // here as a person's job, so it was handed rather than mutated
-        std::test::assert_eq_str(self.two.ask_plan_of("t2").kind, "person", "planned as a person's job, the word bound in the admission");
-        std::test::assert(std::str::contains(self.last(self.two.journal, "task.handed"), "\"case\": \"t2.s0.p\""), "handed as its case: " + self.last(self.two.journal, "task.handed"));
-        std::test::assert_eq_int(self.count(self.one.journal, "intent.offered"), 0, "the clean organism stayed clean");
+        std::test::assert_eq_str(
+            self.two.ask_plan_of("t2").kind,
+            "person",
+            "planned as a person's job, the word bound in the admission",
+        );
+        std::test::assert(
+            std::str::contains(self.last(self.two.journal, "task.handed"), "\"case\": \"t2.s0.p\""),
+            "handed as its case: " + self.last(self.two.journal, "task.handed"),
+        );
+        std::test::assert_eq_int(
+            self.count(self.one.journal, "intent.offered"),
+            0,
+            "the clean organism stayed clean",
+        );
     }
 }
 fn main() { App { }; }

@@ -1,41 +1,68 @@
-# Effects & contracts
+# Effects & Contracts
 
-Most of what a function does is invisible in its signature. `fn
-price(book: OrderBook, qty: Int) -> Decimal` tells you the types and
-nothing else — whether it touches the filesystem, blocks on a socket,
-reads the clock, allocates, or publishes to the bus.
-
-Hale lets you say so, and then holds you to it:
+In Hale, functions and loci can declare **effect contracts** specifying which side effects, resource allocations, or bus publications they are permitted to perform. The compiler verifies these contracts transitively across the entire closed call and bus graph—through helper functions, locus handle calls, imported library seeds, and the standard library—failing the build with a full call-chain witness if any path violates the contract.
 
 ```hale,fragment
 @no_syscall @deterministic
 fn price(book: OrderBook, qty: Int) -> Decimal { ... }
 ```
 
-That is a **contract**, not a hint. The compiler proves it over the
-whole call graph — through helpers, through methods, through calls made
-on a handle, into imported seeds, and into the part of the standard
-library written in Hale. If anything reachable from `price` performs a
-syscall, the build fails and the diagnostic names the path that gets
-there.
+Effect contracts are opt-in and have zero runtime cost. The only implicit check applies to loci placed on an `async_io` coroutine pool, where the compiler warns if a handler reaches a thread-blocking operation.
 
-Effect contracts are **opt-in**. Nothing here fires until you ask for
-it; a program with no annotations behaves exactly as before. The one
-exception is noted below — placement implies a contract, because
-putting a handler on an `async_io` pool is already a claim that it
-won't block.
+---
 
-> **Why the compiler can do this.** The call graph is closed (no
-> function pointers into the unknown, no dynamic dispatch you can't
-> resolve), the stdlib surface is classified entry by entry, and the
-> message graph is declared. Those three facts are what turn "what does
-> this function do?" from a code-review question into a compile-time
-> one.
+## Reference Tables
 
-## Declaring what a function may do
+### Built-in Effect Classes
 
-A fn can declare what it's allowed to *reach*, and the compiler
-enforces it across everything reachable from it:
+Every built-in effect class name is reserved by the compiler (redeclaring `effect syscall;` or `effect secret_use;` is a compile error). Run `hale doc --stdlib` to inspect the exact effect classes of every standard library function.
+
+| Effect Class | What It Covers | Representative Operations |
+|---|---|---|
+| `syscall` | Kernel boundary crossings: filesystem, sockets, child processes, terminal, and stdio (including `println`). | `std::io::fs::read_file`, `println` |
+| `stdio` | Writing to standard output or standard error. `stdio` is a sub-class of `syscall` (every `stdio` operation also carries `syscall`). | `println`, `std::io::stdout::write_bytes` |
+| `block` | Operations that wait or block execution (see [`async_io` pool parking rules](#implicit-async_io-placement-checks) for coroutine exceptions). | `std::http::get`, `std::time::sleep` |
+| `time` | Reading a wall or monotonic clock. Pure transformations on passed-in `Time` values do not carry `time`. | `std::time::monotonic_ns`, `std::time::current` |
+| `entropy` | Reading random numbers or entropy sources. | `std::rand::next_int` |
+| `env` | Reading environment variables or command-line arguments (`argv`). | `std::env::var` |
+| `ffi` | Calling an external C function declared with `@ffi("c")`. | Any `@ffi("c")` function |
+| `publish` | Publishing a message to a bus topic or subject. | `Orders <- o` |
+| `spawn` | Instantiating a locus. | `Worker { }` |
+| `recursion` | A direct or mutual cycle in the call graph. | Any recursive function chain |
+| `alloc` | Dynamic allocation in the locus arena (strings, non-elided records, collection growth). | `"a" + "b"`, `Buf { n: 1 }` |
+| `secret_use` | Compiler-owned class on privileged operations over confined secret material ([Verification](./verification.md#5-secret-confinement-sealed--stdsecret)). | `std::secret::Signer.sign` |
+| `client(S)` | Calling an external API surface `S` bound via `api::client` (`client(*)` matches all consumed surfaces). | `self.shelf.get_item(req)` |
+
+### Effect & Contract Decorators
+
+| Decorator | Target | Meaning |
+|---|---|---|
+| `@effects(none: {c1, c2})` | `fn` | Forbids reaching any listed effect class directly or transitively. |
+| `@effects(only: {c1, c2})` | `fn` | Restricts transitive effects to a subset of the listed classes; forbids all other built-in and user-declared classes. |
+| `@effects(is: {u1, u2})` | `fn` | Classifies the function as a direct source of user-declared effect classes `u1, u2`. |
+| `@effects(publish: {T1, T2})` | `fn` | Restricts bus publications reachable from the function to the exact listed topics. |
+| `@effects(causes: {c1, c2})` | `fn` | Declares the complete set of effects transitively triggered *across the bus* by messages published from this function. |
+| `@effects(depends: {T1, T2})` | `locus` | Declares the complete set of bus topics or wire subjects that can transitively reach any handler on the locus. |
+| `@no_syscall` | `fn` | Shorthand for `@effects(none: {syscall})`. |
+| `@no_block` | `fn` | Shorthand for `@effects(none: {block})`. |
+| `@no_ffi` | `fn` | Shorthand for `@effects(none: {ffi})`. |
+| `@no_publish` | `fn` | Shorthand for `@effects(none: {publish})`. |
+| `@no_spawn` | `fn` | Shorthand for `@effects(none: {spawn})`. |
+| `@no_recursion` | `fn` | Shorthand for `@effects(none: {recursion})`. |
+| `@deterministic` | `fn` | Shorthand for `@effects(none: {time, entropy, env})`. |
+| `@no_panic` | `fn` | Forbids unhandled failures (`violate`, `or raise`, or trapping array indices). |
+| `@budget(dim = N, ...)` | `fn` | Bounds per-call resource dimensions (`alloc_per_call`, `stack_bytes`, `block_points`, `publish`, `fanout`, or `<user_class>`). |
+| `@phase_effects(phase: {...})` | `locus` | Restricts each named lifecycle hook (`birth`, `run`, etc.) or method to the exact listed effect classes. |
+| `@hot` | `fn` | Enforces zero arena allocations and hot-path speed rules on the function. |
+| `@unbounded` / `@bounded_by(x)` | `fn`, hook, `mode` | Acknowledges intentional arena accumulation and silences the unbounded-allocation advisory. |
+
+---
+
+## Function Effect Contracts (`@effects`)
+
+### Forbidding Effects (`none:` and Shorthands)
+
+Use `@effects(none: {...})` or its shorthand decorators to forbid specific effect classes across everything reachable from a function:
 
 ```hale,fragment
 @effects(none: {syscall, block}) fn decode(b: Bytes) -> Msg { ... }
@@ -43,40 +70,7 @@ enforces it across everything reachable from it:
 @effects(publish: {OrderFill})   fn route(o: Order) { ... }
 ```
 
-`none: {…}` forbids effect classes — `syscall`, `block`, `time`,
-`entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`,
-`secret_use`.
-`publish: {…}` declares which topics a fn may publish to (exact,
-because Hale's topic set is closed).
-
-Two things are worth knowing up front, because both surprise people:
-
-- **`println` is a syscall.** Writing to a stream is a `write(2)`,
-  it can block, and a `@no_syscall` fn that printed would not be
-  certifying what it claims. Debug printing inside a certified fn is
-  a contract violation — which is the point.
-- **The check follows handles.** `reader.slurp()` is a call like any
-  other; the compiler resolves the receiver's type and walks into
-  the method. Putting an effect behind a locus that the asserting fn
-  still calls does not hide it. (Putting it behind a locus the fn
-  *doesn't* call — a separate reader/writer locus it publishes to —
-  is the real fix, and is what the diagnostic suggests.)
-
-The common contracts have short names, which are exactly the same
-thing spelled shorter:
-
-| shorthand | full form |
-|---|---|
-| `@no_syscall` | `@effects(none: {syscall})` |
-| `@no_block` | `@effects(none: {block})` |
-| `@no_ffi` | `@effects(none: {ffi})` |
-| `@no_publish` | `@effects(none: {publish})` |
-| `@no_spawn` | `@effects(none: {spawn})` |
-| `@no_recursion` | `@effects(none: {recursion})` |
-| `@deterministic` | `@effects(none: {time, entropy, env})` |
-
-They stack with each other and with the contracts above, so the full
-hot-path certificate is one line:
+Decorators can be stacked in any order to form a composite hot-path contract:
 
 ```hale,fragment
 @no_block @no_syscall @deterministic @no_recursion @hot
@@ -84,376 +78,187 @@ hot-path certificate is one line:
 fn on_tick(a: Int, b: Int) -> Int { ... }
 ```
 
-A fn's decorators are a list, and **order carries no meaning** — each
-one is a separate contract checked by its own analysis. That includes
-`@unbounded`, which is not an effect assertion at all: it acknowledges
-an allocation this fn makes on purpose without a static bound, so the
-memory advisory stops reporting it. A fn that accumulates deliberately
-*and* promises it reaches nothing outside its arena states both, either
-way round:
+When an assertion fails, `hale check` prints the complete call chain from the annotated function to the offending leaf operation, along with the source location in your code or the standard library:
+
+```text
+type error: effect assertion violated: `quiet` must not reach `syscall`,
+but reaches quiet -> Reader::slurp [std::io::fs::file_size — a
+syscall-class operation (filesystem, socket, process, terminal, stdio)].
+Move the effect behind a locus this fn doesn't reach (the
+reader/writer-locus shape), or pass the value in as a parameter.
+    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:98:18)
+```
+
+Key verification rules:
+
+- **`println` is a `syscall` (and `stdio`)**: Writing to stdout/stderr invokes `write(2)` and can block. Debug `println` calls inside a `@no_syscall` function are rejected as contract violations. To forbid terminal output while still permitting file or socket I/O, use `@effects(none: {stdio})`.
+- **Handle calls are followed**: Calling `reader.slurp()` resolves `reader`'s locus type and walks into `Reader::slurp`. Moving an effect into a child locus that the annotated function still calls directly does not hide the effect; instead, decouple via bus publication or pass precomputed values as arguments.
+- **Pure operations vs. effectful sources**: `@deterministic` (`none: {time, entropy, env}`) forbids *reading* nondeterministic sources, not computing over passed-in values:
+
+| Pure (Allowed in `@deterministic`) | Effectful (Rejected in `@deterministic`) |
+|---|---|
+| `std::time::time_from_unix(n)` | `std::time::monotonic_ns()` (`time`) |
+| `std::time::iso8601(t)`, `parse_time(s)` | `std::time::current()` (`time`) |
+| `std::str::parse_int(s)` | `std::env::var(k)` (`env`) |
+| `std::http::parse_request(b)` | `std::http::get(u)` (`syscall`, `block`) |
+
+- **Fail-closed on unknowns**: Any unclassified or unresolved call is treated as potentially performing all effects and fails the assertion.
+
+### Closed-World Allowlists (`only:`)
+
+While `none:` forbids specific classes and permits everything else, `@effects(only: {...})` requires the function's transitive effects to be a **subset** of the listed classes:
+
+```hale
+@effects(only: { alloc })
+fn label(n: Int) -> String {
+    return "a" + "b";
+}
+```
+
+The compiler computes the forbidden complement against the entire closed universe of built-in and user-declared atomic effect classes at check time. If a new user effect class is added to the program later, existing `only:` contracts automatically forbid it without requiring annotation updates:
+
+```hale,refused
+effect money;
+
+@effects(is: { money })
+fn charge(cents: Int) -> Int { return cents; }
+
+@effects(only: { alloc })
+fn quote(n: Int) -> Int { return charge(n); }   // error: reaches `money`
+
+fn main() { println(quote(1)); }
+```
+
+### Decorator Stacking and Contradiction Rules
+
+Function decorators are order-independent, including memory advisories like `@unbounded` and `@bounded_by(<name>)`:
 
 ```hale,fragment
 @unbounded @no_syscall fn absorb(log: Lines, line: String) { ... }
 @no_syscall @unbounded fn absorb(log: Lines, line: String) { ... }
 ```
 
-The one thing a stack may not do is contradict itself, and the compiler
-says so at the decorator rather than leaving you with a contract that
-cannot be enforced. `@unbounded` says "there is an allocation here and I
-mean it"; `@hot`, `@effects(none: {alloc})` and
-`@budget(alloc_per_call = 0)` each say "there is none" — so pairing
-`@unbounded` with any of those is an error, as is writing the same
-decorator twice. `@bounded_by(<name>)`, which silences what `@unbounded`
-silences and names the input that bounds the growth, meets the same
-three, and is an error beside `@unbounded` itself. A per-call ceiling
-*above* zero is fine next to `@unbounded`: "at most two allocations per
-call, and their aggregate growth is intended" is a coherent thing to say
-about a cache.
+The compiler rejects contradictory or duplicate decorator combinations at the declaration site:
 
-A lifecycle hook takes `@unbounded` or `@bounded_by(<name>)`, once, and
-nothing else — a hook is one-shot, so a per-call budget has no calls to
-divide by. Put the other contracts on a `fn` the hook calls. A `mode`
-takes the same one decorator — `@unbounded mode bulk() { … }` — so the
-unbounded-allocation warning inside a mode body can be acknowledged
-where it fires.
+- **Duplicate decorators**: Writing the same decorator twice on one declaration is an error.
+- **`@unbounded` vs. `@bounded_by(<name>)`**: Mutually exclusive; use `@bounded_by(<param>)` when growth is bounded by a named input, or `@unbounded` when growth has no static bound.
+- **Zero-allocation contradictions**: Neither `@unbounded` nor `@bounded_by` can be paired with `@hot`, `@effects(none: {alloc})`, or `@budget(alloc_per_call = 0)`. However, pairing `@unbounded` with a non-zero per-call ceiling (such as `@budget(alloc_per_call = 2)`) is valid.
+- **Lifecycle hooks and modes**: Lifecycle hooks (`birth`, `run`, `dissolve`, etc.) and `mode` blocks (`@unbounded mode bulk() { ... }`) execute once per phase rather than per call, so they accept only `@unbounded` or `@bounded_by(<name>)`. Place per-call `@effects` and `@budget` contracts on helper `fn` members invoked by the hook.
 
-`@deterministic` is the one to know for replay: a fn that reads no
-clock, no randomness and no environment is a function of its inputs,
-so replaying its inputs replays its behavior exactly. The compiler
-knows the difference between reading a source and using a supplied
-value — `std::time::time_from_unix(at)` converts an instant you
-passed in and is fine; `std::time::monotonic_ns()` is not.
+### Forbidding Unhandled Failures (`@no_panic`)
 
-Reach for the general form when the shorthand doesn't say what you
-mean. "No wall clock, but jitter is fine" is a real contract for a
-retry loop, and it's `@effects(none: {time})` — entropy stays
-allowed.
+`@no_panic` verifies that no code path in the function can trap or propagate an unhandled failure:
 
-When an assertion fails you get the path, not just the verdict:
-
-```
-effect assertion violated: `on_tick` must not reach `block`, but reaches
-  on_tick -> helper -> nap [std::time::sleep — a blocking operation …].
+```hale,fragment
+@no_panic fn parse_frame(b: Bytes) -> Frame {
+    return decode(b) or Frame { };   // handled fallback — valid
+}
 ```
 
-## Counting, not just forbidding
+- **Rejected inside `@no_panic`**: Explicit `violate` statements, `or raise` error propagation, and unguarded trapping array/slice indexing.
+- **Allowed inside `@no_panic`**: Fallible calls handled via `or discard`, `or <fallback_value>`, or `or handler(err)`.
 
-`@budget` counts other dimensions too, comma-separated in one
-clause:
+---
+
+## Quantitative Budgets (`@budget`)
+
+`@budget` enforces compile-time upper bounds on per-call resource consumption across a function's transitive call tree:
 
 ```hale,fragment
 @budget(alloc_per_call = 0, stack_bytes = 4096, block_points = 0)
 fn on_frame(x: Int) -> Int { ... }
 
-@budget(publish = 1) fn reply(o: Order) { ... }   // exactly-once reply
-@budget(fanout = 8)  fn notify(e: Ev) { ... }     // bounded amplification
+@budget(publish = 1) fn reply(o: Order) { ... }   // at most 1 bus publish per call
+@budget(fanout = 8)  fn notify(e: Ev) { ... }     // at most 8 transitive bus deliveries
 ```
 
-`stack_bytes` is the deepest call *chain*, not the sum of everything
-reachable — two 100-byte helpers called side by side cost 100, not
-200. Recursion makes it unbounded, which is why it pairs naturally
-with `@no_recursion`.
+| Budget Dimension | What It Counts | Unbounded Conditions (Always Violates) |
+|---|---|---|
+| `alloc_per_call = N` | Arena allocations along the heaviest execution path per call. | Allocation inside a loop or recursion. |
+| `stack_bytes = N` | Deepest call-chain stack frame total (sibling calls take `max`, not sum). | Any recursion in the reachable call graph (pair with `@no_recursion`). |
+| `block_points = N` | Blocking operations along the call tree. | Blocking call inside a loop or recursion. |
+| `publish = N` | Direct and transitive bus publish statements per call. | Publish inside a loop or recursion. |
+| `fanout = N` | Transitive runtime bus subscriber *deliveries* triggered by a call. | Computed publish subject, subscriber born dynamically outside `main`, or topic bound to an external transport. |
+| `<user_class> = N` | Calls to functions carrying `@effects(is: {<user_class>})`. | Carrier inside a loop, recursion, or unresolved indirect call. |
 
-`fanout` is the one that catches surprises: it counts transitive
-subscriber *deliveries*, so publishing once to a subject with 200
-subscribers is a fan-out of 200. That's the amplification a per-fn
-count can't show you.
+### How `fanout` Is Calculated
 
-Three details matter once you start relying on it:
+Unlike `publish` (which counts `Topic <- msg` statements), `fanout` measures downstream delivery amplification:
 
-- It counts **runtime registrations**, not declarations. One
-  `subscribe` line on a locus arranged with `replicas = 3` is three
-  deliveries.
-- It is **transitive**. If a handler you reach republishes, those
-  deliveries are yours too — a publish reaching one relay that
-  republishes to three sinks is a fan-out of four, not one.
-- One message carries **one key**. A keyed publish reaches the
-  subscriptions whose filter that key satisfies, so
-  `where key == replica` costs one delivery, not one per replica.
+1. **Runtime registrations, not source lines**: A single `subscribe` declaration on a locus placed with `replicas = 3` counts as 3 deliveries.
+2. **Transitive across republishers**: If a subscriber handler republishes to another topic with 3 subscribers, a publish to the first topic has a `fanout` of `1 + 3 = 4`.
+3. **Key-aware routing**: A publish to a `keyed_by` topic only counts subscriptions whose `where key == ...` filter matches the message's key. For example, publishing one keyed message to `where key == replica` across `replicas = 4` costs `1` delivery, not `4`.
 
-Where the compiler cannot know the number — a computed subject, a
-subscriber born outside the arrangement, a topic bound to a
-transport — the answer is *unbounded*, not a guess. A budget cannot
-hold over a count nobody can take.
+---
 
-## Effects by lifecycle phase
+## Lifecycle Phase Contracts (`@phase_effects`)
 
-A locus can say which effects each phase may perform:
+Attach `@phase_effects` to a **locus** to restrict which effect classes each lifecycle hook (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`) or named handler/method may perform:
 
 ```hale,fragment
 @phase_effects(birth: {alloc}, run: {})
 locus Engine { ... }
-```
 
-That single line is the "no dynamic memory after initialization"
-discipline: allocate while starting up, never in the steady state.
-
-**A phase name** is one of the six lifecycle hooks — `birth`,
-`accept`, `release`, `run`, `drain`, `dissolve` — or **any handler or
-method by name**, which is how you write a per-message contract:
-
-```hale,fragment
 @phase_effects(on_order: {publish, alloc})
 locus Router { ... }
 ```
 
-Note the `alloc` there. The set is **exact**, and building the payload
-you publish is an allocation — so a handler that constructs `Ack { … }`
-and sends it needs both classes. `{publish}` alone is a stricter claim
-than most publishing handlers can honour, and the compiler will say so.
-
-The lifecycle names are always legal, written out or not: a locus with
-only `params` still has a birth. A phase that names *nothing* on the
-locus — a typo, or a handler you renamed — is an error, because a
-contract nobody checks is worse than no contract.
-
-The closed set covers **your own effect classes** too: a phase that
-reaches a declared `money` carrier without listing `money` violates,
-and `run: {money}` permits it — the same closed-universe rule as
-`only:`, composed classes excluded from the complement (they own no
-bit of their own).
-
-**Empty braces and omission are opposites**, and this is the part to
-get right:
-
-| form | means |
+| Phase Specification | Meaning |
 |---|---|
-| `run: {}` | `run` may perform **no** effect at all |
-| `run: {alloc}` | `run` may allocate, and do nothing else |
-| *(`run` not mentioned)* | `run` is **unconstrained** |
+| `run: {}` | `run` may perform **no effects at all** (neither built-in nor user-declared). |
+| `run: {alloc}` | `run` may only perform `alloc`; all other built-in and user-declared atomic effects are forbidden. |
+| *(phase omitted)* | The omitted phase is **unconstrained**. |
 
-So `@phase_effects(birth: {alloc})` alone constrains only birth —
-`run` stays free. It takes the explicit `run: {}` to say "and nothing
-in the steady state." Violations are errors, and the diagnostic is
-prefixed with the phase: ``phase `run`: effect assertion violated…``
+> [!IMPORTANT]
+> - **Omission vs. Empty Braces**: `@phase_effects(birth: {alloc})` constrains *only* `birth` and leaves `run` unconstrained. To enforce "no dynamic allocation or I/O after startup," explicitly write `@phase_effects(birth: {alloc}, run: {})`.
+> - **Publishing Requires `alloc`**: Constructing a bus message payload allocates in the arena, so a handler that constructs and publishes a message requires `{publish, alloc}`, not `{publish}` alone.
+> - **Typo Checking**: The six lifecycle hook names are always valid on any locus; any other phase name must match a declared method or handler on that locus, or compilation fails.
 
-## Never trapping
+---
 
-`@no_panic` asks a different question from the effect classes — not
-"what do you reach?" but "can any path here fail?":
+## Implicit `async_io` Placement Checks
 
-```hale,fragment
-@no_panic fn parse_frame(b: Bytes) -> Frame {
-    return decode(b) or Frame { };   // handled — fine
-}
-```
+Loci placed on a shared `cooperative(pool = <name>) where async_io` pool share a single OS worker thread across coroutines. Without requiring any decorator, the compiler warns if a handler on an `async_io` pool reaches a call that blocks the underlying OS thread:
 
-An explicit `violate`, an `or raise` (which propagates rather than
-handles), or a trapping index all violate it. `or discard`, a
-substitute value, and `or handler(err)` satisfy it.
-
-## The assertion you don't have to write
-
-Placement already declares intent, so some contracts need no
-annotation. A locus placed `cooperative(pool = web) where async_io`
-shares that pool's single worker — so a handler on it that blocks
-holds up every other locus on the pool:
-
-```
+```text
 `Worker::on_e` is placed on the async_io pool `web`, whose single worker
 it shares — but it reaches Worker::on_e -> slurp [std::io::stdin::read_line].
 A blocking call here stalls every other locus on `web` until it returns.
 ```
 
-That's a warning, not an error: a locus that owns its pool may block
-on purpose. Writing `@no_block` on the handler says "I mean it" and
-upgrades the check to an enforced error.
+Adding `@no_block` to the handler upgrades this check from a warning to a build error. The placement check inspects the pools spawned by the active `main locus` (placement blocks in imported libraries or unspawned modules are inert).
 
-The pools it reads are the ones the build spawns: those of the `main
-locus` it deploys, a `main locus` inside a `module { }` included. A
-second `main locus` (already an error) and an imported library's
-spawn nothing, so their `placement { }` blocks imply nothing.
+### Coroutine-Parking Calls vs. Thread-Blocking Calls
 
-### What parks doesn't stall
+On an `async_io` pool, operations that suspend the current coroutine and yield the worker thread to other coroutines do **not** stall the pool and do **not** trigger the placement warning:
 
-Waiting is only a stall if it holds the worker, and on an `async_io`
-pool some waits don't: the runtime swaps the coro out and the worker
-goes on draining. Those calls are **not** flagged by this advisory:
-
-- `std::time::sleep` — a timer-only park;
-- `std::io::tcp::{accept_one, recv_into, recv_stamped_into}` and the
-  raw-fd `__recv` / `__recv_bytes`;
-- `std::io::udp::{recv, recv_with_source, recv_into}`;
-- `std::io::tls::{recv_into, recv_stamped_into}`.
-
-A sleeping handler on an `async_io` pool is the *prescribed* shape, so
-it says nothing. Everything else still holds the worker and still
-warns — opening a connection (`tcp::connect`, `tls::connect`,
-`tls::upgrade`, and so `std::http::*`), reading a file or stdin, and
-`std::process::{run, wait, read_stdout, read_stderr}`.
-
-The `block` class itself does not move: `sleep` still carries it
-everywhere, because the same call on a classic pool really does hold
-that pool's OS thread — and the same locus type can be placed on an
-async_io pool for one field and a classic pool for another. So
-`@no_block`, which is a claim about the *call graph* and not about a
-placement, still refuses a handler that sleeps. The two agree because
-the advisory no longer suggests `@no_block` for a call that parks: it
-says nothing at all.
-
-## The classes
-
-| class | covers | example |
-|---|---|---|
-| `syscall` | the kernel: filesystem, sockets, processes, terminal, stdio — including `println` | `std::io::fs::read_file` |
-| `block` | waits, holding its thread (on an `async_io` pool, see "What parks doesn't stall" above) | `std::http::get` |
-| `time` | *reading* a clock | `std::time::monotonic_ns` |
-| `entropy` | *reading* randomness | `std::rand::next_int` |
-| `env` | *reading* the environment or argv | `std::env::var` |
-| `ffi` | reaching an `@ffi` declaration — leaving managed Hale | any `@ffi` fn |
-| `publish` | sending on the bus | `Orders <- o` |
-| `spawn` | instantiating a locus | `Worker { }` |
-| `recursion` | a cycle in the call graph | a fn that reaches itself |
-| `alloc` | arena allocation — also the class `@phase_effects` budgets by phase | `Buf { n: 1 }` |
-| `secret_use` | a privileged operation over confined secret material | `std::secret::Signer.sign` |
-
-`secret_use` is **compiler-owned**: `std::secret`'s privileged methods
-carry it, and you use it without declaring it — in `none:`, `only:`,
-`@phase_effects`, `forbid reaches(G, effects(secret_use))`, and
-`bound secret_use <= N`. Every built-in name is reserved, so
-`effect secret_use;` (or `effect syscall;`) is an error rather than a
-silent no-op. See [Verification](./verification.md#secrets-confine-classify-claim).
-
-Two of those are worth dwelling on, because they are the ones people
-guess wrong.
-
-**`println` is a `syscall`.** Writing to a stream is a `write(2)`; it
-can block, and a certificate that permitted it would not be certifying
-what it claims. Debug printing inside a `@no_syscall` function is a
-contract violation — which is the point of having asked.
-
-**Reading an effect source differs from operating on a supplied
-value.** This is the distinction that makes `@deterministic` useful
-rather than merely restrictive:
-
-| pure | effectful |
+| Coroutine-Parking (No `async_io` Warning) | Thread-Blocking (Triggers `async_io` Warning) |
 |---|---|
-| `std::time::time_from_unix(n)` | `std::time::monotonic_ns()` — `time` |
-| `std::time::iso8601(t)`, `parse_time(s)` | `std::time::current()` — `time` |
-| `std::str::parse_int(s)` | `std::env::var(k)` — `env` |
-| `std::http::parse_request(b)` | `std::http::get(u)` — `syscall`, `block` |
+| `std::time::sleep` | `std::io::tcp::connect`, `std::io::tls::{connect, upgrade}` |
+| `std::io::tcp::{accept_one, recv_into, recv_stamped_into}`, `__recv`, `__recv_bytes` | `std::http::*` client calls |
+| `std::io::udp::{recv, recv_with_source, recv_into}` | `std::io::fs::*` file I/O, `std::io::stdin::*` |
+| `std::io::tls::{recv_into, recv_stamped_into}` | `std::process::{run, wait, read_stdout, read_stderr}` |
 
-A function handed a timestamp is a function of its inputs. A function
-that *fetches* one is not, and cannot be replayed.
+Note that `std::time::sleep` still carries the `block` effect class in the call graph because it blocks an OS thread when called on a classic thread pool. Consequently, an explicit `@no_block` annotation on a function will still reject `std::time::sleep`.
 
-You never have to work this out from memory. `hale doc --stdlib`
-publishes every function's classes alongside its signature (the
-signature in a `hale` code block of its own), generated from the same
-registry the checker queries — so the catalogue and the enforcement
-cannot disagree:
+---
 
-```text
-### std::io::fs::read_file
+## Bus-Graph Effect Contracts (`causes:` and `depends:`)
 
-fn read_file(String) -> String fallible(IoError)
+Because Hale's bus topology is closed and statically declared, effect contracts can traverse message publications and subscriptions across the bus.
 
-**Effects:** `syscall`
-```
+### Downstream Causal Contracts (`@effects(causes: {...})`)
 
-The two sections that follow are what make a contract worth relying on
-rather than decorating with: how far the proof actually reaches, and
-what the compiler will tell you about code nobody annotated.
-
-## How far the proof reaches
-
-A violation names the **path**, not just the function:
-
-```
-type error: effect assertion violated: `quiet` must not reach `syscall`,
-but reaches quiet -> Reader::slurp [std::io::fs::file_size — a
-syscall-class operation (filesystem, socket, process, terminal, stdio)].
-Move the effect behind a locus this fn doesn't reach (the
-reader/writer-locus shape), or pass the value in as a parameter.
-```
-
-That chain crosses ordinary calls, `self` methods, and calls made
-through a **handle** (`reader.slurp()`) — including into the part of the
-standard library that is itself written in Hale, whose effects are
-inferred from its implementation rather than declared in a table.
-
-A second line under the finding points at the leaf — the exact site
-that performs the effect. When that site is inside the library, it is
-named rather than located, because it is a position in a file of the
-compiler's, not one of yours:
-
-```
-    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:98:18)
-```
-
-Read the suggestion precisely. Moving an effect behind a locus your
-function *still calls* does not remove it; the checker follows the
-handle. What works is a locus your function does not reach — a
-reader/writer locus it publishes to — or passing the value in already
-computed.
-
-Incompleteness fails closed. A stdlib call the registry cannot classify
-— or does not know at all — is treated as "may do anything" and
-violates the assertion, rather than being quietly assumed pure. An
-assertion is a claim about everything reachable, so anything unknown is
-exactly what it must not certify.
-
-## What the compiler infers, as a reviewable artifact
-
-Annotations only describe the functions someone remembered to annotate.
-The manifest describes **every** function that does anything or
-declares a contract (a pure, unannotated fn has no line):
-
-```sh
-hale check app.hl --dump-effects-manifest > .hale.effects
-```
-
-Each line carries the declared contract plus a `does={…}` column — what
-the compiler sees the function actually do, transitively, annotated or
-not, for free functions, locus methods and lifecycle hooks alike. The
-walk follows calls into the seeds a program imports, so what a function
-does through a library lands on its own line:
-
-```
-# .hale.effects v1 — declared effect contracts
-App::run  does={syscall,block,time}
-Pusher::run  does={syscall,block,publish,time,alloc}
-```
-
-Commit that file and a later build can diff against it:
-
-```sh
-hale check app.hl --check-effects-manifest .hale.effects
-```
-
-```
-effect manifest changed — .hale.effects no longer matches the program's effects.
-  - Api::emit  none={block}  does={publish,alloc}
-  + Api::emit  none={block}  does={syscall,publish,alloc}
-```
-
-A program that does not check has no manifest. With an error in the
-check, either flag prints `check failed: no effects manifest` instead
-of a manifest or a diff, and `hale check` exits as it would without
-the flag; warnings do not stop the manifest.
-
-This catches what annotations structurally cannot. `Api::emit` gained
-filesystem I/O and *nothing in its source changed* — a helper three
-calls away did. No contract was violated, because none was declared;
-the behaviour simply drifted. As a CI gate it turns that into a
-one-line review diff. (The Hale compiler runs this against its own
-example corpus.)
-
-## Effects that travel over the bus
-
-A call graph stops at a publish. The **bus graph continues** — and
-because Hale's message graph is declared over a closed topic set, the
-compiler can walk it:
+While `none:` and `only:` inspect the direct call graph of a function, `@effects(causes: {...})` declares the **complete set** of effects triggered transitively by any bus messages published from the function:
 
 ```hale,fragment
 @effects(causes: {publish, syscall})
 fn handle(o: Order) { Orders <- o; }
 ```
 
-`causes:` is a **complete declaration**, like `publish:` — not a list
-of things to forbid. You state everything publishing can transitively
-set off, and omitting one is the error:
+If a subscriber to `Orders` (or a further downstream republisher) performs an effect not listed in `causes:`, compilation fails with the bus path:
 
-```
+```text
 type error: declared causal set violated: `Api::handle` can transitively
 cause syscall through the bus, which its `@effects(causes: …)` does not
 declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`.
@@ -461,62 +266,35 @@ Add the class to the declaration, or route the publish to a subject
 whose subscribers don't perform it.
 ```
 
-Only effects reached *through* the bus count here; direct ones are
-`none:`'s job. "Publishing is cheap" is often false because of what
-runs downstream, and this is the only place the compiler can see it —
-a system built on opaque message sends cannot ask the question.
+### Upstream Dependency Contracts (`@effects(depends: {...})`)
 
-## …and effects that travel *toward* you
-
-`causes:` walks the bus graph forward. `depends:` walks it backward —
-the complete set of subjects that can transitively reach any of a
-locus's handlers:
+Placed on a **locus**, `@effects(depends: {...})` declares the complete set of bus topics (or wire subject strings) that can transitively reach any of the locus's subscription handlers:
 
 ```hale,fragment
 @effects(depends: {SumLookup, Recalled})
 locus StatedCarry {
-  bus { subscribe SumLookup as on_sum; }
+    bus { subscribe SumLookup as on_sum; }
 }
 ```
 
-Without it, an independence claim is unenforceable. A locus that
-subscribes only to `SumLookup` looks isolated from `Recalled` in
-every declaration it carries — but if some third locus subscribes to
-`Recalled` and republishes onto `SumLookup`, the influence arrives
-anyway, and nothing in the depending locus's source mentions it.
-Declare `{SumLookup}` alone and the diagnostic names the laundering
-path:
+If an upstream locus subscribes to `Recalled` and republishes onto `SumLookup`, `StatedCarry` transitively depends on `Recalled`. Omitting `Recalled` from `depends:` fails the build with the upstream laundering path:
 
-```
+```text
 type error: declared dependency set violated: `StatedCarry` can
 transitively depend on `Recalled` through the bus, which its
 `@effects(depends: …)` does not declare. Path: subject `Recalled` ->
 `Launderer` -> subject `SumLookup` -> `StatedCarry`.
 ```
 
-You may name the topic (`Recalled`) or its wire subject
-(`"recalled"`, when the topic declares `subject: "recalled"`) — they
-address one endpoint, and the compiler joins
-on that identity rather than on how you spelled it.
+You can list either topic identifiers (`Recalled`) or wire subject literals (`"recalled"`); the compiler resolves both to the same underlying bus identity.
 
-It sits on the **locus**, not a fn: dependence enters through
-subscriptions, and those are declared per-locus. A fn-level
-`depends:` is a parse error rather than a silent no-op.
+---
 
-It is opt-in, on measured grounds. Over a real application — 428
-topics, 114 loci — transitivity added nothing beyond what `bus {}`
-already said for 87% of loci. A mandatory form would be redundant far
-more often than it was informative. Reach for it where independence
-is load-bearing: a locus that must not see PII, a control plane that
-must not be influenced by user traffic.
+## User-Declared, Composed, and Domain-Indexed Effects
 
-One boundary worth stating plainly: the closure is over the **bus
-graph**. Influence that travels outside it — through a shared form,
-through a file — is not part of it.
+### Declaring Custom Effect Classes (`effect` and `is:`)
 
-## Effects you declare yourself
-
-The eleven classes above are the compiler's. A program can name its own:
+Declare custom effect classes with `effect <name>;` and mark source functions with `@effects(is: {<name>})`:
 
 ```hale
 effect money;
@@ -530,139 +308,67 @@ fn quote(cents: Int) -> Int { return cents * 2; }
 fn main() { println(quote(100)); }
 ```
 
-`effect money;` declares the class. `is:` classifies a function as a
-source of it. From there it is an ordinary effect: it propagates
-through the call graph, it travels over the bus under `causes:`, it
-can be forbidden with `none:`, and a violation reports the same
-witness path a built-in would. Were `quote` to call `charge`, the
-build would stop with:
+Custom effect classes propagate through the call graph, across seed imports, and over the bus (`causes:`), and work inside `@effects(none:/only:)`, `@phase_effects`, `@budget(<class> = N)`, and architectural `claims` (`forbid reaches(G, effects(money))`, `bound money <= N`). Up to 54 user-defined atomic effect classes can exist in a compiled program (exceeding the 64-bit effect mask capacity is rejected at the `effect` declaration).
 
-```
-type error: effect assertion violated: `quote` must not reach `money`,
-but reaches quote [`charge` declares it carries this effect class].
-Move the effect behind a locus this fn doesn't reach (the
-reader/writer-locus shape), or pass the value in as a parameter.
-```
+### Composed Effect Classes (`effect name = {...}`)
 
-The usual objection is that a user effect has no frontier — that
-`none: {money}` can only ever mean "no function anybody remembered to
-annotate", which is a linting convention wearing a type system's
-clothes. It's a fair objection to answer rather than wave at.
-
-The answer is that the effects worth checking are about interaction
-with the outside, and that *is* the frontier. Money moves when the
-payment processor is called, when the ledger row is written, when the
-settlement is published — all of which are already frontier calls the
-compiler classifies. `is:` doesn't introduce a second kind of
-grounding; it adds rows to the classification that already exists.
-The compiler owns propagation; the program owns classification — the
-same split the stdlib registry has, with a different owner.
-
-That split is also the honest statement of what you get. If you
-annotate `charge` and forget its sibling, `none: {money}` will not
-catch the sibling. What it does guarantee is that *given* your
-classification, no path escapes — which is exactly the property that
-is tedious and error-prone to maintain by review, and exactly the one
-that stops holding the moment a call graph is more than a few edges
-deep.
-
-Classes cross seed boundaries — a class declared in a library resolves
-from the app that imports it, which is the whole point: `money` should
-hold everywhere the money goes, and in a real codebase the money goes
-through `lib/`. Each seed interns its own names from zero, so the merge
-unions the tables and remaps each seed's indices before combining them.
-
-There are 54 classes available — the bits above the built-ins in the
-effect mask. Declaring past that is an error at the `effect NAME;`
-line, not a saturating no-op: a class with no bit unions as "reaches
-nothing", so `@effects(none: {it})` would silently certify a function
-that calls a declared source. Everything else here fails closed, and
-a certificate that is quietly false is worse than none, because it is
-believed.
-
-## Saying what a function may do, not what it may not
-
-Everything so far forbids. `@effects(none: { syscall })` names what is
-out of bounds and permits the rest — which is the right shape when you
-care about one or two things.
-
-It is the wrong shape when you care about *everything else*. To say
-"this handler allocates and does nothing more" you would have to write
-out every other class:
-
-```hale,fragment
-@effects(none: { syscall, block, publish, time, entropy, env, ffi, spawn, recursion, secret_use })
-```
-
-And that list is a snapshot. Add a class to the language — or declare
-one of your own — and every contract like it silently permits the new
-class. The annotation still reads "only alloc"; it no longer means it.
-Nothing fails. The certificate just quietly weakens, which is the one
-failure mode this system exists to rule out.
-
-So there is a closed form:
-
-```hale
-@effects(only: { alloc })
-fn label(n: Int) -> String {
-    return "a" + "b";
-}
-```
-
-The inferred effect set must be a **subset** of what you listed. The
-complement is computed when the program is checked, from the classes
-that actually exist — the eleven built-ins plus every class the program
-declares. Nothing is written down, so nothing can go stale, and the
-build refuses this program:
-
-```hale,refused
-effect money;
-
-@effects(is: { money })
-fn charge(cents: Int) -> Int { return cents; }
-
-@effects(only: { alloc })
-fn quote(n: Int) -> Int { return charge(n); }   // violation
-
-fn main() { println(quote(1)); }
-```
-
-`quote` never mentions `money`. It is caught anyway, because `money`
-is not in the permitted set — and it would still be caught if `money`
-were declared a year after `quote` was written. That is the whole
-difference between the two forms.
-
-## Classes built from other classes
-
-A class can be defined as the union of others:
+Define an effect class as the union of existing built-in or user-declared classes:
 
 ```hale,fragment
 effect io = { syscall, block };
+effect wallclock = { time };
 ```
 
-`io` has no bit of its own — its mask *is* `syscall | block`. One fact,
-two useful consequences, no extra machinery: forbidding `io` catches
-either member, and a function that reaches a syscall carries `io`.
+A composed class owns no separate bit in the effect mask; its mask is the bitwise union of its members (`syscall | block`). This has two consequences:
 
-This is also how a user class joins a built-in contract. `@deterministic`
-means "must not read anything that varies", and it is defined over
-`time`, `entropy` and `env` — so a class of your own is invisible to it:
+1. Forbidding `io` forbids both `syscall` and `block`, and any function performing `syscall` or `block` carries `io`.
+2. Defining `effect wallclock = { time };` includes the built-in `time` bit in `wallclock`, meaning `@deterministic` (`none: {time, entropy, env}`) automatically rejects functions tagged `@effects(is: {wallclock})`.
+
+Cyclic definitions (`effect a = { b }; effect b = { a };`) are rejected at compile time.
+
+### Domain-Indexed Effect Families (`domain` and `effect name(domain)`)
+
+To track effects parameterized over a finite set of partitions or tenants, declare a `domain` followed by an indexed `effect` family in the same file:
 
 ```hale,fragment
-effect wallclock;              // atomic: @deterministic cannot see it
-effect wallclock = { time };   // composed: it can
+domain wing = { delta, gamma };
+
+effect knowledge(wing);
+
+@effects(is: {knowledge(delta)})
+fn read_delta(key: String) -> Idea { ... }
 ```
 
-The second form says *your class is a kind of clock read*, which puts
-the `time` bit in its mask, which is exactly what `@deterministic`
-already tests. Nothing about the contract changes.
+This expands eagerly into atomic classes `knowledge(delta)` and `knowledge(gamma)`, plus the wildcard union class `knowledge(*)`. Misspelled indices (`knowledge(delt)`) are rejected with a did-you-mean diagnostic. See [Claims & the Law](./claims.md#domain-and-effect-families--the-data-plane-vocabulary) for using domain-indexed effects in isolation claims.
 
-It stays opt-in, and that is deliberate. An atomic class like `money`
-is **not** swept into `@deterministic` — moving money is not a source
-of nondeterminism, and the compiler has no business guessing that it
-is. You say so by defining the class in terms of what it actually is.
+---
 
-A definition may name other declared classes as well as built-ins. A
-cycle — `effect a = { b }; effect b = { a };` — resolves to no effect
-at all, so every contract naming either would hold vacuously. Cycles
-are rejected rather than left inert.
+## Tracking Effect Drift in CI (`.hale.effects`)
+
+Even on unannotated code, the compiler infers the transitive effect set (`does={...}`) of every free function, locus method, and lifecycle hook across the program and its imported seeds.
+
+Export the inferred effects manifest and commit it to version control:
+
+```sh
+hale check app.hl --dump-effects-manifest > .hale.effects
+```
+
+```text
+# .hale.effects v1 — declared effect contracts
+App::run  does={syscall,block,time}
+Pusher::run  does={syscall,block,publish,time,alloc}
+```
+
+In CI, gate against unintended effect drift with `--check-effects-manifest`:
+
+```sh
+hale check app.hl --check-effects-manifest .hale.effects
+```
+
+```text
+effect manifest changed — .hale.effects no longer matches the program's effects.
+  - Api::emit  none={block}  does={publish,alloc}
+  + Api::emit  none={block}  does={syscall,publish,alloc}
+```
+
+If a helper function several calls deep introduces a `syscall`, `--check-effects-manifest` flags the exact callers whose transitive `does={...}` set widened, even if those callers had no `@effects` annotation of their own.

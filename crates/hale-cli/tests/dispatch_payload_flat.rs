@@ -351,3 +351,46 @@ fn the_plan_change_is_a_recorded_compatibility_change() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A generic subscriber held by an io-placed holder through a
+/// construction-site literal (`App { h: IoH { s: Gen { v: 1 } } }`) runs on
+/// io, as the non-generic one does: the plan is a static bucket for both,
+/// never a direct call from main. The bus graph labelled the subscriber by
+/// its template's name (`Gen`), which no row of the table carried — its
+/// monomorph's rows are `Gen_Int`'s — so it read as same-thread. The trace
+/// and the model's plan agree for the two.
+#[test]
+fn a_generic_subscriber_off_main_plans_as_the_plain_one_does() {
+    let program = |generic: bool| {
+        let (decl, ty) = if generic {
+            ("locus Gen<T> {\n    params { v: T; sum: Int = 0; }", "Gen<Int>")
+        } else {
+            ("locus Gen {\n    params { v: Int = 0; sum: Int = 0; }", "Gen")
+        };
+        format!(
+            "type Note {{ n: Int = 0; }}\n\
+             topic Ping {{ payload: Note; subject: \"probe.ping\"; }}\n\
+             {decl}\n    bus {{ subscribe Ping as on_ping; }}\n    fn on_ping(n: Note) {{ self.sum = self.sum + n.n; }}\n}}\n\
+             locus IoH {{ params {{ s: {ty}; }} run() {{ std::time::sleep(20ms); }} }}\n\
+             main locus App {{\n    params {{ h: IoH; }}\n    placement {{ h: cooperative(pool = io); }}\n    bus {{ publish Ping; }}\n    run() {{ Ping <- Note {{ n: 1 }}; }}\n}}\n\
+             fn main() {{ App {{ h: IoH {{ s: Gen {{ v: 1 }} }} }}; }}\n"
+        )
+    };
+    let mut plans = Vec::new();
+    for generic in [true, false] {
+        let dir = workdir(if generic { "generic_sub" } else { "plain_sub" });
+        let prog = dir.join("main.hl");
+        std::fs::write(&prog, program(generic)).expect("write");
+        let (traced, bin, stderr) = build_traced(&prog, &dir.join("app"));
+        assert!(bin.is_some(), "generic={generic}: {stderr}");
+        let row = traced.rows.get("probe.ping").cloned();
+        assert_eq!(row.as_ref().map(|r| r.0.as_str()), Some("static_bucket"), "generic={generic}: {stderr}");
+        let dump = hale().arg("model").arg("dump").arg(&dir).output().expect("hale model dump");
+        let text = String::from_utf8_lossy(&dump.stdout).into_owned();
+        let plan = text.lines().find(|l| l.trim_start().starts_with("probe.ping static_")).map(|l| l.trim().to_string());
+        assert_eq!(plan.as_deref(), Some("probe.ping static_bucket pub[main] sub[pool:io]"), "generic={generic}: {text}");
+        plans.push((row, plan));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert_eq!(plans[0], plans[1]);
+}

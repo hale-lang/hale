@@ -6,8 +6,9 @@ import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isolatedEnvironment, boundedNative, memoryOwner, launchToken } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner, launchToken, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
+import { recordState, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced } from './command-wire.mjs';
 
 // An organization fixture's ownership (GH #1123): acme holds the
@@ -94,13 +95,18 @@ export const test = base.extend({
     // owner's DSN goes to the fixture program and to nothing else.
     // An organization fixture's ownership is the graph's (GH #1123), which
     // the API reads from memory too: the Knowledge fixture program projects it.
+    // GH #1590: every record is memory's, so every fixture program migrates
+    // one with the owner's DSN and the record's schema is dropped at the
+    // end; the API reads it with the head's DSN the project keeps.
     const organized = organization === true || organization === 'large';
     const memory = knowledge || organized;
     const memoryNative = knowledge ? native : process.env.HALE_FACE_KNOWLEDGE_BIN;
-    const owner = memory ? memoryOwner() : '';
-    if (memory && !owner) throw new Error('Knowledge and organization fixtures read memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the fixture may migrate a record into.');
+    const dropNative = memory ? memoryNative : process.env.HALE_FACE_MEMORY_BIN;
+    const owner = memoryOwner();
+    if (!owner) throw new Error('The record is memory\'s: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the fixture may migrate a record into.');
     if (memory && !memoryNative) throw new Error('Organization fixtures project the graph with the Knowledge fixture program: supply HALE_FACE_KNOWLEDGE_BIN.');
-    const fixtureEnv = memory ? { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner } : env;
+    if (!dropNative) throw new Error('Use npm test: it builds the memory fixture that drops a record (HALE_FACE_MEMORY_BIN).');
+    const fixtureEnv = { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner };
     let child;
     let relay;
     let seeded = false;
@@ -112,27 +118,29 @@ export const test = base.extend({
     const dropSync = () => {
       if (!seeded || dropped) return;
       dropped = true;
-      const bounded = boundedNative(memoryNative, [root, 'drop'], { lock: false });
+      const bounded = boundedNative(dropNative, [root, 'drop'], { lock: false });
       try { execFileSync(bounded.command, bounded.args, { env: fixtureEnv, timeout: 15_000, stdio: 'ignore' }); } catch { /* exiting: there is no test left to fail */ }
     };
     const exitCleanup = () => {
       if (child?.exitCode === null) child.kill('SIGKILL');
-      if (memory) dropSync();
+      dropSync();
     };
     process.once('exit', exitCleanup);
     try {
       if (organization === 'generated') {
         // The birth runs under the runner's own cache, not this case's
-        // empty one: `hale dna new` builds the toolchain's host into its
+        // empty one: the graft builds the toolchain's host into its
         // cache on first use, and in the per-case cache that was a cold
         // host build (minutes on a CI runner) inside this one case, for a
         // binary nothing here runs. The API below still reads the case's
         // own cache, and the project's bytes do not depend on which cache
         // the host was built in.
-        const birthEnv = { ...env };
+        const birthEnv = { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner };
         if (process.env.XDG_CACHE_HOME) birthEnv.XDG_CACHE_HOME = process.env.XDG_CACHE_HOME;
         else delete birthEnv.XDG_CACHE_HOME;
-        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env: birthEnv, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
+        const grafting = graftEnvironment(birthEnv);
+        ensureHabitat(env.HALE_BIN, birthEnv);
+        await executeNative(env.HALE_BIN, graft(root), { env: grafting, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
       }
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
       seeded = true;
@@ -149,6 +157,10 @@ export const test = base.extend({
       };
       if (knowledge) await project();
       const git = async args => (await execute('git', ['-C', root, ...args], { env, timeout: 5_000 })).stdout.trim();
+      // What a case holds still: the record's head (memory's, GH #1590)
+      // and the project's Git refs, of which there may be none.
+      const refs = async () => `record ${recordState(root).head}\n` + await execute('git', ['-C', root, 'show-ref'], { env, timeout: 5_000 })
+        .then(r => r.stdout, error => { if (error.code === 1) return ''; throw error; });
       const orgSource = path.join(root, 'dna/org/main.hl');
       let originalOrganization;
       const dependency = path.join(root, 'vendor/dna/assembly.hl');
@@ -162,7 +174,7 @@ export const test = base.extend({
           originalOrganization = originalOrganization.replace('        metrics: Metrics', `${members}\n        metrics: Metrics`);
           await writeFile(orgSource, originalOrganization);
         }
-        // A DNA project has a manifest at its root, as `hale dna new` writes
+        // A DNA project has a manifest at its root, as a graft writes
         // one, and the compiler names a program's files relative to it. In a
         // tree with none it names them relative to the seed (`main.hl`), so
         // the organization's source would not be `dna/org/main.hl`.
@@ -255,7 +267,7 @@ export const test = base.extend({
           seatGraph(root, env, lines);
           ownership = lines;
           await project();
-          return git(['rev-parse', 'refs/dna/journal']);
+          return recordState(root).head;
         },
         changeOrganization: async ({ valid = true, commit = true } = {}) => {
           if (!organization) throw new Error('This test did not request an organization fixture.');
@@ -273,29 +285,29 @@ export const test = base.extend({
           else await writeFile(dependency, mode === 'invalid' ? 'locus InvalidDependency { invalid source\n' : originalDependency + (mode === 'comment' ? '\n// Browser fixture changed ignored dependency bytes.\n' : ''));
         },
         projectState: async () => ({
-          refs: await git(['show-ref']), status: await git(['status', '--porcelain']),
+          refs: await refs(), status: await git(['status', '--porcelain']),
           dependency: organization === 'generated' ? await readFile(dependency)
             .then(bytes => createHash('sha256').update(bytes).digest('hex')).catch(() => null) : null,
         }),
-        refs: async () => (await execute('git', ['-C', root, 'show-ref'], { env, timeout: 5_000 })).stdout,
+        refs, ledger: () => ledgerRows(root),
         url: (view = 'practices', extra = {}) => `${shell}#/${view}?${new URLSearchParams({ app: data.application, ...extra })}`,
       });
     } finally {
       await stop(child);
       await relay?.close();
       let dropFailure;
-      if (memory && seeded && !dropped) {
+      if (seeded && !dropped) {
         dropped = true;
-        try { memoryLog += (await executeNative(memoryNative, [root, 'drop'], { env: fixtureEnv, timeout: 15_000 })).stderr; }
+        try { memoryLog += (await executeNative(dropNative, [root, 'drop'], { env: fixtureEnv, timeout: 15_000 })).stderr; }
         catch (error) { dropFailure = error; memoryLog += String(error.stderr || error.message); }
       }
       process.removeListener('exit', exitCleanup);
       if (testInfo.status !== testInfo.expectedStatus || dropFailure) {
         await testInfo.attach('api.log', { body: log, contentType: 'text/plain' });
-        if (memory) await testInfo.attach('memory.log', { body: memoryLog, contentType: 'text/plain' });
+        await testInfo.attach('memory.log', { body: memoryLog, contentType: 'text/plain' });
       }
       await rm(root, { recursive: true, force: true });
-      if (dropFailure) throw new Error(`The Knowledge fixture could not drop its record's memory.\n${memoryLog}`);
+      if (dropFailure) throw new Error(`The fixture could not drop its record's memory.\n${memoryLog}`);
     }
   },
 });

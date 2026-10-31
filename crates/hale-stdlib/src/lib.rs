@@ -32,6 +32,13 @@
 /// [`PATH_RENAMES`] like the rest of `std::api`.
 pub const API_RUNTIME_SOURCE: &str = include_str!("../hl/api_rpc.hl");
 
+/// The `http::Rest` fallback's server (`api_rest_fallback.hl`): the one
+/// call of the program's `std::http` handler a REST connection makes for a
+/// path no row serves. Appended after [`API_RUNTIME_SOURCE`], and only to a
+/// program whose `http::Rest` gives a `fallback:`, so a program that gives
+/// none calls no handler from its listener's connections.
+pub const API_REST_FALLBACK_SOURCE: &str = include_str!("../hl/api_rest_fallback.hl");
+
 /// The stream hub's runtime (`api_hub.hl`, GH #1417 R5): the core, the
 /// listener, the per-connection locus and the adapter a topic bound to a
 /// hub becomes. It is appended after [`API_RUNTIME_SOURCE`], and only to a
@@ -67,10 +74,39 @@ pub const TCP_SERVE_SOURCE: &str = include_str!("../hl/io_tcp_serve.hl");
 /// serving with `std::http::Server` carries no Listener.
 pub const TCP_LISTENER_SOURCE: &str = include_str!("../hl/io_tcp_listener.hl");
 
+/// A response body read as it arrives (`http_read.hl`, GH #1698):
+/// `std::http::BodyReader` and `std::http::SseReader`, on the client's
+/// helpers in `http_client.hl`. Every stdlib declaration is lowered into
+/// every program, so it is appended only to a program that names one of
+/// them (`hale_types::rpc_expand`), and a program that reads no stream
+/// carries none of it.
+pub const HTTP_READ_SOURCE: &str = include_str!("../hl/http_read.hl");
+
+/// The incremental SHA-256 (`crypto_sha256.hl`): `std::crypto::Sha256`.
+/// Every stdlib declaration is lowered into every program, so it is
+/// appended only to a program that names it (`hale_types::rpc_expand`),
+/// and a program that hashes no stream carries none of it.
+pub const SHA256_SOURCE: &str = include_str!("../hl/crypto_sha256.hl");
+
+/// The observe backends (`observe.hl`, GH #1592),
+/// `std::observe::Scrape` and `std::observe::Otlp`. Every stdlib declaration is lowered
+/// into every program, so it is appended only to a program whose main
+/// locus holds one as a param (`hale_types::observe_expand`),
+/// and a program that observes nothing carries none of it.
+pub const OBSERVE_SOURCE: &str = include_str!("../hl/observe.hl");
+
 /// The gRPC transport (`api_grpc.hl`, GH #1417 R7): `std::api::grpc::Rpc`,
 /// over the HTTP/2 server of [`API_H2_SOURCE`]. Appended after it, and only
 /// to a program that names `grpc::Rpc`.
 pub const API_GRPC_SOURCE: &str = include_str!("../hl/api_grpc.hl");
+
+/// The client binding's runtime (`api_client.hl`, spec/api.md § Calling a
+/// surface): the transports an `api::client(…)` param holds
+/// (`std::api::http::Client`, `std::api::mcp::Client`), the principals it
+/// presents, and the outcome types its methods answer. Appended only to a
+/// program that holds a client (`hale_types::client_expand`), for the
+/// reason the api runtime is.
+pub const API_CLIENT_SOURCE: &str = include_str!("../hl/api_client.hl");
 
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
@@ -240,9 +276,22 @@ pub const AP_SOURCE: &str = concat!(
     // and `std::math::int_to_float`; nothing in the bundle precedes it.
     include_str!("../hl/rand.hl"),
     "\n",
-    // std::crypto::ed25519_keypair: one fn over a native primitive.
+    // std::crypto: ed25519_keypair, one fn over a native primitive, and
+    // the Sha256 locus over the SHA-256 core's context.
     include_str!("../hl/crypto.hl"),
+    "\n",
+    // std::observe::Probes (GH #1477): a locus over one native
+    // primitive; order is free.
+    include_str!("../hl/probes.hl"),
 );
+
+/// `std::law`: the standard constitutions, loaded only when a program
+/// or an environment adopts one (never part of `AP_SOURCE`).
+pub const LAW_SOURCE: &str = include_str!("../hl/law.hl");
+
+/// The constitutions `LAW_SOURCE` declares, by the path they are adopted
+/// under (`std::law::Standard`) and the name `law.hl` declares them by.
+pub const LAW_CONSTITUTIONS: &[(&str, &str)] = &[("std::law::Standard", "Standard")];
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
 /// concatenation of these contents joined by `"\n"` — asserted by
@@ -286,6 +335,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("url.hl", include_str!("../hl/url.hl")),
     ("rand.hl", include_str!("../hl/rand.hl")),
     ("crypto.hl", include_str!("../hl/crypto.hl")),
+    ("probes.hl", include_str!("../hl/probes.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -348,6 +398,11 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "Request"], "__StdHttpRequest"),
     (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "http", "Server"], "__StdHttpServer"),
+    // A streamed response body (2026-10-17): chunked, and Server-Sent
+    // Events over it.
+    (&["std", "http", "BodyWriter"], "__StdHttpBodyWriter"),
+    (&["std", "http", "SseWriter"], "__StdHttpSseWriter"),
+    (&["std", "http", "SseEvent"], "__StdHttpSseEvent"),
     // Router battery (promoted from pond/router, 2026-07-17). The
     // free-fn surface (path_param / query_param) routes through
     // this table to its bare implementations in http.hl, same as
@@ -375,6 +430,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "post"], "__http_client_post"),
     (&["std", "http", "request"], "__http_client_request"),
     (&["std", "http", "parse_url"], "__http_parse_url"),
+    // A response body read as it arrives (2026-10-21): the mirror of the
+    // Server's BodyWriter / SseWriter.
+    (&["std", "http", "BodyReader"], "__StdHttpBodyReader"),
+    (&["std", "http", "SseReader"], "__StdHttpSseReader"),
     (&["std", "io", "file", "File"], "__StdIoFileFile"),
     (&["std", "io", "MirrorRing"], "__StdIoMirrorRing"),
     (&["std", "io", "file", "open"], "__std_io_file_open"),
@@ -400,8 +459,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
     (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
-    // std::crypto (crypto.hl): the Ed25519 key pair.
+    // std::crypto (crypto.hl): the Ed25519 key pair; the incremental
+    // SHA-256 (crypto_sha256.hl, appended to a program that names it).
     (&["std", "crypto", "ed25519_keypair"], "__std_crypto_ed25519_keypair"),
+    (&["std", "crypto", "Sha256"], "__StdCryptoSha256"),
     // std::hex (hex.hl): base16 text of bytes.
     (&["std", "hex", "decode"], "__std_hex_decode"),
     (&["std", "hex", "digit"], "__std_hex_digit"),
@@ -420,6 +481,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "json", "JsonFieldRange"], "__JsonFieldRange"),
     // GH #719: the typed field read's result shape.
     (&["std", "json", "JsonString"], "__JsonString"),
+    // free-form JSON (spec/api.md § Codecs): opaque, validated text
+    (&["std", "json", "Value"], "__StdJsonValue"),
+    (&["std", "json", "Value", "parse"], "__json_value_parse"),
+    (&["std", "json", "Value", "null"], "__json_value_null"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
     (&["std", "log", "ConsoleSink"], "__StdLogConsoleSink"),
@@ -453,6 +518,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "ServedContext"], "__StdApiServedContext"),
     (&["std", "api", "Request"], "__StdApiRequest"),
     (&["std", "api", "Outcome"], "__StdApiOutcome"),
+    (&["std", "api", "ErrorClass"], "__StdApiErrorClass"),
     (&["std", "api", "Rpc"], "__StdApiRpc"),
     (&["std", "api", "Handle"], "__StdApiHandle"),
     (&["std", "api", "run_until_stopped"], "__std_api_run_until_stopped"),
@@ -473,6 +539,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "udp", "Endpoint"], "__StdApiUdpEndpoint"),
     (&["std", "api", "HubRows"], "__StdApiHubRows"),
     (&["std", "api", "http", "Rpc"], "__StdApiHttpRpc"),
+    (&["std", "api", "http", "Rest"], "__StdApiHttpRest"),
     (&["std", "api", "http", "Listener"], "__StdApiHttpListener"),
     (&["std", "api", "mcp", "Rpc"], "__StdApiMcpRpc"),
     // GH #1417 (R7): the HTTP/2 server (io_h2.hl).
@@ -481,6 +548,15 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "h2", "Event"], "__StdIoH2Event"),
     (&["std", "io", "h2", "Cmd"], "__StdIoH2Cmd"),
     (&["std", "api", "grpc", "Rpc"], "__StdApiGrpcRpc"),
+    // the client binding (api_client.hl)
+    (&["std", "api", "Refusal"], "__StdApiRefusal"),
+    (&["std", "api", "Failure"], "__StdApiFailure"),
+    (&["std", "api", "ClientPrincipals"], "__StdApiClientPrincipals"),
+    (&["std", "api", "NoPrincipals"], "__StdApiNoPrincipals"),
+    (&["std", "api", "VaultPrincipals"], "__StdApiVaultPrincipals"),
+    (&["std", "api", "Client"], "__StdApiClientTransport"),
+    (&["std", "api", "http", "Client"], "__StdApiHttpClient"),
+    (&["std", "api", "mcp", "Client"], "__StdApiMcpClient"),
     (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
@@ -513,6 +589,9 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "metrics", "labels_two"], "__metrics_labels_two"),
     (&["std", "metrics", "metric_key"], "__metrics_key"),
     (&["std", "name", "Convention"], "__StdNameConvention"),
+    // std::observe (GH #1592): the observe backends, params of a main locus.
+    (&["std", "observe", "Otlp"], "__StdObserveOtlp"),
+    (&["std", "observe", "Scrape"], "__StdObserveScrape"),
     // C2 — subprocess. ProcessOutput is the captured-output struct
     // returned by `std::process::run`; Child is the lifecycle-bound
     // handle returned by `std::process::spawn`. The free-fn surface
@@ -540,6 +619,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "process", "wait"], "__std_process_wait"),
     (&["std", "process", "write_stdin"], "__std_process_write_stdin"),
     (&["std", "source", "Walk"], "__StdSourceWalk"),
+    (&["std", "observe", "Probes"], "__StdObserveProbes"),
     // v1.x polish (2026-05-20): qualified `std::str::ParseError`
     // resolves to the same bare ParseError the stdlib's parse_*
     // fns inject. Lets users disambiguate explicitly in fn
@@ -555,6 +635,9 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "str", "byte_at"], "__str_byte_at"),
     (&["std", "str", "bytes_view"], "__str_bytes_view"),
     (&["std", "str", "slice"], "__str_slice"),
+    (&["std", "str", "find"], "__str_find"),
+    (&["std", "str", "view_cp_at"], "__str_view_cp_at"),
+    (&["std", "str", "view_cp_size"], "__str_view_cp_size"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
     (&["std", "text", "Sink"], "__StdTextSink"),
     (&["std", "text", "StdoutSink"], "__StdTextStdoutSink"),

@@ -1,14 +1,13 @@
-// dna/tests/projection_fence_test.hl — two clones of one record, one
-// memory (GH #1026).
+// dna/tests/projection_fence_test.hl — two projectors of one record, one
+// memory (GH #1026, #1590).
 //
-// Two clones of a record sit at different revisions, and both project it
-// into the same memory. Memory's stamp is a commit of the record, so each
-// clone places it by ancestry: a clone behind the stamp — whether or not
-// it has received the stamp's commit yet — has nothing to project and
-// leaves the graph as it is (this is what refused before, when two
-// clones sat at different revisions); a clone ahead of it projects only
-// its delta; and only a clone on a chain that is neither — a reconcile
-// rebuilt it — rebuilds the graph from row 0. Memory is Postgres: without
+// The record is one chain in memory that only grows, and memory's stamp
+// is a row of it, so each projector places the stamp by the row at the
+// stamp's watermark: a projector whose view is at the stamp has nothing
+// to project and leaves the graph as it is; one whose view is ahead
+// projects only its delta; and only a stamp that is not the record's row
+// at its watermark — a projection of rows rewritten behind memory's
+// function — rebuilds the graph from row 0. Memory is Postgres: without
 // the owner's DSN in HALE_DNA_MEMORY_DSN_OWNER nothing here is exercised.
 
 import "../core" as dna;
@@ -16,120 +15,173 @@ import "../operations" as ops;
 
 fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 
-fn git(repo: String, args: String) -> dna::RunResult { return sh("git\n-C\n" + repo + "\n" + args); }
-
-// A projector over the clone at `root`, into the memory `spine` opens.
+// A projector over the record at `root`, into the memory `spine` opens.
 fn projector(root: String, spine: dna::Dsn) -> ops::MemoryProjection {
-    return ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine) }, j: dna::GitJournal { repo: root, author: "spine" }, receipts: dna::GitReceipts { repo: root } };
+    return ops::MemoryProjection {
+        root: root,
+        dsn_env: "",
+        store: dna::Pq { conn: dna::pq_conn(spine) },
+        j: dna::RecordJournal { repo: root, author: "spine" },
+        receipts: dna::MemoryReceipts { repo: root },
+    };
 }
 
 main locus App {
-    params { a: String = ""; b: String = ""; }
+    params { a: String = ""; }
     // `n` rows no receipt is needed for: the code's structure and a
     // signal, as the organism appends them.
-    fn rows(repo: String, from: Int, n: Int) {
-        let j = dna::GitJournal { repo: repo };
+    fn rows(from: Int, n: Int) {
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.a },
+            ledger: dna::MemoryLedger { repo: self.a },
+        };
         let mut k = from;
         while k < from + n {
-            std::test::assert(j.append(j.revision(), "structure.observed", "locus:L" + to_string(k), "{\"kind\":\"locus\",\"name\":\"L" + to_string(k) + "\"}").ok, "structure row " + to_string(k));
-            std::test::assert(j.append(j.revision(), "pressure.raised", "org/app/w", "backlog x" + to_string(k)).ok, "signal row " + to_string(k));
+            std::test::assert(
+                j.append(
+                    j.revision(),
+                    "structure.observed",
+                    "locus:L" + to_string(k),
+                    "{\"kind\":\"locus\",\"name\":\"L" + to_string(k) + "\"}",
+                ).ok,
+                "structure row " + to_string(k),
+            );
+            std::test::assert(
+                j.append(
+                    j.revision(),
+                    "pressure.raised",
+                    "org/app/w",
+                    "backlog x" + to_string(k),
+                ).ok,
+                "signal row " + to_string(k),
+            );
             k = k + 1;
         }
     }
-    fn head_of(repo: String) -> String { return dna::GitJournal { repo: repo }.head(); }
-    fn length_of(repo: String) -> Int { return dna::GitJournal { repo: repo }.revision(); }
+    fn head() -> String { return dna::RecordJournal { repo: self.a }.head(); }
+    fn length() -> Int { return dna::RecordJournal { repo: self.a }.revision(); }
     run() {
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-        if len(owner) == 0 { eprintln("projection_fence_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
+        if len(owner) == 0 {
+            eprintln("projection_fence_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+            return;
+        }
         let scratch = dna::scratch_root("fence");
         self.a = scratch + "/a";
-        self.b = scratch + "/b";
-        let mk = sh("sh\n-c\nfor d in \"$1\" \"$2\"; do mkdir -p \"$d/.hale/dna\" && git -C \"$d\" init -q -b main && git -C \"$d\" config user.name t && git -C \"$d\" config user.email t@dna; done\nsh\n" + self.a + "\n" + self.b);
-        std::test::assert_eq_int(mk.code, 0, "two repositories: " + mk.stderr);
-
-        // ---- clone a holds the record; clone b receives it at six rows
-        let born = dna::GitJournal { repo: self.a };
-        std::test::assert(born.append(0, "application.observed", "org", "{}").ok, "the record's first row");
-        self.rows(self.a, 0, 3);
-        std::test::assert_eq_int(git(self.b, "fetch\n-q\n" + self.a + "\nrefs/dna/journal:refs/dna/journal").code, 0, "clone b receives the record");
-        std::test::assert_eq_int(self.length_of(self.b), 7, "clone b at seven rows");
-        self.rows(self.a, 3, 3);
-        std::test::assert_eq_int(self.length_of(self.a), 13, "clone a at thirteen");
-        let identity = dna::GitRecord { repo: self.a }.identity();
-        std::test::assert_eq_str(dna::GitRecord { repo: self.b }.identity(), identity, "one record: the same identity in both clones");
+        let mk = sh(
+            "sh\n-c\nmkdir -p \"$1/.hale/dna\" && git -C \"$1\" init -q -b main && git -C \"$1\" config user.name t && git -C \"$1\" config user.email t@dna\nsh\n"
+                + self.a,
+        );
+        std::test::assert_eq_int(mk.code, 0, "a repository: " + mk.stderr);
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.a),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let born = dna::RecordJournal { repo: self.a };
+        std::test::assert(
+            born.append(born.revision(), "application.observed", "org", "{}").ok,
+            "the record's first application row",
+        );
+        let birth = self.length();
+        self.rows(0, 3);
+        let identity = dna::MemoryRecord { repo: self.a }.identity();
         let spine = dna::migrated(owner, identity);
         std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
         std::test::assert(store.open(), "memory opens: " + store.last_error());
         let pa = projector(self.a, spine);
-        let pb = projector(self.b, spine);
+        let pb = projector(self.a, spine);
+        // the record's own rows, then the routed signal rows are the
+        // Ledger's: the record is at its birth, one application row and
+        // three structure rows
+        let at = self.length();
+        std::test::assert_eq_int(
+            at,
+            birth + 3,
+            "the record holds the structure rows; the signals are the Ledger's",
+        );
 
-        // ---- clone a projects the record to its end
+        // ---- projector a projects the record to its end
         let first = pa.apply();
-        std::test::assert_eq_str(first.error, "", "clone a projects");
-        std::test::assert_eq_int(store.watermark(), 13, "memory stamped at clone a's thirteen rows");
-        std::test::assert_eq_str(store.projection_basis().head, self.head_of(self.a), "at clone a's head");
+        std::test::assert_eq_str(first.error, "", "projector a projects");
+        std::test::assert_eq_int(store.watermark(), at, "memory stamped at the record's end");
+        std::test::assert_eq_str(store.projection_basis().head, self.head(), "at its head");
         let generation = store.graph_generation();
 
-        // ---- clone b is behind a stamp it has not received: nothing to do
-        let unseen = pb.apply();
-        std::test::assert(unseen.error == "" && unseen.yielded && unseen.rows == 0, "clone b, which has not received the stamped head, projects nothing and refuses nothing: " + unseen.error);
-        std::test::assert(store.watermark() == 13 && store.projection_basis().head == self.head_of(self.a) && store.graph_generation() == generation, "the graph and its stamp stand");
-
-        // ---- clone b holds the stamped commit, its own head an ancestor of it
-        std::test::assert_eq_int(git(self.b, "fetch\n-q\n" + self.a + "\nrefs/dna/journal:refs/remotes/a/journal").code, 0, "clone b receives clone a's rows beside its own chain");
-        let behind = pb.apply();
-        std::test::assert(behind.error == "" && behind.yielded && behind.rows == 0, "a clone behind the stamp has nothing to project: " + behind.error);
-        std::test::assert(store.watermark() == 13 && store.graph_generation() == generation, "and changes nothing");
-
-        // ---- clone b catches up, then goes ahead: it projects only its delta
-        std::test::assert_eq_int(git(self.b, "update-ref\nrefs/dna/journal\n" + self.head_of(self.a)).code, 0, "clone b fast-forwards");
+        // ---- projector b reads the record at the stamp: nothing to do
         let level = pb.apply();
-        std::test::assert(level.error == "" && level.rows == 0 && store.watermark() == 13, "at the stamp there is nothing to project: " + level.error);
-        self.rows(self.b, 6, 1);
+        std::test::assert(
+            level.error == "" && level.rows == 0,
+            "at the stamp there is nothing to project: " + level.error,
+        );
+        std::test::assert(
+            store.watermark() == at && store.graph_generation() == generation,
+            "the graph and its stamp stand",
+        );
+
+        // ---- the record grows: projector b projects only the delta
+        self.rows(3, 2);
         let ahead = pb.apply();
-        std::test::assert(ahead.error == "" && ahead.rows == 2, "clone b projects its two new rows, and only those: " + to_string(ahead.rows) + " " + ahead.error);
-        std::test::assert_eq_int(store.watermark(), 15, "memory at clone b's fifteen");
-        std::test::assert_eq_str(store.projection_basis().head, self.head_of(self.b), "stamped at clone b's head");
+        std::test::assert(
+            ahead.error == "" && ahead.rows == 2,
+            "projector b projects the two new rows, and only those: " + to_string(ahead.rows) + " "
+                + ahead.error,
+        );
+        std::test::assert_eq_int(store.watermark(), at + 2, "memory at the record's new end");
+        std::test::assert_eq_str(
+            store.projection_basis().head,
+            self.head(),
+            "stamped at the new head",
+        );
         let after_b = store.graph_generation();
 
-        // ---- now clone a is behind, on a stamp it has not received
-        let a_unseen = pa.apply();
-        std::test::assert(a_unseen.error == "" && a_unseen.yielded && a_unseen.rows == 0, "clone a, behind a stamp it has not received, projects nothing: " + a_unseen.error);
-        std::test::assert(store.watermark() == 15 && store.graph_generation() == after_b, "and the graph stands");
-        std::test::assert_eq_int(git(self.a, "fetch\n-q\n" + self.b + "\nrefs/dna/journal:refs/dna/journal").code, 0, "clone a receives the record");
+        // ---- projector a, at the stamp again once it reads the record
         let a_level = pa.apply();
-        std::test::assert(a_level.error == "" && a_level.rows == 0 && store.watermark() == 15, "and at the stamp has nothing to project: " + a_level.error);
+        std::test::assert(
+            a_level.error == "" && a_level.rows == 0 && store.watermark() == at + 2,
+            "and has nothing to project: " + a_level.error,
+        );
+        std::test::assert_eq_int(store.graph_generation(), after_b, "the graph stands");
 
-        // ---- a reconcile rebuilds clone b's last row beneath the stamp: neither ancestor nor descendant
-        let r = dna::GitRecord { repo: self.b };
-        let j = dna::GitJournal { repo: self.b };
-        let stamped = j.head();
-        let parent = j.read(13).digest;
-        let fork = r.build(parent, dna::Row { kind: "pressure.raised", entity: "org/app/w", body: "backlog x6", author: "node" }, false, "Rebuilt-From: " + stamped);
-        std::test::assert(len(fork) > 0, "the rebuilt row builds");
-        std::test::assert(r.move_chain("journal", fork, stamped), "clone b's chain is swapped for the rebuilt one");
-        let rebuilt = pb.apply();
-        std::test::assert_eq_str(rebuilt.error, "", "a replaced chain is rebuilt, not refused");
-        std::test::assert_eq_int(store.watermark(), 15, "memory at the rebuilt chain's fifteen");
-        std::test::assert_eq_str(store.projection_basis().head, fork, "stamped at the rebuilt head");
+        // ---- a stamp that is not the record's row at its watermark: the
+        // graph is derived, and is rebuilt from row 0
+        let sch = dna::schema_for(identity);
+        let forged = sh(
+            "psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\nUPDATE " + sch
+                + ".knowledge_meta SET value = 'not-a-row' WHERE key = 'graph_projection_head'",
+        );
+        std::test::assert_eq_int(
+            forged.code,
+            0,
+            "the stamp names no row of the record: " + forged.stderr,
+        );
+        let rebuilt = pa.apply();
+        std::test::assert_eq_str(
+            rebuilt.error,
+            "",
+            "a stamp the record does not hold is rebuilt, not refused",
+        );
+        std::test::assert_eq_int(store.watermark(), at + 2, "memory at the record's end");
+        std::test::assert_eq_str(store.projection_basis().head, self.head(), "stamped at its head");
         std::test::assert(store.graph_generation() > after_b, "the graph was rebuilt");
         std::test::assert_eq_int(store.count("ideas"), 0, "and holds what the record holds");
-        std::test::assert_eq_int(store.structure_count("locus"), 7, "every locus the record observed");
-
-        // ---- clone a has not received the rebuilt chain, and appends rows of
-        // its own before it shares them: as long as the stamp, on a head it
-        // cannot place. It waits for the record; it does not rebuild the
-        // graph under clone b, which would rebuild it back
-        let settled = store.graph_generation();
-        self.rows(self.a, 7, 1);
-        std::test::assert_eq_int(self.length_of(self.a), 17, "clone a at seventeen, two of them its own");
-        let unshared = pa.apply();
-        std::test::assert(unshared.error == "" && unshared.yielded && unshared.rows == 0, "clone a projects nothing over a stamp it cannot place: " + unshared.error);
-        std::test::assert(store.projection_basis().head == fork && store.graph_generation() == settled, "and the rebuilt graph stands");
+        std::test::assert_eq_int(
+            store.structure_count("locus"),
+            5,
+            "every locus the record observed",
+        );
 
         store.close(); pa.store.close(); pb.store.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, identity),
+            "",
+            "this run's schema and roles dropped",
+        );
         dna::scratch_done(scratch);
     }
 }

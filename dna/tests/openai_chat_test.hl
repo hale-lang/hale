@@ -13,8 +13,14 @@ import "../core" as dna;
 locus FakeOpenAi {
     params { seen: Int = 0; }
     fn handle(req: std::http::Request) -> std::http::Response {
-        if !std::str::contains(req.headers, "Authorization: Bearer ") && req.path == "/v1/chat/completions" {
-            return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\": {\"message\": \"no bearer\"}}" };
+        if !std::str::contains(req.headers, "Authorization: Bearer ")
+            && req.path == "/v1/chat/completions"
+        {
+            return std::http::Response {
+                status: 401,
+                content_type: "application/json",
+                body: "{\"error\": {\"message\": \"no bearer\"}}",
+            };
         }
         if req.path == "/v1/chat/completions" && std::str::contains(req.body, "call a tool") {
             // a reply that asks for a tool and says nothing
@@ -35,10 +41,16 @@ locus FakeOpenAi {
             let mut n = 0;
             let mut it = std::json::array_first(turns);
             while !it.done { n = n + 1; it = std::json::array_next(it); }
-            let said = "model=" + model + " key=" + key + " tools=" + (if len(std::json::find_field_raw(req.body, "tools")) > 2 { "yes" } else { "no" }) + " messages=" + to_string(n) + " metadata=" + std::json::find_field_raw(req.body, "metadata");
+            let said = "model=" + model + " key=" + key + " tools="
+                + (if len(std::json::find_field_raw(req.body, "tools")) > 2 { "yes" } else { "no" })
+                + " messages=" + to_string(n) + " metadata="
+                + std::json::find_field_raw(req.body, "metadata");
             return std::http::Response {
                 status: 200, content_type: "application/json",
-                body: "{\"id\": \"chatcmpl-2\", \"model\": \"" + model + "\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": " + "\"" + std::json::escape_string(said) + "\"" + "}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 3, \"total_tokens\": 8}}"
+                body: "{\"id\": \"chatcmpl-2\", \"model\": \"" + model
+                    + "\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": "
+                    + "\"" + std::json::escape_string(said) + "\""
+                    + "}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 3, \"total_tokens\": 8}}"
             };
         }
         if req.path == "/v1/chat/completions" || req.path == "/local/v1/chat/completions" {
@@ -46,7 +58,10 @@ locus FakeOpenAi {
             let n = len(req.body) / 4;
             return std::http::Response {
                 status: 200, content_type: "application/json",
-                body: "{\"id\": \"chatcmpl-1\", \"model\": \"" + model + "-2026\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"the answer\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": " + to_string(n) + ", \"completion_tokens\": 3, \"total_tokens\": " + to_string(n + 3) + "}}"
+                body: "{\"id\": \"chatcmpl-1\", \"model\": \"" + model
+                    + "-2026\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"the answer\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": "
+                    + to_string(n) + ", \"completion_tokens\": 3, \"total_tokens\": "
+                    + to_string(n + 3) + "}}"
             };
         }
         return std::http::Response { status: 404, body: "no" };
@@ -56,10 +71,18 @@ locus FakeOpenAi {
 main locus App {
     params {
         srv: std::http::Server = std::http::Server { port: 1, handler: FakeOpenAi { } };
-        hosted: dna::OpenAiChat = dna::OpenAiChat { name: "quick", model: "test-model", max_tokens: 64 };
+        hosted: dna::OpenAiChat = dna::OpenAiChat {
+            name: "quick",
+            model: "test-model",
+            max_tokens: 64,
+        };
         keyless: dna::OpenAiChat = dna::OpenAiChat { name: "deep", model: "test-model" };
         local: dna::LocalModel = dna::LocalModel { name: "private", model: "local-model" };
-        gateway: dna::OpenAiChat = dna::OpenAiChat { name: "gateway", model: "catalog-default", send_metadata: true };
+        gateway: dna::OpenAiChat = dna::OpenAiChat {
+            name: "gateway",
+            model: "catalog-default",
+            send_metadata: true,
+        };
         core: dna::Dna = dna::Dna { };
     }
     placement { srv: cooperative(pool = io); }
@@ -78,53 +101,133 @@ main locus App {
         std::test::assert_eq_str(ev.adapter, "openai-chat", "adapter identity");
         std::test::assert_eq_str(ev.requested_model, "test-model", "requested model");
         std::test::assert_eq_str(ev.reported_model, "test-model-2026", "reported model");
-        std::test::assert(std::str::contains(ev.credential, "fp:"), "credential recorded as a fingerprint, never bytes: " + ev.credential);
-        std::test::assert(std::str::contains(ev.prompt_digest, "sha256:"), "prompt digest, not the prompt");
+        std::test::assert(
+            std::str::contains(ev.credential, "fp:"),
+            "credential recorded as a fingerprint, never bytes: " + ev.credential,
+        );
+        std::test::assert(
+            std::str::contains(ev.prompt_digest, "sha256:"),
+            "prompt digest, not the prompt",
+        );
         std::test::assert(std::str::contains(ev.context_digest, "sha256:"), "context digest");
         std::test::assert(std::str::contains(ev.response_digest, "sha256:"), "response digest");
         std::test::assert_eq_str(ev.knowledge_bindings, "kb1 kb2", "knowledge bindings used");
-        std::test::assert(std::str::contains(ev.params, "max_tokens=64"), "parameters as sent: " + ev.params);
-        std::test::assert(std::str::contains(ev.params, "temperature=default"), "no temperature unless set — some models refuse the parameter (GH #566 F7): " + ev.params);
+        std::test::assert(
+            std::str::contains(ev.params, "max_tokens=64"),
+            "parameters as sent: " + ev.params,
+        );
+        std::test::assert(
+            std::str::contains(ev.params, "temperature=default"),
+            "no temperature unless set — some models refuse the parameter (GH #566 F7): "
+                + ev.params,
+        );
         std::test::assert(ev.output_tokens == 3, "output tokens from usage");
         std::test::assert(len(ev.elapsed) > 0, "wall time recorded");
         std::test::assert(ev.cost_micros > 0, "cost from the price table");
         std::test::assert_eq_str(ev.data_class, "internal", "data classification");
         // 2. customer data never reaches a hosted model; no wire call is made
-        let c = self.hosted.complete(dna::ModelRequest { attempt_id: "w1/a1", prompt: "leak?", data_class: "customer" });
+        let c = self.hosted.complete(
+            dna::ModelRequest { attempt_id: "w1/a1", prompt: "leak?", data_class: "customer" },
+        );
         std::test::assert(!c.ok, "customer data refused");
         std::test::assert(std::str::contains(c.refused, "data class customer"), c.refused);
         std::test::assert_eq_int(self.hosted.calls, 2, "counted");
         // 3. no credential: not a permitted backend, refused before the wire
-        std::test::assert(!self.keyless.allows("internal"), "a keyless hosted model is not permitted");
+        std::test::assert(
+            !self.keyless.allows("internal"),
+            "a keyless hosted model is not permitted",
+        );
         let k = self.keyless.complete(dna::ModelRequest { attempt_id: "w1/a2", prompt: "x" });
         std::test::assert(std::str::contains(k.refused, "credential not present"), k.refused);
         // 4. the local endpoint: same wire, no credential, any data class
         std::test::assert(self.local.allows("customer"), "local model allows customer data");
-        let l = self.local.complete(dna::ModelRequest { attempt_id: "w2/a0", prompt: "local?", data_class: "customer" });
+        let l = self.local.complete(
+            dna::ModelRequest { attempt_id: "w2/a0", prompt: "local?", data_class: "customer" },
+        );
         std::test::assert(l.ok, "local call succeeded: " + l.refused);
         std::test::assert_eq_str(self.local.last.adapter, "local", "local adapter identity");
         std::test::assert_eq_str(self.local.last.credential, "", "no credential on the local wire");
         // 5. a gateway call: the model the mapping resolved, the call's
         // metadata (a gateway keeps it) and its idempotency key cross the wire
         let meta = "{\"attempt\": \"w3/a0\", \"position\": \"position:api/dev\", \"holder\": \"riley\"}";
-        let g = self.gateway.complete(dna::ModelRequest { attempt_id: "w3/a0", prompt: "echo the request", model: "coder-m", metadata: meta, idempotency_key: "w3/a0:call:1" });
+        let g = self.gateway.complete(
+            dna::ModelRequest {
+                attempt_id: "w3/a0",
+                prompt: "echo the request",
+                model: "coder-m",
+                metadata: meta,
+                idempotency_key: "w3/a0:call:1",
+            },
+        );
         std::test::assert(g.ok, "gateway call succeeded: " + g.refused);
-        std::test::assert(std::str::contains(g.output, "model=coder-m "), "the request names the resolved model, not the catalog's: " + g.output);
-        std::test::assert(std::str::contains(g.output, "key=w3/a0:call:1 "), "the idempotency key is a header: " + g.output);
-        std::test::assert(std::str::contains(g.output, "\"position\": \"position:api/dev\""), "the metadata is in the body: " + g.output);
-        std::test::assert_eq_str(self.gateway.last.requested_model, "coder-m", "the evidence names the model asked for");
+        std::test::assert(
+            std::str::contains(g.output, "model=coder-m "),
+            "the request names the resolved model, not the catalog's: " + g.output,
+        );
+        std::test::assert(
+            std::str::contains(g.output, "key=w3/a0:call:1 "),
+            "the idempotency key is a header: " + g.output,
+        );
+        std::test::assert(
+            std::str::contains(g.output, "\"position\": \"position:api/dev\""),
+            "the metadata is in the body: " + g.output,
+        );
+        std::test::assert_eq_str(
+            self.gateway.last.requested_model,
+            "coder-m",
+            "the evidence names the model asked for",
+        );
         // a provider that may refuse metadata is not sent it; the model still is
-        let h = self.hosted.complete(dna::ModelRequest { attempt_id: "w3/a1", prompt: "echo the request", model: "other-m", metadata: meta });
-        std::test::assert(std::str::contains(h.output, "model=other-m ") && std::str::contains(h.output, "key= ") && !std::str::contains(h.output, "position:api/dev"), "no metadata and no key unless asked for: " + h.output);
+        let h = self.hosted.complete(
+            dna::ModelRequest {
+                attempt_id: "w3/a1",
+                prompt: "echo the request",
+                model: "other-m",
+                metadata: meta,
+            },
+        );
+        std::test::assert(
+            std::str::contains(h.output, "model=other-m ")
+                && std::str::contains(h.output, "key= ")
+                && !std::str::contains(h.output, "position:api/dev"),
+            "no metadata and no key unless asked for: " + h.output,
+        );
         // 6. a tool loop's wire: the reply's tool calls are read, and the
         // next request carries the tools and the turns since the prompt
-        let t = self.gateway.complete(dna::ModelRequest { attempt_id: "w4/a0", prompt: "call a tool", tools: "[{\"type\": \"function\", \"function\": {\"name\": \"read\", \"parameters\": {}}}]" });
-        std::test::assert(t.ok && t.output == "", "a reply that only asks for a tool is an answer, with no text (its content is null): " + t.output + t.refused);
-        std::test::assert(std::str::contains(t.tool_calls, "\"name\": \"read\"") && std::str::contains(t.tool_calls, "\"id\": \"c1\""), "its tool calls are read: " + t.tool_calls);
-        std::test::assert(std::str::contains(t.tool_calls, "main.hl"), "with their arguments: " + t.tool_calls);
+        let t = self.gateway.complete(
+            dna::ModelRequest {
+                attempt_id: "w4/a0",
+                prompt: "call a tool",
+                tools: "[{\"type\": \"function\", \"function\": {\"name\": \"read\", \"parameters\": {}}}]",
+            },
+        );
+        std::test::assert(
+            t.ok && t.output == "",
+            "a reply that only asks for a tool is an answer, with no text (its content is null): "
+                + t.output + t.refused,
+        );
+        std::test::assert(
+            std::str::contains(t.tool_calls, "\"name\": \"read\"")
+                && std::str::contains(t.tool_calls, "\"id\": \"c1\""),
+            "its tool calls are read: " + t.tool_calls,
+        );
+        std::test::assert(
+            std::str::contains(t.tool_calls, "main.hl"),
+            "with their arguments: " + t.tool_calls,
+        );
         let turns = "[{\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"c1\", \"type\": \"function\", \"function\": {\"name\": \"read\", \"arguments\": \"{}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"c1\", \"content\": \"fn main() { }\"}]";
-        let e = self.gateway.complete(dna::ModelRequest { attempt_id: "w4/a0", prompt: "echo the request", tools: "[{\"type\": \"function\", \"function\": {\"name\": \"read\", \"parameters\": {}}}]", messages: turns });
-        std::test::assert(std::str::contains(e.output, "tools=yes messages=3 "), "the prompt and both turns cross, with the tools: " + e.output);
+        let e = self.gateway.complete(
+            dna::ModelRequest {
+                attempt_id: "w4/a0",
+                prompt: "echo the request",
+                tools: "[{\"type\": \"function\", \"function\": {\"name\": \"read\", \"parameters\": {}}}]",
+                messages: turns,
+            },
+        );
+        std::test::assert(
+            std::str::contains(e.output, "tools=yes messages=3 "),
+            "the prompt and both turns cross, with the tools: " + e.output,
+        );
         // 7. every call was journaled by the assembly as model.called evidence
         std::time::sleep(100ms);
         let mut n = 0;
@@ -136,17 +239,45 @@ main locus App {
         std::test::assert_eq_int(n, 8, "eight calls, eight evidence rows");
         let first = self.core.journal.read(0);
         std::test::assert_eq_str(first.entity, "w1/a0", "keyed by attempt");
-        std::test::assert(std::str::contains(first.body, "\"reported_model\": \"test-model-2026\""), "evidence body: " + first.body);
-        std::test::assert(!std::str::contains(first.body, "say the answer"), "the prompt itself is never journaled");
+        std::test::assert(
+            std::str::contains(first.body, "\"reported_model\": \"test-model-2026\""),
+            "evidence body: " + first.body,
+        );
+        std::test::assert(
+            !std::str::contains(first.body, "say the answer"),
+            "the prompt itself is never journaled",
+        );
     }
 }
 
 // The fake endpoint's port is one `dna::free_port` bound, never a number
 // the fixture invents: the adapters are handed the endpoint built from it.
 fn main() {
+    // a turn of a conversation names it as the chat API's
+    // `prompt_cache_key`, so a provider keeps its prefix warm in one place;
+    // a one-shot call names none
+    let keyed = dna::openai_chat_body_with(
+        "m",
+        dna::ModelRequest { prompt: "p", conversation: "w4/a0" },
+            -1,
+        0,
+        false,
+    );
+    std::test::assert(
+        std::str::contains(keyed, "\"prompt_cache_key\": \"w4/a0\""),
+        "a conversation's turn names it: " + keyed,
+    );
+    let once = dna::openai_chat_body_with("m", dna::ModelRequest { prompt: "p" }, -1, 0, false);
+    std::test::assert(
+        !std::str::contains(once, "prompt_cache_key"),
+        "a one-shot call names none: " + once,
+    );
     // the model key is the vault's (GH #989): `hale test` gives this file a
     // vault of its own, and its slot for the key is written here
-    std::io::fs::write_file(std::secret::vault_local_dir() + "/model-TEST_MODEL_KEY", "test-model-key") or discard;
+    std::io::fs::write_file(
+        std::secret::vault_local_dir() + "/model-TEST_MODEL_KEY",
+        "test-model-key",
+    ) or discard;
     let port = dna::free_port(90);
     let base = "http://127.0.0.1:" + to_string(port);
     App {

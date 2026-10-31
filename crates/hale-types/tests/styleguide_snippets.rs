@@ -83,6 +83,36 @@ fn extract(path: &Path) -> Vec<Snippet> {
     out
 }
 
+/// The guide shows canonical form: every checked snippet is a fixed
+/// point of `hale fmt`, so what it teaches is what the formatter
+/// writes, line breaks included (§ Canonical form).
+#[test]
+fn every_styleguide_snippet_is_in_wrapped_canonical_form() {
+    let path = styleguide();
+    let mut failures = Vec::new();
+    for s in extract(&path) {
+        match hale_syntax::fmt::format_source(&s.body) {
+            Ok(out) if out != s.body => {
+                let first = s
+                    .body
+                    .lines()
+                    .zip(out.lines())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                failures.push(format!(
+                    "spec/styleguide.md:{}: hale fmt rewrites it\n  was: {}\n  fmt: {}",
+                    s.line + 1 + first,
+                    s.body.lines().nth(first).unwrap_or(""),
+                    out.lines().nth(first).unwrap_or("")
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => failures.push(format!("spec/styleguide.md:{}: fmt: {e:?}", s.line)),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn every_styleguide_snippet_parses_and_typechecks() {
     let path = styleguide();
@@ -326,4 +356,285 @@ fn claim_zero_copy_takes_inline_scalar_arrays_only() {
             ds
         );
     }
+}
+
+/// 2.9: a set's type comes from the place a member flows into. A match
+/// that leaves a member out is refused, arms of different members are
+/// not joined, a set is no member of a set, and a primitive is no
+/// member at all.
+#[test]
+fn claim_a_set_is_typed_by_its_place() {
+    let decls = "type A { n: Int; }\ntype B { s: String; }\ntype S = A | B;\n";
+    let ok = build_errs(&format!(
+        "{decls}fn pick(n: Int) -> S {{ if n == 0 {{ return A {{ n: 1 }}; }} return B {{ s: \"b\" }}; }}\n\
+         fn main() {{ let s = pick(0); println(match s {{ A(a) -> a.n, B(b) -> len(b.s) }}); }}"
+    ));
+    assert!(
+        ok.is_empty(),
+        "spec/styleguide.md 2.9: a fn returning the set gives each \
+         member the set's type: {:?}",
+        ok
+    );
+    let partial = build_errs(&format!(
+        "{decls}fn f(s: S) -> Int {{ return match s {{ A(a) -> a.n }}; }}\nfn main() {{ }}"
+    ));
+    assert!(
+        partial.iter().any(|m| m.contains("match is not exhaustive")),
+        "2.9 says a match that leaves a member out fails the build, \
+         which is why it says to leave `_` out: {:?}",
+        partial
+    );
+    let joined = build_errs(&format!(
+        "{decls}fn f(n: Int) -> S {{ let m = if n == 0 {{ A {{ n: 1 }} }} else {{ B {{ s: \"b\" }} }}; return m; }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        joined
+            .iter()
+            .any(|m| m.contains("if-expression arms have mismatched types")),
+        "2.9 quotes this refusal for arms of different members. If the \
+         arms are joined into a set now, the bullet is wrong: {:?}",
+        joined
+    );
+    let nested = build_errs(&format!(
+        "{decls}type C {{ n: Int; }}\ntype T = S | C;\nfn main() {{ }}"
+    ));
+    assert!(
+        nested.iter().any(|m| m.contains("is a set itself")),
+        "2.9 says a set is not a member of another set: {:?}",
+        nested
+    );
+    let primitive = build_errs("type A { n: Int; }\ntype S = A | Int;\nfn main() { }");
+    assert!(
+        primitive
+            .iter()
+            .any(|m| m.contains("a primitive, a list, a tuple or a function type cannot be one")),
+        "2.9 says a primitive is no member of a set: {:?}",
+        primitive
+    );
+}
+
+/// 2.10: a seam's coverage is checked at the locus hop, a failure no
+/// later hop takes needs `or end;` / `or violate`, a closed seam is
+/// the locus's `run`, and a hop on an interface is refused.
+#[test]
+fn claim_a_seam_checks_coverage_and_failures() {
+    let parts = "type A { n: Int; }\ntype B { s: String; }\ntype In = A | B;\ntype Bad { at: Int; }\n\
+                 locus Dec { fn decode(x: Int) -> In fallible(Bad) { if x < 0 { fail Bad { at: x }; } return A { n: x }; } }\n\
+                 locus Both { fn a(v: A) -> String { return \"a\"; } fn b(v: B) -> String { return \"b\"; } }\n\
+                 locus OnlyA { fn a(v: A) -> String { return \"a\"; } }\n\
+                 locus Src { fn next() -> Int fallible(Bad) { fail Bad { at: 0 }; } }\n\
+                 locus Out { fn put(s: String) { println(s); } }\n";
+    let ok = build_errs(&format!(
+        "{parts}locus G {{ params {{ d: Dec = Dec {{ }}; h: Both = Both {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; or end; }} }}\n\
+         fn main() {{ let g = G {{ }}; println(g.go(1) or \"failed\"); }}"
+    ));
+    assert!(ok.is_empty(), "2.10: a covered seam with `or end;` checks: {:?}", ok);
+    let uncovered = build_errs(&format!(
+        "{parts}locus G {{ params {{ d: Dec = Dec {{ }}; h: OnlyA = OnlyA {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; or end; }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        uncovered.iter().any(|m| m.contains(
+            "`self.h` has no method taking `B`, which reaches it from `self.d.decode`: every member has one eater"
+        )),
+        "spec/styleguide.md 2.10 quotes the coverage refusal: {:?}",
+        uncovered
+    );
+    let unplaced = build_errs(&format!(
+        "{parts}locus G {{ params {{ d: Dec = Dec {{ }}; h: Both = Both {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        unplaced
+            .iter()
+            .any(|m| m.contains("fails with `Bad`, and no later hop takes it")),
+        "2.10 says a failure placed nowhere is refused, naming the hop \
+         and the type: {:?}",
+        unplaced
+    );
+    let with_run = build_errs(&format!(
+        "{parts}locus G {{ params {{ s: Src = Src {{ }}; d: Dec = Dec {{ }}; h: Both = Both {{ }}; o: Out = Out {{ }}; }}\n\
+             seam {{ self.s.next() -> self.d.decode -> self.h -> self.o.put; or end; }}\n\
+             run() {{ }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        with_run
+            .iter()
+            .any(|m| m.contains("a closed seam is the locus's `run`")),
+        "2.10 says a locus with a closed seam declares no `run`: {:?}",
+        with_run
+    );
+    let interface = build_errs(&format!(
+        "{parts}interface Eats {{ fn a(v: A) -> String; }}\n\
+         locus G {{ params {{ d: Dec = Dec {{ }}; h: Eats = Both {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; or end; }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        interface
+            .iter()
+            .any(|m| m.contains("a seam's chain is static")),
+        "2.10 says a hop on an interface is refused: {:?}",
+        interface
+    );
+}
+
+/// C9: the four edges of a `bounded` — `len` refused for `count`, a
+/// return by value refused, an element stored through a parameter's
+/// place refused, and whole assignment of another capacity refused —
+/// with the working shapes beside them passing (the C9 snippet).
+#[test]
+fn claim_a_bounded_lives_in_its_holder() {
+    let row = "type Row { names: bounded[String; 4]; }\n";
+    let len = build_errs(&format!(
+        "{row}fn main() {{ let r = Row {{ }}; println(len(r.names)); }}"
+    ));
+    assert!(
+        len.iter()
+            .any(|m| m.contains("a `bounded`'s live count is `count(x)`")),
+        "spec/styleguide.md C9 says `len` of a bounded is refused for \
+         `count`: {:?}",
+        len
+    );
+    let ret = build_errs(&format!(
+        "{row}fn names() -> bounded[String; 4] {{ let mut r = Row {{ }}; return r.names; }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        ret.iter().any(|m| m.contains("cannot be returned by value")),
+        "C9 says a fn returning a bounded is refused: {:?}",
+        ret
+    );
+    let through = build_errs(&format!(
+        "{row}fn fill(r: Row) {{ push(r.names, \"a\") or discard; }}\n\
+         locus L {{ params {{ row: Row = Row {{ }}; }} fn go() {{ fill(self.row); }} }}\n\
+         fn main() {{ let l = L {{ }}; l.go(); }}"
+    ));
+    assert!(
+        through
+            .iter()
+            .any(|m| m.contains("into a bounded place under its parameter")),
+        "C9 says `fill(self.row)` is refused at the argument: {:?}",
+        through
+    );
+    let wider = build_errs(&format!(
+        "{row}type Wide {{ names: bounded[String; 8]; }}\n\
+         fn main() {{ let a = Row {{ }}; let b = Wide {{ }}; a.names = b.names; }}"
+    ));
+    assert!(
+        wider.iter().any(|m| m.contains("not assignable from")),
+        "C9 says whole assignment from another capacity is refused: {:?}",
+        wider
+    );
+}
+
+/// C5: an adapter binding's literal reads no `self` — it is built before
+/// the `main` locus that declares it — and the same literal with its
+/// value written in it passes.
+#[test]
+fn claim_an_adapter_binding_literal_reads_no_self() {
+    let src = |url: &str| {
+        format!(
+            "type Tick {{ n: Int = 0; }}\n\
+             topic Ticks {{ payload: Tick; }}\n\
+             locus Relay {{ params {{ url: String = \"\"; }} fn send(subject: String, bytes: Bytes) {{ }} }}\n\
+             main locus App {{\n\
+                 params {{ url: String = \"nats://h:4222\"; }}\n\
+                 bindings {{ Ticks: Relay {{ url: {url} }}; }}\n\
+                 bus {{ publish Ticks; }}\n\
+                 run() {{ Ticks <- Tick {{ n: 1 }}; }}\n\
+             }}\n\
+             fn main() {{ App {{ }}; }}"
+        )
+    };
+    let read = build_errs(&src("self.url"));
+    assert!(
+        read.iter().any(|m| m.contains("the `Relay` literal is built by the program's prelude") && m.contains("`self` used outside a locus body")),
+        "spec/styleguide.md C5 says an adapter literal reading `self` is refused: {:?}",
+        read
+    );
+    let written = build_errs(&src("\"nats://h:4222\""));
+    assert!(written.is_empty(), "C5's working shape passes: {:?}", written);
+}
+
+/// S15, S16: `hale check` says nothing about a String grown with `+`
+/// in a loop or a text read by slicing off the rest, which is why both
+/// rules are tagged [convention]. When a lint lands, retag them.
+#[test]
+fn claim_quadratic_text_loops_are_not_flagged() {
+    let ds = build_errs(
+        "fn grow(n: Int) -> String {\n\
+             let mut out = \"\";\n\
+             let mut i = 0;\n\
+             while i < n { out = out + \"row\\n\"; i = i + 1; }\n\
+             return out;\n\
+         }\n\
+         fn lines(all: String) -> Int {\n\
+             let mut rest = all;\n\
+             let mut k = 0;\n\
+             let mut nl = std::str::index_of(rest, \"\\n\");\n\
+             while nl >= 0 { k = k + 1; rest = rest[(nl + 1)..len(rest)]; nl = std::str::index_of(rest, \"\\n\"); }\n\
+             return k;\n\
+         }\n\
+         fn main() { println(lines(grow(3))); }",
+    );
+    assert!(
+        ds.is_empty(),
+        "spec/styleguide.md S15 and S16 say the check does not flag \
+         these loops. It reports something now — retag the rules: {:?}",
+        ds
+    );
+}
+
+/// 2.11: a variant's error class is one of five words, and any other
+/// is refused.
+#[test]
+fn claim_an_error_class_is_one_of_five() {
+    let ok = build_errs(
+        "type E = enum { @not_found A, @conflict B(String), @invalid C, @forbidden D, @unavailable F, G };\n\
+         fn main() { }",
+    );
+    assert!(
+        ok.is_empty(),
+        "spec/styleguide.md 2.11 names five error classes: {:?}",
+        ok
+    );
+    let other = build_errs("type E = enum { @missing A, B };\nfn main() { }");
+    assert!(
+        other.iter().any(|m| m.contains("is no error class")),
+        "2.11 says a word that is not a class is refused: {:?}",
+        other
+    );
+}
+
+/// C14: a writer handed a held record and a parameter in one call is
+/// refused (two arguments, or one carrier), and the local copy the rule
+/// suggests passes (the C14 snippet).
+#[test]
+fn claim_a_writer_is_handed_one_owner_per_call() {
+    let head = "type Bag { b: Bytes = b\"\"; }\n\
+                locus Sink {\n\
+                params { held: Bag = Bag { }; }\n\
+                fn put(x: Bag, p: Bytes) { x.b = p; }\n\
+                fn put_two(a: Bag, b: Bag, p: Bytes) { a.b = p; b.b = p; }\n";
+    for body in [
+        "fn go(x: Bag, p: Bytes) { self.put_two(self.held, x, p); }",
+        "fn go(x: Bag, p: Bytes, c: Bool) { self.put(if c { self.held } else { x }, p); }",
+    ] {
+        let errs = build_errs(&format!("{head}{body}\n}}\nfn main() {{ let s = Sink {{ }}; }}"));
+        assert!(
+            errs.iter().any(|m| m.contains("a record this locus holds") && m.contains("the parameter `x`")),
+            "spec/styleguide.md C14 says `{body}` is refused, naming both owners: {errs:?}"
+        );
+    }
+    let copied = build_errs(&format!(
+        "{head}fn go(x: Bag, p: Bytes) {{ let mine = Bag {{ b: x.b }}; self.put_two(self.held, mine, p); }}\n}}\n\
+         fn main() {{ let s = Sink {{ }}; }}"
+    ));
+    assert!(copied.is_empty(), "C14 says the local copy passes: {copied:?}");
 }

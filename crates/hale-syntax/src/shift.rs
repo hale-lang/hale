@@ -116,6 +116,14 @@ impl<A: Shift, B: Shift> Shift for (A, B) {
     }
 }
 
+impl<A: Shift, B: Shift, C: Shift> Shift for (A, B, C) {
+    fn shift(&mut self, d: Move) {
+        self.0.shift(d);
+        self.1.shift(d);
+        self.2.shift(d);
+    }
+}
+
 /// Shift each named binding.
 macro_rules! sh {
     ($d:ident; $($x:ident),* $(,)?) => {{
@@ -181,6 +189,7 @@ impl Shift for TopDecl {
             TopDecl::Constitution(x) => x.shift(d),
             TopDecl::Unit(x) => x.shift(d),
             TopDecl::Api(x) => x.shift(d),
+            TopDecl::Fleet(x) => x.shift(d),
         }
     }
 }
@@ -188,8 +197,21 @@ impl Shift for TopDecl {
 // Claims vocabulary.
 
 shift_struct!(RoleDecl { name, includes, span });
-shift_struct!(ApiDecl { name, rows, span, origin });
-shift_struct!(RpcRow { locus, written, method, requires, span });
+shift_struct!(FleetDecl { name, params, placement, bindings, claims, span, written });
+shift_struct!(FleetPlacement { instance, spec, span });
+
+impl Shift for FleetPlacementSpec {
+    fn shift(&mut self, _: Move) {
+        match self {
+            FleetPlacementSpec::Hosts(_) | FleetPlacementSpec::Replicas(_) => {}
+        }
+    }
+}
+shift_struct!(ApiDecl { name, rows, span, origin, source });
+shift_struct!(ApiSource { kind, location, span });
+shift_struct!(RpcRow { locus, written, method, requires, span, signature, route });
+shift_struct!(RpcRoute { text, status, span });
+shift_struct!(RpcSignature { request, response, wire });
 shift_struct!(UnitDecl { name, equation, span, id });
 shift_struct!(UnitEquation { num, den, target, span, id });
 shift_struct!(GroupDecl { name, members, may_be_empty, span, id });
@@ -213,6 +235,7 @@ impl Shift for ClaimForm {
             ClaimForm::RequireAttributed { class_name } => sh!(d; class_name),
             ClaimForm::RequireNoSilentLossTopic { topic } => sh!(d; topic),
             ClaimForm::RequireNoSilentLossGroup { group } => sh!(d; group),
+            ClaimForm::RequireSeparateDomains { left, right } => sh!(d; left, right),
             ClaimForm::Cover { alias, group } => sh!(d; alias, group),
             ClaimForm::RouteCoverage { topic, range, group } => sh!(d; topic, range, group),
             ClaimForm::Count { publishers, topic, cmp, n } => sh!(d; publishers, topic, cmp, n),
@@ -296,10 +319,12 @@ shift_struct!(LocusDecl {
     depends,
     supervised,
     sealed,
+    repo,
     members,
     span,
     id,
 });
+shift_struct!(RepoAnnotation { ty, span });
 shift_struct!(FormAnnotation { name, args, span });
 shift_struct!(LocalityAnnotation { tier, span });
 shift_unit_enum!(LocalityTier { L1, L2, L3, Any });
@@ -380,6 +405,19 @@ impl Shift for LocusMember {
             LocusMember::Topology(x) => x.shift(d),
             LocusMember::Claims(x) => x.shift(d),
             LocusMember::BirthCheck(x) => x.shift(d),
+            LocusMember::Seam(x) => x.shift(d),
+        }
+    }
+}
+
+shift_struct!(SeamDecl { name, param, ret, head, hops, on_failure, span });
+shift_struct!(SeamHop { path, span });
+
+impl Shift for SeamFailure {
+    fn shift(&mut self, d: Move) {
+        match self {
+            SeamFailure::End(s) => s.shift(d),
+            SeamFailure::Violate(c) => c.shift(d),
         }
     }
 }
@@ -432,7 +470,7 @@ shift_unit_enum!(CapacitySlotKind { Pool, Heap });
 // Params, contracts, bus.
 
 shift_struct!(ParamsBlock { params, span });
-shift_struct!(ParamDecl { name, ty, init, span, id });
+shift_struct!(ParamDecl { name, ty, init, span, id, serve });
 
 impl Shift for ParamInit {
     fn shift(&mut self, d: Move) {
@@ -585,8 +623,8 @@ impl Shift for ScalarClause {
     }
 }
 
-shift_struct!(StructField { name, ty, default, tag, span });
-shift_struct!(EnumVariant { name, fields, span });
+shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, span });
+shift_struct!(EnumVariant { name, fields, class, span, member });
 shift_struct!(ConstDecl { name, ty, value, span, id });
 
 // Effects and fn contracts.
@@ -616,7 +654,8 @@ impl Shift for EffectClass {
             | EffectClass::Spawn
             | EffectClass::Recursion
             | EffectClass::Alloc
-            | EffectClass::SecretUse => {}
+            | EffectClass::SecretUse
+            | EffectClass::Stdio => {}
         }
     }
 }

@@ -1,102 +1,97 @@
 # Files
 
-> **Coming from Python / Node?** No `try/except`, no
-> `.catch()`, no checking `err != nil`. Every filesystem call
-> that can fail returns a [`fallible`](../basics/fallible.md)
-> value, and the compiler makes you address it with `or` right
-> where you call it. The failure is visible at the call site,
-> always.
-
-## Reading and writing
+Filesystem operations in Hale live under `std::io::fs` (whole-file reads, writes, and directory operations) and `std::io::file` (streaming file handles). Every operation that can fail returns `fallible(IoError)` and must be addressed at the call site with `or`.
 
 ```hale
 fn main() {
-    // Write a file (creating or truncating it).
     std::io::fs::write_file("greeting.txt", "hello\n") or raise;
 
-    // Read it back. read_file returns the whole contents as a String.
     let body = std::io::fs::read_file("greeting.txt") or "(empty)";
     println(body);
 }
 ```
 
-`or raise` in `main` has no caller to hand the error to: the
-program stops with `Hale panic: unhandled IoError escaping main
-locus`. More often at the top level you substitute or report:
+## `std::io::fs` and `std::io::file` Reference
 
-```hale
-fn main() {
-    let body = std::io::fs::read_file("config.toml") or {
-        eprintln("no config; using defaults");
-        return;
-    };
-    println("config: ", len(body), " bytes");
-}
-```
+All functions below are `fallible(IoError)` except `file_exists(path)` and `f.read_line()`:
 
-## The surface
+| Function / Method | Signature | Description |
+|---|---|---|
+| `std::io::fs::read_file(path)` | `(String) -> String fallible(IoError)` | Reads an entire UTF-8 text file into a `String` |
+| `std::io::fs::read_bytes(path)` | `(String) -> Bytes fallible(IoError)` | Reads an entire binary file into `Bytes` |
+| `std::io::fs::write_file(path, text)` | `(String, String) -> () fallible(IoError)` | Creates or truncates `path` and writes `text` |
+| `std::io::fs::write_bytes(path, b)` | `(String, Bytes) -> () fallible(IoError)` | Creates or truncates `path` and writes binary `Bytes` |
+| `std::io::fs::write_file_append(path, text)` | `(String, String) -> () fallible(IoError)` | Appends `text` to `path` (creating it if absent) |
+| `std::io::fs::file_size(path)` | `(String) -> Int fallible(IoError)` | Returns file size in bytes |
+| `std::io::fs::file_exists(path)` | `(String) -> Bool` | Infallible test for path existence |
+| `std::io::fs::mkdir(path)` | `(String) -> () fallible(IoError)` | Creates directory `path` |
+| `std::io::fs::rename(from, to)` | `(String, String) -> () fallible(IoError)` | Moves or renames a file or directory |
+| `std::io::fs::unlink(path)` | `(String) -> () fallible(IoError)` | Deletes a file |
+| `std::io::fs::mktemp(prefix, suffix)` | `(String, String) -> String fallible(IoError)` | Creates a unique temporary file and returns its path |
+| `std::io::fs::list_dir_count(path)` | `(String) -> Int fallible(IoError)` | Returns number of entries in directory `path` |
+| `std::io::fs::list_dir_at(path, i)` | `(String, Int) -> String fallible(IoError)` | Returns the name of the `i`th directory entry |
+| `std::io::file::open(path, mode)` | `(String, String) -> File fallible(IoError)` | Opens a streaming `File` locus (`"r"`, `"w"`, `"a"`) |
+| `f.read_line()` | `() -> String` | Reads the next line from `File` `f` (`""` at EOF) |
 
-All of these live under `std::io::fs` and all are
-`fallible(IoError)` except `file_exists`:
+## Handling `IoError`
 
-| Call | Does |
-|---|---|
-| `read_file(path) -> String` | whole-file read |
-| `read_bytes(path) -> Bytes` | whole-file read, binary |
-| `write_file(path, contents)` | create / truncate |
-| `write_bytes(path, b: Bytes)` | create / truncate, binary |
-| `write_file_append(path, contents)` | append |
-| `file_size(path) -> Int` | size in bytes |
-| `mkdir(path)` | create a directory |
-| `rename(from, to)` | move / rename |
-| `unlink(path)` | delete |
-| `mktemp(prefix, suffix) -> String` | make a temp file, return its path |
-| `list_dir_count(path) -> Int` | how many entries |
-| `list_dir_at(path, i) -> String` | the `i`th entry's name |
-| `file_exists(path) -> Bool` | test (never fails) |
+When a filesystem call fails, its `IoError` payload provides four fields:
 
-## The error tells you what happened
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `String` | Stable cross-platform category: `"not_found"`, `"permission_denied"`, `"already_exists"`, `"is_dir"`, `"invalid"`, etc. |
+| `path` | `String` | Path argument that triggered the error |
+| `errno` | `Int` | Raw OS error code |
+| `detail` | `String` | Human-readable OS message (such as `"No such file or directory"`), suitable for logging |
 
-When a call fails, the `IoError` payload carries a `kind`
-(`String`), the raw `errno` (`Int`), the `path` (`String`), and a
-`detail` (`String`) — the platform's own message for the error,
-`"No such file or directory"`, for a log line or a person.
-`kind` is a stable tag derived from the OS error —
-`"not_found"`, `"permission_denied"`, `"already_exists"`,
-`"is_dir"`, and so on. So you can branch on the *kind* of
-failure without parsing error strings (the `detail` is for reading,
-not matching: its wording is the platform's):
+Branch on `e.kind` (rather than parsing `e.detail`) to recover from specific failure conditions:
 
 ```hale
 fn handle_io(e: IoError) -> String {
     if e.kind == "not_found" {
-        return "";                     // treat missing as empty
+        return "";                     // treat missing file as empty
     }
-    eprintln("io error on ", e.path, ": ", e.kind);
+    eprintln("io error on ", e.path, ": ", e.kind, " (", e.detail, ")");
     return "";
 }
 
 fn load(path: String) -> String {
     return std::io::fs::read_file(path) or handle_io(err);
 }
+
+fn main() {
+    let body = std::io::fs::read_file("config.toml") or {
+        eprintln("no config.toml; using defaults");
+        return;
+    };
+    println("config: ", len(body), " bytes");
+}
 ```
 
-This is the `or handler(err)` motion from the basics, put to
-work: one recovery function shared across every read.
+### Idempotent Directory Setup
 
-## Idempotent setup
-
-`or discard` is handy for "make sure this exists; don't care if
-it already did" — it's allowed because the result type is `()`:
+Because `mkdir` returns `()`, you can use `or discard` when ensuring a directory exists without failing if it was already created:
 
 ```hale,fragment
 std::io::fs::mkdir("cache") or discard;
 ```
 
-## Compression and archives
+*(Using `or raise` inside an infallible `fn main()` halts the process with `Hale panic: unhandled IoError escaping main locus` if the call fails.)*
 
-`std::compress` and `std::tar` work over `Bytes` in memory, so
-building a `.tar.gz` is a pipeline of ordinary calls:
+## Streaming Files (`std::io::file::File`)
+
+`read_file` and `write_file` load or write an entire file in one call. To read a large file incrementally line by line, open a `std::io::file::File` locus:
+
+```hale,fragment
+let f = std::io::file::open("log.txt", "r") or raise;
+let line = f.read_line();              // returns "" at end of file
+```
+
+Because `File` is a locus, its `dissolve()` hook automatically closes the underlying OS file descriptor when `f` goes out of scope—no manual `close()` call is required.
+
+## Compression and Tar Archives (`std::compress` and `std::tar`)
+
+`std::compress` and `std::tar` operate over `Bytes` buffers in memory and fail with `IoError`:
 
 ```hale
 fn ship(report: Bytes) fallible(IoError) {
@@ -108,32 +103,14 @@ fn ship(report: Bytes) fallible(IoError) {
 }
 ```
 
-Reading goes the other way: `read_bytes` → `gunzip` →
-`tar::entries` / `entry_name` / `entry_data` to walk what's
-inside. `zstd` / `unzstd` are the faster-newer siblings — they
-load libzstd at first use, and fail with `kind == "not_found"`
-on a machine that doesn't have it (gzip always works). Corrupt
-or truncated input fails with `kind == "invalid"` rather than
-crashing, and decompression refuses to expand past 1 GiB in one
-shot — a zip bomb is an error, not an OOM.
+| Function | Description |
+|---|---|
+| `std::compress::gzip(b)` / `gunzip(b)` | Built-in gzip compression and decompression (`Bytes -> Bytes fallible(IoError)`) |
+| `std::compress::zstd(b)` / `unzstd(b)` | Zstandard compression and decompression (loads `libzstd` on first use; fails with `kind == "not_found"` if unavailable) |
+| `std::tar::pack(buf, name, data)` / `finish(buf)` | Appends an entry to an in-memory tar buffer and finalizes the archive |
+| `std::tar::entries(b)` / `entry_name(b, i)` / `entry_data(b, i)` | Inspects entry count, file path, and payload of an unpacked tar buffer |
 
-## Held-open files
+> [!NOTE]
+> **Decompression Safety Bounds:** Corrupt or truncated archives fail with `err.kind == "invalid"` rather than crashing, and decompression refuses to expand past `1 GiB` in a single call so a zip bomb returns an `IoError` instead of exhausting memory.
 
-`read_file` / `write_file` are whole-file, one-shot. When you
-want a file *handle* you read from incrementally — line by line,
-or seeking around — use `std::io::file::File`, a locus that holds
-the open descriptor for its lifetime:
-
-```hale,fragment
-let f = std::io::file::open("log.txt", "r") or raise;
-let line = f.read_line();              // "" at end of file
-// ... f closes when it goes out of scope
-```
-
-That "closes when it goes out of scope" is the locus lifecycle
-quietly at work — `f` owns the descriptor and releases it when
-its binding's scope ends. You'll see that mechanism in full at
-the services level; here it just means you don't write a manual
-`close`.
-
-Next: structured data on disk and the wire — [JSON](./json.md).
+Next: [JSON](./json.md).

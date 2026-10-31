@@ -1,19 +1,21 @@
-# Build a job queue
+# Tutorial: Build a Job Queue
 
-In about thirty minutes, you'll build a small **job queue** and watch it
-grow in four stages — from a throwaway script to a service split across
-processes — changing almost nothing but `main` at the very end. The
-first three stages run in the browser at the
-[playground](https://play.hale-lang.org/) (no install); to follow
-along locally, drop each program in a `.hl` file and `hale run` it.
+This tutorial walks through building a job queue in four stages—starting from a 12-line script and evolving it into a multi-process service—while keeping the core business logic unchanged.
 
-We'll keep the "work" trivial — squaring a number stands in for whatever a
-real job does — so the shape of the program stays in focus.
+| Stage | Constructs Introduced | Execution Model |
+|---|---|---|
+| **1. Script** | `type`, `fn`, `fn main()` | Single-threaded run-to-exit script |
+| **2. In-Memory Queue** | `locus`, `@form(vec)`, `capacity` | Stateful arena-backed collection |
+| **3. Reactive Bus** | `topic`, `bus { subscribe; publish; }`, `<-` | Decoupled pub/sub components |
+| **4. Multi-Process** | `main locus`, `placement`, `bindings` | Separate OS processes over a Unix socket |
 
-## 1. A job, and the work
+Stages 1–3 run directly in the browser on the [Hale Playground](https://play.hale-lang.org/) or locally via `hale run`.
 
-Start with the data and the work, as a plain script. A `type` is pure data;
-a `fn` does something with it.
+---
+
+## Stage 1: Pure Data and a Function
+
+Start with a `type` (a pure value record) and a `fn` that processes it:
 
 ```hale
 type Job { id: Int; work: Int; }
@@ -32,15 +34,11 @@ fn main() {
 job 1 -> 49
 ```
 
-This is Hale as a small, clean scripting language — no ceremony, no runtime
-to think about. One job, processed.
+---
 
-## 2. A queue that holds the jobs
+## Stage 2: Storing Jobs in a `@form(vec)` Locus
 
-A queue needs to *hold* jobs. In Hale a collection is a locus with a `@form`
-annotation — no `Vec<T>` to import or parameterize. `@form(vec)` synthesizes
-`push`, `get`, `pop`, `len`, and `is_empty` on the locus; `get`/`pop` are
-fallible (out of range), so you address them at the call site with `or`.
+In Hale, dynamic collections are loci annotated with `@form(...)` rather than generic `Vec<T>` types. `@form(vec)` generates `push`, `get`, `pop`, `len`, `is_empty`, `clear`, and `truncate` over the `heap` slot declared in `capacity { }`:
 
 ```hale
 type Job { id: Int; work: Int; }
@@ -72,16 +70,17 @@ job 2 -> 9
 job 3 -> 81
 ```
 
-This is the everyday altitude — loci as plain objects that hold state and
-expose behavior. Still a single program, run start to finish.
+Because `q` is bound with `let q = Queue { };`, its arena lives until the end of `main()` and frees all queued `Job` elements in a single operation at scope exit.
 
-## 3. Make it a service: the typed bus
+---
 
-A real queue doesn't drain itself in a loop — work *arrives*, and workers
-react. That's the typed message bus. Declare the channels as `topic`s, and
-wire loci to them: a `Worker` subscribes to `Jobs`, does the work, and
-publishes a `Result`; a `Reporter` subscribes to `Results`; a `Submitter`
-publishes jobs.
+## Stage 3: Decoupling Producers and Workers with the Typed Bus
+
+Instead of polling a list in `main()`, real services react as work arrives. Declare typed channels with `topic` and connect loci with `bus { }` blocks:
+
+- `Submitter` publishes `Job` payloads to `Jobs` using `Jobs <- payload;`.
+- `Worker` subscribes to `Jobs`, computes the result, and publishes to `Results`.
+- `Reporter` subscribes to `Results` and logs completed work.
 
 ```hale
 type Job    { id: Int; work: Int; }
@@ -128,96 +127,45 @@ job 2 done -> 9
 job 3 done -> 81
 ```
 
-> **Run it:** this exact program is live in the
-> [example gallery](https://hale-lang.org/play/?example=jobqueue) — no
-> install. Or paste it into the [playground](https://play.hale-lang.org/)
-> and edit as you go.
+> **Try it live:** Open the [Job Queue example in the playground](https://hale-lang.org/play/?example=jobqueue).
 
-Notice what you *didn't* write. The `Submitter` never calls the `Worker` —
-it publishes to a topic, and whoever subscribes gets the message. There's no
-mutex, no channel type to choose, no `async`/`await` colouring a single
-function. This is the concurrent-services altitude, and the cardinality is
-emergent: add a second `Worker { };` in `main` and both receive jobs — the
-topic is many-to-many.
+Notice two rules in `fn main()`:
+1. **Subscribers are instantiated before publishers:** `Worker` and `Reporter` are born before `Submitter`'s `birth()` hook publishes messages (`hale check` warns if a publisher fires before its subscribers exist).
+2. **Zero locks or `async`/`await`:** `Submitter` never holds a reference to `Worker`. Adding a second `Worker { };` in `main` automatically fans messages out to both subscribers.
 
-So far the bus has been running in-process (the default transport — an
-in-memory queue). The loci don't know or care. That's the seam we pull on
-next.
+---
 
-## 4. Deploy it: change only `main`
+## Stage 4: Splitting Across Processes Without Touching Locus Code
 
-The loci above never mention threads or transports. You wire *those* in
-`main` — `placement { }` says where loci run, and `bindings { }` says how
-each topic travels. None of the `Worker` / `Reporter` / `Submitter` code
-changes; you give them a new `main` per deployment.
+Notice that `Worker`, `Reporter`, and `Submitter` contain no thread or socket code. Threading (`placement`) and network/IPC transports (`bindings`) are configured exclusively in `main locus`.
 
-To run the worker as its own process — listening for jobs over a Unix
-socket, on its own cooperative pool — that's a `main` locus:
+To run `Worker` and `Reporter` as a standalone daemon listening on a Unix domain socket (`/tmp/jobs.sock`) on a dedicated worker thread pool, write a `main locus`:
 
 ```hale,fragment
-// worker.hl — the worker as its own binary. Import the shared Job/Result
-// types, the Jobs/Results topics, and the Worker/Reporter loci from §3;
-// only this `main` is new.
+// worker_node.hl — imports Job, Result, Jobs, Results, Worker, Reporter from stage 3
 main locus WorkerNode {
     params {
         worker:   Worker   = Worker { };
         reporter: Reporter = Reporter { };
     }
     placement {
-        worker: cooperative(pool = jobs);   // its own pool / OS thread
+        worker: cooperative(pool = jobs);   // Dedicated OS thread pool
     }
     bindings {
         Jobs: unix("/tmp/jobs.sock", role: listen);
     }
     run() {
-        while !self.draining { std::time::sleep(1s); }   // serve until Ctrl-C
+        while !self.draining { std::time::sleep(1s); }   // Keep daemon alive until SIGINT/SIGTERM
     }
 }
 
 fn main() { WorkerNode { }; }
 ```
 
-The `run()` loop is what keeps a listening process up: a program whose
-`main` has nothing left to do exits, socket and all.
+A separate producer binary imports `Jobs` and `Submitter` and binds `Jobs: unix("/tmp/jobs.sock", role: connect);` in its own `main locus`. The `Jobs` topic now crosses an OS process boundary over `/tmp/jobs.sock` with zero edits to `Worker`, `Reporter`, or `Submitter`.
 
-The job *source* becomes a second binary whose `main` instantiates the
-`Submitter` and binds the same topic with `role: connect`
-(`Jobs: unix("/tmp/jobs.sock", role: connect);`). Same `Jobs` topic, same
-typed payload — now crossing a process boundary instead of an in-memory
-queue. Swap `unix(...)` for a broker adapter locus and the loci still
-don't change; only `main` does. (Add a `codec(...)` on the binding — a
-codec locus you write — to put JSON or protobuf on the wire so a non-Hale
-peer can read it.)
+### Where to Go Next
 
-For the full multi-binary picture — sharing the loci across files, picking
-transports, and supervising the workers — see
-[Across binaries](../services/multi-binary.md) and
-[Concurrency & placement](../services/concurrency.md).
-
-## What you built
-
-The same `Job` / `Worker` / topic definitions carried you from a script to a
-distributed service. Each stage added exactly what it needed and nothing
-more:
-
-| Stage | What appeared |
-|---|---|
-| **Script** | `type`, `fn` — data and the work |
-| **Everyday** | a `@form(vec)` locus that holds the jobs |
-| **Concurrent** | `topic`s + the bus; workers react instead of being called |
-| **Deployed** | `main` chooses placement and transports — the loci untouched |
-
-> **Altitude, not scale.** These four steps are how much machinery you are
-> choosing to control. They are a different axis from the *scales* the
-> [README](https://github.com/hale-lang/hale#six-scales-one-model) walks —
-> value, component, service, application, environment, fleet — which measure
-> how large the composed system is. This tutorial climbed one axis while
-> staying near the bottom of the other, which is why the same `Worker`
-> survived every stage.
-
-That last row is the point: a Hale program is a *design* of loci and topics;
-where and how it runs is a binding you change in one place. From here, the
-[locus model](../services/lifecycle.md) chapters go deeper on
-lifecycle, failure, and supervision — or open the
-[playground](https://play.hale-lang.org/) and run the bus version
-in your browser.
+- **[Part I: Values, Types & Variables](../basics/values.md)** — Learn the core language syntax and type system from the ground up.
+- **[Part II: Locus Lifecycle](../services/lifecycle.md)** and **[Concurrency & Thread Placement](../services/concurrency.md)** — Deep dive into `birth`/`run`/`drain`/`dissolve` and thread pools.
+- **[Part II: Multi-Binary Systems & Fleets](../services/multi-binary.md)** — Compose multiple binaries into a verified `fleet locus`.

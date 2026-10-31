@@ -1,0 +1,573 @@
+// dna/tests/habitat_operator_face_test.hl — the habitat serves the operator face.
+//
+// `hale habitat up` births the habitat from the toolchain's genome, which
+// carries its own `ui/` (dna/habitat/ui): the operator face. The standard
+// face serves it under `/app/` behind the head's gate, with no step beyond
+// `up`. The page reads the habitat's state through the generated client of
+// the head's rows (`Commands::index`, over `/api/hale/v1/head/surface`);
+// this fixture makes the same call the client makes and reads the habitat
+// and its organisms from the answer, and the web UIs its home screen lists
+// (`Commands::uis`: each organism's face, and a UI a sapling declares in
+// `[dna.ui.<name>]`). The head is a fixture's trusted-local
+// one; the sign-in itself, under the stub issuer, is
+// dna/api/project_service/tests/operator_face_test.hl.
+// The habitat is this test file's own (`hale test` gives each file one), and
+// its models catalog is empty: the face works with no model mapped. Without
+// docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations and
+// the head a fixture's trusted-local one (no provider to sign in through).
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
+fn face_of(status: String) -> String {
+    let at = std::str::index_of(status, "face    http://");
+    if at < 0 { return ""; }
+    let rest = status[(at + 8)..len(status)];
+    let end = std::str::index_of(rest, "/ (");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+// `curl` of `url` with `args` (newline-separated) before it: its body, then
+// its status on a line of its own.
+fn fetch(args: String, url: String) -> dna::RunResult {
+    return dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n" + args + (if len(args) > 0 { "\n" } else { "" }) + url,
+    );
+}
+
+fn status_of(r: dna::RunResult) -> String { return dna::last_line(std::str::trim(r.stdout)); }
+
+// The habitat's Grafana, behind its face (`up` printed where), and what its
+// senses read of this machine: through the face for the person the head's
+// gate names, and to nothing else. Whether this run installed the machine's
+// exporter (the fixture takes it off at its end).
+fn grafana_and_readings(up: String, face: String, linux: Bool) -> Bool {
+    std::test::assert(
+        std::str::contains(
+            up,
+            "grafana " + face + "/grafana/ (compose service grafana, behind the face's sign-in)",
+        ),
+        "up says where the habitat's Grafana is: " + up,
+    );
+    let token = dna::trim_nl(text_of(dna::local_habitat_dir() + "/face-state/head.token"));
+    let cookie = "-H\nCookie: dna_local=" + token;
+    // Grafana makes its database at its first start
+    let until = std::time::now() + dna::wait_secs(180);
+    let mut health = fetch(cookie, face + "/grafana/api/health");
+    while status_of(health) != "200" && std::time::now() <= until {
+        std::time::sleep(1s);
+        health = fetch(cookie, face + "/grafana/api/health");
+    }
+    std::test::assert_eq_str(
+        status_of(health),
+        "200",
+        "Grafana answers through the face: " + health.stdout,
+    );
+    let anonymous = fetch("", face + "/grafana/api/user");
+    std::test::assert_eq_str(
+        status_of(anonymous),
+        "401",
+        "without the session the head refuses it, and Grafana is not asked: " + anonymous.stdout,
+    );
+    let me = fetch(
+        cookie
+            + "\n-H\nX-Hale-Person: mallory\n-H\nX-WEBAUTH-USER: mallory\n-H\nAuthorization: Basic YWRtaW46YWRtaW4=",
+        face + "/grafana/api/user",
+    );
+    let login = std::json::find_string_field(me.stdout, "login");
+    std::test::assert(
+        status_of(me) == "200" && len(login) > 0 && login != "mallory" && login != "admin",
+        "with it, Grafana signs in the person the head names, never one a header or a password claims: "
+            + me.stdout,
+    );
+    // Grafana's own port, on the face's loopback, opens to nothing that
+    // does not know the habitat's header (reachable from here where the
+    // face shares the machine's network)
+    if linux {
+        let port = std::str::parse_int(face[len("http://127.0.0.1:")..len(face)]) or 0;
+        let direct = fetch(
+            "-H\nX-Hale-Person: mallory\n-H\nAuthorization: Basic YWRtaW46YWRtaW4=",
+            "http://127.0.0.1:" + to_string(port + 5) + "/grafana/api/user",
+        );
+        std::test::assert_eq_str(
+            status_of(direct),
+            "401",
+            "Grafana's port alone opens nothing: " + direct.stdout,
+        );
+    }
+    // the habitat's senses scrape this machine (the store reads senses.d/),
+    // which Grafana reads as its data source
+    let key = dna::allocation_key(dna::local_habitat_dir() + "/genome");
+    let targets = text_of(
+        dna::local_habitat_dir() + "/allocations/" + key + "/senses.d/hosts.json",
+    );
+    std::test::assert(
+        std::str::contains(targets, "\"host.docker.internal:9100\""),
+        "the senses' targets name this machine: " + targets,
+    );
+    // and the store reads the services the habitat places on its hosts
+    // from senses.d/services/ (none placed here: the directory is empty)
+    let senses_yml = text_of(dna::local_habitat_dir() + "/allocations/" + key + "/senses.yml");
+    std::test::assert(
+        std::str::contains(senses_yml, "  - job_name: services\n")
+            && std::str::contains(senses_yml, "\"/etc/prometheus/senses.d/services/*.json\"")
+            && std::io::fs::file_exists(
+                dna::local_habitat_dir() + "/allocations/" + key + "/senses.d/services",
+            ),
+        "`up` adds the placed services' scrape job: " + senses_yml,
+    );
+    let query = face
+        + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22host%22%7D";
+    let seen_until = std::time::now() + dna::wait_secs(120);
+    let mut seen = fetch(cookie, query);
+    let want = if linux { "\"1\"]" } else { "\"host\":\"local\"" };
+    while !std::str::contains(seen.stdout, want) && std::time::now() <= seen_until {
+        std::time::sleep(2s);
+        seen = fetch(cookie, query);
+    }
+    std::test::assert(
+        std::str::contains(seen.stdout, "\"job\":\"host\"")
+            && std::str::contains(seen.stdout, want),
+        "Grafana's data source is the habitat's senses, which scrape this machine"
+            + (if linux { " and read it" } else { "" }) + ": " + seen.stdout + " (curl "
+            + to_string(seen.code) + ": " + seen.stderr + ")\nGrafana's log:\n"
+            + dna::run_tool(
+                "sh\n-c\ndocker logs --tail 15 \"$(docker ps -q --filter label=com.docker.compose.service=grafana --filter label=com.docker.compose.project=$1)\" 2>&1\nsh\n"
+                    + dna::local_habitat_project(),
+            ).stdout,
+    );
+    // ---- what the habitat watches for: its reflexes, rendered for its store,
+    // loaded there, and read back as its alerts
+    std::test::assert(
+        std::str::contains(
+            up,
+            "reflexes 2 watched by its senses' store (disk-filling, disk-full-within-a-day;",
+        ),
+        "up says what the habitat's reflexes are: " + up,
+    );
+    let rules_url = face + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/rules";
+    let rules_until = std::time::now() + dna::wait_secs(60);
+    let mut loaded = fetch(cookie, rules_url);
+    while !std::str::contains(loaded.stdout, "\"disk-full-within-a-day\"")
+        && std::time::now() <= rules_until
+    {
+        std::time::sleep(1s);
+        loaded = fetch(cookie, rules_url);
+    }
+    std::test::assert(
+        std::str::contains(loaded.stdout, "\"name\":\"disk-filling\"")
+            && std::str::contains(loaded.stdout, "\"organism\":\"" + key + "\""),
+        "the habitat's store evaluates its reflexes: " + loaded.stdout,
+    );
+    // as a browser asks it: the session's cookie, through the face's relay
+    let alerts = fetch(
+        cookie
+            + "\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:ca93e7590466f972\n--data\n{\"limit\": 200}",
+        face + "/api/hale/v1/head/surface/call/Commands::alerts",
+    ).stdout;
+    std::test::assert(
+        std::str::contains(alerts, "\"ok\":true") && std::str::contains(alerts, "\"alerts\":\"["),
+        "the head reads the habitat's alerts from its store: " + alerts,
+    );
+    if !linux { return false; }
+    std::test::assert(
+        std::str::contains(up, "node    local: node_exporter ")
+            || std::str::contains(up, "node    local: an exporter already answers on :9100"),
+        "up installs this machine's node exporter, or finds one: " + up,
+    );
+    // and its containers: the container exporter installed, its job scraped
+    std::test::assert(
+        std::str::contains(up, "containers local: cAdvisor ")
+            || std::str::contains(
+                up,
+                "containers local: a container exporter already answers on :9338",
+            ),
+        "up installs this machine's container exporter, or finds one: " + up,
+    );
+    let cquery = face
+        + "/grafana/api/datasources/proxy/uid/habitat-senses/api/v1/query?query=up%7Bjob%3D%22containers%22%7D";
+    let c_until = std::time::now() + dna::wait_secs(240);
+    let mut cseen = fetch(cookie, cquery);
+    while !std::str::contains(cseen.stdout, "\"1\"]") && std::time::now() <= c_until {
+        std::time::sleep(2s);
+        cseen = fetch(cookie, cquery);
+    }
+    std::test::assert(
+        std::str::contains(cseen.stdout, "\"job\":\"containers\"")
+            && std::str::contains(cseen.stdout, "\"1\"]"),
+        "the habitat's senses read this machine's containers: " + cseen.stdout,
+    );
+    return std::str::contains(up, "a container of the habitat's (hale-node-exporter)");
+}
+
+fn get(url: String) -> dna::RunResult {
+    return dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n" + url);
+}
+
+// The row the client calls, as the client calls it.
+fn index_call(face: String) -> String {
+    return dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:a03807891b4f4f8c\n--data\n{\"limit\": 200}\n"
+            + face + "/api/hale/v1/head/surface/call/Commands::index",
+    ).stdout;
+}
+
+// The home screen's read of the web UIs, as the client calls it.
+fn uis_call(face: String) -> String {
+    return dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:ea742e1b3ee3224e\n--data\n{\"limit\": 200}\n"
+            + face + "/api/hale/v1/head/surface/call/Commands::uis",
+    ).stdout;
+}
+
+fn git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool("git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args);
+}
+
+// A row called as the client calls it, with its own digest and, when `token`
+// is not empty, the launch token the trusted-local session asks of a write.
+fn row_call(face: String, member: String, digest: String, body: String, token: String) -> String {
+    return dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: "
+            + digest + (if len(token) > 0 { "\n-H\nX-Hale-Token: " + token } else { "" })
+            + "\n--data\n" + body + "\n" + face + "/api/hale/v1/head/surface/call/Commands::"
+            + member,
+    ).stdout;
+}
+
+// The same row by the head's own route, at the head's port (the face's next).
+fn head_call(face: String, member: String, body: String, token: String) -> String {
+    let at = std::str::index_of(face, "127.0.0.1:") + 10;
+    let head = "http://127.0.0.1:" + to_string((std::str::parse_int(face[at..len(face)]) or 0) + 1);
+    return dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nContent-Type: application/json\n"
+            + (if len(token) > 0 { "-H\nX-Hale-Token: " + token + "\n" } else { "" })
+            + "--data\n" + body + "\n" + head + "/api/hale/v1/head/read-call/Commands::" + member,
+    ).stdout;
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_operator_face_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_operator_face_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("habitat-operator-face");
+    dna::reap_on_exit(scratch);
+
+    // the one fixture whose habitat runs its Grafana, and on Linux its
+    // machine's node exporter (a Mac's is launchd's, never a fixture's)
+    let linux = dna::trim_nl(dna::run_tool("uname\n-s").stdout) == "Linux";
+    let started = in_dir(
+        scratch,
+        "env\nHALE_DNA_GRAFANA=on\nHALE_DNA_NODE_EXPORTER=" + (if linux { "on" } else { "off" })
+            + "\n"
+            + toolchain() + "\nhabitat\nup\n--name\noperator-face",
+    );
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
+    );
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    let face = face_of(status);
+    std::test::assert(std::str::starts_with(face, "http://127.0.0.1:"), "the face has an address");
+    let ours_exporter = grafana_and_readings(started.stdout, face, linux);
+    // ---- its name: given at its birth, recorded, shown, and kept
+    std::test::assert(
+        std::str::contains(status, "\nname    operator-face\n"),
+        "status shows the habitat's name: " + status,
+    );
+    let renamed = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--name\nanother");
+    std::test::assert(
+        renamed.code != 0
+            && std::str::contains(renamed.stderr, "a habitat keeps the name it was born with"),
+        "a habitat keeps its name: " + renamed.stdout + renamed.stderr,
+    );
+    let bad = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--name\nNot_A_Label");
+    std::test::assert(
+        bad.code == 2 && std::str::contains(bad.stderr, "a habitat's name is a DNS label"),
+        "a name is a DNS label: " + bad.stderr,
+    );
+
+    // ---- the habitat's genome carries the operator face, tracked
+    let shell = get(face + "/app/");
+    let mut tries = 0;
+    let mut page = shell;
+    while !std::str::ends_with(std::str::trim(page.stdout), "200") && tries < 180 {
+        std::time::sleep(1s);
+        page = get(face + "/app/");
+        tries = tries + 1;
+    }
+    std::test::assert(
+        std::str::contains(page.stdout, "id=\"crossing\"")
+            && std::str::contains(page.stdout, "type=\"module\" src=\"operator.js\"")
+            && std::str::ends_with(std::str::trim(page.stdout), "200"),
+        "the face serves the operator shell under /app/: " + page.stdout,
+    );
+    let css = get(face + "/app/operator.css").stdout;
+    std::test::assert(
+        std::str::contains(css, "--brass") && std::str::contains(css, "JetBrains Mono"),
+        "with the visual language as properties: " + css,
+    );
+    let hardware = get(face + "/app/hardware.js").stdout;
+    std::test::assert(
+        std::str::contains(hardware, "commandsAddHost"),
+        "with screen 2, the hardware module: " + hardware,
+    );
+    let infrastructure = get(face + "/app/infrastructure.js").stdout;
+    std::test::assert(
+        std::str::contains(infrastructure, "commandsPolicy"),
+        "and screen 3, the infrastructure module: " + infrastructure,
+    );
+    let organisms = get(face + "/app/organisms.js").stdout;
+    std::test::assert(
+        std::str::contains(organisms, "commandsSaplings"),
+        "and screen 4, the organisms module: " + organisms,
+    );
+    let client = get(face + "/app/head-client.js").stdout;
+    std::test::assert(
+        std::str::contains(client, "export function commandsIndex")
+            && std::str::contains(client, "fnv1a64:a03807891b4f4f8c"),
+        "and the generated client of the head's row",
+    );
+
+    // ---- with its models catalog empty (no category mapped, discovery off):
+    // the solo path, which every screen serves as a normal state
+    let genome = dna::local_habitat_dir() + "/genome";
+    let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.");
+    std::test::assert(
+        rows.code == 0 && !std::str::contains(rows.stdout, "model.category"),
+        "the habitat maps no model: " + rows.stderr,
+    );
+
+    // ---- the read the page makes answers: the habitat's record, its name,
+    // no organisms yet
+    let before = index_call(face);
+    std::test::assert(
+        std::str::contains(before, "\"name\":\"operator-face\"")
+            || std::str::contains(before, "\"name\": \"operator-face\""),
+        "Commands::index answers the habitat's name: " + before,
+    );
+    std::test::assert(
+        std::str::contains(get(face + "/app/operator.js").stdout, "const name = r.name ||"),
+        "and the operator face shows it first",
+    );
+    std::test::assert(
+        std::str::contains(before, "\"ok\":true") || std::str::contains(before, "\"ok\": true"),
+        "the habitat-state read answers through the client's row: " + before,
+    );
+    std::test::assert(
+        std::str::contains(before, "\"organisms\":\"[]\"")
+            || std::str::contains(before, "\"organisms\": \"[]\""),
+        "with no organisms yet: " + before,
+    );
+
+    // ---- grafted organisms are counted and named by the same read
+    let a = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nalpha\n--no-library");
+    std::test::assert_eq_int(a.code, 0, "alpha is grafted: " + a.stdout + a.stderr);
+    let mut after = index_call(face);
+    let deadline = std::time::now() + dna::wait_secs(300);
+    while std::time::now() <= deadline && !std::str::contains(after, "alpha") {
+        std::time::sleep(1s);
+        after = index_call(face);
+    }
+    std::test::assert(
+        std::str::contains(after, "alpha") && std::str::contains(after, "grafted"),
+        "the read names the organism and its state: " + after,
+    );
+    // ---- the home screen lists its face among the habitat's web UIs
+    let page_now = get(face + "/app/").stdout;
+    std::test::assert(
+        std::str::contains(page_now, "id=\"ui-rows\"")
+            && std::str::contains(get(face + "/app/operator.js").stdout, "commandsUis"),
+        "the home screen lists the UIs: " + page_now,
+    );
+    let listed = uis_call(face);
+    std::test::assert(
+        std::str::contains(listed, "alpha face")
+            && (
+                std::str::contains(listed, "\"ok\":true")
+                    || std::str::contains(listed, "\"ok\": true")
+            ),
+        "Commands::uis lists the organism's face: " + listed,
+    );
+
+    // ---- a sapling of a local git repository, grafted through the row
+    // (`Commands::graft`) and followed through its log (`Commands::graft_log`)
+    let src = scratch + "/sprout-src";
+    std::io::fs::mkdir(src) or discard;
+    git(src, "init\n-q\n-b\nmain");
+    // it declares a web UI, served by a service it has none of here: listed,
+    // and said to have no address
+    std::io::fs::write_file(
+        src + "/hale.toml",
+        "[dna]\nneeds = [\"memory\", \"nerves\"]\n\n[dna.ui.console]\nlabel = \"sprout console\"\nservice = \"web\"\npath = \"/console\"\n",
+    )
+    or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout v1");
+    git(src, "tag\nv1");
+    let pinned = "sha256:" + dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\ngit -C \"$1\" ls-tree -r --full-tree v1 | sha256sum | cut -d' ' -f1\nsh\n"
+                + src,
+        ).stdout,
+    );
+    let nursery = scratch + "/nursery";
+    std::io::fs::mkdir(nursery) or discard;
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        "[[sapling]]\nname = \"sprout\"\nsummary = \"a small organism\"\nrepo = \"" + src
+            + "\"\nrevision = \"v1\"\ndigest = \"" + pinned + "\"\n",
+    ) or discard;
+    let added = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + nursery);
+    std::test::assert_eq_int(
+        added.code,
+        0,
+        "the nursery is trusted: " + added.stdout + added.stderr,
+    );
+    // a trusted-local session authenticates a write as the head's own
+    // commands are: the launch token. Without it, by either route, a write
+    // the relay carries is refused and the API child is not asked.
+    let token = dna::trim_nl(text_of(dna::local_habitat_dir() + "/face-state/head.token"));
+    std::test::assert(len(token) > 0, "the head's launch token is in its state");
+
+    // ---- a visitor lands on the operator face, the organization shell one link away
+    let cookie = "\n-H\nCookie: dna_local=" + token + "\n";
+    let landed = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code} %{redirect_url}" + cookie + face + "/",
+    );
+    std::test::assert(
+        std::str::trim(landed.stdout) == "302 " + face + "/app/",
+        "`/` lands on the operator face: " + landed.stdout,
+    );
+    let shell_page = dna::run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}" + cookie + face + "/organization",
+    );
+    std::test::assert(
+        std::str::contains(shell_page.stdout, "src=\"/app.js\"")
+            && std::str::ends_with(std::str::trim(shell_page.stdout), "200"),
+        "the organization shell answers at /organization: " + shell_page.stdout,
+    );
+    let bare = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code} %{redirect_url}\n" + face + "/app",
+    );
+    std::test::assert(
+        std::str::trim(bare.stdout) == "302 " + face + "/app/",
+        "`/app` is the app's directory: " + bare.stdout,
+    );
+    let no_graft = row_call(
+        face, "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}", "",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(no_graft), "401")
+            && !std::str::contains(no_graft, "started"),
+        "an unauthenticated graft is refused: " + no_graft,
+    );
+    let no_host = row_call(
+        face, "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        "{\"name\": \"no-such-host.invalid\", \"user\": \"ops\", \"port\": 22}", "",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(no_host), "401"),
+        "an unauthenticated add_host is refused: " + no_host,
+    );
+    let no_apply = head_call(face, "apply_allocations", "{\"host\": \"\", \"fresh\": false}", "");
+    std::test::assert(
+        std::str::ends_with(std::str::trim(no_apply), "401"),
+        "an unauthenticated apply_allocations on the head's own route is refused: " + no_apply,
+    );
+    let no_log = head_call(face, "graft_log", "{\"graft\": \"sprout\", \"from\": 0}", "");
+    std::test::assert(
+        std::str::ends_with(std::str::trim(no_log), "401"),
+        "an unauthenticated graft_log is refused: " + no_log,
+    );
+    let wrong = row_call(
+        face, "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}", "not-the-token",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(wrong), "401"),
+        "and one with another token: " + wrong,
+    );
+    let started_graft = row_call(
+        face, "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}", token,
+    );
+    std::test::assert(
+        std::str::contains(started_graft, "\"graft\":\"sprout\""),
+        "graft answers at once with the graft's id: " + started_graft,
+    );
+    let mut from = 0;
+    let mut text = "";
+    let mut ended = false;
+    let mut exit = -1;
+    let until = std::time::now() + dna::wait_secs(600);
+    while !ended && std::time::now() <= until {
+        let page = row_call(
+            face, "graft_log", "fnv1a64:7a8e4a9a24e7a43e",
+            "{\"graft\": \"sprout\", \"from\": " + to_string(from) + "}", token,
+        );
+        from = std::json::find_int_field(page, "next");
+        text = text + std::json::find_string_field(page, "text");
+        ended = std::str::contains(page, "\"done\":true");
+        exit = std::json::find_int_field(page, "exit");
+        if !ended { std::time::sleep(2s); }
+    }
+    std::test::assert(ended && exit == 0, "the graft's log ends with exit 0: " + text);
+    let sprouted = index_call(face);
+    std::test::assert(
+        std::str::contains(sprouted, "sprout"),
+        "the index names the new organism: " + sprouted,
+    );
+    let sprout_uis = uis_call(face);
+    std::test::assert(
+        std::str::contains(sprout_uis, "sprout face")
+            && std::str::contains(sprout_uis, "sprout console")
+            && std::str::contains(sprout_uis, "its services publish nothing"),
+        "Commands::uis lists the UI the sapling declares, with no address yet: " + sprout_uis,
+    );
+    let escaped = row_call(
+        face, "graft_log", "fnv1a64:7a8e4a9a24e7a43e", "{\"graft\": \"../up\", \"from\": 0}", token,
+    );
+    std::test::assert(
+        std::str::contains(escaped, "invalid_graft") && !std::str::contains(escaped, "\"ok\":true"),
+        "a path outside the grafts is refused: " + escaped,
+    );
+
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    std::test::assert_eq_int(down.code, 0, "down: " + down.stdout + down.stderr);
+    std::test::assert(
+        std::str::contains(down.stdout, "stopped the habitat's Grafana (compose service grafana)"),
+        "down stops the habitat's Grafana: " + down.stdout,
+    );
+    // the machine's exporter is the machine's: this fixture installed it, and takes it off
+    if ours_exporter {
+        let gone = dna::run_tool("docker\nrm\n-f\nhale-node-exporter\nhale-cadvisor");
+        std::test::assert_eq_int(gone.code, 0, "the fixture's exporter is removed: " + gone.stderr);
+    }
+    dna::scratch_done(scratch);
+}

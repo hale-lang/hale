@@ -260,6 +260,15 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // receiver is read.
             match self.current_self.as_ref().map(|cs| cs.locus_name.clone()) {
                 Some(reader) => {
+                    // Read in the reader's own run()? Anywhere else (a
+                    // handler, a hook, a method another locus calls) it
+                    // can answer a drain after run() has returned.
+                    let in_run = self.current_fn.is_some_and(|f| {
+                        self.user_loci.get(&reader).and_then(|r| r.methods.get("run")).is_some_and(|r| *r == f)
+                    });
+                    if !in_run {
+                        self.drain_reads_beyond_run.insert(reader.clone());
+                    }
                     self.drain_observer_loci.insert(reader);
                 }
                 None => self.drain_read_outside_locus = true,
@@ -405,7 +414,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 && match ty {
                     CodegenTy::Interface(_) | CodegenTy::Perspective(_) => true,
                     CodegenTy::LocusRef(n) => self.user_loci.contains_key(n),
-                    _ => false,
+                    other => composite_loci(other).is_some_and(|v| v.iter().any(|(_, n)| self.user_loci.contains_key(n))),
                 }
         });
         let retain = if tears_down { Some(self.emit_reclaim_scope_enter(self_ptr)?) } else { None };
@@ -446,14 +455,19 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 )?;
                 continue;
             }
-            let inner_name = match field_ty {
-                CodegenTy::LocusRef(n) => n,
-                _ => continue,
+            // GH #1566 follow-up: an array or a tuple of loci holds its
+            // elements as owned children, each torn down here, in
+            // element order, as a locus-typed field's one child is
+            let children: Vec<(Option<u32>, String)> = match &field_ty {
+                CodegenTy::LocusRef(n) => vec![(None, n.clone())],
+                other => match composite_loci(other) {
+                    Some(v) => v.into_iter().map(|(k, n)| (Some(k), n)).collect(),
+                    None => continue,
+                },
             };
-            let inner_info = match self.user_loci.get(&inner_name).cloned() {
-                Some(i) => i,
-                None => continue, // shouldn't happen for a typed field
-            };
+            if children.iter().all(|(_, n)| !self.user_loci.contains_key(n)) {
+                continue;
+            }
             // F.29 follow-up: ownership branch. Wrap the cascade
             // body in an `if (__locus_ref_owned_mask >> bit) & 1`
             // check so externally-provided fields (variable-ref
@@ -475,7 +489,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 }
                 _ => None,
             };
-            // GEP the field slot, load the inner self_ptr.
+            // GEP the field slot; each child's self_ptr is loaded from it.
             let field_slot_ptr = self
                 .builder
                 .build_struct_gep(
@@ -485,15 +499,11 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.{}.cascade.gep", locus_name, fname),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let inner_ptr = self
-                .builder
-                .build_load(
-                    ptr_t,
-                    field_slot_ptr,
-                    &format!("{}.{}.cascade.load", locus_name, fname),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
+            let _ = ptr_t;
+            for (pos, inner_name) in children {
+            let Some(inner_info) = self.user_loci.get(&inner_name).cloned() else { continue };
+            let owned_elems = self.owned_elems_word(info, self_ptr, &fname)?;
+            let inner_ptr = self.emit_held_child_ptr(field_slot_ptr, &field_ty, pos, owned_elems, &format!("{locus_name}.{fname}.cascade"))?;
             // GH #1036: step over a child that was already reclaimed
             // (see `emit_reclaimed_child_skip`).
             let skip_bb = self.emit_reclaimed_child_skip(
@@ -571,6 +581,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 .build_unconditional_branch(skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(skip_bb);
+            }
             // Close the owned-branch (if one was emitted): jump to
             // the after-bb and position the builder there so the
             // next field's emission begins in the correct block.
@@ -1066,23 +1077,32 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 )?;
                 continue;
             }
-            let inner_name = match field_ty {
-                CodegenTy::LocusRef(n) => n,
-                _ => continue,
+            let children: Vec<(Option<u32>, String)> = match &field_ty {
+                CodegenTy::LocusRef(n) => {
+                    if is_main_locus
+                        && matches!(
+                            self.deployment.main_placement_map.get(&fname),
+                            Some(ScheduleClass::Pinned(_))
+                        )
+                    {
+                        // C52 (line 12): the replicas of a pinned field whose
+                        // join records the root keeps are joined here, as its
+                        // drain, in its owner's cascade; one the building frame
+                        // keeps is joined by that frame's flush entries.
+                        self.emit_instance_pinned_join(info, self_ptr, &fname, n)?;
+                        continue;
+                    }
+                    vec![(None, n.clone())]
+                }
+                // GH #1566 follow-up: each element of an array or a tuple
+                // of loci, in element order
+                other => match composite_loci(other) {
+                    Some(v) => v.into_iter().map(|(k, n)| (Some(k), n)).collect(),
+                    None => continue,
+                },
             };
-            if is_main_locus
-                && matches!(
-                    self.deployment.main_placement_map.get(&fname),
-                    Some(ScheduleClass::Pinned(_))
-                )
-            {
-                // C52 (line 12): the replicas of a pinned field whose
-                // join records the root keeps are joined here, as its
-                // drain, in its owner's cascade; one the building frame
-                // keeps is joined by that frame's flush entries.
-                self.emit_instance_pinned_join(info, self_ptr, &fname, &inner_name)?;
-                continue;
-            }
+            let mut emitted_gate: Option<(Option<inkwell::basic_block::BasicBlock<'ctx>>, PointerValue<'ctx>)> = None;
+            for (pos, inner_name) in children {
             let inner_info = match self.user_loci.get(&inner_name).cloned() {
                 Some(i) => i,
                 None => continue,
@@ -1112,37 +1132,39 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // F.29 follow-up: ownership branch (same gate as
             // emit_locus_field_dissolves). Externally-provided
             // fields skip the cascade — their real owner runs
-            // drain at THEIR scope exit.
-            let (owned_then_bb, owned_after_bb) = self
-                .emit_locus_field_owned_branch(
-                    info, self_ptr, locus_name, &fname,
-                    "cascade.drain",
-                )?;
-            let after_bb = match (owned_then_bb, owned_after_bb) {
-                (Some(then_bb), Some(after_bb)) => {
-                    self.builder.position_at_end(then_bb);
-                    Some(after_bb)
+            // drain at THEIR scope exit. One gate per field, opened
+            // before its first child.
+            let (_, field_slot_ptr) = match emitted_gate {
+                Some(g) => g,
+                None => {
+                    let (owned_then_bb, owned_after_bb) = self
+                        .emit_locus_field_owned_branch(
+                            info, self_ptr, locus_name, &fname,
+                            "cascade.drain",
+                        )?;
+                    let after_bb = match (owned_then_bb, owned_after_bb) {
+                        (Some(then_bb), Some(after_bb)) => {
+                            self.builder.position_at_end(then_bb);
+                            Some(after_bb)
+                        }
+                        _ => None,
+                    };
+                    let field_slot_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            self_ptr,
+                            field_idx,
+                            &format!("{}.{}.drain.gep", locus_name, fname),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    emitted_gate = Some((after_bb, field_slot_ptr));
+                    (after_bb, field_slot_ptr)
                 }
-                _ => None,
             };
-            let field_slot_ptr = self
-                .builder
-                .build_struct_gep(
-                    info.struct_ty,
-                    self_ptr,
-                    field_idx,
-                    &format!("{}.{}.drain.gep", locus_name, fname),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let inner_ptr = self
-                .builder
-                .build_load(
-                    ptr_t,
-                    field_slot_ptr,
-                    &format!("{}.{}.drain.load", locus_name, fname),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_pointer_value();
+            let _ = ptr_t;
+            let owned_elems = self.owned_elems_word(info, self_ptr, &fname)?;
+            let inner_ptr = self.emit_held_child_ptr(field_slot_ptr, &field_ty, pos, owned_elems, &format!("{locus_name}.{fname}.drain"))?;
             // GH #1036: the drain half steps over a reclaimed child as
             // the dissolve half does — its `drain()` already ran, and
             // its fields lived in its freed arena.
@@ -1173,7 +1195,8 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 .build_unconditional_branch(skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(skip_bb);
-            if let Some(after_bb) = after_bb {
+            }
+            if let Some((Some(after_bb), _)) = emitted_gate {
                 self.builder
                     .build_unconditional_branch(after_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1431,7 +1454,148 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
 
 }
 
+/// GH #1566 follow-up: the loci an array or a tuple of loci holds, by
+/// element: `(position, locus)`. GH #1569: a tuple's locus parts, beside
+/// parts of other types (`(W, Int)`). `None` for a type holding none.
+pub(crate) fn composite_loci(ty: &CodegenTy) -> Option<Vec<(u32, String)>> {
+    match ty {
+        CodegenTy::Array(elem, n) => match elem.as_ref() {
+            CodegenTy::LocusRef(l) => Some((0..*n as u32).map(|k| (k, l.clone())).collect()),
+            _ => None,
+        },
+        CodegenTy::Tuple(ts) => {
+            let parts: Vec<(u32, String)> = ts
+                .iter()
+                .enumerate()
+                .filter_map(|(k, t)| match t {
+                    CodegenTy::LocusRef(l) => Some((k as u32, l.clone())),
+                    _ => None,
+                })
+                .collect();
+            (!parts.is_empty()).then_some(parts)
+        }
+        _ => None,
+    }
+}
+
+/// GH #1569: the elements of an array or a tuple, of any type.
+pub(crate) fn composite_len(ty: &CodegenTy) -> usize {
+    match ty {
+        CodegenTy::Array(_, n) => *n as usize,
+        CodegenTy::Tuple(ts) => ts.len(),
+        _ => 0,
+    }
+}
+
+/// GH #1569: the 64-bit words an owned-elements bitmap of `n` elements
+/// takes (one at least).
+pub(crate) fn owned_elems_words(n: usize) -> u32 {
+    n.div_ceil(64).max(1) as u32
+}
+
+/// GH #1569: the owned-elements bitmap with bit k set where `owned[k]`.
+pub(crate) fn owned_elems_bitmap<'ctx>(
+    context: &'ctx inkwell::context::Context,
+    owned: &[bool],
+) -> inkwell::values::BasicValueEnum<'ctx> {
+    let i64_t = context.i64_type();
+    let words: Vec<inkwell::values::IntValue<'ctx>> = (0..owned_elems_words(owned.len()) as usize)
+        .map(|w| {
+            let bits = (0..64).filter(|b| owned.get(w * 64 + b).copied().unwrap_or(false)).fold(0u64, |m, b| m | (1u64 << b));
+            i64_t.const_int(bits, false)
+        })
+        .collect();
+    i64_t.const_array(&words).into()
+}
+
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #1569: the word of the owned-elements bitmap at `bitmap` that
+    /// holds element `k`'s bit, and that bit.
+    pub(crate) fn owned_elem_bit(
+        &mut self,
+        bitmap: PointerValue<'ctx>,
+        k: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let w = self.builder.build_right_shift(k, i64_t.const_int(6, false), false, "owned.word.idx").map_err(e)?;
+        let b = self.builder.build_and(k, i64_t.const_int(63, false), "owned.bit.idx").map_err(e)?;
+        let word = unsafe { self.builder.build_in_bounds_gep(i64_t, bitmap, &[w], "owned.word.ptr") }.map_err(e)?;
+        let one = self.builder.build_left_shift(i64_t.const_int(1, false), b, "owned.bit").map_err(e)?;
+        Ok((word, one))
+    }
+
+    /// GH #1566 follow-up: the self pointer of the child a field holds:
+    /// the field's own (a locus-typed field, `pos` none), or element
+    /// `pos` of the array or tuple of loci it points at (null when the
+    /// field holds no storage yet).
+    pub(crate) fn emit_held_child_ptr(
+        &mut self,
+        field_slot_ptr: PointerValue<'ctx>,
+        field_ty: &CodegenTy,
+        pos: Option<u32>,
+        owned_elems: Option<PointerValue<'ctx>>,
+        tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let loaded = self.builder.build_load(ptr_t, field_slot_ptr, &format!("{tag}.load")).map_err(e)?.into_pointer_value();
+        let Some(k) = pos else { return Ok(loaded) };
+        let func = self.current_fn.expect("current_fn set");
+        let from = self.builder.get_insert_block().expect("positioned");
+        let has = self.context.append_basic_block(func, &format!("{tag}.el{k}.has"));
+        let join = self.context.append_basic_block(func, &format!("{tag}.el{k}.join"));
+        let null = self.builder.build_is_null(loaded, &format!("{tag}.el{k}.nostorage")).map_err(e)?;
+        self.builder.build_conditional_branch(null, join, has).map_err(e)?;
+        self.builder.position_at_end(has);
+        let el_slot = match field_ty {
+            CodegenTy::Tuple(ts) => {
+                let tuple_ty = self.llvm_tuple_storage_type(ts);
+                self.builder.build_struct_gep(tuple_ty, loaded, k, &format!("{tag}.el{k}.ptr")).map_err(e)?
+            }
+            _ => {
+                let i64_t = self.context.i64_type();
+                unsafe { self.builder.build_in_bounds_gep(ptr_t, loaded, &[i64_t.const_int(k as u64, false)], &format!("{tag}.el{k}.ptr")) }
+                    .map_err(e)?
+            }
+        };
+        let el = self.builder.build_load(ptr_t, el_slot, &format!("{tag}.el{k}")).map_err(e)?;
+        // an element written in after the literal built it is not the
+        // owner's: null, which the teardown steps over
+        let el = match owned_elems {
+            Some(bitmap) => {
+                let i64_t = self.context.i64_type();
+                let (word, one) = self.owned_elem_bit(bitmap, i64_t.const_int(k as u64, false))?;
+                let w = self.builder.build_load(i64_t, word, &format!("{tag}.el{k}.owned.word")).map_err(e)?.into_int_value();
+                let bit = self.builder.build_and(w, one, &format!("{tag}.el{k}.owned.bit")).map_err(e)?;
+                let mine = self.builder.build_int_compare(inkwell::IntPredicate::NE, bit, i64_t.const_zero(), &format!("{tag}.el{k}.owned")).map_err(e)?;
+                self.builder.build_select(mine, el, ptr_t.const_null().into(), &format!("{tag}.el{k}.mine")).map_err(e)?
+            }
+            _ => el,
+        };
+        let has_end = self.builder.get_insert_block().expect("positioned");
+        self.builder.build_unconditional_branch(join).map_err(e)?;
+        self.builder.position_at_end(join);
+        let phi = self.builder.build_phi(ptr_t, &format!("{tag}.el{k}.child")).map_err(e)?;
+        phi.add_incoming(&[(&ptr_t.const_null(), from), (&el, has_end)]);
+        Ok(phi.as_basic_value().into_pointer_value())
+    }
+
+    /// GH #1566 follow-up: the address of `__owned_elems_<fname>` (the
+    /// bitmap, GH #1569), for a param holding an array or a tuple of loci.
+    pub(crate) fn owned_elems_word(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        fname: &str,
+    ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        let Some(&idx) = info.owned_elems_field_idxs.get(fname) else { return Ok(None) };
+        self.builder
+            .build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{fname}.__owned_elems.ptr"))
+            .map(Some)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+    }
+
     /// The fields the dissolve cascade walks for `locus_name`, in the
     /// order the plan places them (`LifecyclePlan::cascade_fields`: line
     /// 12's declaration order), the fields the plan names no order for in
@@ -1447,7 +1611,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<Vec<(String, u32, CodegenTy)>, CodegenError> {
         let mut entries: Vec<(String, u32, CodegenTy)> =
             info.fields.iter().map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone())).collect();
-        entries.sort_by_key(|(_, idx, _)| *idx);
+        // Declaration order, not the struct's layout: the layout puts the
+        // fields a body touches most first (F.32-1b, for the cache line),
+        // and a teardown's order is the declaration's whatever the bodies
+        // read (spec/runtime.md § Lifecycle obligations, line 12). The
+        // fields no param declares (the runtime's own slots) follow, in
+        // their layout order.
+        let declared: BTreeMap<&str, usize> =
+            info.defaults.iter().enumerate().map(|(i, (n, _))| (n.as_str(), i)).collect();
+        entries.sort_by_key(|(n, idx, _)| (declared.get(n.as_str()).copied().unwrap_or(usize::MAX), *idx));
         if !self.cascade_orders.contains_key(locus_name) {
             let plan = self.lifecycle;
             let steps = self.spines.cascade_order(locus_name).map_err(CodegenError::Unsupported)?;
@@ -1945,7 +2117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
                 }
                 ReclaimStep::Latch => {
-                    self.emit_drain_observer_count(locus_name, -1)?;
+                    self.emit_drain_observer_out(locus_name, self_ptr, false)?;
                     self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
                 }
                 ReclaimStep::CancelQueuedRuns => {
@@ -2591,6 +2763,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_call(release_fn, &[owner_self_val.into(), self_ptr.into(), struct_size.into()], &name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1570: a type whose struct a fn may hand back releases the
+        // struct here when this instance's came from
+        // `lotus_returned_struct_alloc`; the runtime answers only for a
+        // struct it handed out. Past this point nothing reads the struct
+        // but a stale teardown path's `__arena` latch, which the free-list
+        // keeps readable (and which ASan's malloc'd blocks make a report).
+        if self.returned_struct_loci.contains(locus_name) {
+            let returned_release = self
+                .module
+                .get_function("lotus_returned_struct_release")
+                .expect("lotus_returned_struct_release declared");
+            self.builder
+                .build_call(
+                    returned_release,
+                    &[self_ptr.into(), struct_size.into()],
+                    &format!("{name}.returned"),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -2649,9 +2840,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(info) => info
                 .fields
                 .values()
-                .filter_map(|(_, ty)| match ty {
-                    CodegenTy::LocusRef(n) => Some(n.clone()),
-                    _ => None,
+                .flat_map(|(_, ty)| match ty {
+                    CodegenTy::LocusRef(n) => vec![n.clone()],
+                    other => composite_loci(other).map(|v| v.into_iter().map(|(_, n)| n).collect()).unwrap_or_default(),
                 })
                 .collect(),
             None => return false,
@@ -2672,5 +2863,67 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         false
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #1570: fill `returned_struct_loci`, the locus types whose
+    /// struct a fn may hand back. The seeds are the declared return types
+    /// of the program's fns and locus methods: a locus they name, through
+    /// a tuple or an array, and each locus satisfying an interface they
+    /// name. The closure adds the locus fields of each, since a literal a
+    /// returned locus's params build lives as long as it does (m90's
+    /// `instantiating_into_payload_arena`). A return type the codegen
+    /// cannot type here (a generic fn's `T`) adds nothing: an
+    /// instantiation of a type outside the set keeps the program-lifetime
+    /// struct, so the set decides only which leaks are closed, never
+    /// whether a struct is released.
+    pub(crate) fn compute_returned_struct_loci(&mut self) {
+        let mut rets: Vec<hale_syntax::ast::TypeExpr> = Vec::new();
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
+            match item {
+                hale_syntax::ast::TopDecl::Fn(f) if f.generics.is_empty() => rets.extend(f.ret.clone()),
+                hale_syntax::ast::TopDecl::Locus(l) if l.generics.is_empty() => {
+                    for m in &l.members {
+                        if let hale_syntax::ast::LocusMember::Fn(f) = m {
+                            if f.generics.is_empty() {
+                                rets.extend(f.ret.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        let mut work: Vec<CodegenTy> = Vec::new();
+        for te in &rets {
+            if let Ok(t) = self.type_expr_to_codegen_ty(te) {
+                work.push(t);
+            }
+        }
+        while let Some(t) = work.pop() {
+            match t {
+                CodegenTy::LocusRef(n) => {
+                    if self.user_loci.contains_key(&n) && set.insert(n.clone()) {
+                        let fields: Vec<CodegenTy> =
+                            self.user_loci[&n].fields.values().map(|(_, t)| t.clone()).collect();
+                        work.extend(fields);
+                    }
+                }
+                CodegenTy::Interface(iface) => {
+                    let names: Vec<String> = self.user_loci.keys().cloned().collect();
+                    for n in names {
+                        if !set.contains(&n) && self.locus_satisfies_interface(&n, &iface).unwrap_or(false) {
+                            work.push(CodegenTy::LocusRef(n));
+                        }
+                    }
+                }
+                CodegenTy::Tuple(ts) => work.extend(ts),
+                CodegenTy::Array(e, _) => work.push(*e),
+                _ => {}
+            }
+        }
+        self.returned_struct_loci = set;
     }
 }

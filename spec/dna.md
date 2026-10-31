@@ -14,10 +14,10 @@ one (GH #646).
 | Memory | Holds | Lives in | Written by |
 |---|---|---|---|
 | **Structure** | what the organism *is*: positions, routes, workflow definitions and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
-| **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | git, `refs/dna/*`, one signed commit per row, cloned and synced | the Board, the organism's pipeline, a head from its clone |
+| **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people | memory: Postgres, `record_rows` in the record's schema `dna_<identity>`, one signed row per event, insert-only (GH #1590) | the Board, the organism's pipeline, a head from its clone |
 | **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules declared and their occurrences, concerns, handoffs, effect claims, liveness, the application's readings | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
 
-The routing table is `memory_of` in the core (`routing.hl`): the
+Each kind's placement is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
 `report`, `lease`, `claim`, `reading` (an application's events,
@@ -36,17 +36,15 @@ workflow execution's own facts (`workflow.admitted` / `.refused` /
 `.outcome_requested` / `.outcome_refused`, `.allowance_requested` /
 `.allowance_granted` / `.allowance_refused`, `.unresolved`,
 `.released`). Every other kind, and any
-kind a build does not know, is the record's. **Routing is versioned and
-is a fact of the record**: version 0 is every kind in the record;
-version 1 is the table; an organism is on the version its last
-`ledger.adopted` row names, and on 0 again after `ledger.abandoned`.
-There is no dual-write: a kind has one home, and a writer that cannot
+kind a build does not know, is the record's. The placement is fixed,
+part of the schema: it is not data in the record and is not versioned,
+since every record has its Ledger from its first row (GH #1590). There is no dual-write: a kind has one home, and a writer that cannot
 reach it fails rather than writing elsewhere.
 
 `RoutedJournal` is the `Journal` an organism and the host stand on:
 the record's journal and the Ledger's read as one merged sequence (a
 row's `seq` as read is its merged position; rows name each other by
-id), appended to by kind under the record's routing. The Ledger is
+id), appended to by kind, as the table routes it. The Ledger is
 `MemoryLedger` (`dna/core/memory_spine.hl`) over `PqLedger` (Postgres,
 the record's `dna_<identity>` schema, one insert conditioned on the
 tail, the claim kinds `effect.requested`, `spend.reserved` and
@@ -59,29 +57,14 @@ host handed it (`HALE_DNA_LEASE`, `HALE_DNA_LEASE_TOKEN`): an append
 under a lease that is not held, is held at another token, or has
 expired lands nothing (`fenced: …`).
 
-**Adoption** is explicit, per organism and one-way. `hale dna ledger
-adopt`, with the record synced, appends `ledger.adopting {routing,
-by}` to the record: a request, which the spine carries out on its
-tick (**The spine**, below). It copies every operational row of the
-record up to that row into the Ledger keyed by its commit (so a copy
-interrupted anywhere is rerun, never repaired), records the cutover,
-carries the running body's lease into memory at its token (unless
-memory already holds a lease under that key), and appends
-`ledger.adopted {routing, checkpoint, rows, by}`: the checkpoint is
-the `ledger.adopting` row's commit, the record head the copy was taken
-at, and from that commit on operational kinds never go into the
-record. Historical operational rows stay in git, read-only; readers of
-history (`history`, the projections, the export) read both memories as
-one. `hale dna ledger abandon --why` appends `ledger.abandoning {by,
-why}`; the spine empties the Ledger and appends `ledger.abandoned {by,
-why}`, and the organism is on routing 0 again with nothing lost.
-Until a body with memory runs, an adoption or abandonment waits in the
-record. `hale dna run` on an adopted record refuses to start without
-`HALE_DNA_MEMORY_DSN_SPINE` (#646 decision 3: a body without its
-memory admits nothing); `dev` applies memory's schema and hands the
-host the spine's DSN. `hale dna ledger [status]` says the routing,
-whether memory is named here, and the Ledger's row count and cutover;
-`hale dna ledger rows` prints the Ledger's rows as JSON lines (`seq`,
+**The Ledger is born with the record** (GH #1590): memory's migration
+makes both, and nothing adopts or abandons a Ledger. Readers of history
+(`history`, the projections, the export) read both memories as one.
+`hale dna run` refuses to start without `HALE_DNA_MEMORY_DSN_SPINE`
+(#646 decision 3: a body without its memory admits nothing); `dev`
+derives the spine's DSN from memory that is up and migrated and hands
+it to the host, applying no schema (GH #1653). `hale dna
+ledger rows` prints the Ledger's rows as JSON lines (`seq`,
 `kind`, `entity`, `body`, `author`, `writer` — the role that wrote it, so a head writing as `host` is told apart from the body — `prev`, `digest`), read under the
 head's role or the spine's.
 
@@ -96,8 +79,8 @@ calling role is who wrote it (`session_user`, kept in the row's
 `writer` column beside `lease` and `epoch`). It refuses, returning the
 reason the verb prints:
 
-1. a kind that is not the Ledger's (`ledger_kind`, the routing table
-   above as data): it is appended to the record instead;
+1. a kind that is not the Ledger's (`ledger_kind`, the placement
+   above, in the schema): it is appended to the record instead;
 2. a person the record retired (`org_retired`, below) — checked before
    the author, since a retirement also ends the person's memberships,
    and the refusal says so;
@@ -134,10 +117,8 @@ operations live behind since — never into git instead. A write decided
 at a revision needs the Ledger's revision read, and without memory its
 verb refuses (`the ledger's revision was not read`). Nothing on a head
 is authoritative, and no head executes work offline (#646 decision 2).
-On routing 0 an operational row goes into the record, as it always did.
-An adoption and an abandonment are the record's `ledger.adopting` and
-`ledger.abandoning` rows above, carried out by a node under a claim on
-the asking row (**Claims by id**, below).
+An operational row never goes into the record: memory's append
+function refuses a Ledger kind there (GH #1590).
 
 **The org chart in memory (GH #1026, #1123).** The checks above read
 what the spine projects, and the org chart is the graph's (**The
@@ -183,12 +164,11 @@ and `review.reasoned` are the record's; `receipt.*` — a bill filed, its
 class, its disclosure, its reads, its holds, its redaction — are the
 Ledger's, whatever the class, and the body itself is where it always
 was (a git blob for an internal body, memory's sealed store for a
-protected one; only the digest is ever a row). A redaction of a git
-receipt after adoption is therefore a Ledger row, and the body it names
-may be a blob filed before adoption (a head's redaction of a protected
-body is a row of the record, which the spine reads to erase it): sync applies redactions and candidate drops
-over both memories read as one, so the treatment holds across the
-split. The books export is a supported ledger query: it reads `hale
+protected one; only the digest is ever a row). A redaction is a
+Ledger row (a head's redaction of a protected body is a row of the
+record, which the spine reads to erase it): sync applies redactions and
+candidate drops over both memories read as one, so the treatment holds
+across the split. The books export is a supported ledger query: it reads `hale
 dna ledger rows` beside the record's rows and never SQL of its own.
 Recovery between the two memories needs no transaction spanning them:
 every step that touches both writes its intent in the memory that owns
@@ -197,55 +177,43 @@ merged journal — a task settles on its mutation's outcome, a settled
 review births its task once, an effect claim is resolved by evidence
 or gated as unknown, a retirement's reassignments are reapplied, a
 filed body without its row is filed again — exactly as they did over
-one journal, because the routed journal is that journal. **The
-continuity gate** is a pre-split record built with the real git
-journal — unfinished work, a reservation, a practice bound to a handed
-task, a retired participant, redacted evidence, a pending handoff, a
-schedule — adopted through the same steps a live organism takes, its
-projections read before and after, and a redaction after adoption
-removing a body filed before it (`dna_ledger.rs`).
+one journal, because the routed journal is that journal.
 
-**Handoffs between records (stage 5, #662).** A handoff crosses
-between records as an envelope through an `Exchange`, the core's
-contract for one record's mailbox in another: `peer_identity`,
-`deliver` (idempotent by the envelope's kind and entity — its entity
-is `handoff:<id>` and the id is the handoff's origin, peer, kind and
-subject, so a delivery repeated after an interruption is one
-envelope), `delivered` (whether the peer already holds it), `received`
-(every mailbox of this record). The exchange is git's alone: mailbox
-refs in a private peer cache of the other record's remote,
-`refs/dna/exchange/<sender>`, beside the identity each record
-publishes under `refs/dna/identity`. `hale dna connect` refuses an
-`http://` or `https://` url: a connection exchanges through the other
-record's git remote. The exchange keeps the contract #646 set:
-**durable delivery** — a handoff published here whose envelope the
-peer does not hold is delivered again, once, by `hale dna handoff sync`
-from the envelope kept with its `handoff.published` row; a delivery
-that cannot reach the peer at all records nothing and says to deliver
-again; **the disclosure scope** is the connection's classes, checked
-before anything is delivered and again before anything is admitted;
-**settlement only on the receiver's acceptance** — the origin's task
-moves to `transfer_accepted` when the receiver's `handoff.accepted`
-envelope reaches it through the exchange, never when a delivery
+**Handoffs between records (stage 5, #662; over the nerves, GH
+#1590).** A handoff crosses between records as a signed envelope through
+an `Exchange`, the core's contract (`dna/core/exchange.hl`): `card(url,
+record)` reads the card the other record publishes, `deliver(url, peer,
+id, line)` puts a signed envelope in its inbox, idempotent by the
+envelope's id (`<handoff id>.<kind>`; the handoff id is its origin, peer,
+kind and subject, so a delivery repeated after an interruption is one
+envelope), and `received()` is every envelope this record's inbox holds.
+`NatsExchange` (`dna/host/connections.hl`) is the nerves' and
+`MemExchange` the fixtures'. The contract #646 set holds: **durable
+delivery** — an envelope is stored by the receiver's exchange stream,
+which keeps it until the receiver has drained it (no age limit), before
+`deliver` returns; one delivered again by its id within a week is stored
+once, and the receiver keeps one in memory whenever it arrived; a
+delivery that cannot reach the peer records nothing and says to deliver
+again; **authorship** — every envelope is signed
+with the sending record's own key, and a receiver admits one only under
+a connection that pinned that key; **the disclosure scope** is the
+connection's classes, checked before anything is delivered and again
+before anything is admitted; **settlement only on the receiver's
+acceptance** — the origin's task moves to `transfer_accepted` when the
+receiver's `accepted` envelope reaches it, never when a delivery
 returned.
 
-**Coordination in memory (stage 2, #651).** On routing 1 every lease
-is a row of memory's `claims` table, swapped by its token:
+**Coordination in memory (stage 2, #651).** Every lease is a row of
+memory's `claims` table, swapped by its token:
 `MemoryLeases` is `Coordination` over `current(key)` and `put(key,
 lease, expected)`, and a put lands only when the stored token is the
-one expected (0 for an absent lease). `GitLeases` — the record's
-coordination — takes a mutation lease from the record's cells on
-routing 0 and from memory on routing 1, reading the routing from the
-record whenever its head moved: an adopted organism's leases move with
-it, and nothing in its wiring changes. The body lease moves the same
-way: on routing 1 it is the row `body` (`owner/<owner>` over a shared
-record), the fence renews the row every third of its life with every
-call bounded, a stale token — a host that lost the lease to another —
-lands nothing, `hale dna body` reads it there, and `refs/dna/lease/*`
-is not written. A head takes and fences a lease under its own role.
-Effect claims are unique rows of the Ledger (`(kind, entity)`), so the
-contended-claim row the git rule needed does not arise. Memory lost
-after activation is the case the git lease already handles: the
+one expected (0 for an absent lease). The body lease is the row
+`body` (`owner/<owner>` over a shared record): the fence renews it every
+third of its life with every call bounded, a stale token — a host that
+lost the lease to another — lands nothing, and `hale dna body` reads it
+there. A head takes and fences a lease under its own role.
+Effect claims are unique rows of the Ledger (`(kind, entity)`), so a
+contended-claim row does not arise. Memory lost after activation: the
 renewal fails, the fence keeps the lease it last proved until the
 margin before its expiry and then stops the organism, and `status`
 says THE LEDGER IS UNREACHABLE and that nothing is admitted until it
@@ -259,7 +227,7 @@ core's — `dna/core/memory_store.hl` (the graph, `Pq`),
 (`PqProtected`), `memory_embed.hl`, `memory_schema.hl` (the schema,
 the roles, the grants and the functions) and `memory_spine.hl`
 (`Memory`, `MemoryLedger`, `MemoryLeases`, `MemoryKnowledge`,
-`MemoryVault`, `LedgerAdoption`) — and they open Postgres through
+`MemoryVault`) — and they open Postgres through
 pond's driver, pinned under `dna/core/pond` and vendored beside the
 core at `vendor/dna/pond`. The projection tail, `MemoryProjection`, is
 not in the core: it lives in `dna/operations/memory_tail.hl`, beside
@@ -279,26 +247,43 @@ host's tick (**The spine**, below).
   carries no password: it names the entry,
   `postgres://<role>@host:port/db?sslmode=…&vault=postgres-<role>`, and
   the connection reveals it into its SCRAM exchange's `@secret`
-  parameter, in the one statement that uses it (GH #989). The seed
-  compose database's owner DSN names `postgres-owner-<seed>` the same
-  way. An operator's DSN with a password in it is presented as given.
+  parameter, in the one statement that uses it (GH #989). The owner's
+  DSN of the organism's memory allocation in the local habitat names
+  `postgres-owner-<id>` the same way (**The local habitat holds the
+  organism's infrastructure**, below). An operator's DSN with a
+  password in it is presented as given.
 - **Three DSNs.** `HALE_DNA_MEMORY_DSN_OWNER` is the schema owner's,
-  used only to migrate: by `hale dna memory migrate [dir]`, by `hale
-  dna dev` before it starts the host, by `hale dna upgrade` when it is
-  set, and by a provisioned body, whose env file carries it for the
-  `hale dna dev` its unit runs. Without it, `memory migrate` and `dev`
-  use the database `dna/compose.yaml` brings up. `hale dna memory
-  migrate` prints two lines, `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and
-  `HALE_DNA_MEMORY_DSN_HEAD=<dsn>`: the owner's host and database, each
-  role's name and credentials. The host that runs the organism is
-  handed `HALE_DNA_MEMORY_DSN_SPINE` alone, and the organization
-  inherits it: `dev` sets it from the migration, and `hale dna run`
-  takes it from its own environment; both take
-  `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_MEMORY_DSN_HEAD` out of the
-  host's. With no database to migrate, `dev` says why and starts the
-  host without the owner's DSN. A head — the CLI, `hale dna ui`, the API — opens memory with
+  used only by the habitat's acts that migrate (GH #1653): birth, `hale
+  habitat migrate [organism]`, `hale dna memory migrate [dir]`, `hale
+  dna upgrade` when it is set, and a provisioned body's provisioning
+  script, which runs `hale habitat migrate .` once with it. Without it,
+  those acts bring up and migrate the organism's memory allocation in
+  the local habitat. A migration prints two lines,
+  `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and `HALE_DNA_MEMORY_DSN_HEAD=<dsn>`:
+  the owner's host and database, each role's name and credentials. The
+  host that runs the organism is handed `HALE_DNA_MEMORY_DSN_SPINE`
+  alone, and the organization inherits it: `dev` derives it from memory
+  that is up and migrated, applying no schema (`memory-migrate
+  --derive`), and `hale dna run` takes it from its own environment;
+  both take `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_MEMORY_DSN_HEAD`
+  out of the host's. With no memory up, `dev` says so, names `hale
+  habitat migrate <organism>`, and starts the host without memory. A
+  head — the CLI, `hale dna ui`, the API — opens memory with
   `HALE_DNA_MEMORY_DSN_HEAD`; a process given the spine's DSN uses that
-  instead, and none holds both.
+  instead, and none holds both. The head's DSN a migration answers is
+  kept in the clone, `.hale/dna/memory.env`, beside the line that says
+  where it was derived, `HALE_DNA_MEMORY_FROM=owner` or
+  `HALE_DNA_MEMORY_FROM=habitat <project>/memory-<id>`, and every `hale
+  dna` verb in that clone given neither role's DSN runs with it. The
+  file holds the head role's DSN alone (never the owner's or the
+  spine's), is written mode 600 and never printed, and is written only
+  where git ignores it (a graft and `upgrade` keep `/.hale/` in
+  `.gitignore`); a verb refuses it when it is readable by group or
+  others, naming `chmod 600`. A kept DSN derived from anything but the
+  operator's database or the organism's own memory allocation (another
+  habitat's, a database an older toolchain migrated, a file with no
+  origin line) is removed and refused, naming `hale habitat migrate
+  <dir>`: no verb re-derives it, since none migrates as a side effect.
 - **The migration** runs in one transaction under an advisory lock on
   the schema: the `vector` and `pgcrypto` extensions, the schema and
   every store's tables, the record's claim on the schema
@@ -319,12 +304,13 @@ host's tick (**The spine**, below).
   GH #1123: 6 makes `org_members` a view over the graph's `holds`
   edges, where it was a table the spine rewrote from the retired owners
   map, and moves no projection either; GH #987: 7 adds the `reading`
-  family to the routing table the insert function reads, which moves
+  family to the placement the insert function reads, which moves
   none; GH #988: 8 adds the `reflex` family the same way. Each protocol move empties the
   graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
-  at none, naming both and `hale dna memory migrate` with the owner's
-  DSN; it also refuses a schema whose claim names another record (`it
+  at none, naming both and `hale habitat migrate <organism>` (with
+  `HALE_DNA_MEMORY_DSN_OWNER` for a Postgres of the operator's); it
+  also refuses a schema whose claim names another record (`it
   is not read`). The host checks the version on the spine's DSN before
   it starts anything, and refuses to start (exit 2) on a mismatch.
 - **Grants.** A head's role — the head's, or an owner's — has `SELECT`
@@ -338,7 +324,7 @@ host's tick (**The spine**, below).
   `DELETE`, `TRUNCATE`) except the owner-only `memory_keys`,
   `memory_principals`, `protected_receipts` and `protected_redactions`,
   and has `EXECUTE` on every function; it has no DDL. Every Ledger row
-  but an adoption's copy goes through `ledger_append`.
+  goes through `ledger_append`.
 - **Connections are bounded.** Each process holds one memory handle
   (`Memory`: the Ledger and the leases), opened on first use and
   closed when the process ends; everything in a process that reads the
@@ -350,21 +336,14 @@ host's tick (**The spine**, below).
 any number of identical nodes run, and a node holds nothing — its state
 is the stores, its code is the genome. On each tick (`HOST_TICK`, 1 s)
 every host that runs a body applies the record into the graph and the
-org chart (`MemoryProjection`), carries out an adoption or abandonment
-the record asks for (`LedgerAdoption`, under a claim on the asking row),
-and erases the protected bodies the record redacted
-(`MemoryVault.complete_redactions`). Nothing coordinates the nodes; the
-stores serialize them — the projection a row at a time by
-compare-and-swap, an adoption by its claim, an erasure by digest (it
-is idempotent). There is no spine lease and nothing is admitted: a
+org chart (`MemoryProjection`) and erases the protected bodies the
+record redacted (`MemoryVault.complete_redactions`). Nothing
+coordinates the nodes; the stores serialize them — the projection a
+row at a time by compare-and-swap, an erasure by digest (it is
+idempotent). There is no spine lease and nothing is admitted: a
 writer writes, and memory's insert function is the gate (**Writers
-write directly**, above). **Sync before project**: when the record has
-a remote, a node projects only as far as the head the remote holds
-after that tick's sync, and not at all on a tick whose sync did not
-complete, so a stamped row is always a shared one — a node that
-projected a row it never shared and then died would leave every other
-node waiting on a commit none of them can receive. With no remote there
-is one clone, and nothing to wait on. A host with no
+write directly**, above). Every row a node projects is shared already: the record is memory's,
+read by every clone and body alike (GH #1590). A host with no
 `HALE_DNA_MEMORY_DSN_SPINE` says so and runs with no memory: nothing is
 projected. What failed on a tick is said once, when it changes, and
 tried again on the next.
@@ -418,7 +397,8 @@ owner}` row; the node returns its checkout to the last genome that built
 (`.hale/dna/genome.built`), builds that, and serves it. A node that is up
 records `node.started <holder> {sha, by, owner}`. On its tick, every
 `HALE_DNA_GENOME_POLL` seconds (300 by default; 0 never), it fetches
-again, into `refs/dna/remote/genome` (never `FETCH_HEAD`, which any
+again, into `refs/hale/remote/genome` (the genome's; never
+`FETCH_HEAD`, which any
 other fetch in the clone rewrites); when the forge's head is neither what it runs nor a sha that did
 not build here, it stops cleanly — the organization and the expression
 drain on SIGTERM, the body lease is given back (`body.released {why:
@@ -432,32 +412,63 @@ carries a `genome:` line: the sha each node runs, from its last
 
 ## The record
 
-The Journal is a git branch, `refs/dna/journal`, in the governed
-repository:
+The record is memory's (GH #1590): the table `record_rows` in the
+record's schema `dna_<identity>`, read and written by every clone and
+body alike, so nothing of it travels by git and there is nothing to
+sync.
 
-- **One commit per event.** The commit's tree holds `journal.jsonl`,
-  every event so far, one JSON object per line: `seq`, `kind`,
-  `entity`, `body`, `author`. The commit's subject is `<kind> <entity>`.
-- **The commit DAG is the chain.** An event's digest is its commit;
-  its `prev` is the parent; the first event has no parent. Integrity
-  is git's: the ref resolves, and its commit count is the event count.
-- **Append is compare-and-swap on the ref.** A writer builds the next
-  commit on the head it read and updates the ref with that head as the
-  expected old value. A writer that lost the race reloads and, when it
-  was appending at the tail, re-appends at the new tail; `seq` is the
-  position in the record, never a promise made before the append. A
-  lost race is not a failure: the append goes round with the new tail
-  until it lands, within a bound only a wedged repository reaches.
-- **Authorship is git's.** The organism's own events carry its
-  configured author; a human's facts (a verdict, an intent through the
-  CLI, a host's crash accounting) carry the git identity of whoever
-  ran the command. Commit signing, where the repository requires it,
-  applies unchanged.
-- **Receipts** are blobs under `refs/dna/receipts/<sha256>`, filed by
-  the digest of their content: a verification step's output, a diff
-  document. Events name receipts by digest. A receipt has a data class
-  (GH #606): a `public` or `internal` body is such a blob; a `customer`
-  or `confidential` body (`protected_class`) never is. It is kept in
+- **One row per event**: `seq`, `kind`, `entity`, `body`, `author`, the
+  writer's role (`writer`, the session's), `prev`, `digest`, `sig`.
+- **The identity is the first row's digest.** `hale habitat graft` composes
+  `record.genesis {genome, nonce}` (the genome's root commit, and a
+  nonce so two projects made alike are two records), pins its digest in
+  `hale.toml` (`[dna] record`), provisions memory (the record's Ledger
+  with it), and appends it at 0, then `record.key {key}` (the public
+  half of the record's key). A clone whose history does not
+  hold the genome a record was born on does not open it (the
+  `hale.toml` naming it was copied from another project).
+- **The rows are read through the toolchain.** `hale dna record-rows
+  [project]` prints the record's rows in the line format (one JSON
+  object per line: `seq`, `kind`, `entity`, `body`, `author`), oldest
+  first, and exits 1 with the reason when the record cannot be read. It
+  prints the record's rows alone; the Ledger's are memory's, and `hale
+  dna history` walks both. The DNA's tests and scripts read the record
+  through it and never through its storage.
+- **The chain is a prev-digest chain.** A row's digest is
+  `sha256(prev|kind|entity|body)`, its `prev` the digest before it
+  (`genesis` for the first); a reader verifies the chain it loads.
+- **Append is one function, insert-only.** Every writer appends through
+  `record_append` (one row) or `record_append_rows` (a batch made
+  visible together, every row checked before any lands), `SECURITY
+  DEFINER` functions that take the schema's advisory lock, refuse a
+  Ledger kind, and land the row only on the `prev` and, when asked, the
+  revision the writer read; no role may update, delete or truncate the
+  record's rows, or the Ledger's. A writer that lost the race at the
+  tail reads again and goes round with the new tail, within a bound
+  only a wedged memory reaches; an exact append is one attempt.
+- **Every row is signed as its writer signs.** The organism's parts
+  (`dna`, `spine`, `host`, a node, a leg …) sign with the record's key
+  (Ed25519, in the vault as `dna-exchange-<schema>`, never leaving the
+  credential) over `hale-dna-row` + NUL + the digest; a person signs
+  with their own ssh key (`ssh-keygen -Y sign -n hale-dna-record`, the
+  key git's `user.signingkey` names under `gpg.format ssh`), and is
+  unsigned with none configured. Under `dna.trust = signed` a person's
+  row is admitted when the key the record enrolled for them verifies it
+  (`hale dna signers`: `signer.enrolled {who, key}` and
+  `signer.revoked {who}` rows, each counted only when signed by someone
+  the record already admits; the first enrolment is the bootstrap).
+- **A record an earlier toolchain kept on git** (`refs/dna/journal`) is
+  not carried forward: nothing reads it, and a graft and `hale
+  dna upgrade` refuse a clone that holds one, saying to start a fresh
+  record (delete the old refs and the `[dna] record` line, then graft
+  again).
+- **Receipts** are kept in memory by the digest of their content: a
+  verification step's output, a diff document. Events name receipts by
+  digest. A receipt has a data class (GH #606): a `public` or
+  `internal` body is kept unsealed (`receipt_keep(digest, class, body,
+  at)`, which refuses a digest that is not the body's and one memory
+  erased under a redaction); a `customer` or `confidential` body
+  (`protected_class`) is sealed. It is kept in
   memory alone, sealed there — by the organism through
   `Dna.file_evidence(text, class, by)`, by a head through `hale dna
   receipt file --class`, both through `MemoryVault` — and the record
@@ -484,7 +495,7 @@ repository:
   every protected read and erase failing (#637). Without memory, the
   body is withheld: `receipt.withheld <digest> {class, by, why}`, and
   nothing holds it. The record keeps the digest and the class either
-  way, so `sync` never carries a protected body into a clone. Reading
+  way, and only the sealed table holds a protected body. Reading
   one is an act in the reader's name for a purpose (`hale dna receipt
   show <digest> --purpose <p> [--as <who>]`): it is refused unless a
   `receipt.disclosed <digest> {recipient, purpose, by}` row names both,
@@ -502,7 +513,8 @@ repository:
   A redaction (`Dna.redact_evidence(digest, by, why, policy)`, `hale
   dna receipt redact <digest> --why --policy`) appends
   `receipt.redacted <digest> {by, why, policy, class, store}` and then
-  removes the body: a git receipt's ref is deleted (`Receipts.erase`);
+  removes the body: an unsealed body is erased from memory at once
+  (`Receipts.erase`);
   a protected body is erased from memory through `receipt_erase`, by
   the spine — a head's redaction of a body memory keeps records
   `receipt.redacted` (`store: memory`) and the spine erases the body on
@@ -515,7 +527,7 @@ repository:
   redacting again. A body the record says was redacted is not filed
   again — `Dna.file_evidence` answers its digest and keeps nothing, and
   `hale dna receipt file` and `receipt_file` refuse it — and `hale dna
-  receipt redact` appends a git receipt's redaction only at the head it
+  receipt redact` appends an unsealed receipt's redaction only at the head it
   read the hold at and, once the organism has adopted the ledger, only
   at the ledger revision it read the hold at (the request's
   `expected`), refusing "the record moved" otherwise (#636). A store
@@ -524,16 +536,13 @@ repository:
   it answers (`protected_erase_step`). The record keeps the digest, so
   provenance survives and a reader learns the body is gone — a read of
   a redacted digest is refused `… was redacted: by … under …`, and
-  `hale dna history` says so under a redacted prompt. Every `sync`
-  deletes redacted receipts' refs from the clone and the remote, so a
-  clone that fetched one drops it at its next sync; the blob stays in
-  each object store until git collects it (`git gc --prune=now`), and a
-  copy disclosed or cloned outside the record cannot be recalled. The
-  projection retires an idea whose receipt was redacted instead of
+  `hale dna history` says so under a redacted prompt. A copy disclosed
+  outside the record cannot be recalled. The projection retires an idea
+  whose receipt was redacted instead of
   stopping.
-- **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
-  becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
-  compare-and-swapped on the ref. Tokens are monotonic per key.
+- **Leases** are rows of memory (`MemoryLeases` over the `leases`
+  table): `holder`, `token`, `expires`, `present`, put by token
+  compare-and-swap. Tokens are monotonic per key.
 - **Effects are requested before they run, and the claim is exclusive
   (GH #604 rule 3).** `effect.requested <key>` is appended before a
   dispatch and `effect.result <key>` once after; a retry finds the
@@ -549,60 +558,36 @@ repository:
   gate refuses an unknown effect until a person resolves it —
   `hale dna effect resolve <key> --outcome ok|failed`, one row in
   their name, the last result for the key being its status.
-- **Sync.** `hale dna sync` (and the host, every tick) fetches the
-  remote's record into `refs/dna/remote/journal`, reconciles, and
-  pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
-  local-only events are re-appended on top of the remote's head, bodies
-  and authors unchanged, `seq` their new position, then pushed; a push
-  the remote refuses is fetched and reconciled again. **A fetch is a
-  read** (GH #961, #1072): two at once in one clone — the host's tick
-  and a verb beside it — race on git's lock of the ref they update, and
-  the one that loses is tried again, up to five times, waiting 100 ms
-  more before each (the other already moved the ref at least as far).
-  A fetch that still fails is a read that did not happen and refuses
-  the sync, the connect or the handoff with git's reason; only git's
-  own "couldn't find remote ref" is a remote that holds nothing under
-  the family. **The reconciled
-  chain is built beside the ref and swapped in with one
-  compare-and-swap**: the ref never points at a record missing a row
-  it held a moment before, so a reader's position only grows, a writer
-  that reloads after a lost race finds its own rows, and a clone that
-  appended while the chain was built is not overwritten — the swap
-  fails and the reconcile goes round. A local-only event with no row
-  refuses the reconcile rather than being skipped. A fact's identity
-  in the record is its content and its place among rows of the same
-  content, never its `seq` (a reconcile renumbers, and a node raising
-  one concern three times writes three identical rows, each a fact):
-  a host relays and handles by that identity, so a renumbered fact is
-  not relayed twice and a repeated one is not relayed once. **A reconcile
-  rebuilds only what this clone may sign (GH #639).** Under
-  `dna.trust = signed` every local-only row is read before any chain
-  moves: a row this clone signed is rebuilt and re-signed, and its
-  commit names the original (`Rebuilt-From: <commit>` in the message's
-  body); a row never signed is rebuilt unsigned, so a reconcile upgrades
-  nobody's provenance; a row signed with another key refuses the whole
-  reconcile — the row and the key it was signed with are named, every
-  local row and commit stays where it is, the remote is untouched, and
-  the refusal says what keeps the work (that row's writer syncs first,
-  since a writer rebuilds its own rows; or the remote is fast-forwarded
-  once it holds the row). A fast-forward is never refused. Under `local`
-  trust nothing is read and every row is rebuilt as before. **A remote with
-  no record yet is the local one's push**, not "up to date": the first
-  sync after an ordinary `git push origin main` carries the record, so
-  no one has to push `refs/dna/*` by hand for a second clone to have
-  the organization's history. Receipts and candidates travel
-  by refspec both ways; mailboxes are received. The remote is `dna.remote` in git config, or
-  `origin`. A plain clone has no record until it syncs.
-- **Candidates are kept.** The gateway points `refs/dna/candidates/<mutation>`
-  at a candidate when it commits it, and sync carries the pointers with
-  the record, so a refused or revised change stays readable as a diff
-  after its worktree is gone: `hale dna candidates` lists them with
-  their Review's state, `hale dna candidates <mutation>` shows one from
-  its Review's base, and `hale dna candidates drop <mutation> --why <why>`
-  appends `candidate.dropped <mutation> {by, why}` and stops keeping it —
-  here, at the remote, and at every clone on its next sync, the way a
-  redaction removes a receipt. The commits stay in each object store
-  until git collects them.
+- **There is nothing to sync (GH #1590).** Every clone and body reads
+  and writes the one record in memory, so `hale dna sync` (and the
+  host's tick) only applies what the record says of this clone — a
+  dropped candidate's branch deleted here. A fact's identity in the
+  record is its content and its place among rows of the same content,
+  never its `seq` (a node raising one concern three times writes three
+  identical rows, each a fact): a host relays and handles by that
+  identity, so a fact is not relayed twice and a repeated one is not
+  relayed once. Another record's envelopes arrive on the nerves.
+  Candidates are branches of the genome and travel as branches do
+  (below); the genome's remote is `dna.remote` in git config, or
+  `origin`. A clone of the genome reaches the record through memory
+  (its `[dna] record` pin names the schema, and `hale dna memory
+  migrate` or `upgrade` with the owner's DSN keeps the head's DSN in
+  the clone).
+- **Candidates are kept, as branches of the genome (GH #1590).** The
+  gateway keeps a candidate when it commits it as the branch
+  `dna/candidate/<mutation>` (`refs/heads/dna/candidate/<mutation>`,
+  `dna::candidate_ref`), and the record names its commit
+  (`mutation.candidate <mutation>`, the sha), so a refused or revised
+  change stays readable as a diff after its worktree is gone: `hale dna
+  candidates` lists the branches with their Review's state, `hale dna
+  candidates <mutation>` shows one from its Review's base, and `hale dna
+  candidates drop <mutation> --why <why>` appends `candidate.dropped
+  <mutation> {by, why}` and deletes the branch here; every clone deletes
+  its own when it reads the row. A candidate is code, and travels as any
+  branch does: a person who pushes one to a forge deletes it there as
+  any branch is deleted. The commits stay in each object store until git
+  collects them. The readers know branches alone; nothing reads or
+  moves a candidate an earlier toolchain kept under the record's refs.
 - **An apply expresses the candidate, tree and all.** An approval
   applies exactly the reviewed candidate, or nothing: the candidate's
   worktree head is the pinned digest, the genome's head is the base the
@@ -692,6 +677,13 @@ repository:
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
+  `--supersedes` takes the digest whole or as any prefix of it, as
+  `hale dna practice` abbreviates it (`sha256:3122d`), and the CLI
+  resolves it before it requests anything (`dna::superseded_digest`):
+  the row carries the full digest of the one practice in force it
+  begins, and a prefix that begins no practice's digest, several
+  practices' digests, or the digest of one not in force is refused
+  there, by name, never accepted and then refused at ratification.
   **Roles are authorities, not identities.** The person who proposed
   a practice may ratify it: the proposal is in their name (`by`), the
   verdict carries the Board's authority, and the record keeps both, so
@@ -711,63 +703,110 @@ repository:
   `hale dna practice` lists every named practice with its state (in
   force, awaiting the Board, declined, retired), its first line, who
   proposed it and why, and requests not yet heard.
-- **Cross-record handoff (GH #615).** A replica of one record is inside
-  the horizon: sync carries all of it, to equally trusted readers. A
-  *handoff* crosses a horizon into a separate record, and a connection is
-  its only path; nothing selective leaves a record by sync. `hale dna
-  connect <record-url> --name <name> --as <position> --purpose <purpose>
-  --classes <internal,customer,confidential> [--by <who>]` (the url is
-  the other record's git remote; an `http://` or `https://` url is
-  refused as a service url) reads the other record's identity — its genesis, the root commit of its journal,
-  which every record publishes as a blob under `refs/dna/identity` when it
-  syncs (until a push of it to the remote as it is now has succeeded —
-  `dna.identitypublished` names that remote and blob — each sync asks the
-  remote and pushes it, never forced, and `sync` says when it could not)
-  — and nothing else of it; it refuses this record's own, and appends `connection.proposed` (`name`, `url`, `peer`,
-  `position`, `purpose`, `classes`, `by`, `review_id`) with a Board
-  Review `c-<name>-<n>`. The connection is in force once a `board`
-  verdict approves that Review from someone other than its proposer —
-  the host then settles the Review in the approver's name — and until
-  `hale dna disconnect <name> --why <why>` appends `connection.closed`.
-  `hale dna handoff <name> task <id> | receipt <digest> [--note …] [--as
-  <who>]` writes one `handoff.received` envelope into the other
-  record's **mailbox for this record**, `refs/dna/exchange/<this record's
-  identity>` — a chain of rows only this record writes, pushed there under
-  compare-and-swap. Neither record reads the other's journal: this clone's
-  cache for a connection (`.hale/dna/peers/<name>.git`) holds the other
-  record's identity and this record's own mailbox there, nothing else. The
-  envelope carries `handoff` (`h` and twelve hex
-  digits of the origin genesis, kind and subject, so a fact crosses
-  once), `origin_record`, `origin_url`, `origin_author`, `origin_row`
-  (the source row's digest), `lineage` (the subject's rows here, as
-  `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`, `class`,
-  `fact`, `note`. This record then appends `handoff.published` (with
-  `peer_row`, the commit it landed as) and, for a Task,
-  `task.transfer_requested`. A handoff retried after a crash completes
-  what the first try left (#637): an envelope already in the mailbox is
-  reused, never written twice, and a published Task missing its
-  `task.transfer_requested` gets it. Only a handed Task crosses. A receipt
-  crosses as its digest and class; its body never leaves this record. A
-  fact whose class the connection does not carry is refused at the edge
-  as `handoff.refused`, with nothing written across. The receiving record
-  reads its own mailboxes (`sync` fetches `refs/dna/exchange/*` from its
-  remote; a row claiming another origin than the mailbox it is in is
-  ignored) and admits what arrives under its own policy: `hale dna
-  handoff` lists a received handoff as admitted only under a connection in
-  force back to its origin record that carries its class, and `hale dna
-  handoff accept <id> [--as <who>]`, only for an admitted one, appends
-  `handoff.accepted` to its own journal (with the envelope's origin,
-  lineage, purpose and fact) and sends a `handoff.accepted` envelope into
-  the origin's mailbox for it. `hale dna handoff sync` reads, for every
-  connection in force, the envelopes the other record sent to this
-  record's mailbox: each acceptance of a handoff published through it is
-  admitted once, as
-  `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`,
-  each row checked on its own, so a crash between the two is completed at
-  the next sync rather than suppressing it (#637).
-  The Task settles only then, the rule retirement follows (GH #604 rule
-  5). A closed connection is not read, so history stays in both records
-  and nothing further is admitted.
+- **Cross-record handoff (GH #615; over the nerves, GH #1590).** A
+  replica of one record is inside the horizon: sync carries all of it,
+  to equally trusted readers. A *handoff* crosses a horizon into a
+  separate record, and a connection is its only path; nothing selective
+  leaves a record by sync.
+  - **The card.** Every record publishes a card on its nerves:
+    `{identity, genome, key}` — its identity, its genome's root commit
+    and the ed25519 public key its envelopes are signed with — signed by
+    that key, the one message of `exchange.<org>.card` in its exchange
+    stream (`DNA_<ID>_EXCHANGE` over `exchange.<org>.>`). `hale dna
+    nerves migrate` creates the stream, its inbox consumer (`exchange`,
+    over `exchange.<org>.in.>`) and the card, purging the one before.
+    The key's seed is the SHA-256 of the vault's `dna-exchange-<org>`,
+    drawn by the graft and `upgrade` like the organism's other secrets; it signs
+    through `std::secret::Credential.sign_ed25519`, so neither the secret
+    nor the seed leaves the vault's credential. The record is the signer
+    (a record-to-record act); the person who acted is named in the
+    envelope.
+  - **Connecting.** `hale dna connect <nerves-url> --record <identity>
+    --name <name> --as <position> --purpose <purpose> --classes
+    <internal,customer,confidential> [--by <who>]` reads the other
+    record's card at its nerves (a direct get: **connect needs the
+    peer's card, published by its nerves, and no process of it
+    running**), checks the card's signature and that it is
+    `<identity>`'s (the identity its genome pins, `[dna] record`), refuses
+    this record's own, and appends `connection.proposed` (`name`, `url`,
+    `peer`, `peer_key`, `peer_genome`, `position`, `purpose`, `classes`,
+    `by`, `review_id`, `exchange: "nerves"`) with a Board Review
+    `c-<name>-<n>`. The connection is in force once a `board` verdict
+    approves that Review from someone other than its proposer — the host
+    then settles the Review in the approver's name — and until `hale dna
+    disconnect <name> --why <why>` appends `connection.closed`. **A
+    connection proposed before the nerves exchange** (`exchange: "git"`,
+    no key pinned) **is not in force**: it is proposed again.
+  - **The inbox key.** The other record's server holds a user
+    `exchange` (`nats-<org>-exchange` in the vault, the nerves
+    allocation's `nats.conf`) that
+    may publish into `exchange.<org>.in.>` and read the card, and nothing
+    else. Its operator hands it to a connected record's operator, who
+    keeps it under the same vault name; a sender whose vault lacks it
+    connects without credentials, which an open server alone admits. The
+    sender is proven by the envelope's signature, not by the key.
+  - **Handing off.** `hale dna handoff <name> task <id> | receipt
+    <digest> [--note …] [--as <who>]` signs one envelope (`kind:
+    received`) and publishes it to
+    `exchange.<peer org>.in.<this org>.received` with `Nats-Msg-Id` its
+    id and the first 32 hex digits of the sha256 of its signature (so a
+    retry of the same signed envelope is stored once, and no other
+    holder of the inbox key can take its place by publishing first
+    under an id it could predict); once the other record's stream has stored it, this record
+    appends `handoff.published` (with `peer_row`, `<stream>#<seq>`, and
+    the signed envelope) and, for a Task, `task.transfer_requested`. The
+    envelope's body carries `handoff` (`h` and twelve hex digits of the
+    origin's identity, kind and subject), `origin_record`,
+    `origin_author`, `origin_row`, `lineage` (the subject's rows here, as
+    `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`,
+    `class`, `fact`, `note`. A handoff retried after a crash completes
+    what the first try left (#637): the envelope is delivered once by its
+    id, and a published Task missing its `task.transfer_requested` gets
+    it. Only a handed Task crosses. A receipt crosses as its digest and
+    class; its body never leaves this record. A fact whose class the
+    connection does not carry is refused at the edge as
+    `handoff.refused`, with nothing published.
+  - **The bounded inbox.** The exchange stream is a work queue
+    (`retention: workqueue`): an envelope leaves it once the receiver's
+    drain has acknowledged it, kept in memory or refused, and the card
+    (read by direct get, never consumed) stays. What waits undrained is
+    bounded, and the stream refuses what overflows it rather than
+    dropping what it holds (`discard: new`): each sender's subject holds
+    at most 10 000 waiting envelopes of a kind (`max_msgs_per_subject`,
+    `discard_new_per_subject`) and the stream 256 MiB, so a connected
+    record cannot flood another's disk while it is not reading, and a
+    receiver that drains takes any number. A handoff refused as full
+    records nothing here and says so.
+  - **Receiving.** The receiving record's verbs (`hale dna handoff`,
+    `handoff accept`, `handoff sync`) first drain its inbox into memory:
+    each envelope addressed to this record, from the sender its subject
+    names, whose signature holds under the key it carries, is kept once
+    by its sender, its id and the key that signed it in `exchange_rows`
+    through `exchange_keep` (insert-only; memory schema 9), and
+    acknowledged; anything else is acknowledged and refused. An envelope
+    claiming a record this one has a live connection to, signed with any
+    key but the one that connection pinned, is acknowledged and dropped
+    unkept, and the drain says so on stderr; one from a record not yet
+    connected is kept beside any other claiming the same id, so a
+    forgery never takes the place of the sender's own envelope, and only
+    the one under the key a connection pins is admitted. The drain reaches its own nerves as the spine
+    (`HALE_DNA_NATS_URL_SPINE`, else the owner's server, else the
+    organism's nerves allocation if it is up) and says so when it
+    reached none. `hale dna handoff` lists a received handoff as admitted only under a
+    connection in force back to its origin record that pinned the key
+    the envelope is signed with and carries its class; `hale dna handoff
+    accept <id> [--as <who>]`, only for an admitted one, appends
+    `handoff.accepted` to its own record (with the envelope's origin,
+    lineage, purpose and fact) and delivers an `accepted` envelope into
+    the origin's inbox; accepting it again delivers that envelope again.
+    `hale dna handoff sync` admits, for every connection in force, each
+    acceptance the other record sent — under the pinned key — once, as `handoff.accepted_by_peer` and, for a Task,
+    `task.transfer_accepted`, each row checked on its own, so a crash
+    between the two is completed at the next sync rather than
+    suppressing it (#637). The Task settles only then, the rule
+    retirement follows (GH #604 rule 5). A closed connection is not
+    read, so history stays in both records and nothing further is
+    admitted.
 - **An attributed external decision (GH #616).** A decision made by
   someone who does not run Hale — a manager, a client, an accountant —
   enters as a fact reported by a position inside the horizon, never as
@@ -781,7 +820,7 @@ repository:
   rule 4), when the decider is the reporter, when a field is missing, or
   when the evidence is not a receipt the record holds. `hale dna receipt
   file <path> [--class internal|customer|confidential]` files one:
-  internal text under `refs/dna/receipts/` with a `receipt.filed` row
+  internal text kept in memory with a `receipt.filed` row
   (`by`, `name`, `bytes`, `class`, `store`), a protected class sealed
   in memory alone (`receipt.classified`). Whether a report settles the Task is the
   obligation's **acceptance policy**: a practice named
@@ -809,8 +848,10 @@ repository:
   an ask: an occurrence is an execution, and its key is its
   idempotence.
   **Declared by ratification.** A ratified practice whose receipt
-  carries `schedule` (a JSON object as text) declares it in its
-  `ratify` step; the ratification stands when the declaration is
+  carries `schedule` (a JSON object as text), or whose text names a
+  cadence and a step among its terms (**A practice's terms**, below),
+  declares it in its `ratify` step, and so does each practice of a
+  family (a pack) the Board ratifies whole; the ratification stands when the declaration is
   refused — the step is done, `ratified by <who>; its schedule was
   refused (<why>)`, and the refusal is its own `schedule.refused` row
   naming the hole. `hale dna schedule
@@ -825,7 +866,25 @@ repository:
   convener is answered `declared: false` with why, and nothing is
   declared; while nobody holds the Board, or no memory is named, the
   verified requester declares, as a Review's fallback decides by its
-  required authority. A declaration is
+  required authority.
+  **A practice's terms.** A practice's text may carry terms, words
+  `<key>=<value>` (the value the rest of the word; `practice_term`,
+  `dna/core/practices.hl`): the parameters of what the practice runs.
+  Only a document of kind `practice` runs anything: an idea or a mandate
+  whose text shows terms (an example, say) declares nothing. A
+  practice whose terms name `every=` (an interval, `500ms`, `30s`, `15m`,
+  `1h`, `1d`) and `step=<definition>` declares, ratified, the schedule
+  whose id is its name, of that definition, every that interval,
+  convened by the position it is bound to (its target, `position:<p>`;
+  a practice bound to `org` names no convener and is refused). Either
+  way, by its receipt's `schedule` or by its terms, an occurrence's
+  inputs are `{practice, name}` (the ratified digest and the practice's
+  name) and whatever the receipt's `args` add, so the step reads its
+  parameters from the practice itself: an amendment the Board ratifies
+  changes the terms, and the schedule is declared again with them.
+  **Upstream watches** (below) is the first practice that runs a step
+  this way.
+  A declaration is
   `schedule.declared <id> {every_ms, cron, definition, args, convener,
   from}`, written when new or changed — declaring the same schedule
   unchanged writes nothing — and `from` is the occurrence it was
@@ -1030,12 +1089,15 @@ repository:
   `oidc` a head serves nothing without a verified token: `/api/*`
   answers 401, `/` redirects to `/auth/login`. A session comes from OpenID Connect's
   authorization-code flow against `dna.oidc.issuer` (https, or plain
-  http to `127.0.0.1` or `localhost` exactly — the URL's host is parsed,
-  userinfo refused, never matched by prefix): the head discovers the
-  issuer's endpoints, refuses a discovery document whose
+  http to `127.0.0.1` or `localhost` exactly, or to exactly the address
+  the habitat declares, `HALE_DNA_HABITAT_ADDRESS`: a habitat on another
+  machine of the LAN is named by its DNS and runs no TLS, `spec/habitat.md`
+  § A habitat on another machine — the URL's host is parsed, userinfo
+  refused, never matched by prefix, and no other host is admitted): the
+  head discovers the issuer's endpoints, refuses a discovery document whose
   `authorization_endpoint` or `token_endpoint` is not https (plain http
-  only when the issuer itself is on this machine; `discovery_refusal`,
-  #635), sends the browser to its authorize endpoint with a random
+  only when the issuer itself is on this machine or the habitat's declared
+  address; `discovery_refusal`, #635), sends the browser to its authorize endpoint with a random
   `state` and `nonce` (`std::os::getrandom`), and exchanges the
   returned code at the token endpoint itself with the client's secret
   (`dna.oidc.client`, its secret the vault's `oidc-client-<client>`,
@@ -1052,8 +1114,10 @@ repository:
   (`bearer_refusal`). A command reaches the head's surface (`HeadCommands`) over its
   `http::Rpc` exposure (GH #1135, #1417; `spec/api.md` § The HTTP
   transport), `POST /call/<member>`, on the port the head's launcher gives it
-  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
-  given, none served, and a relayed command is `commands_unavailable`),
+  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port) or, none
+  given, the port the system picks, which the API child reports to the head
+  that started it (`HALE_DNA_API_PORTS`); until it has, a relayed command is
+  `commands_unavailable`,
   as a POSTed line of
   the wire under the caller's bearer; no program forwards a line. The
   head's bearer source (`dna/api/bearer.hl`, `OidcBearer`) verifies the
@@ -1078,8 +1142,9 @@ repository:
   the session becomes a bearer; a caller's own bearer is not asked.
   An OIDC child is ready when it refuses an unauthenticated read carrying the digest of the
   proof the face gave it (`X-Hale-Child`), so a process squatting on the
-  child's port is never handed a token. **An issuer on the loopback is
-  anyone's who can bind its port**, so its key is pinned: a head under
+  child's port is never handed a token. **An issuer on the loopback (or on
+  the habitat's declared address) is anyone's who can bind its port**, so
+  its key is pinned: a head under
   a loopback issuer does not start without `dna.oidc.key` (the issuer's
   SubjectPublicKeyInfo) and trusts that key alone. In local mode the stub
   signs under a key made for the launch, its client secret is the
@@ -1140,7 +1205,7 @@ repository:
   `review.verdict` (the body: the verdict), `concern raise` appends
   `concern.requested`, `pressure raise` appends `pressure.requested`
   and `practice propose` appends `practice.requested`, each in the
-  appender's git identity, from any clone. **A one-shot verb never
+  appender's name and signed as they sign, from any clone. **A one-shot verb never
   publishes.** A **node** — the host under `hale dna run` or `dev`,
   which is its program's `main locus` for as long as it runs — relays
   every request row it holds that the record has not answered onto the
@@ -1187,13 +1252,12 @@ repository:
   refuses: for a request with an id of its own (a concern's, a
   pressure signal's) it is one object, `why` and `request`. `local`,
   the default, trusts every writer to the record — the operator's
-  profile; `signed` admits a row only when its commit carries a
-  signature git verifies (`git verify-commit`; git's keyring or
-  allowed-signers file is the list of who may act), and a row that
-  does not is refused in the record in the host's name
-  (`intent.refused`, `review.refused`, `concern.refused`: "unverified
-  writer") and never relayed. Under `signed`, rows this clone writes
-  are signed commits. Signing is one mechanism for this edge, not the
+  profile; `signed` admits a person's row only when it carries a
+  signature by the key the record enrolled for them (`hale dna
+  signers`, **The record**), and an organism part's only under the
+  record's key, and a row that does not is refused in the record in the
+  host's name (`intent.refused`, `review.refused`, `concern.refused`:
+  "unverified writer") and never relayed. Signing is one mechanism for this edge, not the
   boundary itself: a hosted head is admitted through a reviewed mapping
   of principals to authority and acts as the user, never as itself.
   The organism's answers (`intent.offered`, `task.born`,
@@ -1203,8 +1267,10 @@ repository:
   a head's ask carries the person the head identified.
   A row is answered when a later row of the answering kind names its
   entity. `hale dna task create --no-wait` appends and returns, on either
-  path: beside a live organism once the row is appended, from a clone
-  with no organism once the row is appended and synced. "Beside a live
+  path, once the row is appended (the record is memory's: there is
+  nothing to sync); without `--no-wait`, an ask or a verdict made where
+  no body anywhere holds the record's lease is refused before anything is
+  written. "Beside a live
   organism" is the record's body lease: live, and held by this clone's
   body.
 
@@ -1223,7 +1289,7 @@ repository:
   out through those bindings. The generated organization reads them
   through its own pinned connection: a message that arrives is handed
   to every topic of its subject the organization subscribes, whatever
-  its `bindings` list (which `init` writes for most of them, for its
+  its `bindings` list (which the graft writes for most of them, for its
   own publishes). The payload
   is the bus's own encoding: both ends are Hale programs declaring the
   same topic, and nothing converts it. A one-shot verb instantiates no
@@ -1253,7 +1319,23 @@ repository:
   node) and hands it to the organization (`HALE_DNA_OWNER`); an owner's
   name in a subject or a durable keeps
   its letters, digits, `-` and `_`, anything else `_`.
-- **Credentials, one per family**, each a user on the server: `owner`
+- **An account per organization.** The organization's users are an
+  account of their own, `ORG_<KEY>` (its record's first 12 hex digits),
+  with JetStream: an account is its own subject space, so `*` in a
+  permission stands for the organization's token however many
+  organizations one server holds, and nothing of one account reaches
+  another. Every user is named by its role and the record's key
+  (`dna::nerves_user`: `owner-<key>`, `spine-<key>`, `head-<key>`,
+  `reflexes-<key>`, `exchange-<key>`, `app-<name>-<key>`), so a server's
+  users are distinct across its accounts; the heart's broker users
+  (`heart-<key>`, `heart-<key>-node`) are keyed already. An
+  organization's program names its role alone (`user: "spine"`, as `hale
+  habitat graft` writes it): DNA's NATS connection (`nats::NatsConn`)
+  connects a role's bare name as that role's user of the organization's
+  account (`HALE_DNA_NATS_ORG`), so a program generated before the
+  accounts connects unchanged.
+- **Credentials, one per family**, each a user of the organization's
+  account: `owner`
   creates the stream and is held by no process that runs the organism;
   `spine` publishes and reads `<org>.dna.>` and an owner's
   `<org>.<owner>.dna.>` (the host and the organization), reads
@@ -1262,20 +1344,24 @@ repository:
   subscribes and publishes nothing; the application the record attaches
   holds a user of its own, `app-<name>` (**The application's
   account**), which publishes on `<org>.app.<name>.>` alone and reads
-  nothing of DNA's. `hale dna nerves migrate [dir]`
-  creates or updates the stream with the owner's URL
-  (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
-  `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG`, one
-  `HALE_DNA_NATS_URL_<ROLE>` per role — `nats://host:port` alone — and
-  `HALE_DNA_NATS_VAULT_REFLEXES`, and for the attached application
-  `HALE_DNA_NATS_USER_APP` and `HALE_DNA_NATS_VAULT_APP`: the users and
-  vault names a program that is not the host presents; `hale dna dev` runs it
-  before it starts the host and hands the host the spine's URL and the
-  token, never the owner's nor the head's; `hale dna run` takes the
-  two from its environment and has the owner's and the head's removed
-  from it. `hale dna nerves drop [dir]` deletes the stream, and
-  everything it held, with the owner's URL — beside dropping memory's
-  schema, when an organization is torn down.
+  nothing of DNA's. Birth, `hale habitat migrate [organism]` and `hale
+  dna nerves migrate [dir]` create or update the stream with the
+  owner's URL (`HALE_DNA_NATS_URL_OWNER`, or the organism's nerves
+  allocation in the local habitat, brought up) and print
+  `HALE_DNA_NATS_ORG`, one `HALE_DNA_NATS_URL_<ROLE>` per role —
+  `nats://host:port` alone — and `HALE_DNA_NATS_VAULT_REFLEXES`, and for
+  the attached application `HALE_DNA_NATS_USER_APP` and
+  `HALE_DNA_NATS_VAULT_APP`: the users and vault names a program that is
+  not the host presents (GH #1653). `hale dna nerves urls [dir]` prints
+  the same lines for nerves that are up, bringing nothing up and
+  creating no stream (`nerves-migrate --derive`), and names `hale
+  habitat migrate <organism>` when they are not; `hale dna dev` derives
+  them the same way before it starts the host and hands the host the
+  spine's URL and the token, never the owner's nor the head's; `hale
+  dna run` takes the two from its environment and has the owner's and
+  the head's removed from it. `hale dna nerves drop [dir]` deletes the
+  stream, and everything it held, with the owner's URL — beside
+  dropping memory's schema, when an organization is torn down.
 - **The application's account** (GH #989). The application the record
   attaches is named by its project: the project's name as a subject
   token (lower-case letters and digits, anything else `_`, at most 32),
@@ -1283,18 +1369,20 @@ repository:
   row recorded before that field resolves by the project's directory
   name: a record is data already written, not an API kept compatible.
   An application publishes under its project's name. Its user is
-  `app-<name>`, its password the vault's `nats-<org>-app-<name>` and
-  `dna/nats.conf`'s `$NATS_APP_<NAME>_PASSWORD`, and it may publish on
+  `app-<name>-<key>`, its password the vault's `nats-<org>-app-<name>` and
+  its account's secrets' `$NATS_<KEY>_APP_<NAME>_PASSWORD`, and it may
+  publish on
   `<org>.app.<name>.>` and nowhere else; no other application's
   subjects, nor the reflexes'. It is provisioned when
-  `application.attached` lands (`hale dna init` lands it, for an
+  `application.attached` lands (`hale habitat graft` lands it, for an
   application and for a repository alike, then
   provisions the organism's secrets) and on every `upgrade` that finds
   it missing. `hale dna application remove [project] [--as <who>]`
   writes `application.detached {name, by}` to the record, the
-  membership's source, and revokes the account: its user leaves
-  `dna/nats.conf`, its password the include and its entry the vault,
-  and compose's `nerves` is restarted, so a connection it holds is
+  membership's source, and revokes the account: its user leaves the
+  organization's account, its password the account's secrets and its
+  entry the vault, and the nerves server holding it is restarted when
+  it is up, so a connection it holds is
   closed and none opens again. An application named `reflexes` holds
   no account: those subjects are the reflexes' alone.
 - **The nerves' passwords** (GH #989) are the vault's, one per role
@@ -1305,22 +1393,27 @@ repository:
   No URL carries a password: userinfo in a server's URL is dropped. A
   role whose entry the vault lacks is refused (`nerves migrate`, the
   host, the reflexes); nothing connects with a default.
-  - **The server's files.** `dna/nats.conf` is a tracked seed file with
-    no secret in it: it `include`s `./nats.secrets.conf` and names each
-    user's password as its variable (`$NATS_<ROLE>_PASSWORD`, and the
-    attached application's `$NATS_APP_<NAME>_PASSWORD`).
-    `dna/nats.secrets.conf`, written by the bootstrap from the same draw
-    as the vault's entries, is the one file that holds a password: mode
-    600, ignored by the project's `.gitignore` (which `init` and
-    `upgrade` give the line), mounted into compose's `nerves` service.
-  - **The guard.** The writer refuses a secrets file git tracks or would
-    track.
-  - **Rotation.** `init` and `upgrade` draw every role's password anew
-    (a regenerated seed rotates them); a server compose is running is
-    restarted to read them, and a restart that fails is said. `upgrade`
-    rewrites `dna/compose.yaml`, which mounts the secrets file. A server
-    of the operator's (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the
-    secrets file again after each rotation.
+  - **The server's files** live beside the allocation of the organism
+    whose server it is (`allocations/<id>/`, mode 700; GH #1653), never
+    in a checkout: the organism's own, or the habitat's for an
+    organization the habitat's nerves hold (`dna::nerves_root`). Each
+    organization it holds is two files of its `nerves.d/`: its account
+    (`<key>.account.conf`, no secret: each user's password is a variable,
+    `$NATS_<KEY>_<ROLE>_PASSWORD`, and the attached application's
+    `$NATS_<KEY>_APP_<NAME>_PASSWORD`) and its secrets
+    (`<key>.secrets.conf`, written by the bootstrap from the same draw as
+    the vault's entries, the one file that holds a password, mode 600),
+    which the account `include`s: NATS parses an included file in its
+    own scope, so an account reads only the variables it brings.
+    `nats.conf` is the server's: JetStream, and inside `accounts` an
+    `include` of every account, rewritten whenever one comes or goes; it and `nerves.d/` are mounted
+    into the `nerves-<id>` service, and a server that is up restarts to
+    read an account that came or changed.
+  - **Rotation.** A graft and `upgrade` draw every role's password anew;
+    the nerves server holding the account, when it is up, is restarted to read them, and
+    a restart that fails is said. A server of the operator's
+    (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the secrets file
+    again after each rotation.
 - **Liveness.** At start the host waits for the organization to read
   its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
@@ -1378,11 +1471,6 @@ repository:
     whether a redelivery or a replay, is refused as a duplicate and
     lands nothing. Whether it is recorded is decided at the revisions the
     row is appended at, so two hosts land it once.
-  - **Shared records.** Over a shared record that keeps its rows in git
-    (routing 0), each owner's clone appends on its own, and only the
-    ledger can decide an id across owners. There readings wait in the
-    stream until the ledger is adopted, and the host says so once. They
-    wait at most as long as the stream keeps them (a week).
   - **Not a reading.** A message that names no application and event, or
     whose body is not such an object, is not a reading: the host says
     why and records nothing.
@@ -1404,12 +1492,23 @@ repository:
 - **Stopping.** A node is its program's `main locus`, and SIGTERM
   drains it (GH #1039): its supervision reads `draining`, stops the
   organization (which drains the same way), gives the lease back and
-  ends. `hale dna run` and `dev` give the node a 30 s grace for it
+  ends. A node that ends on its own, as a genome that does not build
+  ends it, gives the lease back the same way (`body.released {why:
+  "exit <code>"}`) once what it started is gone, so a supervisor that
+  starts it again does not leave a lease behind for each start; a lease
+  it no longer holds is not touched (the release is a compare-and-swap
+  on its token). A seed build that fails says why: its exit status (or
+  the signal that ended it) and the last lines of its stderr. `hale dna run` and `dev` give the node a 30 s grace for it
   (`LOTUS_DRAIN_GRACE_MS`, unless the environment already sets one).
   The core imports no NATS, because a program holding pond's
   connection drains on SIGTERM: an API that imports the core keeps the
   default action. The head holds its own connection and drains: its
-  watcher stops and the server stops accepting, at once.
+  watcher stops and the server stops accepting, at once. A request it
+  is still relaying (a read proxied to its API child, a command relayed
+  to its commands port) ends at the drain as well: the relay waits a
+  slice at a time and, once the drain has begun, answers 503, retryable
+  (`head_api_unavailable`, `commands_unavailable`), instead of waiting
+  out the relay's deadline past the drain's grace.
 - **One transport: the nerves** (GH #986). Every fact between the
   organism's parts travels over the nerves, and
   an application's concern is one of its own events (**The heart's
@@ -1418,14 +1517,15 @@ repository:
   server, its own user and the vault name of that user's credential,
   and the organization's token (`HALE_DNA_NATS_URL_APP`,
   `HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`,
-  `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
+  `HALE_DNA_NATS_ORG`; `dev` derives them as `nerves urls` does, a node is
   started with them, and a repository's compose services are handed
   them with the path of the password's vault entry: **The body runs a
   repository's compose services**), and none of the organism's other
   credentials: the spine's, the owner's, the head's and the reflexes' NATS URLs and
   memory DSNs are taken out of what it inherits. A node materializes
   `vendor/dna` in its clone for its toolchain, so an instance can import
-  pond's NATS client from it. Local mode is the seed compose's nerves.
+  pond's NATS client from it. Local mode is the organism's nerves
+  allocation in the local habitat.
 
 `.hale/dna/` holds only what is not the record: the status projection,
 worktrees, scratch inputs to the toolchain. Deleting it loses nothing
@@ -1434,15 +1534,18 @@ the record holds.
 ## Event kinds
 
 Every kind names its memory. The **memory** column is the routing
-table under version 1 (`memory_of` in `routing.hl`); on routing 0
-every kind is the record's, and a kind no build knows is the
+table (`memory_of` in `routing.hl`); a kind no build knows is the
 record's.
 
 | kind | memory | what it is |
 |---|---|---|
 | `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain, and its `name`, which its broker account carries |
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
-| `structure.observed` | record | the compiler's model of one of its parts, at `init` |
+| `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given), `toolchain` (`go`, `hale` or `none`, the default) and who; a later attach of the name states it anew |
+| `codebase.detached` | record | the codebase removed (`hale dna codebase detach`): its `name` and who |
+| `task.delivered` | ledger | a codebase task's verdict, delivered (entity the task): `via` `review` (merged: `review`, `leg_commit`, `merge_commit`, `edited`, `edit_receipt`, `comment_receipts`: the pull request's comments, each kept as a receipt, space-separated) or `brief` (its Review approved: `review_id`, `by`) |
+| `task.refused` | ledger | a codebase task's verdict, refused (entity the task): `via` `review` (closed without merging; `comment_receipts` as above) or `brief` (its Review not approved), with `why` |
+| `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
@@ -1455,7 +1558,7 @@ record's.
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
-| `law.deferred` | record | a clause `init` could not certify |
+| `law.deferred` | record | a clause the graft could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
 | `intent.offered` / `intent.refused` | ledger | the outcome an ask was admitted for, or the refusal |
 | `intent.unrecovered` | ledger | an intent offered before a restart that no admission names; never re-offered |
@@ -1471,7 +1574,7 @@ record's.
 | `mutation.located` | record | the files found, and the grant they were found under |
 | `mutation.candidate` | record | the commit the editor produced |
 | `mutation.<disposition>` | record | what the autonomy boundary decided: `review`, `stage`, `escalate`, `release`, `deny` |
-| `mutation.topology` | record | the diff names a plan or the manifest: re-classed for the Board |
+| `mutation.topology` | record | the diff names a fleet seed's source or the manifest: re-classed for the Board |
 | `mutation.applied` | record | the candidate applied to the genome |
 | `mutation.apply_retried` | record | the apply ran again on a settled review |
 | `mutation.retained` | record | kept after its observation window |
@@ -1519,7 +1622,8 @@ record's.
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
 | `body.provisioned` | record | a machine made able to run it |
 | `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is in the vault where the body runs |
-| `secret.rotated` | record | a credential set or rotated — the name and the place, never the value |
+| `secret.rotated` | record | a credential set or rotated — the name and the place, never the value (a family's member: `<name>--<label>`) |
+| `secret.removed` | record | a family's member taken out of the vault (`<name>--<label>`), never its value |
 | `schedule.requested` / `schedule.answered` | ledger | a schedule asked of the organization (`hale dna schedule declare`), relayed by the host; its answer under the request's id: `declared`, `why` |
 | `schedule.declared` / `schedule.refused` | ledger | a schedule a ratified practice or a request declares (`every_ms`, `cron`, `definition`, `args`, `convener`, `from`); or one that would not be declared (`why`, and `hole` for a convener nobody holds), or an occurrence whose admission was refused (`occurrence`, `why`) |
 | `schedule.skipped` / `schedule.missed` | ledger | an occurrence not admitted while the last execution is open (`occurrence`, `task`); occurrences whose period passed with no tick (`first`, `last`, `count`, `why`) |
@@ -1540,10 +1644,257 @@ record's.
 | `expression.restarted` / `expression.deployed` | record | the shape and build the new expression reports, or what a deployment gateway expressed and judged |
 | `expression.observed` / `expression.crashed` | record | the observation window's outcome; `crashed` names the instance and node on a fleet |
 | `fleet.deploy` | record | a genome revision expressed through the fleet's nodes |
-| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
+| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the fleet |
 | `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
 | `gate.observed` | record | a gate's check run at the candidate as the forge reported it: `gate`, `sha`, `conclusion`, `url`, `forge`, `run`; written only by the host's forge sync, once per run (GH #1161) |
-| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | the move of the day's work into the ledger, its checkpoint, and its undoing |
+
+### A codebase attached with no application
+
+`hale dna codebase attach <name> --repo <url|path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--knowledge <dir>] [--branch <name>] [--as <who>]`
+writes `codebase.attached` (above); `--knowledge` (default `docs/integrations/`, a
+directory inside the repository) declares where the codebase keeps an
+watched source's architecture note, `<watch>.md`, on its default branch
+(**The task a move becomes**); `detach <name>` writes
+`codebase.detached`; `list` (the default) reads the record's attached
+codebases. No application row is written and no broker account exists: a
+codebase is a repository the organism works on, not a heart it senses.
+The name is lowercase letters, digits, `-` and `_`. `build` and `test`
+are opaque strings, run with `sh` in a worktree and nowhere else; empty
+means no step. A path `--repo` is stored absolute. `--toolchain` declares
+the toolchain hand a leg works the codebase with (anything but `go`,
+`hale` or `none` is refused); `none` leaves build and test as the opaque
+commands, and `hale` is recorded for the hale hand to select by.
+
+A genome's manifest may list its codebases, `[[dna.codebase]]` in its
+`hale.toml` with the same fields (`name`, `repo`, `branch`, `build`,
+`test`, `toolchain`); the habitat attaches each one at the organism's graft
+as this verb does, once (`spec/habitat.md`, Nurseries and saplings).
+
+A `go` codebase's leg holds a Go hand (`legs::GoToolchain`, beside
+`Toolchain` in `dna/core/legs/hands.hl`, behind the `GoHand` interface and
+`Hands.go`) with three tools added to the hat's `tool_grant`: `go_vet`
+(`go vet ./...`), `go_test` (`go test` over a `package` pattern, default
+`./...`; a pattern that starts with `-` or holds other than path
+characters is refused) and `gofmt_check` (`gofmt -l .`; any listed file is
+the failure, empty is clean). Each runs in the leg's worktree of the
+codebase; its output is bounded and returned as the tool's result, and the
+call is a row of the `tool-calls` receipt like any other. A machine with no
+`go` or `gofmt` on PATH answers that the Go toolchain is not installed
+there, rather than failing obscurely. For a `go` codebase `verify` runs,
+after `build`, `gofmt -l`, `go vet` and `go test ./...`, the first to fail
+refusing as `gofmt failed`, `go vet failed` or `go test failed`; `propose`
+runs the same three first and pushes nothing when one fails
+(`not pushed: …`).
+
+A leg working a codebase (`legs::CodebaseWork`, `dna/core/legs/codebase.hl`)
+takes its worktree from the codebase's repository, never the organism's
+own: a scratch clone at `branch`, on a new branch
+`leg/<codebase>/<task>`. Its verify step is the codebase's `build` and
+then its `test` in that worktree (the first to fail refuses, with its
+output). It proposes by committing, pushing the branch to the codebase's
+repository (`origin`) and opening a review through its `ForgeHand`:
+`GhForge { repo, base }` names the codebase's repository and default
+branch (`gh pr create --repo --base --head`), and `ForgeBridge` puts the
+core's `Forge` behind the hand, so a fixture runs it over `MemForge`.
+The forge decides; a leg never merges.
+
+A task names a codebase with `hale dna task create --to position:<name>
+--codebase <name> <outcome…>` (the codebase must be attached, and the ask
+routed to a position): the intent row, the `IntentOffer` and the `Intent`
+carry `codebase`, and `ask-position`'s admission inputs record it. The
+Work's hat then carries `codebase`, the attached row as a JSON object
+(`name`, `repo`, `build`, `test`, `branch`, `toolchain`; absent for a task naming none,
+so such a hat's digest is unchanged). A leg's `hand` and `submit
+--from-worktree` on a hat that names one work a clone of the codebase's
+repository on `leg/<codebase>/<task>`, not the project's checkout: the
+`check` and `test` hands run the codebase's `build` and `test`, the
+validators are the two commands, and `submit` pushes the branch there,
+opens the review through the leg's forge hand and files the outcome as
+`result_ref: review:<ref>`. The owner settles such an outcome done on that
+reference and makes no Mutation of its own genome. The language hands (Go)
+that make the commands typed are a later item.
+
+### Upstream watches
+
+A watched upstream (an external service the organism depends on) is a
+practice, never a manifest table or a record family of its own. The
+standard pack's template `standard/upstream-watched/<name>` is proposed
+once per upstream (`hale dna pack apply standard --set integration=<name>
+--set position=<owner> --set source=<source> --set kind=<kind> --set
+every=<cadence> [--set codebase=<name>]`), ratified by the Board with the rest of its batch, and
+bound to the owning position (its target `position:<owner>`). The batch
+also proposes an idea, `standard/upstream-source/<name>`, the source as
+knowledge, an external source with its URL, bound to the same position.
+The practice's text names its terms (**A practice's terms**):
+
+- `source=`: `http://`, `https://` or `file://` for a page or a feed;
+  for an OpenAPI document, the surface `hale api import` wrote and the
+  genome commits (a path inside it), whose source is the one it was
+  imported from (`from openapi "…"`);
+- `kind=`: `changelog`, `docs`, `feed` or `openapi`;
+- `every=`: the cadence, as a schedule takes it;
+- `codebase=`: optional, an attached codebase whose client of the source
+  a move is a task for (**The task a move becomes**); the pack's default
+  `none` is no codebase;
+- `step=source-check`: the step its occurrences run.
+
+Ratified, the practice declares the schedule its text names, its id the
+practice's name, of `source-check`, convened by its position: a position
+nobody holds is `schedule.refused` with the hole, and the same terms
+again write nothing (**Schedules**). Each occurrence's inputs are
+`{practice, name}`, and its `check` step (`dna/core/source_check.hl`)
+reads its parameters from the practice's receipt; a document that is not
+a practice is refused (result `refused`). A practice that is not in
+force (never ratified, or retired) checks nothing. One whose terms do
+not stand (no position, a kind outside the four, a source of the wrong
+shape) fails its occurrence saying why, its result `refused`.
+
+The step reads the source and normalizes it:
+
+- `changelog` and `docs`: a body whose first character is `<` is HTML,
+  read as text with its markup stripped, a line per block element, and
+  the volatile parts left out (`head`, `script`, `style`, `noscript`,
+  `template`, `svg`, `iframe`, `object` and comments); any other body is
+  its lines. Each line has its common entities read, its white space
+  collapsed and its ends trimmed, and blank lines are dropped.
+- `feed`: the entries (RSS `item`, Atom `entry`), a line each, `title |
+  link` (the `guid` or `id` without a link); the feed's own fields and
+  dates are not read.
+- `openapi`: the source document itself, canonical (`hale api drift
+  <surface> --document`, run in the genome: the parsed OpenAPI document,
+  JSON or YAML alike, as JSON with its keys sorted), with the `drift …`
+  lines of `hale api drift <surface>` as its summary. The document, not
+  the drift lines, is what is digested: a drift line names a row and a
+  slot, so a second change to a row that already drifted reads the same.
+  An exit of `--document` other than 0, or of the drift check other than
+  0 or 1, is a failed read.
+
+A fetch is one GET (`std::http::get`, 30 seconds, no redirects followed:
+a status outside 2xx fails) or a file read, at most 4 MiB, in UTF-8. The
+digest is the normalized text's sha256, and the text is kept as a
+receipt under it. The baseline is the receipt the previous occurrence
+named: each occurrence's outcome is the record of what it saw, and the
+step reads the outcomes of the practice's earlier occurrences (by its
+name, so an amended practice keeps its baseline). An outcome `done`
+names the snapshot it saw as its `result` (`sha256:…`); one `failed`
+with the result `unreached` could not read the source. Against the
+baseline:
+
+- none: the outcome names the snapshot, and nothing else is written;
+- the same digest: the same, nothing else;
+- another digest: the unified diff of the baseline's snapshot and this
+  text, labelled `<practice name> <from12>` / `<to12>`, cut at a line
+  past 16 KiB with a line saying so, is kept as a receipt; a
+  `reading.recorded` lands, entity `sources/<watch>.changed/<task>`
+  (`<watch>` the last segment of the practice's name), `app` `sources`,
+  `event` and `subject` `<watch>.changed`, its payload `{id, practice,
+  name, kind, source, position, task, from, to, drift (openapi), receipt,
+  diff}`; an API's receipt leads with its drift lines, then the diff of
+  the canonical document; and the organization admits a concern
+  (`on_concern`) from `<position>/<watch>`, so it is routed to the
+  position, its `request` the reading's entity and its words naming the
+  reading and the receipt.
+
+A read that fails is the occurrence's own failure, result `unreached`.
+The third in a row (`SOURCE_UNREACHABLE_AFTER`) also lands one
+`reading.recorded` `sources/<watch>.unreachable/<task>` (payload `{…,
+why, failures}`) and no concern; the failures before and after it land
+nothing, and an occurrence that reads the source again ends the run. A
+step performed again (a restart before its outcome) that finds a reading
+its task landed answers from that reading, without reading the source
+again: a move's outcome names the snapshot the reading moved to, and its
+concern, asked again under the same request, names the reading's
+receipt, so a source that moved on since is the next occurrence's move. The step
+keeps no rows of its own: what each occurrence saw is its outcome, and
+the snapshots and diffs are receipts.
+
+The concern goes the way every concern goes (`concern-escalate`): raised
+and routed, and proposed as knowledge at the threshold. Of itself a
+concern is not a task; a practice that names an attached `codebase=`
+files one for its move (below).
+
+#### The task a move becomes
+
+A watched upstream whose practice names an attached codebase (a
+`codebase=<name>` term, beside `source=` and `kind=`) is that codebase's
+client of an external service. Two things follow from a move, by the
+organization, none by a person filing anything, and both are composed of
+shapes that exist: the practice, a knowledge node, an ask. No row kind
+and no record family is added.
+
+**The note.** The codebase's knowledge directory (`--knowledge`) holds
+`<watch>.md` on its default branch, the source's architecture note. At each
+move the organization reads it (`git show <branch>:<dir><watch>.md` in the
+repository, in a scratch clone when it is not on this machine) and
+proposes it as a knowledge node of kind `concept`, named
+`integration/<watch>`, authored by `org` and bound to the practice's
+position: the Board ratifies it as any knowledge (`knowledge.proposed`, its
+Review). A proposal is by the digest of its document, so a note that did
+not change is the proposal already in the record, and a note that changed
+is a fresh proposal on the same node. A codebase with no such file notes
+nothing.
+
+**The task.** A move (the check that lands `reading.recorded`
+`sources/<watch>.changed/<task>` and its concern, whether the check is
+fresh or asked again) files, besides, one ask under `position:<position>`
+naming the codebase, id `source-<watch>-<reading's task>` (an ask is
+admitted once by its id): the `ask-position` workflow, `Patch` output, and
+in the admission's inputs an `integration` object `{integration (the
+watch), practice (its name), codebase, source (its kind), reading,
+diff_receipt, diff, note_path, note_digest, note}`, derived from the
+reading, the concern's receipt and the practice that convened the check
+(the diff and the note inline cut at a line past 8000 bytes, the whole of
+each in the receipt and the codebase). The hat carries it
+(`hat.integration`, in the digest), and a prompt rendering names the move,
+its diff and the note and the two ways to answer. A leg holding the
+position claims it through the ordinary claim path (`attempt.claimed`;
+`hale dna work next --as position:<name>`).
+
+**The answer.** The leg reads the client through the codebase's worktree
+and answers one of two ways. A change opens a pull request at the
+codebase's forge (the Go hand and `CodebaseWork.propose`, **A codebase
+attached with no application**); the review's body ends in a
+`leg-commit: <sha>` line naming the commit the leg left the branch at, and
+the attempt settles `done` with `result_ref: review:<ref>`. A first line
+beginning `NO IMPACT` over an unchanged worktree is a no-impact brief: the
+attempt settles `done` with `result_ref: brief:<digest>` and the brief as
+its result, no validator judging a tree nothing changed, and the
+organization puts it to a Review of its own, not the forge's: a knowledge
+proposal (kind `idea`) bound to the position, its provenance naming the
+task (no row of its own). Neither
+touches anything but the codebase's repository and the record: no Mutation
+of the genome is asked. Either answer's receipts are the architecture
+note and the reading's diff in full, one manifest of sources (`{"sources":
+[{kind note|diff|file, path, digest}…]}`: the note, the diff by its
+receipt, and every file read through the `read` hand with the digest of
+what it read), and the tool calls (a `read` row names its `path`).
+
+**The verdict.** The forge decides a review's fate and the organization
+learns it through the `Forge` interface (`dna/core/forge.hl`):
+`review_state` (`open`, `merged\t<commit>`, `closed`, `unknown`),
+`review_body` and `review_comments` (`who\tkey\ttext`, newlines as `\n`),
+beside the verdict, check and comment methods. The host's forge sync
+asks it for every codebase review not yet decided, per codebase (the
+allocated Forgejo's API for a codebase whose repository is there, by its
+url; GitHub's `gh pr view` for a `github` forge, the repository taken
+from the codebase's url; the file forge's `<n>.merged`, `<n>.said` for
+fixtures),
+through `codebase_intake` (`dna/core/codebase_reviews.hl`), which returns
+the rows and writes none:
+
+- merged: `task.delivered {via: review, leg_commit, merge_commit, edited,
+  edit_receipt, comment_receipts}`. A review the team edited before merging is still
+  delivered; `edited` is whether `git diff <leg_commit> <merge_commit>`
+  in the codebase is not empty, and that diff is the `edit_receipt`: what
+  the organism learns from;
+- closed unmerged: `task.refused {via: review, why, comment_receipts}`;
+- each comment on the review, once by its key, is a receipt on the task:
+  `comment_receipts` on the verdict row, in the forge's order. A comment
+  has no row kind of its own.
+
+A no-impact brief's Review is the verdict: approved, `task.delivered {via:
+brief}`; otherwise `task.refused {via: brief}`, written when the Review
+settles (`brief_verdict`).
 
 Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must
@@ -1645,7 +1996,7 @@ expansion.
 DNA ships a catalog of definitions, each a chain in which every step
 writes one store (`dna::baseline_definitions()`, in
 `dna/core/workflow_definition.hl`). A project's `dna/org/workflows.hl` is
-generated — written by `hale dna new` and rewritten to the current shape
+generated — written by `hale habitat graft` and rewritten to the current shape
 by every `hale dna upgrade`, whatever an earlier toolchain wrote — and
 returns it plus the project's own (`fn workflows() -> dna::WorkflowCatalog`),
 which live in `dna/org/own_workflows.hl` (`fn own_workflows(catalog)`:
@@ -1669,6 +2020,7 @@ bound at admission — and a new Task binds the newest (`latest`).
 | `deploy-observe` | `deploy` (heart) · `settle` (record) |
 | `concern-escalate` | `raise` (record) |
 | `optimize-walk` | `walk` (record) |
+| `source-check` | `check` (record) |
 | `secret-rotate` | `rotate` (vault) · `recorded` (record) |
 | `body-provision` | `provision` · `start` (host) · `lease` (memory) · `observed` (record) |
 | `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | the ask's one leaf: an edit prepared for review, a person's job, a judgment handed back as an `Assessment`, or a change made by the position it is routed to (record) |
@@ -1696,7 +2048,8 @@ the leader's word, memory's projection) is kept and performed again when
 what it waits on may have arrived: a verdict, the leader's answer, the
 tick. The organization performs the steps this toolchain knows, by
 definition and key: `practice-ratify/ratify`, `practice-ratify/hat`,
-`concern-escalate/raise`, `optimize-walk/walk`. A definition with an
+`concern-escalate/raise`, `optimize-walk/walk`,
+`source-check/check`. A definition with an
 organism step it does not know — a path not moved onto the catalog yet
 (`ask-triage`, whose ask is still admitted as `ask-edit` or `ask-person`
 after the leader plans it), or a revision from a newer toolchain — is
@@ -1747,40 +2100,17 @@ what an admission would refuse each definition for.
   reads the machinery's signals, asks the leader once per incarnation
   and is done at its `org.reviewed` row, which names the execution
   (`task`).
+- **source-check** is one check of an upstream a practice watches, and
+  occurs on the schedule the practice declares (**Upstream watches**);
+  it takes `practice` and `name`, and its parameters are the practice's
+  text. `check` reads the source and lands what **Upstream watches**
+  says, or finds the reading it landed when it is performed again.
 
-**The record is the local-mode floor; the ledger is the runtime.** Every
-step is a few rows of the day's work (`step.*`, `attempt.*`,
-`work.settled`, `effect.*`). Until `hale dna ledger adopt`, each is a
-commit on `refs/dna/journal`, so an execution costs tens of commits: a
-Board deciding a repository's 35 seeded proposals waits some 15 to 18
-seconds for their ratifications on a git-backed record (measured), where
-memory takes the same rows in about a second. A git-backed record is what one person working
-alone starts on; an organization runs with its ledger adopted.
-`hale dna review <group> approve|reject` writes every verdict of the
-group first and then waits for the answers once, bounded by the group's
-size. `hale dna review all approve|reject` decides every group with a
-pending Review in the order a new organization is ratified (`purpose`,
-`design`, `operating`, `using`, `library`, `holes`, `practices`,
-`positions`, `changes`, `holds`, `ingest`), each group waited for before
-the next, since a hold waits on the position it sits on. `hale dna init
---with <pack> [--set <param>=<value>]… [--as <who>]` runs `init`, then
-`hale dna pack apply --on-holes` on the toolchain's nursery: the pack
-proposed as one batch beside init's own proposals and **planned on the
-holes init just proposed**, so it may fill them (the toolchain's
-`founder` pack is `fill * <founder>`, every seat left vacant), and one
-`review all approve` ratifies the starting organization, its seats
-included: the holes in `holes`, then the pack in `changes`. Planned on
-the record alone, a fill of a hole is refused (the position is a
-proposal until the Board ratifies it), which is why onboarding took a
-second batch and a second verdict. The holes stay one Review each, and
-the pack one family: init's proposals are not folded into the pack,
-since a hole's graph rows (its `unfold` from the purpose or the part,
-the `reviews` edges, its equipment) are not steps a batch writes, and
-plain `init` stays as it is. What the batch stands on is named in it
-instead (`planned_on`, under the batch of changes below), and its
-ratification waits for that ground.
+**The ledger is the runtime.** Every step is a few rows of the day's
+work (`step.*`, `attempt.*`, `work.settled`, `effect.*`), each one row
+of the Ledger in memory beside the record (GH #1590).
 
-**The declared purpose is a proposal like any other.** `hale dna init`
+**The declared purpose is a proposal like any other.** `hale habitat graft`
 proposes it in the record's one seed call (host verb `graph-ingest`, a repository's
 or an application's: kind `purpose`, author `org`, for
 `org`, `provenance: declared`) with the Board's Review under the
@@ -1789,7 +2119,7 @@ review purpose approve` decides; the generated organization holds no
 Review of its own for it.
 
 **The graph read again (`hale dna ingest [project] [--at <rev>]`).**
-`init` reads the repository once; a later commit is read again with the
+The graft reads the repository once; a later commit is read again with the
 same ingest, the commit (`HEAD` by default) checked out beside the
 record under `.hale/dna/ingest/` with the repository's own directory
 name and removed after. The ingest also states a `tool` node per
@@ -1859,8 +2189,7 @@ under, appended with it, so the committed proposal can be reconstructed
 from the journal after a restart and compared against a later reuse of
 that id.
 
-These kinds are the ledger's under split routing and the record's on
-routing 0, like every other operational kind.
+These kinds are the ledger's, like every other operational kind.
 
 An attempt's id is its Work and its number (`<work>/a<n>`, numbered from
 0 as §4 has it: the first attempt is `a0` and a retry is `a1`), so a
@@ -2292,7 +2621,7 @@ memory is named to it.
   fresh id per call (a claim by its holder renews); `renew` is counted
   by the caller. A leg's identity is a position the record knows —
   `position:<name>` from the graph (a `graph.node` row, or a position a ratified graph proposal
-  states: a hole `hale dna init` proposed, a position `hale dna position
+  states: a hole `hale habitat graft` proposed, a position `hale dna position
   open` opened; read through the record the command is admitted over,
   and ended by a reviewed retirement in a later ratified proposal) or the organization's own, `/` allowed in the name
   as the graph spells a process's positions (`position:api/dev`), with
@@ -2305,7 +2634,7 @@ memory is named to it.
   `unresolved`; 2 usage, or a catalog with a performer declaring no
   effect class.
   `run` is one cycle through the project's performers
-  (`dna/org/work.hl`, generated at init): a person's leg renders the
+  (`dna/org/work.hl`, generated by the graft): a person's leg renders the
   brief and leaves the outcome to `submit`; a deterministic performer
   wins for the work kinds it takes and settles; the model performer
   (`legs::ModelPerformer`) is the catalog's router behind the
@@ -2368,12 +2697,16 @@ memory is named to it.
   them before it ends; `--drain` (a marker beside the leg) ends a
   running loop once its children have. Nothing is held between tasks;
   a child ended mid-task leaves a lease that expires. A project
-  initialised with no backend configured gets `NoModel`: its agent
-  Works are a person's. The catalog and the tape (`models.hl`,
+  initialised with no backend configured gets the agent router with
+  `mapped_only: true` (**Models**, Discovery): a Work the model map names
+  an endpoint for is asked there, and any other is given back unperformed,
+  a person's. `NoModel` takes nothing: its agent Works are a person's. The catalog and the tape (`models.hl`,
   `tape.hl`) stay in the core while the editor and leader call them
   in process. A performer is handed the brief and
   the hands as interfaces — git in scratch, the forge (it decides, a
-  leg never merges), the toolchain; deploy and the heart's API refuse,
+  leg never merges; the organism's forge allocation answers "open a
+  review", `AllocatedForge`, and no hand names a forge by kind), the
+  toolchain; deploy and the heart's API refuse,
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
@@ -2386,7 +2719,7 @@ memory is named to it.
   reads (the record head, the hat, the socket's path in
   `/capabilities`) stay HTTP. The principal is the peer's credentials
   mapped to a person by the record (`dna.unix.member`; a record that
-  declares `dna.trust = local`, as `hale dna new` declares for the one
+  declares `dna.trust = local`, as `hale habitat graft` declares for the one
   it makes, is that person's — they hold every position — and one that
   declares nothing, or another trust, leaves it to the graph's `holds`
   edges); the lease's holder is the position
@@ -2800,9 +3133,9 @@ with a new token — commits nothing, however live it feels, and answers
 and proposes again once the record resumes under a live token; a
 request that only attaches to a running attempt writes nothing and is
 not fenced. Two takes of a free lease at once land one: the other is
-stale, decided again and refused. The cell leases (`MemLeases`,
-`GitLeases`) stay for what they hold — a body, a mutation — where the
-operation they fence is not an append to this record. A runtime with no
+stale, decided again and refused. The leases (`MemoryLeases`, and
+`MemLeases` for fixtures) stay for what they hold — a body, a mutation —
+where the operation they fence is not an append to this record. A runtime with no
 lease key is unfenced: a standalone runtime over a memory record.
 
 ## Workflow execution: edit outcomes
@@ -2912,6 +3245,24 @@ the offer. An admission the record refuses holds the attempt for
 completed when the record resumes or on `redrive` without a restart,
 and the hand-off is announced only once it is durable.
 
+The solo path: the generated org chart sets `solo_without_model` on its
+substrate. While the organism has no model (`has_model`: no `model.category`
+row names one, `model_mapped`, and the editor's router permits no call, its
+hosted backends keyless and its local server, which `LocalModel` probes on
+this host, not running; a canned or recorded backend is a model), a Work the
+routing would hand to a leg (an agent's: a judgment, a Work routed to a
+position) or to the editor is a human leaf instead, a case for a person, and
+the case is handed unassigned with no word asked of the leader. The
+organism's own steps (an `organism` Work: applying a ratified change,
+raising a concern) need no model and stay the organism's. Nothing
+waits on a model and nothing times out into a leg; mapping a category or
+giving the catalog a model gives the next execution its legs back. A
+substrate a program wires itself (`solo_without_model` false, the default)
+routes as before. A chart generated
+before the flag routes as before, and `hale dna upgrade` does not add it:
+DNA migrates nothing, and such an organism takes the solo path when it is
+born again (`hale habitat graft`).
+
 ## Workflow execution: human completion
 
 A case is completed by its person through the tooling of the day —
@@ -2929,6 +3280,15 @@ barrier, so the Work settles done, the step counts it, and a
 completion the record already holds an outcome for changes nothing.
 The report is kept until the record is seen to hold the outcome, as
 an edit's is.
+
+The face reaches the same through two rows of the head's surface, each
+in the caller's name (any person of the record), answering `{ok, code,
+why, task_id, state, assignee}`: `Commands::take_task` (`{task_id}`: a
+handed Task that names no assignee becomes the caller's, a
+`task.reassigned` row from `""`) and `Commands::complete_task`
+(`{task_id, text}`: a `task.done` row whose body is `by <who>: <text>`,
+refused `evidence_required` where the bound practice wants evidence, and
+by memory's gate for anyone but the assignee).
 
 The completion is judged against what the admission bound — the
 assignee (moved by `task.reassigned`), whether evidence is required,
@@ -3001,7 +3361,7 @@ cancellation committed by another hand through a restart or through
 the fence on their next transition, not by being told.
 
 **Restart.** The record is the execution. An incarnation booted over
-it — in process, a new runtime over the same git record, a new routed
+it — in process, a new runtime over the same record, a new routed
 record over the same two memories, or a new process — rebuilds only
 what is unfinished, under the original ids: no execution is admitted
 again, no step registers or activates twice, no completed member runs
@@ -3035,7 +3395,7 @@ distinguishes the cases: a redelivered attempt has its
 under one id.
 
 **The process boundary.** `dna/tests/conformance/runner.hl` is the
-public assembly (`Dna.run_workflow` over a `GitJournal`) with a durable
+public assembly (`Dna.run_workflow` over the record and the Ledger in memory) with a durable
 service adapter whose store is a file; the fixture builds it with the
 `hale` under test, runs it as a separate process, kills it with
 SIGKILL the moment C1's attempt is admitted, the moment it is claimed,
@@ -3051,60 +3411,38 @@ the completed record, it runs nothing.
 `Journal` (ordered append with an expected revision, read by index,
 chain verification), `Coordination` (leases with fencing tokens) and
 `Receipts` (content-addressed store and read) are interfaces in the
-core. The git-backed implementations are the ones an assembly wires
-for an organism; the in-memory ones exist for tests. Protected bodies
+core. The memory implementations (`RecordJournal`, `MemoryLeases`,
+`MemoryReceipts`, GH #1590) are the ones an assembly wires for an
+organism; the in-process ones exist for tests. Protected bodies
 go through `MemoryVault` to memory's sealed store instead
 (`ProtectedBodies`, `PqProtected`, which files, reads and erases only
 through `receipt_file`, `receipt_read` and `receipt_erase`; GH #606,
 #985).
 
 **The record has an API of its own (GH #646 stage 0).** `Record` is
-the one boundary the git-backed `GitJournal`, `GitReceipts` and
-`GitLeases` and the host's sync, reconcile, body lease, identity and
-exchange mailboxes all stand on, with a vocabulary that never names
-the tool: *chains* of rows appended under compare-and-swap at a head
-(`journal`; `exchange/<identity>` for a mailbox; `remote/journal` for
-what the remote held at the last receive), a row *built* beside every
-chain and swapped in later, *bodies* kept by the digest of their
-content, *cells* swapped by version (a lease, the published identity),
-*pointers* naming an object the repository already holds
-(`candidates/<mutation>`, `revisions/<rev>`), *families* received from
-and shared with a remote, the *signer* of a row, and the `dna.*`
-settings. `GitRecord` is the one implementation over git plumbing —
-the only file in the core and the host that spells `git` for the
-record; the genome's own git in `workspace.hl`, `verification.hl`,
-`org.hl` and the host's `genome.hl` is the Structure, not the record.
-`MemRecord` is the one for fixtures. `hale dna init` and `upgrade` seed
-the record through the host (`graph-ingest`, `design-upgrade`): the
-driver keeps no record code of its own.
+the boundary the organism's readers and writers stand on, with a
+vocabulary that never names the store: a *chain* of rows appended at
+its head (`journal`), *bodies* kept by the digest of their content, the
+*signer* of a row, and the `dna.*` settings. `MemoryRecord` is the
+implementation over memory, `MemRecord` the one for fixtures; what the
+interface kept for git's transport (chains built beside a head and
+swapped, cells, pointers, families shared with a remote) answers that
+the record is memory's. `hale habitat graft` and `hale dna upgrade` seed the record
+through the host (`graph-ingest`, `design-upgrade`): the driver keeps no
+record code of its own.
 
-**A reload never shortens what a reader holds (GH #748).** The chain
-only grows — a reconcile builds beside the ref and swaps in one whole
-chain, so the ref never points at a record missing a row it held a
-moment before — and a reader is held to the same rule. A chain that
-reads back shorter than the rows a `GitJournal` already holds, or
-empty, or with no head at all, is a read of the record that failed,
-never a shorter record: `git` unable to run under load, the repository
-unreachable for a moment, a tool that could not be forked. Every read
-is made *before* a row is dropped, and one that comes back short
-leaves the rows, the head and the text as they were, counts itself
-(`reads_refused`, with `last_error` naming the read), and answers
-`refresh()` with "nothing moved" — so the next refresh tries again,
-and an append whose reload could not read the chain ends as the i/o
-failure it is rather than re-offering a stale head two hundred times.
-The view a reader holds is therefore stale at worst. It used to be
-emptied first and refilled from those reads, so one failed read left
-an organism holding no record at all, in silence, and everything it
-derives from a scan of its own record began again from nothing: how
-often a source has raised a concern, which Review is open, which Task
-is in flight.
+**A reload never shortens what a reader holds (GH #748).** The record
+only grows, and a reader is held to the same rule: a read that comes
+back shorter than the rows a reader holds is a read that failed, never
+a shorter record, and leaves the rows, the head and the text as they
+were.
 
 **A head read tells an absent chain from a read that failed
 (GH #961).** `Record.head(chain)` answers a `Head`: `ok` when the read
 happened, then `absent` for a chain that does not exist or `id` for
 its head; a read that did not happen is `ok: false` with `why`, and no
-caller takes it for an absent chain. `GitRecord` reads `absent` only
-from `rev-parse -q --verify` exiting 1 with nothing on either stream.
+caller takes it for an absent chain. `MemoryRecord` reads `absent` only
+for a record memory answers with no rows.
 Every caller that compares a head it read earlier — an admission
 fence, an API response's final check, a writer's compare-and-swap —
 refuses on a failed read with the reason (`record_unavailable`, or an
@@ -3130,8 +3468,8 @@ interface.
 ## The organization
 
 The organism is an organization written in Hale (GH #566 F2): a
-program at `dna/org` that `hale dna init` generates and `hale dna run`
-runs. The application it oversees is not modified by `init` and
+program at `dna/org` that `hale habitat graft` generates and `hale dna run`
+runs. The application it oversees is not modified by the graft and
 contains none of it; it is observed like any Hale binary. The
 manifest declares two environments, the application's and the
 organization's (`[claims] no_base = true`; each adopts its own law).
@@ -3272,17 +3610,18 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   names its organization admits nothing until memory says what it
   holds — it fails closed. The host's `run` and `dev` read which
   organizations exist straight from the record's `graph.node` rows of
-  kind `organization` (the record is the membership's source), so a
-  shared record is known as one without memory: over a record that
+  kind `organization` (the record is the membership's source): over a record that
   states organizations, a body that names none does not run, nor one
-  that names an organization the record does not state; and `run` of a
-  body that names its organization needs the ledger adopted. The
+  that names an organization the record does not state. The
   host's admission helpers read memory as a head does
   (`HALE_DNA_MEMORY_DSN_HEAD`, else the spine's DSN). A body admits an
   intent (`Intent.to`, the position it is for; "" is `org`) only for a
   position its organization owns, refusing one offered to it for
   another's by name (`intent.refused`: "not this organization's to
-  admit"). A head never offers such an intent to the body beside it:
+  admit"). It refuses only on the graph as of the record's end: it reads
+  the ownership again, and while memory's projection has record rows
+  still to apply the intent stays unanswered, for the relay to offer it
+  again. A head never offers such an intent to the body beside it:
   `hale dna task create --to` writes it to the record for the owner's
   controller, the host relays only `intent.requested` rows for
   positions its owner holds, and `status` lists the rest as
@@ -3348,8 +3687,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   lease is a row of memory's `claims` table per owner, `owner/<owner>`,
   taken like the single body's `body` row, so two
   firms' controllers run side by side over one record and a firm's
-  second host waits on its own firm's lease alone; a shared record
-  runs no body until its ledger is adopted. The lease's token is an
+  second host waits on its own firm's lease alone. The lease's token is an
   epoch: it rises when the lease is taken (a takeover, a forced
   claim, an expiry) and holds through renewals, and the host hands
   the body it starts its lease and epoch (`HALE_DNA_LEASE`,
@@ -3362,12 +3700,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   owner's positions pass to another on a timeout. The rest of this
   entry describes the lease as one body's; it holds per owner. A record
   admits one body of each. The
-  host takes `refs/dna/lease/body` before it builds or runs anything
-  — at the record's remote when it has one, so two hosts on two
-  clones fence each other through the remote itself (the lease blob
-  is pushed with `--force-with-lease`, git's compare-and-swap), in
-  the clone otherwise. The blob is a `GitLeases` lease
-  (`holder\ntoken\nexpires\npresent`), the holder
+  host takes the body lease in memory (the row `body`, `owner/<owner>`
+  over a shared record, swapped by its token) before it builds or runs
+  anything, so two hosts on two clones fence each other through memory
+  itself. The lease's fields are (`holder\ntoken\nexpires\npresent`), the holder
   `user@host:<clone>`, so the same clone restarting is the same
   holder and takes its lease back at once; a second clone is refused
   with who holds it and exits 3. The lease lives 30s and is renewed
@@ -3381,7 +3717,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   outlasts a takeover starts and relays nothing, and the host exits 3.
   **The renewal and the fence do not wait on the host.** Beside the
   host runs the body fence (the host binary's `body-fence`), which
-  renews the lease every 10s with every git call bounded to 8s — and
+  renews the lease every 10s with every call bounded to 8s — and
   to the deadline it last proved (the lease's expiry less 5s,
   `.hale/dna/body.deadline`), so the calls of one renewal together cannot
   outlast the lease — and
@@ -3424,7 +3760,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   only a tool that began a session of its own is out of reach, which the
   host says at startup (#970). A host blocked in a sync, a build or an
   observation window therefore cannot keep its organism executing past
-  the lease; while the remote cannot be reached the lease is kept
+  the lease; while memory cannot be reached the lease is kept
   unrenewed until then: a partitioned body executes nothing past its
   TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
@@ -3440,10 +3776,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   which records it is connected to — declared by its pieces. `hale
   dna profile` prints one line per axis from the pieces alone: the
   record's remote, the body lease and its last tick, `[dna] fleet`,
-  the knowledge store's environment, `dna.trust`, `dna.github`; the
+  the knowledge store's environment, `dna.trust`, the forge allocation; the
   status projection carries a `profile:` and a `body:` line. `hale
-  dna new --profile local|remote-body [--remote <url>] [--body
-  <user@host>]` sets pieces (a remote, `dna.body`); the profile name
+  habitat graft <name> --profile local|remote-body [--remote <url>]
+  [--body <user@host>]` sets pieces (a remote, `dna.body`); the profile name
   is not written anywhere. Profiles are examples of combinations,
   not a closed set; the toolchain refuses only what breaks a
   commitment (a second body on one record).
@@ -3452,12 +3788,14 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   order: the toolchain `hale.lock` pins (installed with the site's
   installer at that version, verified, or stop), the record's remote
   cloned (fetched into a clone that exists), `vendor/dna` and the
-  record brought up, memory's database from `dna/compose.yaml` or a
-  DSN (which goes into the body's env file as
-  `HALE_DNA_MEMORY_DSN_OWNER`, never the record: the unit's `hale dna
-  dev` migrates with it and hands the host only the spine's DSN),
-  and a systemd user unit `hale-dna-<project>-<record>` supervising `hale dna
-  dev . --no-iris` — on one server the body is the organization and
+  record brought up, memory's database from the body's local habitat or
+  a DSN (which goes into the body's env file as
+  `HALE_DNA_MEMORY_DSN_OWNER`, never the record), the organism's memory
+  and nerves migrated once by `hale habitat migrate .` in the script
+  (GH #1653: the unit's `hale dna dev` migrates nothing, and hands the
+  host only the spine's DSN), and a systemd user unit
+  `hale-dna-<project>-<record>` supervising `hale dna dev . --no-iris`
+  — on one server the body is the organization and
   the application under one host — with
   `Restart=always` (GH #1026): a failure flows up one more level, and
   a node that exits to take a moved genome is started again on it
@@ -3496,13 +3834,21 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   refused), never the record — and fills that name's slot of the vault
   (**The organism's secrets**; mode 600, the newest value) on the body
   over ssh's stdin, or on this machine. A name is a slot the organism
-  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential
+  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, a credential
   `dna/org/models.hl` or `dna/org/work.hl` names (`HostedCredential
   { key }`; the body's own credential check reads `models.hl` alone, so
-  a legs key never stands in for the organization's) — and any other is refused. No process's environment
+  a legs key never stands in for the organization's), or the model key of
+  a slot a category's latest `model.category` row asks its endpoint with
+  (its `key_vault` `model-<NAME>`: the habitat's models' key,
+  `model-HABITAT_<KEY>`, among them) — and any other is refused. No process's environment
   carries the value: the part that sends it reads it from the vault.
+  Off a terminal the value is the whole of stdin with one trailing
+  newline (`\n`, or one `\r\n` pair) taken off; at a terminal, one line typed after a prompt; an
+  empty value is refused by the secret's name and nothing is stored.
   `secret rotate <NAME>` is the same for a name already set. The record
-  gets `secret.rotated <NAME> {where, by}` and nothing else. At start
+  gets `secret.rotated <NAME> {where, by}` and nothing else. A secret the
+  seed declares is named by its own name (**Declared secrets**), where
+  `secret show` and a family's `--member <label>` also apply. At start
   the host checks the credentials its catalog names
   (`HostedCredential { key }` in `dna/org/models.hl`): when none is in
   its slot of the vault (`model-<key>`, the one source a model key has;
@@ -3511,7 +3857,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   start finds one and appends `body.credential_present`.
 - **What a body holds on a machine is bound to its record (#635).**
   `<record>` in the unit's and the env file's names is the first
-  twelve hex digits of the record's identity (its journal's genesis), so
+  twelve hex digits of the record's identity (its first row's digest), so
   two records whose directories share a name on one machine never share
   a unit or a credential. Everything else a body reads lives in its
   clone: the `dna.*` git configuration (the OIDC member mapping among
@@ -3573,7 +3919,7 @@ model named a file the listing does not hold (`SourceEditor.located_why`).
 
 **Which seed is checked.** A root that is itself a seed (it holds a
 `.hl` file of its own: an application's organization; the root
-`hale.toml` that `hale dna init` writes in repository mode is the
+`hale.toml` that `hale habitat graft` writes in repository mode is the
 organization's environments, not source, and does not make a seed) is
 checked and formatted whole. Otherwise (a repository, whose code sits under its
 seeds) each edited file's seed is its nearest ancestor directory under
@@ -3585,10 +3931,20 @@ rule: when the Mutation's seed is the repository's root (`.`) and the
 root is not a seed, `fmt --check`, `check`, `verify`, `test` and the base
 topology run in the seed of the first file the candidate changed.
 
+**The law in force on a Hale heart (GH #1591).** When the practice
+`standard/logs-are-structured` is in force as law (ratified, not retired,
+its document saying `law: true`), the candidate's `check` adopts
+`std::law::Standard` from outside, as `hale check --adopt
+std::law::Standard` (spec/verification.md, "Adopting from outside the
+source"): a heart with a bare `println` on a served or attached path
+fails the check, naming the clause `logs_structured`, and one that writes
+through `std::log` passes. Nothing is written into the heart's source,
+and with the practice absent, advice or retired the check adopts nothing.
+
 ## Models
 
 The organization's models are a catalog in source (GH #583 M1):
-`dna/org/models.hl`, generated by `init` and owned by the project.
+`dna/org/models.hl`, generated by the graft and owned by the project.
 
 - **The seam.** `ModelBackend` (`identity`, `adapter`, `price_micros`,
   `model_name`, `allows`, `capacity_bytes`, `complete`) is what every
@@ -3603,8 +3959,8 @@ The organization's models are a catalog in source (GH #583 M1):
   leg's wait row, a call that was not made (`refused` says why,
   `waited_ms` for how long). **The prompt is a
   receipt (GH #611):** the evidence carries the prompt and the context
-  as sent, and the substrate files each as a receipt in the record
-  (`refs/dna/receipts`) under the `prompt_digest` / `context_digest`
+  as sent, and the substrate files each as a receipt in memory under
+  the `prompt_digest` / `context_digest`
   the row names — only a body that
   hashes to its digest, and receipts are content-addressed, so an
   identical brief is stored once — recording `bodies: stored` (or
@@ -3617,7 +3973,7 @@ The organization's models are a catalog in source (GH #583 M1):
   `model.called` row of that attempt, `prompt <digest> (<n> bytes)`, exactly
   those bytes from the receipt, and `end of prompt` (the same for the
   context) — never a re-composition; a withheld body says so, and a
-  body this clone lacks says `hale dna sync` fetches it. A wider
+  body memory lacks says so. A wider
   history (`hale dna history m1`) names the calls and leaves their
   bodies to each attempt's own, since an editor's prompt carries whole
   files. The row says `stored` only when the store gives the body back.
@@ -3745,9 +4101,10 @@ The organization's models are a catalog in source (GH #583 M1):
   handles recorded outcomes; model quality is only ever tested by a
   fresh run.
 - **The fixture.** `dna/acceptance/trio`: a gateway (the root seed),
-  an api and a worker under a plan of four instances on two nodes
-  with routes between them and claims across them
-  (`require_publishes` on the gateway and the api, `forbid_reaches`
+  an api and a worker under a fleet seed (`trio/fleet`) of four
+  instances on two hosts, with the routes its bindings derive and claims
+  across them (`require publishes` on the gateway and the api, `require
+  subscribes` on the api for the gateway's orders, `forbid reaches`
   gateway → worker avoiding the api). Its organization, with every
   backend a `RecordedModel` over the real adapter
   (`dna/acceptance/trio.fixture/catalog.hl`; mode from
@@ -3768,19 +4125,27 @@ The organization's models are a catalog in source (GH #583 M1):
   is one more function; a provider switch is one file; `hale check`
   validates it and the law keeps the concrete types at every
   boundary.
-- **Discovery.** `init` and `new` look at the environment
-  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and `PATH` (`ollama`, whose
-  first listed model becomes the desk model; `claude`, else `codex`,
-  becomes `harness()`), write the catalog for what is there
-  (`AnthropicMessages` with `claude-opus-5` / `claude-haiku-4-5` when
-  its key is present, else `OpenAiChat` with `gpt-4o` /
-  `gpt-4o-mini`, a placeholder key when none is set; with a harness
-  the editor's and the agent's `quick` tier is the harness, and with
-  no key every model-backed slot is), and print what each position
-  was given. Nothing found is fine: a hosted backend without its key
-  is not permitted, and every Review waits for the Board. `upgrade`
-  writes a catalog for an organization that predates it and says what
-  to point at it; it never edits the organization's main.
+- **Discovery.** The graft looks at the vault (`model-ANTHROPIC_API_KEY`,
+  `model-OPENAI_API_KEY`) and `PATH` (`ollama`, whose first listed model
+  becomes the desk model; `claude`, else `codex`, becomes `harness()`),
+  writes the catalog for what is there, and prints what each position was
+  given. A hosted pair is written only for a key actually in the vault:
+  `AnthropicMessages` with `claude-opus-5` / `claude-haiku-4-5` when its
+  key is there, else `OpenAiChat` with `gpt-4o` / `gpt-4o-mini` when its
+  key is. With neither, no hosted backend is written (no placeholder, so
+  `hale dna secrets` lists no model key): with a harness every
+  model-backed slot is the harness, else the desk, and the habitat's
+  models (**The habitat's models**) are the organism's backend through its
+  map. With a harness and a key, the editor's and the agent's `quick` tier
+  is the harness. The legs' performer (`dna/org/work.hl`) is the agent
+  router behind the model leg when a backend or a harness was found;
+  with none it is the same router with `mapped_only: true`, which asks
+  only where the map names an endpoint for the Work and gives any other
+  Work back unperformed (`refused`, never a failed outcome), so agent work
+  with nothing mapped stays a person's. Nothing found is fine: every Review
+  waits for the Board. `upgrade` writes a catalog for an organization that
+  predates it and says what to point at it; it never edits the
+  organization's main.
 - **The budget has one owner.** The catalog declares `org_budget()`,
   a `BudgetPolicy` (`window`: `day`, `week` or `none`;
   `allowance_micros`, 0 = unmetered) as data. The substrate owns the
@@ -3847,16 +4212,28 @@ The organization's models are a catalog in source (GH #583 M1):
   selector is `default`, `position:<name>`, `contract:<Name>` or
   `task:<id>`, a size `quick`, `standard` or `deep`, and `--permit`
   the sizes a more specific selector may move it to. **`models category
-  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]`**
-  appends `model.category` (prices in micro-dollars per 1k tokens); a
-  `tools` or `do` category without `--tools` is refused. **`models
-  map`** lists the latest row per selector and per category. `hale dna
-  init` seeds a starting mapping when a hosted model's key is in the
+  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+  [--endpoint <url>] [--key-vault <slot>]`** appends `model.category`
+  (prices in micro-dollars per 1k tokens); a `tools` or `do` category
+  without `--tools` is refused. `--endpoint` names where the model is
+  asked, an OpenAI-compatible chat URL (voice's on a host, say), and
+  `--key-vault` the vault slot of that endpoint's key, a slot's name and
+  never a key: a Work the category resolves for is asked there by its
+  `openai-chat` performer, with that slot's key or, with none, no key at all
+  (the performer's own key never goes to another endpoint). The habitat's
+  head sets it for a tenant as `Commands::set_model_map`
+  (`spec/habitat.md`). **`models
+  map`** lists the latest row per selector and per category. A graft
+  (`hale habitat graft`) seeds a starting mapping when a hosted model's key is in the
   vault: `model.rule default` at `standard` (permitting every size), and
   every category `<mode>.<size>` filled by the hosted pair the catalog
   writes, `quick` by the fast model and `standard` and `deep` by the
   frontier one, each with tool calls and the catalog's prices, in the
-  name `hale dna init`; with no hosted key it seeds none. `hale dna
+  name `hale habitat graft`; with no hosted key it seeds none, and the
+  habitat's models map it in the name `hale habitat` (**The habitat's
+  models**). A request that names an endpoint is sent there with that
+  endpoint's key slot whatever the catalog holds, a catalog with no backend
+  of its own among them. `hale dna
   task create --size <size>` appends `model.rule task:<intent id>`, an
   override that holds only inside the sizes the rule beneath it
   permits.
@@ -3965,49 +4342,56 @@ The live half is memory's, projected from the record by the spine
   number of projectors may apply one record at once, with no
   coordinator, and converge on one graph, each row applied once; after
   a crash a projector resumes at the stamp. Nothing in memory becomes
-  ratified except from a `knowledge.ratified` row: git is the sole
-  authority; memory can lag, never disagree. The observed and inferred
-  tier (K3) lives only in Postgres and is backed up like any Postgres;
-  the ratified tier rebuilds from git.
+  ratified except from a `knowledge.ratified` row: the record is the
+  sole authority; the projection can lag, never disagree. The observed
+  and inferred tier (K3) is derived and rebuilds from the record.
 - **The record is the scope of its memory.** Memory is opened for one
-  record, named by the record's identity — the sha of the journal's
-  first commit, the same in every clone of the record and different
-  for every record: that first commit carries a `Record-Nonce:` of 16
-  random bytes, so two projects created alike in the same second (same
-  author, same scaffold, same row) are two records, not one
-  organization to memory and the nerves (GH #1068); a record that
-  cannot draw them writes no first row. A record made before keeps its
-  identity (`GitJournal.genesis()`; `scope(record)` on the
-  store before `open`, `record()` to read it back). `Pq` keeps one
+  record, named by the record's identity — the digest of its first row,
+  `record.genesis`, which carries a nonce, so two projects created alike
+  are two records (GH #1068, #1590) (`scope(record)` on the
+  store before `open`, `record()` to read it back).store before `open`, `record()` to read it back). `Pq` keeps one
   Postgres schema per record, `dna_<identity>`, selected for the
   session at `open` (with `public` behind it for the vector type), so
   two records on one database each see only their own ideas, bindings,
-  structure, signals and watermark; `hale dna dev`'s compose database
-  is one record's anyway. The schema's `knowledge_meta` carries a
+  structure, signals and watermark; a memory allocation in the local
+  habitat is one record's anyway. The schema's `knowledge_meta` carries a
   `record` row naming its owner, written by the migration and checked
   by the migration and by every `open`: a schema that names another
   record is refused (`scope: schema … belongs to record …, not …`),
   never read. A record with no rows yet has no identity: its projection
   opens under `dna_unscoped`, where nothing is ever applied, and moves
   to the record's own schema once its first row lands.
+- **The genome pins the identity (GH #1590).** `hale habitat graft`
+  composes the record's first row, writes `[dna] record = "<identity>"`
+  into the repository's `hale.toml`, and only then provisions memory
+  and appends the row, so a clone knows which record — which schema,
+  roles and nerves token — it belongs to from its genome. The graft writes
+  it into the `dna` table wherever the manifest keeps it (a `[dna]`
+  header in any spelling, dotted keys, an inline table), editing the
+  parsed document so the rest of the file survives.
+  `record_identity_at` (`dna/core/memory_spine.hl`) reads it wherever
+  TOML lets it stand, as a basic or a literal string: with no pin there
+  is no record; a pin present but not readable there (not a string, a
+  multi-line string, a basic string with escapes) is refused, never
+  taken for no pin; and a pin that is not 40 or 64 lowercase hex digits
+  is none. A record whose first row names a genome this clone's
+  history does not hold is not opened (the `hale.toml` naming it was
+  copied from another project). A graft in a clone whose pinned record
+  memory does not hold refuses: it would start a second record under
+  the first one's name.
 - **The spine projects; readers read.** `MemoryProjection`
   (`dna/operations/memory_tail.hl`) applies the record into the graph
   on the host's tick, as the record's spine role, on every node (**The
-  spine**, above), so the projection advances without anyone asking. **The fence compares heads by ancestry**:
-  memory's stamp is a commit of the record, so every clone can place
-  it. Nothing stamped, or the stamped head is this clone's row at the
-  stamp: the rows after it are the delta. This clone's head an ancestor
-  of the stamped head, or the stamped head a commit this clone has not
-  received: another projector is ahead, and there is nothing to project
-  here until the record is received (a head a clone cannot place is
-  never taken for a replaced chain, or two nodes that append before they
-  share would rebuild each other's projection until they synced).
-  Neither, of a head this clone holds: the chain was rebuilt
-  beneath the projection (a reconcile re-appends local rows with new
-  digests, GH #603), so the graph is rebuilt from row 0 —
-  `rebuild(watermark, head)` empties it only while the stamp is still
-  the one read, so of several projectors that see one replaced chain
-  one rebuilds, and a projector rebuilds at most once per pass. **A question memory cannot answer is a
+  spine**, above), so the projection advances without anyone asking. **The fence compares the stamp with the record**:
+  memory's stamp is a row of the record (its watermark and that row's
+  digest), and the record only grows (GH #1590). The stamped row at its
+  place: the rows after it are the delta. A watermark past the record
+  this projector holds: another projector is ahead, and there is
+  nothing to project until it reads again. A stamp that does not match
+  the row at its place is a graph this record cannot vouch for, so it is
+  rebuilt from row 0 — `rebuild(watermark, head)` empties it only while
+  the stamp is still the one read, so of several projectors one
+  rebuilds, and a projector rebuilds at most once per pass. **A question memory cannot answer is a
   refusal, never an empty answer**: a package built from failing
   reads, or from a projection behind the record, is indistinguishable
   from "there is no knowledge here". The projection's store is opened
@@ -4028,7 +4412,7 @@ The live half is memory's, projected from the record by the spine
   knowledge row <m>; the spine applies it on its tick`. The organization's knowledge package is read from memory
   under the spine role. The API reads the graph under the head's role
   (**The API**, below).
-- **The design, as proposals (GH #596 C).** `init` seeds the
+- **The design, as proposals (GH #596 C).** The graft seeds the
   toolchain's practices about how a DNA organization works — the
   design principles, the evolution pattern, structure follows intent,
   standard equipment, the structural signals, signaling, the optimize
@@ -4061,7 +4445,7 @@ The live half is memory's, projected from the record by the spine
   retires an idea by marking it not accepted: it leaves every package
   and stays readable by digest.
 - **The operating practices, as proposals (GH #994).** Beside the
-  design, `init` seeds a second family, `operating/<slug>`: how the
+  design, the graft seeds a second family, `operating/<slug>`: how the
   organism runs, which is what a leader plans within and a reviewer
   cites, where the design says how an organization is shaped — one
   store per step, row first, readings never act, legs hold nothing,
@@ -4118,7 +4502,7 @@ The live half is memory's, projected from the record by the spine
   package's budget; without memory (`HALE_DNA_MEMORY_DSN_HEAD`) it says
   the knowledge was not read, and a subject with no node prints nothing.
 - **The nodes knowledge is about, and the library (seed/pull,
-  seed/library).** `init`
+  seed/library).** The graft
   writes `graph.node` rows for `language:hale` (kind `language`, text
   `Hale <toolchain version>…`) and `system:dna` (kind `system`) and, for
   an attached application, `application:<account name>` (kind
@@ -4192,7 +4576,7 @@ The live half is memory's, projected from the record by the spine
   gets no library from an upgrade. `HALE_DNA_LIBRARY_VERSION` and
   `HALE_DNA_LIBRARY_SUFFIX` (fixtures only) name another version and
   append to every text: how a test makes a later toolchain out of the one
-  binary it has. `init --no-library` (and `new --no-library`) seeds none of
+  binary it has. `graft --no-library` seeds none of
   the nodes, the edge or the ideas (the practices stay). `language`,
   `system` and `application` are node kinds and
   `written_in(application, language)` an edge kind (**The repository's
@@ -4205,7 +4589,7 @@ The live half is memory's, projected from the record by the spine
   each, grouped `using`, seeded, decided and superseded exactly as the
   other two (`hale dna review using approve|reject`), and kept by
   `--no-library`: they are practices, not the library.
-- **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
+- **The charter (GH #596 L).** The graft writes `dna/org/charter.hl`, a
   function returning text like `purpose`: the leader's brief, saying
   that it is the organism's architect — it proposes, the Board
   decides — and what it must know before it plans an ask or decides a
@@ -4219,7 +4603,7 @@ The live half is memory's, projected from the record by the spine
   when memory has any — and puts it above the diffs. The model
   call carries `knowledge_bindings` naming the package, so the
   evidence of every decision that read it says so.
-- **`HALE_DNA_DISCOVER=off`** makes `init`'s discovery find nothing —
+- **`HALE_DNA_DISCOVER=off`** makes the graft's discovery find nothing —
   no key, no local model, no harness — so a fixture on a developer's
   machine makes the organization CI makes: one whose leader has no
   model that answers, whose plans take the defaults, and which spends
@@ -4280,7 +4664,10 @@ The live half is memory's, projected from the record by the spine
   next birth in the record, which may be another ask's. An answer that names
   no kind and no class leaves the defaults standing — class
   `application`, the ask's own target — and the admission says it did
-  not parse. Without a leader the ask is an application change. An
+  not parse. On the solo path (below, Workflow execution: human cases), an
+  organism with no model asks no plan: the ask is a person's job, admitted
+  under `ask-person` and handed unassigned, for a person to take, and never
+  reaches the editor, which is a model too (`spec/habitat.md`). Without a leader the ask is an application change. An
   ask whose leader has not answered yet is in planning, and asked
   again meanwhile is not asked of the leader twice. No `task.planned`,
   `task.pending` or `task.resumed` row is written: the admission is
@@ -4318,30 +4705,316 @@ The live half is memory's, projected from the record by the spine
   `intent.offered` with no admission naming it is noted
   (`intent.unrecovered`) and never re-offered: work may already have
   run.
-- **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
-  (its own compose project, `name: hale-dna-<project>`, so two seeds
-  on one machine never share a container; the `knowledge-db` service,
-  `pgvector/pgvector:pg16`, a named volume
-  `hale-dna-<project>-knowledge`, a host port in 54xx). Each service's
-  host port (memory's in 54xx, the nerves' in 42xx, the senses' in 93xx)
-  is taken at seed time: a candidate from the project's name, stepped past
-  any port something on the machine already listens on, as
-  `dna::free_port` takes a fixture's, so a seed never publishes on one
-  another server holds (a CI runner's NATS on 4222). The file is part of
-  the genome, and `upgrade` rewrites it to the template, keeping the ports
-  the file already publishes, so a clone's upgrade regenerates the same
-  file. With no
-  `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -f
-  dna/compose.yaml up -d --wait knowledge-db` and derives the owner's
-  DSN from the published port and the vault's `postgres-owner-<project>`
-  (**The organism's secrets**), which a database made with another
-  password adopts first; an operator's
-  `HALE_DNA_MEMORY_DSN_OWNER` wins. It applies memory's schema with the
-  owner's DSN and starts the host with the record's spine DSN alone
-  (**Memory**). With compose not on PATH, or no compose file, it says
-  exactly which it needs and the host runs with no memory. `hale dna
-  run` brings up no database: beyond one machine memory is a Postgres
-  of the operator's, migrated with `hale dna memory migrate`.
+- **The local habitat holds the organism's infrastructure** (GH #1653).
+  A machine has one local habitat, under
+  `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, run as one docker
+  compose project named for the habitat: `hale-habitat-local-<h>`, `<h>`
+  the first eight hex digits of the sha256 of the habitat's directory. No
+  seed and no checkout appears in a project, container, volume or port
+  name. An organism is a tenant of the habitat: its memory, its nerves and
+  its senses' store are **allocations**, services of the habitat's
+  project named for the organism's record identity and the role —
+  `memory-<id>`, `nerves-<id>`, `senses-<id>`, `<id>` the first twelve hex
+  digits of the identity `[dna] record` pins. Two organisms are two sets
+  of allocations in the one project; two checkouts of one organism (two
+  worktrees, two clones) are the same organism, with the same
+  allocations. An allocation's files live beside it, never in a checkout:
+  `allocations/<id>/` holds its `compose.yaml` (`pgvector/pgvector:pg16`,
+  `nats:2`, the senses' Prometheus; each service on docker's default
+  bridge, so the habitat makes no network per tenant), its `ports.yaml`
+  (the host ports, memory's in the 54000s, the nerves' in the 42000s, the
+  senses' in the 39000s, a candidate from the service's name stepped past
+  any port something already listens on, chosen once for the habitat and
+  kept), `postgres.secrets`, `nats.conf`, `nats.secrets.conf` and
+  `senses.yml`, the directory mode 700 and every secrets file mode 600.
+  Compose runs as `docker compose -p <habitat project> --project-directory
+  allocations/<id> -f compose.yaml -f ports.yaml`, with
+  `COMPOSE_IGNORE_ORPHANS=1`, since the other tenants are the same
+  project's. A checkout holds no compose file and no server
+  configuration; `upgrade` removes the ones an older toolchain wrote
+  (`dna/compose.yaml`, `dna/nats.conf`, `dna/nats.secrets.conf`,
+  `dna/postgres.secrets`, `dna/senses.yml`) and migrates no container an
+  older toolchain started: there is no migration.
+- **The habitat is an organism the toolchain ships** (GH #1653). Its
+  genome is the toolchain's, as the foundational law and the nursery are
+  (`hale_dna::HABITAT_FILES`, `dna/habitat/README.md`): a repository
+  organism whose heart slot is empty, its document's marked `law` items
+  its law with the nursery's `standard` pack, and its fixed positions
+  the nursery's `habitat` pack (`habitat/placement`, `habitat/backends`,
+  `habitat/identity`, `habitat/admission`). It is the one organism born
+  without a parent. `hale habitat up [--foreground] [--profile local]`
+  births it the first time into `<habitat>/genome` (written from the
+  toolchain's files, a repository, then the birth's seed on it, its record in its
+  own memory allocation, and both packs proposed to its Board), then
+  migrates its own memory and nerves (the habitat's schema is its own to
+  move, at bootstrap and at a toolchain's upgrade), brings every tenant's
+  recorded allocation up through the `compose` provider — migrating none: an organism's allocation moves
+  at its own upgrade or with `hale habitat migrate <organism>`, never
+  under ongoing work — records its placement (the host `local` the
+  `compose` provider produces with its offers, the `local` profile's
+  policy, and its own head and face placed on that host:
+  `spec/habitat.md`, Hosts, providers and placement) and starts its body, `hale dna dev <genome>`: a
+  systemd user unit named for the habitat's project, or with
+  `--foreground` in the process itself (what a fixture runs, to ready).
+  `up` is idempotent, and the `hosted` profile is not built. **A
+  habitat's backends are chosen at its birth** (`--backends own|operator`,
+  kept beside it and as its `habitat.profile` row, which names no DSN):
+  `own`, the default, provisions memory, the nerves and the senses' store
+  as allocations of its project; `operator` adopts the Postgres and the
+  NATS `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER` name,
+  starts no service of its project, and records each allocation with the
+  service `operator` (what a suite run on an owner's DSN and NATS is).
+  `up` refuses when the environment disagrees with them: an `own`
+  habitat with an operator's server named, an `operator` habitat with
+  either unnamed, or a `--backends` other than the habitat's. A unit of an
+  `operator` habitat reads them from `<habitat>/backends.env` (mode 600),
+  never from its own lines. `hale habitat
+  status` reads the habitat, its genome and body, and each allocation:
+  whether each role's service runs, and the schema version it records
+  against this toolchain's, naming `hale habitat migrate <organism>` (or
+  `hale dna upgrade`) for one behind. `hale habitat down` stops the body
+  and every service of the project and keeps their data, after the body
+  has drained: it is told to stop and waited for, up to its drain grace
+  (`LOTUS_DRAIN_GRACE_MS`, the node's 30 s by default) and a margin, so
+  its drain still reaches its backends; one that outlives that is said
+  and killed, and only then are the services stopped (a unit's
+  `TimeoutStopSec` is the same window). A birth that stops part way —
+  memory or docker failing after the identity is pinned — is resumed by
+  the next `up`; `<habitat>/birth.pending` says a birth is not whole yet
+  (and which of its profile and packs are done), but whether its record
+  was born is memory's to say, never the file's. A pinned identity whose
+  `record.genesis` memory holds is resumed: the rest of the birth, each step
+  of which keeps what is done, against that record — every seed step
+  checks its own completion and runs when it is missing (the seed when
+  the record holds no `application.attached`, the seat when its git
+  config keys are absent, each family for what the record does not hold,
+  the library and the models map when their rows are absent), so a
+  graft that stopped part way is finished the same way. Only when memory
+  answers that it holds no genesis for the pin, or the identity's memory
+  allocation was never made (docker answers it has no such volume), is
+  the identity drawn again and what was made for it taken down. Memory
+  that cannot be reached is a refusal that destroys nothing. Allocation
+  rows wait for the genesis memory confirms before they are written into
+  the record.
+- **Every other organism is grafted from the habitat** (GH #1653).
+  `hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+  [--with <pack>]` births an
+  organism as the habitat's child: a new application at `<dir>`, or with
+  `--attach` the application or repository already there. An attached
+  application's organism is its workspace's: the manifest the birth
+  reads (the nearest `hale.toml` above the seed) is the one its pin and
+  its needs are read from. A graft is complete when the habitat's record
+  holds its `habitat.grafted` row; one that stopped part way (a pinned
+  genome whose genesis names this habitat, and no such row yet) goes on
+  where it stopped when run again, each step keeping what is done (the
+  birth's seed, the allocations, the row, the `standard` pack, each
+  once). Memory decides whose child a pinned record is, never a guess:
+  its genesis is read from memory (with the clone's kept head DSN, else
+  one derived from memory that is there, else after the local setup the
+  birth makes), and a genesis that cannot be read is refused, naming why.
+  A genome pinning a record born of another parent, or of none, is
+  refused, and one memory holds no record for is refused by the birth,
+  naming it. The habitat must be born
+  and its record readable, and the environment must agree with its
+  backends. Graft has two halves. **Needs by role** come first: the
+  genome declares the roles it needs from the habitat in its manifest,
+  `[dna] needs = ["memory", "nerves", "senses"]`; memory and the nerves
+  are always among them (the record is memory's, and the organization
+  reads the nerves). A genome that declares none, foreign heart or not
+  (a foreign heart declares nothing), gets exactly the organism's own
+  roles — memory, the nerves and the senses' store — and never a heart
+  role (`database`, `broker`, `cache`, `object-store`): a heart's
+  infrastructure is its own, and the habitat provides nothing for a
+  heart that did not ask. A Hale heart that needs one declares it. The
+  local profile provisions **`database`**: a tenant database of the
+  organism's own memory server (its memory allocation's Postgres, or the
+  operator's on `operator` backends), `heart_<id>`, owned by a role of
+  the same name that it alone reaches (`PUBLIC` revoked), its password
+  drawn into the vault slot `postgres-heart_<id>`; it is recorded as the
+  organism's `database` allocation (`habitat.allocated <id>/database`),
+  provisioned again by `hale habitat migrate`, and handed to the heart as
+  `HALE_DNA_DATABASE_DSN`, a DSN that names its vault slot and carries
+  no password (the attach contract's name for it; `hale dna dev` derives
+  it, provisioning nothing). The local profile provisions **`broker`**
+  too: two users of the organism's own nerves server, both confined to
+  its own subject space `heart.<id>.>`, and neither granted `_INBOX`, so
+  no grant reaches another user's replies (the heart's replies come back
+  under its own `heart.<id>._INBOX`): `heart-<id>`, the heart, which
+  publishes and subscribes on all of `heart.<id>.>`, and
+  `heart-<id>-node`, the narrower user its nodes connect as, which
+  subscribes on `heart.<id>.node.>` and publishes on `heart.<id>.reply.>`
+  and `heart.<id>._INBOX.>`; no JetStream; their passwords the vault
+  slots `nats-<org>-heart` and `nats-<org>-heart-node`, drawn with the
+  organism's other secrets as every drawn secret is — 32 lowercase hex
+  digits, so a password is safe in a JSON document and a URL as it is;
+  recorded as its `broker` allocation. **`broker`, and any heart role
+  that needs server configuration, requires `own` backends**: a habitat
+  on `operator` backends refuses it at graft, by name (the operator's
+  NATS is not the habitat's to configure), so a heart that needs one
+  runs in a habitat on `own` backends — a fixture's own compose stack,
+  taken down by the sweep — while `database`, a tenant database and a
+  role, is provisioned on either. `cache` and `object-store` are
+  refused by name at graft until a heart needs one, as is a role the
+  habitat does not know.
+- **A heart may hand its migrations to the habitat** (GH #1653). It is
+  the heart's choice. A Hale heart that owns the schema of a heart role
+  it declares may say how to migrate it, in its genome's manifest:
+  `[dna.migrations.<role>]` with `command`, the argv of its own
+  migration tool, run in the organism's directory with that role's
+  handover (`HALE_DNA_DATABASE_DSN`, the broker's) and the rest of the
+  attach handover in its environment. The habitat then runs it at graft,
+  at `hale habitat migrate <organism>` and at `hale dna upgrade`, every
+  time: the tool is idempotent and keeps its own ledger, so it decides
+  whether anything moved, and the habitat keeps no version of the
+  heart's schema. Each run is a habitat act: the role's allocation is
+  brought up and waited for first, as `hale habitat migrate` brings it
+  up, so a `hale dna upgrade` that restarts the nerves for new passwords
+  runs the migration once they are back. Each run is a `habitat.migrated <id>/<role>` row with
+  the command, its exit status and its output (its last 4096 bytes); a
+  run that fails fails the act that ran it, naming its command, and the
+  next act runs it again. A heart that declares none owns its schema
+  however it likes, migrating on boot included; a foreign heart declares
+  none; and the habitat migrates nothing of a heart's on its own. A
+  declaration for a role the genome does not need, one with no
+  `command`, or one with any other key (`schema_version` among them) is
+  refused by name. A heart role's allocation carries no schema version:
+  "behind the toolchain" is said only of the organism's own memory and
+  nerves, whose schemas are the toolchain's.
+- **The attach handover** (GH #1653). What the habitat hands a
+  habitat-scoped heart, a secret only ever by its vault slot's name:
+  `HALE_DNA_APPLICATION_ID` (the record's identity), `HALE_DNA_HEAD_URL`
+  (`git config dna.head.url`, the local head's `http://127.0.0.1:8792`
+  by default), `HALE_DNA_OIDC_ISSUER` (`dna.oidc.issuer`, the local stub's
+  `http://127.0.0.1:8794` by default), `HALE_DNA_OIDC_CLIENT` (the
+  service client the heart signs in as, its application's name) and
+  `HALE_DNA_OIDC_CLIENT_VAULT` (`oidc-service-<client>`); for an
+  allocated `database`, `HALE_DNA_DATABASE_DSN`; for an allocated `broker`,
+  `HALE_DNA_BROKER_URL` (the nerves server, no credential),
+  `HALE_DNA_BROKER_USER`, `HALE_DNA_BROKER_VAULT`,
+  `HALE_DNA_BROKER_SUBJECTS`, and the nodes' `HALE_DNA_BROKER_NODE_USER`
+  and `HALE_DNA_BROKER_NODE_VAULT`, which the heart passes a node at its
+  enrollment (a client names its reply inbox `heart.<id>._INBOX`: pond's
+  `NatsClient.inbox_prefix`). Graft
+  maps the service client in the child's record (`git config --local
+  --add dna.oidc.service <client>=<client>`) and draws its secret, so
+  none of it is written by hand. `hale dna dev` hands the set to the
+  host, which the heart inherits, derived (nothing provisioned); `hale
+  habitat handover [organism]` prints it. The manifest is read once, by
+  graft (a TOML parser: `needs` on one line or several, with comments
+  and a trailing comma); every reader after it (the handover, the
+  organism's secrets, its nerves server's users) reads the roles the
+  habitat allocated, its rows as the allocation keeps them
+  (`allocation.json`), never the manifest again. Where a heart runs and on what
+  port is the deployment's (#1477), not the handover's. **Then birth satisfies them**: the record's
+  genesis names its parent (`parent`, the habitat's record identity, in
+  the first row's body, and so in the child's identity), each role it
+  needs is allocated to it and recorded in the habitat's record
+  (`habitat.allocated`, `habitat.migrated`), the graft is a
+  `habitat.grafted <child>` row (`child`, `parent`, `needs`,
+  `backends`), and the `standard` pack is proposed to the child's Board
+  (`--no-pack` leaves it for `hale dna pack apply standard`, as
+  `--no-library` leaves the library: a fixture that counts the record's
+  requests says so). `--with <pack> [--set <param>=<value>]… [--as
+  <who>]` proposes a nursery pack as well, planned on the holes the
+  birth proposed (`hale dna pack apply <pack> --on-holes`), so one
+  `review all approve` ratifies the starting organization whole; a
+  pack the holes refuse is the graft's failing exit, its organism born.
+  A new application takes the profile flags
+  `--profile local|remote-body [--remote <url>] [--body <user@host>]`;
+  an attached one keeps its own, and graft refuses them with `--attach`.
+  `hale dna new` and `hale dna init` are retired: each exits 2 naming the
+  graft that replaces it (`hale habitat graft <name>`, `hale habitat graft
+  <dir> --attach`, with the flags it was given). A graft of an organism
+  this habitat's record already holds as its child goes on where its
+  birth stopped; one whose genesis names another parent, or none, is
+  refused.
+- **A test's organisms are grafted too** (GH #1653). A DNA fixture
+  makes an organism with `dna::grafted(dir, args)`, into
+  `dna::test_habitat()`: the DNA suite's slice habitat when the suite
+  runs it — born once per slice whose fixtures graft, with no body
+  (`hale habitat up --no-body`), under a scratch root the slice sweeps,
+  on the operator's backends when the slice has an owner's DSN and NATS
+  (CI's: no compose) and its own otherwise, its secrets in a vault of its
+  own that `test_habitat` lends into the fixture's (`HALE_DNA_TEST_HABITAT`,
+  `HALE_DNA_TEST_HABITAT_VAULT`) — or, run by hand, a habitat of the test
+  file's own, born the first time. A CLI test does the same through
+  `tests/support/habitat.rs` (`habitat()`, `graft(cwd, dir, args)`), in
+  the habitat of its process's vault. `HALE_DNA_HABITAT` names a
+  habitat's directory outright. A fixture whose subject is the
+  allocations themselves (their compose project, the nerves' or the
+  senses' servers) births the test file's own habitat under its own
+  vault (`hale habitat up --no-body --backends own`, or `operator` when it
+  only reads the allocations' files) and grafts into that.
+- **An allocation is a row of the habitat's record.** Every provisioning
+  act is: `habitat.allocated <id>/<role>` the first time an organism's
+  role is provisioned (`organism`, `role`, `service`, `project`, the
+  `provider` that placed it and the `host` it is on — `compose` on
+  `local`, or on `operator` backends `operator` and no host — and the
+  vault slots it holds by name, never a value) and `habitat.migrated
+  <id>/<role>` each time an organism role's schema version moves (`from`,
+  `schema_version`: memory's `MEMORY_SCHEMA_VERSION`, the nerves'
+  `NERVES_STREAM_VERSION`), or each time a heart's declared migration runs
+  (`command`, `status`, `output`; a heart role carries no version). A row is keyed by the organism and the role
+  alone, never a checkout: two checkouts of one organism are one tenant.
+  An allocation made before the habitat's record exists (the bootstrap's
+  own memory and nerves, or an organism migrated before the habitat is
+  born) waits in `allocations/<id>/allocation.json`, the local profile's
+  cache of the rows, and is written at birth. `status` reads the rows,
+  and the cache only while the habitat's memory is not up. `hale dna
+  upgrade` migrates an organism's allocation whose recorded version is
+  behind this toolchain's.
+- **The habitat is long-lived, and only its acts provision.** Nothing
+  tears the local habitat down when work ends, and organisms are reused
+  tenants from run to run: `hale dna dev` and `hale dna work next` run
+  against whatever is up. Provisioning and migration are the habitat's
+  acts alone: **birth** (`hale habitat up`, `hale habitat graft`) brings the organism's memory and
+  nerves allocations up, applies memory's schema and creates the
+  organization's stream; `hale habitat migrate [organism]` brings its
+  allocations up and moves memory's schema and the nerves' stream to this
+  toolchain's, idempotently; `upgrade` moves the schema of an operator's
+  own memory (`HALE_DNA_MEMORY_DSN_OWNER`); and the explicit verbs `hale
+  dna memory migrate`, `nerves migrate` and `senses up` remain until the graft
+  retires them. **No other command migrates or
+  provisions as a side effect**: `dev`, `run`, `head`, `show`, `work` and
+  the host's verbs derive the roles' DSNs and URLs from what is up
+  (`memory-migrate --derive`, `nerves-migrate --derive`, `senses-up
+  --derive`: nothing brought up, no schema applied, no stream created,
+  nothing written into the habitat) and, when it is not, say so and name
+  `hale habitat migrate <organism>`. A schema that is behind is the
+  store's refusal when it opens (`memory_fence`), naming the same act.
+  With an operator's `HALE_DNA_MEMORY_DSN_OWNER` or
+  `HALE_DNA_NATS_URL_OWNER`, that server is the organism's, and the
+  habitat's allocation for it is not used. The owner's DSN of the memory
+  allocation names the vault's `postgres-owner-<id>` (**The organism's
+  secrets**), which a database made with another password adopts first.
+  `hale dna run` brings up nothing: beyond one machine memory is a
+  Postgres of the operator's. Only a test's habitat is ever taken down: a
+  test's `hale` runs under a habitat of its own (`hale test` gives each
+  file one beside its vault, the CLI tests one per process), which comes
+  down with the vault. `hale test`, the CLI tests' reap and
+  `scripts/compose-down-under.sh` share one teardown, `hale habitat sweep
+  <root>`: a project is rooted in the root when a container of it ran
+  from under it, or when a directory under it names it whether or not a
+  container is left (a project whose containers went keeps its network and
+  volumes): each `<home>/.hale/habitat/<project>` an `ssh` host was handed
+  a render in, and each habitat born there (`…/hale/habitat/local`, its
+  project named from that path), never a project one of whose containers
+  ran from outside the root. It names every project rooted in the root in
+  the root's `.dna-compose-projects` before it takes any down, and drops
+  a name only once the project's containers, volumes and networks are
+  confirmed gone, so
+  a teardown that did not finish (a volume docker would not remove) is
+  found again by name and retried by the next — a vault whose habitat
+  did not come down is kept for the next sweep. It, and
+  `dna::scratch_done`, refuse the developer's habitat's project whatever
+  a file under a root names. The test vaults of gone processes are
+  swept by `hale habitat sweep --test-vaults [<root>]` (`hale test`'s
+  first vault runs it, as do the CLI tests'): each vault's habitat comes
+  down before the vault goes, and a habitat whose vault went first —
+  every toolchain before this one removes a gone process's vault
+  without its habitat, and they share `<tmp>/hale-test-vaults-<uid>` —
+  is found by its compose working directory under a gone process's
+  vault and taken down by its project's name.
 - **Knowledge changes later work (K2).** The substrate holds a
   `MemoryKnowledge` (`budget`, 8 by default; memory opened under the
   spine's role), the owner's line to memory; the editor never holds
@@ -4404,7 +5077,7 @@ The live half is memory's, projected from the record by the spine
   (a firm, GH #1123), `definition` (a workflow catalog definition a
   schedule convenes, GH #1143), and what knowledge is about (seed/pull):
   `language` (`language:hale`), `system` (`system:dna`) and
-  `application` (`application:<name>`), which `init` seeds and an ingest
+  `application` (`application:<name>`), which the graft seeds and an ingest
   of a repository never reads; a node's id is `<kind>:<name>`. **Hyperedge
   kinds**, arity two or more, each a list of members `{role, node}`
   whose first is its anchor:
@@ -4474,8 +5147,8 @@ The live half is memory's, projected from the record by the spine
   `organization` nodes and their `holds` edges, proposed and ratified as
   holes and holds (below). Who owns a position and who is a firm's
   member are `holds` edges, never a file: the owners map
-  (`dna/org/owners`) is retired, not rendered (GH #1123) — `hale dna
-  init` and `new` write none, and `hale dna upgrade` removes one,
+  (`dna/org/owners`) is retired, not rendered (GH #1123) — a graft
+  writes none, and `hale dna upgrade` removes one,
   noting the lines it named to be stated again as `holds` edges, and
   takes the generated `ownership:` field out of `dna/org/main.hl` (or
   notes it where the file was edited by hand). The organization's
@@ -4495,9 +5168,9 @@ The live half is memory's, projected from the record by the spine
   ratified practices that bind something, one hyperedge each.
   `Pq.graph_ownership()` is JSON `[node, holder]` pairs of every live
   `holds` edge an organization is in (**Owners**).
-- **Ingest: `hale dna init` on a repository (GH #1090).** A directory
+- **Ingest: `hale habitat graft <dir> --attach` on a repository (GH #1090).** A directory
   with no Hale source of its own that is no workspace's seed is a
-  repository, not one application: `init` makes the organization there
+  repository, not one application: the graft makes the organization there
   as it would for an application — `vendor/dna`, `dna/org`, the manifest
   with `[claims] no_base` and `[environments.org]` alone (there is no
   application entrypoint) — cuts no topology artifact, and seeds the
@@ -4513,21 +5186,25 @@ The live half is memory's, projected from the record by the spine
   first paragraph, and none without a `README.md`, so an empty tree is
   an empty graph; **processes** — the compose file's services
   (`compose.yaml`, `compose.yml`, `docker-compose.*`), then the
-  `compose` **deployment** that runs them (built) — processes first,
-  since a perspective lists in the record's order; **seeds** —
+  `compose` **deployment** that runs them (built), and each host
+  command the root's `hale.toml` declares (`[dna.host.<command>]`, a
+  process a habitat places on a host) not already a service, with the
+  `host` deployment that runs them (placed) — processes first, since a
+  perspective lists in the record's order; **seeds** —
   each directory holding `hale.toml`, `package.json`, `Cargo.toml`,
   `go.mod` or `pyproject.toml`, the outermost only (a workspace's
   members are its own), never the root; a process unfolds into the seed
   of its name. A `ui/` at the root holding no manifest is **no seed**
   (ruling 11b, 2026-10-12): when the repository references it — a link
   in a tracked markdown document outside it resolves into it, or the
-  compose file names `./ui` (a volume or a build) — the head serves it as
+  compose file names `./ui` (a volume or a build) — the standard face serves it as
   the application's static assets under `/app/` (`/app/` its
   `index.html`, `/app/<path>` the file `ui/<path>`, nothing outside it,
-  for the attached project: `ops::application_asset`; a file's bytes are
+  for the attached project, which the face asks the head's read for:
+  `ops::application_asset`; the head serves none; a file's bytes are
   written as they are, with their length and the extension's content
-  type, so an image or a font arrives whole), and `init` says so
-  on a `note` line; when nothing references it `init` says once that it
+  type, so an image or a font arrives whole), and the graft says so
+  on a `note` line; when nothing references it the graft says once that it
   is ignored. Neither writes a row. **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
   and each directory under `spec/vendor/`; **nouns** — a YAML contract's
   `components.schemas` and a markdown contract's `CREATE TABLE`s, named
@@ -4570,14 +5247,14 @@ The live half is memory's, projected from the record by the spine
   a meets row that links no contract; a runs row that names no
   deployment; a name in code in a declaring table that is no process,
   seed or file of the repository. Nothing is appended then, the purpose's
-  Review included (init seeds it and the graph in one `graph-ingest`
-  call), so the record does not exist and init can be run again once the
-  document is fixed. A job's own `name:` names its gate and is not a
-  word its steps say. `init` says what it read:
+  Review included (the graft seeds it and the graph in one `graph-ingest`
+  call), so the record does not exist and the graft can be run again once
+  the document is fixed. A job's own `name:` names its gate and is not a
+  word its steps say. The graft says what it read:
   `graph   <n> node(s), <m> edge(s): <count> <kind>, …; <p> proposal(s)`.
   A record that exists is not reseeded.
-- **Ingest: `hale dna init` on an application (seed/structure-2).** An
-  application's `init` enriches this one path; there is no second
+- **Ingest: `hale habitat graft <dir> --attach` on an application (seed/structure-2).** An
+  grafting an application enriches this one path; there is no second
   proposer and no starter chart. The artifact's rows are unchanged
   (`application.attached`, `structure.observed` per locus, topic, binding
   and effect class, `responsibility.proposed` per locus: facts the Board
@@ -4594,7 +5271,7 @@ The live half is memory's, projected from the record by the spine
   manifest walk finds it as before): the root that is never a seed for a
   repository is one here, a compose process of its name unfolds into it, a
   CI step naming `.` guards it, and an application with no `README.md`
-  takes the purpose `init` declares (`dna/org/purpose.hl`) as its
+  takes the purpose the graft declares (`dna/org/purpose.hl`) as its
   `purpose` node, so the board has a place. And each API surface it serves
   is a **contract** the seed `meets` as server: `api:<Surface>`, from the
   toolchain's own export (`hale check --api`, handed to the host as a
@@ -4606,18 +5283,18 @@ The live half is memory's, projected from the record by the spine
   table's row. The `requires` of the surface's members, and of a stream, are
   the contract's **roles**: the equipment of the positions that serve it
   (**Standard equipment**, below), never an organization and
-  never authority. `init` says what it read on the same
+  never authority. The graft says what it read on the same
   `graph   …` line, and writes `dna/org/structure.hl` as for a
   repository. A fresh application whose export is empty has two nodes (its
   `purpose` and its seed) and no edge.
 - **Holes as proposals (GH #1091).** What a repository cannot imply
-  and a delivery needs, `init` proposes at record birth, each on its own
+  and a delivery needs, the graft proposes at record birth, each on its own
   with one Board Review, in the same checked seed as the graph (so a
   repository whose holes cannot be proposed leaves no record either).
   The holes are **derived from the graph's edges**, never enumerated; a
   *part* is a process, or a seed no process unfolds into (a UI, a
   validator); a cell naming a seed a process unfolds into (a link, a path
-  inside it) names that process. `init` proposes: a `board` under the purpose; under each
+  inside it) names that process. The graft proposes: a `board` under the purpose; under each
   part that serves or consumes a contract (`meets`) — and under an
   application's own seed whether or not it serves one — a `reviewer` whose
   proposal carries a `reviews` edge to the part's seed and to every
@@ -4629,13 +5306,13 @@ The live half is memory's, projected from the record by the spine
   `operator` with a `reviews` edge to the deployment; and each item a document
   marks `derived`, `practice` or `law`, proposed as advice (a `law`
   item's question asks for law). The one structure policy is the
-  project's: **`dna/org/structure.hl`**, which `init` writes for a
+  project's: **`dna/org/structure.hl`**, which the graft writes for a
   repository or an application unless one is there already, and whose
   `fn operational_roles() -> String` names, space-separated, the
   operational roles each deployment also gets (`support`, `accounts`,
   `billing`, `on-call`), proposed empty and signing nothing — `""`, none,
-  by default. It is read once, when `init` seeds the record, so a project
-  opts in by writing the file before `init`; a word that is no
+  by default. It is read once, when the graft seeds the record, so a project
+  opts in by writing the file before grafting; a word that is no
   operational role refuses the seed, and a role named twice is proposed
   once. `upgrade` rewrites an existing file to the current shape, keeps
   the roles it names, and notes every other line the rewrite dropped. A work item is an
@@ -4671,7 +5348,7 @@ The live half is memory's, projected from the record by the spine
   `PositionOpenRequested` until it is answered. The organization refuses
   a name with a space or `|`, no mandate, no author, a name the graph
   states, or an `under` the graph does not state (`position.refused`);
-  otherwise it proposes the position's node (the body `init` writes for
+  otherwise it proposes the position's node (the body the graft writes for
   a hole, and an `unfold` edge from the part with `--under`) and its
   mandate as two members of one family Review in the group `positions`
   (`position.proposed`), which ratifying ratifies both.
@@ -4680,7 +5357,11 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `fill * <holder>`,
-  `vacate <name> <holder>`, `practice <name> | <text>`, `retire-practice <name>`,
+  `vacate <name> <holder>`, `practice <name> [for <position>] |
+  <text>`, `law <name> [for <position>] | <text>` (a practice its
+  document proposes as law, `law: true`, which the Board ratifies as law
+  or as advice; GH #1591), `idea <name> [for <position>] | <text>`
+  (knowledge, such as an external source), `retire-practice <name>`,
   `nursery <source>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
@@ -4695,10 +5376,17 @@ The live half is memory's, projected from the record by the spine
   `fill` of a position the graph does not state and the batch does not
   open, a `fill` of a stated position with no ratified mandate, a hold
   the organization would then hold twice, or a `vacate` of a hold the
-  record does not state, asked twice or filled in the same batch, or a
-  practice named twice or already in force is
+  record does not state, asked twice or filled in the same batch, a
+  practice or an idea named twice, one `for` a position the graph does
+  not state and the batch does not open, or one already in force with
+  another text or target is
   refused whole, naming the
-  step, and nothing is written. Opens are taken first, so a step may
+  step, and nothing is written. A practice or an idea `for` a position
+  is bound to it (its document's and its member row's target), and to
+  `org` without one. One in force with the same text and target is
+  kept: the step leaves the batch, so a pack adopted again proposes only
+  what it adds, and a batch left with no step is refused, `nothing to
+  propose: every step is in force already`. Opens are taken first, so a step may
   name a position a later line opens; every other step is taken in the
   order written, against the organization the steps before it leave.
   `fill * <holder>` is taken last: every position the organization would
@@ -4709,9 +5397,9 @@ The live half is memory's, projected from the record by the spine
   each seat; a wildcard that finds no vacant seat is refused.
   **Planned on pending proposals (`--on-holes`, `batch_plan_on`).**
   `hale dna apply <file> --on-holes` and `hale dna pack apply … --on-holes`
-  (what `init --with` passes) plan the batch on the holes `hale dna init`
+  (what `graft --with` passes) plan the batch on the holes `hale habitat graft`
   proposed that are not decided yet (`batch_init_holes`: each
-  `review.requested` in the group `holes` authored by `hale dna init`
+  `review.requested` in the group `holes` authored by `hale habitat graft`
   whose digest has no `knowledge.ratified`, `knowledge.declined` or
   `knowledge.refused`): the record is read with a `knowledge.ratified`
   row for each appended (`PlannedOn`, a read-only journal), so a hole's
@@ -4732,7 +5420,7 @@ The live half is memory's, projected from the record by the spine
   is refused whole as stale (`the batch is stale: the proposal it was
   planned on, k:…, was not ratified`); when all are ratified, it is
   planned again against the record and its `effects` compared, as every
-  batch is. A pack that opens a position init already proposes is
+  batch is. A pack that opens a position the graft already proposes is
   refused when it is proposed (`` `position:…` is a position the graph
   already states``), not at ratification.
   **The operations, as graph rows.** `assign` adds a `reviews` edge
@@ -4808,9 +5496,20 @@ The live half is memory's, projected from the record by the spine
   whose `nursery.toml` lists its packs (`[[pack]]`: `name`, `version`,
   `path`, `summary`, `params` with each one's default, `""` for none).
   With no `--from` the nursery is the toolchain's (`dna/nursery`,
-  embedded: `dev-team`, `small-startup`, `content-team`, and `founder`,
-  `fill * {founder}`, one person in every vacant seat, what `init --with
-  founder --set founder=<who>` proposes); a git
+  embedded: `dev-team`, `small-startup`, `content-team`, `founder`,
+  `fill * {founder}`, one person in every vacant seat, what `graft --with
+  founder --set founder=<who>` proposes, and `standard`, the standard
+  practices every organism is to adopt at birth, each a `law` step that
+  extends the foundational law once ratified: its first clause,
+  `standard/logs-are-structured`, is that every line a running part logs
+  is a record, held by the Board in review until the compiler classes the
+  stdio streams, the law can name a `program` group and `std::log` is the
+  logger (GH #1591); beside the clauses it holds a template, two `? `
+  lines kept only when `integration`, `position`, `source`, `kind` and
+  `every` are all set, that propose one watched upstream: the practice
+  `standard/upstream-watched/<integration>` and the idea
+  `standard/upstream-source/<integration>`, both `for` the position
+  (**Upstream watches**)); a git
   repository is cloned into `$XDG_CACHE_HOME/hale/nursery/` and read at
   the revision after `#`, its default branch's head without one. The CLI
   renders the pack: every parameter replaced by its `--set` value or its
@@ -4836,8 +5535,19 @@ The live half is memory's, projected from the record by the spine
   ratified the org chart lists `nursery <source>`; `hale dna nursery
   list` prints the ones in force. `pack apply --from <git URL>` is
   refused, before anything is fetched, while the URL is not one of
-  them; the toolchain's nursery and a directory need no trust, and
+  them, unless the habitat's Board trusts it (`hale habitat nursery add`,
+  below); the toolchain's nursery and a directory need no trust, and
   reading a nursery (`list`, `show`) needs none either.
+  **Saplings** (phase 4) are a second kind of nursery entry beside packs,
+  and packs stay what they are: `[[sapling]]` with `name` (one word, no
+  `/`), `summary` (its purpose), `repo` (a git URL or path), `revision`,
+  `digest` (`sha256:` over `git ls-tree -r --full-tree <revision>`, the
+  tree's listing, so one tree is one digest at any commit), `packs` (the
+  packs it adopts at graft, by name, from its own nursery or else the
+  toolchain's) and `set` (their parameters). A sapling is grafted by name
+  into the habitat (`spec/habitat.md`, Nurseries and saplings); the
+  toolchain's nursery offers `hale`, and a repository may be its own
+  nursery (`repo = "."`).
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`
@@ -4868,8 +5578,7 @@ The live half is memory's, projected from the record by the spine
   whole; a refusal is a receipt (`state: refused`, `structure.why`) and no
   row, and the same steps still pending are answered `already_proposed`
   with the Review they await. A command is conditioned on `record_head`
-  (`stale_subject` once the Record moved) and is `commands_unsupported`
-  once the Record's ledger is adopted. The receipt's `structure` branch
+  (`stale_subject` once the Record moved). The receipt's `structure` branch
   (`state`, `request_id`, `review_id`, `event_id`, `why`, `warning`)
   reads `requested` until the organization answers the request row, then
   `proposed` with its Review or `refused` with why; the Board decides
@@ -4882,10 +5591,10 @@ The live half is memory's, projected from the record by the spine
   Review the same steps await. The habitat UI is a client of the
   generated surface (`hale api client --surface HeadCommands`), and wires
   its affordances to these members.
-  **Mandates (seed/structure).** Each position `init` proposes carries a
+  **Mandates (seed/structure).** Each position the graft proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
-  knowledge idea of kind `mandate` (family `mandate`, `author: hale dna
-  init`, name `mandate/<position name>`, `target` the position's node id,
+  knowledge idea of kind `mandate` (family `mandate`, `author: hale habitat
+  graft`, name `mandate/<position name>`, `target` the position's node id,
   `position:<name>`), whose text states what the position decides, what it
   may not, what it cites, how it writes and what it escalates. `review`
   lists it under `holes` directly after its position (question: `ratify
@@ -4910,7 +5619,7 @@ The live half is memory's, projected from the record by the spine
   rest, inside the grant, the Leader's), cited and not re-implemented; the
   charter refines them. The organism's own positions the hat already names
   (`position:leader`, `position:editor`, `position:agent`) get theirs at
-  `init` and `upgrade` under `design` beside the design practices
+  the graft and `upgrade` under `design` beside the design practices
   (`design/mandate-<name>`, a seeded practice with a `target`, proposed as
   a `mandate` bound to it and superseded on `upgrade` the same way).
   **Standard equipment.** A proposed position's node body carries
@@ -4946,7 +5655,7 @@ The live half is memory's, projected from the record by the spine
   position (`fill org/collections organization:north`) or a person's
   membership of a firm (`fill organization:north bob`), each a `holds`
   edge (GH #1123) —
-  as `hale dna practice propose` asks for a practice (`init` alone writes
+  as `hale dna practice propose` asks for a practice (the graft alone writes
   proposals directly, since no organism exists yet): a
   `hold.requested <id> {request_id, position, holder, by}` row in the
   asker's name, relayed as `HoldRequested` until the organization answers
@@ -4988,12 +5697,13 @@ The live half is memory's, projected from the record by the spine
   so). Its expression is the repository's compose services (below).
 - **A repository's application is its compose services (ruling 11,
   2026-10-12).** The compose file is a repository's expression, and the
-  record attaches its application all the same: `init` lands
+  record attaches its application all the same: the graft lands
   `application.attached` (entity `.`) with the project's name as `name`,
   `repository: true` and no `main`, `artifact` or shape (nothing was
   cut), before the purpose and the graph. Its broker account is drawn as
   any attached application's (**The application's account**): `app-<name>`
-  in the vault and `dna/nats.conf`, and `hale dna nerves migrate` prints
+  in the vault and the nerves allocation's `nats.conf`, and `hale dna
+  nerves migrate` prints
   `HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP` and
   `HALE_DNA_NATS_VAULT_APP` for it, so what the repository's processes
   publish under `<org>.app.<name>.` reaches the heart. `hale dna status`
@@ -5007,7 +5717,9 @@ The live half is memory's, projected from the record by the spine
   organization reads its nerves, as the organism's own compose project,
   `<record schema>-<application>` (`dna_<id>-todo`): two organisms on one
   machine, or a person's own `docker compose up` of the same file, never share
-  a container. `up -d --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`) waits
+  a container. `up -d --build --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`; `--build`
+  builds a service whose image comes from the checkout's own context from
+  the checkout as it is now) waits
   for every service to be running, and healthy where it declares a
   healthcheck; the body says `the repository's compose services are up
   (compose project <p>)`, or that they did not all come up and why, and the
@@ -5125,8 +5837,8 @@ The live half is memory's, projected from the record by the spine
   answers. Nothing is edited through it: a change moves through the
   record's rows, and the spine projects it into both perspectives. A
   record with no rows is the empty perspective, with no memory asked, and
-  stderr says `hale dna init` seeds a record and `hale dna sync` fetches
-  one; with rows and no memory named it refuses, and says the graph is
+  stderr says a graft births a record; with rows and no memory
+  named it refuses, and says the graph is
   memory's. The projection's stamp is read before the graph, so the rows
   it reports never overstate what the graph holds. Text
   (`dna/operations/graph_show.hl`) shows a node by the last segment of its
@@ -5154,13 +5866,13 @@ The live half is memory's, projected from the record by the spine
   record's length), `projected_rows` (memory's watermark), `stamp_valid`
   and `graph`, the query's answer as memory built it. How memory stands to
   the record is said on stderr, never in the perspective: behind it
-  (`memory has projected <m> of the record's <n> rows`), past it (this
-  clone is behind its remote: `hale dna sync`), or with a stamp that
-  vouches for nothing (`hale dna memory migrate`). On voice's record with
+  (`memory has projected <m> of the record's <n> rows`), past it (a
+  read that raced a writer: read again), or with a stamp that
+  vouches for nothing (`hale habitat migrate <organism>`). On voice's record with
   its holes filled the two texts are GRAPH.md's renderings, byte for byte
   (`dna/tests/graph_show_test.hl`).
 - **Projections and ranking (K3).** The tail also projects the
-  record's `structure.observed` rows (init's loci, topics, bindings,
+  record's `structure.observed` rows (the graft's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the
   latest row winning, and its `pressure.raised` and `concern.raised`
   rows into signals counted per (kind, source, what) with the last
@@ -5221,13 +5933,17 @@ The live half is memory's, projected from the record by the spine
 
 The assembly names what fills each role; `hale check` sees the wiring.
 
-- **Record** — `Journal`: `GitJournal` (the branch), `MemJournal` (tests).
+- **Record** — `Journal`: `RoutedJournal` over `RecordJournal` (memory) and `MemoryLedger`, `MemJournal` (tests).
 - **Board** (the `board` field, a `Membrane`) — where humans see and
   decide: `Board` / `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
-  relayed by the host); GitHub, mirrored by the host when `git config
-  dna.github` names `owner/repo`: every pending mutation Review becomes
-  a pull request (`github.pr`; the candidate pushed to `dna/<id>`, the
+  relayed by the host); the organism's forge, mirrored by the host:
+  the forge is a gate, not a store, and which forge stands in it is the
+  organism's forge allocation (`spec/habitat.md`, Forge and identity) —
+  the habitat's own Forgejo by default in the local profile, GitHub when a
+  Board names it (`hale habitat forge <organism> github --repo
+  owner/repo`). Against whichever it is, every pending mutation Review becomes
+  a pull request (`github.pr`, naming the forge; the candidate pushed to `dna/<id>`, the
   three views as the body), every GitHub review on it becomes a
   `review.verdict` row in the reviewer's login (authority `board` when
   `dna.github.board` lists the login, else `reviewer`; each review
@@ -5243,13 +5959,23 @@ The assembly names what fills each role; `hale check` sees the wiring.
   forge's own key so each is admitted once), `comment`, `close_review`,
   `present`, `name`. `GitHubForge` (`gh`) is one implementation; the
   `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
-  `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
-  behaviour, and `hale dna profile`'s `github:` line names which the
-  host found (`HALE_DNA_FORGE`, or `dna.github`). The forge's pass
+  `<n>.verdicts`) is the fixtures'; `ForgejoForge` (Forgejo's API, a
+  token the vault slot of the organism's own Forgejo user holds) is the
+  local profile's; `NoForge` is a bare remote's honest
+  behaviour, the no-infrastructure fallback, and `hale dna profile`'s `github:` line names which the
+  host found: the organism's forge allocation (or `HALE_DNA_FORGE`, the
+  fixtures' override). `hale dna forge sync` syncs with the allocated
+  forge; with `none` allocated it answers `forge: no forge allocated`.
+  (`hale dna github sync` is gone.) The forge's pass
   is written against the interface; the rows it appends (`github.pr`,
   `github.commented`, `review.verdict` keyed by the forge's key) do
-  not change with the forge. Nothing in the core or the host spells
-  `gh` outside that one implementation.
+  not change with the forge. Only the `github.pr` rows of the forge in
+  the gate now are read: after the allocation (and the remote) moves to
+  another forge, a Review still open is opened again there and nothing
+  migrates. Nothing in the core or the host spells
+  `gh` outside that one implementation, and no practice, workflow or
+  standard names a forge by kind: "open a review" is the verb, and the
+  allocation answers it.
 - **Deployment** — `Deployment`: `NoDeployment` (a host expresses:
   `hale dna dev`), `ShellDeployment { command, seed }` (the command
   owns expressing and judging: `express <candidate> <seed>` returning 0
@@ -5266,7 +5992,7 @@ The assembly names what fills each role; `hale check` sees the wiring.
 
 The skin's (GH #989). **A secret is provisioned when its owner is
 declared and consumed when it runs.** Organism-level secrets are
-provisioned by `hale dna init` and `upgrade`, whether or not the part
+provisioned by a graft and `hale dna upgrade`, whether or not the part
 that uses one runs; per-member secrets are provisioned at that member's
 admission, and are not on the organism's list: an owner's head role on
 a shared record (`postgres-<schema>_head_<owner>`) where the owner
@@ -5282,23 +6008,28 @@ secret, by its vault name, and never creates one.
 | vault name | kind | whose |
 |---|---|---|
 | `postgres-dna_<identity>_spine`, `_head` | drawn | memory's roles (**Memory**) |
-| `postgres-owner-<seed>`, when the seed has `dna/compose.yaml` | drawn | the compose database's superuser |
+| `postgres-owner-<id>`, when the organism has a memory allocation | drawn | the memory allocation's superuser in the local habitat |
 | `nats-<org>-<role>`, for `owner spine head reflexes` | drawn | the nerves' accounts (**The nerves**) |
 | `nats-<org>-app-<name>`, while the record attaches the application | drawn | the application's broker account (**The application's account**) |
 | `oidc-client-<dna.oidc.client>` (`dna-local` when unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
 | `forge-token` | slot | the forge's token: with none, nothing is done at the forge, never as `gh`'s own login |
 | `model-<NAME>`, per credential `dna/org/models.hl` or `dna/org/work.hl` names | slot | a model's key (**Models**); `hale dna secrets` lists a `work.hl` key as the legs' model key |
+| a category's `key_vault`, per latest `model.category` row naming one | slot | the key the model map asks that endpoint with (**Models**); `hale dna secrets` lists it as the model map's key for its categories |
+| `model-HABITAT_<KEY>` (`<KEY>` the organism's key, upper-cased) | filled by the habitat | the organism's key at the habitat's models, copied from its member of the provider's family (**The habitat's models**), and the slot its seeded map names |
+| `secret-<org>-<name>`, per `[dna.secrets.<name>]` in `hale.toml` | as declared: drawn or a slot | a secret the seed declares (**Declared secrets**) |
+| `secret-<org>-<name>--<label>`, per member a person fills | slot (a family) | a member of a family the seed declares (**Declared secrets**) |
+| `secret-<org>-<name>--<organism>`, per tenant of a models provider | drawn (a family) | a tenant's key at the habitat's models, the provider's `key` family (**The habitat's models**) |
 
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
   from urandom (32 hex characters) into the vault when the vault lacks
-  it; the nerves' are drawn anew on every `init` and `upgrade`, since
-  the server's include is written from the same draw. The servers
-  compose runs read theirs from files written from the same draw as the
-  vault's entries: `dna/nats.secrets.conf` for the nerves and
-  `dna/postgres.secrets` for the database (its `POSTGRES_PASSWORD_FILE`),
-  each mode 600, ignored, and refused when git tracks it or would. No
-  committed file holds a secret. A secret a person
+  it; the nerves' are drawn anew on every graft and `upgrade`, since
+  the server's include is written from the same draw. The habitat's
+  allocations read theirs from files written from the same draw as the
+  vault's entries, beside the allocation and never in a checkout
+  (GH #1653): `nats.secrets.conf` for the nerves and `postgres.secrets`
+  for memory (its `POSTGRES_PASSWORD_FILE`), each mode 600 in
+  `allocations/<id>/`. No committed file holds a secret. A secret a person
   supplies is a named empty entry that `hale dna secret set <NAME>`
   fills (`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a model key's name);
   an entry that is empty is not held.
@@ -5333,34 +6064,306 @@ secret, by its vault name, and never creates one.
   is reported by the body, since the vault that matters is the one on
   the machine that calls the model).
 
+### Declared secrets
+
+A seed declares the secrets its own programs and host commands read in
+its manifest, one table each:
+
+```toml
+[dna.secrets.operator-token]
+kind    = "drawn"                 # drawn: the habitat draws it; slot: a person fills it
+readers = ["api", "host.node"]    # its programs, by directory, and its host commands, host.<command>
+person  = "none"                  # read | write | none
+
+[dna.secrets.model-token]
+kind    = "slot"
+family  = true                    # several values, each a member a person fills under a label
+readers = ["worker"]
+```
+
+- **The declaration.** A name is lowercase letters, digits and `-`, a
+  letter first, at most 32 characters, with no `-` last or doubled. Its
+  keys are `kind` (`drawn` or `slot`, required), `readers`, `person` and
+  `family`, and any other is refused. `person` is `read` (`hale dna
+  secret show` reveals it; a slot's person also sets it), `write` (a
+  person sets it and never reads it back; a slot's default) or `none` (no
+  person touches it; a drawn secret's default). A drawn secret whose
+  person is `write` is refused (a person never sets it), as is a slot
+  whose person is `none` (no one could fill it). A reader is a program of
+  the seed, by its directory's name, or `host.<command>` for a host
+  command it declares (`[dna.host.<command>]`, spec/habitat.md § Host
+  commands); a `host.` reader with no such command is refused. `family =
+  true` (a bool; `false` by default) makes a slot a family; on a drawn
+  secret it is refused unless a capability the seed provides names the
+  secret as its `key` (**The habitat's models**): a drawn family's members
+  are the habitat's, one per tenant. `optional = true` (a bool; `false` by default) makes
+  a slot one its readers do without: refused on a drawn secret, which
+  always exists. The toolchain is the declaration's one reader (`hale
+  dna declared-secrets [dir]` prints it for the DNA's own code, a secret a
+  line); a declaration it refuses provisions none of them, and `hale dna
+  secrets` and the graft's or upgrade's report say why.
+- **Its entry.** Each is the vault entry `secret-<org>-<name>`, `<org>`
+  the record's schema (`dna_<identity>`), as the nerves' entries are
+  named; a family's member is `secret-<org>-<name>--<label>`, the double
+  dash keeping a member from any other secret's entry. A drawn secret is
+  drawn (32 hex characters) when the vault lacks it, by a graft and every
+  `hale dna upgrade`, and never drawn again by them: it changes only by
+  `hale dna secret rotate <name>`. A slot is an empty entry until `hale
+  dna secret set <name>` fills it, and listed MISSING until then. A
+  family is no entry until a person fills a member; how many it has is
+  the deployment's, not the seed's.
+- **Optional.** An optional slot no person filled is listed `unset
+  (optional)` by `hale dna secrets`, never MISSING; the board does not
+  name it and `run`/`dev` never refuse on it. It is not handed: its
+  readers see no `HALE_SECRET_<NAME>` at all. An optional family with no
+  member is handed EMPTY: its variable is set, to nothing, so a reader
+  tells "none handed over" from "not declared".
+- **A family's members.** `hale dna secret set <name> --member <label>` fills
+  one, `rotate <name> --member <label>` sets it again, `remove <name> --member
+  <label>` takes it out of the vault (the record gets `secret.removed
+  <name>--<label>`), and `show <name> --member <label>` reveals one of a
+  family whose person is `read`. A label is 1 to 63 characters, a
+  lowercase letter or a digit, then lowercase letters, digits and `-`
+  (`^[a-z0-9][a-z0-9-]{0,62}$`); any other is refused, naming the rule.
+  A family named without `--member` is refused, naming it; `--member` on a secret
+  that is no family is refused; `remove` takes a family's member alone.
+  `--as` keeps its meaning on these verbs: who acts. `hale
+  dna secrets` lists a family once, with its members' labels, and as
+  MISSING while it has none, naming `hale dna secret set <name> --member
+  <label>`. A drawn family (a provider's key) is never MISSING: it is
+  listed `no tenant` while the habitat has keyed none, and `present` with
+  its members' labels after. `rotate <name> --member <label>` draws that
+  tenant's member anew (one the vault lacks is refused: the habitat draws a
+  member for each tenant it keys), after which the habitat copies it to the
+  tenant and restages the provider's reader vault; `set` and `remove` are
+  refused (a member goes with its tenant, `hale habitat organism remove`).
+- **Set, rotate, show.** `hale dna secret set <name>` fills a declared
+  slot from stdin (as any slot, **Secrets** above), in the organism's
+  vault here (`--body` is refused: the organism's vault is the one its
+  readers are handed from); on a drawn secret it is refused, and `secret
+  rotate <name>` draws that one anew. `hale dna secret show <name>`
+  prints the value of a declared secret whose person is `read`, and
+  refuses any other, naming its person; it is the one verb that reveals a
+  value, and the record gets nothing. Each runs where the organism's
+  vault is: through a pointer, `hale habitat organism <name> dna secret
+  …` runs it on the habitat's machine, a value piped in or printed
+  passing through the person's SSH login.
+- **Handed to its programs.** Where the organism's services run — the
+  habitat's apply of its `services` allocation, by compose on this
+  machine or over SSH on a host, and a repository body's compose
+  services (`hale dna dev`, `run`) — each secret a program of the seed
+  reads is put in a reader vault of the organism's own on the machine
+  that runs them: here `<habitat>/allocations/<id>/vault/`, on an SSH
+  host `~/.hale/habitat/<project>/.vault/` beside the render the habitat
+  ships, never in a checkout; mode 700, each entry 600, holding those
+  entries and no other. The organism keeps the directory's address
+  whatever its programs read: when none reads any (the last reader gone,
+  a declaration refused), the set is empty and every entry staged before
+  is removed, and no directory is made for nothing. Each is copied file to file from the vault
+  (over the habitat's SSH on its stdin, for a host), never read into a
+  program or put on a command line; the directory is rewritten in place,
+  never replaced, since a running service mounts it, and on a host it
+  goes with the project's withdrawal, whatever it held. Compose is handed `HALE_VAULT_DIR`
+  (that directory) and, per secret, `HALE_SECRET_<NAME>` (the name
+  upper-cased, `-` as `_`) naming its entry — a family's, each member's
+  entry, one a line, in their labels' order. The application's compose
+  file passes them to the services that read them and mounts the
+  directory, read-only, at the same path; a program then reads one as
+  `std::secret::Credential { vault: <the entry> }`. For every family
+  compose is handed `HALE_SECRET_<NAME>_FAMILY` beside it, its members'
+  common prefix (`secret-<org>-<name>--`), so a reader lists the members
+  in `HALE_VAULT_DIR` by it and sees one drawn or removed while it runs:
+  the habitat restages the reader vault in place when it draws or removes
+  a member of a drawn family, without applying the services again. A
+  family with no member yet has its directory all the same (compose
+  mounts it before the first is drawn). Compose's environment
+  is the project's, so every service of the project could be passed
+  every secret its programs read: the grant to the declared readers is
+  the compose file's to keep (a secret no program reads is never handed).
+  Beside them, an organism the habitat grafted has its compose handed
+  the habitat's name, `HALE_DNA_HABITAT_NAME`, whatever its programs
+  read, which reaches a service only as its compose file passes it.
+- **Handed to its host commands** by `hale habitat organism place` and
+  `unplace` (spec/habitat.md § Host commands), for the run alone.
+- **Superseded.** A host command's `operator_token` and its
+  `{operator_token_file}` input are refused: the token is a drawn secret
+  the seed declares, `host.<command>` among its readers.
+
+### The habitat's models
+
+A seed may provide the habitat's other organisms a capability, declared in
+its manifest. `models` is the one there is: an OpenAI-compatible endpoint
+that every organism the habitat grafts is pointed at, each asking with a
+key of its own that the habitat draws, so no person mints one (voice's).
+
+```toml
+[dna.provides.models]
+service     = "api"                  # the compose service that serves it (required)
+path        = "/v1/chat/completions" # where a chat is asked (this default)
+models_path = "/v1/models"           # where what it serves is listed (this default)
+key         = "tenant-key"           # a drawn family it declares (required)
+
+[dna.secrets.tenant-key]
+kind    = "drawn"
+family  = true
+readers = ["api"]
+```
+
+- **The declaration.** `[dna.provides.<capability>]` names `models` or is
+  refused; its keys are `service` (a compose service's name), `path` and
+  `models_path` (`/` first, no space, query, fragment or `..`), `key`,
+  `extension` (the name of the object on each models-list entry that holds
+  the provider's own fields: lowercase letters, digits, `_` and `-`;
+  voice's is `voice`) and `grant` (one line, what a person does when a
+  tenant is served nothing yet, `{organism}` standing for the tenant and
+  `{habitat}` for the habitat's name, the one its services are handed as
+  `HALE_DNA_HABITAT_NAME`), and
+  any other is refused. `key` must name a secret the seed declares
+  that is drawn and a family; a missing one, a slot or a drawn single is
+  refused. The toolchain is its one reader: `hale dna declared-provides
+  [dir]` prints `models\t<service>\t<path>\t<models_path>\t<key>\t<extension>\t<grant>`
+  (the last two empty when undeclared), and a
+  graft refuses a declaration it refuses, saying why. A habitat holds one
+  models provider: grafting a second while one is grafted is refused,
+  naming the first.
+- **Tenants.** Every organism the habitat grafted is a tenant, the
+  provider among them (voice's own DNA asks voice), and so is the
+  habitat's own genome, the habitat's infrastructure, whose key is its
+  record's. Once the provider's
+  services allocation is applied, for each tenant `T`: a member of the
+  provider's `key` family is drawn in the vault, labelled by `T`'s name
+  (refused, saying why, when the name is no label: **Declared secrets**),
+  the genome's labelled `habitat` whatever its directory is called. A
+  provider names what it keeps for a tenant by its label (voice's
+  project is `<HALE_DNA_HABITAT_NAME>-<label>`), so labels are unique: a
+  graft of an organism called `habitat` is refused (spec/habitat.md,
+  Graft and `[dna] needs`),
+  and the provider's reader vault is restaged in place where its services
+  run; the value is copied into `T`'s slot `model-HABITAT_<KEY>` (`<KEY>`
+  `T`'s key upper-cased: the habitat's organisms share one vault, so the
+  slot is named for the organism); the provider is asked what it serves,
+  `GET <its link><models_path>` with `Authorization: Bearer <T's key>`, from
+  the habitat's machine, where `T`'s DNA runs; and `T`'s model map is
+  seeded in the name `hale habitat`: `model.rule default` at `standard`
+  permitting every size, every `think.<size>` the first served model, every
+  `tools.<size>` and `do.<size>` the first served model that returns tool
+  calls (with tool calls; none when none is), each
+  with `endpoint` `<its link><path>` and `key_vault` `model-HABITAT_<KEY>`.
+  A row in any other name than `hale habitat` (a person's, the graft's
+  hosted seeding) is never written over, and one the habitat wrote that
+  says the same is not written again. The link is the provider's service's
+  as `Commands::allocations` resolves it (spec/habitat.md § Placing and
+  applying); one with no URL (loopback only on its host) seeds nothing, and
+  the act says why. A provider that serves `T` nothing yet, or does not
+  answer, seeds nothing: `the habitat's models (<provider>) serve none for
+  <T> yet: <grant>, then \`hale habitat models <T>\``, with the provider's
+  `grant` sentence (`{organism}` replaced by `T`'s name, `{habitat}` by
+  the habitat's), or, when it
+  declares none or did not answer, `the habitat's models (<provider>) serve
+  none for <T> yet[ (why)]: \`hale habitat models <T>\` maps them once one
+  is served`.
+- **The models list.** The OpenAI shape, the models the asking key may be
+  served by: `{"data": [{"id": "<model>", "available": true|false,
+  "capabilities": {"tools": true|false}}, …]}`, in the order the provider
+  prefers them, with `available` and `capabilities` in the entry's
+  `<extension>` object instead when the provider declares one (voice lists
+  its whole catalog, each entry's `voice.available` saying whether that
+  key may spend a seat on it). An entry with no `id` is skipped, one whose
+  `available` is false is not served, one that does not say is, and one
+  whose `capabilities.tools` is not said returns no tool calls.
+- **When.** A graft does it for the organism it grafts, once its own
+  services are placed (a sapling's, at the end of its graft), and grafting
+  the provider does it for every organism the habitat holds and the
+  habitat's genome. `hale habitat
+  models <organism>|--all [--plan]` does it again: for an organism grafted
+  before the provider, or a model placed since (spec/habitat.md § Verbs);
+  `--all` includes the genome, and `hale habitat models habitat` names it
+  alone.
+  None of it fails a graft: what stopped it is said.
+- **Rotated and removed.** `hale dna secret rotate <key> --member <T>` in
+  the provider draws `T`'s member anew; the habitat copies it into `T`'s
+  slot and restages the provider's reader vault. `hale habitat organism
+  remove <T>` removes `T`'s member from the vault and restages the
+  provider's reader vault (an item of its plan's `vault` group), and its
+  slot `model-HABITAT_<KEY>` with its other slots.
+
+### Declared web UIs
+
+A seed declares the web UIs it serves in its manifest, one table each,
+which the habitat's home screen lists (spec/habitat.md § The face):
+
+```toml
+[dna.ui.admin]
+label   = "voice admin"         # what the home screen calls it (required)
+service = "api"                 # the compose service that serves it (required)
+path    = "/"                   # where under that service's address ("/" by default)
+login   = "operator-token"      # a declared secret a person reads to sign in (optional)
+```
+
+- **The declaration.** A name is lowercase letters, digits and `-`, a
+  letter first, at most 32 characters, with no `-` last. Its keys are
+  `label` (one line of at most 80 characters, required), `service` (a
+  compose service's name, required), `path` (`/` first, no space) and
+  `login`, and any other is refused. `login` names a secret the seed
+  declares (`[dna.secrets.<login>]`, Declared secrets above) whose
+  person is `read`, and no family: a login naming no declared secret, one
+  a person may not read, or a family is refused. The toolchain is the
+  declaration's one reader (`hale dna declared-uis [dir]` prints it for
+  the DNA's own code, a UI a line: name, label, service, path, login), and
+  `hale habitat graft` refuses a manifest whose UIs it refuses, saying
+  why; nothing is grafted.
+- **Where it is.** A UI is at the address the organism's `services`
+  allocation publishes for its `service` (the `links` of
+  `Commands::allocations`, each published port resolved against the host
+  the allocation was last applied on), with `path` after it. A service
+  published on its host's loopback alone is not linked: it is named as
+  `loopback only on <host>`. A service its services do not publish (not
+  applied, or no port) has no address, and says so.
+- **How to sign in.** With `login`, `hale dna secret show <login>`, run
+  through the pointer (`hale habitat organism <organism> dna secret show
+  <login>`) from the person's machine. The value is never listed.
+- **Read when listed.** The head reads the declaration from the
+  organism's directory each time it lists the UIs, so an upgrade's
+  declaration is the one listed; nothing about it is recorded. One the
+  toolchain refuses after the graft (an upgrade's) is listed as refused,
+  with why.
+
 ## The fleet
 
-The genome's topology is the fleet plan Hale already checks
-(`spec/verification.md`, "Fleet composition"), and the DNA expresses
-one arrangement of it:
+The genome's topology is a fleet seed Hale already checks — a seed
+declaring `fleet locus` (`spec/verification.md`, "Fleet composition")
+— and the DNA expresses one arrangement of it:
 
-- **The plan describes the workspace's own services.** Plan schema
-  1.2 lets an instance name a `seed` (relative to the plan) instead
-  of an `artifact`; composition cuts the artifact from the seed first,
-  so a candidate is checked as the fleet it would deploy. An instance
-  may name the `node` that expresses it. `[dna] fleet = "<name>"` in
-  `hale.toml` names which entry of `[fleets]` the DNA expresses.
+- **The fleet seed describes the workspace's own services.** Its params
+  are the workspace's seeds' mains, and composition cuts each one's
+  artifact from its seed, so a candidate is checked as the fleet it
+  would deploy. An instance's placement host (`host("edge-1")`) is the
+  node that expresses it. `[dna] fleet = "<name>"` in `hale.toml` names
+  which entry of `[fleets]` (a fleet seed) the DNA expresses. The DNA
+  reads the fleet as its rows: `hale fleet export <seed>` (`hale dna
+  fleet-of` resolves the name to the seed in a checkout's manifest);
+  a plan JSON is read nowhere.
 - **The fleet is evidence.** Verification runs `hale fleet check --in
   <worktree> --if-declared` on every candidate (`evidence.fleet`;
   `fleet_clean`, true when the workspace declares no fleet). A change
   to one service that breaks a claim the fleet makes over all of them
   is `mutation.deny` ("candidate breaks the fleet") with the witness
-  in the receipt. A candidate whose diff names a plan (`*.plan.json`)
-  or the manifest (`hale.toml`) changes the fleet's shape: it is
+  in the receipt. A candidate whose diff names a fleet seed's source (a
+  `.hl` file in a directory one of whose own files declares `fleet
+  locus`, so an import-only change counts) or the manifest (`hale.toml`)
+  changes the fleet's shape: it is
   re-classed `topology` (`mutation.topology`) whatever it was asked
   as, and `OrgPolicy` sends it to the Board.
 - **A deploy is a row.** `fleet.deploy` (entity: the Mutation, or the
-  short revision for an operator's deploy) carries the plan name, the
-  revision, the seed the change edits (`""` for the whole genome), the
-  instances touched — every instance with a node whose seed is that
-  directory — and the reason (`apply`, `rollback`, or the operator's).
-  The revision is pushed to `refs/dna/revisions/<rev>` on the record's
-  remote first, so every node can fetch it. Under `hale dna run` with
+  short revision for an operator's deploy) carries the fleet's name
+  (`plan`), the revision, the seed the change edits (`""` for the whole
+  genome), the instances touched — every instance with a host whose
+  seed is that directory, read from the fleet's export at that revision
+  (checked out into a scratch worktree for it) — and the reason (`apply`, `rollback`, or the operator's).
+  The revision is published first on the genome's forge (the record's
+  remote) as the branch `dna/revision/<rev>`, and every node fetches it
+  by its sha, as `hale fetch` fetches a pinned dependency (GH #1590: a
+  revision is the genome's, not the record's). Under `hale dna run` with
   `[dna] fleet` set, the host answers an application's
   `expression.restart_requested` with a deploy row; `hale dna deploy
   <revision>` and `hale dna rollback <mutation>` write the same row by
@@ -5369,15 +6372,17 @@ one arrangement of it:
   <name>] [--tick <ms>]` runs in a clone of the governed repository.
   Every tick it syncs the record and reads the latest `fleet.deploy`;
   when that names a revision it does not express, it fetches the
-  revision, checks it out, and for each instance the plan assigns to
-  the node that the deploy touches (or that is not up) cuts the
+  revision by its sha from the forge (`git fetch <remote> <sha>`; a
+  fetch that fails is said and tried next tick), checks it out, reads
+  the fleet's export there, and for each instance the fleet places on
+  the node's host that the deploy touches (or that is not up) cuts the
   artifact, builds the seed, restarts the process (cwd the clone,
   `LOTUS_OBS=1`, `HALE_DNA_NODE`, `HALE_DNA_INSTANCE`,
   `HALE_DNA_EXPRESSION`) and appends `instance.up` as `node/<name>`:
   node, instance, revision, model hash, build digest, pid. An instance
   that exits appends `instance.exited` with its code. The expression
   identity per instance is therefore reported by the node that
-  expresses it and joined to the plan by instance id. The node decides
+  expresses it and joined to the fleet by instance id. The node decides
   nothing. `.hale/node/<name>/<instance>.pid` is the only local state.
 - **The window is over every touched instance.** After an apply's
   deploy row the host waits for every touched instance's `instance.up`
@@ -5390,7 +6395,7 @@ one arrangement of it:
   instances, which every node answers. Never up: `expression.crashed`
   "never expressed by …" and `Observation build_failed`.
 - **`hale dna fleet`** renders what the fleet expresses from the
-  record: every instance of the plan, its node, whether it is up, the
+  record: every instance of the fleet, its node, whether it is up, the
   revision and model hash it last came up at, and the last deploy.
 
 ## The senses and the reflexes
@@ -5431,19 +6436,25 @@ routes; it never plans on a reading.
   own.
   It is no spine: its nerves connection has no server and stops at
   once, and it takes no application's events. It drains on SIGTERM.
-- **The store.** The seed's `dna/compose.yaml` has a `senses` service:
-  Prometheus, scraping what `dna/senses.yml` names over the host gateway
-  (`honor_labels`, so a part's own labels are the readings'), and keeping
-  what it scraped for its retention (`--storage.tsdb.retention.time`, a
-  week). Its port is the seed's, in 93xx, on 127.0.0.1, taken as the
-  compose file's other ports are.
-  - `init` writes both files. `upgrade` writes `dna/senses.yml` when it
-    is missing, and says so when the compose file has no `senses`
-    service or `dna/nats.conf` no `reflexes` user.
-  - `hale dna senses up [dir]` brings the service up and prints
-    `HALE_DNA_SENSES_URL`, its read URL.
-  - `hale dna dev` runs it with the rest of compose, unless the
-    environment names its own memory or nerves (an owner's DSN or URL).
+- **The store** is the organism's `senses-<id>` allocation in the local
+  habitat (GH #1653): Prometheus, scraping what the allocation's
+  `senses.yml` names over the host gateway (`honor_labels`, so a part's
+  own labels are the readings'), and keeping what it scraped for its
+  retention (`--storage.tsdb.retention.time`, a week). Its port is in
+  the 39000s, on 127.0.0.1, kept in the allocation's `ports.yaml` as
+  memory's and the nerves' are.
+  - The allocation's `compose.yaml` and `senses.yml` are written the
+    first time a habitat act brings an allocation of the organism up.
+  - `hale habitat migrate [organism]` and `hale dna senses up [dir]`
+    bring the store up; `senses up` prints `HALE_DNA_SENSES_URL`, its
+    read URL.
+  - `hale dna senses url [dir]` prints the same line for a store that
+    is up, bringing nothing up, and names `hale habitat migrate
+    <organism>` when it is not.
+  - `hale dna dev` never brings the store up: it says the store's URL
+    when it is up, or that it is not, unless the environment names its
+    own memory or nerves (an owner's DSN or URL), and nothing stops for
+    it.
   - A reading never acts.
 - **The reflexes** (`dna/reflexes`) are a program on the private-services
   tier. They hold the store's read URL and a publish-only credential,
@@ -5465,8 +6476,10 @@ routes; it never plans on a reading.
     duplicate. They remember what they published only while it is down.
   - **Launch.** The face's launcher (`hale dna head`, `start.sh`) builds and starts them beside the
     stub OpenID provider when a project is attached, with that project's
-    store and nerves, and stops them with the launcher. A store or
-    nerves that does not come up leaves the face running without them.
+    store and nerves (`hale dna senses url`, `hale dna nerves urls`), and
+    stops them with the launcher. The launcher brings nothing up: a store
+    or nerves that is not up leaves the face running without them, and
+    the launcher names `hale habitat migrate <project>`.
 - **The node acts on the row.** On its tick a node reads every firing
   that names it and has no `reflex.acted` row yet. It restarts that one
   instance at the latest deploy's revision, through the path a
@@ -5503,26 +6516,26 @@ over one seed, one command per process (GH #1490):
 - **the verb program**, `dna/host/verb`: every other verb, one-shot —
   the projections (`status`, `history`, `review`, `board`, `report`,
   `pressure`, `fleet`), the writers (`task create`, a verdict,
-  `pressure raise`, `sync`, `deploy`, `rollback`, `github sync`) and
+  `pressure raise`, `sync`, `deploy`, `rollback`, `forge sync`) and
   the rest. It imports the host's seed and starts no locus that runs
   or handles the bus, so it runs to exit, and the memory-bound survey
   judges it as it judges a script (`spec/verification.md`).
 
 `hale dna <verb>` resolves the project from the manifest (the root, the
-application's seed, the fleet and its plan under `[dna]`), builds both
+application's seed, the fleet and its fleet seed under `[dna]`), builds both
 programs once into the toolchain cache (side by side, the first time
 any host verb needs either), and execs the one the verb belongs to in
 place — the pid that ran `hale dna <verb>` is the host:
-`<program> <verb> <root> <seed> <fleet> <plan> …`, with `HALE_BIN` (the
+`<program> <verb> <root> <seed> <fleet> <fleet seed> …`, with `HALE_BIN` (the
 toolchain) and `HALE_DNA_TOOLCHAIN` in the environment. Either program
 refuses a verb that is the other's. The host reads the record through
-the core's `GitJournal`, appends in a person's or a node's name with
-the ref compare-and-swapped, and starts every child — the
+the core's `RecordJournal`, appends in a person's or a node's name
+through memory's append function, and starts every child — the
 organization, the application, iris, an instance — through `sh`,
 detached, with its pid, its exit code and its log as files under
 `.hale/dna/` or `.hale/node/<name>/`, echoing the log to the terminal
-a tick at a time. The compiler keeps `init` / `new` / `upgrade` (they
-embed the sources), `hale fleet check` and the plan schema, and the
+a tick at a time. The compiler keeps the graft and `upgrade` (they
+embed the sources), `hale fleet check` and `export`, and the
 exec shims. The host decides nothing.
 
 ## A seed is built once per content fingerprint
@@ -5573,7 +6586,7 @@ every build a miss.
 
 ## The embedded source has a name
 
-`hale dna init` / `new` / `upgrade` materialize `vendor/dna` from the
+A graft and `hale dna upgrade` materialize `vendor/dna` from the
 DNA source **embedded in the `hale` binary**, so an organism runs the
 core that binary carries and not the one in any checkout. A version
 does not identify that source — two builds of one version can embed
@@ -5616,7 +6629,8 @@ rather than shipping a digest that names nothing.
 ## The surface
 
 `hale dna ui [project] [--port N]` serves the DNA surface in a browser
-from the record alone: a Hale program (`dna/ui`, embedded in the
+from the record in memory (GH #1590: a head reads no record without
+memory): a Hale program (`dna/ui`, embedded in the
 toolchain like the core and the host, built once
 into the toolchain cache) that answers every request by running one
 offline verb of `hale dna` in the project root and returning what it printed
@@ -5636,30 +6650,32 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
-The head (`dna/api/project_service`), which serves the face, is the
+The head (`dna/api/project_service`), which the face fronts, is the
 surface's counterpart for the operator's machine. `hale dna head
-[project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P]
-[--source-drafts]` starts it from an installed toolchain: the toolchain
+[project] [--port P] [--head-port P] [--api-port P] [--oidc-port P]
+[--commands-port P] [--source-drafts]` starts it from an installed toolchain: the toolchain
 embeds the head's seeds (`dna/api`, `dna/api/practice_review`,
-`dna/api/project_service`, `dna/oidc`, `dna/oidc/serve`, `dna/reflexes`),
+`dna/api/project_service`, `dna/face/standard`, `dna/oidc`, `dna/oidc/serve`, `dna/reflexes`),
 the face's assets (`dna/face/web`) and the launcher (`dna/face/start.sh`)
 beside the host's sources — not in the embedded DNA digest, which names
 what `vendor/dna` is materialized from — materializes them into the
-toolchain cache, whose key covers them, builds the four seeds there
+toolchain cache, whose key covers them, builds the five seeds there
 side by side under the cache's build lock once per key, and execs the
 materialized launcher with every binary handed in (`HALE_API_BIN`,
-`HALE_HEAD_BIN`, `HALE_OIDC_BIN`, `HALE_REFLEXES_BIN`) and `HALE_BIN`
+`HALE_HEAD_BIN`, `HALE_FACE_BIN`, `HALE_OIDC_BIN`, `HALE_REFLEXES_BIN`) and `HALE_BIN`
 the running toolchain. With a project and no
-`HALE_DNA_MEMORY_DSN_HEAD`, it derives the head's memory DSN as
-`hale dna memory migrate` does, onto the launcher's environment and
-never its output, when memory is up: an owner's server
-(`HALE_DNA_MEMORY_DSN_OWNER`), or the project's compose `knowledge-db`
-already running. Otherwise it says memory is not up, names `hale dna
-dev`, and starts the head with Knowledge unsupported; it brings no
-database up. From a checkout, `dna/face/start.sh [project]` is the same
-launcher, building each seed it is not handed from the checkout into
+`HALE_DNA_MEMORY_DSN_HEAD`, it derives the head's memory DSN alone,
+onto the launcher's environment and never its output, when memory is
+up and migrated: an owner's server (`HALE_DNA_MEMORY_DSN_OWNER`), or
+the organism's memory allocation in the local habitat already running.
+Otherwise it says memory is not up, names `hale habitat migrate
+<project>`, and starts the head with Knowledge unsupported; it brings
+nothing up and migrates nothing (GH #1653). The launcher reads the
+reflexes' store and nerves with `hale dna senses url` and `hale dna
+nerves urls`, which bring nothing up either. From a checkout,
+`dna/face/start.sh [project]` is the same launcher, building each seed it is not handed from the checkout into
 temporary storage on every start. The head is
-one loopback process that serves the browser shell, keeps a registry one loopback process that serves the browser shell, keeps a registry
+one loopback process that serves surfaces only, keeps a registry
 of projects and a journal of receipts under a state directory, and
 proxies the Record's read and command routes to a per-project API
 child it starts and replaces. Its own operations — create, init,
@@ -5673,6 +6689,253 @@ retry and conflicts on a changed one. A run that passes its deadline
 is `outcome_unknown` when the verb reaches beyond this machine, never
 `failed`; the head appends nothing to any record itself. It is
 trusted-local and refuses an `oidc` project.
+
+**Faces (Phase 3).** A face is a role an application fills: the browser's
+door to the organism. This slice has one, the **standard face**
+(`dna/face/standard`), which the toolchain ships and grafts as it grafts
+the habitat genome and the packs: its sources and the browser's assets are
+part of the head's files, built into the toolchain cache beside the head's
+seeds. A genome names others as below.
+
+**Named faces.** An organism names a face by a param of its `main locus`
+of type `dna::Face` (`dna/core/face.hl`, in the embedded core), recognised by the type it resolves to (whatever alias imports the core; a look-alike `Face` is no face) as
+`std::observe::Probes` is and built by its literal, never a manifest table:
+
+```text
+admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "Orders", port: 8801 };
+```
+
+The param's name is the face's; `app` is the seed of the application
+that fills it (relative to the application's seed), `roles` the roles it acts
+under and `consumes` the surfaces it calls (space-separated names), `port`
+the loopback port it is served on, a literal 1..65535. The compiler reads the
+literal into `hale check --api`: the inventory carries a `faces` array
+(`name`, `app`, `roles`, `consumes`, `port`), present only when the program
+declares one, so an inventory without faces is as before. The check refuses a
+face with no `app`, no port or a port another face holds, a role the program
+does not declare, or a surface it does not declare.
+
+The record states a face from that description, composing the graph's
+vocabulary and adding none: an `application:face/<name>` node (the application
+and port on its row), and the face as a `consumer` on the `meets` edge of the
+contract of each surface it consumes, the one edge the contract has (beside the
+seed that serves it). A face is a consumer, never a part: no position is
+proposed for it. The head's `Commands::index` row answers them as a `faces`
+section (`name`, `app`, `port`, `roles`, `consumes`), and the standard face
+lists them in `/index`, each a link to `http://<host>:<port>/` on the host the
+browser reached the face by. Mounting is navigation to the face's URL, not a
+reverse proxy.
+
+`hale dna dev` and `hale dna run` build each declared face's seed and start it
+as `<binary> <port>` with `HALE_DNA_FACE=<name>` and
+`HALE_DNA_FACE_PORT=<port>`, beside the application and holding none of the
+organism's credentials (as the application holds none); the pids are
+`.hale/dna/face-<name>.pid`, listed in `.hale/dna/faces`, and the body's stop
+and fence stop them with it. A face that does not build is said, and the
+organism does not wait on it. An organism that names none is served by the
+standard face alone, unchanged. In both kinds of face the contract is the
+surfaces: headers carry only identity and the digest. A face is not restarted
+by an apply in this slice.
+
+The head serves surfaces only. The standard face stands in front of it,
+on the port the browser opens (8792; `--port`), the head on the loopback
+behind it (`--head-port`, 8796; it learns the face's as
+`HALE_DNA_PUBLIC_PORT`, its origin for sign-in, host checks and
+commands). The face serves `GET /` and the shell's assets from
+`dna/face/web` and `GET /app/…` from the attached project's `ui/`, and
+passes every other request to the head as the browser sent it: method,
+path and query, headers (cookie, origin, host) and body, the answer
+written back as it came, an event stream held open until either end closes.
+`/` is the head's gate: the head answers it `204` when the person may
+open the shell (a session under OIDC, the launch-token cookie under a
+fixture's trusted-local session), naming them on `X-Hale-Person` (the
+session's person, or the head's own principal), and the face then serves
+the shell; any other answer (the sign-in redirect, the launch token's
+cookie and redirect to `/`, a refusal) is passed on unchanged. A face
+given `HALE_DNA_GRAFANA_PORT` and `HALE_DNA_GRAFANA_HEADER` serves the
+habitat's Grafana under `/grafana/` behind the same gate, in the person's
+name (`spec/habitat.md`, Readings), starting it at its first use and
+stopping it unused when given `HALE_DNA_GRAFANA_ON_DEMAND` too; without
+them `/grafana/` is a 404. `/app/…` asks the
+head's read (`GET /api/hale/v1/head`) as the same session which project is
+attached, and serves its `ui/` (`ops::application_asset`), or the
+head's refusal. The head has no static file and no `/app/`: those paths
+are no route of it. The browser's traffic keeps relaying as the browser
+sent it (the head's browser routes are not rows of a surface); the face's
+own reads go through a client.
+
+**The index.** `GET /index` on the face is the record's index: a static
+page, plain HTML in the shell's stylesheet and no script, generated on
+each request. Behind the head's read as the person's session (the same
+gate as `/app/`: the head's refusal is passed on; a trusted-local session
+reads bare, as every head read does), the face reads the record through a
+client of the head's surface (`api::client`, `spec/api.md` § Calling a
+surface; the face declares the one row it calls, `Commands::index`, whose
+member digest is the row's request and response shapes, so the two sides
+agree by shape). The row is `Commands::index` of `HeadCommands`
+(`dna/api/record_index.hl`), a read any authenticated caller the record
+knows may ask: it takes `{limit}` (at most that many entries of each
+section, 200 by default, 1000 at most) and answers the record's revision
+and six sections, each a JSON array the face renders and the purpose a
+line: the declared **purpose** (the `purpose` node of the graph the
+record states); the **parts and positions** (each `position` node with
+the holders of its `holds` edges); the attached **codebases** (name,
+repository, branch, build, test, toolchain); the **watched upstreams**
+(each ratified, unretired `standard/upstream-watched/<name>` practice with
+its position, source, kind and codebase, its terms refused if they cannot
+stand, the result of its last occurrence — the snapshot's digest, short,
+or `unreached` — and the instant of that occurrence in UTC; the
+occurrences are the Ledger's rows, read beside the record); the
+**contracts** (each `contract` node with its source and text); and every
+**outside link** the record holds as knowledge, each `http://` or
+`https://` URL in the text or source of a graph node or in the text of a
+ratified, unretired practice, with what holds it. The row writes nothing
+and adds no manifest table, record family or row kind: the sections are
+read from the rows that exist. The face's client is `http::Client` on the head's `/api/hale/v1/head/surface`
+(`POST …/call/Commands::index`), its bearer the requesting visitor's own
+`Cookie` header, which the face received and presents on the visitor's
+behalf. The head reads that bearer as the visitor's cookies, runs the
+request through its own gates (a session under OIDC, the loopback host
+check, the trusted-local session), and relays the call to the API child's
+commands port under the visitor's credential: the session's ID token under
+OIDC, the child's launch token in a trusted-local session. So the index is
+the visitor's read: a visitor who is not signed in, or whose session is
+forged, is refused as the head refuses every read (`401`), the face passing
+the refusal on.
+A page the face serves (the habitat's operator face) calls the same row from
+the browser: the face relays that one `POST` with the page's own `Cookie`
+header as the `Authorization` bearer, which is where the head reads the
+visitor's session, so the generated client of the head's rows needs no token
+of its own.
+
+**The habitat's face.** The habitat is an organism, so its face is this
+one: `hale habitat up` starts `face` (`hale dna head` on the habitat's
+genome, the standard face over the habitat's own head) beside `body`
+(`hale dna dev <genome> --no-iris`) as services of the habitat's compose
+project, its head's state in `face-state` under the habitat's directory;
+`hale habitat status` prints its address on a `face` line, and `down`
+takes the compose project down. The habitat's index is the same page
+and the same `Commands::index` row, with one more section in the answer: a
+record that grafted organisms lists them under **Organisms** (the
+`organisms` array, empty and then no section in any other record). Each
+entry is read from a `habitat.grafted` row and says the organism's name (the
+directory it was grafted into), its state (`up` while its face accepts
+connections on the loopback, `grafted` otherwise), the address of its face
+and the address of its head, its declared `purpose` (the `PURPOSE` of its
+`dna/org/purpose.hl`, taken at its graft) and its `pulse` (the worst state
+the providers of its allocations observe now, each where it was last
+applied: `down` over `degraded` over `up`, `""` when none is observed; its
+forge and identity, the habitat's services it is given, are observed with
+the allocations and are not its pulse). No manifest table, record family or row kind
+is added: the addresses are fields of the existing `habitat.grafted` row
+(`name`, `face`, `head`), taken at the graft. An organism's address is a
+block of `HEAD_BLOCK` (8) consecutive loopback ports, found free from a
+starting point of the habitat's own and distinct from every block already
+handed out, and kept in the organism's `dna.head.url` (its face is the
+block's base, its head the next port, then its API child, provider and
+commands). `hale dna head <organism>` serves on that block unless a port
+flag says otherwise, so the recorded address is the one the head answers
+on. The habitat's own address is assigned the same way, in its genome's
+`dna.head.url`, the first time `up` needs it.
+
+**The habitat's placement.** Three more reads of `HeadCommands`
+(`dna/api/habitat_rows.hl`), each taking `{limit}` as the index does and
+answering the record's revision and one JSON array, are what the operator
+face's hardware and infrastructure screens read: `Commands::hosts` (each
+`habitat.host` row: the host's `name`, the `provider` that produced it and
+what it `offers`), `Commands::policy` (each `habitat.policy` row: the
+`role`, its `provider` and the `profile` it came from) and
+`Commands::allocations` (each `habitat.allocated` row: the `allocation`
+(`<instance>/<role>`), its `role`, `instance`, `organism`, `provider`,
+`host`, `service` and `address`, and the `state` its provider observes
+now with the `detail` it saw: `up`, `degraded` or `down` from the
+`compose` provider; `""` for the `operator`'s, which the habitat does not
+observe). The latest row of an entity is the one listed. A host is a
+machine the habitat places on (`spec/habitat.md`, Hosts, providers and
+placement), never the program `dna/host`. They are reads any authenticated
+caller the record knows may ask, they write nothing, and the head relays
+them from the face as it relays the index: `POST
+/api/hale/v1/head/surface/call/<member>` for the surface's reads
+(`Commands::index`, `::hosts`, `::allocations`, `::policy`) and no other
+member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
+record, written by `hale habitat up`; an allocation's provider and host
+are fields of the existing `habitat.allocated` row. `Commands::hosts`
+leaves out a removed host. Four Board rows (`requires: [owner]`) manage
+the hosts: `Commands::add_host` (`{name, user, port}`) and
+`Commands::probe_host` (`{name}`), each answering `{ok, code, why, host,
+public_key, authorize}`: the host as its row now states it, and for
+`add_host` the habitat's public key and the line the host's
+`~/.ssh/authorized_keys` takes; `Commands::plan_remove_host` (`{name}`), a
+read, answering `{ok, code, why, plan, confirm}`: the removal's plan, a
+JSON array of items (`spec/habitat.md`, Destroying: plan, then confirm),
+and the name to type back to confirm it (`""` when the plan stops and
+deletes nothing on the host); and `Commands::remove_host` (`{name,
+confirm}`), answering `{ok, code, why, host, plan, report}`: it plans
+again with the same auditor and, when the plan stops or deletes anything
+on the host, executes it only when `confirm` is the host's name, item by
+item, `report` saying of each item `done`, `failed` or `left`. A refusal
+is `code` with `why` (`invalid_host`, `host_exists`, `unreachable`,
+`key_unavailable`, `not_found`, `host_key_changed`, `not_removable`,
+`confirm_required`, `confirm_mismatch`, `plan_changed`, `partly_removed`,
+`record_refused`). The plan's reply carries its `digest`, and
+`remove_host` takes it (`{name, confirm, digest}`), refusing `plan_changed`
+when the plan is another now. Two more Board rows remove an organism the
+habitat grafted, the same way: `Commands::plan_remove_organism` (`{name}`,
+a read answering `{ok, code, why, plan, confirm, digest}`) and
+`Commands::remove_organism` (`{name, confirm, digest}`, answering `{ok,
+code, why, plan, report}`; refusals `not_found`, `ambiguous`,
+`not_removable`, `confirm_required`, `confirm_mismatch`, `plan_changed`,
+`partly_removed`); an organism removed is its `habitat.grafted` and
+`habitat.allocated` rows written again with `"state": "removed"`.
+Each row they write is in the name of the person the caller maps to. They are what `hale habitat host add|probe|remove`
+calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
+placement). Two more Board rows place and apply the allocations:
+`Commands::place_allocation` (`{allocation, host}`, answering `{ok, code,
+why, allocation}`, the row it wrote) and `Commands::apply_allocations`
+(`{host, fresh}`, answering `{ok, code, why, restart, applied}`, `applied`
+a JSON array of each allocation's `allocation`, `host`, `provider`, `ok`,
+`why`, `state` and `detail`): `hale habitat place` and `hale habitat apply`
+call them (`spec/habitat.md`, Placing and applying).
+Two more reads list the habitat's nurseries and saplings for the operator
+face's organisms screen: `Commands::nurseries` (`source`, `kind`: the
+toolchain's, `bundled`, then each `habitat.nursery` row the Board trusts)
+and `Commands::saplings` (each `habitat.sapling` row: `name`, `purpose`,
+`repo`, `revision`, `digest`, `nursery`, `packs`, and `proposed`, the
+revision a newer `habitat.sapling.proposed` row files, `""` when none
+waits); the head relays both from the face. Two Board rows act on them:
+`Commands::add_nursery` (`{source}`: a `habitat.nursery <source>` row,
+state `trusted`) and `Commands::ratify_sapling` (`{name}`: the sapling
+pinned at the revision its proposal filed), each answering `{ok, code,
+why}`, each row written in the name of the person the caller maps to.
+The services an organism's host command placed on a host
+(`spec/habitat.md`, Host commands) are three rows: `Commands::record_placed`
+(`{organism, command, host, id, service, platform, readings, toolchain}`,
+the Board's, answering `{ok, code, why, readings}`: a `habitat.placed` row
+keyed `<organism>/<command>/<host>/<id>`, and `readings` the endpoint it
+registered with the habitat's senses, `""` for none),
+`Commands::record_unplaced` (`{organism, command, host, id}`, the Board's:
+a `habitat.unplaced` row keeping what the placement said), each refusing
+`invalid_placement`, `not_found` or `record_refused`, and
+`Commands::placements`, a read the head relays from the face, answering
+`{ok, why, revision, placements, history}`: the placements that hold (each
+key's latest row) and every one the record names with its `state`. `hale
+habitat organism place` and `unplace` write the first two once the command
+ran.
+`Commands::uis`, a read the head relays from the face, lists the web UIs
+across the habitat's organisms for the operator face's home screen,
+answering `{ok, why, revision, uis}`: `uis` a JSON array of `{organism,
+kind, name, label, url, loopback_host, login, note}`, per organism the
+habitat grafted its face (`kind` `face`, `label` `<organism> face`, `url`
+its graft row's address) and then each UI its manifest declares (`kind`
+`declared`, Declared web UIs above): `url` its address and path when its
+service is linked, else `loopback_host` the host whose loopback alone
+serves it, or a `note` saying why it has none; `login` the declared
+secret a person reads to sign in, `""` for none. A declaration the
+toolchain refuses is one entry, its `note` `refused: <why>`.
+`Commands::brief` is the habitat's brief for an agent pairing with a
+person (`spec/habitat.md`, Pairing), a read. The head serves the surface
+over `mcp::Rpc` too, under the commands port's bearer and roles, on a port
+the system gives it and reports as `mcp=<port>` (`HALE_DNA_API_PORTS`).
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a
@@ -5689,7 +6952,7 @@ held; one more is refused 503 `busy`. The rows come from the nerves
 organization and every owner's, as the head's user, on
 `HALE_DNA_NATS_URL_HEAD`, else on the server of
 `HALE_DNA_NATS_URL_OWNER` (which it hands a body it starts), else on
-the project's compose `nerves` service while `hale dna dev` has it up
+the organism's nerves allocation in the local habitat while it is up
 (asked for, never brought up; asked again every 5 s). With none, only
 the head's own state is pushed. The application view still reads on a
 timer: the application's readings (**The heart's events**) do not reach
@@ -5738,7 +7001,7 @@ otherwise.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `HALE_DNA_DISCOVER=off` | discover | `off` makes `init`'s discovery (harnesses on PATH, local model servers) find nothing; for fixtures. The api head passes it on to the `init` it runs. |
+| `HALE_DNA_DISCOVER=off` | discover | `off` makes the graft's discovery (harnesses on PATH, local model servers) find nothing; for fixtures. The api head passes it on to the graft it runs. |
 | `HALE_DNA_TAPE=record\|replay` | the catalog's `mode` | Whether a `RecordedModel` whose `mode_env` names it records answers or replays them; the trio fixture's catalog and `scripts/dna-cycle` name it. |
 | `HALE_DNA_TAPE_DIR=<dir>` | the catalog's `dir` | The tape directory of a `RecordedModel` whose `dir_env` names it. |
 | `HALE_DNA_TOOLCHAIN=<path>` | the running `hale` | The toolchain binary the host and the processes it starts use; `hale dna` sets it to the binary it is. It is part of a seed's build fingerprint. |
@@ -5750,25 +7013,45 @@ otherwise.
 | `HALE_DNA_TRANSPORT_HOME=<dir>` | unset | With `local`, the body's home directory. |
 | `HALE_DNA_GIT_TIMEOUT=<s>` | 8 | Seconds a record `fetch`, `push` or `ls-remote` may take before it is killed. |
 | `HALE_DNA_NODE=<name>` | `<hostname>:<pid>` | This node's name in its claims (GH #1026). |
+| `HALE_DNA_EXCHANGE_PER_SENDER=<n>` | 10000 | How many envelopes of a kind one sender's subject of this record's exchange stream holds (`max_msgs_per_subject`), set when `hale dna nerves migrate` creates or updates the stream; a fixture lowers it to test a full inbox (GH #1590). |
 | `HALE_DNA_OWNER=<org>` | unnamed | The organization this body is, for the ownership graph. |
 | `HALE_DNA_LEASE=<name>` | unset | The lease a body holds; set by the body for the processes it starts. |
 | `HALE_DNA_LEASE_TOKEN=<n>` | unset | The lease's fencing token; set with `HALE_DNA_LEASE`. |
-| `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the compose Postgres | A Postgres of your own instead of `dna/compose.yaml`'s: the owner role that migrates memory and creates the record's roles. Read by `memory migrate`, `dev`, `show` and the fixtures that migrate or drop a record. |
+| `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the memory allocation | A Postgres of your own instead of the organism's memory allocation in the local habitat: the owner role that migrates memory and creates the record's roles. Migrated by `hale habitat migrate`, `memory migrate` and `upgrade`; read, never migrated, by `dev`, `head` and `show`; and by the fixtures that migrate or drop a record. |
 | `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` | unset | The spine role's DSN, printed by `memory migrate` and handed to the process that is the spine. |
 | `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` | unset | The head role's DSN, handed to the head and to nothing else. |
+| `HALE_DNA_APPLICATION_ID=<identity>` | set by `hale dna dev` | The attach handover (GH #1653): the record's identity, the application id a habitat-scoped heart presents to its head. |
+| `HALE_DNA_HEAD_URL=<url>` | set by `hale dna dev` | The attach handover: the head the heart reaches (`git config dna.head.url`, `http://127.0.0.1:8792` by default). Also read by `hale habitat` and `hale dna` verbs as the head URL when `--head <url>` is not given (precedence: `--head`, `HALE_DNA_HEAD_URL`, `<habitat>/head.url`, `habitat.profile`). |
+| `HALE_DNA_OIDC_ISSUER=<url>` | set by `hale dna dev` | The attach handover: the OIDC issuer the heart's service client asks (`dna.oidc.issuer`, `http://127.0.0.1:8794` by default). |
+| `HALE_DNA_OIDC_CLIENT=<id>` | set by `hale dna dev` | The attach handover: the heart's service client id, mapped at graft as `dna.oidc.service <id>=<id>`. |
+| `HALE_DNA_OIDC_CLIENT_VAULT=<slot>` | set by `hale dna dev` | The attach handover: the vault slot holding the service client's secret (`oidc-service-<id>`), never the secret. |
+| `HALE_DNA_BROKER_URL=<url>` | set for a heart the habitat allocated `broker` | The attach handover: the organism's nerves server, with no credential. |
+| `HALE_DNA_BROKER_USER=<user>` | set for a heart the habitat allocated `broker` | The attach handover: the heart's broker user, `heart-<id>`. |
+| `HALE_DNA_BROKER_VAULT=<slot>` | set for a heart the habitat allocated `broker` | The attach handover: the vault slot of the broker user's password, `nats-<org>-heart`. |
+| `HALE_DNA_BROKER_SUBJECTS=<subjects>` | set for a heart the habitat allocated `broker` | The attach handover: the heart's own subject space, `heart.<id>.>`. |
+| `HALE_DNA_BROKER_NODE_USER=<user>` | set for a heart the habitat allocated `broker` | The attach handover: the user the heart's nodes connect as, `heart-<id>-node`. |
+| `HALE_DNA_BROKER_NODE_VAULT=<slot>` | set for a heart the habitat allocated `broker` | The attach handover: the vault slot of the nodes' broker password, `nats-<org>-heart-node`, which the heart passes a node at enrollment. |
+| `HALE_DNA_HABITAT=<dir>` | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local` | The local habitat's directory, named outright (GH #1653): a test's or a DNA suite slice's habitat; the developer's stays the default. A test never inherits it: `hale test` sets each file's to the habitat beside its vault, and the CLI tests' `hale()` its process's, whatever the caller exported. |
+| `HALE_HABITAT_IMAGE=<tag>` | built from `Dockerfile` and `hale.pin` | An existing local docker image for the habitat's `body` and `face` compose services, skipping the `Dockerfile` build (`--image <tag>` on `hale habitat up` takes precedence). `hale habitat image build [<checkout>]` builds it once from a local checkout and `hale test` and the DNA suite pass its tag to fixture children. |
+| `HALE_DNA_TEST_HABITAT=<dir>` | unset | Set by the DNA suite for a slice whose fixtures graft (GH #1653): the slice's habitat, born once with no body, which `dna::test_habitat` hands a fixture; unset, a test file births a habitat of its own. |
+| `HALE_DNA_TEST_HABITAT_VAULT=<dir>` | unset | Set beside `HALE_DNA_TEST_HABITAT`: the vault the slice's habitat was born with, whose entries `dna::test_habitat` lends into the fixture's own vault. |
+| `HALE_DNA_DATABASE_DSN=<dsn>` | set for a heart whose genome declares `database` | The heart's own database, a tenant of the organism's memory server provisioned at graft (GH #1653): a DSN naming the role `heart_<id>` and its vault slot `postgres-heart_<id>`, never a password. `hale dna dev` hands it to the host, and the heart inherits it. |
+| `HALE_DNA_MEMORY_FROM=owner\|habitat <project>/memory-<id>` | written by every migration | Not set by hand: the line beside the head's DSN in a clone's `.hale/dna/memory.env` that says where the DSN was derived, an operator's own Postgres (`owner`) or the organism's memory allocation in the local habitat. A kept DSN whose origin is anything else (another habitat's allocation, an older toolchain's database, or no origin) is removed and refused, naming `hale habitat migrate` (GH #1653). |
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
 | `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |
-| `HALE_DNA_NATS_URL_OWNER=<url>` | the compose NATS | The owner user's URL: it creates the organization's stream (`nerves migrate`, `dev`). |
+| `HALE_DNA_NATS_URL_OWNER=<url>` | the nerves allocation | The owner user's URL: it creates the organization's stream (`hale habitat migrate`, `nerves migrate`); `dev` and `nerves urls` derive the roles' URLs on it. |
 | `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine. |
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
-| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>` (`hale dna nerves migrate` prints it; GH #989). |
+| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>-<key>` (the record's key, so one server's users are distinct across its accounts; `hale dna nerves migrate` prints it; GH #989). |
+| `HALE_DNA_NATS_APP=<name>` | unset | The attached application's name, the token of the subjects it publishes on, `<org>.app.<name>.>`: handed beside its user, which carries the record's key too, so an application never derives its name from its user. |
 | `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
-| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
+| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, pinned by `dna/face/start.sh` (8795 by default) for the head and by the head for its API child; unset, the child's transport listens where the system puts it and the child reports the port it got (`HALE_DNA_API_PORTS`). |
+| `HALE_DNA_API_PORTS=<file>` | unset | Where an API child writes the ports it serves on once they are bound (`api=<port>`, `commands=<port>` and `mcp=<port>` lines, renamed into place; the MCP port is always the system's): set by the head for its child, which it starts with port 0 for whatever it does not pin, and reads the ports back from there. |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
 | `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
 | `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |
@@ -5778,7 +7061,7 @@ otherwise.
 | `HALE_DNA_ORGANIZATION_LAUNCH=<attempt>` | unset | Set by the host on the organization process it starts for a workflow attempt: which attempt launched it. |
 | `HALE_DNA_RESTART_FOR=<mutation>` | unset | Set by the host when it restarts an expression on a Mutation's request; the expression journals `expression.restarted` for it (GH #529 D6). |
 | `HALE_DNA_EXPRESSION=<name>` | unset | The expression that was restarted; set with `HALE_DNA_RESTART_FOR`. |
-| `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale dna new` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
+| `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale habitat graft` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
 | `HALE_DNA_LIBRARY_VERSION=<version>` | the toolchain's | The version the library is proposed under (`library/<node>@<version>`, and on each idea): a fixture's way to make a later toolchain out of the one binary it has, so `upgrade`'s supersession is exercised against real record history. |
 | `HALE_DNA_LIBRARY_SUFFIX=<text>` | unset | Appended to every library idea's text, so a later version's ideas differ from the earlier's (fixtures only). |
 | `HALE_DNA_LIBRARY_EARLIER_NAMES=1` | unset | The two moved chapters are proposed under their earlier names (`library/api`, `library/shaping`): a fixture's way to make a record the earlier toolchain would have seeded, so an upgrade is seen finding them (fixtures only). |
@@ -5790,6 +7073,22 @@ otherwise.
 | `HALE_DNA_ONESHOT` | off | A `hale dna run` application returns after the ping instead of staying up. |
 | `HALE_DNA_API=<url>` | `http://127.0.0.1:8793` | The head API a leg's verbs (`hale dna work …`) talk to when `--api` is not given. |
 | `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
+| `HALE_DNA_HOST_NAME=<name>` | unset | The name of the `ssh` host a compose project is applied on, handed to that project's environment by the habitat (`spec/habitat.md`, The handover); a project maps it in its compose file. Unset on this machine. |
+| `HALE_DNA_HOST_LISTEN=<addr>` | unset | That host's listen address (the first IPv4 address its name resolves to on the habitat's machine), handed beside `HALE_DNA_HOST_NAME`, through the toolchain's own resolver (`hale habitat resolve`); an apply on a host whose name resolves to none is refused. Unset on this machine. |
+| `HALE_DNA_HABITAT_NAME=<name>` | unset | The habitat's name (its `name` file, `hale habitat up --name`; `local` when it was born with none), handed by the habitat to the environment of every organism of its own: the compose project of its services, wherever they are applied, a repository body's compose services when the habitat grafted it, and each run of a host command (`spec/habitat.md`, The handover; Host commands). A project maps it in its compose file; a provider names what it keeps for the habitat it serves by it (voice's projects, `<name>-<label>`). Unset for a repository body outside a habitat. |
+| `HALE_DNA_HOST_RESERVED_BYTES=<n>` | unset | The memory, in bytes, the habitat's own containers may use on the host a host command runs on, by their compose `mem_limit`s: the habitat's own services on its machine and each organism's allocations placed there (a service with no limit counts 0). Handed to every run of a host command, 0 on a host the habitat runs nothing on (`spec/habitat.md`, Host commands); a provider's node subtracts it from the memory it offers models. Unset outside a habitat. |
+| `HALE_DNA_HABITAT_LISTEN=<addr>` | `127.0.0.1` | The address a habitat declares its face, head and OIDC stub on: what the `face` service binds (`HALE_DNA_LISTEN_HOST`) and where `up` probes them. Not set by hand: `hale habitat up --host <name>` sets it on every container it runs on that machine to the address `<name>` resolves to on the admin machine. |
+| `HALE_DNA_HABITAT_EXPECT=<record>` | unset | The record a `hale habitat down` run on a habitat's machine through a pointer must find there: when it is set and the habitat's genome pins another record, or none, nothing is stopped or removed. Not set by hand: `hale habitat down` on the admin machine sets it to the pointer's identity, after checking the same over SSH. |
+| `HALE_DNA_HABITAT_ADDRESS=<name>` | `127.0.0.1` | The host a habitat's face and head are recorded at (`http://<name>:<port>`, on its `habitat.profile` row and in `head.url`). Not set by hand: `hale habitat up --host <name>` sets it to `<name>` on the containers it runs there. |
+| `HALE_HABITAT_SSH_CONFIG=<file>` | unset | An SSH config file `hale habitat up --host` and the verbs of a habitat on another machine hand `ssh -F`; unset, `ssh` reads the person's own. |
+| `HALE_DNA_IDENTITY=publish` | unset | The face's launch whose sign-in provider is the habitat's, shared with every organism it grafts (`dna/face/start.sh`): its key is kept in the face's state (`HALE_DNA_HEAD_STATE/oidc.key`, made once) and the provider is published at `<habitat>/identity.env` (issuer, the key's public half, the client, where it answers). A launch under a habitat that published one starts no provider and signs in through it. Not set by hand: the habitat's compose render sets it on its `face` service. |
+| `HALE_DNA_GRAFANA=off` | on demand | `hale habitat up` runs no Grafana behind the habitat's face (and removes one an earlier `up` started); `status` names none. `on` runs it from `up` to `down`; unset (or anything else), `up` creates it without starting it and the face starts it at its first use and stops it after 15 minutes unused (`spec/habitat.md`, Readings). The DNA suite sets `off` for every fixture; `habitat_operator_face_test` opts in with `on` on its own `up`. |
+| `HALE_DNA_GRAFANA_PORT=<port>` | unset | The loopback port of the habitat's Grafana, which the standard face serves under `/grafana/` behind the head's gate. Not set by hand: the habitat's compose render sets it on its `face` service (the head block's sixth port). Unset, `/grafana/` is a 404. |
+| `HALE_DNA_GRAFANA_HEADER=<name>` | unset | The header the habitat's Grafana trusts for the signed-in person's name, drawn once per habitat (`X-Hale-Grafana-<32 hex>`, `<habitat>/grafana.secrets`, 0600): the face sets it on what it relays to Grafana, and nothing else on the machine knows it. Not set by hand. |
+| `HALE_DNA_GRAFANA_ON_DEMAND=<dir>` | unset | The directory of the habitat's compose files (its allocation's), set on the `face` service when Grafana runs on demand: the standard face starts the `grafana` service there (`docker compose start`) for a signed-in use while Grafana does not answer, and stops it once unused for 15 minutes. Unset, the face never starts or stops it. Not set by hand. |
+| `HALE_DNA_FACE_HOME=<path>` | unset | The path the standard face lands a signed-in visitor on in place of the organization shell at `/` (`dna::face_home`); the shell is then at `/organization`. Not set by hand: the habitat's compose render sets it on its `face` service to `/app/`, the operator face. A value that is not a path of the face is ignored. |
+| `HALE_DNA_LISTEN_HOST=<addr>` | `127.0.0.1` | The address the face, the head and the OIDC stub bind (`dna::listen_host`). Not set by hand: the habitat's compose render sets it on its `face` service from the address the habitat declares (`127.0.0.1` for a local habitat); on macOS, where `face` runs on the project's network, it is `0.0.0.0` inside the container and compose publishes the ports on the declared address alone. |
+| `HALE_DNA_LOOPBACK_HOST=<host>` | `127.0.0.1` | The host a process dials a port published on this machine's loopback at (`dna::loopback_host`, `dna::reach_url`): an allocation's recorded `127.0.0.1:<port>` is dialled there. Not set by hand: the habitat's compose render sets `host.docker.internal` on its `body` and `face` on macOS, where they run on the project's network; on Linux they share the host's network and it is unset. A listener in the process's own container is dialled at `127.0.0.1` regardless. |
 | `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
 | `HALE_DNA_COMMAND_POLICY=<path>` | unset | The explicit authority policy the native command lanes and the governance verbs require; with none, they refuse. |
 | `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |
@@ -5797,7 +7096,7 @@ otherwise.
 | `HALE_DNA_TASK_POLICY=<path>` | unset | The policy for task administration commands. |
 | `HALE_DNA_RPC_SOCKET=<path>` | the record's socket under `XDG_RUNTIME_DIR/hale/dna` (else `.hale/dna`) | Where the head serves its surface (`HeadCommands`, GH #1417) over `unix::Rpc`; the capabilities name it to the legs. |
 | `HALE_DNA_ORG_DRAFTS=1` | off | Lets the api accept organization-source drafts (`1` only). |
-| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
+| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine, or on exactly the habitat's declared address (`HALE_DNA_HABITAT_ADDRESS`), only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
 | `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |
 | `HALE_DNA_OIDC_MEMBER=<subject>=<member>` | unset | Which member a subject is. |
 | `HALE_DNA_OIDC_KEY=<pin>` | unset | The pin of the issuer's signing key. |
@@ -5805,12 +7104,19 @@ otherwise.
 | `HALE_DNA_OIDC_KEY_X=<x>` | unset | The x coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_KEY_Y=<y>` | unset | The y coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
+| `HALE_DNA_NODE_EXPORTER=off` | on | No machine's node exporter or container exporter is installed or removed by this run: not by `hale habitat up` on the habitat's machine, `host add` on a host, `host remove`, or a forget. The DNA suite sets it for every fixture (`habitat_operator_face_test` opts in on Linux); the run `up --host` makes inside the habitat's image always has it, since the person's machine installs the habitat machine's exporter over SSH instead. |
+| `HALE_DNA_OIDC_DIAL=<url>` | unset | Where the habitat's sign-in provider answers on its own machine (`http://<listen>:<port>`), as its face published it in `<habitat>/identity.env`: an organism's face launch probes it there before it signs in through the provider. Not set by hand. |
+| `HALE_DNA_OIDC_SERVICES_FILE=<path>` | unset | A file of more service clients' ids the stub issuer accepts, read at each request (`dna/oidc`). Not set by hand: the habitat's face hands its provider `<habitat>/identity.services`, which a graft appends each organism's heart's service client to. |
+| `HALE_DNA_FACE=<name>` | set by the host | The name of the named face (`dna::Face` param of the organism's main) an application is started as. |
+| `HALE_DNA_FACE_PORT=<port>` | set by the host | The loopback port a named face serves on, the `port` of its literal (also its one argument). |
 | `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |
 | `HALE_DNA_TRUSTED_LOCAL=1` | off | The trusted-local session, a fixture's mode alone (`1` only). A project serves its heads under OIDC. |
-| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built. |
+| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built, and the compose projects run from under them. Without it, `dna::scratch_done` and the sweep take every compose project whose working directory is under a root they remove down with it (`docker compose -p <project> down -v`, found by the `com.docker.compose.project.working_dir` label on containers, or by name in the root's `.dna-compose-projects`), and confirm it by the project's label on containers and volumes. Neither ever takes down the developer's local habitat, nor the habitat `XDG_DATA_HOME` names outside the root (GH #1653). A teardown that fails or leaves anything fails the fixture (or the slice), and keeps the root, its registry entry, the slice's ledger and the projects it names for another attempt. |
 | `HALE_DNA_SUITE_TAG=<tag>` | unset | The stamp a DNA suite slice puts on the processes and scratch roots it starts, so its sweep collects only its own. |
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
 | `HALE_HEAD_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt head (project service) binary to launch, as `--head` does. |
+| `HALE_FACE_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt standard face (`dna/face/standard`) to start in front of the head, as `--face` does. `hale dna head` hands in the one it built. |
+| `HALE_DNA_PUBLIC_PORT=<port>` | unset (the head's own) | The port the browser reaches the head on, when the standard face stands in front of it (`dna/face/start.sh` sets it to the face's): the origin the head signs in under, answers as and checks a command against. |
 | `HALE_OIDC_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt stub OpenID provider (`dna/oidc/serve`) to start. `hale dna head` hands in the one it built. |
 | `HALE_REFLEXES_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt reflexes binary (`dna/reflexes`) to start beside an attached project. `hale dna head` hands in the one it built. |

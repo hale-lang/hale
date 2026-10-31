@@ -739,11 +739,11 @@ fn a_call_through_a_name_that_shadows_a_unit_type_is_no_cast() {
 const CAST_OF_AN_INT: &str = "`Money(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1cent`)";
 
 /// A struct field's default is evaluated at each literal that leaves the
-/// field, in the literal's scope, so what a cast's name in it means is
-/// that scope's: a local or a parameter of the constructing fn is the
-/// callee. With nothing shadowing it, the cast is one error at the
-/// default, however many literals leave the field; a default no literal
-/// leaves is never evaluated.
+/// field, and it reads only its own fields and constants: a local or a
+/// parameter of the constructing fn that would shadow the cast's name is
+/// refused at the literal. With nothing shadowing it, the cast is one
+/// error at the default, however many literals leave the field; a default
+/// no literal leaves is never evaluated.
 #[test]
 fn a_cast_in_a_struct_default_is_judged_where_the_default_is_evaluated() {
     let prelude =
@@ -755,7 +755,10 @@ fn a_cast_in_a_struct_default_is_judged_where_the_default_is_evaluated() {
     for body in shadowed {
         let src = format!("{prelude}{body}");
         let errors: Vec<String> = diags(&src).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
-        assert!(errors.is_empty(), "the caller's name is the callee: {errors:#?}\n{src}");
+        assert!(
+            errors.len() == 1 && errors[0].starts_with("a default reads only its own fields and constants; `Money` here is the caller's binding"),
+            "the caller's name would be the callee: refused at the literal: {errors:#?}\n{src}"
+        );
     }
     let unshadowed = format!(
         "{prelude}fn other() -> Int {{\n    let s = S {{}};\n    return s.n;\n}}\nfn main() {{\n    let s = S {{}};\n    println(s.n + other());\n}}\n"
@@ -790,27 +793,35 @@ fn casts_and_rest(src: &str) -> (Vec<(usize, String)>, Vec<String>) {
 /// An omitted struct default is typed where it is evaluated, at the
 /// literal that leaves it, with every scope it opens, the parameter
 /// defaults its calls leave and the field defaults its own literals
-/// leave: a name it binds itself, or its caller binds, is the callee; a
-/// cast with nothing shadowing it is one error at its place, wherever the
-/// nesting reaches it; and a default whose literal leaves the same field
-/// is not entered again.
+/// leave: a name it binds itself is the callee, one its caller binds is
+/// refused at the literal (a default reads only its own fields and
+/// constants); a cast with nothing shadowing it is one error at its place,
+/// wherever the nesting reaches it; and a default whose literal leaves the
+/// same field is not entered again.
 #[test]
 fn an_omitted_struct_default_is_typed_where_it_is_evaluated() {
     let prelude = "unit cent;\ntype Money = quantity Int in cent;\nfn id(n: Int) -> Int {\n    return n;\n}\n";
-    let clean = [
-        // The default's own block binds the name.
-        "type S { n: Int = {\n    let Money = id;\n    Money(1)\n}; }\nfn main() {\n    let s = S {};\n    println(s.n);\n}\n",
-        // A parameter default the field's default leaves, in the caller's scope.
+    // The default's own block binds the name.
+    let clean =
+        format!("{prelude}type S {{ n: Int = {{\n    let Money = id;\n    Money(1)\n}}; }}\nfn main() {{\n    let s = S {{}};\n    println(s.n);\n}}\n");
+    let (casts, rest) = casts_and_rest(&clean);
+    assert!(casts.is_empty() && rest.is_empty(), "checks clean: {casts:?} {rest:#?}\n{clean}");
+    let shadowed = [
+        // A parameter default the field's default leaves, where the caller
+        // binds the name.
         "fn take(n: Int = Money(1)) -> Int {\n    return n;\n}\ntype S { n: Int = take(); }\n\
          fn main() {\n    let Money = id;\n    let s = S {};\n    println(s.n);\n}\n",
-        // A nested literal's omitted field, in the caller's scope.
+        // A nested literal's omitted field, the same.
         "type Inner { n: Int = Money(1); }\ntype Outer { inner: Inner = Inner {}; }\n\
          fn main() {\n    let Money = id;\n    let o = Outer {};\n    println(o.inner.n);\n}\n",
     ];
-    for body in clean {
+    for body in shadowed {
         let src = format!("{prelude}{body}");
         let (casts, rest) = casts_and_rest(&src);
-        assert!(casts.is_empty() && rest.is_empty(), "checks clean: {casts:?} {rest:#?}\n{src}");
+        assert!(
+            casts.is_empty() && rest.iter().any(|m| m.starts_with("a default reads only its own fields and constants")),
+            "refused where the caller's binding would be read: {casts:?} {rest:#?}\n{src}"
+        );
     }
     let refused = [
         "type Inner { n: Int = Money(1); }\ntype Outer { inner: Inner = Inner {}; }\n\

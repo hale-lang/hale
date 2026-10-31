@@ -33,32 +33,84 @@ locus ReviewRecord {
     // that is named and does not answer routes nothing: the Review is not
     // opened (`recorded: false`) and reconcile asks again, so it never
     // opens on its claimed authority alone.
-    fn routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool, knowledge: MemoryKnowledge, receipts: Receipts) -> RouteRequirement {
+    fn routing(
+        review_id: String,
+        definition: String,
+        paths: String,
+        open: Bool,
+        gated: Bool,
+        knowledge: MemoryKnowledge,
+        receipts: Receipts
+    ) -> RouteRequirement {
         let row = routed_row(self.journal, review_id);
-        let again = len(row) > 0 && open && definition == "practice-ratify" && len(native_json_string(row, "signers")) == 0;
-        if len(row) > 0 && !again { return RouteRequirement { signers: native_json_string(row, "signers"), gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") }; }
+        let again = len(row) > 0
+            && open
+            && definition == "practice-ratify"
+            && len(native_json_string(row, "signers")) == 0;
+        if len(row) > 0 && !again {
+            return RouteRequirement {
+                signers: native_json_string(row, "signers"),
+                gates: native_json_string(row, "gates"),
+                fallback: std::json::find_bool_field(row, "fallback"),
+            };
+        }
         if !open { return RouteRequirement { }; }
-        if !knowledge.ready() { return self.fallback(review_id, definition, row, "no memory is named"); }
+        if !knowledge.ready() {
+            return self.fallback(review_id, definition, row, "no memory is named");
+        }
         let data = knowledge.routing();
         if len(data) == 0 { return RouteRequirement { recorded: false }; }
-        let mut need = if definition == "practice-ratify" { board_requirement(data) } else { route_requirement(data, graph_route(data, paths, route_law(route_bound(data), receipts))) };
-        if len(need.signers) == 0 { return self.fallback(review_id, definition, row, "no position the route names is held"); }
+        let mut need = if definition == "practice-ratify" {
+            board_requirement(data)
+        } else {
+            route_requirement(
+                data,
+                graph_route(data, paths, route_law(route_bound(data), receipts)),
+            )
+        };
+        if len(need.signers) == 0 {
+            return self.fallback(review_id, definition, row, "no position the route names is held");
+        }
         // a prepared source's Review is never opened at a forge, where a
         // gate's run is observed: it takes the route's positions, and no gate
         if !gated { need.gates = ""; }
         if len(row) > 0 {
-            let x = self.journal.append(self.journal.revision(), "review.routed", review_id, routed_body(definition, need, ""));
+            let x = self.journal.append(
+                self.journal.revision(),
+                "review.routed",
+                review_id,
+                routed_body(definition, need, ""),
+            );
             if !x.ok { return RouteRequirement { recorded: false }; }
             return need;
         }
-        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
+        if !append_once(
+            self.journal,
+            "review.routed",
+            review_id,
+            routed_body(definition, need, ""),
+        ) {
+            return RouteRequirement { recorded: false };
+        }
         return need;
     }
     // The fallback: a Review on it is decided by its own required
     // authority. A change's is recorded once, with why.
-    fn fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
+    fn fallback(
+        review_id: String,
+        definition: String,
+        row: String,
+        why: String
+    ) -> RouteRequirement {
         if len(row) > 0 || definition != "change-deliver" { return RouteRequirement { }; }
-        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
+        if !append_once(
+            self.journal,
+            "review.routed",
+            review_id,
+            routed_body(definition, RouteRequirement { }, why),
+        ) {
+            return RouteRequirement { recorded: false };
+        }
         return RouteRequirement { };
     }
     // GH #1089: an open routed Review's holders routed again when who holds
@@ -75,7 +127,9 @@ locus ReviewRecord {
         let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
-            if e.kind == "review.routed" && !std::str::contains(routed, "\n" + e.entity + "\n") { routed = routed + e.entity + "\n"; }
+            if e.kind == "review.routed" && !std::str::contains(routed, "\n" + e.entity + "\n") {
+                routed = routed + e.entity + "\n";
+            }
             if e.kind == "review.settled" { settled = settled + e.entity + "\n"; }
             i = i + 1;
         }
@@ -100,8 +154,17 @@ locus ReviewRecord {
             let signers = native_json_string(row, "signers");
             let now_held = signers_held_now(data, signers);
             if now_held == signers { continue; }
-            let need = RouteRequirement { signers: now_held, gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") };
-            let x = self.journal.append(self.journal.revision(), "review.routed", id, routed_body(native_json_string(row, "definition"), need, ""));
+            let need = RouteRequirement {
+                signers: now_held,
+                gates: native_json_string(row, "gates"),
+                fallback: std::json::find_bool_field(row, "fallback"),
+            };
+            let x = self.journal.append(
+                self.journal.revision(),
+                "review.routed",
+                id,
+                routed_body(native_json_string(row, "definition"), need, ""),
+            );
             if x.ok { told = told + id + "\n"; }
         }
         return told;
@@ -123,7 +186,11 @@ locus ReviewRecord {
         while i < self.journal.revision() {
             let e = self.journal.read(i);
             i = i + 1;
-            if e.kind != "gate.observed" || std::str::contains(self.gate_runs_told, "\n" + e.digest + "\n") { continue; }
+            if e.kind != "gate.observed"
+                || std::str::contains(self.gate_runs_told, "\n" + e.digest + "\n")
+            {
+                continue;
+            }
             self.gate_runs_told = self.gate_runs_told + e.digest + "\n";
             if std::str::contains(told, "\n" + e.entity + "\n") { continue; }
             told = told + e.entity + "\n";
@@ -134,7 +201,9 @@ locus ReviewRecord {
     // ---- the Reviews this incarnation has born
     fn knowledge_known(id: String) -> Bool {
         let mut i = 0;
-        while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        while i < self.knowledge_reviews.len() {
+            if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1;
+        }
         return false;
     }
     // One id per Review born this incarnation, as the journal opens them.
@@ -142,7 +211,9 @@ locus ReviewRecord {
     fn knowledge_born(id: String) { self.knowledge_reviews.push(id); }
     fn source_known(id: String) -> Bool {
         let mut i = 0;
-        while i < self.organization_source_reviews.len() { if (self.organization_source_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        while i < self.organization_source_reviews.len() {
+            if (self.organization_source_reviews.get(i) or "") == id { return true; } i = i + 1;
+        }
         return false;
     }
     // One id per Review born this incarnation, as the journal opens them.
@@ -153,8 +224,11 @@ locus ReviewRecord {
     // whether the settlement, and its reasoning when there is one, are in
     // the record.
     fn decided(review_id: String, outcome: String, reviewer: String, comment: String) -> Bool {
-        if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return false; }
-        return len(comment) == 0 || append_once(self.journal, "review.reasoned", review_id, comment);
+        if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) {
+            return false;
+        }
+        return len(comment) == 0
+            || append_once(self.journal, "review.reasoned", review_id, comment);
     }
     fn refused(review_id: String, why: String) {
         let x = self.journal.append(self.journal.revision(), "review.refused", review_id, why);
@@ -167,14 +241,29 @@ locus ReviewRecord {
         b.string_field("by", by);
         b.string_field("awaiting", awaiting);
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "review.signed", review_id, b.result());
+        let x = self.journal.append(
+            self.journal.revision(),
+            "review.signed",
+            review_id,
+            b.result(),
+        );
     }
     // The Review's own settlement, and (GH #566 F7) why: a person's note,
     // or the Leader's reasoning.
     fn settled(review_id: String, outcome: String, by: String, comment: String) {
-        let x = self.journal.append(self.journal.revision(), "review.settled", review_id, outcome + " by " + by);
+        let x = self.journal.append(
+            self.journal.revision(),
+            "review.settled",
+            review_id,
+            outcome + " by " + by,
+        );
         if len(comment) > 0 {
-            let w = self.journal.append(self.journal.revision(), "review.reasoned", review_id, comment);
+            let w = self.journal.append(
+                self.journal.revision(),
+                "review.reasoned",
+                review_id,
+                comment,
+            );
         }
     }
     fn approved(mutation_id: String) -> Bool {
@@ -183,7 +272,9 @@ locus ReviewRecord {
         let mut ok = false;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "review.settled" && e.entity == mutation_id { ok = e.body[0..7] == "approve"; }
+            if e.kind == "review.settled" && e.entity == mutation_id {
+                ok = e.body[0..7] == "approve";
+            }
             i = i + 1;
         }
         return ok;

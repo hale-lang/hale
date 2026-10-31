@@ -624,7 +624,7 @@ impl CallWalk {
             }
             TopDecl::Type(t) => self.type_decl(t),
             // A unit declaration holds names and numbers, no call.
-            TopDecl::Unit(_) | TopDecl::Api(_) => {}
+            TopDecl::Unit(_) | TopDecl::Api(_) | TopDecl::Fleet(_) => {}
             TopDecl::Const(c) => {
                 self.owner = c.name.name.clone();
                 self.ty(&c.ty);
@@ -744,6 +744,11 @@ impl CallWalk {
                 self.expr(&bc.cond);
                 self.opt_expr(&bc.payload);
             }
+            // A seam is expanded into ordinary methods before this walk sees
+            // the stdlib, and the stdlib declares none.
+            // a seam's one expression, its head (`hale_syntax::sites` walks
+            // the same): its hops are `self.` paths, no calls
+            LocusMember::Seam(sd) => self.expr(&sd.head),
             LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) => {}
         }
     }
@@ -1356,6 +1361,7 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
     ("std::test::__note_fail", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
     ("std::test::__note_pass", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
     ("std::test::__passes", Position::Expression, &["__test_fail_trailer"]),
+    ("std::process::__probes_start", Position::Statement, &["__StdObserveProbes"]),
 ];
 
 /// Every allowed pair, with the kind it is allowed as.

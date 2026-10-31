@@ -189,6 +189,34 @@ impl EffectClassTable {
     }
 }
 
+/// Parse source a desugar pass generates through the load's one table, as
+/// the programs carry it, and leave every program carrying the table the
+/// parse left: a class the generated source declares or names (the client
+/// binding's `client(<Surface>)`, `client_expand`) has one index in every
+/// seed, the one a claim the program wrote already interned for it.
+pub fn parse_generated(
+    programs: &mut [&mut Program],
+    src: &str,
+    base: u32,
+) -> Result<Program, Vec<hale_syntax::Diag>> {
+    let table = {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        EffectClassTable::of(&ro)
+    };
+    let mut load = hale_syntax::ast::EffectClasses {
+        names: table.names,
+        declared: table.declared.into_iter().collect(),
+        defs: table.defs,
+    };
+    let generated = hale_syntax::parse_source_at_in(src, base, &mut load)?;
+    for p in programs.iter_mut() {
+        p.effect_names = load.names.clone();
+        p.declared_effects = load.declared.clone();
+        p.effect_defs = load.defs.clone();
+    }
+    Ok(generated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,7 +27,8 @@ fn app_source(sock: String, port: Int, me_name: String, me: String) -> String {
         + "        if token == \"t-alice\" { return std::api::Principal { mode: \"bearer\", name: \"alice\" }; }\n"
         + "        if token == \"t-bob\" { return std::api::Principal { mode: \"bearer\", name: \"bob\" }; }\n"
         + "        if token == \"t-oidc\" { return std::api::Principal { mode: \"bearer\", name: \"oidc:auth0|123\" }; }\n"
-        + "        if token == \"t-me\" { return std::api::Principal { mode: \"bearer\", name: \"" + me_name + "\", uid: " + me + " }; }\n"
+        + "        if token == \"t-me\" { return std::api::Principal { mode: \"bearer\", name: \""
+        + me_name + "\", uid: " + me + " }; }\n"
         + "        return std::api::Principal { mode: \"bearer\", name: \"\" };\n"
         + "    }\n"
         + "    fn refused() -> String { return \"no such token\"; }\n"
@@ -43,14 +44,17 @@ fn app_source(sock: String, port: Int, me_name: String, me: String) -> String {
         + "        desk: Desk = Desk { };\n"
         + "        tokens: Tokens = Tokens { };\n"
         + "        roles: std::api::StaticRoles = std::api::StaticRoles { known: \"support\" };\n"
+        + "        sock: api::Exposure = api::serve(Public, unix::Rpc { path: \"" + sock
+        + "\", roles: self.roles }, as: \"sock\", receivers: { Desk: self.desk }, bound: 8, on_full: refuse);\n"
+        + "        web: api::Exposure = api::serve(Public, http::Rpc { bind: \"127.0.0.1:"
+        + to_string(port)
+        + "\", codec: json, principals: self.tokens, roles: self.roles }, as: \"web\", receivers: { Desk: self.desk }, bound: 8, on_full: refuse);\n"
         + "    }\n"
         + "    placement { desk: cooperative(pool = work) where async_io; }\n"
         + "    run() {\n"
-        + "        let sock = api::serve(Public, unix::Rpc { path: \"" + sock + "\", roles: self.roles }, as: \"sock\", receivers: { Desk: self.desk }, bound: 8, on_full: refuse);\n"
-        + "        let web = api::serve(Public, http::Rpc { bind: \"127.0.0.1:" + to_string(port) + "\", codec: json, principals: self.tokens, roles: self.roles }, as: \"web\", receivers: { Desk: self.desk }, bound: 8, on_full: refuse);\n"
         + "        while !self.draining { std::time::sleep(100ms); }\n"
-        + "        sock.stop();\n"
-        + "        web.stop();\n"
+        + "        self.sock.stop();\n"
+        + "        self.web.stop();\n"
         + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
@@ -147,7 +151,12 @@ fn has(s: String, needle: String) -> Bool {
 
 // One POST of a refund under a bearer token: the body, then the status.
 fn post_refund(base: String, token: String) -> String {
-    return std::str::trim(run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer " + token + "\n--data\n{\"amount\":5}\n" + base + "/call/Desk::on_refund").stdout);
+    return std::str::trim(
+        run_tool(
+            "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer " + token
+                + "\n--data\n{\"amount\":5}\n" + base + "/call/Desk::on_refund",
+        ).stdout,
+    );
 }
 
 // The same refund as one line of the socket's wire.
@@ -177,15 +186,31 @@ fn main() {
     // `*`: a bearer the source names and a socket peer both hold the
     // role; a token the source names nobody is refused before the gate.
     let a = Proc { };
-    std::test::assert(a.start("env\nLOTUS_API_ROLES=support=*\n" + bin), "the app started under support=*");
+    std::test::assert(
+        a.start("env\nLOTUS_API_ROLES=support=*\n" + bin),
+        "the app started under support=*",
+    );
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
     let a1 = post_refund(base, "t-alice");
-    std::test::assert(std::str::ends_with(a1, "200") && has(a1, "\"by\":\"alice\",\"role\":\"support\""), "`*` grants a bearer its source named, and the handler sees the role: " + a1);
+    std::test::assert(
+        std::str::ends_with(a1, "200") && has(a1, "\"by\":\"alice\",\"role\":\"support\""),
+        "`*` grants a bearer its source named, and the handler sees the role: " + a1,
+    );
     let a2 = api.ask(refund_line());
-    std::test::assert(has(a2, "\"ok\":true") && has(a2, "\"role\":\"support\"") && has(a2, "\"caller\":{\"mode\":\"unix\""), "`*` grants a socket peer: " + a2);
+    std::test::assert(
+        has(a2, "\"ok\":true")
+            && has(a2, "\"role\":\"support\"")
+            && has(a2, "\"caller\":{\"mode\":\"unix\""),
+        "`*` grants a socket peer: " + a2,
+    );
     let a3 = post_refund(base, "t-mallory");
-    std::test::assert(std::str::ends_with(a3, "401") && has(a3, "\"kind\":\"unauthenticated\"") && !has(a3, "\"by\""), "`*` grants no token the source names nobody: " + a3);
+    std::test::assert(
+        std::str::ends_with(a3, "401")
+            && has(a3, "\"kind\":\"unauthenticated\"")
+            && !has(a3, "\"by\""),
+        "`*` grants no token the source names nobody: " + a3,
+    );
     a.stop();
     std::io::fs::unlink(sock) or discard;
 
@@ -193,54 +218,99 @@ fn main() {
     // socket peer whose account carries a named bearer's spelling does
     // not either — the table names this host's account as a bearer.
     let b = Proc { };
-    std::test::assert(b.start("env\nLOTUS_API_ROLES=support=bearer:alice,bearer:" + me_name + "\n" + bin), "the app started under bearer members");
+    std::test::assert(
+        b.start("env\nLOTUS_API_ROLES=support=bearer:alice,bearer:" + me_name + "\n" + bin),
+        "the app started under bearer members",
+    );
     let api2 = Api { };
     std::test::assert(api2.connect(sock), "connected under bearer members");
     let b1 = post_refund(base, "t-alice");
-    std::test::assert(std::str::ends_with(b1, "200") && has(b1, "\"by\":\"alice\",\"role\":\"support\""), "bearer:alice grants alice over HTTP: " + b1);
+    std::test::assert(
+        std::str::ends_with(b1, "200") && has(b1, "\"by\":\"alice\",\"role\":\"support\""),
+        "bearer:alice grants alice over HTTP: " + b1,
+    );
     let b2 = post_refund(base, "t-bob");
-    std::test::assert(std::str::ends_with(b2, "403") && has(b2, "\"kind\":\"unauthorized\"") && has(b2, "\"requires\":[\"support\"]") && !has(b2, "\"by\""), "bearer:alice refuses bob: " + b2);
+    std::test::assert(
+        std::str::ends_with(b2, "403")
+            && has(b2, "\"kind\":\"unauthorized\"")
+            && has(b2, "\"requires\":[\"support\"]")
+            && !has(b2, "\"by\""),
+        "bearer:alice refuses bob: " + b2,
+    );
     let b3 = api2.ask(refund_line());
-    std::test::assert(has(b3, "\"kind\":\"unauthorized\"") && !has(b3, "\"by\""), "bearer:" + me_name + " refuses the socket peer whose account is " + me_name + ": " + b3);
+    std::test::assert(
+        has(b3, "\"kind\":\"unauthorized\"") && !has(b3, "\"by\""),
+        "bearer:" + me_name + " refuses the socket peer whose account is " + me_name + ": " + b3,
+    );
     let b4 = post_refund(base, "t-me");
-    std::test::assert(std::str::ends_with(b4, "200") && has(b4, "\"role\":\"support\""), "the bearer the source names " + me_name + " holds it: " + b4);
+    std::test::assert(
+        std::str::ends_with(b4, "200") && has(b4, "\"role\":\"support\""),
+        "the bearer the source names " + me_name + " holds it: " + b4,
+    );
     b.stop();
     std::io::fs::unlink(sock) or discard;
 
     // An OIDC subject as its source names it, `:` and `|` included, is a
     // `bearer:` member as written.
     let o = Proc { };
-    std::test::assert(o.start("env\nLOTUS_API_ROLES=support=bearer:oidc:auth0|123\n" + bin), "the app started under an OIDC-shaped bearer member");
+    std::test::assert(
+        o.start("env\nLOTUS_API_ROLES=support=bearer:oidc:auth0|123\n" + bin),
+        "the app started under an OIDC-shaped bearer member",
+    );
     let apio = Api { };
     std::test::assert(apio.connect(sock), "connected under the OIDC-shaped member: " + o.out);
     let o1 = post_refund(base, "t-oidc");
-    std::test::assert(std::str::ends_with(o1, "200") && has(o1, "\"by\":\"oidc:auth0|123\",\"role\":\"support\""), "bearer:oidc:auth0|123 grants that subject: " + o1);
+    std::test::assert(
+        std::str::ends_with(o1, "200") && has(o1, "\"by\":\"oidc:auth0|123\",\"role\":\"support\""),
+        "bearer:oidc:auth0|123 grants that subject: " + o1,
+    );
     let o2 = post_refund(base, "t-alice");
-    std::test::assert(std::str::ends_with(o2, "403") && !has(o2, "\"by\""), "and no one else: " + o2);
+    std::test::assert(
+        std::str::ends_with(o2, "403") && !has(o2, "\"by\""),
+        "and no one else: " + o2,
+    );
     o.stop();
     std::io::fs::unlink(sock) or discard;
 
     // `user:` and `uid:` name this host's account: the socket peer holds
     // the role, the bearer spelled the same (and carrying the uid) does not.
     let c = Proc { };
-    std::test::assert(c.start("env\nLOTUS_API_ROLES=support=user:" + me_name + ",uid:" + me + "\n" + bin), "the app started under account members");
+    std::test::assert(
+        c.start("env\nLOTUS_API_ROLES=support=user:" + me_name + ",uid:" + me + "\n" + bin),
+        "the app started under account members",
+    );
     let api3 = Api { };
     std::test::assert(api3.connect(sock), "connected under account members");
     let c1 = post_refund(base, "t-me");
-    std::test::assert(std::str::ends_with(c1, "403") && has(c1, "\"kind\":\"unauthorized\""), "user:" + me_name + " and uid:" + me + " refuse a bearer named " + me_name + ": " + c1);
+    std::test::assert(
+        std::str::ends_with(c1, "403") && has(c1, "\"kind\":\"unauthorized\""),
+        "user:" + me_name + " and uid:" + me + " refuse a bearer named " + me_name + ": " + c1,
+    );
     let c2 = api3.ask(refund_line());
-    std::test::assert(has(c2, "\"ok\":true") && has(c2, "\"role\":\"support\""), "the socket peer holds it by its account: " + c2);
+    std::test::assert(
+        has(c2, "\"ok\":true") && has(c2, "\"role\":\"support\""),
+        "the socket peer holds it by its account: " + c2,
+    );
     c.stop();
     std::io::fs::unlink(sock) or discard;
 
     // A misspelled prefix is still no member: the source refuses to
     // start, and the reason lists the spellings, bearer's included.
     let d = Proc { };
-    std::test::assert(d.start("env\nLOTUS_API_ROLES=support=barer:alice\n" + bin), "started under a misspelled prefix");
+    std::test::assert(
+        d.start("env\nLOTUS_API_ROLES=support=barer:alice\n" + bin),
+        "started under a misspelled prefix",
+    );
     std::test::assert_eq_int(d.exit_code(), 2, "a misspelled prefix refuses to start: " + d.out);
-    std::test::assert(has(d.out, "`barer:alice` is not a role member") && has(d.out, "bearer:<name>"), "and says which, naming the spellings: " + d.out);
+    std::test::assert(
+        has(d.out, "`barer:alice` is not a role member") && has(d.out, "bearer:<name>"),
+        "and says which, naming the spellings: " + d.out,
+    );
     let e = Proc { };
-    std::test::assert(e.start("env\nLOTUS_API_ROLES=support=bearer:a b\n" + bin), "started under a bearer name with a blank");
+    std::test::assert(
+        e.start("env\nLOTUS_API_ROLES=support=bearer:a b\n" + bin),
+        "started under a bearer name with a blank",
+    );
     std::test::assert_eq_int(e.exit_code(), 2, "a bearer name never carries a blank: " + e.out);
     std::io::fs::unlink(sock) or discard;
     std::io::fs::unlink(bin) or discard;

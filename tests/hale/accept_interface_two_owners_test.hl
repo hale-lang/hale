@@ -59,9 +59,17 @@ locus Outer {
         self.inner.churn(10000);
         self.side.churn(10000);
         Small { w: 7 };
-        std::test::assert_eq_int(self.inner.released, 10000, "Inner released each Small it accepted");
+        std::test::assert_eq_int(
+            self.inner.released,
+            10000,
+            "Inner released each Small it accepted",
+        );
         std::test::assert_eq_int(self.inner.tracked(), 0, "and none stays on Inner's tracker");
-        std::test::assert_eq_int(self.side.released, 50000, "Side released each Small (2) and Big (3) born in it");
+        std::test::assert_eq_int(
+            self.side.released,
+            50000,
+            "Side released each Small (2) and Big (3) born in it",
+        );
         std::test::assert_eq_int(self.side.tracked(), 0, "none stays on Side's trackers");
         // The Bigs born in Inner bubbled to Outer (5 each), and its own Small (7).
         std::test::assert_eq_int(self.released, 50007, "Outer released what reached it");

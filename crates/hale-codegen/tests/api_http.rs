@@ -103,18 +103,18 @@ main locus Desk {
         bearer: Tokens = Tokens { };
         public_roles: Grants = Grants { trader: "alice" };
         orders: Orders = Orders { };
+        public: api::Exposure = api::serve(Public, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", bound: @BOUND@, on_full: refuse);
     }
     placement {
         orders: cooperative(pool = desk) where async_io;
     }
     on_failure(l: Orders, err: ClosureViolation) { }
     run() {
-        let public = api::serve(Public, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", bound: @BOUND@, on_full: refuse);
         let trigger = std::env::var("TRIGGER");
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
-        public.stop();
+        self.public.stop();
         println("stopped");
     }
 }
@@ -345,14 +345,14 @@ main locus Desk {
         roles: Nobody = Nobody { };
         echoer: Echoer = Echoer { };
         bind: String = "";
+        h: api::Exposure = api::serve(Echo, http::Rpc { bind: self.bind, codec: json, principals: self.bearer, roles: self.roles }, as: "echo", bound: 4, on_full: refuse);
     }
     run() {
-        let h = api::serve(Echo, http::Rpc { bind: self.bind, codec: json, principals: self.bearer, roles: self.roles }, as: "echo", bound: 4, on_full: refuse);
         let trigger = std::env::var("TRIGGER");
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
-        h.stop();
+        self.h.stop();
     }
 }
 
@@ -517,14 +517,14 @@ main locus Desk {
         roles: Nobody = Nobody { };
         echoer: lib::Echoer = lib::Echoer { base: 100 };
         doubler: base::Doubler = base::Doubler { };
+        h: api::Exposure = api::serve(@SURFACE@, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.roles }, as: "svc", bound: 4, on_full: refuse);
     }
     run() {
-        let h = api::serve(@SURFACE@, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.roles }, as: "svc", bound: 4, on_full: refuse);
         let trigger = std::env::var("TRIGGER");
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
-        h.stop();
+        self.h.stop();
     }
 }
 

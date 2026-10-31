@@ -1,3 +1,7 @@
+--- crates/hale-cli/tests/fixtures/claims-program/app-fail/main.hl ---
+Claim [361..365] unknown constitution `Logs` — nothing declares it
+--- crates/hale-cli/tests/fixtures/claims-program/app-pass/main.hl ---
+Claim [358..362] unknown constitution `Logs` — nothing declares it
 --- crates/hale-cli/tests/fixtures/imported-main-claims/app-policy/main.hl ---
 Claim [731..736] unknown constitution `House` — nothing declares it
 --- crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl ---
@@ -22,6 +26,13 @@ Claim [509..517] claim `wired`: topic reference `t::Tasks` does not resolve — 
 Claim [559..567] claim `single`: topic reference `t::Tasks` does not resolve — no imported topic matches this path. Unknown names are errors, never empty sets
 Claim [615..616] claim `no_orphans`: `seed(t)` names no import alias with declared topics — the coverage domain would be empty, and a universal over an empty domain holds vacuously
 Claim [686..711] claim `data_iso` names effect class `knowledge(delta)`, which is never declared. Add `effect knowledge(delta);` at the top level.
+--- crates/hale-cli/tests/api_client_binding.rs#1 ---
+Claim [908..920] claim `desk_offline` violated: `desks` reaches `effects(client(Shelf))` — witness: `Desk::look` -> `__ApiClient_Shelf::get_item`
+Claim [383..438] claim `desk_offline`: the boundary into `effects(client(Shelf))` is crossed by this call
+Claim [2113929443..2113929460] claim `desk_offline`: the forbidden destination `__ApiClient_Shelf` is declared here
+Claim [1047..1056] claim `no_client` violated: `desks` reaches `effects(client(*))` — witness: `Desk::look` -> `__ApiClient_Shelf::get_item`
+Claim [383..438] claim `no_client`: the boundary into `effects(client(*))` is crossed by this call
+Claim [2113929443..2113929460] claim `no_client`: the forbidden destination `__ApiClient_Shelf` is declared here
 --- crates/hale-cli/tests/claims_artifact_unknowns.rs#0 ---
 Claim [360..363] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `Bridge::hop` -> `B::work`
 Claim [133..147] claim `iso`: the boundary into `b_side` is crossed by this call
@@ -30,7 +41,7 @@ Claim [7..8] claim `iso`: the forbidden destination `B` is declared here
 Claim [372..375] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.notify)-> `Email::notify`
 Claim [237..256] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
 Claim [56..61] claim `iso`: the forbidden destination `Email` is declared here
---- crates/hale-cli/tests/fleet_cross_tier.rs#4 ---
+--- crates/hale-cli/tests/fleet_cross_tier.rs#3 ---
 Claim [161..173] claim `no_llm` names effect class `llm`, which is never declared. Add `effect llm;` at the top level.
 --- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0 ---
 Claim [104..117] group member `MissingWorker` names no declared locus or fn. Unknown names are errors, never empty sets.
@@ -60,7 +71,7 @@ Claim [192..195] claim `iso` violated: `a_side` reaches `b_side` — witness: `t
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [4..8] claim `iso`: the forbidden destination `leak` is declared here
 --- crates/hale-cli/tests/topology_graph_cli.rs#21 ---
-Claim [102..109] claim `bad`: `require attributed` takes a built-in class with countable DIRECT sites — `syscall`, `block`, `publish`, `time`, `entropy`, `env`, `alloc`, `secret_use`. `purpose` is not one of those: a user class would be trivially true, and `ffi` / `spawn` / `recursion` are structural properties with no site to attribute.
+Claim [102..109] claim `bad`: `require attributed` takes a built-in class with countable DIRECT sites — `syscall`, `block`, `publish`, `time`, `entropy`, `env`, `alloc`, `secret_use`, `stdio`. `purpose` is not one of those: a user class would be trivially true, and `ffi` / `spawn` / `recursion` are structural properties with no site to attribute.
 --- crates/hale-cli/tests/topology_graph_cli.rs#23 ---
 Claim [235..238] claim `iso` is declared more than once — the name is the contract-of-record and must be unique
 --- crates/hale-cli/tests/topology_v2.rs#0 ---
@@ -111,6 +122,12 @@ Claim [37..44] unknown constitution `Missing` — nothing declares it
 Claim [345..349] claim `loss` violated: route `Payments` is configured to discard silently — topic `Payments` keyed by `id` is `on_unmatched: swallow`
 --- crates/hale-types/tests/claim_no_silent_loss.rs#6 ---
 Claim [233..237] claim `loss`: the routes of `quiet` names no route — no member publishes or subscribes anything, so `require no_silent_loss` would quantify over an empty set and hold while checking nothing. Name a topic, or a group whose members use the bus.
+--- crates/hale-types/tests/claim_placement.rs#1 ---
+Claim [117..127] group member `lib::Alpha` does not resolve — no imported declaration matches this path. Unknown names are errors, never empty sets
+Claim [99..130] group `readers` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+Claim [391..398] claim `separate` is invalid: group `readers` has a refused selection; resolve its group diagnostics before checking execution-domain separation
+--- crates/hale-types/tests/claim_placement.rs#2 ---
+Claim [348..360] unknown constitution `PlacementLaw` — nothing declares it
 --- crates/hale-types/tests/claim_route_coverage.rs#1 ---
 Claim [791..796] claim `route` violated: not every key of `Orders` reaches exactly one registration of `workers` — overlapping: 2 registrations of `workers` receive key 0: `Alpha::on_alpha` (where key == 0) at `App.a`; `Beta::on_beta` (where key == 0) at `App.b`
 --- crates/hale-types/tests/claim_route_coverage.rs#2 ---
@@ -151,6 +168,8 @@ Claim [257..260] claim `iso` violated: `b_side` reaches `a_side` — witness: `A
 Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
 --- crates/hale-types/tests/claims.rs#13 ---
 Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/claims.rs#20 ---
+Claim [568..569] claim `c` cannot be certified: `Writer::write` (reachable from `writers`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
 --- crates/hale-types/tests/claims_edges.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here
@@ -253,8 +272,6 @@ Claim [484..488] declared causal set violated: `Source::fire` can transitively c
 Claim [318..322] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `Created` -> `Audit::on_any`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#9 ---
 Claim [421..425] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
---- crates/hale-types/tests/judgment_causes.rs#10 ---
-Claim [451..455] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the effects of `Sink::on_t` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#12 ---
 Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#13 ---
@@ -272,7 +289,7 @@ Claim [166..170] declared causal set cannot be certified: `Source::fire` publish
 --- crates/hale-types/tests/judgment_causes.rs#20 ---
 Claim [281..285] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the set of subscribers to `t` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#21 ---
-Claim [732..736] declared causal set cannot be certified: `App::fire` publishes into a closure this model does not fully know — the effects of `Ledger::on_settled` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
+Claim [479..483] declared causal set cannot be certified: `App::fire` publishes into a closure this model does not fully know — the set of subscribers to `settled` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_certificates.rs#4 ---
 Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [84..94] counts against `hot`'s alloc budget: a `T` instantiation

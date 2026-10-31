@@ -376,7 +376,8 @@ impl<'p> UseScopes<'p, '_> {
                 | TopDecl::Claims(_)
                 | TopDecl::Constitution(_)
                 | TopDecl::Unit(_)
-                | TopDecl::Api(_) => {}
+                | TopDecl::Api(_)
+                | TopDecl::Fleet(_) => {}
             }
         }
     }
@@ -467,7 +468,8 @@ impl<'p> UseScopes<'p, '_> {
             | LocusMember::Capacity(_)
             | LocusMember::Placement(_)
             | LocusMember::Topology(_)
-            | LocusMember::Claims(_) => {}
+            | LocusMember::Claims(_)
+            | LocusMember::Seam(_) => {}
         }
     }
 

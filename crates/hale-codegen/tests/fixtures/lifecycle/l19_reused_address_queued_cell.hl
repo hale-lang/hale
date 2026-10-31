@@ -51,7 +51,9 @@ locus Host {
         } else {
             std::io::fs::write_file(gate("born"), "born") or discard;
             let until = std::time::monotonic_ns() + 5000000000;
-            while !std::io::fs::file_exists(gate("drained")) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+            while !std::io::fs::file_exists(gate("drained")) && std::time::monotonic_ns() < until {
+                std::time::sleep(1ms);
+            }
         }
     }
     fn on_start(s: Go) {
@@ -68,7 +70,9 @@ main locus App {
     run() {
         Start <- Go { k: 0 };
         let until = std::time::monotonic_ns() + 5000000000;
-        while !std::io::fs::file_exists(gate("born")) && std::time::monotonic_ns() < until { usleep(1000); }
+        while !std::io::fs::file_exists(gate("born")) && std::time::monotonic_ns() < until {
+            usleep(1000);
+        }
         std::time::sleep(50ms);
         std::io::fs::write_file(gate("drained"), "drained") or discard;
         std::time::sleep(100ms);

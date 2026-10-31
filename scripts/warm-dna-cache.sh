@@ -16,8 +16,14 @@ set -euo pipefail
 hale=$(realpath -- "${1:?the hale binary}")
 cache=${2:-${XDG_CACHE_HOME:-$HOME/.cache}}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm.XXXXXX")
-trap 'rm -rf -- "$tmp"' EXIT
-export XDG_CACHE_HOME=$cache HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# the root goes with whatever compose ran from under it: a habitat with no
+# owner's servers brings its memory and nerves up as its own allocations,
+# and the local habitat is the root's own here (XDG_DATA_HOME under it),
+# never the developer's
+# (a teardown that did not finish keeps the root, and fails the script)
+trap 'if "$here/compose-down-under.sh" "$tmp"; then rm -rf -- "$tmp"; else exit 1; fi' EXIT
+export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_HABITAT=$tmp/data/hale/habitat/local HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
 iris_dir=$("$hale" iris --where)
 host_bin=$iris_dir/dna/host/host
 # the host's verb program (GH #1490), built beside the body by the same
@@ -37,7 +43,16 @@ verb_bin=$iris_dir/dna/host/verb/verb
 if [[ -s "$host_bin" && ! -s "$host_bin.ir-size" ]] || [[ -s "$verb_bin" && ! -s "$verb_bin.ir-size" ]]; then
     rm -f -- "$host_bin" "$verb_bin"
 fi
-LOTUS_DUMP_IR=1 "$hale" dna new "$tmp/warm" >/dev/null
+# the habitat's birth runs the first host verb (GH #1653): on the owner's
+# servers when they are named, else its own allocations
+if [[ -n "${HALE_DNA_MEMORY_DSN_OWNER:-}" && -n "${HALE_DNA_NATS_URL_OWNER:-}" ]]; then
+    backends=operator; clear_owner=()
+else
+    # a lone owner endpoint is refused beside `own`: clear both
+    backends=own; clear_owner=(env -u HALE_DNA_MEMORY_DSN_OWNER -u HALE_DNA_NATS_URL_OWNER)
+fi
+LOTUS_DUMP_IR=1 "${clear_owner[@]}" "$hale" habitat up --no-body --backends "$backends" >/dev/null
+"${clear_owner[@]}" "$hale" habitat graft "$tmp/warm" --no-pack >/dev/null
 for bin in "$host_bin" "$verb_bin"; do
     if [[ -f "$bin.ll" ]]; then
         echo "lines=$(( $(wc -l < "$bin.ll") )) defines=$(grep -c '^define ' "$bin.ll")" \
@@ -54,8 +69,8 @@ done
 # Moving one on purpose is an edit here, with the reason in the commit
 # (the same three numbers for three corpus programs are pinned in
 # crates/hale-codegen/tests/ir_size_band.rs).
-host_ir_pinned="lines=1712630 defines=6264 calls=237131"
-verb_ir_pinned="lines=1711772 defines=6224 calls=236803"
+host_ir_pinned="lines=1999283 defines=6708 calls=265782"
+verb_ir_pinned="lines=1998546 defines=6670 calls=265512"
 measured_all=
 for which in body verb; do
     if [[ $which == body ]]; then bin=$host_bin pinned=$host_ir_pinned seed=dna/host; else bin=$verb_bin pinned=$verb_ir_pinned seed=dna/host/verb; fi

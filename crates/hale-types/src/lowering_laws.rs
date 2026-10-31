@@ -27,7 +27,7 @@ use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
-use crate::typed_bodies::OmittedArgsByCall;
+use crate::typed_bodies::OmittedView;
 use crate::Bundle;
 
 /// The rows the laws read.
@@ -46,7 +46,7 @@ pub struct LoweringLawInputs<'a> {
     pub ownership: &'a dyn Fn() -> Option<&'a OwnershipGraph>,
     /// The typed-body table's `omitted_args` column: which defaults each
     /// call leaves to be expanded at it.
-    pub omitted: &'a OmittedArgsByCall,
+    pub omitted: OmittedView<'a>,
 }
 
 /// What a law on the shared finding type ([`Law`]) reads: the bundle and
@@ -357,6 +357,12 @@ fn placement_entry_consumed(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>
         let Some(param) = params.params.iter().find(|p| p.name.name == field) else {
             continue;
         };
+        // An exposure param's row is the serve-site law's (GH #1565): it
+        // places the exposure's listener, and a row that cannot is refused
+        // there, in its terms.
+        if crate::surfaces::param_serve_site(param).is_some() {
+            continue;
+        }
         // The literal form to suggest: the declared type as written (a
         // stdlib locus is a qualified path, and its literal is spelled
         // the same way), or `T` when the type is inferred from the
@@ -461,7 +467,7 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
     /// no body reaches (a params default of a locus or a perspective, a
     /// const, a type's field default, a closure's assertion, an adapter's
     /// inits, a perspective's members).
-    fn items(&mut self, items: &'a [TopDecl]) {
+    pub(crate) fn items(&mut self, items: &'a [TopDecl]) {
         for item in items {
             match item {
                 TopDecl::Fn(fd) => self.fn_decl(fd),

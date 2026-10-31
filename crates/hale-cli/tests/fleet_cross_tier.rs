@@ -11,6 +11,9 @@
 //! recording either. See
 //! `a_shared_constitution_name_across_components_is_not_checked`.
 
+#[path = "support/fleet_seed.rs"]
+mod fleet_seed;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -91,16 +94,17 @@ fn main() {{ BApp {{ }}; }}
     )
 }
 
-const PLAN: &str = r#"{
-  "schema": "1.0", "name": "prod",
-  "instances": [
-    {"id": "a-0", "artifact": "artifacts/a.json", "labels": ["emit"]},
-    {"id": "b-0", "artifact": "artifacts/b.json", "labels": ["recv"]}],
-  "routes": [
-    {"id": "r", "transport": "unix",
-     "publishers":  [{"instance": "a-0", "topic": "t::OrderIntent"}],
-     "subscribers": [{"instance": "b-0", "topic": "t::OrderIntent"}]}]
-}"#;
+/// The fleet of the two, the emitter's topic bound between them, with
+/// `claims` across them.
+fn fleet_src(claims: &[&str]) -> String {
+    fleet_seed::fleet(
+        &[("aa", "../a"), ("ba", "../b"), ("t", "../lib")],
+        &["a: aa::AApp;", "b: ba::BApp;"],
+        &[],
+        &["t::OrderIntent: unix(\"/tmp/hale-cross-tier.sock\");"],
+        claims,
+    )
+}
 
 /// Build both components and return (root, per-component artifact).
 fn two_components(
@@ -113,7 +117,7 @@ fn two_components(
     write(&r, "a/main.hl", &emitter(a_clause));
     write(&r, "b/main.hl", &receiver(b_clause));
     write(&r, "hale.toml", "[deps]\n");
-    write(&r, "plan.json", PLAN);
+    write(&r, "prod/fleet.hl", &fleet_src(&[]));
     for app in ["a", "b"] {
         let dst = r.join(format!("artifacts/{}.json", app));
         std::fs::create_dir_all(dst.parent().expect("parent")).expect("mkdir");
@@ -193,7 +197,7 @@ fn a_shared_constitution_name_across_components_is_not_checked() {
         "one_pub: count publishers(topic t::OrderIntent) == 1;",
         "any_subs: count subscribers(topic t::OrderIntent) >= 0;",
     );
-    let plan = r.join("plan.json");
+    let plan = r.join("prod");
     let (out, code) = hale(&["fleet", "check", plan.to_str().expect("utf8")]);
     assert_eq!(
         code, 0,
@@ -234,21 +238,11 @@ fn a_component_failing_its_adopted_clause_cannot_enter_a_fleet() {
         &receiver("any_subs: count subscribers(topic t::OrderIntent) >= 0;"),
     );
     write(&r, "hale.toml", "[deps]\n");
-    write(&r, "plan.json", PLAN);
-
-    for app in ["a", "b"] {
-        let dst = r.join(format!("artifacts/{}.json", app));
-        std::fs::create_dir_all(dst.parent().expect("parent")).expect("mkdir");
-        let _ = hale(&[
-            "check",
-            r.join(app).to_str().expect("utf8"),
-            &format!("--dump-topology={}", dst.display()),
-        ]);
-    }
+    write(&r, "prod/fleet.hl", &fleet_src(&[]));
     let (out, code) = hale(&[
         "fleet",
         "check",
-        r.join("plan.json").to_str().expect("utf8"),
+        r.join("prod").to_str().expect("utf8"),
     ]);
     assert_eq!(
         code, 1,
@@ -328,39 +322,16 @@ fn a_fleet_claim_cannot_name_an_effect_class() {
         "one_pub: count publishers(topic t::OrderIntent) == 1;",
         "any_subs: count subscribers(topic t::OrderIntent) >= 0;",
     );
-    let plan = r#"{
-      "schema": "1.0", "name": "prod",
-      "instances": [
-        {"id": "a-0", "artifact": "artifacts/a.json", "labels": ["emit"]},
-        {"id": "b-0", "artifact": "artifacts/b.json", "labels": ["recv"]}],
-      "groups": {"emit": {"labels": ["emit"]}},
-      "claims": [
-        {"name": "no_llm",
-         "forbid_reaches": {"from": "emit", "to": "effects(llm)"},
-         "effects": ["llm"]}]
-    }"#;
-    write(&r, "bad.plan.json", plan);
+    // `effects(llm)` is no instance of the fleet: a fleet claim's
+    // operands are its instances, never an effect class, and the
+    // claim is refused rather than resolved to an empty set.
+    write(&r, "bad/fleet.hl", &fleet_src(&["no_llm: forbid reaches(a, effects(llm));"]));
     let (out, code) = hale(&[
         "fleet",
         "check",
-        r.join("bad.plan.json").to_str().expect("utf8"),
+        r.join("bad").to_str().expect("utf8"),
     ]);
-    assert_eq!(code, 1, "an unknown claim field must be refused: {out}");
-
-    // And with the stray field removed, `effects(llm)` as a group
-    // name is an unknown group — not a silently-empty one that makes
-    // the claim hold.
-    let plan = plan.replace(",\n         \"effects\": [\"llm\"]", "");
-    write(&r, "bad2.plan.json", &plan);
-    let (out, code) = hale(&[
-        "fleet",
-        "check",
-        r.join("bad2.plan.json").to_str().expect("utf8"),
-    ]);
-    assert_eq!(
-        code, 1,
-        "`effects(llm)` is not a declared fleet group and must not \
-         resolve to the empty set: {out}"
-    );
+    assert_eq!(code, 1, "an effect class is not a fleet group: {out}");
+    assert!(out.contains("fleet claim `no_llm`"), "{out}");
     let _ = std::fs::remove_dir_all(&r);
 }

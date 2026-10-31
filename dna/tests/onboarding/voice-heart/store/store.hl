@@ -1,0 +1,831 @@
+// The configuration the api reads and the admin plane writes: the
+// catalog, projects and keys, accounts, nodes and seats, and the change
+// log, as the rows of ../spec/store.md.
+//
+// Everything above this file reaches it through `Store`, so nothing
+// learns which store answers. `MemoryStore` holds the rows in the process:
+// it is the test double, and enough for one api instance until the
+// Postgres store (spec/store.md, over pond's pq), a second implementation
+// of the same interface, takes its place.
+//
+// Every write is one call that carries its change: the store applies the
+// write and appends the change together, which a Postgres store does in
+// one transaction (store.md: "each write one transaction that also appends
+// to `change`").
+
+/// A store that could not answer: `unavailable` (the database is down),
+/// `full` (a list is at its bound).
+type StoreError { kind: String = "unavailable"; message: String = ""; }
+
+/// A `catalog_model` row. `removed` models keep their id forever.
+type ModelRow {
+    id: String = "";
+    owned_by: String = "local";
+    kind: String = "local";
+    context_length: Int = 0;
+    max_output_tokens: Int = 0;
+    priced: Bool = false;
+    price: ModelPrice = ModelPrice { };
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    removed: Bool = false;
+    removed_at: Time = `1970-01-01T00:00:00Z`;
+    present: Bool = false;
+}
+
+/// A `project` row, with its `budget` and its project- and model-scope
+/// `limit` rows.
+type ProjectRow {
+    id: String = "";
+    name: String = "";
+    owners: Names = Names { };
+    data_classes: Names = Names { };
+    models: Restriction = Restriction { };
+    accounts: Restriction = Restriction { };
+    budgeted: Bool = false;
+    budget: BudgetSet = BudgetSet { period: Period::month };
+    limits: Limits = Limits { };
+    position: String = "";
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    archived: Bool = false;
+    archived_at: Time = `1970-01-01T00:00:00Z`;
+    present: Bool = false;
+}
+
+/// An `api_key` row: the secret's digest, never the secret.
+type KeyRow {
+    id: String = "";
+    project: String = "";
+    name: String = "";
+    prefix: String = "";
+    digest: String = "";
+    models: Restriction = Restriction { };
+    accounts: Restriction = Restriction { };
+    limits: Limits = Limits { };
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    expires: Bool = false;
+    expires_at: Time = `1970-01-01T00:00:00Z`;
+    used: Bool = false;
+    last_used_at: Time = `1970-01-01T00:00:00Z`;
+    revoked: Bool = false;
+    revoked_at: Time = `1970-01-01T00:00:00Z`;
+    present: Bool = false;
+}
+
+/// An `account` row, with its account-scope limits. `provider` "" is `null`.
+type AccountRow {
+    id: String = "";
+    name: String = "";
+    provider: String = "";
+    // subscription | metered | none
+    billing: String = "none";
+    limits: Limits = Limits { };
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    archived: Bool = false;
+    archived_at: Time = `1970-01-01T00:00:00Z`;
+    present: Bool = false;
+}
+
+/// A `node` row: the enrollment token's digest, never the token.
+/// `max_in_flight` -1 is `null`, the coordinator's cap unset.
+type NodeRow {
+    id: String = "";
+    name: String = "";
+    token_digest: String = "";
+    max_in_flight: Int = -1;
+    // bumped by any change to the node or its seats
+    assignment_version: Int = 0;
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    revoked: Bool = false;
+    revoked_at: Time = `1970-01-01T00:00:00Z`;
+    present: Bool = false;
+}
+
+/// A `seat` row, keyed by `ref` (`<node>/<seat>`). `config` is the
+/// engine's JSON object, as written.
+type SeatRow {
+    ref: String = "";
+    node: String = "";
+    id: String = "";
+    engine: String = "";
+    account: String = "";
+    serves: SeatModels = SeatModels { };
+    data_classes: Names = Names { };
+    concurrency: Int = 1;
+    enabled: Bool = true;
+    config: String = "{}";
+    present: Bool = false;
+}
+
+/// A `change` row. `before` and `after` are the resource's JSON as its
+/// `GET` answers it, "" for `null`; never a secret, digest or token.
+type ChangeRow {
+    seq: Int = 0;
+    id: String = "";
+    at: Time = `1970-01-01T00:00:00Z`;
+    // create | update | delete | archive | revoke | rotate
+    action: String = "";
+    // the resource's path under /admin/v1
+    target: String = "";
+    before: String = "";
+    after: String = "";
+}
+
+/// A `node_state` row: what a node declared and reported, written by the
+/// node plane. `capabilities` and `local` are the node's JSON as it sent
+/// them. The node's last heartbeat and load are `Store.beat`'s, apart.
+type FleetRow {
+    node: String = "";
+    version: String = "";
+    capabilities: String = "";
+    local: String = "";
+    registered_at: Time = `1970-01-01T00:00:00Z`;
+    // the assignment the node last reported on; -1 for none
+    applied_version: Int = -1;
+    draining: Bool = false;
+    present: Bool = false;
+}
+
+/// A node's last sign of life: its heartbeat (or registration) and the
+/// requests it had in flight then.
+type Beat { at: Time = `1970-01-01T00:00:00Z`; in_flight: Int = 0; present: Bool = false; }
+
+/// A `seat_state` row, keyed by `ref`.
+type SeatStateRow {
+    ref: String = "";
+    node: String = "";
+    seat: String = "";
+    // starting | up | down | disabled | paused | refused
+    status: String = "";
+    reason: String = "";
+    in_flight: Int = 0;
+    present: Bool = false;
+}
+
+/// Which changes, newest first: under `target` (all when ""), in
+/// [from, to] where set, at most `limit`, older than `cursor` (a change id)
+/// when set.
+type ChangeQuery {
+    target: String = "";
+    has_from: Bool = false;
+    from: Time = `1970-01-01T00:00:00Z`;
+    has_to: Bool = false;
+    to: Time = `1970-01-01T00:00:00Z`;
+    limit: Int = 100;
+    cursor: String = "";
+}
+
+/// Every catalog row, removed ones included, in the order they were added.
+type ModelRows { rows: bounded[ModelRow; 256]; }
+
+/// Every project row, archived ones included, in the order they were added.
+type ProjectRows { rows: bounded[ProjectRow; 64]; }
+
+/// One project's key rows, revoked ones included, in the order they were added.
+type KeyRows { rows: bounded[KeyRow; 64]; }
+
+/// The keys an archive revokes, revoked, and a change for each.
+type Revocations { keys: bounded[KeyRow; 64]; changes: bounded[ChangeRow; 64]; }
+
+/// Every account row, archived ones included, in the order they were added.
+type AccountRows { rows: bounded[AccountRow; 64]; }
+
+/// Every node row, revoked ones included, in the order they were added.
+type NodeRows { rows: bounded[NodeRow; 64]; }
+
+/// Every seat row, on every node, in the order they were added.
+type SeatRows { rows: bounded[SeatRow; 256]; }
+
+/// One node's seat states.
+type SeatStateRows { rows: bounded[SeatStateRow; 16]; }
+
+/// A page of changes; `more` when older ones match too.
+/// A page of the log. `cursor_known` is false when the query's cursor
+/// names no change, and the page is then empty.
+type ChangeRows { rows: bounded[ChangeRow; 1000]; more: Bool = false; cursor_known: Bool = true; }
+
+interface Store {
+    /// What answers: `memory`, `postgres`. Readiness names it.
+    fn kind() -> String;
+    /// Hold `target` (a resource's path, as a change names it) from a read
+    /// to the write that follows it: on any api instance, a writer of the
+    /// same resource waits, so the read is current and no update is lost.
+    /// The write ends the hold; `let_go` ends one that wrote nothing.
+    fn hold(target: String) fallible(StoreError);
+    fn let_go();
+    /// True when the store answers.
+    fn ready() -> Bool;
+
+    /// The row for `id`; `present` is false when there is none.
+    fn model(id: String) -> ModelRow fallible(StoreError);
+    fn models() -> ModelRows fallible(StoreError);
+    /// Add a row; false, and nothing written, when its id is taken.
+    fn insert_model(row: ModelRow, change: ChangeRow) -> Bool fallible(StoreError);
+    /// Replace the row with `row.id`.
+    fn update_model(row: ModelRow, change: ChangeRow) fallible(StoreError);
+
+    fn project(id: String) -> ProjectRow fallible(StoreError);
+    fn projects() -> ProjectRows fallible(StoreError);
+    fn insert_project(row: ProjectRow, change: ChangeRow) -> Bool fallible(StoreError);
+    fn update_project(row: ProjectRow, change: ChangeRow) fallible(StoreError);
+    /// Replace the row, archived, and write the keys it revokes, each with
+    /// its own change, all in one write: the keys' changes first, then the
+    /// project's.
+    fn archive_project(
+        row: ProjectRow,
+        change: ChangeRow,
+        revoked: Revocations
+    ) fallible(StoreError);
+
+    fn key(id: String) -> KeyRow fallible(StoreError);
+    /// The key whose secret has this digest; `present` false for none.
+    fn key_by_digest(digest: String) -> KeyRow fallible(StoreError);
+    fn keys(project: String) -> KeyRows fallible(StoreError);
+    fn insert_key(row: KeyRow, change: ChangeRow) -> Bool fallible(StoreError);
+    fn update_key(row: KeyRow, change: ChangeRow) fallible(StoreError);
+    /// A key was used to make a request, at `at`: its `last_used_at`, no
+    /// change of configuration.
+    fn touch_key(id: String, at: Time) fallible(StoreError);
+
+    fn account(id: String) -> AccountRow fallible(StoreError);
+    fn accounts() -> AccountRows fallible(StoreError);
+    fn insert_account(row: AccountRow, change: ChangeRow) -> Bool fallible(StoreError);
+    fn update_account(row: AccountRow, change: ChangeRow) fallible(StoreError);
+
+    fn node(id: String) -> NodeRow fallible(StoreError);
+    fn nodes() -> NodeRows fallible(StoreError);
+    /// Add a row, at assignment version 1.
+    fn insert_node(row: NodeRow, change: ChangeRow) -> Bool fallible(StoreError);
+    /// Replace the row, its `assignment_version` moved on by one from the
+    /// stored one, whatever the row says.
+    fn update_node(row: NodeRow, change: ChangeRow) fallible(StoreError);
+
+    /// The seat `<node>/<id>`; `present` false for none.
+    fn seat(node: String, id: String) -> SeatRow fallible(StoreError);
+    fn seats() -> SeatRows fallible(StoreError);
+    /// Add, replace or remove a seat; its node's `assignment_version` moves
+    /// on by one with it. Insert is false when the node has the id.
+    fn insert_seat(row: SeatRow, change: ChangeRow) -> Bool fallible(StoreError);
+    fn update_seat(row: SeatRow, change: ChangeRow) fallible(StoreError);
+    fn delete_seat(row: SeatRow, change: ChangeRow) fallible(StoreError);
+
+    /// The change log, as `q` asks; the store numbers each change it
+    /// appends.
+    fn changes(q: ChangeQuery) -> ChangeRows fallible(StoreError);
+
+    /// The route table the brain last wrote (internal.yaml `RouteTable`),
+    /// as JSON; "" when none has been.
+    fn route_table() -> String fallible(StoreError);
+
+    // ---- the fleet as reported (the node plane's writes; no change log)
+
+    /// The node's state; `present` false until it first registers.
+    fn fleet(node: String) -> FleetRow fallible(StoreError);
+    /// Replace it: a registration, or what the node reported since.
+    fn put_fleet(row: FleetRow) fallible(StoreError);
+    /// The node's last sign of life.
+    fn beat(node: String) -> Beat fallible(StoreError);
+    /// A sign of life now, with its load. Written on every heartbeat, so
+    /// it keeps no text of its own.
+    fn put_beat(node: String, when: Time, in_flight: Int) fallible(StoreError);
+    fn seat_states(node: String) -> SeatStateRows fallible(StoreError);
+    /// Replace one seat's state; a store writes it only when it changed.
+    fn put_seat_state(row: SeatStateRow) fallible(StoreError);
+    /// An account's provider windows, the JSON array an engine last
+    /// reported, "" for none.
+    fn windows(account: String) -> String fallible(StoreError);
+    fn put_windows(account: String, json: String) fallible(StoreError);
+}
+
+// ---- in memory -------------------------------------------------------
+
+@form(hashmap)
+locus FleetTable { capacity { pool rows of FleetRow indexed_by node; } }
+
+@form(hashmap)
+locus SeatStateTable { capacity { pool rows of SeatStateRow indexed_by ref; } }
+
+/// An account's windows, as JSON.
+type WindowRow { account: String = ""; json: String = ""; present: Bool = false; }
+
+@form(hashmap)
+locus WindowTable { capacity { pool rows of WindowRow indexed_by account; } }
+
+@form(hashmap)
+locus ModelTable { capacity { pool rows of ModelRow indexed_by id; } }
+
+@form(hashmap)
+locus ProjectTable { capacity { pool rows of ProjectRow indexed_by id; } }
+
+@form(hashmap)
+locus KeyTable { capacity { pool rows of KeyRow indexed_by id; } }
+
+/// A secret's digest, pointing at its key.
+type DigestRow { digest: String = ""; key: String = ""; present: Bool = false; }
+
+@form(hashmap)
+locus DigestTable { capacity { pool rows of DigestRow indexed_by digest; } }
+
+@form(hashmap)
+locus AccountTable { capacity { pool rows of AccountRow indexed_by id; } }
+
+@form(hashmap)
+locus NodeTable { capacity { pool rows of NodeRow indexed_by id; } }
+
+@form(hashmap)
+locus SeatTable { capacity { pool rows of SeatRow indexed_by ref; } }
+
+/// Ids in the order they were added: a hashmap iterates in bucket order.
+@form(vec)
+locus IdOrder { capacity { heap rows of String; } }
+
+@form(vec)
+locus ChangeLog { capacity { heap rows of ChangeRow; } }
+
+/// The rows in the process. Bounded as the lists it answers are.
+///
+/// Its writes are `@unbounded`, which `hale verify` asks of a hashmap write
+/// in a long-lived locus; measured, a replaced row does not grow the
+/// process (FRICTION.md). The change log only grows, as a log does.
+locus MemoryStore {
+    params {
+        model_rows: ModelTable = ModelTable { };
+        model_order: IdOrder = IdOrder { };
+        project_rows: ProjectTable = ProjectTable { };
+        project_order: IdOrder = IdOrder { };
+        key_rows: KeyTable = KeyTable { };
+        key_order: IdOrder = IdOrder { };
+        digests: DigestTable = DigestTable { };
+        account_rows: AccountTable = AccountTable { };
+        account_order: IdOrder = IdOrder { };
+        node_rows: NodeTable = NodeTable { };
+        node_order: IdOrder = IdOrder { };
+        seat_rows: SeatTable = SeatTable { };
+        seat_order: IdOrder = IdOrder { };
+        log: ChangeLog = ChangeLog { };
+        fleet_rows: FleetTable = FleetTable { };
+        // a node's last beat, by its place in `node_order`: scalars set in
+        // place, so a heartbeat allocates nothing
+        beat_ns: bounded[Int; 64];
+        beat_load: bounded[Int; 64];
+        seat_state_rows: SeatStateTable = SeatStateTable { };
+        window_rows: WindowTable = WindowTable { };
+    }
+
+    fn kind() -> String { return "memory"; }
+
+    /// One api holds every write on its own: nothing to wait for.
+    fn hold(target: String) fallible(StoreError) { }
+
+    fn let_go() { }
+    fn ready() -> Bool { return true; }
+
+    // ---- the catalog
+
+    fn model(id: String) -> ModelRow fallible(StoreError) {
+        return self.model_rows.get(id) or ModelRow { };
+    }
+
+    fn models() -> ModelRows fallible(StoreError) {
+        let mut out = ModelRows { };
+        let mut i = 0;
+        while i < self.model_order.len() {
+            let id = self.model_order.get(i) or "";
+            push(out.rows, self.model_rows.get(id) or ModelRow { }) or discard;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn insert_model(row: ModelRow, change: ChangeRow) -> Bool fallible(StoreError) {
+        let cur = self.model_rows.get(row.id) or ModelRow { };
+        if cur.present { return false; }
+        if self.model_order.len() >= 256 {
+            fail StoreError { kind: "full", message: "the catalog holds at most 256 models" };
+        }
+        let mut r = row;
+        r.present = true;
+        self.model_rows.set(r);
+        self.model_order.push(r.id);
+        self.append(change);
+        return true;
+    }
+
+    @unbounded
+    fn update_model(row: ModelRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        r.present = true;
+        self.model_rows.set(r);
+        self.append(change);
+    }
+
+    // ---- projects
+
+    fn project(id: String) -> ProjectRow fallible(StoreError) {
+        return self.project_rows.get(id) or ProjectRow { };
+    }
+
+    fn projects() -> ProjectRows fallible(StoreError) {
+        let mut out = ProjectRows { };
+        let mut i = 0;
+        while i < self.project_order.len() {
+            let id = self.project_order.get(i) or "";
+            push(out.rows, self.project_rows.get(id) or ProjectRow { }) or discard;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn insert_project(row: ProjectRow, change: ChangeRow) -> Bool fallible(StoreError) {
+        let cur = self.project_rows.get(row.id) or ProjectRow { };
+        if cur.present { return false; }
+        if self.project_order.len() >= 64 {
+            fail StoreError { kind: "full", message: "voice holds at most 64 projects" };
+        }
+        let mut r = row;
+        r.present = true;
+        self.project_rows.set(r);
+        self.project_order.push(r.id);
+        self.append(change);
+        return true;
+    }
+
+    @unbounded
+    fn update_project(row: ProjectRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        r.present = true;
+        self.project_rows.set(r);
+        self.append(change);
+    }
+
+    @unbounded
+    fn archive_project(
+        row: ProjectRow,
+        change: ChangeRow,
+        revoked: Revocations
+    ) fallible(StoreError) {
+        for k in revoked.keys {
+            let mut gone = k;
+            gone.present = true;
+            self.key_rows.set(gone);
+        }
+        for c in revoked.changes {
+            self.append(c);
+        }
+        let mut r = row;
+        r.present = true;
+        self.project_rows.set(r);
+        self.append(change);
+    }
+
+    // ---- keys
+
+    fn key(id: String) -> KeyRow fallible(StoreError) {
+        return self.key_rows.get(id) or KeyRow { };
+    }
+
+    fn key_by_digest(digest: String) -> KeyRow fallible(StoreError) {
+        let d = self.digests.get(digest) or DigestRow { };
+        if !d.present { return KeyRow { }; }
+        return self.key_rows.get(d.key) or KeyRow { };
+    }
+
+    fn keys(project: String) -> KeyRows fallible(StoreError) {
+        let mut out = KeyRows { };
+        let mut i = 0;
+        while i < self.key_order.len() {
+            let id = self.key_order.get(i) or "";
+            let k = self.key_rows.get(id) or KeyRow { };
+            if k.project == project { push(out.rows, k) or discard; }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn insert_key(row: KeyRow, change: ChangeRow) -> Bool fallible(StoreError) {
+        let cur = self.key_rows.get(row.id) or KeyRow { };
+        if cur.present { return false; }
+        let held = self.keys(row.project) or KeyRows { };
+        if count(held.rows) >= 64 {
+            fail StoreError { kind: "full", message: "a project holds at most 64 keys" };
+        }
+        let mut r = row;
+        r.present = true;
+        self.key_rows.set(r);
+        self.key_order.push(r.id);
+        self.digests.set(DigestRow { digest: r.digest, key: r.id, present: true });
+        self.append(change);
+        return true;
+    }
+
+    @unbounded
+    fn update_key(row: KeyRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        r.present = true;
+        self.key_rows.set(r);
+        self.append(change);
+    }
+
+    @unbounded
+    fn touch_key(id: String, at: Time) fallible(StoreError) {
+        let mut k = self.key_rows.get(id) or KeyRow { };
+        if !k.present { return; }
+        k.used = true;
+        k.last_used_at = at;
+        self.key_rows.set(k);
+    }
+
+    // ---- accounts
+
+    fn account(id: String) -> AccountRow fallible(StoreError) {
+        return self.account_rows.get(id) or AccountRow { };
+    }
+
+    fn accounts() -> AccountRows fallible(StoreError) {
+        let mut out = AccountRows { };
+        let mut i = 0;
+        while i < self.account_order.len() {
+            let id = self.account_order.get(i) or "";
+            push(out.rows, self.account_rows.get(id) or AccountRow { }) or discard;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn insert_account(row: AccountRow, change: ChangeRow) -> Bool fallible(StoreError) {
+        let cur = self.account_rows.get(row.id) or AccountRow { };
+        if cur.present { return false; }
+        if self.account_order.len() >= 64 {
+            fail StoreError { kind: "full", message: "voice holds at most 64 accounts" };
+        }
+        let mut r = row;
+        r.present = true;
+        self.account_rows.set(r);
+        self.account_order.push(r.id);
+        self.append(change);
+        return true;
+    }
+
+    @unbounded
+    fn update_account(row: AccountRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        r.present = true;
+        self.account_rows.set(r);
+        self.append(change);
+    }
+
+    // ---- nodes and seats
+
+    fn node(id: String) -> NodeRow fallible(StoreError) {
+        return self.node_rows.get(id) or NodeRow { };
+    }
+
+    fn nodes() -> NodeRows fallible(StoreError) {
+        let mut out = NodeRows { };
+        let mut i = 0;
+        while i < self.node_order.len() {
+            let id = self.node_order.get(i) or "";
+            push(out.rows, self.node_rows.get(id) or NodeRow { }) or discard;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn insert_node(row: NodeRow, change: ChangeRow) -> Bool fallible(StoreError) {
+        let cur = self.node_rows.get(row.id) or NodeRow { };
+        if cur.present { return false; }
+        if self.node_order.len() >= 64 {
+            fail StoreError { kind: "full", message: "voice holds at most 64 nodes" };
+        }
+        let mut r = row;
+        r.present = true;
+        r.assignment_version = 1;
+        self.node_rows.set(r);
+        self.node_order.push(r.id);
+        self.append(change);
+        return true;
+    }
+
+    @unbounded
+    fn update_node(row: NodeRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        let stored = self.node_rows.get(row.id) or NodeRow { };
+        r.assignment_version = stored.assignment_version + 1;
+        r.present = true;
+        self.node_rows.set(r);
+        self.append(change);
+    }
+
+    fn seat(node: String, id: String) -> SeatRow fallible(StoreError) {
+        return self.seat_rows.get(node + "/" + id) or SeatRow { };
+    }
+
+    fn seats() -> SeatRows fallible(StoreError) {
+        let mut out = SeatRows { };
+        let mut i = 0;
+        while i < self.seat_order.len() {
+            let ref = self.seat_order.get(i) or "";
+            let s = self.seat_rows.get(ref) or SeatRow { };
+            if s.present { push(out.rows, s) or discard; }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn insert_seat(row: SeatRow, change: ChangeRow) -> Bool fallible(StoreError) {
+        let ref = row.node + "/" + row.id;
+        let cur = self.seat_rows.get(ref) or SeatRow { };
+        if cur.present { return false; }
+        let all = self.seats() or SeatRows { };
+        if count(all.rows) >= 256 {
+            fail StoreError { kind: "full", message: "voice holds at most 256 seats" };
+        }
+        let mut r = row;
+        r.ref = ref;
+        r.present = true;
+        self.seat_rows.set(r);
+        if !self.seen(ref) { self.seat_order.push(ref); }
+        self.bump(row.node);
+        self.append(change);
+        return true;
+    }
+
+    @unbounded
+    fn update_seat(row: SeatRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        r.ref = row.node + "/" + row.id;
+        r.present = true;
+        self.seat_rows.set(r);
+        self.bump(row.node);
+        self.append(change);
+    }
+
+    @unbounded
+    fn delete_seat(row: SeatRow, change: ChangeRow) fallible(StoreError) {
+        let mut r = row;
+        r.ref = row.node + "/" + row.id;
+        r.present = false;
+        self.seat_rows.set(r);
+        self.bump(row.node);
+        self.append(change);
+    }
+
+    /// True when `ref` was ever a seat here: a seat removed and added again
+    /// keeps its place in the order.
+    fn seen(ref: String) -> Bool {
+        let mut i = 0;
+        while i < self.seat_order.len() {
+            if (self.seat_order.get(i) or "") == ref { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// A change to a node's seats is a new assignment for the node.
+    @unbounded
+    fn bump(node: String) {
+        let mut n = self.node_rows.get(node) or NodeRow { };
+        if !n.present { return; }
+        n.assignment_version = n.assignment_version + 1;
+        self.node_rows.set(n);
+    }
+
+    // ---- the change log
+
+    @unbounded
+    fn append(change: ChangeRow) {
+        let mut c = change;
+        c.seq = self.log.len() + 1;
+        c.id = "chg_" + pad(c.seq, 6);
+        self.log.push(c);
+    }
+
+    /// No brain writes to the memory store.
+    fn route_table() -> String fallible(StoreError) { return ""; }
+
+    fn changes(q: ChangeQuery) -> ChangeRows fallible(StoreError) {
+        let mut out = ChangeRows { };
+        let limit = if q.limit < 1 { 100 } else if q.limit > 1000 { 1000 } else { q.limit };
+        let mut started = len(q.cursor) == 0;
+        let mut i = self.log.len() - 1;
+        while i >= 0 {
+            let c = self.log.get(i) or ChangeRow { };
+            if !started {
+                if c.id == q.cursor { started = true; }
+            } else if matches(c, q) {
+                if count(out.rows) >= limit {
+                    out.more = true;
+                    return out;
+                }
+                push(out.rows, c) or discard;
+            }
+            i = i - 1;
+        }
+        if !started { out.cursor_known = false; }
+        return out;
+    }
+
+    // ---- the fleet as reported
+
+    fn fleet(node: String) -> FleetRow fallible(StoreError) {
+        return self.fleet_rows.get(node) or FleetRow { };
+    }
+
+    @unbounded
+    fn put_fleet(row: FleetRow) fallible(StoreError) {
+        let mut r = row;
+        r.present = true;
+        self.fleet_rows.set(r);
+    }
+
+    fn beat(node: String) -> Beat fallible(StoreError) {
+        let i = self.node_index(node);
+        if i < 0 || i >= count(self.beat_ns) { return Beat { }; }
+        let ns = at(self.beat_ns, i) or 0;
+        if ns == 0 { return Beat { }; }
+        return Beat {
+            at: std::time::from_nanos(ns),
+            in_flight: at(self.beat_load, i) or 0,
+            present: true,
+        };
+    }
+
+    fn put_beat(node: String, when: Time, in_flight: Int) fallible(StoreError) {
+        let i = self.node_index(node);
+        if i < 0 { return; }
+        while count(self.beat_ns) <= i {
+            push(self.beat_ns, 0) or discard;
+            push(self.beat_load, 0) or discard;
+        }
+        set(self.beat_ns, i, std::time::nanos(when)) or discard;
+        set(self.beat_load, i, in_flight) or discard;
+    }
+
+    /// A node's place in the order it was added, -1 for none.
+    fn node_index(node: String) -> Int {
+        let mut i = 0;
+        while i < self.node_order.len() {
+            if (self.node_order.get(i) or "") == node { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn seat_states(node: String) -> SeatStateRows fallible(StoreError) {
+        let mut out = SeatStateRows { };
+        let mut i = 0;
+        while i < self.seat_order.len() {
+            let ref = self.seat_order.get(i) or "";
+            let st = self.seat_state_rows.get(ref) or SeatStateRow { };
+            if st.present && st.node == node { push(out.rows, st) or discard; }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn put_seat_state(row: SeatStateRow) fallible(StoreError) {
+        let cur = self.seat_state_rows.get(row.ref) or SeatStateRow { };
+        if cur.present
+            && cur.status == row.status
+            && cur.reason == row.reason
+            && cur.in_flight == row.in_flight
+        {
+            return;
+        }
+        let mut r = row;
+        r.present = true;
+        self.seat_state_rows.set(r);
+    }
+
+    fn windows(account: String) -> String fallible(StoreError) {
+        let w = self.window_rows.get(account) or WindowRow { };
+        return w.json;
+    }
+
+    @unbounded
+    fn put_windows(account: String, json: String) fallible(StoreError) {
+        let cur = self.window_rows.get(account) or WindowRow { };
+        if cur.present && cur.json == json { return; }
+        self.window_rows.set(WindowRow { account: account, json: json, present: true });
+    }
+}
+
+/// True when `c` is one `q` asks for (all but the cursor and the limit).
+fn matches(c: ChangeRow, q: ChangeQuery) -> Bool {
+    if len(q.target) > 0
+        && c.target != q.target
+        && !std::str::starts_with(c.target, q.target + "/")
+    {
+        return false;
+    }
+    let at = std::time::unix(c.at);
+    if q.has_from && at < std::time::unix(q.from) { return false; }
+    if q.has_to && at > std::time::unix(q.to) { return false; }
+    return true;
+}

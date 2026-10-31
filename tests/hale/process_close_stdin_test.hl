@@ -17,7 +17,11 @@ fn main() {
     std::test::assert_eq_int(code, 0, "cat exited 0 after EOF");
     // The pipe holds all of it (one read takes up to 64 KiB), and the
     // next read is the EOF.
-    std::test::assert_eq_str(std::process::read_stdout(c) or "", "hello\nworld\n", "everything written came back");
+    std::test::assert_eq_str(
+        std::process::read_stdout(c) or "",
+        "hello\nworld\n",
+        "everything written came back",
+    );
     std::test::assert_eq_str(std::process::read_stdout(c) or "x", "", "then EOF");
     // Idempotent, and a write after it is the closed fd's IoError.
     std::process::close_stdin(c);

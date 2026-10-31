@@ -72,6 +72,14 @@ main locus App {
         fixture: std::api::test::Rpc = std::api::test::Rpc { };
         failures: Int = 0;
         answered_when_failed: Int = -1;
+        h: api::Exposure = api::serve(
+            S,
+            self.fixture,
+            as: "svc",
+            receivers: { Svc: self.svc },
+            bound: 8,
+            on_full: refuse
+        );
     }
     placement { svc: cooperative(pool = work) where async_io; }
     on_failure(c: Svc, err: ClosureViolation) {
@@ -81,12 +89,14 @@ main locus App {
     }
 
     run() {
-        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
         let f = self.fixture;
 
         f.call_as_peer(1, "Svc::fast", "{\"n\":1}", 1000);
         std::test::assert_eq_str(f.await_outcome(1, 2000), "result", "the first generation serves");
-        std::test::assert(std::str::contains(f.line(1), "\"value\":{\"n\":1}"), "and says it is the first");
+        std::test::assert(
+            std::str::contains(f.line(1), "\"value\":{\"n\":1}"),
+            "and says it is the first",
+        );
         std::test::assert_eq_int(self.svc.births, 1, "one incarnation so far");
 
         // the call that arms the failure, and two calls queued behind it
@@ -97,25 +107,59 @@ main locus App {
         // after the three is answered once they are admitted; only then may the
         // receiver fail
         f.send(-1, "probe");
-        std::test::assert_eq_str(f.await_outcome(-1, 3000), "refusal:malformed", "the three calls were admitted before the receiver failed");
+        std::test::assert_eq_str(
+            f.await_outcome(-1, 3000),
+            "refusal:malformed",
+            "the three calls were admitted before the receiver failed",
+        );
         self.svc.released = true;
-        std::test::assert_eq_str(f.await_outcome(2, 3000), "result", "the call executing across the restart completes");
-        std::test::assert(std::str::contains(f.line(2), "\"value\":{\"n\":1}"), "under the generation that ran it");
+        std::test::assert_eq_str(
+            f.await_outcome(2, 3000),
+            "result",
+            "the call executing across the restart completes",
+        );
+        std::test::assert(
+            std::str::contains(f.line(2), "\"value\":{\"n\":1}"),
+            "under the generation that ran it",
+        );
         std::test::assert_eq_int(self.failures, 1, "the owner's on_failure ran");
-        std::test::assert_eq_str(f.await_outcome(3, 3000), "refusal:unavailable", "a call queued behind it was accepted under the failed generation");
-        std::test::assert_eq_str(f.await_outcome(4, 3000), "refusal:unavailable", "and so was the next");
+        std::test::assert_eq_str(
+            f.await_outcome(3, 3000),
+            "refusal:unavailable",
+            "a call queued behind it was accepted under the failed generation",
+        );
+        std::test::assert_eq_str(
+            f.await_outcome(4, 3000),
+            "refusal:unavailable",
+            "and so was the next",
+        );
         let mut i = 0;
         while i < 3000 && self.svc.births < 2 { std::time::sleep(1ms); i = i + 1; }
-        std::test::assert_eq_int(self.svc.births, 2, "the receiver restarted: a new incarnation, the same instance");
-        std::test::assert_eq_int(self.svc.ran_slow, 0, "neither queued call ran, in either generation");
+        std::test::assert_eq_int(
+            self.svc.births,
+            2,
+            "the receiver restarted: a new incarnation, the same instance",
+        );
+        std::test::assert_eq_int(
+            self.svc.ran_slow,
+            0,
+            "neither queued call ran, in either generation",
+        );
         std::test::assert_eq_int(self.svc.ran_fast, 1, "only the first generation's fast call ran");
 
         // the next call runs in the new generation
         f.call_as_peer(5, "Svc::fast", "{\"n\":5}", 1000);
-        std::test::assert_eq_str(f.await_outcome(5, 3000), "result", "the restarted receiver serves again, without re-establishing the exposure");
-        std::test::assert(std::str::contains(f.line(5), "\"value\":{\"n\":2}"), "in the second generation");
+        std::test::assert_eq_str(
+            f.await_outcome(5, 3000),
+            "result",
+            "the restarted receiver serves again, without re-establishing the exposure",
+        );
+        std::test::assert(
+            std::str::contains(f.line(5), "\"value\":{\"n\":2}"),
+            "in the second generation",
+        );
         std::test::assert_eq_int(self.svc.ran_fast, 2, "it ran once");
-        h.stop();
+        self.h.stop();
     }
 }
 

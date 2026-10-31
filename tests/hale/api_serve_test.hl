@@ -30,20 +30,26 @@ fn lib_source() -> String {
 }
 
 fn app_source(sock: String, me: String, receivers: String) -> String {
-    return app_with("handlers: lib::Handlers = lib::Handlers { }; core: lib::Internal = lib::Internal { };", sock, me, receivers);
+    return app_with(
+        "handlers: lib::Handlers = lib::Handlers { }; core: lib::Internal = lib::Internal { };",
+        sock,
+        me,
+        receivers,
+    );
 }
 
 fn app_with(held: String, sock: String, me: String, receivers: String) -> String {
     return "import \"../lib\" as lib;\n"
         + "locus Table {\n"
-        + "    fn holds(p: std::api::Principal, r: String) -> Bool { return p.name == \"uid:" + me + "\"; }\n"
+        + "    fn holds(p: std::api::Principal, r: String) -> Bool { return p.name == \"uid:" + me
+        + "\"; }\n"
         + "}\n"
         + "main locus App {\n"
-        + "    params { " + held + " }\n"
+        + "    params { " + held + " h: api::Exposure = api::serve(lib, unix::Rpc { path: \"" + sock
+        + "\", roles: Table { } }, as: \"lib\"" + receivers + ", bound: 8, on_full: refuse); }\n"
         + "    run() {\n"
-        + "        let h = api::serve(lib, unix::Rpc { path: \"" + sock + "\", roles: Table { } }, as: \"lib\"" + receivers + ", bound: 8, on_full: refuse);\n"
         + "        std::time::sleep(8s);\n"
-        + "        h.stop();\n"
+        + "        self.h.stop();\n"
         + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
@@ -99,7 +105,12 @@ locus Api {
 }
 
 fn run_tool(argv: String) -> std::process::ProcessOutput {
-    return std::process::run(argv) or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    return std::process::run(argv) or std::process::ProcessOutput {
+        code: -9,
+        signal: 0,
+        stdout: "",
+        stderr: "run failed",
+    };
 }
 
 fn main() {
@@ -113,21 +124,47 @@ fn main() {
     std::io::fs::write_file(root + "/lib/lib.hl", lib_source()) or discard;
 
     // ---- a receiver bound to a locus no row names is refused, located
-    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, ", receivers: { Nobody: self.handlers }")) or discard;
+    std::io::fs::write_file(
+        root + "/app/main.hl",
+        app_source(sock, me, ", receivers: { Nobody: self.handlers }"),
+    ) or discard;
     let wrong = run_tool(hale + "\ncheck\n" + root + "/app");
-    std::test::assert(wrong.code != 0 && std::str::contains(wrong.stderr, "binds `Nobody`, which no row of `lib` names"), "a receiver must be a locus the surface's rows name: " + wrong.stderr);
+    std::test::assert(
+        wrong.code != 0
+            && std::str::contains(wrong.stderr, "binds `Nobody`, which no row of `lib` names"),
+        "a receiver must be a locus the surface's rows name: " + wrong.stderr,
+    );
 
     // ---- a served type held twice, with no receiver chosen, would answer for both: refused
-    std::io::fs::write_file(root + "/app/main.hl", app_with("handlers: lib::Handlers = lib::Handlers { }; spare: lib::Handlers = lib::Handlers { };", sock, me, "")) or discard;
+    std::io::fs::write_file(
+        root + "/app/main.hl",
+        app_with(
+            "handlers: lib::Handlers = lib::Handlers { }; spare: lib::Handlers = lib::Handlers { };",
+            sock,
+            me,
+            "",
+        ),
+    ) or discard;
     let twice = run_tool(hale + "\ncheck\n" + root + "/app");
-    std::test::assert(twice.code != 0 && std::str::contains(twice.stderr, "Handlers"), "a served type held twice names no receiver: " + twice.stderr);
+    std::test::assert(
+        twice.code != 0 && std::str::contains(twice.stderr, "Handlers"),
+        "a served type held twice names no receiver: " + twice.stderr,
+    );
 
     // ---- holding the library's other locus serves nothing of it
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, "")) or discard;
     let served = run_tool(hale + "\ncheck\n--api\n" + root + "/app");
     std::test::assert_eq_int(served.code, 0, "the app checks: " + served.stderr);
-    std::test::assert(std::str::contains(served.stdout, "lib::Handlers::on_order") && std::str::contains(served.stdout, "\"clerk\""), "the served locus's gated handler is on the surface: " + served.stdout);
-    std::test::assert(!std::str::contains(served.stdout, "Internal") && !std::str::contains(served.stdout, "on_tick"), "the held, unserved locus is not: " + served.stdout);
+    std::test::assert(
+        std::str::contains(served.stdout, "lib::Handlers::on_order")
+            && std::str::contains(served.stdout, "\"clerk\""),
+        "the served locus's gated handler is on the surface: " + served.stdout,
+    );
+    std::test::assert(
+        !std::str::contains(served.stdout, "Internal")
+            && !std::str::contains(served.stdout, "on_tick"),
+        "the held, unserved locus is not: " + served.stdout,
+    );
 
     let built = run_tool(hale + "\nbuild\n" + root + "/app");
     std::test::assert_eq_int(built.code, 0, "and builds: " + built.stderr);
@@ -136,9 +173,17 @@ fn main() {
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
     let r = api.ask("{\"call\":\"lib::Handlers::on_order\",\"payload\":{\"id\":7},\"id\":\"c-1\"}");
-    std::test::assert(std::str::contains(r, "\"ok\":true") && std::str::contains(r, "\"id\":7") && std::str::contains(r, "\"by\":\"uid:" + me + "\""), "the imported handler answers through the socket, gated: " + r);
+    std::test::assert(
+        std::str::contains(r, "\"ok\":true")
+            && std::str::contains(r, "\"id\":7")
+            && std::str::contains(r, "\"by\":\"uid:" + me + "\""),
+        "the imported handler answers through the socket, gated: " + r,
+    );
     let t = api.ask("{\"call\":\"lib::Internal::on_tick\",\"payload\":{\"n\":1},\"id\":\"c-2\"}");
-    std::test::assert(std::str::contains(t, "\"kind\":\"malformed\"") && std::str::contains(t, "unknown_member"), "the internal locus is no member of the surface: " + t);
+    std::test::assert(
+        std::str::contains(t, "\"kind\":\"malformed\"") && std::str::contains(t, "unknown_member"),
+        "the internal locus is no member of the surface: " + t,
+    );
     p.stop();
     std::io::fs::unlink(sock) or discard;
     let _rm = run_tool("rm\n-rf\n" + root);

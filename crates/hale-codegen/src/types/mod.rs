@@ -31,7 +31,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match t {
             TypeExpr::Bounded { elem, cap, .. } => {
                 let e = self.type_expr_to_codegen_ty(elem)?;
-                if !matches!(
+                // A payload-free enum is its i32 tag: inline bytes, like
+                // a `Bool`. One with payloads is a pointer to its cell,
+                // which the slots' anchoring does not walk; the check
+                // refuses it (`bounded_element_refusal`).
+                let tag_enum = matches!(&e, CodegenTy::Enum(n)
+                    if self.user_enums.get(n.as_str()).is_some_and(|i| !i.has_payload));
+                if !tag_enum && !matches!(
                     e,
                     CodegenTy::Int
                         | CodegenTy::Float
@@ -96,6 +102,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // own `declare_locus_struct` runs later in the
                     // same pass.
                     Ok(CodegenTy::LocusRef(name.clone()))
+                } else if self.pending_enum_names.contains(name) && !self.user_enums.contains_key(name) {
+                    // An enum not declared yet: its layout is unknown until
+                    // it is, so whatever names it waits (`lower_program`'s
+                    // dependency loop), rather than taking a record's.
+                    Err(CodegenError::Unsupported(format!(
+                        "unknown type name `{name}` yet: an enum declared after its use"
+                    )))
                 } else if self.user_enums.contains_key(name) {
                     // Enums resolve to Enum(name) — BEFORE the
                     // user_types/pending_type_names branch. An enum
@@ -189,6 +202,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     || self.pending_locus_names.contains(mangled)
                 {
                     Ok(CodegenTy::LocusRef(mangled.to_string()))
+                } else if self.pending_enum_names.contains(mangled) && !self.user_enums.contains_key(mangled) {
+                    Err(CodegenError::Unsupported(format!(
+                        "unknown type name `{mangled}` yet: an enum declared after its use"
+                    )))
                 } else if self.user_enums.contains_key(mangled) {
                     // Path-qualified enum (e.g. a cross-seed
                     // `lib::Result`). Checked before the
@@ -472,6 +489,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         variants: variant_infos,
                         has_payload,
                         payload_bytes: max_bytes,
+                        set: t.is_set(),
                     },
                 );
                 return Ok(());
@@ -520,14 +538,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Returns `None` when no rewrite applies — caller falls back
     /// to the original path. Idempotent: if `bare` is already a
     /// mangled name in `user_types`, the rewrite is skipped.
-    /// m67: like resolve_generic_struct_path but takes a target
-    /// CodegenTy (the declared type at the use site — return slot
-    /// or struct field) instead of a TypeExpr ascription. Used at
-    /// return statements (where the target is the fn's declared
-    /// return CodegenTy) and struct field initializers (where the
-    /// target is the field's declared CodegenTy). The caller has
-    /// already converted the source-position TypeExpr through
-    /// `type_expr_to_codegen_ty`, so we get the mangled name directly.
+    /// m67: the target is the declared CodegenTy at the use site (a
+    /// `let` ascription, a return slot, a field, a param, an
+    /// assignment's place, a `fail` payload), already converted
+    /// through `type_expr_to_codegen_ty`, so it names the mangled
+    /// monomorph directly. Every site reaches it through
+    /// `rewrite_generic_literal`, which walks array and tuple
+    /// literals down to their elements.
     pub(crate) fn resolve_generic_struct_path_for_codegen_ty(
         &self,
         bare: &QualifiedName,
@@ -573,16 +590,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
-    pub(crate) fn resolve_generic_struct_path(
-        &self,
-        bare: &QualifiedName,
-        expected: &TypeExpr,
-    ) -> Option<QualifiedName> {
-        // The type resolver follows aliases and qualified names before
-        // the literal is matched to its concrete template. A let's
-        // annotation and a field's type therefore use the same route.
-        let target = self.type_expr_to_codegen_ty(expected).ok()?;
-        self.resolve_generic_struct_path_for_codegen_ty(bare, &target)
+    /// A literal spelled with a generic template's name, written where
+    /// `target` is the declared type: the literal rewritten to the
+    /// monomorph `target` names, and an array (`[x, y]`, `[x; N]`) or
+    /// tuple literal's elements each the same way against their declared
+    /// element type (`let cs: [Cfg<Int>; 2] = [Cfg { .. }, Cfg { .. }]`). `None` where nothing
+    /// is rewritten. Every rewritten literal is the same source
+    /// expression, renamed, and keeps its id (GH #921 A2).
+    pub(crate) fn rewrite_generic_literal(&self, e: &Expr, target: &CodegenTy) -> Option<Expr> {
+        let each = |parts: &[Expr], tys: &mut dyn Iterator<Item = &CodegenTy>| -> Option<Vec<Expr>> {
+            let new: Vec<Option<Expr>> = parts.iter().zip(tys).map(|(p, t)| self.rewrite_generic_literal(p, t)).collect();
+            if new.iter().all(Option::is_none) {
+                return None;
+            }
+            Some(parts.iter().zip(new).map(|(p, n)| n.unwrap_or_else(|| p.clone())).collect())
+        };
+        match (e, target) {
+            (Expr::Struct { path, inits, span, id }, _) => {
+                let path = self.resolve_generic_struct_path_for_codegen_ty(path, target)?;
+                Some(Expr::Struct { id: *id, path, inits: inits.clone(), span: *span })
+            }
+            (Expr::Array(parts, span), CodegenTy::Array(elem, _)) => {
+                Some(Expr::Array(each(parts, &mut std::iter::repeat(&**elem))?, *span))
+            }
+            (Expr::ArrayRepeat { val, count, span }, CodegenTy::Array(elem, _)) => Some(Expr::ArrayRepeat {
+                val: Box::new(self.rewrite_generic_literal(val, elem)?),
+                count: *count,
+                span: *span,
+            }),
+            (Expr::Tuple(parts, span), CodegenTy::Tuple(elems)) if parts.len() == elems.len() => {
+                Some(Expr::Tuple(each(parts, &mut elems.iter())?, *span))
+            }
+            _ => None,
+        }
     }
 
     /// F.30b (5b) (2026-05-20): wrap a String / Bytes literal
@@ -758,14 +798,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &CodegenTy,
     ) -> Option<(&CodegenTy, u64)> {
         match ty {
-            CodegenTy::Array(elem, n) => match elem.as_ref() {
-                CodegenTy::Int
-                | CodegenTy::Float
-                | CodegenTy::Bool
-                | CodegenTy::Decimal(_)
-                | CodegenTy::Duration => Some((elem.as_ref(), *n)),
-                _ => None,
-            },
+            // The element's layout is the one rule the owned-view pass
+            // reads a write into the field by
+            // (`hale_types::ty::inline_array_scalar`).
+            CodegenTy::Array(elem, n) => {
+                let prim = match elem.as_ref() {
+                    CodegenTy::Int => Some(PrimType::Int),
+                    CodegenTy::Float => Some(PrimType::Float),
+                    CodegenTy::Bool => Some(PrimType::Bool),
+                    CodegenTy::Decimal(s) => Some(PrimType::Decimal(*s)),
+                    CodegenTy::Duration => Some(PrimType::Duration),
+                    CodegenTy::Time => Some(PrimType::Time),
+                    CodegenTy::String => Some(PrimType::String),
+                    CodegenTy::Bytes => Some(PrimType::Bytes),
+                    _ => None,
+                };
+                prim.filter(|p| hale_types::ty::inline_array_scalar(*p)).map(|_| (elem.as_ref(), *n))
+            }
             _ => None,
         }
     }
@@ -936,33 +985,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(fname)
                 .cloned()
                 .expect("field declared by declare_user_type");
-            // m67: rewrite a bare-name struct literal in field-
-            // init position to its mangled monomorph using the
-            // field's declared CodegenTy as the target.
+            // m67: a literal spelled with a generic template's name in
+            // field-init position takes the field's declared type's
+            // arguments (`rewrite_generic_literal`).
             let rewritten;
-            let expr_to_lower: &Expr = match expr {
-                Expr::Struct { path, inits, span, id } => {
-                    match self
-                        .resolve_generic_struct_path_for_codegen_ty(
-                            path,
-                            &declared_ty,
-                        )
-                    {
-                        Some(new_path) => {
-                            // GH #921 A2: same source expression,
-                            // renamed path — it keeps its id.
-                            rewritten = Expr::Struct {
-                                id: *id,
-                                path: new_path,
-                                inits: inits.clone(),
-                                span: *span,
-                            };
-                            &rewritten
-                        }
-                        None => expr,
-                    }
+            let expr_to_lower: &Expr = match self.rewrite_generic_literal(expr, &declared_ty) {
+                Some(r) => {
+                    rewritten = r;
+                    &rewritten
                 }
-                _ => expr,
+                None => expr,
             };
             // A default is evaluated here, in the literal's scope: the
             // literal is one step of the evaluation path, as the

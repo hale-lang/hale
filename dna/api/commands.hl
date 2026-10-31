@@ -89,14 +89,40 @@ type CommandRequest {
     steps: String = "";
     pack: String = "";
 }
-type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
-type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
+type TaskCommandOutcome {
+    state: String = "";
+    from: String = "";
+    to: String = "";
+    event_id: String = "";
+}
+type PersonRetirementOutcome {
+    state: String = "";
+    from: String = "";
+    to: String = "";
+    event_id: String = "";
+    transferred: Int = -1;
+}
 // The admitted ask and, re-derived on every read, the organism's answer to it.
-type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; kind: String = ""; }
+type TaskCreateOutcome {
+    intent_id: String = "";
+    intent_state: String = "";
+    task_id: String = "";
+    event_id: String = "";
+    kind: String = "";
+}
 // A leg's claim or outcome as it reads back (GH #946): the attempt and its lease, or the refusal.
 type AttemptCommandOutcome {
-    state: String = ""; attempt_id: String = ""; work_id: String = ""; task_id: String = ""; performer_kind: String = "";
-    holder: String = ""; token: Int = -1; until: Int = 0; disposition: String = ""; reason: String = ""; event_id: String = "";
+    state: String = "";
+    attempt_id: String = "";
+    work_id: String = "";
+    task_id: String = "";
+    performer_kind: String = "";
+    holder: String = "";
+    token: Int = -1;
+    until: Int = 0;
+    disposition: String = "";
+    reason: String = "";
+    event_id: String = "";
     allowance_micros: Int = -1; // GH #1131: an ask for spend the spine granted, what the attempt may cost (-1: nothing bounds it)
 }
 // A change to the structure as it reads back: the request row's own id
@@ -104,7 +130,14 @@ type AttemptCommandOutcome {
 // landed, and the answer — `requested`, `proposed` (with the Review the
 // Board decides), `refused` (with why; also a refusal at the head, with no
 // row), or `already_proposed` (the same batch still awaits that Review).
-type StructureCommandOutcome { state: String = ""; request_id: String = ""; review_id: String = ""; event_id: String = ""; why: String = ""; warning: String = ""; }
+type StructureCommandOutcome {
+    state: String = "";
+    request_id: String = "";
+    review_id: String = "";
+    event_id: String = "";
+    why: String = "";
+    warning: String = "";
+}
 type OrganizationCommandOutcome {
     proposal_state: String = "pending";
     source_head: String = "";
@@ -165,8 +198,12 @@ interface CommandProvider {
 locus NoCommands {
     params { }
     fn supported(operation: String, version: String) -> Bool { return false; }
-    fn submit(context: CommandContext, command: CommandRequest) -> CommandResult { return CommandResult { code: "commands_unsupported" }; }
-    fn lookup(context: CommandContext, request_id: String) -> CommandResult { return CommandResult { code: "commands_unsupported" }; }
+    fn submit(context: CommandContext, command: CommandRequest) -> CommandResult {
+        return CommandResult { code: "commands_unsupported" };
+    }
+    fn lookup(context: CommandContext, request_id: String) -> CommandResult {
+        return CommandResult { code: "commands_unsupported" };
+    }
 }
 
 type CommandHeader {
@@ -178,7 +215,9 @@ type CommandHeader {
 locus CommandWire {
     params { }
     fn raw(object: String, key: String) -> String { return std::json::find_field_raw(object, key); }
-    fn is_text(raw: String) -> Bool { return len(raw) >= 2 && std::str::starts_with(raw, "\"") && std::str::ends_with(raw, "\""); }
+    fn is_text(raw: String) -> Bool {
+        return len(raw) >= 2 && std::str::starts_with(raw, "\"") && std::str::ends_with(raw, "\"");
+    }
     fn text(object: String, key: String) -> String {
         let raw = self.raw(object, key);
         if !self.is_text(raw) { return ""; }
@@ -212,7 +251,12 @@ locus CommandWire {
             // Obsolete folded headers and malformed names are ambiguous.
             if colon < 1 { return CommandHeader { valid: false }; }
             let key = line[0..colon];
-            if key != std::str::trim(key) || std::str::contains(key, " ") || std::str::contains(key, "\t") { return CommandHeader { valid: false }; }
+            if key != std::str::trim(key)
+                || std::str::contains(key, " ")
+                || std::str::contains(key, "\t")
+            {
+                return CommandHeader { valid: false };
+            }
             if std::str::lower(key) == std::str::lower(name) {
                 result.count = result.count + 1;
                 result.value = std::str::trim(line[(colon + 1)..len(line)]);
@@ -223,13 +267,21 @@ locus CommandWire {
         return result;
     }
     fn origin_valid(origin: String) -> Bool {
-        let scheme = if std::str::starts_with(origin, "https://") { 8 } else if std::str::starts_with(origin, "http://") { 7 } else { 0 };
+        let scheme = if std::str::starts_with(origin, "https://") {
+            8
+        } else if std::str::starts_with(origin, "http://") {
+            7
+        } else {
+            0
+        };
         let size = len(origin);
         if scheme == 0 || size <= scheme || size > 2048 { return false; }
         let mut i = scheme;
         while i < size {
             let c = std::str::byte_at_unchecked(origin, i);
-            if c <= 32 || c >= 127 || c == 47 || c == 92 || c == 64 || c == 63 || c == 35 { return false; }
+            if c <= 32 || c >= 127 || c == 47 || c == 92 || c == 64 || c == 63 || c == 35 {
+                return false;
+            }
             i = i + 1;
         }
         return true;
@@ -249,7 +301,12 @@ locus CommandWire {
         return true;
     }
     fn lookup_id(query: String) -> String {
-        if !std::str::starts_with(query, "request_id=") || std::str::contains(query, "&") || len(query) > 1024 { return ""; }
+        if !std::str::starts_with(query, "request_id=")
+            || std::str::contains(query, "&")
+            || len(query) > 1024
+        {
+            return "";
+        }
         let http = Http { };
         let id = http.decode(query[11..len(query)]);
         if !id.ok || !self.bounded(id.text, 128, true, false) { return ""; }
@@ -258,26 +315,47 @@ locus CommandWire {
     fn guard(req: std::http::Request, origin: String) -> String {
         if !self.origin_valid(origin) { return "commands_unsupported"; }
         let supplied = self.header(req.headers, "Origin");
-        if !supplied.valid || supplied.count != 1 || supplied.value != origin { return "invalid_origin"; }
+        if !supplied.valid || supplied.count != 1 || supplied.value != origin {
+            return "invalid_origin";
+        }
         let content = self.header(req.headers, "Content-Type");
-        if !content.valid || content.count != 1 || std::str::lower(content.value) != "application/json" { return "unsupported_media_type"; }
+        if !content.valid
+            || content.count != 1
+            || std::str::lower(content.value) != "application/json"
+        {
+            return "unsupported_media_type";
+        }
         let marker = self.header(req.headers, "X-Hale-Command");
         if !marker.valid || marker.count != 1 || marker.value != "1" { return "invalid_command"; }
         let length = self.header(req.headers, "Content-Length");
         let transfer = self.header(req.headers, "Transfer-Encoding");
-        if !length.valid || length.count > 1 || !transfer.valid || transfer.count > 0 { return "invalid_command"; }
-        if length.count == 1 && length.value != to_string(len(req.body)) { return "invalid_command"; }
+        if !length.valid || length.count > 1 || !transfer.valid || transfer.count > 0 {
+            return "invalid_command";
+        }
+        if length.count == 1 && length.value != to_string(len(req.body)) {
+            return "invalid_command";
+        }
         if len(req.body) > 32768 { return "command_too_large"; }
         return "";
     }
     fn recipients_valid(value: String) -> Bool {
         let syntax = ops::OrganizationJson { };
-        if len(value) > 65536 || !syntax.valid(value) || !std::str::starts_with(std::str::trim(value), "[") { return false; }
+        if len(value) > 65536
+            || !syntax.valid(value)
+            || !std::str::starts_with(std::str::trim(value), "[")
+        {
+            return false;
+        }
         let mut it = std::json::array_first(value); let mut count = 0; let mut seen = "\n";
         while !it.done {
             if !self.is_text(it.element) { return false; }
             let name = syntax.decode(it.element);
-            if !self.bounded(name, 256, true, false) || std::str::contains(seen, "\n" + name + "\n") || count >= 64 { return false; }
+            if !self.bounded(name, 256, true, false)
+                || std::str::contains(seen, "\n" + name + "\n")
+                || count >= 64
+            {
+                return false;
+            }
             seen = seen + name + "\n"; count = count + 1; it = std::json::array_next(it);
         }
         return true;
@@ -290,26 +368,94 @@ locus CommandWire {
         while !it.done {
             if !self.is_text(it.element) || n >= 64 { return "!"; }
             let word = syntax.decode(it.element);
-            if !self.bounded(word, 128, true, false) || std::str::contains(word, " ") { return "!"; }
-            out = out + (if len(out) > 0 { " " } else { "" }) + word; n = n + 1; it = std::json::array_next(it);
+            if !self.bounded(word, 128, true, false) || std::str::contains(word, " ") {
+                return "!";
+            }
+            out = out + (if len(out) > 0 { " " } else { "" }) + word;
+            n = n + 1;
+            it = std::json::array_next(it);
         }
         return out;
     }
     fn error(code: String) -> std::http::Response {
         let http = Http { };
-        if code == "invalid_command" { return http.error(400, code, "invalid command fields, values, or required headers", false); }
-        if code == "invalid_query" { return http.error(400, code, "lookup requires exactly one request_id", false); }
-        if code == "unauthenticated" { return http.error(401, code, "sign in at /auth/login", false); }
-        if code == "forbidden" { return http.error(403, code, "this command operation is not authorized", false); }
-        if code == "invalid_origin" { return http.error(403, code, "the command origin is not permitted", false); }
-        if code == "command_context_changed" { return http.error(409, code, "the authenticated principal changed; review the command under the current identity", false); }
-        if code == "stale_subject" { return http.error(409, code, "the selected subject is no longer eligible; load its current state", false); }
-        if code == "request_conflict" { return http.error(409, code, "this request identity belongs to different command content", false); }
-        if code == "command_not_found" { return http.error(404, code, "no visible command was found for this request identity", false); }
-        if code == "command_too_large" { return http.error(413, code, "the command body exceeds the supported byte limit", false); }
-        if code == "unsupported_media_type" { return http.error(415, code, "commands require Content-Type application/json", false); }
-        if code == "commands_unsupported" { return http.error(503, code, "this application does not configure command submission", false); }
-        return http.error(503, "commands_unavailable", "the command result is unavailable; retain the request identity for lookup", true);
+        if code == "invalid_command" {
+            return http.error(
+                400,
+                code,
+                "invalid command fields, values, or required headers",
+                false,
+            );
+        }
+        if code == "invalid_query" {
+            return http.error(400, code, "lookup requires exactly one request_id", false);
+        }
+        if code == "unauthenticated" {
+            return http.error(401, code, "sign in at /auth/login", false);
+        }
+        if code == "forbidden" {
+            return http.error(403, code, "this command operation is not authorized", false);
+        }
+        if code == "invalid_origin" {
+            return http.error(403, code, "the command origin is not permitted", false);
+        }
+        if code == "command_context_changed" {
+            return http.error(
+                409,
+                code,
+                "the authenticated principal changed; review the command under the current identity",
+                false,
+            );
+        }
+        if code == "stale_subject" {
+            return http.error(
+                409,
+                code,
+                "the selected subject is no longer eligible; load its current state",
+                false,
+            );
+        }
+        if code == "request_conflict" {
+            return http.error(
+                409,
+                code,
+                "this request identity belongs to different command content",
+                false,
+            );
+        }
+        if code == "command_not_found" {
+            return http.error(
+                404,
+                code,
+                "no visible command was found for this request identity",
+                false,
+            );
+        }
+        if code == "command_too_large" {
+            return http.error(
+                413,
+                code,
+                "the command body exceeds the supported byte limit",
+                false,
+            );
+        }
+        if code == "unsupported_media_type" {
+            return http.error(415, code, "commands require Content-Type application/json", false);
+        }
+        if code == "commands_unsupported" {
+            return http.error(
+                503,
+                code,
+                "this application does not configure command submission",
+                false,
+            );
+        }
+        return http.error(
+            503,
+            "commands_unavailable",
+            "the command result is unavailable; retain the request identity for lookup",
+            true,
+        );
     }
 }
 
@@ -322,33 +468,105 @@ role reviewer; // holds `position:reviewer`
 // The payloads: the old envelope's arguments and preconditions, flat,
 // under the request id the caller mints. The head supplies the context
 // (this record), the target's application and the principal.
-type PracticeProposal { request_id: String = ""; subject_digest: String = ""; text: String = ""; rationale: String = ""; }
-type ReviewDecision { request_id: String = ""; review_id: String = ""; subject_digest: String = ""; verdict: String = ""; comment: String = ""; }
+type PracticeProposal {
+    request_id: String = "";
+    subject_digest: String = "";
+    text: String = "";
+    rationale: String = "";
+}
+type ReviewDecision {
+    request_id: String = "";
+    review_id: String = "";
+    subject_digest: String = "";
+    verdict: String = "";
+    comment: String = "";
+}
 type OrganizationProposal {
-    request_id: String = ""; source_head: String = ""; module_digest: String = ""; dependency_source: String = ""; dependency_digest: String = "";
+    request_id: String = "";
+    source_head: String = "";
+    module_digest: String = "";
+    dependency_source: String = "";
+    dependency_digest: String = "";
     record_head: String = ""; source_text: String = ""; rationale: String = "";
 }
 // `kind`: "" asks for a change, "judgment" for an assessment a leg performs (GH #1144)
-type TaskCreation { request_id: String = ""; record_head: String = ""; outcome: String = ""; to: String = ""; kind: String = ""; }
-type TaskReassignment { request_id: String = ""; task_id: String = ""; assignment_digest: String = ""; assignee: String = ""; to: String = ""; }
-type PersonRetirement { request_id: String = ""; person: String = ""; subject_digest: String = ""; to: String = ""; }
+type TaskCreation {
+    request_id: String = "";
+    record_head: String = "";
+    outcome: String = "";
+    to: String = "";
+    kind: String = "";
+}
+type TaskReassignment {
+    request_id: String = "";
+    task_id: String = "";
+    assignment_digest: String = "";
+    assignee: String = "";
+    to: String = "";
+}
+type PersonRetirement {
+    request_id: String = "";
+    person: String = "";
+    subject_digest: String = "";
+    to: String = "";
+}
 // A leg's claim (GH #946): the three lists are space-separated words.
 type Claim {
-    request_id: String = ""; record_head: String = ""; performer_kind: String = ""; performer: String = ""; effect_class: String = "";
+    request_id: String = "";
+    record_head: String = "";
+    performer_kind: String = "";
+    performer: String = "";
+    effect_class: String = "";
     capabilities: String = ""; data_classes: String = ""; organizations: String = ""; ttl: Int = 0;
 }
 // A leg's outcome: `evidence` and `receipts` are JSON arrays as text;
 // the hat fields are empty and -1 when no hat was worn.
 type Outcome {
-    request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; effect_class: String = "";
-    disposition: String = ""; result: String = ""; result_ref: String = ""; narrative: String = ""; evidence: String = ""; receipts: String = "";
-    hat_digest: String = ""; hat_head: String = ""; hat_watermark: Int = -1; prompt_digest: String = ""; renderer: String = "";
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    effect_class: String = "";
+    disposition: String = "";
+    result: String = "";
+    result_ref: String = "";
+    narrative: String = "";
+    evidence: String = "";
+    receipts: String = "";
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = -1;
+    prompt_digest: String = "";
+    renderer: String = "";
 }
-type Renewal { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; ttl: Int = 0; }
-type Release { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; why: String = ""; }
+type Renewal {
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    ttl: Int = 0;
+}
+type Release {
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    why: String = "";
+}
 // A leg's ask for its attempt's spend (GH #1131): the lease alone.
-type Allowance { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; }
-type Friction { request_id: String = ""; record_head: String = ""; position: String = ""; attempt_id: String = ""; text: String = ""; }
+type Allowance {
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+}
+type Friction {
+    request_id: String = "";
+    record_head: String = "";
+    position: String = "";
+    attempt_id: String = "";
+    text: String = "";
+}
 type Lookup { request_id: String = ""; }
 // A change to the organization's structure, asked of the head as its CLI
 // verb asks it (structure_command.hl in dna/operations): the head the
@@ -356,13 +574,30 @@ type Lookup { request_id: String = ""; }
 // or a preview gave it), and what the verb takes. A name is a position's
 // with or without its `position:` prefix (`organization:<name>` for a
 // fill's position or holder too). The proposer is the caller's person.
-type PositionOpening { request_id: String = ""; record_head: String = ""; position: String = ""; text: String = ""; mandate: String = ""; under: String = ""; }
-type HoldFill { request_id: String = ""; record_head: String = ""; position: String = ""; holder: String = ""; }
+type PositionOpening {
+    request_id: String = "";
+    record_head: String = "";
+    position: String = "";
+    text: String = "";
+    mandate: String = "";
+    under: String = "";
+}
+type HoldFill {
+    request_id: String = "";
+    record_head: String = "";
+    position: String = "";
+    holder: String = "";
+}
 // A batch's text, one step a line (dna/core/batch.hl): `open <name> [under
 // <node>] | <mandate>`, `fill <name> <holder>`, `vacate <name> <holder>`,
 // `practice <name> | <text>`. `pack` is a pack's provenance as `hale dna
 // pack apply` records it (`<name>@<version> <digest> <source>`), "" for none.
-type BatchApplication { request_id: String = ""; record_head: String = ""; steps: String = ""; pack: String = ""; }
+type BatchApplication {
+    request_id: String = "";
+    record_head: String = "";
+    steps: String = "";
+    pack: String = "";
+}
 type BatchDraft { steps: String = ""; }
 // A batch planned against the Record's head and not proposed: `ok` when
 // `Commands::apply_batch` would propose it there, else `why` the plan
@@ -401,19 +636,45 @@ type CommandReply {
 // which the provider and the admissibility check below share.
 fn native_of(command: CommandRequest) -> ops::GovernanceCommand {
     return ops::GovernanceCommand {
-        request_id: command.request_id, operation: command.operation, operation_version: command.operation_version,
-        application_id: command.application_id, position_id: command.position_id, target_kind: command.target_kind,
-        target_id: command.target_id, subject_digest: command.subject_digest, text: command.text, rationale: command.rationale,
-        expected_review_state: command.expected_review_state, verdict: command.verdict, comment: command.comment,
-        source_head: command.source_head, dependency_source: command.dependency_source, dependency_digest: command.dependency_digest,
+        request_id: command.request_id,
+        operation: command.operation,
+        operation_version: command.operation_version,
+        application_id: command.application_id,
+        position_id: command.position_id,
+        target_kind: command.target_kind,
+        target_id: command.target_id,
+        subject_digest: command.subject_digest,
+        text: command.text,
+        rationale: command.rationale,
+        expected_review_state: command.expected_review_state,
+        verdict: command.verdict,
+        comment: command.comment,
+        source_head: command.source_head,
+        dependency_source: command.dependency_source,
+        dependency_digest: command.dependency_digest,
         record_head: command.record_head, source_text: command.source_text,
         expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
         outcome: command.outcome, to: command.to, ask_kind: command.ask_kind,
-        performer_kind: command.performer_kind, performer: command.performer, effect_class: command.effect_class, capabilities: command.capabilities, data_classes: command.data_classes,
-        organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
-        disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
+        performer_kind: command.performer_kind,
+        performer: command.performer,
+        effect_class: command.effect_class,
+        capabilities: command.capabilities,
+        data_classes: command.data_classes,
+        organizations: command.organizations,
+        ttl: command.ttl,
+        attempt_id: command.attempt_id,
+        holder: command.holder,
+        token: command.token,
+        disposition: command.disposition,
+        result: command.result,
+        result_ref: command.result_ref,
+        narrative: command.narrative,
         evidence: command.evidence, receipts: command.receipts,
-        hat_digest: command.hat_digest, hat_head: command.hat_head, hat_watermark: command.hat_watermark, prompt_digest: command.prompt_digest, renderer: command.renderer,
+        hat_digest: command.hat_digest,
+        hat_head: command.hat_head,
+        hat_watermark: command.hat_watermark,
+        prompt_digest: command.prompt_digest,
+        renderer: command.renderer,
         mandate: command.mandate, under: command.under, steps: command.steps, pack: command.pack
     };
 }
@@ -454,32 +715,69 @@ locus CommandAdmission {
         let person = self.roles.person(ctx.caller);
         let name = if len(person) > 0 { person } else { ctx.caller.name };
         let mode = if std::str::starts_with(ctx.caller.name, "oidc:") { "oidc" } else { "local" };
-        return CommandContext { root: self.root, source: source, principal_mode: mode, principal_name: name, principal_positions: self.roles.positions(ctx.caller) };
+        return CommandContext {
+            root: self.root,
+            source: source,
+            principal_mode: mode,
+            principal_name: name,
+            principal_positions: self.roles.positions(ctx.caller),
+        };
     }
     // An issuer's subject that maps to no person — a service — asks
     // nothing and looks nothing up: a command is a person's, and the store
     // never records a subject as the account the head runs under.
-    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.name, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
+    fn personless(ctx: std::api::Context) -> Bool {
+        return std::str::starts_with(ctx.caller.name, "oidc:")
+            && len(self.roles.person(ctx.caller)) == 0;
+    }
     fn refused(code: String) -> CommandReply { return CommandReply { code: code }; }
     fn reply(result: CommandResult, context: CommandContext) -> CommandReply {
         let mut receipt = result.receipt;
         receipt.principal_positions = context.principal_positions;
-        return CommandReply { ok: result.ok, code: result.code, application_id: result.source.identity, head: result.source.head, revision: result.source.revision, receipt: receipt };
+        return CommandReply {
+            ok: result.ok,
+            code: result.code,
+            application_id: result.source.identity,
+            head: result.source.head,
+            revision: result.source.revision,
+            receipt: receipt,
+        };
     }
     // The operations' own rule for this operation, as GovernanceCommands
     // restates it before admission.
     fn admissible(context: CommandContext, command: CommandRequest) -> Bool {
-        if !self.wire.bounded(command.request_id, 128, true, false) || !self.wire.bounded(command.target_id, 256, true, false) || !self.wire.bounded(command.subject_digest, 256, true, false) { return false; }
-        let native_context = ops::GovernanceContext { application_id: command.application_id, principal_mode: context.principal_mode, principal_name: context.principal_name };
+        if !self.wire.bounded(command.request_id, 128, true, false)
+            || !self.wire.bounded(command.target_id, 256, true, false)
+            || !self.wire.bounded(command.subject_digest, 256, true, false)
+        {
+            return false;
+        }
+        let native_context = ops::GovernanceContext {
+            application_id: command.application_id,
+            principal_mode: context.principal_mode,
+            principal_name: context.principal_name,
+        };
         let native = native_of(command);
-        if self.attempts.known(command.operation, "1") { return self.attempts.valid(native_context, native); }
+        if self.attempts.known(command.operation, "1") {
+            return self.attempts.valid(native_context, native);
+        }
         if !self.attempts.absent(native) { return false; }
-        if self.structure_codec.known(command.operation, "1") { return self.structure_codec.valid(native_context, native); }
+        if self.structure_codec.known(command.operation, "1") {
+            return self.structure_codec.valid(native_context, native);
+        }
         if !self.structure_codec.absent(native) { return false; }
-        if self.person_codec.known(command.operation, "1") { return self.person_codec.valid(native_context, native); }
-        if self.create_codec.known(command.operation, "1") { return self.create_codec.valid(native_context, native); }
-        if self.task_codec.known(command.operation, "1") { return self.task_codec.valid(native_context, native); }
-        if self.organization_codec.known(command.operation, "1") { return self.organization_codec.valid(native_context, native); }
+        if self.person_codec.known(command.operation, "1") {
+            return self.person_codec.valid(native_context, native);
+        }
+        if self.create_codec.known(command.operation, "1") {
+            return self.create_codec.valid(native_context, native);
+        }
+        if self.task_codec.known(command.operation, "1") {
+            return self.task_codec.valid(native_context, native);
+        }
+        if self.organization_codec.known(command.operation, "1") {
+            return self.organization_codec.valid(native_context, native);
+        }
         return self.codec.valid(native_context, native);
     }
     fn submit(ctx: std::api::Context, command: CommandRequest) -> CommandReply {
@@ -488,91 +786,460 @@ locus CommandAdmission {
         if !context.source.ok { return self.refused(context.source.code); }
         let mut request = command;
         request.application_id = context.source.identity;
-        if request.target_kind == "dna.record" || request.target_kind == "dna.work" || request.target_kind == "dna.friction" { request.target_id = context.source.identity; }
+        if request.target_kind == "dna.record"
+            || request.target_kind == "dna.work"
+            || request.target_kind == "dna.friction"
+        {
+            request.target_id = context.source.identity;
+        }
         request.expected_principal_mode = context.principal_mode;
         request.expected_principal_name = context.principal_name;
         if !self.admissible(context, request) { return self.refused("invalid_command"); }
         request.valid = true;
-        if !self.provider.supported(request.operation, request.operation_version) { return self.refused("commands_unsupported"); }
+        if !self.provider.supported(request.operation, request.operation_version) {
+            return self.refused("commands_unsupported");
+        }
         return self.reply(self.provider.submit(context, request), context);
     }
     fn propose(p: PracticeProposal, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.practice.propose", target_kind: "dna.practice", target_id: p.subject_digest, subject_digest: p.subject_digest, text: p.text, rationale: p.rationale });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: p.request_id,
+                operation: "dna.practice.propose",
+                target_kind: "dna.practice",
+                target_id: p.subject_digest,
+                subject_digest: p.subject_digest,
+                text: p.text,
+                rationale: p.rationale,
+            },
+        );
     }
     fn verdict(v: ReviewDecision, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: v.request_id, operation: "dna.review.verdict", target_kind: "dna.review", target_id: v.review_id, subject_digest: v.subject_digest, expected_review_state: "pending", verdict: v.verdict, comment: v.comment });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: v.request_id,
+                operation: "dna.review.verdict",
+                target_kind: "dna.review",
+                target_id: v.review_id,
+                subject_digest: v.subject_digest,
+                expected_review_state: "pending",
+                verdict: v.verdict,
+                comment: v.comment,
+            },
+        );
     }
     fn propose_organization(o: OrganizationProposal, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: o.request_id, operation: "dna.organization.propose", target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: o.module_digest,
-            source_head: o.source_head, dependency_source: o.dependency_source, dependency_digest: o.dependency_digest, record_head: o.record_head, source_text: o.source_text, rationale: o.rationale });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: o.request_id,
+                operation: "dna.organization.propose",
+                target_kind: "dna.organization.module",
+                target_id: "dna/org/main.hl",
+                subject_digest: o.module_digest,
+                source_head: o.source_head,
+                dependency_source: o.dependency_source,
+                dependency_digest: o.dependency_digest,
+                record_head: o.record_head,
+                source_text: o.source_text,
+                rationale: o.rationale });
     }
     fn create_task(t: TaskCreation, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.create", target_kind: "dna.record", subject_digest: t.record_head, record_head: t.record_head, outcome: t.outcome, to: t.to, ask_kind: t.kind });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: t.request_id,
+                operation: "dna.task.create",
+                target_kind: "dna.record",
+                subject_digest: t.record_head,
+                record_head: t.record_head,
+                outcome: t.outcome,
+                to: t.to,
+                ask_kind: t.kind,
+            },
+        );
     }
     fn reassign_task(t: TaskReassignment, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.reassign", target_kind: "dna.task", target_id: t.task_id, subject_digest: t.assignment_digest, expected_assignee: t.assignee, new_assignee: t.to });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: t.request_id,
+                operation: "dna.task.reassign",
+                target_kind: "dna.task",
+                target_id: t.task_id,
+                subject_digest: t.assignment_digest,
+                expected_assignee: t.assignee,
+                new_assignee: t.to,
+            },
+        );
     }
     fn retire_person(p: PersonRetirement, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.person.retire", target_kind: "dna.person", target_id: p.person, subject_digest: p.subject_digest, new_assignee: p.to });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: p.request_id,
+                operation: "dna.person.retire",
+                target_kind: "dna.person",
+                target_id: p.person,
+                subject_digest: p.subject_digest,
+                new_assignee: p.to,
+            },
+        );
     }
     fn claim(c: Claim, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: c.request_id, operation: "dna.attempt.claim", target_kind: "dna.work", subject_digest: c.record_head, record_head: c.record_head,
-            performer_kind: c.performer_kind, performer: c.performer, effect_class: c.effect_class, capabilities: c.capabilities, data_classes: c.data_classes, organizations: c.organizations, ttl: c.ttl });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: c.request_id,
+                operation: "dna.attempt.claim",
+                target_kind: "dna.work",
+                subject_digest: c.record_head,
+                record_head: c.record_head,
+                performer_kind: c.performer_kind,
+                performer: c.performer,
+                effect_class: c.effect_class,
+                capabilities: c.capabilities,
+                data_classes: c.data_classes,
+                organizations: c.organizations,
+                ttl: c.ttl });
     }
     fn outcome(o: Outcome, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: o.request_id, operation: "dna.attempt.outcome", target_kind: "dna.attempt", target_id: o.attempt_id, subject_digest: lease_of(o.holder, o.token),
-            attempt_id: o.attempt_id, holder: o.holder, token: o.token, effect_class: o.effect_class, disposition: o.disposition, result: o.result, result_ref: o.result_ref, narrative: o.narrative,
-            evidence: if o.evidence == "[]" { "" } else { o.evidence }, receipts: if o.receipts == "[]" { "" } else { o.receipts },
-            hat_digest: o.hat_digest, hat_head: o.hat_head, hat_watermark: o.hat_watermark, prompt_digest: o.prompt_digest, renderer: o.renderer });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: o.request_id,
+                operation: "dna.attempt.outcome",
+                target_kind: "dna.attempt",
+                target_id: o.attempt_id,
+                subject_digest: lease_of(o.holder, o.token),
+                attempt_id: o.attempt_id,
+                holder: o.holder,
+                token: o.token,
+                effect_class: o.effect_class,
+                disposition: o.disposition,
+                result: o.result,
+                result_ref: o.result_ref,
+                narrative: o.narrative,
+                evidence: if o.evidence == "[]" {
+                    ""
+                } else {
+                    o.evidence
+                }, receipts: if o.receipts == "[]" {
+                    ""
+                } else {
+                    o.receipts
+                },
+                hat_digest: o.hat_digest,
+                hat_head: o.hat_head,
+                hat_watermark: o.hat_watermark,
+                prompt_digest: o.prompt_digest,
+                renderer: o.renderer });
     }
     fn renew(r: Renewal, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: r.request_id, operation: "dna.attempt.renew", target_kind: "dna.attempt", target_id: r.attempt_id, subject_digest: lease_of(r.holder, r.token), attempt_id: r.attempt_id, holder: r.holder, token: r.token, ttl: r.ttl });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: r.request_id,
+                operation: "dna.attempt.renew",
+                target_kind: "dna.attempt",
+                target_id: r.attempt_id,
+                subject_digest: lease_of(r.holder, r.token),
+                attempt_id: r.attempt_id,
+                holder: r.holder,
+                token: r.token,
+                ttl: r.ttl,
+            },
+        );
     }
     fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: r.request_id, operation: "dna.attempt.release", target_kind: "dna.attempt", target_id: r.attempt_id, subject_digest: lease_of(r.holder, r.token), attempt_id: r.attempt_id, holder: r.holder, token: r.token, narrative: r.why });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: r.request_id,
+                operation: "dna.attempt.release",
+                target_kind: "dna.attempt",
+                target_id: r.attempt_id,
+                subject_digest: lease_of(r.holder, r.token),
+                attempt_id: r.attempt_id,
+                holder: r.holder,
+                token: r.token,
+                narrative: r.why,
+            },
+        );
     }
     fn allowance(a: Allowance, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: a.request_id, operation: "dna.attempt.allowance", target_kind: "dna.attempt", target_id: a.attempt_id, subject_digest: lease_of(a.holder, a.token), attempt_id: a.attempt_id, holder: a.holder, token: a.token });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: a.request_id,
+                operation: "dna.attempt.allowance",
+                target_kind: "dna.attempt",
+                target_id: a.attempt_id,
+                subject_digest: lease_of(a.holder, a.token),
+                attempt_id: a.attempt_id,
+                holder: a.holder,
+                token: a.token,
+            },
+        );
     }
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: f.request_id, operation: "dna.friction.file", target_kind: "dna.friction", subject_digest: f.record_head, record_head: f.record_head, performer: f.position, attempt_id: f.attempt_id, result: f.text });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: f.request_id,
+                operation: "dna.friction.file",
+                target_kind: "dna.friction",
+                subject_digest: f.record_head,
+                record_head: f.record_head,
+                performer: f.position,
+                attempt_id: f.attempt_id,
+                result: f.text,
+            },
+        );
     }
     // A change to the structure (ops::StructureCommandCodec): the rows its
     // CLI verb writes, admitted as every command is.
     fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.position.open", target_kind: "dna.position", target_id: seat_named(p.position, false), subject_digest: p.record_head, record_head: p.record_head,
-            text: p.text, mandate: p.mandate, under: p.under });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: p.request_id,
+                operation: "dna.position.open",
+                target_kind: "dna.position",
+                target_id: seat_named(p.position, false),
+                subject_digest: p.record_head,
+                record_head: p.record_head,
+                text: p.text, mandate: p.mandate, under: p.under });
     }
     fn fill(h: HoldFill, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: h.request_id, operation: "dna.hold.fill", target_kind: "dna.position", target_id: seat_named(h.position, true), subject_digest: h.record_head, record_head: h.record_head, new_assignee: h.holder });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: h.request_id,
+                operation: "dna.hold.fill",
+                target_kind: "dna.position",
+                target_id: seat_named(h.position, true),
+                subject_digest: h.record_head,
+                record_head: h.record_head,
+                new_assignee: h.holder,
+            },
+        );
     }
     fn apply_batch(b: BatchApplication, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: b.request_id, operation: "dna.batch.apply", target_kind: "dna.record", subject_digest: b.record_head, record_head: b.record_head, steps: b.steps, pack: b.pack });
+        return self.submit(
+            ctx,
+            CommandRequest {
+                request_id: b.request_id,
+                operation: "dna.batch.apply",
+                target_kind: "dna.record",
+                subject_digest: b.record_head,
+                record_head: b.record_head,
+                steps: b.steps,
+                pack: b.pack,
+            },
+        );
     }
     // A batch planned, not proposed: what `apply_batch` would propose at the
     // Record's head, as data. A read — it writes nothing, and asks nothing of
     // the provider — so any authenticated caller may ask, and a head that
     // composes no provider answers it too. The plan is the one `apply_batch`
-    // makes (`dna::batch_plan` over the captured Record), and a Record whose
-    // ledger is adopted is refused as `apply_batch` refuses it.
+    // makes (`dna::batch_plan` over the captured Record).
     fn preview_batch(d: BatchDraft, ctx: std::api::Context) -> BatchPreview {
-        if len(d.steps) == 0 || len(d.steps) > 65536 { return BatchPreview { code: "invalid_command" }; }
-        let capture = ops::GovernanceCommands { record: dna::GitRecord { repo: self.root } };
+        if len(d.steps) == 0 || len(d.steps) > 65536 {
+            return BatchPreview { code: "invalid_command" };
+        }
+        let capture = ops::GovernanceCommands { record: dna::MemoryRecord { repo: self.root } };
         let s = capture.capture();
         if !s.ok { return BatchPreview { code: s.code }; }
         let j = ops::GovernanceJournal { snapshot: s };
         if !j.valid { return BatchPreview { code: "command_history_invalid" }; }
-        if !capture.source_supported(j) { return BatchPreview { code: "commands_unsupported", application_id: s.application_id, head: s.head, revision: s.revision }; }
-        let receipts = ops::GovernanceReceipts { record: dna::GitRecord { repo: self.root } };
+        let receipts = ops::GovernanceReceipts { record: dna::MemoryRecord { repo: self.root } };
         let plan = dna::batch_plan(j, receipts, d.steps);
         let diff = dna::batch_diff(plan);
-        return BatchPreview { ok: plan.ok, code: "", why: plan.why, application_id: s.application_id, head: s.head, revision: s.revision, steps: plan.steps,
-            before: plan.before, after: plan.after, added: diff.added, removed: diff.removed, unchanged: diff.unchanged, pending: if plan.ok { dna::batch_pending(j, plan.steps) } else { "" } };
+        return BatchPreview {
+            ok: plan.ok,
+            code: "",
+            why: plan.why,
+            application_id: s.application_id,
+            head: s.head,
+            revision: s.revision,
+            steps: plan.steps,
+            before: plan.before,
+            after: plan.after,
+            added: diff.added,
+            removed: diff.removed,
+            unchanged: diff.unchanged,
+            pending: if plan.ok {
+                dna::batch_pending(j, plan.steps)
+            } else {
+                ""
+            } };
+    }
+    // The record as the standard face's index reads it (record_index.hl): a
+    // read, so any authenticated caller the record knows may ask.
+    fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
+        if self.personless(ctx) { return RecordIndex { why: "forbidden" }; }
+        return record_index(self.root, a.limit);
+    }
+    // The habitat's hosts, allocations and policy (habitat_rows.hl): reads,
+    // so any authenticated caller the record knows may ask.
+    fn hosts(a: HabitatAsk, ctx: std::api::Context) -> HostRows {
+        if self.personless(ctx) { return HostRows { why: "forbidden" }; }
+        return habitat_hosts(self.root, a.limit);
+    }
+    fn allocations(a: HabitatAsk, ctx: std::api::Context) -> AllocationRows {
+        if self.personless(ctx) { return AllocationRows { why: "forbidden" }; }
+        return habitat_allocations(self.root, a.limit);
+    }
+    fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
+        if self.personless(ctx) { return PolicyRows { why: "forbidden" }; }
+        return habitat_policy(self.root, a.limit);
+    }
+    // What the habitat's reflexes say now: its store's alerts (a read).
+    fn alerts(a: HabitatAsk, ctx: std::api::Context) -> AlertRows {
+        if self.personless(ctx) { return AlertRows { why: "forbidden" }; }
+        return habitat_alerts(self.root);
+    }
+    // The web UIs across its organisms (habitat_rows.hl): each organism's
+    // face and the UIs its manifest declares, with their addresses (a read).
+    fn uis(a: HabitatAsk, ctx: std::api::Context) -> UiRows {
+        if self.personless(ctx) { return UiRows { why: "forbidden" }; }
+        return habitat_uis(self.root, a.limit);
+    }
+    // The habitat's placement (habitat_placement.hl): the Board's.
+    fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
+        if self.personless(ctx) { return PlaceReply { code: "forbidden" }; }
+        return habitat_place(self.root, a);
+    }
+    fn apply_allocations(a: ApplyAsk, ctx: std::api::Context) -> ApplyReply {
+        if self.personless(ctx) { return ApplyReply { code: "forbidden" }; }
+        return habitat_apply(self.root, a);
+    }
+    fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
+        if self.personless(ctx) { return GraftReply { code: "forbidden" }; }
+        return habitat_graft(self.root, a);
+    }
+    // The log of a graft this head started (habitat_placement.hl): read by
+    // the graft's id, the Board's like the graft.
+    fn graft_log(a: GraftLogAsk, ctx: std::api::Context) -> GraftLogReply {
+        if self.personless(ctx) { return GraftLogReply { code: "forbidden" }; }
+        return habitat_graft_log(a);
+    }
+    fn set_model_map(a: ModelMapSet, ctx: std::api::Context) -> ModelMapReply {
+        if self.personless(ctx) { return ModelMapReply { code: "forbidden" }; }
+        return habitat_set_model_map(self.root, a);
+    }
+    fn probe_model(a: ModelProbe, ctx: std::api::Context) -> ModelMapReply {
+        if self.personless(ctx) { return ModelMapReply { code: "forbidden" }; }
+        return habitat_probe_model(self.root, a);
+    }
+    // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
+    // the Board's acts on them.
+    fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
+        if self.personless(ctx) { return NurseryRows { why: "forbidden" }; }
+        return habitat_nurseries(self.root, a.limit);
+    }
+    fn saplings(a: HabitatAsk, ctx: std::api::Context) -> SaplingRows {
+        if self.personless(ctx) { return SaplingRows { why: "forbidden" }; }
+        return habitat_saplings(self.root, a.limit);
+    }
+    fn add_nursery(a: NurseryAdd, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_nursery_add(self.root, a, self.author(ctx));
+    }
+    // The solo path (solo_tasks.hl): a person takes a handed Task and
+    // reports it done, as text, in their own name.
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        let who = self.roles.person(ctx.caller);
+        if self.personless(ctx) || len(who) == 0 {
+            return task_act_refused(
+                t.task_id,
+                "forbidden",
+                "a Task is taken by a person of the record",
+            );
+        }
+        return solo_take(self.root, t.task_id, who);
+    }
+    fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
+        let who = self.roles.person(ctx.caller);
+        if self.personless(ctx) || len(who) == 0 {
+            return task_act_refused(
+                d.task_id,
+                "forbidden",
+                "a Task is reported done by a person of the record",
+            );
+        }
+        return solo_done(self.root, d.task_id, d.text, who);
+    }
+    fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_sapling_ratify(self.root, n.name, self.author(ctx));
+    }
+    // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
+    // with the live state, for the person who asks. A read.
+    fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
+        if self.personless(ctx) { return HabitatBrief { why: "forbidden" }; }
+        return habitat_brief(self.root, self.roles.person(ctx.caller), a.limit);
+    }
+    // Who a habitat act's row is written by: the person the caller maps
+    // to, else the caller as the binding named it. Every act of the
+    // habitat's is a row in the name of whoever asked, over any transport.
+    fn author(ctx: std::api::Context) -> String {
+        let person = self.roles.person(ctx.caller);
+        return if len(person) > 0 { person } else { ctx.caller.name };
+    }
+    // The habitat's hosts (habitat_hosts.hl): the Board's acts.
+    fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
+        if self.personless(ctx) { return HostReply { code: "forbidden" }; }
+        return habitat_host_add(self.root, a, self.author(ctx));
+    }
+    fn probe_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
+        if self.personless(ctx) { return HostReply { code: "forbidden" }; }
+        return habitat_host_probe(self.root, n.name, self.author(ctx));
+    }
+    fn plan_remove_host(n: HostNamed, ctx: std::api::Context) -> HostPlan {
+        if self.personless(ctx) { return HostPlan { code: "forbidden" }; }
+        return habitat_host_plan_remove(self.root, n.name);
+    }
+    fn remove_host(r: HostRemove, ctx: std::api::Context) -> HostRemoval {
+        if self.personless(ctx) { return HostRemoval { code: "forbidden" }; }
+        return habitat_host_remove(self.root, r, self.author(ctx));
+    }
+    // The services placed on its hosts (habitat_placed.hl): recorded by the
+    // CLI once a placement ran, the Board's; and read.
+    fn record_placed(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        if self.personless(ctx) { return PlacementReply { code: "forbidden" }; }
+        return habitat_record_placed(self.root, p, self.author(ctx));
+    }
+    fn record_unplaced(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        if self.personless(ctx) { return PlacementReply { code: "forbidden" }; }
+        return habitat_record_unplaced(self.root, p, self.author(ctx));
+    }
+    fn placements(a: HabitatAsk, ctx: std::api::Context) -> PlacementRows {
+        if self.personless(ctx) { return PlacementRows { why: "forbidden" }; }
+        return habitat_placements(self.root);
+    }
+    // The habitat's organisms (habitat_organisms.hl): removed, the Board's.
+    fn plan_remove_organism(n: OrganismNamed, ctx: std::api::Context) -> OrganismPlan {
+        if self.personless(ctx) { return OrganismPlan { code: "forbidden" }; }
+        return habitat_organism_plan_remove(self.root, n.name);
+    }
+    fn remove_organism(r: OrganismRemove, ctx: std::api::Context) -> OrganismRemoval {
+        if self.personless(ctx) { return OrganismRemoval { code: "forbidden" }; }
+        return habitat_organism_remove(self.root, r, self.author(ctx));
+    }
+    fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_allocate_forge(self.root, a);
     }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
-        if !self.wire.bounded(l.request_id, 128, true, false) { return self.refused("invalid_query"); }
+        if !self.wire.bounded(l.request_id, 128, true, false) {
+            return self.refused("invalid_query");
+        }
         if self.personless(ctx) { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
@@ -590,48 +1257,191 @@ locus Commands {
         admission: CommandAdmission = CommandAdmission { };
         knowledge: KnowledgeAdmission = KnowledgeAdmission { };
     }
-    fn propose(p: PracticeProposal, ctx: std::api::Context) -> CommandReply { return self.admission.propose(p, ctx); }
-    fn verdict(v: ReviewDecision, ctx: std::api::Context) -> CommandReply { return self.admission.verdict(v, ctx); }
-    fn propose_organization(o: OrganizationProposal, ctx: std::api::Context) -> CommandReply { return self.admission.propose_organization(o, ctx); }
-    fn create_task(t: TaskCreation, ctx: std::api::Context) -> CommandReply { return self.admission.create_task(t, ctx); }
-    fn reassign_task(t: TaskReassignment, ctx: std::api::Context) -> CommandReply { return self.admission.reassign_task(t, ctx); }
-    fn retire_person(p: PersonRetirement, ctx: std::api::Context) -> CommandReply { return self.admission.retire_person(p, ctx); }
-    fn claim(c: Claim, ctx: std::api::Context) -> CommandReply { return self.admission.claim(c, ctx); }
-    fn outcome(o: Outcome, ctx: std::api::Context) -> CommandReply { return self.admission.outcome(o, ctx); }
-    fn renew(r: Renewal, ctx: std::api::Context) -> CommandReply { return self.admission.renew(r, ctx); }
-    fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply { return self.admission.release_attempt(r, ctx); }
-    fn ask_allowance(a: Allowance, ctx: std::api::Context) -> CommandReply { return self.admission.allowance(a, ctx); }
-    fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply { return self.admission.file_friction(f, ctx); }
-    fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply { return self.admission.lookup(l, ctx); }
+    fn propose(p: PracticeProposal, ctx: std::api::Context) -> CommandReply {
+        return self.admission.propose(p, ctx);
+    }
+    fn verdict(v: ReviewDecision, ctx: std::api::Context) -> CommandReply {
+        return self.admission.verdict(v, ctx);
+    }
+    fn propose_organization(o: OrganizationProposal, ctx: std::api::Context) -> CommandReply {
+        return self.admission.propose_organization(o, ctx);
+    }
+    fn create_task(t: TaskCreation, ctx: std::api::Context) -> CommandReply {
+        return self.admission.create_task(t, ctx);
+    }
+    fn reassign_task(t: TaskReassignment, ctx: std::api::Context) -> CommandReply {
+        return self.admission.reassign_task(t, ctx);
+    }
+    fn retire_person(p: PersonRetirement, ctx: std::api::Context) -> CommandReply {
+        return self.admission.retire_person(p, ctx);
+    }
+    fn claim(c: Claim, ctx: std::api::Context) -> CommandReply {
+        return self.admission.claim(c, ctx);
+    }
+    fn outcome(o: Outcome, ctx: std::api::Context) -> CommandReply {
+        return self.admission.outcome(o, ctx);
+    }
+    fn renew(r: Renewal, ctx: std::api::Context) -> CommandReply {
+        return self.admission.renew(r, ctx);
+    }
+    fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply {
+        return self.admission.release_attempt(r, ctx);
+    }
+    fn ask_allowance(a: Allowance, ctx: std::api::Context) -> CommandReply {
+        return self.admission.allowance(a, ctx);
+    }
+    fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply {
+        return self.admission.file_friction(f, ctx);
+    }
+    fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
+        return self.admission.lookup(l, ctx);
+    }
+    fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
+        return self.admission.index(a, ctx);
+    }
+    fn hosts(a: HabitatAsk, ctx: std::api::Context) -> HostRows {
+        return self.admission.hosts(a, ctx);
+    }
+    fn allocations(a: HabitatAsk, ctx: std::api::Context) -> AllocationRows {
+        return self.admission.allocations(a, ctx);
+    }
+    fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
+        return self.admission.policy(a, ctx);
+    }
+    fn alerts(a: HabitatAsk, ctx: std::api::Context) -> AlertRows {
+        return self.admission.alerts(a, ctx);
+    }
+    fn uis(a: HabitatAsk, ctx: std::api::Context) -> UiRows {
+        return self.admission.uis(a, ctx);
+    }
+    fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
+        return self.admission.place_allocation(a, ctx);
+    }
+    fn apply_allocations(a: ApplyAsk, ctx: std::api::Context) -> ApplyReply {
+        return self.admission.apply_allocations(a, ctx);
+    }
+    fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
+        return self.admission.graft(a, ctx);
+    }
+    fn graft_log(a: GraftLogAsk, ctx: std::api::Context) -> GraftLogReply {
+        return self.admission.graft_log(a, ctx);
+    }
+    fn set_model_map(a: ModelMapSet, ctx: std::api::Context) -> ModelMapReply {
+        return self.admission.set_model_map(a, ctx);
+    }
+    fn probe_model(a: ModelProbe, ctx: std::api::Context) -> ModelMapReply {
+        return self.admission.probe_model(a, ctx);
+    }
+    fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
+        return self.admission.nurseries(a, ctx);
+    }
+    fn saplings(a: HabitatAsk, ctx: std::api::Context) -> SaplingRows {
+        return self.admission.saplings(a, ctx);
+    }
+    fn add_nursery(a: NurseryAdd, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.add_nursery(a, ctx);
+    }
+    fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.ratify_sapling(n, ctx);
+    }
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        return self.admission.take_task(t, ctx);
+    }
+    fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
+        return self.admission.complete_task(d, ctx);
+    }
+    fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
+        return self.admission.add_host(a, ctx);
+    }
+    fn probe_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
+        return self.admission.probe_host(n, ctx);
+    }
+    fn plan_remove_host(n: HostNamed, ctx: std::api::Context) -> HostPlan {
+        return self.admission.plan_remove_host(n, ctx);
+    }
+    fn remove_host(r: HostRemove, ctx: std::api::Context) -> HostRemoval {
+        return self.admission.remove_host(r, ctx);
+    }
+    fn record_placed(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        return self.admission.record_placed(p, ctx);
+    }
+    fn record_unplaced(p: PlacementRecord, ctx: std::api::Context) -> PlacementReply {
+        return self.admission.record_unplaced(p, ctx);
+    }
+    fn placements(a: HabitatAsk, ctx: std::api::Context) -> PlacementRows {
+        return self.admission.placements(a, ctx);
+    }
+    fn plan_remove_organism(n: OrganismNamed, ctx: std::api::Context) -> OrganismPlan {
+        return self.admission.plan_remove_organism(n, ctx);
+    }
+    fn remove_organism(r: OrganismRemove, ctx: std::api::Context) -> OrganismRemoval {
+        return self.admission.remove_organism(r, ctx);
+    }
+    fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
+        return self.admission.brief(a, ctx);
+    }
+    fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.allocate_forge(a, ctx);
+    }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
-    fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply { return self.admission.open_position(p, ctx); }
-    fn fill(h: HoldFill, ctx: std::api::Context) -> CommandReply { return self.admission.fill(h, ctx); }
-    fn apply_batch(b: BatchApplication, ctx: std::api::Context) -> CommandReply { return self.admission.apply_batch(b, ctx); }
-    fn preview_batch(d: BatchDraft, ctx: std::api::Context) -> BatchPreview { return self.admission.preview_batch(d, ctx); }
+    fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply {
+        return self.admission.open_position(p, ctx);
+    }
+    fn fill(h: HoldFill, ctx: std::api::Context) -> CommandReply {
+        return self.admission.fill(h, ctx);
+    }
+    fn apply_batch(b: BatchApplication, ctx: std::api::Context) -> CommandReply {
+        return self.admission.apply_batch(b, ctx);
+    }
+    fn preview_batch(d: BatchDraft, ctx: std::api::Context) -> BatchPreview {
+        return self.admission.preview_batch(d, ctx);
+    }
     // Knowledge (knowledge_commands.hl): a person of the record may ask;
     // the Knowledge policy decides what that person may change.
-    fn link_knowledge(l: KnowledgeLink, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.link(l, ctx); }
-    fn unlink_knowledge(u: KnowledgeUnlink, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.unlink(u, ctx); }
-    fn propose_knowledge(p: KnowledgeNodeProposal, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.propose_node(p, ctx); }
-    fn revise_knowledge(r: KnowledgeNodeRevision, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.revise_node(r, ctx); }
-    fn retire_knowledge(r: KnowledgeNodeRetirement, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.retire_node(r, ctx); }
-    fn bind_knowledge(b: KnowledgeBind, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.bind(b, ctx); }
-    fn unbind_knowledge(u: KnowledgeUnbind, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.unbind(u, ctx); }
-    fn lookup_knowledge(l: KnowledgeRecovery, ctx: std::api::Context) -> KnowledgeReply { return self.knowledge.lookup(l, ctx); }
+    fn link_knowledge(l: KnowledgeLink, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.link(l, ctx);
+    }
+    fn unlink_knowledge(u: KnowledgeUnlink, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.unlink(u, ctx);
+    }
+    fn propose_knowledge(p: KnowledgeNodeProposal, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.propose_node(p, ctx);
+    }
+    fn revise_knowledge(r: KnowledgeNodeRevision, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.revise_node(r, ctx);
+    }
+    fn retire_knowledge(r: KnowledgeNodeRetirement, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.retire_node(r, ctx);
+    }
+    fn bind_knowledge(b: KnowledgeBind, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.bind(b, ctx);
+    }
+    fn unbind_knowledge(u: KnowledgeUnbind, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.unbind(u, ctx);
+    }
+    fn lookup_knowledge(l: KnowledgeRecovery, ctx: std::api::Context) -> KnowledgeReply {
+        return self.knowledge.lookup(l, ctx);
+    }
 }
 
 // The head's surface (GH #1417): every command, served over `unix::Rpc` on
-// the head's socket and `http::Rpc` on its commands port, under the record's
-// roles (`dna::RecordRoles`, named at the serve site). A call is
+// the head's socket, `http::Rpc` on its commands port and `mcp::Rpc` for an
+// agent pairing with a person, under the record's roles
+// (`dna::RecordRoles`, named at the serve site). A call is
 // `{"call": "Commands::file_friction", "payload": {…}, "id": …}` on the
-// socket, `POST /call/Commands::file_friction` over HTTP.
+// socket, `POST /call/Commands::file_friction` over HTTP, and the tool
+// `Commands__file_friction` over MCP.
 api HeadCommands {
     rpc Commands::propose requires: [position];
     rpc Commands::verdict requires: [reviewer];
     rpc Commands::propose_organization requires: [owner];
     rpc Commands::create_task;
     rpc Commands::reassign_task requires: [owner];
+    // The solo path (solo_tasks.hl): a person of the record takes a handed
+    // Task no one holds, and reports one theirs done as text.
+    rpc Commands::take_task;
+    rpc Commands::complete_task;
     rpc Commands::retire_person requires: [owner];
     rpc Commands::claim requires: [position];
     rpc Commands::outcome requires: [position];
@@ -640,6 +1450,8 @@ api HeadCommands {
     rpc Commands::ask_allowance requires: [position];
     rpc Commands::file_friction requires: [position];
     rpc Commands::lookup;
+    // The record as the standard face's index reads it: a read.
+    rpc Commands::index;
     // The structure: every mutation is a head command whose handler writes
     // the rows its CLI verb writes, and the UI is a client of this surface.
     // `vacate` is a one-step batch (`vacate <position> <holder>`).
@@ -657,13 +1469,74 @@ api HeadCommands {
     rpc Commands::bind_knowledge requires: [position];
     rpc Commands::unbind_knowledge requires: [position];
     rpc Commands::lookup_knowledge;
+    // The habitat's placement (habitat_rows.hl): its hosts, its allocations
+    // with what their providers observe, and its policy. Reads.
+    rpc Commands::hosts;
+    rpc Commands::allocations;
+    rpc Commands::policy;
+    // What its reflexes say now: its senses' store's alerts. A read.
+    rpc Commands::alerts;
+    // The web UIs across its organisms, for the operator face's home
+    // screen: each organism's face and the UIs its manifest declares
+    // ([dna.ui.<name>]). A read.
+    rpc Commands::uis;
+    // The habitat's placement (habitat_placement.hl): an allocation placed
+    // on a host ("change a host"), and the allocations applied where they
+    // are placed, with the pulse after. The Board's.
+    rpc Commands::place_allocation requires: [owner];
+    rpc Commands::apply_allocations requires: [owner];
+    // A sapling grafted by name, on a host (habitat_placement.hl). The Board's.
+    rpc Commands::graft requires: [owner];
+    rpc Commands::graft_log requires: [owner];
+    // A tenant's model map pointed at an endpoint, and a call on it
+    // (habitat_placement.hl). The Board's.
+    rpc Commands::set_model_map requires: [owner];
+    rpc Commands::probe_model requires: [owner];
+    // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
+    // the Board's: a nursery trusted, a sapling's newer revision ratified.
+    rpc Commands::nurseries;
+    rpc Commands::saplings;
+    rpc Commands::add_nursery requires: [owner];
+    rpc Commands::ratify_sapling requires: [owner];
+    // The habitat's hosts (habitat_hosts.hl): a machine added over SSH,
+    // probed again, removed. The Board's. A removal is planned first
+    // (`plan_remove_host`, a read of the Board's: nothing is touched) and,
+    // when it stops or deletes anything on the host, executed only with the
+    // host's name typed back as `confirm`.
+    rpc Commands::add_host requires: [owner];
+    rpc Commands::probe_host requires: [owner];
+    rpc Commands::plan_remove_host requires: [owner];
+    rpc Commands::remove_host requires: [owner];
+    // The services placed on its hosts (habitat_placed.hl): a placement
+    // `hale habitat organism place` ran, and one `unplace` took off,
+    // recorded by the CLI (the Board's), and the placements that hold, a
+    // read.
+    rpc Commands::record_placed requires: [owner];
+    rpc Commands::record_unplaced requires: [owner];
+    rpc Commands::placements;
+    // The habitat's organisms (habitat_organisms.hl): one removed, planned
+    // first (`plan_remove_organism`, a read of the Board's) and executed
+    // only with the organism's name typed back as `confirm`.
+    rpc Commands::plan_remove_organism requires: [owner];
+    rpc Commands::remove_organism requires: [owner];
+    // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
+    // with the live state, for an agent pairing with a person. A read.
+    rpc Commands::brief;
+
+    // An organism's forge allocated (habitat_rows.hl). The Board's.
+    rpc Commands::allocate_forge requires: [owner];
 }
 
 // A seat as a structure command names it: `position:<name>` from a name
 // written either way, or `organization:<name>` as given where an
 // organization may be named.
 fn seat_named(name: String, organizations: Bool) -> String {
-    if len(name) == 0 || std::str::starts_with(name, "position:") || (organizations && std::str::starts_with(name, "organization:")) { return name; }
+    if len(name) == 0
+        || std::str::starts_with(name, "position:")
+        || (organizations && std::str::starts_with(name, "organization:"))
+    {
+        return name;
+    }
     return "position:" + name;
 }
 

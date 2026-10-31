@@ -1,104 +1,68 @@
-# The nerves
+# The Nerves
 
-The nerves carry signals between the organism's parts: an ask, a
-verdict or a leg's outcome the record already holds, and an
-application's event on its way to becoming a row. They are a NATS
-JetStream server on the private tier, with one stream per organization
-and one user per role, each allowed only its own subjects. They carry
-signals, never facts: a request is a row before it is sent, an event
-is a row before anything acts on it, and a message the stream loses
-costs a relay, never the row. When the stream stops acknowledging, the
-connection's delivery closure is violated, the node records it and
-stops, and its unit starts it again. The nerves hold neither the
-record nor memory, and no device reaches them.
+The **nerves** are the organism's **NATS JetStream** broker (`nats:2`), running on the private-services tier with a dedicated durable stream per organization (`DNA_<ID>`) and per-component user accounts (`owner`, `spine`, `head`, `reflexes`, and `app-<name>`). The broker carries signals between the host, spine, head, reflexes, and supervised applications after state transitions have been committed to PostgreSQL. If the NATS stream fails to acknowledge a publish within its delivery window, the node's delivery closure triggers, records a `violation.recorded` row, releases the body lease, and exits with code `75` so its supervisor restarts it cleanly.
 
-## Row first
-
-Nothing a person runs publishes anything. `hale dna task create`, a
-verdict, `hale dna concern raise`, `hale dna pressure raise`,
-`hale dna practice propose` and `hale dna schedule declare` each write
-their row into the record, from any clone, and return. A **node**
-([The spine](./spine.md#a-node)) is the one that publishes: while it
-runs it is its program's `main locus`, with every DNA topic it
-publishes bound to pond's NATS adapter, and on every tick it relays
-each request row it holds that the record has not answered.
-
-The row is the fact and the answer is a row. A message never admits
-anything; the part that reads it decides, and writes what it decided.
-
-## The server
-
-`dna/compose.yaml` runs the nerves as its `nerves` service
-(`nats:2`, on the loopback, a host port in 42xx taken free when the
-seed was made), configured by `dna/nats.conf`. Beyond one machine,
-run a server of your own with JetStream on (`-js`, or `jetstream {}`
-in its configuration), give it `dna/nats.conf` and
-`dna/nats.secrets.conf`, and name it with `HALE_DNA_NATS_URL_OWNER`.
-
-`dna/nats.conf` is tracked and holds no password: each user's password
-is a variable of `dna/nats.secrets.conf`, which the bootstrap writes
-from the vault, mode 600 and ignored by git. For a project named
-`refproj` the users are:
-
-```text
-    # creates the organization's stream; held by no process that runs it
-    { user: owner, password: $NATS_OWNER_PASSWORD }
-    # the spine: a node's host publishes the organization's facts, and the
-    # organization reads them through its durable consumers (`spine`, an
-    # owner's `spine_<owner>`, and `heart` for the applications' events).
-    # `*` stands for the organization's token: this server carries one
-    # organization. A node also tells the heads every row it lands.
-    { user: spine, password: $NATS_SPINE_PASSWORD,
-      permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
-    # the application `refproj` the record attaches: publishes on its own
-    # subjects alone, reads nothing of DNA's (#987)
-    { user: app-refproj, password: $NATS_APP_REFPROJ_PASSWORD,
-      permissions: { publish: ["*.app.refproj.>"], subscribe: ["_INBOX.>"] } }
-    # the reflexes (#988): publish their firings on their own subjects,
-    # read nothing
-    { user: reflexes, password: $NATS_REFLEXES_PASSWORD,
-      permissions: { publish: ["*.app.reflexes.>"], subscribe: ["_INBOX.>"] } }
-    # the head: subscribes, publishes nothing
-    { user: head, password: $NATS_HEAD_PASSWORD,
-      permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }
+```sh
+hale dna nerves migrate         # provision or update the NATS JetStream stream
+hale dna nerves urls            # print per-role NATS URLs and vault slot names
 ```
 
-## Accounts
+## Row-First Delivery Model
 
-| user | held by | may |
-|---|---|---|
-| `owner` | `hale dna nerves migrate`, `hale dna dev` | create, update or delete the stream; no process that runs the organism holds it |
-| `spine` | a node's host and the organization it starts | publish and read the organization's facts (`<org>.dna.>`), read the applications' events through the durable `heart`, tell the heads what landed (`<org>.head.>`) |
-| `head` | a head (the face) | subscribe; publish nothing |
-| `reflexes` | the reflexes | publish their firings on `<org>.app.reflexes.>` alone |
-| `app-<name>` | the application the record attaches | publish on `<org>.app.<name>.>` alone; read nothing of DNA's |
+User-facing CLI commands (`hale dna task create`, `hale dna review`, `hale dna concern raise`, `hale dna pressure raise`, `hale dna practice propose`, and `hale dna schedule declare`) never connect or publish to NATS directly. Instead, each command writes a request row to PostgreSQL (`record_rows` or the `ledger`) and returns or waits for an answer row.
 
-Each password is the vault's, `nats-<org>-<role>` (the application's
-is `nats-<org>-app-<name>`), drawn by `hale dna init` and drawn anew by
-every `hale dna upgrade`, which restarts a server compose is running so
-it reads them. A part that connects names its user and its vault
-entry, and pond's client presents the password on the one line that
-writes `CONNECT`: no URL, argument or environment variable carries it.
-A role the vault holds no password for is refused; nothing connects
-with a default.
+Only a running spine **node** ([The Spine](./spine.md#a-node)) publishes to NATS. The node binds its `dna::` bus topics to pond's NATS adapter and, on every tick, relays any request rows in PostgreSQL that have not yet received an answering row. Because the database row is the source of truth, a dropped NATS message only delays a relay—it never loses a request or admits an action without a row.
 
-The application's account is provisioned when the record attaches the
-application and revoked by `hale dna application remove`
-([The heart and the body](./heart.md)). A repository's record attaches
-one too: `hale dna init` on a repository root names its application by
-the project (its compose services are what express it), and its services
-publish their events as `app-<project>`. An application named
-`reflexes` holds no account: those subjects are the reflexes' alone.
+## Broker Configuration & Accounts
 
-### A repository's compose services
+In local development, the broker runs as a `nerves-<id>` container inside your machine's local habitat ([Memory and the Record](./memory.md#the-local-habitat)): a `nats:2` server bound to `127.0.0.1` on a host port in the `42000` range (stored in `ports.yaml`). An organism grafted with the habitat's defaults has no server of its own: its organization is an **account** on the habitat's NATS server. An organism grafted with `--own nerves` gets a server of its own, holding its one account. For multi-host deployments, run a NATS server with JetStream enabled, deploy the generated files, and pass `HALE_DNA_NATS_URL_OWNER` during migration.
 
-In a repository the body runs the compose file at its root: `hale dna dev`
-and `hale dna run` bring its services up once the organization reads its
-nerves, as a compose project of the organism's own (`dna_<id>-<project>`),
-wait for them to be running and healthy, bring up again any that stops
-other than by finishing, and take them down when the body stops. Compose
-never sees the organism's own credentials; it is handed the application's
-nerves, for the compose file to pass on:
+Each organization a server holds is an account of its own (`ORG_<KEY>`, the record's first 12 hex digits), so nothing of one organization reaches another on a shared server. Its users are named by role and record key, and their passwords are variables of the account's secrets file (`<key>.secrets.conf`, written from the vault with mode `0600`), which the account includes first. The server's `nats.conf` includes every account in its `nerves.d/` directory and is rewritten whenever one comes or goes. For a project named `refproj` whose record key is `3f2a9c0b7d11`, the generated account reads:
+
+```text
+include ./3f2a9c0b7d11.secrets.conf
+ORG_3F2A9C0B7D11: {
+  jetstream: enabled
+  users = [
+      # creates the organization's stream; held by no process that runs it
+      { user: owner-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_OWNER_PASSWORD }
+      # the spine: a node's host publishes the organization's facts, and the
+      # organization reads them through its durable consumers
+      { user: spine-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_SPINE_PASSWORD,
+        permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
+      # the application `refproj` the record attaches: publishes on its own
+      # subjects alone, reads nothing of DNA's
+      { user: app-refproj-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_APP_REFPROJ_PASSWORD,
+        permissions: { publish: ["*.app.refproj.>"], subscribe: ["_INBOX.>"] } }
+      # the reflexes: publish their firings on their own subjects, read nothing
+      { user: reflexes-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_REFLEXES_PASSWORD,
+        permissions: { publish: ["*.app.reflexes.>"], subscribe: ["_INBOX.>"] } }
+      # the head: subscribes, publishes nothing
+      { user: head-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_HEAD_PASSWORD,
+        permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }
+  ]
+}
+```
+
+### NATS User Accounts
+
+| NATS User | Held By | Vault Slot | Permitted Operations |
+| --- | --- | --- | --- |
+| `owner` | `hale habitat graft`, `hale habitat migrate`, `hale dna nerves migrate`, `hale dna nerves drop` | `nats-<org>-owner` | Create, update, or delete the JetStream stream; never held by a running daemon |
+| `spine` | Node host supervisor and `dna/org` | `nats-<org>-spine` | Publish and consume `<org>.dna.>` via durable `spine`, consume `<org>.app.>` via durable `heart`, publish `<org>.head.>` notifications |
+| `head` | Edge API / web face (`hale dna head`) | `nats-<org>-head` | Subscribe to `<org>.>`; forbidden from publishing |
+| `reflexes` | Health daemon (`dna/reflexes`) | `nats-<org>-reflexes` | Publish on `<org>.app.reflexes.>` only; cannot read any stream |
+| `app-<name>` | Attached application (`<name>`) | `nats-<org>-app-<name>` | Publish on `<org>.app.<name>.>` only; cannot read any DNA subjects |
+
+`hale habitat graft` generates random passwords for all NATS roles in the vault, and `hale dna upgrade` rotates them and restarts the `nerves-<id>` container so the updated credentials take effect immediately. When a component connects, pond's NATS client reads the password directly from its vault slot when writing the `CONNECT` frame—passwords never appear in URLs, CLI arguments, or environment variables.
+
+The `app-<name>` account is created when `application.attached` is recorded and revoked when you run `hale dna application remove` ([The Heart and the Body](./heart.md)). When `hale habitat graft <dir> --attach` is run on a repository root that uses Docker Compose services, it provisions `app-<project>` for those services. No application may be named `reflexes`, as `<org>.app.reflexes.>` is reserved for the reflex daemon.
+
+### Supervising Repository Docker Compose Services
+
+If your repository root contains a `compose.yaml`, `hale dna dev` and `hale dna run` automatically manage those services as a Docker Compose project named `dna_<id>-<project>` once `dna/org` connects to NATS. The host waits for the containers to report healthy, restarts any service that exits abnormally, and stops them on shutdown.
+
+Compose receives only the application's NATS credentials (`app-<project>`) and never sees DNA's internal database or spine credentials:
 
 ```yaml
 services:
@@ -116,27 +80,14 @@ secrets:
     file: ${HALE_DNA_NATS_SECRET_APP:-/dev/null}
 ```
 
-`HALE_DNA_NATS_SECRET_APP` is the path of the vault's entry for the
-application's password: compose mounts that file read-only, so the password
-is never copied, never in an environment and never in the repository. The
-broker's address is the one the body uses; on Linux a container on a bridge
-network cannot reach a broker on the host's loopback, which is why the
-service runs on the host's network. A body whose host dies does not leave
-them behind: every service carries the body's mark as a label, and the
-body fence, which already stops what a lost body started, removes the
-containers carrying that mark when its ownership record
-(`.hale/dna/compose.owner.<token>_<pid>`, one per body) says they are this
-body's. Nothing takes the
-project down whole, so a replacement body's services in the same project
-are never touched. `HALE_DNA_COMPOSE=off` leaves the
-services to you. The todo repository (`dna/tests/onboarding/todo`) is the
-worked example.
-[The skin](./skin.md) has every secret the organism holds.
+- **Secret mounting (`HALE_DNA_NATS_SECRET_APP`)**: Points to the mode `0600` vault file for `app-<project>`, which Docker Compose mounts read-only at `/run/secrets/nats-app`.
+- **Host networking (`network_mode: host`)**: Allows Linux containers to reach the loopback-bound habitat broker at the same address the host uses.
+- **Orphan cleanup via the body fence**: Each container is labeled with the active body's token and tracked in `.hale/dna/compose.owner.<token>_<pid>`. If the host crashes, the body fence removes only the containers belonging to that failed body epoch without disrupting a replacement body's containers.
+- **Disabling Compose management**: Set `HALE_DNA_COMPOSE=off` to manage the repository's Compose stack manually. See `dna/tests/onboarding/todo` for a complete working example.
 
-## Migrate and drop
+## Migrate and Drop
 
-The stream is created with the owner's URL, and the verb prints what
-every other part is handed:
+Run `hale dna nerves migrate` to create or update the organization's JetStream stream and print the environment variables for each component role:
 
 ```text
 $ hale dna nerves migrate
@@ -150,80 +101,41 @@ HALE_DNA_NATS_VAULT_APP=nats-dna_…-app-refproj
 HALE_DNA_NATS_VAULT_REFLEXES=nats-dna_…-reflexes
 ```
 
-`HALE_DNA_NATS_ORG` is the organization's token, the same name memory
-gives the record's schema. Every URL is the server alone,
-`nats://host:port`; the three `_APP` lines appear while the record
-attaches an application. With no `HALE_DNA_NATS_URL_OWNER` the verb
-brings up compose's `nerves` service and uses that. It refuses a
-server without JetStream (`the server does not run JetStream (start
-it with -js)`) and a vault that lacks a role's password, naming
-`hale dna upgrade`. Run it again at any time: an existing stream is
-brought to this toolchain's configuration.
+- **`HALE_DNA_NATS_ORG`**: The organization token (`dna_<identity>`), matching the PostgreSQL schema name.
+- **Automatic habitat startup**: If `HALE_DNA_NATS_URL_OWNER` is unset, `hale dna nerves migrate` starts the `nerves-<id>` allocation in the local habitat and configures the stream there. It rejects NATS servers running without JetStream (`the server does not run JetStream (start it with -js)`) or missing vault passwords (prompting you to run `hale dna upgrade`).
+- **`hale dna nerves urls`**: Prints the same environment variables for a running broker without starting containers or modifying streams.
+- **Host credential scoping**: `hale dna dev` resolves the `spine` URL and token from the running habitat allocation (if down, it exits and names `hale habitat migrate`). `hale dna run` requires `HALE_DNA_NATS_URL_SPINE` and `HALE_DNA_NATS_ORG` in its environment and strips any `owner` or `head` URLs; if unset, the host logs a warning and runs without NATS (`hale dna run: no nerves: …; the organization hears nothing the record asks`). Supervised application instances inherit only `HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`, and `HALE_DNA_NATS_ORG`, with all DNA database DSNs and other NATS URLs stripped from their environment.
+- **`hale dna nerves drop`**: Deletes the `DNA_<ID>` stream and all stored messages (`dropped DNA_…` or `absent DNA_…`). Requires `HALE_DNA_NATS_URL_OWNER` to be explicitly set and never defaults to the local habitat allocation.
 
-`hale dna dev` does this first and hands the host the spine's URL and
-the token alone. `hale dna run` creates nothing: give it
-`HALE_DNA_NATS_URL_SPINE` and `HALE_DNA_NATS_ORG`, and it strips any
-owner's or head's URL before the host sees them. Without them the host
-says so and runs, and the organization hears nothing the record asks:
+## Subjects and the Stream
 
-```text
-hale dna run: no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks
-```
+Every NATS subject is prefixed with the organization token (`<org>`):
 
-An application the organism starts (an instance a fleet node starts,
-the application `dev` runs) inherits the application's URL, user,
-vault entry and the token, and none of the organism's other
-credentials: the spine's, owner's, head's and reflexes' URLs and every
-memory DSN are taken out of what it inherits.
+| Subject Pattern | Traffic Carried |
+| --- | --- |
+| `<org>.dna.<family>.<event>` | Internal DNA workflow and governance events declared on `dna::` topics (e.g., `dna.intent.offered`) |
+| `<org>.app.<app>.<event>` | Telemetry and concern events published by an attached application ([The Heart and the Body](./heart.md)) |
+| `<org>.head.<event>` | Row-landed notifications (`head.row.landed`) sent from spine nodes to edge heads |
 
-`hale dna nerves drop` deletes the stream, and everything it held,
-with the owner's URL; it prints `dropped DNA_…`, or `absent DNA_…` when
-there was none. It never falls back to compose: with no
-`HALE_DNA_NATS_URL_OWNER` it drops nothing and says so. Drop it beside
-memory's schema when an organization is gone for good.
+Pond's NATS adapter automatically prepends `<org>.` on publish and strips it on receive, allowing multiple organizations to share a single NATS server without colliding on topic names.
 
-## Subjects and the stream
+Each organization owns one file-backed JetStream stream named `DNA_<ID>` (the uppercased `<org>` token) capturing `<org>.>` with a 7-day retention window. Readers track their offset via two durable consumers:
+- **`spine`**: Consumed by `dna/org`, filtered to `<org>.dna.>`. Events published while `dna/org` is restarting remain queued in the stream until it reconnects.
+- **`heart`**: Consumed by the node's host supervisor, filtered to `<org>.app.>` with up to `64` unacknowledged messages in flight. Because there is one `heart` durable per organization, each application event is delivered to one host.
 
-Everything an organization carries is under its token:
-
-| subject | what travels on it |
-|---|---|
-| `<org>.dna.<family>.<event>` | DNA's own facts: the declared subject of a `dna::` topic, such as `dna.intent.offered` |
-| `<org>.app.<app>.<event>` | an application's events, under its own name ([The heart and the body](./heart.md)) |
-| `<org>.head.<event>` | what a node tells the heads (`head.row.landed`), outside `dna.` so no organization reads it |
-
-The connection puts the token on what leaves and takes it off what
-arrives, so a topic keeps its declared subject. One server can carry
-several organizations this way, each under its own token.
-
-Each organization has one stream, `DNA_<ID>` (its token upper-cased),
-over `<org>.>`, on disk, keeping what it was told for a week. It is
-not a queue that forgets once read: every publish is acknowledged by
-the stream, and each reader keeps its own place in it through a
-durable consumer:
-
-- `spine`: the organization reads its facts, filtered to
-  `<org>.dna.>`. A fact published while it was down or restarting
-  reaches it when it is back.
-- `heart`: the node's host reads every application's events,
-  `<org>.app.>`, at most 64 unacknowledged at once. There is one for
-  the organization, so each event goes to one host.
-
-At start the host waits up to 20 seconds for the organization to be
-reading, and says which:
+On startup, the host waits up to 20 seconds for `dna/org` to begin pulling from `spine`:
 
 ```text
 hale dna run: the organization reads its facts from the nerves (DNA_…)
 hale dna run: the organization did not come to read the nerves within 20s; the facts wait in the stream
 ```
 
-## Relaying after the row lands
+## Relaying After the Row Lands
 
-These are the request rows a node relays, the topic each goes out on,
-and the rows that answer it:
+On every tick, a spine node checks PostgreSQL for unanswered request rows and publishes them to NATS. A request row remains eligible for relay every 30 seconds until a corresponding answering row is written to PostgreSQL:
 
-| request row | topic (subject) | answered by |
-|---|---|---|
+| Unanswered Request Row | NATS Topic (Subject) | Answering Row Kind(s) |
+| --- | --- | --- |
 | `intent.requested` | `IntentOffered` (`dna.intent.offered`) | `intent.offered`, `intent.refused` |
 | `review.verdict` | `ReviewVerdict` (`dna.review.verdict`) | `review.settled`, `review.refused`, `review.signed` |
 | `concern.requested` | `ConcernRaised` (`dna.concern.raised`) | `concern.raised`, `concern.refused` |
@@ -233,93 +145,35 @@ and the rows that answer it:
 | `position.requested` | `PositionOpenRequested` (`dna.position.requested`) | `position.proposed`, `position.refused` |
 | `graph.requested` | `GraphReviewRequested` (`dna.graph.requested`) | `graph.proposed`, `graph.refused` |
 | `schedule.requested` | `ScheduleRequested` (`dna.schedule.requested`) | `schedule.answered` |
-| `knowledge.node.requested`, `.binding.`, `.edge.` | `KnowledgeNodeRequested`, `…BindingRequested`, `…EdgeRequested` | the matching `.proposed` or `.refused` |
+| `knowledge.node.requested`, `.binding.`, `.edge.` | `KnowledgeNodeRequested`, `…BindingRequested`, `…EdgeRequested` | Matching `.proposed` or `.refused` row |
 | `observation.requested` | `ExpressionObserved` (`dna.expression.observed`) | `expression.observed`, `observation.refused` |
 | `attempt.outcome_requested` | `WorkSubmit` (`dna.work.submit`) | `attempt.outcome`, `attempt.outcome_refused` |
 | `attempt.allowance_requested` | `WorkAllowanceAsk` (`dna.work.allowance`) | `attempt.allowance_granted`, `attempt.allowance_refused` |
 
-A request is answered when a later row of an answering kind names it.
-Until then the node relays it again every 30 seconds, whatever the
-transport said about the last publish: a publish is confirmed by its
-answer in the record, never by the stream. A concern and a pressure
-signal share an entity with every other from their source, so each
-carries a `request` id and its answer names that id.
+Because multiple concerns or pressure signals from the same source share an entity path, each `concern.requested` and `pressure.requested` row carries a unique `request` ID matched by its answering row.
 
-Under `dna.trust = signed` a node relays only rows whose commit
-carries a signature git verifies. It answers an unverified one with a
-refusal naming the commit (`unverified writer`) and never publishes it.
-Over a shared record a node relays an ask only for a position its
-owner holds; the rest stay in the record for the owner's node.
+- **Signed trust enforcement (`dna.trust = signed`)**: Nodes verify the SSH signature on human request rows before relaying; unverified requests receive an immediate refusal row (`unverified writer`) and are never published to NATS.
+- **Shared-record routing**: On a shared record, a node only relays `intent.requested` rows targeting positions owned by its organization.
 
-## Consumed once, by id
+## Idempotent Consumption & Delivery Auditing
 
-Delivery is at least once, so every reader consumes by id:
+### At-Least-Once Delivery & Deduplication by ID
 
-- The organization admits an intent once by its id: offered again, it
-  answers with the execution already admitted and writes nothing. A
-  verdict repeated at a settled Review is answered as already settled.
-  A practice, a concern or a pressure request is answered once by its
-  request id; a concern delivered twice is one concern, and the count
-  that turns concerns into a proposal counts requests, never
-  redeliveries.
-- A leg's outcome and allowance ask are keyed by the attempt and the
-  lease: one outcome under one lease.
-- An application's event lands as a `reading.recorded` row,
-  `<app>/<event>/<id>`, before anything acts on it. A second arrival
-  of the same entity, a redelivery or a replay, is refused as a
-  duplicate and lands nothing. The host acknowledges the message to
-  the stream only once its row has landed, or it was refused for good
-  (a duplicate, or not a reading at all); one whose row could not be
-  written comes again. An event not landed within the stream's week
-  ages out unrecorded.
+Because JetStream and the 30-second relay loop deliver messages at least once, every consumer deduplicates by identifier:
+- **Intents, verdicts, practices, concerns, and pressure**: Admitted once by request/intent ID. Duplicate deliveries return the existing execution or settled Review without writing duplicate rows, and threshold counters (such as `concern_threshold` and `appendage_threshold`) count unique request IDs rather than NATS redeliveries.
+- **Worker leg outcomes and allowances**: Keyed by `(attempt_id, lease_token)` so each lease settles at most once.
+- **Application events (`reading.recorded`)**: Persisted as `<app>/<event>/<id>` before any handler runs. Duplicate arrivals of the same entity ID are rejected as duplicates. The host acknowledges the JetStream message only after the `reading.recorded` row commits to PostgreSQL (or is permanently rejected as malformed/duplicate); unacknowledged messages are redelivered for up to the stream's 7-day retention window.
 
-## Delivery is audited
+### Delivery Closure Auditing
 
-A connection keeps every publish until the stream acknowledges it and
-writes it again after a reconnect. A publish still unacknowledged
-past its window violates the connection's `delivery` closure. The
-violation collapses to the connection's owner, which never restarts the
-connection in place:
+Pond's NATS connection buffers outbound messages until acknowledged by JetStream and retransmits them across reconnects. If a publish remains unacknowledged past its delivery timeout, the connection's `delivery` closure fires and collapses to its owning process rather than silently dropping messages:
 
-- the host appends `violation.recorded` (`adapter_undeliverable`,
-  subject `nerves`, its holder and why), stops its organization and
-  the expression, gives the body lease back (`body.released`,
-  `why: nerves`) and exits 75, the organism's one restart code; its
-  unit starts it again with a fresh connection;
-- the organization's own connection collapsing makes it exit 75 too,
-  and the host that supervises it ends with it.
+- **Host connection failure**: The host appends `violation.recorded` (`adapter_undeliverable`, subject `nerves`), stops `dna/org` and the supervised application, releases the body lease (`body.released`, `why: nerves`), and exits with code `75` so systemd restarts the node with a fresh connection.
+- **Organization connection failure**: `dna/org` exits with code `75`, causing the supervising host to shut down and restart alongside it.
+- **Heart consumer failure (`pulse_stopped`)**: If pulling from the `heart` durable fails while the NATS connection is otherwise live (for example, if the durable consumer or stream was deleted), the host logs one `violation.recorded` (`pulse_stopped`) row for the outage, recreates the durable consumer, and resumes pulling.
 
-The new node relays every request still unanswered, because the row,
-not the publish, is the fact.
+## Head Notifications, Shared Records, and Shutdown
 
-The heart's durable is audited the same way: a pull on `heart` refused
-while the connection holds (the durable or the stream gone) is one
-`violation.recorded` row (`pulse_stopped`) per outage, and the
-connection makes the durable again and pulls on.
-
-## Rows landing
-
-For every row its view of the organism gains, a node publishes
-`head.row.landed` (the row's `seq`, `kind` and `entity`), at most 256
-on one tick. The face's head subscribes as the `head` user and tells
-the browser to read again, so the face does not poll for the
-organism's rows ([The head and the face](./head.md)).
-
-## Shared records
-
-Over a record several organizations share, every owner runs a body and
-an organization, and each owner is a space of its own on the stream:
-its host publishes under `<org>.<owner>.` and its organization reads
-through the durable `spine_<owner>`, filtered to
-`<org>.<owner>.dna.>`. No organization pulls a fact another owner's
-host published. The host names its owner from the clone's `dna.owner`
-and hands it to the organization as `HALE_DNA_OWNER`. The applications'
-events stay on one `heart` durable for the whole organization.
-
-## Stopping
-
-SIGTERM drains a node: it stops its organization, which drains the
-same way, gives the body lease back and ends. `hale dna run` and
-`hale dna dev` give it 30 seconds for that (`LOTUS_DRAIN_GRACE_MS`, in
-milliseconds, when the environment does not already set one); past
-the grace the runtime ends it.
+- **Push notifications to heads (`head.row.landed`)**: Whenever a node observes new rows in PostgreSQL, it publishes up to `256` `head.row.landed` messages (`seq`, `kind`, `entity`) per tick on `<org>.head.row.landed`. Edge heads (`hale dna head`) subscribe as the `head` user and push updates to connected browsers without polling ([The Head and the Face](./head.md)).
+- **Shared multi-owner streams**: When multiple organizations share a record, each owner's host sets `HALE_DNA_OWNER` (from `dna.owner` in Git config), publishes internal facts under `<org>.<owner>.dna.>`, and consumes them through a dedicated durable consumer named `spine_<owner>`. Application events remain on the single shared `heart` durable across the organization.
+- **Graceful shutdown (`SIGTERM`)**: Sending `SIGTERM` drains the node and `dna/org`, releases the body lease, and exits cleanly within `LOTUS_DRAIN_GRACE_MS` (default `30000` ms / 30 seconds).

@@ -28,9 +28,18 @@ fn child(root: String) {
     let r = k.read(request);
     let elapsed = std::time::monotonic() - t0;
     std::test::assert_eq_int(r.status, 503, "a refused memory answers 503: " + r.body);
-    std::test::assert(std::str::contains(r.body, "\"knowledge_unavailable\""), "the code names the outage: " + r.body);
-    std::test::assert(std::str::contains(r.body, "\"retryable\": true"), "and says a retry may work: " + r.body);
-    std::test::assert(elapsed < 200ms, "the 503 comes at once, not after connect retries: " + to_string(elapsed));
+    std::test::assert(
+        std::str::contains(r.body, "\"knowledge_unavailable\""),
+        "the code names the outage: " + r.body,
+    );
+    std::test::assert(
+        std::str::contains(r.body, "\"retryable\": true"),
+        "and says a retry may work: " + r.body,
+    );
+    std::test::assert(
+        elapsed < 200ms,
+        "the 503 comes at once, not after connect retries: " + to_string(elapsed),
+    );
 }
 
 fn main() {
@@ -41,8 +50,17 @@ fn main() {
     let scratch = dna::scratch_root("knowledge-memory-refused");
     let port = dna::free_port(1);
     let dsn = "postgres://dna:dna@127.0.0.1:" + to_string(port) + "/dna?sslmode=disable";
-    let outcome = dna::run_tool("env\nHALE_1030_TEST_DSN=" + dsn + "\n" + std::env::arg_or(0, "") + "\nchild\n" + scratch);
-    std::test::assert_eq_int(outcome.code, 0, "the read against a closed port: " + outcome.stdout + outcome.stderr);
-    std::test::assert(std::str::contains(outcome.stderr, "connection_refused"), "the API names the reason on stderr: " + outcome.stderr);
+    let outcome = dna::run_tool(
+        "env\nHALE_1030_TEST_DSN=" + dsn + "\n" + std::env::arg_or(0, "") + "\nchild\n" + scratch,
+    );
+    std::test::assert_eq_int(
+        outcome.code,
+        0,
+        "the read against a closed port: " + outcome.stdout + outcome.stderr,
+    );
+    std::test::assert(
+        std::str::contains(outcome.stderr, "connection_refused"),
+        "the API names the reason on stderr: " + outcome.stderr,
+    );
     dna::scratch_done(scratch);
 }

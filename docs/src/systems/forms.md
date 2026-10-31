@@ -1,151 +1,105 @@
-# Forms under the hood
+# Forms Under the Hood
 
-> **Coming from Rust / C++?** A form is closer to a monomorphized
-> template than to a generic collection object. `@form(vec)`
-> doesn't wrap a one-size-fits-all container — the compiler emits
-> a tight, type-specialized implementation per cell type, sized
-> and laid out for *your* element. You declared the access
-> discipline at [the everyday level](../everyday/collections.md);
-> here's what it lowers to and how to choose.
-
-## A form is a lowering, not a type
-
-When you write:
+A `@form(...)` annotation on a locus instructs the compiler to lower a `capacity` slot (`heap` or `pool`) into a monomorphized, type-specialized data structure and synthesize its access methods. Rather than wrapping a generic container, the compiler emits layout-specific code tailored to your exact element `type`.
 
 ```hale
-@form(vec)
-locus Names {
-    capacity { heap items of String; }
+type Hits { word: String; n: Int; }
+
+@form(hashmap)
+locus WordCounts {
+    capacity { pool entries of Hits indexed_by word; }
+}
+
+fn main() {
+    let wc = WordCounts { };
+    wc.bump("hale");
+    wc.bump("hale");
+    let h = wc.get("hale") or Hits { word: "hale", n: 0 };
+    println(h.n); // 2
 }
 ```
 
-the compiler doesn't reach for a library `Vec`. It synthesizes,
-for *this* locus and *this* cell type, a contiguous growable
-buffer and the methods over it — `push`, `get`, `set`, `pop`,
-`len`, `is_empty`, and the sort family. The storage is the
-`heap` [capacity slot](./memory.md); the form decides the layout
-(here: a `{cap, len, buf}` struct with doubling realloc) and the
-method surface.
+## The Six Collection Forms
 
-The six forms and what they require:
+Every form requires a specific `capacity` slot declaration and synthesizes a fixed set of methods on the enclosing locus (maximum one `@form` per locus):
 
-| Form | Backing slot | Lowers to | Synthesized surface |
+| Form | Backing Slot | Memory Layout | Synthesized Methods |
 |---|---|---|---|
-| `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*`, `clear`, `truncate` |
-| `@form(hashmap)` | one `pool` + `indexed_by` | intrusive open-addressing table | `set`, `get`, `has`, `remove`, `len`, `is_empty`, `key_at`, `entry_at`, `bump` |
-| `@form(set)` | one `pool` + `indexed_by` | the hashmap table, value never surfaced | `insert`, `contains -> Bool`, `remove`, `len`, `is_empty` |
-| `@form(ring_buffer, cap=N)` | one `pool` | fixed circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
-| `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len`, `remove` |
-| `@form(heap)` | one `heap` + `ordered_by min\|max <field>` | binary heap over a doubling buffer | `push`, `pop`, `peek`, `len`, `is_empty`, `clear` |
+| `@form(vec)` | `heap <name> of <T>` | Doubling contiguous `{cap, len, buf}` buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*`, `clear`, `truncate` |
+| `@form(hashmap)` | `pool <name> of <T> indexed_by <key>` | Intrusive open-addressing hash table | `set`, `get`, `has`, `remove`, `len`, `is_empty`, `key_at`, `entry_at`, `bump` |
+| `@form(set)` | `pool <name> of <T> indexed_by <key>` | Open-addressing hash table (value hidden) | `insert`, `contains -> Bool`, `remove`, `len`, `is_empty` |
+| `@form(ring_buffer, cap = N)` | `pool <name> of <T>` | Fixed-capacity circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
+| `@form(lru_cache, cap = N)` | `pool <name> of <T> indexed_by <key>` | Fixed-capacity keyed table with LRU eviction | `put`, `get`, `contains`, `len`, `remove` |
+| `@form(heap)` | `heap <name> of <T> ordered_by min\|max <field>` | Binary heap over a doubling contiguous buffer | `push`, `pop`, `peek`, `len`, `is_empty`, `clear` |
 
-`get` / `pop` / `remove` (and a vec's `set`) are `fallible`
-(bounds / missing-key / empty); `push` on `vec` is infallible, on `ring_buffer` returns
-`Bool` (full is a normal condition, not an error). `lru_cache` is
-the cap-bounded keyed form: `put` is infallible and silently
-evicts the least-recently-**used** entry over `cap` (a `get`
-counts as a use and saves an entry from eviction; `contains` does
-not). Its `get` is `fallible(KeyError)` on a miss, and so is
-`remove(k)`, which takes the entry out and hands you the value. A
-cache whose cells own something outside memory — a socket, a file —
-declares `fn on_evict(k: K, v: S)` on the locus: the cache calls it with
-each entry it evicts, before reclaiming the cell, so the cell can be
-closed, and when the cache dissolves it calls it once more for each
-entry still held, least recently used first. The hook may not `put` into
-its own cache, directly or through a method it calls; the check refuses
-that `put`.
+### Choosing a Form
 
-Both a `vec` and a `hashmap` also expose **batched iteration** —
-`for x in v.items { … }` walks the vec, and
-`for e in m.entries { … }` walks the map. The loop is an inline
-buffer/slot walk, not per-element method calls. (Don't mutate the
-form inside the body — a grow would rehash under the cursor.)
+- **Ordered sequence with index access**: `@form(vec)`.
+- **Key-value table where the key is a struct field**: `@form(hashmap)` with `indexed_by <field>`.
+- **Key membership set**: `@form(set)` with `indexed_by <field>`.
+- **Bounded FIFO queue with explicit full detection**: `@form(ring_buffer, cap = N)`.
+- **Bounded keyed cache with automatic LRU eviction**: `@form(lru_cache, cap = N)` with `indexed_by <field>`.
+- **Priority queue or timer frontier**: `@form(heap)` with `ordered_by min <field>` or `ordered_by max <field>`.
 
-A form owns what it holds. A `vec`'s `push` / `set` and a
-`hashmap`'s `set` (and an `lru_cache`'s `put`) store the form's own copy of the value —
-its Strings and Bytes, and any nested record, tuple, array or
-payload-carrying enum with what that owns — and when a `set` replaces an element or cell, or a
-`pop` / `remove` (or a vec's `clear` / `truncate`, or a cache's
-eviction) drops one, all of it is reclaimed and reused, at
-any depth, so a map or vec churned for hours keeps a flat arena,
-under every sync discipline. A
-value you read out stays whole: a vec's `get` hands you a copy, a
-synced map's read (`serialized`, `striped` or `lockfree`) copies the
-cell out for the reader, and a single-pool map's reclamation waits
-for the end of the current activation. Reading a nested record out of a map cell and setting it
-back under the same key costs nothing; storing it under another key
-copies it.
+> [!IMPORTANT]
+> Form cells must be primitives or value `type` records—never loci. To manage a keyed collection of live child loci, use `accept` and route messages over a keyed bus topic (see [Service Patterns](../services/patterns.md)).
 
-By default a `@form(hashmap)` is single-pool: its densest layout
-has no synchronization, and a *cross-pool* call into one instance
-is rejected. "Cross-pool" is judged per instance, at the call
-site: two loci that each hold their own form field on different
-pools are two separate, single-threaded maps — each touched only
-by its owner's pool — so neither is flagged and neither needs a
-discipline. (You don't need byte-identical twin types to place
-two same-type forms on two pools.) The rejection is for genuine
-sharing: reaching one instance from a pool other than the one it
-lives on. Opt into that with the `sync = …` parameter —
-`@form(hashmap, sync = serialized)` (per-map mutex),
-`sync = striped` (cell-level CAS, parallel writers), or `sync = lockfree`
-(CAS-only steady state) — trading layout density for the sharing
-discipline the workload needs.
+## Method Semantics & Special Operations
 
-A map you leave unconfigured is not always single-pool: when one
-instance of it is called from more than one pool, the compiler
-infers a discipline for it (`serialized`, or `striped` for several
-writers on a hot path), lays the map out with it, and accepts the
-cross-pool calls that discipline makes safe. The question is asked
-per instance: two workers on two pools that each hold their own
-map need nothing, and one map `fn main` hands to both does. Write `sync = none`
-to keep a map single-pool regardless: inference leaves it alone,
-and a cross-pool call into it is rejected. A `sync = none` map
-takes no lock, so it is not one to the other checks either: a
-`@no_block` method may read it, an `@effects(depends: …)` locus
-may hold it, and one instance holding it, shared across two pools,
-gets the unsynchronized-state warning.
+### Fallibility and Return Types
+- **Lookup and removal**: `get`, `pop`, `peek`, `remove`, and `vec.set` are `fallible` (raising on out-of-bounds, missing key, or empty container) and must be addressed with `or` at the call site.
+- **Insertion**: `vec.push`, `hashmap.set`, `set.insert`, `lru_cache.put`, and `heap.push` are infallible. On `@form(ring_buffer, cap = N)`, `push` returns `Bool` (`false` when the ring is full).
 
-## The performance contract
+### Counter Increment (`hashmap.bump`)
+On a `@form(hashmap)` whose cell type contains exclusively the `indexed_by` key field and one `Int` field (such as `type Hits { word: String; n: Int; }`), `m.bump(key)` initializes a missing entry to `1` or increments the existing counter in place. `hale check` rejects `bump` on any other cell layout.
 
-Each form commits to a performance band, measured by
-microbenchmarks:
+### LRU Eviction Hooks (`lru_cache` and `on_evict`)
+On `@form(lru_cache, cap = N)`, `put` inserts or updates an entry and silently evicts the least-recently-used entry when the population exceeds `cap`. Calling `get` marks an entry as recently used; calling `contains` does not.
 
-- **Tight-loop primitive** (`push`) — within ~10% of idiomatic
-  C. `@form(vec).push` hits this.
-- **Amortized workload** — within ~2× of the C equivalent.
-- **Per-op fallible** (`get` through the fallible ABI) — no tight
-  bound; advisory, because the fallible return shape costs real
-  cycles. `@form(vec)`'s `get` / `set` / `pop` / `push` are inlined
-  at codegen, so for a vec the gap is largely closed.
+If cached cells own external resources (such as file descriptors or sockets), define `fn on_evict(k: K, v: V)` on the cache locus:
+- The runtime invokes `on_evict` just before reclaiming each evicted cell.
+- When the cache locus dissolves, `on_evict` runs for every remaining entry in least-recently-used order.
+- `on_evict` may not call `put` on its own cache directly or transitively (`hale check` rejects recursive cache insertion).
 
-The point: a form isn't a slow generic that "works for any type."
-It's a specialized implementation monomorphized to your cell
-type. The cost is that a `@form(vec)` of `Player` isn't
-interchangeable with some library's `Vec<Player>` — there's no
-such shared generic. If you want a shared API across forms, you
-declare an `interface`.
+### Batched Inline Iteration
+Both `@form(vec)` and `@form(hashmap)` expose inline slot iteration via the capacity slot's name:
+- `for x in v.items { ... }` walks a vector's contiguous buffer directly.
+- `for e in m.entries { ... }` walks a hashmap's occupied buckets directly without per-element method overhead.
 
-## Choosing a form
+Do not mutate or resize the collection inside a batched iteration loop, as growing the backing buffer invalidates the active cursor.
 
-- **Growable, ordered, index access** → `@form(vec)`.
-- **Keyed lookup, key is a field of the value** → `@form(hashmap)`
-  (`indexed_by` names the key field).
-- **Bounded window, drop-or-backpressure on full** →
-  `@form(ring_buffer, cap = N)`.
-- **Bounded keyed cache, evict least-recently-used on full** →
-  `@form(lru_cache, cap = N)` (`indexed_by` names the key field).
-- **Always take the smallest (or largest) next** — a priority
-  queue, a timer list, a search frontier → `@form(heap)`
-  (`ordered_by min <field>` or `ordered_by max <field>`).
+## Memory Ownership & Copy-on-Write Reads
 
-One form per locus — a locus is one container. Need two? That's
-two loci, which is usually the cleaner decomposition anyway.
+Every form owns the storage of its elements. Inserting or updating an element (`push`, `set`, `put`) deep-copies any heap-backed fields (`String`, `Bytes`, and nested records, tuples, arrays, or payload enums) into the form's storage. When an entry is overwritten, removed (`pop`, `remove`, `clear`, `truncate`), or evicted, all nested blocks are reclaimed and recycled at any depth, keeping arena memory flat across hours of churn.
 
-## Orthogonal to projection class
+### Value Isolation and In-Place Read-Modify-Write
+Mutating a variable returned by `get` never silently mutates the stored cell unless you write it back with `set`. For single-pool `@form(hashmap)` and `@form(lru_cache)` instances, `get` returns a shallow copy of top-level scalar fields while sharing nested records, arrays, tuples, and payload enums copy-on-write.
 
-A form governs how a locus stores *cells of a value type*. A
-[projection class](./memory.md) governs how a parent serves
-observations of its *accepted child loci*. They operate on
-different things and compose freely on the same locus:
+If you read an entry, update a nested field or array element, and immediately write the entry back to the same key, the compiler elides the copy and updates the cell's backing block in place:
+
+```hale,fragment
+let mut e = m.get(k) or Cell { id: k };
+e.levels[j] = Level { price: p, qty: q };
+m.set(e);
+```
+
+This zero-allocation round-trip applies when `m.set(e)` executes immediately on all control-flow paths, no other read of `m` occurs in between, and `e` is not read afterward. Any other mutation copies the nested allocation on write; `hale check` flags that copy as a hot-path warning inside loops or bus handlers, and as a compile error inside `@hot` functions.
+
+## Hashmap Concurrency (`sync` Disciplines)
+
+By default, a `@form(hashmap)` uses an unsynchronized single-pool layout when accessed from only one worker pool. If the same hashmap instance is shared across multiple pools, the compiler either infers a synchronization discipline or enforces the explicit `sync` mode you declare:
+
+| Annotation | Synchronization Strategy | Cross-Pool Access | Notes |
+|---|---|---|---|
+| `@form(hashmap)` *(default)* | Auto-inferred per instance (`none` if single-pool; `serialized` or `striped` if shared) | Allowed (compiler selects safe layout) | Two separate instances on two different pools each remain lock-free (`none`). |
+| `@form(hashmap, sync = none)` | No locks or atomics; densest layout | Rejected at compile time | Safe inside `@no_block` methods and `@effects(depends: ...)` loci. |
+| `@form(hashmap, sync = serialized)` | Per-map mutex | Allowed | Simple synchronization for low-to-moderate contention. |
+| `@form(hashmap, sync = striped)` | Cell-level CAS with parallel writers | Allowed | High-throughput concurrent reads and writes; `get` copies the cell out for the reader. |
+| `@form(hashmap, sync = lockfree)` | CAS-only steady state | Allowed | Lock-free concurrent access; `get` copies the cell out for the reader. |
+
+## Composability with Projection Classes
+
+A `@form(...)` annotation governs how a locus lays out its value `capacity` slot, whereas a `projection` class governs how a parent locus allocates arenas for its `accept`ed child loci (see [Memory & Lifetime](./memory.md#projection-classes)). The two mechanisms are orthogonal and compose on the same locus:
 
 ```hale
 type Session { id: String; user: String; }
@@ -158,19 +112,9 @@ locus SessionStore : projection chunked {
 }
 ```
 
-`@form(hashmap)` lays out the `sessions` value store;
-`projection chunked` sizes the allocator for the accepted
-`Worker` children. Different slots, no interference.
+## Performance Contract
 
-## Cells are data
-
-A form cell can be a primitive or a `type` record — never a
-locus. Storing a locus in a map would mean `get(key)` hands a
-live entity to a stranger, the same antipattern the language
-rejects for [methods returning
-loci](../everyday/locus-gently.md). For keyed *entities*, make
-them accepted children and key a parallel index by name. Cells
-are values; entities are children.
-
-Next: the fastest same-machine transport — [Zero-copy & the
-high-frequency bus](./zero-copy-bus.md).
+Because forms lower to monomorphized, inlined code rather than virtual or boxed generics:
+- **Tight-loop primitives** (`@form(vec)` `push`, `get`, `set`, `pop`): Inlined directly at codegen, executing within ~10% of `clang -O3` C.
+- **Amortized table workloads**: Within ~2x of hand-written C, with contended `@form(hashmap)` writes outperforming hand-rolled C locks by ~1.3–1.4x.
+- **Polymorphism across forms**: Because `@form(vec)` of `Player` is specialized to its locus, there is no generic `Vec<T>` type parameter. To write functions that operate over multiple form loci, define a structural `interface`.

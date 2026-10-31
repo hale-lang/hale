@@ -130,7 +130,7 @@ fn targets() -> Vec<String> {
     push_dir("dna", &|p| {
         p.is_dir()
             && !p.ends_with("tests")
-            && std::fs::read_dir(p).unwrap().any(|f| f.unwrap().path().extension().is_some_and(|x| x == "hl"))
+            && hale_corpus::holds_hl(p)
     });
     // the host's verb program, a seed inside the host's (GH #1490)
     out.push("dna/host/verb".to_string());
@@ -151,7 +151,18 @@ fn over_target<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -
     })
 }
 
-/// [`over_target`] with the summary as the snapshot built it.
+/// The effect rows over the summary beside the whole stdlib copy
+/// ([`over_target_as_built`]'s).
+fn whole_effects(snap: &Snapshot) -> hale_types::effect_rows::EffectRows {
+    let views = snap.demand_owned_views().expect("the owned-view column");
+    let summary = hale_types::alloc_summary::derive_alloc_summary_over(&snap.bundle(), views);
+    derive_effect_rows(&snap.bundle(), snap.demand_scope().expect("the scope"), Arc::new(summary))
+}
+
+/// [`over_target`] with the summary beside the whole stdlib copy, as the
+/// snapshot's walk and owned-view column give it: the corrections pinned
+/// here are of the copy's rows too, which the check's summary holds only
+/// where the program reaches them.
 fn over_target_as_built<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -> T + Send) -> Option<T> {
     let path = root().join(target);
     std::thread::scope(|s| {
@@ -160,8 +171,10 @@ fn over_target_as_built<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocS
             .spawn_scoped(s, move || {
                 let config = Config::check(path.is_dir(), false);
                 let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, config).ok()?;
-                let summary = snap.demand_alloc_summary().ok()?;
-                Some(f(&snap, summary))
+                snap.demand_alloc_summary().ok()?;
+                let views = snap.demand_owned_views().ok()?;
+                let summary = hale_types::alloc_summary::derive_alloc_summary_over(&snap.bundle(), views);
+                Some(f(&snap, &summary))
             })
             .unwrap()
             .join()
@@ -294,11 +307,33 @@ fn own_scope_let_block_scope_test() {
             // `query_param`'s pair loop decodes through them); 446 since
             // `std::rand::Rng` came (its birth, an entry point, and four
             // methods; `next` invoked unboundedly by `next_int`'s rejection
-            // loop); 447 since `std::crypto::ed25519_keypair`'s body came
+            // loop); 447 since `std::crypto::ed25519_keypair`'s body came;
+            // 458, and one more entry point, since std::http's streamed body
+            // came (`BodyWriter`'s birth, `chunk` and `end`, `SseWriter`'s
+            // `event` and `end`, and six framing helpers); 471, and four
+            // more invoked unboundedly, since the HTTP client's call
+            // deadline came (eight helpers, five of them called in its read
+            // and retry loops, and its sends no longer through
+            // `__http_send_raw`); 476, and five more invoked
+            // unboundedly, since `std::log`'s sinks write records (the
+            // format, level, time, render and JSON-fields helpers, each
+            // called from a sink's bus handler); 478, and two more, since
+            // a record's values are escaped byte by byte (the plain-byte
+            // and hex-digit helpers); 480 since `std::json::Value` came
+            // (`parse` and `null`); 481, and one more entry point, since
+            // `std::observe::Probes` came (its birth); 483, and one more
+            // invoked unboundedly, since the stdlib's own terminal lines
+            // are written by `log.hl` (`__std_log_diag`, `__std_log_out`);
+            // 484, and one more invoked unboundedly, since
+            // `Registry.render()` renders a series at a time
+            // (`__metrics_render_series`); 486, and two more entry points,
+            // since a `std::metrics::Registry` registers at birth and leaves
+            // at dissolve (the observe backends themselves join only a
+            // program that holds one)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 447 fns, 28 entry points, 119 invoked-unboundedly",
-                "+ # 447 fns, 28 entry points, 118 invoked-unboundedly",
+                "- # 487 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 487 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -317,7 +352,7 @@ fn own_scope_let_block_scope_test() {
         // fn's effects do.
         let bundle = snap.bundle();
         let top = snap.demand_scope().expect("the scope");
-        let rows_now = snap.demand_effects().expect("the effect rows");
+        let rows_now = &whole_effects(snap);
         let rows_old = derive_effect_rows(&bundle, top, Arc::new(old));
         let moved: Vec<String> = rows_now
             .rows
@@ -408,7 +443,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The seven targets pinned below are the only ones whose own fns or leak
+/// The six targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -429,7 +464,6 @@ fn reached_no_other_target_changes() {
             "dna/oidc",
             "tests/hale/is_route_test.hl",
             "tests/hale/perspective_ctor_override_test.hl",
-            "tests/hale/unit_quantities_test.hl",
         ]
     );
 }
@@ -446,6 +480,17 @@ fn reached_no_other_target_changes() {
 /// failure in place: `__http_retry_sentinel`, called in that loop, went.
 /// One more since the client writes its `Host` header through
 /// `__http_host_text` (an IPv6 host is bracketed), called per request.
+/// Four more since the client's call deadline came: its arming, reads,
+/// writes and deadline tests run in its read and retry loops, and its
+/// writes go to the deadline sends rather than `__http_send_raw` (and
+/// oidc, which calls the one-shot fns by their public path, one more of
+/// them beside the copy). Five more since `std::log`'s sinks write
+/// records: the record helpers each sink's bus handler calls. Two more
+/// since a record's values are escaped byte by byte.
+/// And the copy's fns a program calls by their public path
+/// (`std::…`) run where they are called, so a bus
+/// handler's such calls invoke them unboundedly beside the copy: is_route
+/// six of them, oidc ten more. None is the program's own.
 fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: &[&str], lines: &[&str]) {
     let u = unreached(target, &stdlib_fns()).expect("the target loads");
     let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
@@ -471,7 +516,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (120, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (133, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -481,7 +526,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (120, 0),
+        (133, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -501,7 +546,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (142, 2),
+        (155, 13),
         &[
             "b64",
             "decode",
@@ -525,38 +570,38 @@ fn reached_oidc() {
             "+ fn printable   [scratch-local]",
             "- fn signed_id_token   [invoked-unboundedly]",
             "+ fn signed_id_token",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5446..5495",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5446..5495",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5553..5602",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5553..5602",
             "- fn StubIssuer::handle   [invoked-unboundedly]",
             "+ fn StubIssuer::handle",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7806..8045",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7806..8045",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7881..8043",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7881..8043",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8755..8832",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8755..8832",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9062..9148",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9062..9148",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9424..9569",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9424..9569",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9496..9557",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9496..9557",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10269..10378",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10269..10378",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10658..10768",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10658..10768",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11505..11613",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11505..11613",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11640..11694",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11640..11694",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8155..8475",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8155..8475",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8278..8460",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @8278..8460",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9185..9319",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9185..9319",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10025..10168",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10025..10168",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10684..10906",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10684..10906",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10804..10865",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @10804..10865",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11788..11974",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11788..11974",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12274..12477",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12274..12477",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @13730..13899",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @13730..13899",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @13926..13980",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @13926..13980",
             "- fn StubIssuer::json   [invoked-unboundedly]",
             "+ fn StubIssuer::json",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6727..6814",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6727..6814",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7027..7159",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7027..7159",
             "- fn StubIssuer::service_token   [invoked-unboundedly]",
             "+ fn StubIssuer::service_token",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12480..12589",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12480..12589",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @15132..15302",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @15132..15302",
             "- fn StubIssuer::token_answer   [invoked-unboundedly]",
             "+ fn StubIssuer::token_answer",
         ],
@@ -568,7 +613,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (122, 0),
+        (135, 6),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -595,20 +640,6 @@ fn reached_is_route_test() {
             "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1951..1963",
             "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @1951..1963",
         ],
-    );
-}
-
-/// unit_quantities_test reads `later` as a function value (a local that
-/// shadows a type in a default's scope); the indirect calls of the loops
-/// the program never starts resolve to it.
-#[test]
-fn reached_unit_quantities_test() {
-    pinned_unreached(
-        "tests/hale/unit_quantities_test.hl",
-        (119, 0),
-        &["later"],
-        &[],
-        &["- fn later   [invoked-unboundedly]", "+ fn later"],
     );
 }
 
@@ -683,28 +714,146 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/json_escape_runs_test.hl`, the property test of the
     // run-appending JSON escaper; 5:
     // `tests/hale/enum_return_copy_loops_test.hl`, whose decoder builds a
-    // record per element of a JSON array.
-    assert_eq!(moved, 5, "the run-to-exit programs among the targets that lose a site");
+    // record per element of a JSON array; 6:
+    // `tests/hale/bounded_whole_assign_test.hl`, whose `fill` builds a
+    // String per pushed element; 7: `tests/hale/api_codec_call_test.hl`,
+    // whose codec, called by the program itself, decodes the same way; 8:
+    // `tests/hale/api_codec_import_test.hl`, the same codec of an imported
+    // type; 9: `tests/hale/api_value_map_test.hl`, whose map of values builds
+    // a record per member it reads; 10: `tests/hale/api_patch_field_test.hl`,
+    // whose codec of a presence triple decodes the same way; 11:
+    // `tests/hale/api_json_value_test.hl`, whose codec decodes a JSON value's
+    // record the same way; 12: `tests/hale/api_encode_linear_test.hl`, whose
+    // codec decodes its page of records the same way; 13:
+    // `tests/hale/crypto_sha256_stream_test.hl`, whose `main` builds its
+    // assertion messages and failure fallbacks in its loops.
+    assert_eq!(moved, 13, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
         [
-            "tests/hale/api_context_test.hl: main StringConcat @12899..12990 InUnboundedLoop",
-            "tests/hale/api_context_test.hl: main StringConcat @12899..12982 InUnboundedLoop",
+            // `tests/hale/api_codec_call_test.hl`: the api codec the program calls
+            // itself, its decoders' refusals and encoders' per-element pieces (a record's,
+            // a wire map's keyed record's, and those of a record holding an
+            // enum and an optional map)
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"JsonError\") @34846..34891 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"JsonError\") @35066..35111 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"JsonError\") @35253..35301 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"Check\") @35316..35349 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Desk StructLit(\"JsonError\") @23913..23960 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Desk StructLit(\"JsonError\") @25164..25210 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @4718..4764 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5223..5269 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5354..5400 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5542..5591 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5621..5670 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"Line\") @5685..5720 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @9725..9770 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @11097..11143 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @11643..11691 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @12334..12379 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @26337..26386 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @26337..26378 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @26805..26854 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @26805..26846 InUnboundedLoop",
+            // `tests/hale/api_codec_import_test.hl`: the codec of an imported type
+            "tests/hale/api_codec_import_test.hl: __api_decode___lib_tests__hale__api_codec_import_lib___main__Item StructLit(\"JsonError\") @3439..3484 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @13548..13655 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @13548..13631 InUnboundedLoop",
             // GH #1490 (step 3): `self.buf = self.buf + chunk`, an
             // append whose operands are typed by the field and the
             // `recv` result, not a literal.
-            "tests/hale/api_context_test.hl: Api::ask StringConcat @6440..6456 InvokedUnboundedly",
-            "tests/hale/api_roles_test.hl: main StringConcat @10367..10392 InUnboundedLoop",
-            "tests/hale/api_roles_test.hl: main StringConcat @10367..10385 InUnboundedLoop",
-            "tests/hale/api_roles_test.hl: main StringConcat @10395..10449 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: Api::ask StringConcat @6460..6476 InvokedUnboundedly",
+            // `tests/hale/api_encode_linear_test.hl`: its page's decoder, the
+            // refusals and the record built per element read
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"JsonError\") @3214..3259 InvokedUnboundedly",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"JsonError\") @3343..3388 InUnboundedLoop",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"JsonError\") @3667..3714 InvokedUnboundedly",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"JsonError\") @4008..4056 InvokedUnboundedly",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"JsonError\") @4087..4137 InvokedUnboundedly",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Item StructLit(\"Item\") @4152..4187 InvokedUnboundedly",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Page StructLit(\"JsonError\") @8855..8901 InUnboundedLoop",
+            "tests/hale/api_encode_linear_test.hl: __api_decode_Page StructLit(\"JsonError\") @9401..9449 InUnboundedLoop",
+            // `tests/hale/api_json_value_test.hl`: its codec of JSON values, the
+            // decoders' refusals and a list's appends
+            "tests/hale/api_json_value_test.hl: __api_decode_Change StructLit(\"JsonError\") @8351..8400 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Change StructLit(\"JsonError\") @8969..9017 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Log StructLit(\"JsonError\") @14100..14150 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Log StructLit(\"JsonError\") @14210..14258 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Seat StructLit(\"JsonError\") @4003..4052 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: main StringConcat @3064..3136 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: nested StringConcat @1054..1064 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: nested StringConcat @1082..1093 InUnboundedLoop",
+            // `tests/hale/api_patch_field_test.hl`: its codec of presence triples,
+            // a nested record's refusal
+            "tests/hale/api_patch_field_test.hl: __api_decode_Inner StructLit(\"JsonError\") @4583..4627 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10729..10754 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10729..10747 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10769..10823 InUnboundedLoop",
+            // `tests/hale/api_value_map_test.hl`: its codec of a map of values,
+            // a record built per member read and each value written
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"Check\") @32771..32805 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @32815..32862 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @34179..34228 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"Gauge\") @34314..34347 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @34357..34404 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @35721..35770 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"Price\") @35864..35898 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @35908..35955 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"Mark\") @37296..37328 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @37338..37384 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @38867..38916 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"Stamp\") @38961..38991 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @39001..39048 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"Tag\") @40368..40399 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Health StructLit(\"JsonError\") @40409..40454 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_decode_Level StructLit(\"JsonError\") @44840..44884 InvokedUnboundedly",
+            "tests/hale/api_value_map_test.hl: __api_decode_Level StructLit(\"JsonError\") @45142..45186 InvokedUnboundedly",
+            "tests/hale/api_value_map_test.hl: __api_decode_Level StructLit(\"JsonError\") @45203..45247 InvokedUnboundedly",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @41973..42022 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @41973..42014 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @42063..42107 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @42063..42100 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @42445..42494 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @42445..42486 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @42891..42940 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @42891..42932 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @43342..43391 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @43342..43383 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @43790..43839 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @43790..43831 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @43880..43918 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @43880..43911 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @44251..44300 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @44251..44292 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @44341..44385 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: __api_encode_Health StringConcat @44341..44378 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: main StringConcat @2167..2203 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: main StringConcat @2167..2197 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: main StringConcat @2167..2186 InUnboundedLoop",
+            "tests/hale/api_value_map_test.hl: main StringConcat @2167..2180 InUnboundedLoop",
+            "tests/hale/bounded_whole_assign_test.hl: fill StringConcat @1534..1552 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
+            // `tests/hale/crypto_sha256_stream_test.hl`: the failure fallbacks and
+            // assertion messages of the incremental SHA-256's test, and the
+            // hasher its loop over hashlib's pinned digests builds per size
+            "tests/hale/crypto_sha256_stream_test.hl: data BytesLit @730..733 InvokedUnboundedly",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5377..5439 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5377..5428 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @5514..5531 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StructLit(\"std::crypto::Sha256\") @5552..5575 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6045..6072 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6531..6568 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6693..6719 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main BytesLit @6734..6737 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6908 InUnboundedLoop",
+            "tests/hale/crypto_sha256_stream_test.hl: main StringConcat @6858..6897 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
-            "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") @972..1074 InvokedUnboundedly",
+            "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") @972..1095 InvokedUnboundedly",
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
-            "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7859..7894 InvokedUnboundedly",
+            "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7937..7972 InvokedUnboundedly",
         ]
     );
 }
@@ -777,7 +926,7 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 31, "the stdlib source files that share a name with the copy");
+    assert_eq!(sharing, 32, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the
@@ -947,7 +1096,7 @@ fn module_bodies_91_module_decls() {
                 "# 10 fns, 3 entry points, 1 invoked-unboundedly".to_string()
             )
         );
-        let rows_now = snap.demand_effects().expect("the effect rows");
+        let rows_now = &whole_effects(snap);
         let rows_old = derive_effect_rows(&bundle, snap.demand_scope().expect("the scope"), Arc::new(old));
         let mut moved = Vec::new();
         for (k, r) in &rows_now.rows {
@@ -1114,11 +1263,11 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 190",
-                "dna__core__pond__pq: 11",
+                "dna__core: 383",
+                "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 652",
-                "dna__operations: 138",
+                "dna__host: 702",
+                "dna__operations: 135",
                 "the stdlib's copy: 1",
             ])
         )]

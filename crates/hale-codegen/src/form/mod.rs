@@ -107,6 +107,26 @@ use crate::codegen::{
 };
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The copy a `@form(vec)` `set` or `push` stores: the element's own,
+    /// down to its String and Bytes fields. A field whose block already
+    /// lives in the vec's arena — the locus's own String param, another
+    /// slot's — is copied too (the cell single-owner clone, as a
+    /// hashmap cell's store does), not shared: the slot's retire frees
+    /// what it holds when it is replaced or popped, which freed the
+    /// param's block under it (`push(Row { id: self.a })`, then a `set`).
+    /// A value from another arena, the common case, clones as before.
+    pub(crate) fn emit_vec_cell_copy_ptr(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        elem_ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let prev = std::mem::replace(&mut self.cell_owned_clone, true);
+        let res = self.emit_owned_store_copy_ptr(value, elem_ty, dest_arena);
+        self.cell_owned_clone = prev;
+        res
+    }
+
     /// GH #577: what `get` hands back is OWNED. A vec slot holds a
     /// pointer to the element (a String's blob, a struct with its
     /// blobs), and `set` retires the replaced element; a `get` that
@@ -229,7 +249,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// block of their own (a nested record, a tuple, an out-of-line
     /// array, a payload enum — with everything under them), leaving out
     /// its top-level String and Bytes fields, which the per-field
-    /// fixups retire; for a tuple or an out-of-line array, every slot.
+    /// fixups retire; for a tuple or an out-of-line array, every slot;
+    /// for a payload enum, its variant table
+    /// (`lotus_self_field_retire_replaced_enum`).
     /// `None` when the store retires nothing beyond those fixups: a
     /// record of scalars, Strings and Bytes, or a type that is not such
     /// a block. A tuple or array of scalars answers `Some(vec![])`: it
@@ -256,6 +278,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Array(_, _) if Self::array_inline_spec(ty).is_none() => {
                 self.retire_desc_for(ty, 0).map(|(_, d)| d)
             }
+            // A payload enum's variant table (`retire_desc_for`), which
+            // the enum entry of the runtime walk indexes by each value's
+            // tag. A unit-only enum is an inline tag: `None`.
+            CodegenTy::Enum(_) => self.retire_desc_for(ty, 0).map(|(_, d)| d),
             _ => None,
         }
     }
@@ -276,6 +302,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .ok_or_else(|| CodegenError::Unsupported(format!("unknown type `{}`", tn))),
             CodegenTy::Tuple(elems) => Ok(self.llvm_tuple_storage_type(elems).into()),
             CodegenTy::Array(elem, n) => Ok(self.llvm_array_storage_type(elem, *n).into()),
+            CodegenTy::Enum(name) => self
+                .user_enums
+                .get(name.as_str())
+                .map(|info| self.enum_storage_struct(info).into())
+                .ok_or_else(|| CodegenError::Unsupported(format!("unknown enum `{}`", name))),
             other => Err(CodegenError::Unsupported(format!("no field block for {:?}", other))),
         }
     }
@@ -415,6 +446,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         elem_ty: &CodegenTy,
     ) -> Option<(i64, PointerValue<'ctx>, i64)> {
+        self.vec_retire_args_nested(elem_ty).map(|(size, desc, n, _)| (size, desc, n))
+    }
+
+    /// `vec_retire_args`, plus whether the descriptor has a nested entry
+    /// (`LOTUS_RETIRE_OFF_NESTED`): without one the element is retired
+    /// by `lotus_form_retire_replaced_flat`, which skips the nested
+    /// walk's block lists.
+    fn vec_retire_args_nested(
+        &mut self,
+        elem_ty: &CodegenTy,
+    ) -> Option<(i64, PointerValue<'ctx>, i64, bool)> {
+        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i32_t = self.context.i32_type();
         let (size_sentinel, offs): (i64, Vec<u32>) = match elem_ty {
@@ -428,8 +471,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => return None,
         };
         if offs.is_empty() {
-            return Some((size_sentinel, ptr_t.const_null(), 0));
+            return Some((size_sentinel, ptr_t.const_null(), 0, false));
         }
+        let nested = offs.iter().any(|w| w & LOTUS_RETIRE_OFF_NESTED != 0);
         let gname = match elem_ty {
             CodegenTy::TypeRef(tn) => format!("__vec_retire_desc.{}", tn),
             _ => unreachable!("only a struct element has field offsets"),
@@ -446,7 +490,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 g
             }
         };
-        Some((size_sentinel, g.as_pointer_value(), offs.len() as i64))
+        Some((size_sentinel, g.as_pointer_value(), offs.len() as i64, nested))
     }
 
     /// Free a vec element the vec no longer holds — the one `set`
@@ -488,17 +532,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
-        let Some((size_sentinel, desc_ptr, n_offs)) = self.vec_retire_args(elem_ty) else {
+        let Some((size_sentinel, desc_ptr, n_offs, nested)) = self.vec_retire_args_nested(elem_ty) else {
             return Ok(());
         };
         let old_ptr = self
             .builder
             .build_load(ptr_t, slot, &format!("{}.vec.{}.old", locus_name, tag))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let retire_fn = self
-            .module
-            .get_function("lotus_form_retire_replaced")
-            .expect("lotus_form_retire_replaced declared");
+        // An element with no nested block pays only the flat compare.
+        let retire_name = if nested { "lotus_form_retire_replaced" } else { "lotus_form_retire_replaced_flat" };
+        let retire_fn = self.module.get_function(retire_name).expect("form retire declared");
         self.builder
             .build_call(
                 retire_fn,
@@ -1057,7 +1100,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .into_pointer_value();
                 // GH #577: the vec owns what it stores — always a copy, so
                 // no two slots share a struct the retire below could free
-                let val = self.emit_owned_store_copy_ptr(val, &elem_ty, dest_arena)?;
+                let val = self.emit_vec_cell_copy_ptr(val, &elem_ty, dest_arena)?;
                 // FORM-vec hot-path inline (replaces the opaque
                 // lotus_vec_set C call). The vec slot is the inline
                 // struct `{ usize cap, usize len, ptr buf }`. The
@@ -2297,7 +2340,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     })?
                     .into_pointer_value();
                 // GH #577: the vec owns what it stores — always a copy (see set)
-                let arg_val = self.emit_owned_store_copy_ptr(arg_val, &slot.elem_ty, dest_arena)?;
+                let arg_val = self.emit_vec_cell_copy_ptr(arg_val, &slot.elem_ty, dest_arena)?;
                 // Materialize the (now arena-anchored) arg in an
                 // alloca so we can hand its address to
                 // lotus_vec_push. The runtime memcpys elem_size

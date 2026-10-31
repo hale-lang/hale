@@ -61,12 +61,32 @@ main locus App {
         s: Steps = Steps { };
     }
     run() {
-        std::test::assert_eq_int(self.w.round(), 126, "two dynamic children dispatch to the assembly's Tripler");
-        std::test::assert_eq_str(self.performer.name(), "tripler", "their births re-designated nothing");
+        std::test::assert_eq_int(
+            self.w.round(),
+            126,
+            "two dynamic children dispatch to the assembly's Tripler",
+        );
+        std::test::assert_eq_str(
+            self.performer.name(),
+            "tripler",
+            "their births re-designated nothing",
+        );
         reperspective self.performer as Doubler;
-        std::test::assert_eq_int(self.w.round(), 84, "children born after the swap dispatch to the swapped impl");
-        std::test::assert_eq_str(self.performer.name(), "doubler", "and the designating holder sees it too");
-        std::test::assert_eq_int(self.s.round(), 21, "an imported holder holds an imported perspective's slot");
+        std::test::assert_eq_int(
+            self.w.round(),
+            84,
+            "children born after the swap dispatch to the swapped impl",
+        );
+        std::test::assert_eq_str(
+            self.performer.name(),
+            "doubler",
+            "and the designating holder sees it too",
+        );
+        std::test::assert_eq_int(
+            self.s.round(),
+            21,
+            "an imported holder holds an imported perspective's slot",
+        );
         reperspective self.scaling as lib::Twice;
         std::test::assert_eq_int(self.s.round(), 14, "and follows its swap");
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # A canned OpenAI-compatible chat endpoint for the cycle's legs: POST /v1/chat/completions answers
-# from a script, turn by turn, over real HTTP. No model, no tokens.
+# from a script, turn by turn, over real HTTP. No model, no tokens. GET /v1/models lists the one
+# model it serves, as a models provider's list says it (`capabilities.tools`: it returns tool calls).
 #
 #   canned-gateway.py <port> <log>
 #
@@ -14,7 +15,12 @@
 #           on its first line, then answer.
 #   assess  (an Assessment): answer at once with an assessment, calling no tool.
 import json, sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 
 PORT, LOG = int(sys.argv[1]), sys.argv[2]
 NOTE = "// The steward's note: the list's api stays one surface.\n"
@@ -45,6 +51,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def do_GET(self):
+        if not self.path.endswith("/models"):
+            self.send_error(404); return
+        out = json.dumps({"object": "list", "data": [{"id": "canned", "object": "model", "owned_by": "canned", "capabilities": {"tools": True}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
     def do_POST(self):
         if not self.path.endswith("/chat/completions"):
             self.send_error(404); return
@@ -74,4 +90,4 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
-ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

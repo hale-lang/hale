@@ -1,6 +1,7 @@
 //! `hale dna head` — the head as a toolchain verb.
 //!
-//! The head (the project service serving the browser face, its
+//! The head (the standard face serving the browser, the project service
+//! behind it, its
 //! per-project API child, the stub OpenID provider and the reflexes) is
 //! launched by `dna/face/start.sh`, which builds its four seeds from a
 //! checkout. A person with an installed toolchain has none, so the
@@ -15,25 +16,26 @@
 //! built and only launches.
 //!
 //! With a project and no `HALE_DNA_MEMORY_DSN_HEAD`, the head's memory
-//! DSN is derived as `hale dna memory migrate` derives it (the same
-//! function, in this process), handed to the launcher on its
-//! environment and never printed. Memory that cannot be reached is said
-//! plainly, with `hale dna dev` as the way to bring it up; the head
-//! starts anyway, with Knowledge unsupported.
+//! DSN is derived from the organism's memory when it is up and migrated
+//! (GH #1653: derived, never migrated, and nothing brought up), handed to
+//! the launcher on its environment and never printed. Memory that is not
+//! up is said plainly, with `hale habitat migrate` as the way to bring it
+//! up; the head starts anyway, with Knowledge unsupported.
 
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use super::{memory_migrate, MemoryPlan};
+use super::{memory_derive, MemoryPlan};
 
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
-    "usage: hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]\n\
+    "usage: hale dna head [project] [--port P] [--head-port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]\n\
      \n\
-     Start the head: the project service serving the browser face at\n\
-     http://127.0.0.1:<port>/ (8792), its per-project API child (--api-port,\n\
+     Start the head: the standard face serving the browser at\n\
+     http://127.0.0.1:<port>/ (8792), the project service behind it (--head-port,\n\
+     8796; it serves surfaces only), its per-project API child (--api-port,\n\
      8793; its commands on --commands-port, 8795), the stub OpenID provider you\n\
      sign in through (--oidc-port, 8794) and, with a project, the reflexes.\n\
      Without a project the browser opens on Projects, where one is created,\n\
@@ -46,9 +48,9 @@ pub(crate) fn usage_text() -> &'static str {
      From a hale checkout, dna/face/start.sh starts the same head.\n\
      \n\
      With a project and no HALE_DNA_MEMORY_DSN_HEAD, the head's memory DSN is\n\
-     derived as `hale dna memory migrate` derives it (never printed); when the\n\
-     project's memory is not up, `hale dna dev <project>` brings it and the\n\
-     nerves up, and until then Knowledge is unsupported. The rest of the\n\
+     derived from the organism's memory (never printed); the head migrates and\n\
+     brings up nothing. When it is not up, `hale habitat migrate <project>`\n\
+     brings it and the nerves up, and until then Knowledge is unsupported. The rest of the\n\
      launcher's environment (HALE_DNA_HEAD_STATE, HALE_DNA_NATS_URL_HEAD, …)\n\
      is inherited as dna/face/start.sh --help describes.\n\
      \n\
@@ -66,7 +68,7 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
                 print!("{}", usage_text());
                 return ExitCode::SUCCESS;
             }
-            "--port" | "--api-port" | "--oidc-port" | "--commands-port" => match it.next() {
+            "--port" | "--head-port" | "--api-port" | "--oidc-port" | "--commands-port" => match it.next() {
                 Some(v) => {
                     passed.push(a.clone());
                     passed.push(v.clone());
@@ -90,6 +92,18 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
             }
         }
     }
+    // an organism grafted by the habitat has its block of ports on record
+    // (`dna.head.url`, GH #1653): the head serves where the habitat says
+    if let Some(p) = project.as_deref() {
+        if let Some(base) = super::habitat::head_url_at(Path::new(p)).as_deref().and_then(super::habitat::loopback_port) {
+            for (flag, offset) in [("--port", 0), ("--head-port", 1), ("--api-port", 2), ("--oidc-port", 3), ("--commands-port", 4)] {
+                if !passed.iter().any(|a| a == flag) {
+                    passed.push(flag.to_string());
+                    passed.push((base + offset).to_string());
+                }
+            }
+        }
+    }
     match launch(project.as_deref(), &passed) {
         // `launch` execs; it returns only when it could not
         Ok(never) => match never {},
@@ -97,6 +111,66 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
             eprintln!("hale dna head: {e}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// The listen address and declared address a head launched under a habitat
+/// on another machine binds and answers as (`HALE_DNA_LISTEN_HOST`,
+/// `HALE_DNA_HABITAT_ADDRESS`), from the habitat's own
+/// (`HALE_DNA_HABITAT_LISTEN`, `HALE_DNA_HABITAT_ADDRESS`), and the state
+/// directory of the organism's own head there (`HALE_DNA_HEAD_STATE`,
+/// `$XDG_STATE_HOME/organisms/<record>`): every run there shares one
+/// `XDG_STATE_HOME`, so without it two organisms' heads would share their
+/// pid, URL, registry and journal files. None for a local habitat.
+fn head_listen_env(project: Option<&str>) -> Vec<(&'static str, String)> {
+    let record = project.and_then(|p| super::manifest_pin(&Path::new(p).join("hale.toml")).ok().flatten());
+    head_listen_env_of(std::env::var("HALE_DNA_HABITAT_LISTEN").ok(), std::env::var("HALE_DNA_HABITAT_ADDRESS").ok(), std::env::var("XDG_STATE_HOME").ok(), record)
+}
+
+fn head_listen_env_of(listen: Option<String>, address: Option<String>, state_home: Option<String>, record: Option<String>) -> Vec<(&'static str, String)> {
+    let some = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let (listen, address, state_home, record) = (some(listen), some(address), some(state_home), some(record));
+    let mut out = Vec::new();
+    if let Some(l) = listen {
+        out.push(("HALE_DNA_LISTEN_HOST", l));
+        if let Some(a) = address {
+            out.push(("HALE_DNA_HABITAT_ADDRESS", a));
+        }
+        if let (Some(base), Some(id)) = (state_home, record) {
+            let key: String = id.chars().take(12).collect();
+            out.push(("HALE_DNA_HEAD_STATE", format!("{}/organisms/{key}", base.trim_end_matches('/'))));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_head_under_a_remote_habitat_binds_its_listen_address() {
+        assert!(head_listen_env_of(None, None, None, None).is_empty());
+        assert!(head_listen_env_of(None, Some("rack-a.lan".into()), Some("/d/state".into()), Some("ab".repeat(32))).is_empty());
+        assert_eq!(
+            head_listen_env_of(Some("192.0.2.7".into()), Some("rack-a.lan".into()), None, None),
+            vec![("HALE_DNA_LISTEN_HOST", "192.0.2.7".to_string()), ("HALE_DNA_HABITAT_ADDRESS", "rack-a.lan".to_string())]
+        );
+    }
+
+    #[test]
+    fn two_organisms_heads_under_a_remote_habitat_keep_distinct_state() {
+        let state = |record: &str| {
+            head_listen_env_of(Some("192.0.2.7".into()), Some("rack-a.lan".into()), Some("/d/state/".into()), Some(record.into()))
+                .into_iter()
+                .find(|(k, _)| *k == "HALE_DNA_HEAD_STATE")
+                .map(|(_, v)| v)
+        };
+        let one = state(&"1".repeat(64)).unwrap();
+        let two = state(&"2".repeat(64)).unwrap();
+        assert_eq!(one, "/d/state/organisms/111111111111");
+        assert_eq!(two, "/d/state/organisms/222222222222");
+        assert_ne!(one, two);
     }
 }
 
@@ -118,6 +192,9 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
     }
     if !set("HALE_HEAD_BIN") {
         wanted.push(("HALE_HEAD_BIN", &hale_dna::HEAD_SERVICE));
+    }
+    if !set("HALE_FACE_BIN") {
+        wanted.push(("HALE_FACE_BIN", &hale_dna::HEAD_FACE));
     }
     if !trusted_local && !set("HALE_OIDC_BIN") {
         wanted.push(("HALE_OIDC_BIN", &hale_dna::HEAD_OIDC));
@@ -151,6 +228,17 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
             }
         }
     }
+    // under a habitat on another machine (`up --host` hands the containers
+    // it runs there the habitat's declared address), an organism's face,
+    // head and identity stub bind the habitat's listen address and answer
+    // under its name, as the habitat's own face does, so the URLs its
+    // graft recorded answer from the admin machine, and keep their state in
+    // a directory of the organism's own; nothing changes for a local habitat
+    for (var, value) in head_listen_env(project) {
+        if !set(var) {
+            cmd.env(var, value);
+        }
+    }
     // exec in place: the pid that ran `hale dna head` is the launcher, so
     // a Ctrl-C or a signal to it runs the launcher's cleanup
     use std::os::unix::process::CommandExt;
@@ -158,29 +246,26 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
     Err(format!("cannot run {}: {e}", cache.join(hale_dna::HEAD_LAUNCHER).display()))
 }
 
-/// The head's memory DSN for `project`, as `hale dna memory migrate`
-/// prints it (`HALE_DNA_MEMORY_DSN_HEAD`): the same function, applying
-/// memory's schema with the owner's DSN when it is not applied yet, which
-/// is idempotent. The DSN carries the head role's password, so it travels
-/// on the launcher's environment alone. `None`, said plainly, when there
-/// is no memory to reach — or when the project's compose memory is not
-/// running: the head starts no database (`hale dna dev` does), so the
-/// migration is asked only of memory that is already up.
+/// The head's memory DSN for `project`, derived from the organism's
+/// memory as `hale habitat migrate` keeps it (`HALE_DNA_MEMORY_DSN_HEAD`).
+/// GH #1653: derived only, from memory that is up: nothing is brought up
+/// and no schema is applied here, and a schema that is behind is the
+/// store's refusal, naming `hale habitat migrate`. The DSN carries the
+/// head role's password, so it travels on the launcher's environment
+/// alone. `None`, said plainly with the fix, when there is no memory to
+/// reach.
 fn head_dsn(project: &Path) -> Option<OsString> {
-    let why = match memory_down(project) {
-        Some(why) => why,
-        None => match memory_migrate(project) {
-            Ok(MemoryPlan::Roles { head, .. }) => {
-                eprintln!("hale dna head: the head reads Knowledge from memory (its DSN derived as `hale dna memory migrate` derives it)");
-                return Some(OsString::from(head));
-            }
-            Ok(MemoryPlan::NoDatabase(why)) => why,
-            Err(e) => e,
-        },
+    let why = match memory_derive(project) {
+        Ok(MemoryPlan::Roles { head, .. }) => {
+            eprintln!("hale dna head: the head reads Knowledge from memory (its DSN derived from the organism's memory)");
+            return Some(OsString::from(head));
+        }
+        Ok(MemoryPlan::NoDatabase(why)) => why,
+        Err(e) => e,
     };
     eprintln!("hale dna head: memory is not up: {why}");
     eprintln!(
-        "hale dna head: `hale dna dev {}` brings the project's memory and nerves up; until then the head runs with Knowledge unsupported",
+        "hale dna head: `hale habitat migrate {}` brings the organism's memory and nerves up and migrates them; until then the head runs with Knowledge unsupported",
         project.display()
     );
     None
@@ -190,35 +275,8 @@ fn head_dsn(project: &Path) -> Option<OsString> {
 /// for a verb that reads memory as the head (`hale dna show`): `None`,
 /// quietly, when memory is not up, for that verb to say so its own way.
 pub(super) fn derived_head_dsn(project: &Path) -> Option<OsString> {
-    if memory_down(project).is_some() {
-        return None;
-    }
-    match memory_migrate(project) {
+    match memory_derive(project) {
         Ok(MemoryPlan::Roles { head, .. }) => Some(OsString::from(head)),
         _ => None,
-    }
-}
-
-/// Why memory is not up for `project`, or `None` when it is: an owner's
-/// own server (HALE_DNA_MEMORY_DSN_OWNER) is the owner's to keep up and
-/// is asked directly; otherwise the project's compose `knowledge-db` must
-/// be running already, since migrating would bring it up.
-fn memory_down(project: &Path) -> Option<String> {
-    if set("HALE_DNA_MEMORY_DSN_OWNER") {
-        return None;
-    }
-    let root = match super::project(project) {
-        Ok((root, _)) => root,
-        Err(e) => return Some(e),
-    };
-    let compose = root.join("dna/compose.yaml");
-    if !compose.is_file() {
-        return Some("no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER".to_string());
-    }
-    let out = Command::new("docker").args(["compose", "-f"]).arg(&compose).args(["ps", "--status", "running", "--services"]).output();
-    match out {
-        Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == "knowledge-db") => None,
-        Ok(_) => Some("the project's memory (compose's `knowledge-db`) is not running".to_string()),
-        Err(e) => Some(format!("docker: {e}")),
     }
 }

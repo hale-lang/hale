@@ -29,83 +29,69 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::Serialize;
 
-/// The plan's own schema, independent of the topology artifact's.
-/// 1.1 (GH #408 Phase 7): `binary` / `binary_sha256` on an instance,
-/// for `hale fleet attest`. A 1.0 plan still reads; the artifact
-/// emits 1.1.
-pub const FLEET_PLAN_SCHEMA: &str = "1.1";
+/// The fleet artifact's own schema, independent of the topology
+/// artifact's, and the export document's (`hale fleet export`).
+pub const FLEET_PLAN_SCHEMA: &str = "1.2";
 
-/// Plan schemas this build reads. Equality was right when there was
-/// one; a set keeps "your plan is newer than your compiler" a real
-/// refusal without making every older plan one too.
-const READABLE_PLAN_SCHEMAS: [&str; 3] = ["1.0", "1.1", "1.2"];
-
-/// An exact, finite deployment. Autoscaling ranges and wildcard
-/// discovery are elaborator INPUTS, not sealed-plan contents: a
-/// bounded range is not one truth value for a cardinality claim.
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+/// An exact, finite deployment, as composition reads it: the
+/// `deployment` rows of a fleet seed (`Deployment::composition`), and
+/// the document `hale fleet export` writes from them. Never read back:
+/// a fleet's input is its seed. Autoscaling ranges and wildcard
+/// discovery are not contents: a bounded range is not one truth value
+/// for a cardinality claim.
+#[derive(Serialize, Debug)]
 pub struct FleetPlan {
     pub schema: String,
     pub name: String,
     pub instances: Vec<InstanceSpec>,
-    #[serde(default)]
     pub routes: Vec<RouteSpec>,
     /// Fleet groups quantify over INSTANCES, by id or by label. A
     /// group's vertices are every vertex of its instances, which is
     /// the same projection an application-tier group makes from a
     /// locus to its methods — one altitude up.
-    #[serde(default)]
     pub groups: BTreeMap<String, GroupSpec>,
-    #[serde(default)]
     pub claims: Vec<ClaimSpec>,
 }
 
-#[derive(Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug, Default)]
 pub struct GroupSpec {
-    #[serde(default)]
     pub instances: Vec<String>,
-    #[serde(default)]
     pub labels: Vec<String>,
 }
 
 /// A fleet claim, as normalized rows rather than source grammar —
 /// the plan is an IR, so an external generator can produce one
 /// without Hale syntax committing to a deployment format.
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct ClaimSpec {
     pub name: String,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forbid_reaches: Option<ForbidReaches>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub require_subscribes: Option<RequireEndpoint>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub require_publishes: Option<RequireEndpoint>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub count_publisher_instances: Option<CountSpec>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub count_subscriber_instances: Option<CountSpec>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub only_edges: Option<OnlyEdges>,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct ForbidReaches {
     pub from: String,
     pub to: String,
     /// Masking a group's vertices makes this the interposition form:
     /// "every path passes through the gate" is "no path avoids it".
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub avoiding: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct RequireEndpoint {
     pub group: String,
     pub subject: String,
@@ -114,85 +100,62 @@ pub struct RequireEndpoint {
 /// Fleet cardinality counts INSTANCE-qualified endpoints, not source
 /// declarations — a different sort from the application tier, which
 /// is why it gets a different spelling.
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct CountSpec {
     pub subject: String,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub eq: Option<usize>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<usize>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min: Option<usize>,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct OnlyEdges {
     pub from: String,
     pub to: String,
     /// Wire subjects that may cross this boundary. A grant names a
     /// typed topic identity, not a transport address.
-    #[serde(default)]
     pub grant_subjects: Vec<String>,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct InstanceSpec {
     /// `riskgw-prod-0`, not `riskgw`. An application TYPE is not a
     /// deployed instance, and everything downstream — cardinality,
     /// witnesses, several instances of one artifact — needs the
     /// distinction.
     pub id: String,
-    /// Path to a topology artifact, relative to the plan file. Empty
-    /// when `seed` names where to cut it from (schema 1.2).
-    #[serde(default)]
+    /// The artifact cut from the instance's seed: composition's input,
+    /// never exported (it is a cache beside the fleet seed).
+    #[serde(skip)]
     pub artifact: String,
-    #[serde(default)]
     pub labels: Vec<String>,
-    /// GH #566 F5 (schema 1.2): the seed this instance is built from,
-    /// relative to the plan file. With no `artifact`, composition cuts
-    /// the artifact from the seed first (`hale check --dump-topology`)
-    /// — the plan then describes the workspace's own services, and a
-    /// DNA candidate is checked as the fleet it would deploy.
-    #[serde(default)]
+    /// The seed this instance is built from, relative to the fleet seed.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<String>,
-    /// GH #566 F5 (schema 1.2): the node that expresses this instance
-    /// (`hale node <name>`). An instance with no node is expressed by
-    /// whoever runs it by hand. Composition ignores it; the host
-    /// (`dna/host`, Hale) reads it from the plan itself.
-    #[serde(default)]
-    #[allow(dead_code)]
+    /// The host its placement default names (`host("…")`): the node
+    /// that expresses it (`hale node <name>`). Composition ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// GH #408 Phase 7 (`attest`): path to this instance's built
-    /// executable, relative to the plan file. The artifact certifies
-    /// the model; this row is what lets a deployment answer for the
-    /// bytes it actually runs.
-    #[serde(default)]
-    pub binary: Option<String>,
-    /// Expected SHA-256 of `binary`, hex. Cryptographic where the
-    /// in-band `artifact_digest` (FNV, a tripwire) deliberately is
-    /// not: this hash is the thing an operator asserts across a
-    /// trust boundary.
-    #[serde(default)]
-    pub binary_sha256: Option<String>,
+    /// The component's shape hash: what a signature over the rows
+    /// certifies the instance runs.
+    pub app_shape_hash: String,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug)]
 pub struct RouteSpec {
     pub id: String,
     pub publishers: Vec<Endpoint>,
     pub subscribers: Vec<Endpoint>,
     /// Free-form for now; transport POLICY is a later phase. Carried
     /// so the fleet model records how a hop is realized.
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize, Debug, Clone)]
 pub struct Endpoint {
     pub instance: String,
     /// The topic's LOCAL name in that instance's artifact.
@@ -229,12 +192,42 @@ struct WireId {
     payload_hash: String,
 }
 
+/// Compose the fleet seed `path` declares through its `deployment`
+/// rows. With trust roots declared, the rows must carry a signature
+/// under one of them (`hale fleet sign <seed>`), and every component is
+/// recorded as admitted under that key.
 pub fn compose(
-    plan_path: &Path,
+    path: &Path,
     trust: &crate::sign::Trust,
 ) -> Result<String, Vec<String>> {
-    let plan = read_plan(plan_path)?;
-    let base = plan_path.parent().unwrap_or(Path::new("."));
+    let rows = crate::deployment::derive_deployment(path)?;
+    let signed_by = verify_rows(&rows, trust)?;
+    compose_plan(&rows.composition(), &rows.root, signed_by)
+}
+
+/// The rows' signature, checked against the trust roots: `None` when
+/// none are declared, the verifying key's id when they are. The
+/// signature covers the export's exact bytes (`Deployment::export`),
+/// which the rows re-derive the same every time from the same source.
+pub fn verify_rows(
+    rows: &crate::deployment::Deployment,
+    trust: &crate::sign::Trust,
+) -> Result<Option<String>, Vec<String>> {
+    if trust.is_empty() {
+        return Ok(None);
+    }
+    trust
+        .verify(rows.export().as_bytes(), &rows.signature_path())
+        .map(Some)
+        .map_err(|e| vec![format!("fleet `{}`: {e}", rows.fleet)])
+}
+
+/// Compose one fleet whose artifact paths resolve against `base`.
+pub fn compose_plan(
+    plan: &FleetPlan,
+    base: &Path,
+    signed_by: Option<String>,
+) -> Result<String, Vec<String>> {
     let mut errs: Vec<String> = Vec::new();
 
     // ---- step 1: validate every component artifact ----
@@ -250,21 +243,15 @@ pub fn compose(
             ));
             continue;
         }
-        let artifact = match artifact_of(base, &plan.name, inst) {
-            Ok(p) => p,
-            Err(e) => {
-                errs.push(format!("instance `{}`: {}", inst.id, e));
-                continue;
-            }
-        };
-        match load_artifact(&artifact, trust) {
-            Ok((model, sha256, signed_by)) => comps.push(Component {
+        let artifact = base.join(&inst.artifact);
+        match load_artifact(&artifact) {
+            Ok((model, sha256)) => comps.push(Component {
                 id: inst.id.clone(),
                 labels: inst.labels.clone(),
                 model,
                 path: artifact,
                 sha256,
-                signed_by,
+                signed_by: signed_by.clone(),
             }),
             Err(e) => errs.push(format!("instance `{}`: {}", inst.id, e)),
         }
@@ -515,12 +502,12 @@ pub fn compose(
     }
 
     // ---- step 9-10: fleet claims over the composed model ----
-    let groups = resolve_groups(&plan, &comps, &mut errs);
+    let groups = resolve_groups(plan, &comps, &mut errs);
     if !errs.is_empty() {
         return Err(errs);
     }
     let claim_rows = evaluate_claims(
-        &plan, &groups, &comps, &by_id, &call_edges, &local_bus,
+        plan, &groups, &comps, &by_id, &call_edges, &local_bus,
         &route_edges, &resolved_routes, &holes, &mut errs,
     );
     if !errs.is_empty() {
@@ -528,7 +515,7 @@ pub fn compose(
     }
 
     Ok(render(
-        &plan, &comps, &vertices, &call_edges, &local_bus, &route_edges,
+        plan, &comps, &vertices, &call_edges, &local_bus, &route_edges,
         &routes_out, &unknowns, &claim_rows,
     ))
 }
@@ -1338,153 +1325,46 @@ fn render(
     out
 }
 
-/// `hale fleet attest <plan>` — the binary-digest half of Phase 7.
-///
-/// The composition certifies the model; attest answers a different
-/// question: are the executables this plan deploys the ones the
-/// operator hashed? All-or-nothing over the plan's instances — an
-/// attestation that skips an instance it cannot check is a partial
-/// answer wearing a full answer's exit code, so a missing `binary`
-/// or `binary_sha256` row is a refusal, not a skip.
-///
-/// Out of scope, on purpose: whether a RUNNING process still is
-/// that binary. This checks bytes at rest at deploy time; runtime
-/// self-attestation is obs territory (7b).
-pub fn attest(plan_path: &Path) -> Result<String, Vec<String>> {
-    let plan = read_plan(plan_path)?;
-    let base = plan_path.parent().unwrap_or(Path::new("."));
-    let mut errs: Vec<String> = Vec::new();
-    let mut ok: usize = 0;
-    for inst in &plan.instances {
-        let (Some(bin), Some(expect)) =
-            (&inst.binary, &inst.binary_sha256)
-        else {
-            errs.push(format!(
-                "instance `{}` declares no {} — every instance must \
-                 carry `binary` and `binary_sha256` for the plan to be \
-                 attestable; a partial attestation would report \
-                 coverage it does not have",
-                inst.id,
-                match (&inst.binary, &inst.binary_sha256) {
-                    (None, None) => "`binary` / `binary_sha256`",
-                    (None, _) => "`binary`",
-                    _ => "`binary_sha256`",
-                }
-            ));
-            continue;
-        };
-        let path = base.join(bin);
-        match crate::sign::sha256_file(&path) {
-            Err(e) => errs.push(format!("instance `{}`: {}", inst.id, e)),
-            Ok(actual) => {
-                if actual.eq_ignore_ascii_case(expect) {
-                    ok += 1;
-                } else {
-                    errs.push(format!(
-                        "instance `{}`: {} is not the binary the plan \
-                         names — sha256 {} where the plan says {}",
-                        inst.id,
-                        path.display(),
-                        actual,
-                        expect
-                    ));
-                }
-            }
-        }
-    }
-    if errs.is_empty() {
-        Ok(format!(
-            "ok: fleet `{}` attested — {} binary(ies) match the plan",
-            plan.name, ok
-        ))
-    } else {
-        Err(errs)
-    }
-}
-
-/// Where an instance's artifact is: the plan's `artifact` path, or —
-/// with a `seed` and no artifact (schema 1.2) — cut now from the seed
-/// into `.hale/fleet/<plan>/<id>.topology.json` beside the plan, so
-/// the composition reads what the seed IS at this revision. A seed
-/// that does not check is an instance with no admissible artifact.
-fn artifact_of(base: &Path, plan_name: &str, inst: &InstanceSpec) -> Result<PathBuf, String> {
-    if !inst.artifact.is_empty() {
-        return Ok(base.join(&inst.artifact));
-    }
-    let Some(seed) = inst.seed.as_deref() else {
-        return Err("no `artifact` and no `seed`: an instance names one or the other".into());
-    };
-    let out = base.join(".hale/fleet").join(plan_name).join(format!("{}.topology.json", inst.id));
+/// Cut `seed`'s topology artifact into `out` (`hale check <seed>
+/// --dump-topology`). A seed that does not check has no artifact.
+pub(crate) fn cut_artifact(seed: &Path, out: &Path) -> Result<(), String> {
+    let shown = seed.display().to_string();
+    let seed_s = shown.as_str();
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("mkdir {}: {e}", d.display()))?;
     }
+    // cut beside the cache under a name of this process's, then moved
+    // over it whole: two compositions of one fleet never read a half-
+    // written artifact
+    let tmp = out.with_extension(format!("{}.cut", std::process::id()));
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let r = std::process::Command::new(me)
         .arg("check")
-        .arg(base.join(seed))
-        .arg(format!("--dump-topology={}", out.display()))
+        .arg(seed)
+        .arg(format!("--dump-topology={}", tmp.display()))
         .output()
-        .map_err(|e| format!("hale check {seed}: {e}"))?;
+        .map_err(|e| format!("hale check {seed_s}: {e}"))?;
     if !r.status.success() {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!(
-            "seed `{seed}` does not check, so it has no artifact to compose:\n{}{}",
+            "seed `{seed_s}` does not check, so it has no artifact to compose:\n{}{}",
             String::from_utf8_lossy(&r.stdout).trim(),
             String::from_utf8_lossy(&r.stderr).trim()
         ));
     }
-    Ok(out)
+    std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", out.display()))
 }
 
-pub fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
-    let src = std::fs::read_to_string(p)
-        .map_err(|e| vec![format!("read {}: {}", p.display(), e)])?;
-    let plan: FleetPlan = serde_json::from_str(&src)
-        .map_err(|e| vec![format!("parse {}: {}", p.display(), e)])?;
-    if !READABLE_PLAN_SCHEMAS.contains(&plan.schema.as_str()) {
-        return Err(vec![format!(
-            "{}: plan schema `{}`, this build understands `{}`",
-            p.display(),
-            plan.schema,
-            READABLE_PLAN_SCHEMAS.join("`, `")
-        )]);
-    }
-    if plan.instances.is_empty() {
-        return Err(vec![format!(
-            "{}: a fleet with no instances composes nothing",
-            p.display()
-        )]);
-    }
-    Ok(plan)
-}
-
-/// Load one component artifact and refuse anything a composition
-/// cannot honestly build on. Returns the parsed artifact, the
-/// SHA-256 of the admitted bytes, and the key_id that signed them
-/// (when trust roots are declared).
-fn load_artifact(
+/// Load one component artifact cut from its seed and refuse anything a
+/// composition cannot honestly build on. Returns the parsed artifact
+/// and the SHA-256 of the admitted bytes. Trust is the rows' (a
+/// signature over the fleet seed's `deployment` rows, `verify_rows`),
+/// not a component's.
+pub(crate) fn load_artifact(
     p: &Path,
-    trust: &crate::sign::Trust,
-) -> Result<
-    (crate::fleet_model::ComponentModel, String, Option<String>),
-    String,
-> {
+) -> Result<(crate::fleet_model::ComponentModel, String), String> {
     let src = std::fs::read_to_string(p)
         .map_err(|e| format!("read {}: {}", p.display(), e))?;
-    // Provenance BEFORE integrity BEFORE meaning. The signature is
-    // checked first because it covers the exact bytes everything
-    // after it reads — and because trust roots, once declared, make
-    // an unsigned component inadmissible outright (GH #408 Phase 7):
-    // declaring a trust set and then quietly composing unsigned
-    // artifacts would be the vacuity this system exists to refuse.
-    let signed_by = if trust.is_empty() {
-        None
-    } else {
-        Some(
-            trust
-                .verify(src.as_bytes(), &crate::sign::sidecar(p))
-                .map_err(|e| e.to_string())?,
-        )
-    };
     let sha256 = {
         use std::fmt::Write as _;
         let d = openssl::sha::sha256(src.as_bytes());
@@ -1603,7 +1483,7 @@ fn load_artifact(
         &v,
         &p.display().to_string(),
     )?;
-    Ok((model, sha256, signed_by))
+    Ok((model, sha256))
 }
 
 

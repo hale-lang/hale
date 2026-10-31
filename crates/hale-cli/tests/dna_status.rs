@@ -4,6 +4,12 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -21,11 +27,12 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
         eprintln!("dna_status: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_status_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_status_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgstat", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgstat", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     // GH #946: the record is seated at birth — its maker's uid mapped to
     // them in the local config, so the head's socket knows the peer
@@ -67,6 +74,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)
@@ -103,6 +111,11 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
         let out = c.output().unwrap();
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
+    // a model is mapped: this organism routes Work to its legs and its
+    // editor (with none, the solo path hands every ask to a person,
+    // dna/tests/solo_no_model_test.hl)
+    let (ok, out) = run(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "riley"]);
+    assert!(ok, "the model mapped: {out}");
     // ask: a Task is born, and the answer comes from the Journal
     let (ok, out) = run(&["dna", "task", "create", "write", "the", "changelog"]);
     let ask_out = out.clone();

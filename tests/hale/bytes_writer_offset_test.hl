@@ -19,7 +19,11 @@ fn main() {
 
     let r = ring.readable();
     std::test::assert_eq_int(std::bytes::read_u8(r, 0) or 0, 7, "the byte reads back");
-    std::test::assert_eq_int(std::bytes::read_u32_le(r, a) or 0, 305419896, "the u32 reads back at the returned offset");
+    std::test::assert_eq_int(
+        std::bytes::read_u32_le(r, a) or 0,
+        305419896,
+        "the u32 reads back at the returned offset",
+    );
     let f = std::bytes::read_f64_be(r, b) or 0.0;
     std::test::assert(f == 2.5, "the f64 reads back at the returned offset");
     std::test::assert_eq_int(ring.len(), 13, "the three writes fill thirteen bytes");

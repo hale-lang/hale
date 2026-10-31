@@ -182,6 +182,10 @@ impl EffectSet {
     /// Bits 7-9 sit below `BUILTIN_BITS`, so this costs no user
     /// capacity.
     pub const SECRET_USE: EffectSet = EffectSet(1 << 7);
+    /// A write to fd 1 or 2. A sub-class of `SYSCALL`: no leaf carries
+    /// it alone (`stdio_is_a_syscall` pins that), so every contract
+    /// over `syscall` still sees it.
+    pub const STDIO: EffectSet = EffectSet(1 << 8);
     /// Not yet classified (#265 step 4 turns the surface; until
     /// then queries must treat this as "may do anything").
     pub const UNCLASSIFIED: EffectSet = EffectSet(u64::MAX);
@@ -194,6 +198,17 @@ impl EffectSet {
     }
     pub fn is_unclassified(self) -> bool {
         self.0 == u64::MAX
+    }
+    /// What a declared set ADMITS: its classes and their sub-classes.
+    /// A set naming `syscall` admits `stdio`, a kind of syscall, so a
+    /// contract that allowed every syscall before `stdio` existed
+    /// allows the same operations now.
+    pub fn admitted(self) -> EffectSet {
+        if self.contains(EffectSet::SYSCALL) {
+            self.union(EffectSet::STDIO)
+        } else {
+            self
+        }
     }
 }
 
@@ -302,6 +317,8 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "io", "udp", "Reader"],
     &["std", "bytes", "BytesBuilder"],
     &["std", "cli", "Resolver"],
+    // the incremental SHA-256 (crypto.hl)
+    &["std", "crypto", "Sha256"],
     &["std", "http", "Client"],
     &["std", "bus", "UnixTransport"],
     &["std", "http", "ClientRequest"],
@@ -320,6 +337,13 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "http", "RouteParams"],
     &["std", "http", "Router"],
     &["std", "http", "Server"],
+    // a streamed response body (http.hl, 2026-10-17)
+    &["std", "http", "BodyWriter"],
+    &["std", "http", "SseEvent"],
+    &["std", "http", "SseWriter"],
+    // a response body read as it arrives (http_client.hl, 2026-10-21)
+    &["std", "http", "BodyReader"],
+    &["std", "http", "SseReader"],
     &["std", "io", "MirrorRing"],
     &["std", "io", "file", "File"],
     // R7: the HTTP/2 server's loci and its two messages (io_h2.hl)
@@ -688,6 +712,15 @@ pub const SURFACES: &[NsSurface] = &[
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
             row!("sha1", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha1)),
             row!("sha256", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha256)),
+            // SHA-256 without the whole input in memory: the file read in
+            // fixed-size blocks, and the `Sha256` locus's primitives (the
+            // C context's pointer as an Int, the BytesBuilder convention).
+            // One core with `sha256` (lotus_arena.c).
+            row!("sha256_file", SYSCALL, [Str] -> Bytes ! "IoError", Intrinsic(CryptoSha256File)),
+            row!("__sha256_finish", PURE, [Int] -> Bytes, Intrinsic(CryptoSha256FinishRaw)),
+            row!("__sha256_free", PURE, [Int] -> Int, Intrinsic(CryptoSha256FreeRaw)),
+            row!("__sha256_new", PURE, [] -> Int, Intrinsic(CryptoSha256NewRaw)),
+            row!("__sha256_update", PURE, [Int, Bytes] -> Int, Intrinsic(CryptoSha256UpdateRaw)),
             row!("sha512", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha512)),
         ],
         open_prefixes: &[],
@@ -846,7 +879,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "stdout"],
         fns: &[
-            row!("write_bytes", SYSCALL, [Str] -> Int, Intrinsic(IoStdoutWriteBytes)),
+            row!("write_bytes", SYSCALL | STDIO, [Str] -> Int, Intrinsic(IoStdoutWriteBytes)),
         ],
         open_prefixes: &[],
     },
@@ -912,6 +945,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTcpRecvBytesRaw)),
             row!("__send", SYSCALL, [Int, Str] -> Int, Intrinsic(IoTcpSendRaw)),
             row!("__send_bytes", SYSCALL, [Int, Bytes] -> Int, Intrinsic(IoTcpSendBytesRaw)),
+            row!("__send_bytes_until", SYSCALL, [Int, Bytes, Int] -> Int, Intrinsic(IoTcpSendBytesUntilRaw)),
             row!("__set_recv_timeout_ns", SYSCALL, [Int, Int] -> Int, Intrinsic(IoTcpSetRecvTimeoutNsRaw)),
             row!("__shutdown_listen_socket", SYSCALL, [Int] -> Int, Intrinsic(IoTcpShutdownListenSocketRaw)),
             row!("accept_one", SYSCALL | BLOCK, [Int] -> Int ! "IoError", Intrinsic(IoTcpAcceptOne)),
@@ -1016,7 +1050,11 @@ pub const SURFACES: &[NsSurface] = &[
             row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvKernelNs)),
             row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvUserNs)),
             row!("recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytes)),
+            row!("__recv_bytes_until", SYSCALL | BLOCK, [Int, Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytesUntilRaw)),
             row!("recv_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvInto)),
+            // the http client's streamed body: `recv_into` bounded by an
+            // absolute CLOCK_MONOTONIC instant (i64 ns, 0 = none)
+            row!("__recv_into_until", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int, Int] -> Int, Intrinsic(IoTlsRecvIntoUntilRaw)),
             // GH #829: `tls::recv_stamped_into` is dispatched by codegen
             // through the same `lower_recv_into_common` and is named by the
             // surface table, but had no signature row at all — so neither
@@ -1024,6 +1062,7 @@ pub const SURFACES: &[NsSurface] = &[
             // closed if every member of it is.
             row!("recv_stamped_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvStampedInto)),
             row!("send_bytes", SYSCALL, [Int, Bytes] -> Int, Intrinsic(IoTlsSendBytes)),
+            row!("__send_bytes_until", SYSCALL, [Int, Bytes, Int] -> Int, Intrinsic(IoTlsSendBytesUntilRaw)),
             row!("set_nodelay", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTlsSetNodelay)),
             row!("set_recv_timeout", SYSCALL, [Int, Duration] -> Unit ! "IoError", Intrinsic(IoTlsSetRecvTimeout)),
             row!("set_rx_timestamps", SYSCALL, [Int, Bool] -> Unit ! "IoError", Intrinsic(IoTlsSetRxTimestamps)),
@@ -1124,6 +1163,17 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // `std::json::Value::parse(text)`: a program's own `Value`, held to
+    // the codecs' rules (well-formed, 64 levels, 64 KiB)
+    NsSurface {
+        ns: &["json", "Value"],
+        fns: &[
+            row!("parse", PURE, [Str] -> Named("__StdJsonValue") ! "ParseError", Renamed),
+            // the JSON value `null`: what a codec holds before it reads one
+            row!("null", PURE, [] -> Named("__StdJsonValue"), Renamed),
+        ],
+        open_prefixes: &[],
+    },
     // GH #265 / R2 parity: `std::ts` (tree-sitter parsing) and
     // `std::shm` (shared-memory ring reads) are lowered by codegen
     // and called from stdlib `.hl`, but were absent from this table
@@ -1185,6 +1235,35 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // GH #1592: the process-wide series table a `std::observe::Scrape`
+    // scrapes. `std::metrics` registers and updates through the first six,
+    // which lower to nothing (and -1 for an id) in a program that holds no
+    // scrape; `std::observe::Scrape` reads it through
+    // the snapshot. A series update is a write to the program's own
+    // memory, as the registry's own map write is.
+    NsSurface {
+        ns: &["observe"],
+        fns: &[
+            row!("__registry", ALLOC, [Str] -> Int, Intrinsic(ObserveRegistryRaw)),
+            row!("__drop_registry", PURE, [Int] -> Int, Intrinsic(ObserveDropRegistryRaw)),
+            row!("__series", ALLOC, [Int, Str, Str, Int, Str] -> Int, Intrinsic(ObserveSeriesRaw)),
+            row!("__add", PURE, [Int, Float] -> Int, Intrinsic(ObserveAddRaw)),
+            row!("__set", PURE, [Int, Float] -> Int, Intrinsic(ObserveSetRaw)),
+            row!("__observe", PURE, [Int, Float] -> Int, Intrinsic(ObserveObserveRaw)),
+            row!("__snapshot", SYSCALL | ALLOC, [] -> Int, Intrinsic(ObserveSnapshotRaw)),
+            row!("__snap_str", ALLOC, [Int, Int] -> Str, Intrinsic(ObserveSnapStrRaw)),
+            row!("__snap_num", PURE, [Int, Int] -> Float, Intrinsic(ObserveSnapNumRaw)),
+            row!("__snap_int", PURE, [Int, Int] -> Int, Intrinsic(ObserveSnapIntRaw)),
+            // GH #1592 S4: the lifecycle event ring a declared `observe {
+            // events }` fills, drained by `std::observe::Otlp`; constants in
+            // any other program.
+            row!("__events_take", ALLOC, [Int] -> Int, Intrinsic(ObserveEventsTakeRaw)),
+            row!("__event_str", ALLOC, [Int, Int] -> Str, Intrinsic(ObserveEventStrRaw)),
+            row!("__event_int", PURE, [Int, Int] -> Int, Intrinsic(ObserveEventIntRaw)),
+            row!("__events_dropped", PURE, [Int] -> Int, Intrinsic(ObserveEventsDroppedRaw)),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["os"],
         fns: &[
@@ -1221,8 +1300,8 @@ pub const SURFACES: &[NsSurface] = &[
             // Closes the parent's end of the child's stdin (its EOF);
             // a statement, through its rename like `adopt`.
             row!("close_stdin", SYSCALL, _, Renamed),
-            row!("dump_arena_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
-            row!("dump_pool_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
+            row!("dump_arena_residency", SYSCALL | STDIO, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
+            row!("dump_pool_residency", SYSCALL | STDIO, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
             row!("exit", SYSCALL, [Int] -> Unit, Intrinsic(ProcessExit)),
             row!("kill", SYSCALL, [Int] -> Unit ! "IoError", Renamed),
             row!("pid", SYSCALL, [] -> Int, Intrinsic(ProcessPid)),
@@ -1244,6 +1323,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("try_wait", SYSCALL, _, Renamed),
             row!("wait", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Renamed),
             row!("write_stdin", SYSCALL, _, Renamed),
+            // GH #1477: a `std::observe::Probes` param's birth starts the
+            // runtime's probe thread; only the stdlib's seed calls it
+            internal!("__probes_start", _, Intrinsic(ProcessProbesStartRaw)),
         ],
         open_prefixes: &[],
     },
@@ -1321,11 +1403,24 @@ pub const SURFACES: &[NsSurface] = &[
             row!("bytes_view", PURE, [Str] -> Named("__StrByteView"), Renamed),
             row!("range_copy", PURE, [Str, Int, Int, Int] -> Str, Intrinsic(StrRangeCopy)),
             row!("slice", PURE, [Named("__StrByteView"), Int, Int] -> Str, Renamed),
+            // the code-point readers over a view, bounded by its `n`: the
+            // String forms pay the offset to find the String's end
+            row!("view_cp_at", PURE, [Named("__StrByteView"), Int] -> Int, Renamed),
+            row!("view_cp_size", PURE, [Named("__StrByteView"), Int] -> Int, Renamed),
             row!("index_of", PURE, [Str, Str] -> Int, Intrinsic(StrIndexOf)),
             // `index_of` from a byte offset on, the index into `s`: a
             // scanner's next search without slicing the tail (downstream
             // handoff).
             row!("index_of_from", PURE, [Str, Str, Int] -> Int, Intrinsic(StrIndexOfFrom)),
+            // a Float's shortest text that reads back as the same double:
+            // what the api codec writes (spec/api.md § Codecs)
+            row!("__float_text", PURE, [Float] -> Str, Intrinsic(StrFloatTextRaw)),
+            // `index_of_from` for a caller holding the length (a view's
+            // `n`): no strlen per call, so a scan with it is linear. The
+            // range family's contract, the caller owns the bound; `find`
+            // is the view's safe form.
+            row!("range_index_of", PURE, [Str, Int, Str, Int] -> Int, Intrinsic(StrRangeIndexOf)),
+            row!("find", PURE, [Named("__StrByteView"), Str, Int] -> Int, Renamed),
             row!("contains", PURE, [Str, Str] -> Bool, Intrinsic(StrContains)),
             // #353: the everyday predicates. The runtime carried
             // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
@@ -1565,6 +1660,11 @@ pub enum IntrinsicId {
     CryptoHmacSha512,
     CryptoSha1,
     CryptoSha256,
+    CryptoSha256File,
+    CryptoSha256FinishRaw,
+    CryptoSha256FreeRaw,
+    CryptoSha256NewRaw,
+    CryptoSha256UpdateRaw,
     CryptoSha512,
     RingSpscEmitRaw,
     RingSpscInitRaw,
@@ -1582,6 +1682,20 @@ pub enum IntrinsicId {
     EnvArgsCount,
     EnvVar,
     EnvVarExists,
+    ObserveRegistryRaw,
+    ObserveDropRegistryRaw,
+    ObserveSeriesRaw,
+    ObserveAddRaw,
+    ObserveSetRaw,
+    ObserveObserveRaw,
+    ObserveSnapshotRaw,
+    ObserveSnapStrRaw,
+    ObserveSnapNumRaw,
+    ObserveSnapIntRaw,
+    ObserveEventsTakeRaw,
+    ObserveEventStrRaw,
+    ObserveEventIntRaw,
+    ObserveEventsDroppedRaw,
     IoFileAtEofRaw,
     IoFileCloseRaw,
     IoFileOpenRaw,
@@ -1646,6 +1760,7 @@ pub enum IntrinsicId {
     IoTcpRecvBytesRaw,
     IoTcpSendRaw,
     IoTcpSendBytesRaw,
+    IoTcpSendBytesUntilRaw,
     IoTcpSetRecvTimeoutNsRaw,
     IoTcpShutdownListenSocketRaw,
     IoTcpAcceptOne,
@@ -1698,9 +1813,12 @@ pub enum IntrinsicId {
     IoTlsLastRecvKernelNs,
     IoTlsLastRecvUserNs,
     IoTlsRecvBytes,
+    IoTlsRecvBytesUntilRaw,
     IoTlsRecvInto,
+    IoTlsRecvIntoUntilRaw,
     IoTlsRecvStampedInto,
     IoTlsSendBytes,
+    IoTlsSendBytesUntilRaw,
     IoTlsSetNodelay,
     IoTlsSetRecvTimeout,
     IoTlsSetRxTimestamps,
@@ -1780,6 +1898,10 @@ pub enum IntrinsicId {
     ProcessDumpArenaResidency,
     ProcessDumpPoolResidency,
     ProcessExit,
+    /// GH #1477: `std::process::__probes_start(port)`, a
+    /// `std::observe::Probes` param's birth: the runtime's probe thread
+    /// on `port`.
+    ProcessProbesStartRaw,
     ProcessPid,
     ProcessUid,
     ProcessRssBytes,
@@ -1798,6 +1920,8 @@ pub enum IntrinsicId {
     StrRangeCopy,
     StrIndexOf,
     StrIndexOfFrom,
+    StrFloatTextRaw,
+    StrRangeIndexOf,
     StrContains,
     StrSplitInto,
     StrJoin,
@@ -2116,7 +2240,7 @@ pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
 pub fn builtin_effects(name: &str) -> Option<EffectSet> {
     match name {
         "println" | "print" | "eprintln" | "eprint" => {
-            Some(EffectSet::SYSCALL)
+            Some(EffectSet::SYSCALL.union(EffectSet::STDIO))
         }
         _ => None,
     }
@@ -2160,7 +2284,7 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// | `std::io::tcp::recv_stamped_into` | `lotus_tcp_recv_stamped` |
 /// | `std::io::udp::recv`, `__recv`, `recv_with_source` | `lotus_udp_recvfrom_async` |
 /// | `std::io::udp::recv_into` | `lotus_udp_recv_into` |
-/// | `std::io::tls::recv_into`, `recv_stamped_into`, `recv_bytes` | `lotus_tls__read` (`SSL_read` on the non-blocking socket, each `WANT_READ` / `WANT_WRITE` a park) |
+/// | `std::io::tls::recv_into`, `__recv_into_until`, `recv_stamped_into`, `recv_bytes`, `__recv_bytes_until` | `lotus_tls__read` (`SSL_read` on the non-blocking socket, each `WANT_READ` / `WANT_WRITE` a park) |
 /// | `std::io::tls::connect`, `connect_within`, `upgrade` | the tcp dial, then `lotus_tls__handshake` (`SSL_connect` on the non-blocking socket, each `WANT_*` a park) |
 /// | `std::http::get`, `post`, `request` | Hale bodies (`http_client.hl`) whose every wait is one of the rows above or `tcp::__send_bytes` / `tls::send_bytes` (each a park on EPOLLOUT) |
 ///
@@ -2191,7 +2315,9 @@ pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "tls", "connect"],
     &["std", "io", "tls", "connect_within"],
     &["std", "io", "tls", "recv_bytes"],
+    &["std", "io", "tls", "__recv_bytes_until"],
     &["std", "io", "tls", "recv_into"],
+    &["std", "io", "tls", "__recv_into_until"],
     &["std", "io", "tls", "recv_stamped_into"],
     &["std", "io", "tls", "upgrade"],
     &["std", "io", "udp", "__recv"],
@@ -2261,6 +2387,22 @@ mod tests {
 
     fn path(s: &NsSurface, f: &StdFn) -> String {
         format!("std::{}::{}", s.ns.join("::"), f.name)
+    }
+
+    /// `stdio` is a sub-class of `syscall`: no leaf, row or builtin,
+    /// carries it alone, so a law or contract over `syscall` sees every
+    /// write to fd 1 or 2.
+    #[test]
+    fn stdio_is_a_syscall() {
+        for (s, f) in rows() {
+            if !f.effects.is_unclassified() && f.effects.contains(EffectSet::STDIO) {
+                assert!(f.effects.contains(EffectSet::SYSCALL), "{} carries stdio without syscall", path(s, f));
+            }
+        }
+        for b in ["println", "print", "eprintln", "eprint"] {
+            let e = builtin_effects(b).unwrap();
+            assert!(e.contains(EffectSet::STDIO) && e.contains(EffectSet::SYSCALL), "{b}");
+        }
     }
 
     #[test]

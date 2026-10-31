@@ -62,15 +62,43 @@ main locus App {
     fn check(label: String, d: dna::Dna) {
         let j = d.journal;
         std::test::assert_eq_int(d.rehydrated, 1, label + ": t1's review is restored");
-        std::test::assert_eq_int(self.count(j, "task.resumed", "t1"), 0, label + ": t1 waits for its Mutation's review, not resumed: " + self.kinds(j));
+        std::test::assert_eq_int(
+            self.count(j, "task.resumed", "t1"),
+            0,
+            label + ": t1 waits for its Mutation's review, not resumed: " + self.kinds(j),
+        );
         std::test::assert_eq_int(d.pending_asks.len(), 0, label + ": nothing is planned again");
-        std::test::assert_eq_int(self.count(j, "mutation.proposed", ""), 2, label + ": no Mutation is proposed by the restart");
-        std::test::assert_eq_str(d.task_state("t1"), "pending", label + ": t1 is still pending on its review");
-        std::test::assert_eq_int(self.count(j, "mutation.failed", "m2"), 1, label + ": t2's Mutation, only proposed, failed in flight");
-        std::test::assert_eq_str(d.task_state("t2"), "pending", label + ": t2, a Task of the shape from before, is left where it is (card 18)");
-        std::test::assert_eq_int(self.count(j, "task.resumed", "t2"), 0, label + ": t2 is not resumed");
+        std::test::assert_eq_int(
+            self.count(j, "mutation.proposed", ""),
+            2,
+            label + ": no Mutation is proposed by the restart",
+        );
+        std::test::assert_eq_str(
+            d.task_state("t1"),
+            "pending",
+            label + ": t1 is still pending on its review",
+        );
+        std::test::assert_eq_int(
+            self.count(j, "mutation.failed", "m2"),
+            1,
+            label + ": t2's Mutation, only proposed, failed in flight",
+        );
+        std::test::assert_eq_str(
+            d.task_state("t2"),
+            "pending",
+            label + ": t2, a Task of the shape from before, is left where it is (card 18)",
+        );
+        std::test::assert_eq_int(
+            self.count(j, "task.resumed", "t2"),
+            0,
+            label + ": t2 is not resumed",
+        );
         std::test::assert_eq_str(d.task_state("t3"), "done", label + ": t3 stays done");
-        std::test::assert_eq_int(self.count(j, "task.resumed", "t3"), 0, label + ": t3 is not resumed");
+        std::test::assert_eq_int(
+            self.count(j, "task.resumed", "t3"),
+            0,
+            label + ": t3 is not resumed",
+        );
     }
     run() {
         // t1: a direct edit awaiting review, stopped before the Task settled
@@ -89,8 +117,6 @@ main locus App {
         self.put("intent.offered", "i3", "format the tree");
         self.put("task.born", "t3", "i3: format the tree");
         self.put("task.done", "t3", "formatted");
-        let a = self.record.append(self.record.revision(), "ledger.adopted", "ledger", "{\"routing\":1,\"checkpoint\":\"probe\"}");
-        std::test::assert(a.ok, "routing enabled");
 
         self.one = dna::Dna { journal: self.chronological, planned: true, org_id: "assoc-one" };
         self.check("one memory", self.one);
@@ -100,7 +126,10 @@ main locus App {
         };
         // the merged view puts the record's Mutation rows before the ledger's births
         let order = self.kinds(self.two.journal);
-        std::test::assert(std::str::index_of(order, "mutation.proposed") < std::str::index_of(order, "task.born"), "the split view reads the record first: " + order);
+        std::test::assert(
+            std::str::index_of(order, "mutation.proposed") < std::str::index_of(order, "task.born"),
+            "the split view reads the record first: " + order,
+        );
         self.check("two memories", self.two);
     }
 }

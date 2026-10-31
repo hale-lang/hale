@@ -6,18 +6,33 @@ locus TaskQueryCases {
         let h = api::Http { };
         std::test::assert(!h.query("assignee=alex").ok, "assignee is not a common read field");
         let q = h.task_query("assignee=Ren%C3%A9e+Li&limit=1&offset=1&snapshot=head");
-        std::test::assert(q.ok && q.assignee == "Renée Li" && q.limit == 1 && q.offset == 1 && q.snapshot == "head", "exact decoded identity and pinned page");
+        std::test::assert(
+            q.ok
+                && q.assignee == "Renée Li"
+                && q.limit == 1
+                && q.offset == 1
+                && q.snapshot == "head",
+            "exact decoded identity and pinned page",
+        );
         std::test::assert(h.task_query("id=t1&assignee=alex").ok, "exact identity plus assignee");
         std::test::assert(h.task_query("assignee=%2520").assignee == "%20", "decoded exactly once");
         let bad = "assignee=\nassignee=alex&assignee=blair\nassignee=alex&%61ssignee=alex\nassignee=%00\nassignee=%0a\nassignee=%7f\nassignee=%ff\nassignee=%c0%af\nassignee=%ed%a0%80\nassignee=alex&offset=1\nassignee=alex&id=t1&offset=1&snapshot=head\nassignee=alex&owner=org\nassignee=alex&\n";
         let mut rest = bad;
-        while len(rest) > 0 { let cut = std::str::index_of(rest, "\n"); let raw = rest[0..cut]; rest = rest[(cut + 1)..len(rest)]; std::test::assert(!h.task_query(raw).ok, "refused task query: " + raw); }
+        while len(rest) > 0 {
+            let cut = std::str::index_of(rest, "\n");
+            let raw = rest[0..cut];
+            rest = rest[(cut + 1)..len(rest)];
+            std::test::assert(!h.task_query(raw).ok, "refused task query: " + raw);
+        }
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < 128 { b.append_str("é"); i = i + 1; }
         let exact = std::str::from_bytes(b.snapshot() or raise);
         std::test::assert(h.task_query("assignee=" + exact).ok, "256 UTF-8 bytes accepted");
         std::test::assert(!h.task_query("assignee=" + exact + "a").ok, "257 UTF-8 bytes refused");
-        std::test::assert(h.query("id=t1&limit=2").ok && h.task_query("id=t1&limit=2").assignee == "", "unfiltered common grammar preserved");
+        std::test::assert(
+            h.query("id=t1&limit=2").ok && h.task_query("id=t1&limit=2").assignee == "",
+            "unfiltered common grammar preserved",
+        );
         eprintln("PASS exact Task-only assignee query grammar");
     }
 }

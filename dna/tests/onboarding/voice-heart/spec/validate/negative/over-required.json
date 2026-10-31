@@ -1,0 +1,7 @@
+{
+  "why": "A field a request row requires and the contract does not would refuse what the contract allows, and must fail. (On an answer it is a field voice always sends, which the contract allows: ANSWERS in bundle.mjs.)",
+  "side": "bundle",
+  "set": ["components", "schemas", "AccountCreate", "required"],
+  "value": ["id", "name", "provider"],
+  "expect": "AccountCreate.provider (required by the row)"
+}

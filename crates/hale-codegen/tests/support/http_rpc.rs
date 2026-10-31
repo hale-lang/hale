@@ -309,6 +309,11 @@ pub fn request_text(method: &str, path: &str, headers: &[(String, String)], body
         s.push_str(&format!("{k}: {v}\r\n"));
     }
     if let Some(b) = body {
+        // a body is the json codec's unless the caller names its own type
+        // (an `http::Rest` row refuses any other, spec/api.md § The REST transport)
+        if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("Content-Type")) {
+            s.push_str("Content-Type: application/json\r\n");
+        }
         s.push_str(&format!("Content-Length: {}\r\n", b.len()));
     }
     s.push_str("Connection: close\r\n\r\n");

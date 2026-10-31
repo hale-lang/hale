@@ -24,20 +24,80 @@ interface KnowledgeCommandProvider {
 locus NoKnowledgeCommands {
     params { }
     fn supported() -> Bool { return false; }
-    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> ops::KnowledgeResult { return ops::KnowledgeResult { code: "commands_unsupported" }; }
-    fn lookup(context: CommandContext, request_id: String) -> ops::KnowledgeResult { return ops::KnowledgeResult { code: "commands_unsupported" }; }
+    fn submit(context: CommandContext, command: ops::KnowledgeCommand) -> ops::KnowledgeResult {
+        return ops::KnowledgeResult { code: "commands_unsupported" };
+    }
+    fn lookup(context: CommandContext, request_id: String) -> ops::KnowledgeResult {
+        return ops::KnowledgeResult { code: "commands_unsupported" };
+    }
 }
 
 // The payloads. `record_head` is the head the change was prepared at;
 // an edge's `target_id` is the endpoint it is made from (its from_id or
 // to_id).
-type KnowledgeLink { request_id: String = ""; record_head: String = ""; target_id: String = ""; from_id: String = ""; to_id: String = ""; rel: String = ""; rationale: String = ""; }
-type KnowledgeUnlink { request_id: String = ""; record_head: String = ""; target_id: String = ""; edge_id: String = ""; from_id: String = ""; to_id: String = ""; rel: String = ""; rationale: String = ""; }
-type KnowledgeNodeProposal { request_id: String = ""; record_head: String = ""; kind: String = ""; name: String = ""; text: String = ""; author: String = ""; target: String = ""; rationale: String = ""; }
-type KnowledgeNodeRevision { request_id: String = ""; record_head: String = ""; supersedes: String = ""; kind: String = ""; name: String = ""; text: String = ""; author: String = ""; target: String = ""; rationale: String = ""; }
-type KnowledgeNodeRetirement { request_id: String = ""; record_head: String = ""; id: String = ""; rationale: String = ""; }
-type KnowledgeBind { request_id: String = ""; record_head: String = ""; idea_id: String = ""; author: String = ""; target: String = ""; rationale: String = ""; }
-type KnowledgeUnbind { request_id: String = ""; record_head: String = ""; binding_id: String = ""; idea_id: String = ""; author: String = ""; target: String = ""; rationale: String = ""; }
+type KnowledgeLink {
+    request_id: String = "";
+    record_head: String = "";
+    target_id: String = "";
+    from_id: String = "";
+    to_id: String = "";
+    rel: String = "";
+    rationale: String = "";
+}
+type KnowledgeUnlink {
+    request_id: String = "";
+    record_head: String = "";
+    target_id: String = "";
+    edge_id: String = "";
+    from_id: String = "";
+    to_id: String = "";
+    rel: String = "";
+    rationale: String = "";
+}
+type KnowledgeNodeProposal {
+    request_id: String = "";
+    record_head: String = "";
+    kind: String = "";
+    name: String = "";
+    text: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
+}
+type KnowledgeNodeRevision {
+    request_id: String = "";
+    record_head: String = "";
+    supersedes: String = "";
+    kind: String = "";
+    name: String = "";
+    text: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
+}
+type KnowledgeNodeRetirement {
+    request_id: String = "";
+    record_head: String = "";
+    id: String = "";
+    rationale: String = "";
+}
+type KnowledgeBind {
+    request_id: String = "";
+    record_head: String = "";
+    idea_id: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
+}
+type KnowledgeUnbind {
+    request_id: String = "";
+    record_head: String = "";
+    binding_id: String = "";
+    idea_id: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
+}
 type KnowledgeRecovery { request_id: String = ""; }
 // Every Knowledge command's answer: the provider's result and the
 // receipt as the record holds it — `node`, `binding` or (a reviewed
@@ -71,14 +131,29 @@ locus KnowledgeAdmission {
     fn context(ctx: std::api::Context) -> CommandContext {
         let source = self.reader.read();
         let person = self.roles.person(ctx.caller);
-        return CommandContext { root: self.root, source: source, principal_mode: "local", principal_name: if len(person) > 0 { person } else { ctx.caller.name } };
+        return CommandContext {
+            root: self.root,
+            source: source,
+            principal_mode: "local",
+            principal_name: if len(person) > 0 { person } else { ctx.caller.name },
+        };
     }
     // As CommandAdmission's: an issuer's subject that maps to no person
     // (a service) asks nothing and looks nothing up.
-    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.name, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
+    fn personless(ctx: std::api::Context) -> Bool {
+        return std::str::starts_with(ctx.caller.name, "oidc:")
+            && len(self.roles.person(ctx.caller)) == 0;
+    }
     fn refused(code: String) -> KnowledgeReply { return KnowledgeReply { code: code }; }
     fn reply(result: ops::KnowledgeResult) -> KnowledgeReply {
-        return KnowledgeReply { ok: result.ok, code: result.code, application_id: result.application_id, head: result.head, revision: result.revision, receipt: result.receipt };
+        return KnowledgeReply {
+            ok: result.ok,
+            code: result.code,
+            application_id: result.application_id,
+            head: result.head,
+            revision: result.revision,
+            receipt: result.receipt,
+        };
     }
     fn submit(ctx: std::api::Context, command: ops::KnowledgeCommand) -> KnowledgeReply {
         if self.personless(ctx) { return self.refused("forbidden"); }
@@ -86,38 +161,132 @@ locus KnowledgeAdmission {
         if !context.source.ok { return self.refused(context.source.code); }
         let mut c = command;
         c.application_id = context.source.identity;
-        let native = ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
+        let native = ops::GovernanceContext {
+            application_id: context.source.identity,
+            principal_mode: context.principal_mode,
+            principal_name: context.principal_name,
+        };
         if !self.codec.valid(native, c) { return self.refused("invalid_command"); }
         if !self.provider.supported() { return self.refused("commands_unsupported"); }
         return self.reply(self.provider.submit(context, c));
     }
     fn link(l: KnowledgeLink, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: l.request_id, operation: "dna.knowledge.edge.link", target_id: l.target_id, record_head: l.record_head, from_id: l.from_id, to_id: l.to_id, rel: l.rel, rationale: l.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: l.request_id,
+                operation: "dna.knowledge.edge.link",
+                target_id: l.target_id,
+                record_head: l.record_head,
+                from_id: l.from_id,
+                to_id: l.to_id,
+                rel: l.rel,
+                rationale: l.rationale,
+            },
+        );
     }
     fn unlink(u: KnowledgeUnlink, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: u.request_id, operation: "dna.knowledge.edge.unlink", target_id: u.target_id, record_head: u.record_head, edge_id: u.edge_id, from_id: u.from_id, to_id: u.to_id, rel: u.rel, rationale: u.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: u.request_id,
+                operation: "dna.knowledge.edge.unlink",
+                target_id: u.target_id,
+                record_head: u.record_head,
+                edge_id: u.edge_id,
+                from_id: u.from_id,
+                to_id: u.to_id,
+                rel: u.rel,
+                rationale: u.rationale,
+            },
+        );
     }
     // A proposal targets the collection it names; a revision the node it
     // supersedes; a retirement the node it retires.
     fn propose_node(p: KnowledgeNodeProposal, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: p.request_id, operation: "dna.knowledge.node.propose", target_id: p.target, record_head: p.record_head, node_kind: p.kind, name: p.name, text: p.text, author: p.author, target: p.target, rationale: p.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: p.request_id,
+                operation: "dna.knowledge.node.propose",
+                target_id: p.target,
+                record_head: p.record_head,
+                node_kind: p.kind,
+                name: p.name,
+                text: p.text,
+                author: p.author,
+                target: p.target,
+                rationale: p.rationale,
+            },
+        );
     }
     fn revise_node(r: KnowledgeNodeRevision, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: r.request_id, operation: "dna.knowledge.node.revise", target_id: r.supersedes, record_head: r.record_head, supersedes: r.supersedes, node_kind: r.kind, name: r.name, text: r.text, author: r.author, target: r.target, rationale: r.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: r.request_id,
+                operation: "dna.knowledge.node.revise",
+                target_id: r.supersedes,
+                record_head: r.record_head,
+                supersedes: r.supersedes,
+                node_kind: r.kind,
+                name: r.name,
+                text: r.text,
+                author: r.author,
+                target: r.target,
+                rationale: r.rationale,
+            },
+        );
     }
     fn retire_node(r: KnowledgeNodeRetirement, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: r.request_id, operation: "dna.knowledge.node.retire", target_id: r.id, record_head: r.record_head, rationale: r.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: r.request_id,
+                operation: "dna.knowledge.node.retire",
+                target_id: r.id,
+                record_head: r.record_head,
+                rationale: r.rationale,
+            },
+        );
     }
     fn bind(b: KnowledgeBind, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: b.request_id, operation: "dna.knowledge.binding.bind", target_id: b.idea_id, record_head: b.record_head, idea_id: b.idea_id, author: b.author, target: b.target, rationale: b.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: b.request_id,
+                operation: "dna.knowledge.binding.bind",
+                target_id: b.idea_id,
+                record_head: b.record_head,
+                idea_id: b.idea_id,
+                author: b.author,
+                target: b.target,
+                rationale: b.rationale,
+            },
+        );
     }
     fn unbind(u: KnowledgeUnbind, ctx: std::api::Context) -> KnowledgeReply {
-        return self.submit(ctx, ops::KnowledgeCommand { request_id: u.request_id, operation: "dna.knowledge.binding.unbind", target_id: u.idea_id, record_head: u.record_head, binding_id: u.binding_id, idea_id: u.idea_id, author: u.author, target: u.target, rationale: u.rationale });
+        return self.submit(
+            ctx,
+            ops::KnowledgeCommand {
+                request_id: u.request_id,
+                operation: "dna.knowledge.binding.unbind",
+                target_id: u.idea_id,
+                record_head: u.record_head,
+                binding_id: u.binding_id,
+                idea_id: u.idea_id,
+                author: u.author,
+                target: u.target,
+                rationale: u.rationale,
+            },
+        );
     }
     // Recovery by the request id the caller minted, under the policy's
     // own recovery grant.
     fn lookup(l: KnowledgeRecovery, ctx: std::api::Context) -> KnowledgeReply {
-        if !self.wire.bounded(l.request_id, 128, true, false) { return self.refused("invalid_query"); }
+        if !self.wire.bounded(l.request_id, 128, true, false) {
+            return self.refused("invalid_query");
+        }
         if self.personless(ctx) { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }

@@ -1,0 +1,499 @@
+// dna/tests/habitat_saplings_test.hl — a sapling grafted by name from a
+// nursery the habitat's Board trusts (phase 4).
+//
+// A sapling is an organism's seed in a nursery, beside its packs: a
+// repository pinned at a revision with a digest, and the packs it adopts at
+// graft. The nursery here is a directory of the fixture's, its sapling a
+// local git repository standing in for one on the network. The Board trusts
+// the nursery (`hale habitat nursery add`, the head's `Commands::add_nursery`)
+// and what it offers is read into the habitat's record; the head lists the
+// nurseries and the saplings. A revision whose tree is not the one pinned is
+// refused and nothing is grafted; the pinned one is grafted by name, with no
+// checkout, its digest checked, its pack proposed to the child's Board, and
+// the sapling, revision and digest on the graft's row. A newer revision in
+// the nursery is filed for the Board and never pulled; ratified, the pin
+// moves and the grafted organism does not. Without docker compose nothing
+// here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn face_of(status: String) -> String {
+    let at = std::str::index_of(status, "face    http://");
+    if at < 0 { return ""; }
+    let rest = status[(at + 8)..len(status)];
+    let end = std::str::index_of(rest, "/ (");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+// The JSON array `field` of what the head's surface answers `member`, read
+// through the face; retried until it answers.
+fn surface_read(face: String, member: String, field: String) -> String {
+    let mut tries = 0;
+    while tries < 120 {
+        let r = dna::run_tool(
+            "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n--data\n{\"limit\": 50}\n"
+                + face
+                + "/api/hale/v1/head/surface/call/" + member,
+        ).stdout;
+        let got = std::json::find_string_field(r, field);
+        if std::str::starts_with(got, "[") { return got; }
+        std::time::sleep(500ms);
+        tries = tries + 1;
+    }
+    return "";
+}
+
+// Whether the habitat's head answers its surface's reads (its API child up,
+// its socket bound) within `secs`, scaled.
+fn head_ready(face: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if len(surface_read(face, "Commands::nurseries", "nurseries")) > 0 { return true; }
+    }
+    return false;
+}
+
+fn element(array: String, key: String, value: String) -> String {
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        if std::json::find_string_field(it.element, key) == value { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+// `git` in `dir` as a fixture's author.
+fn git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool(
+        "git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args,
+    );
+}
+
+// The digest a nursery pins a revision by: the sha256 of its tree's listing.
+fn digest_of(dir: String, rev: String) -> String {
+    let r = dna::run_tool(
+        "sh\n-c\ngit -C \"$1\" ls-tree -r --full-tree \"$2\" | sha256sum | cut -d' ' -f1\nsh\n"
+            + dir
+            + "\n" + rev,
+    );
+    return "sha256:" + dna::trim_nl(r.stdout);
+}
+
+// The nursery's index: one pack, and the sapling `sprout` at `rev`.
+fn index(src: String, rev: String, digest: String) -> String {
+    return "[[pack]]\nname = \"crew\"\nversion = \"1\"\npath = \"packs/crew.pack\"\nsummary = \"one dev for a part\"\nparams = { part = \"\" }\n\n[[sapling]]\nname = \"sprout\"\nsummary = \"a small organism to graft\"\nrepo = \""
+        + src + "\"\nrevision = \"" + rev + "\"\ndigest = \"" + digest
+        + "\"\npacks = [\"crew\"]\nset = { part = \"sprout\" }\n";
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_saplings_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_saplings_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("habitat-saplings");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+
+    // ---- the habitat, up with its head
+    let started = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    std::test::assert(
+        started.code == 0
+            && std::str::contains(started.stdout, "body    up (compose service body)"),
+        "the habitat is born and its body runs: " + started.stdout + started.stderr,
+    );
+    std::test::assert(
+        std::str::contains(started.stdout, "sapling hale at ")
+            && !std::str::contains(started.stdout, "sapling voice"),
+        "up reads the toolchain's nursery: the hale organism is pinned, no application: "
+            + started.stdout,
+    );
+    let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
+    // the body runs before its head answers (the head's API child is built
+    // and started beside it): every verb below is a client of the head
+    std::test::assert(head_ready(face, 900), "the habitat's head answers at " + face);
+
+    // ---- a sapling's repository, and a nursery offering it at v1
+    let src = scratch + "/sprout-src";
+    std::io::fs::mkdir(src) or discard;
+    git(src, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(src + "/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n")
+    or discard;
+    std::io::fs::write_file(src + "/README.md", "# sprout\n\nA small organism to graft.\n")
+    or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout v1");
+    git(src, "tag\nv1");
+    let v1 = dna::trim_nl(git(src, "rev-parse\nv1").stdout);
+    let pinned = digest_of(src, "v1");
+    std::io::fs::write_file(src + "/NOTES.md", "another tree\n") or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nanother tree");
+    let other = dna::trim_nl(git(src, "rev-parse\nHEAD").stdout);
+
+    std::io::fs::mkdir(scratch + "/nursery") or discard;
+    let nursery = dna::trim_nl(dna::run_tool("realpath\n" + scratch + "/nursery").stdout);
+    std::io::fs::mkdir(nursery + "/packs") or discard;
+    std::io::fs::write_file(
+        nursery + "/packs/crew.pack",
+        "open {part}/dev | Decides: how {part} is built.\n",
+    ) or discard;
+    std::io::fs::write_file(nursery + "/nursery.toml", index(src, "v1", pinned)) or discard;
+
+    // ---- the Board trusts the nursery; what it offers is the record's
+    let added = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + nursery);
+    std::test::assert(
+        added.code == 0
+            && std::str::contains(added.stdout, "nursery " + nursery + ": the Board trusts it")
+            && std::str::contains(added.stdout, "sapling sprout at v1 (" + pinned + ")"),
+        "the nursery is trusted and its sapling pinned: " + added.stdout + added.stderr,
+    );
+    let nurseries = surface_read(face, "Commands::nurseries", "nurseries");
+    std::test::assert(
+        len(element(nurseries, "source", "toolchain")) > 0
+            && std::json::find_string_field(element(nurseries, "source", nursery), "kind") == "dir",
+        "the head lists the toolchain's nursery and the trusted one: " + nurseries,
+    );
+    let saplings = surface_read(face, "Commands::saplings", "saplings");
+    let sprout = element(saplings, "name", "sprout");
+    std::test::assert(
+        std::json::find_string_field(sprout, "revision") == "v1"
+            && std::json::find_string_field(sprout, "digest") == pinned
+            && std::json::find_string_field(sprout, "nursery") == nursery
+            && std::json::find_string_field(sprout, "purpose") == "a small organism to graft"
+            && len(element(saplings, "name", "hale")) > 0
+            && len(element(saplings, "name", "voice")) == 0,
+        "the head lists the saplings, the toolchain's hale among them: " + saplings,
+    );
+
+    // ---- a revision whose tree is not the one pinned is refused
+    git(src, "tag\n-f\nv1\n" + other);
+    let tampered = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nsprout\n--no-library");
+    std::test::assert(
+        tampered.code != 0
+            && std::str::contains(
+                tampered.stderr,
+                "not the " + pinned + " its nursery pinned: refused",
+            ),
+        "a tampered revision is refused: " + tampered.stdout + tampered.stderr,
+    );
+    std::test::assert(
+        !std::str::contains(
+            in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout,
+            "\\\"sapling\\\":\\\"sprout\\\"",
+        ),
+        "and nothing is grafted",
+    );
+
+    // ---- the pinned revision grafted by name: digest checked, pack proposed
+    git(src, "tag\n-f\nv1\n" + v1);
+    let grafted = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nsprout\n--no-library");
+    std::test::assert(
+        grafted.code == 0
+            && std::str::contains(grafted.stdout, "fetched sprout at v1")
+            && std::str::contains(grafted.stdout, "as the habitat's child")
+            && std::str::contains(grafted.stdout, "pack    `crew` proposed")
+            && std::str::contains(
+                grafted.stdout,
+                "ratified its purpose, practices and positions, at the graft of the sapling `sprout`",
+            ),
+        "the sapling is grafted by name, its packaging ratified by the graft: " + grafted.stdout
+            + grafted.stderr,
+    );
+    let store = dna::local_habitat_dir() + "/saplings/sprout";
+    let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(rows, "\\\"sapling\\\":\\\"sprout\\\"")
+            && std::str::contains(rows, "\\\"revision\\\":\\\"v1\\\"")
+            && std::str::contains(rows, "\\\"digest\\\":\\\"" + pinned + "\\\""),
+        "the graft's row says which sapling, revision and digest: " + rows,
+    );
+    let child = in_dir(store, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(child, "crew@1"),
+        "the sapling's pack is proposed to the child's Board: " + child,
+    );
+
+    // ---- a newer revision is filed for the Board, never pulled
+    std::io::fs::write_file(src + "/CHANGELOG.md", "v2\n") or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout v2");
+    git(src, "tag\nv2");
+    let newer = digest_of(src, "v2");
+    std::io::fs::write_file(nursery + "/nursery.toml", index(src, "v2", newer)) or discard;
+    let refreshed = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    std::test::assert(
+        refreshed.code == 0 && std::str::contains(refreshed.stdout, "upgrade sprout v1 -> v2"),
+        "the newer revision is filed: " + refreshed.stdout + refreshed.stderr,
+    );
+    let again = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    std::test::assert(
+        !std::str::contains(again.stdout, "upgrade sprout"),
+        "once: " + again.stdout,
+    );
+    let waiting = element(surface_read(face, "Commands::saplings", "saplings"), "name", "sprout");
+    std::test::assert(
+        std::json::find_string_field(waiting, "revision") == "v1"
+            && std::json::find_string_field(waiting, "proposed") == "v2",
+        "the pin stays at v1, v2 waits for the Board: " + waiting,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "nothing is pulled",
+    );
+
+    // ---- ratified, the pin moves; the grafted organism does not
+    let ratified = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nratify\nsprout");
+    std::test::assert(
+        ratified.code == 0 && std::str::contains(ratified.stdout, "sprout pinned at v2"),
+        "the Board ratifies the newer revision: " + ratified.stdout + ratified.stderr,
+    );
+    let moved = element(surface_read(face, "Commands::saplings", "saplings"), "name", "sprout");
+    std::test::assert(
+        std::json::find_string_field(moved, "revision") == "v2"
+            && std::json::find_string_field(moved, "digest") == newer
+            && std::json::find_string_field(moved, "proposed") == "",
+        "pinned at v2: " + moved,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "the grafted organism stays at its revision",
+    );
+
+    // ---- `organism upgrade` moves it to the ratified revision, keeping its
+    // record: planned first (nothing moves), a v2 whose tree is not the
+    // pinned one refused, then moved, and at the pin a second is refused
+    let record = dna::allocation_key(store);
+    let planned = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout\n--plan");
+    std::test::assert(
+        planned.code == 0
+            && std::str::contains(
+                planned.stdout,
+                "upgrade sprout: v1 (" + pinned + ") -> v2 (" + newer + ")",
+            )
+            && std::str::contains(planned.stdout, "record  habitat.organism.upgraded " + record)
+            && std::str::contains(planned.stdout, "place   none"),
+        "the plan names each step: " + planned.stdout + planned.stderr,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "the plan moves nothing",
+    );
+    let v2 = dna::trim_nl(git(src, "rev-parse\nv2").stdout);
+    git(src, "tag\n-f\nv2\n" + v1);
+    let mismatch = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout");
+    std::test::assert(
+        mismatch.code != 0
+            && std::str::contains(
+                mismatch.stderr,
+                "not the " + newer + " the habitat pins: refused, nothing moved",
+            ),
+        "a v2 that is not the pinned tree is refused: " + mismatch.stdout + mismatch.stderr,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "and nothing moves",
+    );
+    git(src, "tag\n-f\nv2\n" + v2);
+    let upgraded = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout");
+    std::test::assert(
+        upgraded.code == 0
+            && std::str::contains(upgraded.stdout, "fetched sprout at v2")
+            && std::str::contains(upgraded.stdout, "record  habitat.organism.upgraded " + record),
+        "the organism is upgraded: " + upgraded.stdout + upgraded.stderr,
+    );
+    std::test::assert(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout) == v2
+            && std::io::fs::file_exists(store + "/CHANGELOG.md")
+            && dna::allocation_key(store) == record,
+        "its tree is at v2 and its manifest pins the same record",
+    );
+    let urows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(urows, "habitat.organism.upgraded")
+            && std::str::contains(urows, "\\\"from\\\":\\\"v1\\\"")
+            && std::str::contains(urows, "\\\"to\\\":\\\"v2\\\""),
+        "the upgrade is a row of the habitat's record: " + urows,
+    );
+    let again = in_dir(scratch, toolchain() + "\nhabitat\norganism\nupgrade\nsprout");
+    std::test::assert(
+        again.code != 0 && std::str::contains(again.stderr, "already at v2 (" + newer + ")"),
+        "at the pin, nothing to upgrade: " + again.stdout + again.stderr,
+    );
+
+    // ---- a graft that stops after the child is born, and goes on after a
+    // newer revision was ratified, is the revision it checked: `bud` needs
+    // a database whose heart migration fails until `ready` is there
+    let bsrc = scratch + "/bud-src";
+    std::io::fs::mkdir(bsrc) or discard;
+    git(bsrc, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(
+        bsrc + "/hale.toml",
+        "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n\n[dna.migrations.database]\ncommand = [\"sh\", \"-c\", \"test -e ready\"]\n",
+    ) or discard;
+    std::io::fs::write_file(bsrc + "/README.md", "# bud\n") or discard;
+    git(bsrc, "add\n-A");
+    git(bsrc, "commit\n-q\n-m\nbud v1");
+    git(bsrc, "tag\nv1");
+    let bud1 = digest_of(bsrc, "v1");
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        index(src, "v2", newer) + bud_entry(bsrc, "v1", bud1),
+    ) or discard;
+    in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    let stopped = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbud\n--no-library");
+    let bstore = dna::local_habitat_dir() + "/saplings/bud";
+    std::test::assert(
+        stopped.code != 0 && len(dna::allocation_key(bstore)) == 12,
+        "the graft stops after the child is born: " + stopped.stdout + stopped.stderr,
+    );
+    std::io::fs::write_file(bsrc + "/CHANGELOG.md", "v2\n") or discard;
+    git(bsrc, "add\n-A");
+    git(bsrc, "commit\n-q\n-m\nbud v2");
+    git(bsrc, "tag\nv2");
+    let bud2 = digest_of(bsrc, "v2");
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        index(src, "v2", newer) + bud_entry(bsrc, "v2", bud2),
+    ) or discard;
+    in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    let bratified = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nratify\nbud");
+    std::test::assert_eq_int(bratified.code, 0, "bud v2 is ratified: " + bratified.stderr);
+    std::io::fs::write_file(bstore + "/ready", "") or discard;
+    let resumed = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbud\n--no-library");
+    std::test::assert(
+        resumed.code == 0 && std::str::contains(resumed.stdout, "bud goes on at v1 (" + bud1 + ")"),
+        "the graft goes on at the revision it checked: " + resumed.stdout + resumed.stderr,
+    );
+    let brows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    // the graft's row (its fields in key order): v1 and v1's digest
+    std::test::assert(
+        std::str::contains(brows, "\\\"revision\\\":\\\"v1\\\",\\\"sapling\\\":\\\"bud\\\"")
+            && std::str::contains(brows, "\\\"digest\\\":\\\"" + bud1 + "\\\",\\\"face"),
+        "the graft's row names v1, the revision grafted: " + brows,
+    );
+
+    // ---- a tenant removed: sprout's record is a schema on the habitat's
+    // memory (its graft's default), dropped there with its roles; the
+    // habitat's memory goes on
+    let sid = dna::record_scope(store);
+    let hkey = dna::allocation_key(genome);
+    let in_memory = "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter \"label=com.docker.compose.service=memory-$2\" | head -n 1); [ -n \"$id\" ] && docker exec \"$id\" psql -tA -U dna -d dna -c \"select count(*) from information_schema.schemata where schema_name = '$3'\"\nsh\n"
+        + dna::local_habitat_project() + "\n" + hkey + "\n" + dna::schema_for(sid);
+    let counted = dna::run_tool(in_memory);
+    std::test::assert(
+        dna::trim_nl(counted.stdout) == "1",
+        "sprout's record is a schema on the habitat's memory: " + counted.stdout + counted.stderr
+            + "; its parts: "
+            + (std::io::fs::read_file(
+                dna::local_habitat_dir() + "/allocations/" + dna::allocation_key(store)
+                    + "/parts.json",
+            ) or "(none)")
+            + "; memory services: "
+            + dna::run_tool(
+                "sh\n-c\ndocker ps --format '{{.Label \"com.docker.compose.service\"}}' --filter label=com.docker.compose.project=$1\nsh\n"
+                    + dna::local_habitat_project(),
+            ).stdout,
+    );
+    let tplan = in_dir(scratch, toolchain() + "\nhabitat\norganism\nremove\nsprout\n--plan");
+    std::test::assert(
+        tplan.code == 0
+            && std::str::contains(
+                tplan.stdout,
+                "a schema on the habitat's memory (memory-" + hkey + ")",
+            )
+            && !std::str::contains(tplan.stdout, "memory-" + dna::allocation_key(store)),
+        "the plan drops its schema there and names no server of its own: " + tplan.stdout
+            + tplan.stderr,
+    );
+    // and its organization an account on the habitat's nerves: no server of
+    // its own, its account and secrets in the habitat server's nerves.d
+    let skey = dna::allocation_key(store);
+    let server_dir = dna::local_habitat_dir() + "/allocations/" + hkey;
+    let own_nerves = dna::run_tool(
+        "docker\nps\n-q\n--filter\nlabel=com.docker.compose.project=" + dna::local_habitat_project()
+            + "\n--filter\nlabel=com.docker.compose.service=nerves-" + skey,
+    );
+    std::test::assert(
+        len(dna::trim_nl(own_nerves.stdout)) == 0
+            && std::io::fs::file_exists(server_dir + "/nerves.d/" + skey + ".account.conf")
+            && std::io::fs::file_exists(server_dir + "/nerves.d/" + skey + ".secrets.conf")
+            && std::str::contains(
+                std::io::fs::read_file(server_dir + "/nats.conf") or "",
+                "include ./nerves.d/" + skey + ".account.conf",
+            ),
+        "sprout's organization is an account on the habitat's nerves, with no server of its own: "
+            + (std::io::fs::read_file(server_dir + "/nats.conf") or "(no nats.conf)"),
+    );
+    let removed = at_terminal(scratch, "sprout", toolchain() + " habitat organism remove sprout");
+    std::test::assert(
+        !std::io::fs::file_exists(server_dir + "/nerves.d/" + skey + ".account.conf")
+            && !std::str::contains(
+                std::io::fs::read_file(server_dir + "/nats.conf") or "",
+                "/" + skey + ".account.conf",
+            ),
+        "and its account leaves the habitat's nerves: " + removed.stdout,
+    );
+    let left = dna::run_tool(in_memory);
+    // what is on the habitat's memory after it: the record's roles, and who
+    // is connected (a schema with its roles is one migrated again; one
+    // without them, one never dropped)
+    let after = if dna::trim_nl(left.stdout) == "0" {
+        ""
+    } else {
+        dna::run_tool(
+            "sh\n-c\nid=$(docker ps -q --filter \"label=com.docker.compose.project=$1\" --filter \"label=com.docker.compose.service=memory-$2\" | head -n 1); docker exec \"$id\" psql -tA -U dna -d dna -c \"select 'roles: ' || coalesce(string_agg(rolname, ' '), '-') from pg_roles where rolname in ('$3', '$4')\" -c \"select 'sessions: ' || coalesce(string_agg(usename || '/' || application_name || '/' || state, ' '), '-') from pg_stat_activity where datname = 'dna'\"\nsh\n"
+                + dna::local_habitat_project() + "\n" + hkey + "\n" + dna::spine_role(sid) + "\n"
+                + dna::head_role(sid),
+        ).stdout
+    };
+    std::test::assert(
+        removed.code == 0 && dna::trim_nl(left.stdout) == "0",
+        "its schema is dropped on the habitat's memory, which goes on (removal exit "
+            + to_string(removed.code) + "; schemas left: [" + dna::trim_nl(left.stdout) + "] "
+            + left.stderr + "; " + after + "): " + removed.stdout
+            + removed.stderr,
+    );
+
+    in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    dna::scratch_done(scratch);
+}
+
+// The shell command line `line` run in `dir` at a terminal, `typed`
+// typed at it (habitat_forget_test.hl's).
+fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
+    return in_dir(
+        dir,
+        "sh\n-c\nif [ -e /proc/version ]; then printf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null; else f=\"$PWD/term-alive-$$\" && : > \"$f\" && { sleep 0.2; printf '%s\\n' \"$1\"; while [ -f \"$f\" ]; do sleep 0.1; done; } | script -q /dev/null sh -c \"trap 'rm -f \\\"$f\\\"' EXIT; $2\"; fi\nsh\n"
+            + typed + "\n" + line,
+    );
+}
+
+// The nursery's entry for `bud` at `rev`.
+fn bud_entry(src: String, rev: String, digest: String) -> String {
+    return "\n[[sapling]]\nname = \"bud\"\nsummary = \"a sapling whose graft stops once\"\nrepo = \""
+        + src + "\"\nrevision = \"" + rev + "\"\ndigest = \"" + digest + "\"\n";
+}

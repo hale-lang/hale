@@ -39,9 +39,109 @@ fn genome_branch(root: String) -> String {
     return dna::trim_nl(r.stdout);
 }
 
+// ---- what the record used to point at (GH #1590) ---------------------------
+
+// The commit a Mutation's candidate branch is at ("" when none is kept).
+fn genome_candidate(root: String, mutation: String) -> String {
+    return genome_commit(root, dna::candidate_ref(mutation));
+}
+
+// The Mutations whose candidates are kept here, one per line, by name.
+fn genome_candidates(root: String) -> String {
+    let r = genome(root, "for-each-ref\n--format=%(refname)\n" + dna::CANDIDATE_BRANCHES);
+    if r.code != 0 { return ""; }
+    let mut out = "";
+    let mut rest = r.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(name, dna::CANDIDATE_BRANCHES) {
+            out = out + name[len(dna::CANDIDATE_BRANCHES)..len(name)] + "\n";
+        }
+    }
+    return out;
+}
+
+// Stop keeping a Mutation's candidate here: its branch deleted. True when
+// one was kept; its commit stays in the object store until git collects it.
+fn genome_uncandidate(root: String, mutation: String) -> Bool {
+    if len(genome_candidate(root, mutation)) == 0 { return false; }
+    return genome(root, "update-ref\n-d\n" + dna::candidate_ref(mutation)).code == 0;
+}
+
+// The branch a deployed revision is published as on the genome's forge, so
+// every node can fetch it by its sha (`genome_fetch_commit`).
+fn revision_branch(rev: String) -> String { return "dna/revision/" + rev; }
+
+// Fetch one commit by its sha from the remote, as `hale fetch` fetches a
+// pinned dependency; the error text, "" when the commit is here.
+fn genome_fetch_commit(root: String, remote: String, sha: String) -> String {
+    if len(genome_commit(root, sha)) > 0 { return ""; }
+    let f = genome(root, "fetch\n-q\n" + remote + "\n" + sha);
+    if f.code == 0 && len(genome_commit(root, sha)) > 0 { return ""; }
+    let e = dna::trim_nl(f.stderr);
+    return if len(e) == 0 { "the fetch of " + sha + " failed" } else { e };
+}
+
+// The genome's root commit, the one its card names (GH #1590); "" when the
+// genome has no commit yet.
+fn genome_root(root: String) -> String {
+    let r = genome(root, "rev-list\n--max-parents=0\nHEAD");
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(dna::line_at(r.stdout, 0));
+}
+
 // Push `src` to the remote's branch `branch`; the error text, "" when it landed.
-fn genome_push_branch(root: String, remote: String, src: String, branch: String, force: Bool) -> String {
-    let r = genome(root, "push\n-q\n" + (if force { "-f\n" } else { "" }) + remote + "\n" + src + ":refs/heads/" + branch);
+fn genome_push_branch(
+    root: String,
+    remote: String,
+    src: String,
+    branch: String,
+    force: Bool
+) -> String {
+    let r = genome(
+        root,
+        "push\n-q\n" + (if force { "-f\n" } else { "" }) + remote + "\n" + src + ":refs/heads/"
+            + branch,
+    );
+    if r.code == 0 { return ""; }
+    let e = dna::trim_nl(r.stderr);
+    return if len(e) == 0 { "push failed" } else { e };
+}
+
+// Push `src` to `branch` of the repository at `url` (a Forgejo's), as the
+// user `user` whose token the vault slot `slot` holds: the token reaches
+// git through a credential helper reading a file only this user can read,
+// in a fresh private directory, never an argv or this process's
+// environment, and the directory goes after the push. The error text, ""
+// when done.
+fn genome_push_url(
+    root: String,
+    url: String,
+    user: String,
+    slot: String,
+    src: String,
+    branch: String,
+    force: Bool
+) -> String {
+    let token = std::secret::Credential { vault: slot };
+    if !token.ready() { return "no token in the vault slot " + slot; }
+    let made = dna::run_tool("mktemp\n-d\n-t\nhale-forge-XXXXXX");
+    let dir = dna::trim_nl(made.stdout);
+    if made.code != 0 || len(dir) == 0 { return "no private directory for the forge's token"; }
+    if !token.write_private(dir + "/token") {
+        dna::run_tool("rm\n-rf\n" + dir);
+        return "the forge's token could not be written for git";
+    }
+    let r = genome(
+        root,
+        "-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username=" + user
+            + "; echo \"password=$(cat '" + dir + "/token')\"; }; f\npush\n-q\n"
+            + (if force { "-f\n" } else { "" }) + dna::reach_url(url) + "\n" + src + ":refs/heads/"
+            + branch,
+    );
+    dna::run_tool("rm\n-rf\n" + dir);
     if r.code == 0 { return ""; }
     let e = dna::trim_nl(r.stderr);
     return if len(e) == 0 { "push failed" } else { e };
@@ -84,10 +184,9 @@ fn genome_default_branch(root: String, remote: String) -> String {
 }
 
 // Where the pull fetches the forge's default branch: a ref of its own,
-// never FETCH_HEAD, which every fetch in the clone rewrites — the record's
-// fetches of its own refs among them, so a read of FETCH_HEAD after this
-// fetch could name a row of the journal (GH #1072).
-const GENOME_REMOTE_REF: String = "refs/dna/remote/genome";
+// never FETCH_HEAD, which every fetch in the clone rewrites, so a read of
+// it after this fetch could name what another fetch brought (GH #1072).
+const GENOME_REMOTE_REF: String = "refs/hale/remote/genome";
 
 // Fetch the forge's default branch; the commit it is at, "" when it could
 // not be fetched. A fetch that lost the ref's lock to another is tried
@@ -113,9 +212,35 @@ fn genome_fetch_default(root: String, remote: String) -> String {
 fn genome_fast_forward(root: String, target: String) -> String {
     let head = genome_commit(root, "HEAD");
     if head == target { return ""; }
-    if genome(root, "merge-base\n--is-ancestor\nHEAD\n" + target).code != 0 { return "the genome here (" + head + ") is not an ancestor of the forge's " + target + "; it is not pulled"; }
+    if genome(root, "merge-base\n--is-ancestor\nHEAD\n" + target).code != 0 {
+        return "the genome here (" + head + ") is not an ancestor of the forge's " + target
+            + "; it is not pulled";
+    }
     let m = genome(root, "merge\n--ff-only\n-q\n" + target);
     if m.code == 0 { return ""; }
     let e = dna::trim_nl(m.stderr);
     return if len(e) == 0 { "the fast-forward failed" } else { e };
+}
+
+// The loopback address the habitat's `role` (`face`, `head`) answers on,
+// from the block its genome's `dna.head.url` names: the face is the
+// block's base, the head the next port. "" while no block is assigned.
+fn habitat_address(root: String, role: String) -> String {
+    let url = dna::trim_nl(
+        dna::run_tool("git\n-C\n" + root + "\nconfig\n--get\ndna.head.url").stdout,
+    );
+    let at = std::str::index_of(url, "127.0.0.1:");
+    if at < 0 { return ""; }
+    let base = std::str::parse_int(url[(at + 10)..len(url)]) or 0;
+    if base < 1 { return ""; }
+    return "http://127.0.0.1:" + to_string(if role == "head" { base + 1 } else { base });
+}
+
+// The issuer the organism at `root` signs in through: its `dna.oidc.issuer`,
+// else the stub's default address.
+fn oidc_issuer(root: String) -> String {
+    let named = dna::trim_nl(
+        dna::run_tool("git\n-C\n" + root + "\nconfig\n--get\ndna.oidc.issuer").stdout,
+    );
+    return if len(named) > 0 { named } else { "http://127.0.0.1:8794" };
 }

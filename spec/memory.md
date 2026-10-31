@@ -890,6 +890,17 @@ multithreading):
   allocator. Alignment is **16** per the Arena alignment
   contract (was 8 — a latent `Decimal`-param `movaps` trap).
 
+**An elided arena borrows its frame's.** A locus whose bodies allocate
+nothing (no `birth()` that writes its arena, the elision row of
+`hale_types::alloc_routing`) gets no arena of its own: `__arena` is the
+arena current where it is built (its parent's, for a child), so a fresh
+heap value it is built with (`W { name: f"made {i}" }`) lives in that
+frame's arena until the frame ends, not until the instance is reclaimed.
+Built in a loop inside one long call, such instances accumulate their
+fresh fields as any value the loop body builds does (frame
+accumulation, returned at the frame's end), and an arena per instance
+to avoid it would cost every user (ruled 2026-10-17).
+
 Steady-state churn (accept → run → reclaim per event) therefore
 reuses one struct slot per concurrent child, per type. Resident
 children don't route through mid-life reclaim and are unaffected.
@@ -1073,6 +1084,17 @@ its keyed variant, the static devirt path) gets a wire cell and a
 per-delivery region, on any thread. A payload with no owned
 fields (the flat paths) is unaffected (no wire cell, no region).
 
+**A region is reused, not rebuilt (2026-10-16).** Reclaiming a
+region at the handler's return no longer means destroying it: one
+that comes back clean (a single ordinary chunk, nothing retired into
+it, no slots) is rewound to empty and kept for the next delivery on
+the same thread, a few per thread, drained at the thread's exit.
+What the handler could see of the payload is gone either way. A
+region in any other state is destroyed as before. With chunk
+recycling off (`LOTUS_NO_CHUNK_POOL`, the ASan default) every region
+is destroyed, so a payload read past its handler is still a
+use-after-free the sanitizer reports.
+
 **"The instant the handler returns" includes parks (GH #781,
 2026-09-19).** On a `where async_io` pool the handler runs on a
 coroutine, so its return may come after any number of parks — and
@@ -1194,6 +1216,53 @@ Two correctness invariants make this safe:
      would clobber TLS, leaving the epilogue to deep-copy
      into the wrong arena (whichever nested callee was
      called last).
+  3. A record, array or tuple parameter of a method is the
+     caller's storage, passed by pointer, so a heap value
+     stored under it (`x.b = p`, `x.inner.b = p`, `a[i] = p`,
+     a `bounded` field assigned whole) is deep-copied into
+     the same entry snapshot of the caller's arena, never
+     into the scratch, as a free fn's store lands in its
+     `__caller_arena`. A call the method hands a place under
+     such a parameter (`self.put(x, p)`, `put_free(x.inner,
+     p)`) publishes that snapshot as the callee's caller
+     arena instead of the scratch when the callee may write
+     through the parameter it lands in (the owned-view
+     column's hand-offs, whose write summaries forward a
+     parameter a relay hands on through a carrier as one
+     handed by name), so a chain of methods handing the
+     record on stores into the arena of the frame that owns
+     it; a callee that only reads it keeps the scratch. The
+     rule goes by provenance, not spelling: any argument
+     handed to such a callee that is not fresh (a literal, a
+     constructor, a fresh call result, a local holding one)
+     is a hand-off, through a block, an `if`, a `match` or an
+     `or` (`self.put({ x }, p)`) as much as by name. One that
+     may only be a place under a field of `self`
+     (`put_free(self.bag, p)`, `self.o.put({ self.bag }, p)`)
+     publishes the locus's own arena instead, which owns the
+     record; the write is a clone into it, so a String it
+     replaces is not recycled as a `self.bag.b = p` store
+     recycles it. **One owner per call:** a call publishes one
+     arena, so a call that hands such a callee both a place
+     under a field of `self` and (a part of) one of the
+     method's parameters, in two arguments
+     (`self.put_two(self.held, x, p)`) or in one carrier
+     (`self.put(if c { self.held } else { x }, p)`), is
+     refused by the check, which names both owners. Copy one
+     into a local record first (`let mine = Bag { b: x.b };`)
+     and hand that, or write the held record through `self`. A
+     member the bus dispatch invokes is published no arena
+     (its snapshot is the payload-arena fallback) and keeps
+     its scratch. A shadowing `let` or binder of the name is
+     a local of the method's own. The allocation survey
+     places these writes where they land, never in the
+     scratch (`spec/verification.md` § "A write through a
+     parameter is the owner's"): a value stored through such
+     a parameter escapes as `param-store`, judged by the
+     calls that hand the record, and a call handing a writer
+     a record `self` holds stores as `held-store`, kept until
+     the locus dissolves, so a `run()` loop or a handler
+     doing so is reported at the call.
 
 Cost: two mallocs (subregion arena struct + initial 64 KiB
 chunk) and two frees per method call. For typical short
@@ -1206,6 +1275,84 @@ An `lotus_arena_reset` primitive (subregion reuse: keep
 chunks, set `used=0`) could amortize this to ~5–10 ns per
 call but is deferred — the leak's the load-bearing bug; the
 fast-path optimization can follow.
+
+**Per-iteration reclaim.** A loop body in a frame with a
+method scratch (a locus method, a lifecycle hook, a mode, a bus
+handler) allocates into a region of its own for each iteration:
+the iteration's region is a subregion owned by the arena the loop
+runs in, made at the body's entry
+(`lotus_arena_iteration_enter`, which first frees the previous
+iteration's, or empties it in place when it holds one chunk and
+nothing else, and never with the chunk pool off), freed where the
+loop is left
+(`lotus_arena_iteration_leave` at the loop's exit, which every
+`break` and the header's false edge reach), and owned by the
+scratch, so a `return`, a `fail` or a violation from inside the
+body frees it with the scratch (an arena's destroy frees what it
+owns first). A `return`'s or `fail`'s value is computed in the
+scratch, not the iteration's region, so the epilogue copies it out
+as before. Without this a `run()` that loops for its locus's life
+kept every iteration's values until the locus dissolved
+(`buf.snapshot()` per iteration over a 1 GiB file held 1 GB; a
+`BodyReader` drained by `chunk()` held the whole 5 GB body), while
+the same body moved into a method was flat.
+
+The rule is `hale_types::iteration_reclaim`, read by lowering and
+by the allocation summary alike. A body reclaims per iteration
+unless it can hand a value to the next iteration through the frame:
+
+  1. it assigns a binding declared before the loop (whole, through
+     a field or through an index) whose type is not a scalar (Int,
+     Uint, Float, Decimal, Bool, Duration, Time) or a locus,
+     interface or perspective reference;
+  2. it names an outside `bounded[T; N]` or `BytesMut` at all (a
+     `bounded` write into a field or record is a call, rule 3);
+  3. it hands a call (any but a builtin that only reads, by a name
+     no fn can take: `len`, `println`, `to_string`, …) an argument
+     that is neither owned nor a locus passed whole. A value is
+     *owned* (a literal, a scalar, a value this iteration made, a path
+     into one, a call's result when every argument was owned), *whole*
+     (`self`, an outside locus reference, or a body binding of one: as
+     an argument it is the locus, but any path through it, `alias.bag`,
+     is that locus's storage), or *outside* (an outside record and any
+     path into it, any path through a locus, an element of an outside
+     array or tuple, a match binder, a call's result handed anything
+     not owned). The kinds are computed in the one walk that judges
+     the body, keyed by declaration, never by spelling: a use is the
+     declaration the snapshot resolved it to under lexical scoping
+     (`Snapshot::binding_of`), a declaration inside the body is the
+     body's (its kind installed by the walk, or outside when the walk
+     installs none), one before it is classified by the reader, and a
+     use resolving to no local binding is outside. A `let`, a tuple
+     `let`, a `for` binder and a match-arm binder (the scrutinee, or a
+     part of it inside a constructor or tuple pattern) take their
+     value's kind,
+     an assignment joins it in, and a carrier (its tail read inside
+     its own scope), an `or` and a container literal join their arms
+     and parts. Handed outside
+     storage, the callee could write into
+     it from its caller arena, which is the iteration's: a free fn
+     through its parameter whatever its name (`push` included), a fn
+     value held in a field (`self.callback(outer, p)`), a method
+     through a record parameter;
+  4. it makes a locus (a literal or a fresh factory call: the
+     instance, its slot and its GH #815 teardown outlive the
+     iteration);
+  5. it holds a `reperspective`, a recovery op, a `violate` or a
+     shared-memory write.
+
+Everything else an iteration hands on keeps the lifetime it has
+without the rule: a store into `self` or any locus copies into that
+locus's arena (invariant 1 above), a send into the payload arena, a
+return into the caller's (invariant 2). Names resolve lexically: a
+`let` or `for` binder in the body shadows the outside binding. A
+body whose allocations never reach the region keeps no trace of it
+(the enter call is removed after the body is lowered). Free fns and
+`main` keep their loops on the frame's region. The allocation
+summary marks a site of such a body `per-iteration-reclaim`, and
+surveys the fresh String or Bytes a call in a locus member's loop
+returns (`AllocKind::CallResult`): a loop that still keeps one per
+iteration is reported at the call.
 
 Locus instantiation routing is unchanged. Child locus structs
 allocate via their own routes (parent arena if parent accepts
@@ -1220,7 +1367,9 @@ The free-fn path (`lotus_arena_create_subregion(__caller_arena)`
 at entry, destroyed at exit, with allocations routed to
 `__caller_arena` directly post-cross-seed-segv-fix) is
 unchanged. Free fns called from inside a method body get
-`__caller_arena = method's scratch` — anything they alloc
+`__caller_arena = method's scratch` (or, handed a place under one of
+the method's record parameters, the method's caller's arena: invariant
+3 above) — anything they alloc
 lives in the same scratch and gets reclaimed at the outer
 method's exit. The cross-seed-segv test pattern (foreign
 vec push from inside a free fn) continues to work because
@@ -1402,6 +1551,35 @@ reclaim on a real-world long-running workload:
      the block survive. Interface and payload-enum fields keep
      the identity-skip; they are not retired.
 
+     Reads in place (2026-10-13): what a map that reads in place
+     (`sync = none`, or no `sync =`) or an LRU cache hands a
+     reader is the cell's bytes copied into the reader's frame, its
+     nested blocks still the cell's. A write under a LOCAL root
+     replaces a pointer in the block it writes into (rule #7), so a
+     write into a nested part of such a value would land in the
+     cell's block. The language rule is that it never does
+     (forms.md § Reading a cell): the first write into a nested part
+     copies the part into the frame (`own_viewed_value`, behind a
+     per-local, per-part flag), unless the write is part of a
+     get-modify-set no one can observe — then it stays in the
+     cell's block and the set above keeps that block, and the
+     idiom allocates nothing. The decision is
+     `hale_types::view_bindings`'s, computed once per checked program
+     over the checker's types (the owned-view column, which lowering
+     reads), and each copy it adds is an allocation-survey site.
+
+     Any place (2026-10-13): the same holds for a local bound from
+     any place without a copy — an array, a tuple's element, a
+     `match` payload, a `for` element read from a field, an element,
+     a local or a parameter is the place's own block, and a write
+     under the local root would land there. The first write copies
+     the whole value into the frame (`emit_local_cow`, behind a
+     per-local flag), unless it is a self field's get-modify-store
+     no one can observe: `self.f = v` keeps the block the field
+     already holds at each place, so `let mut v = self.f; v.x[i] =
+     y; self.f = v;` allocates nothing (types.md § A local bound
+     from a place is yours).
+
      The same holds for a retiring form's OWN fields (a
      `@form(vec)`, or a `@form(hashmap)` that retires — rule #6's
      `self.X = ...` in the form locus's methods): they live in
@@ -1485,6 +1663,22 @@ reclaim on a real-world long-running workload:
      locus's lifetime: ~6 MiB over 200 000 replaces of a record
      holding a record of one String.
 
+     A payload-enum field itself (`self.e = E::A(s)`) is replaced
+     the same way: the field points at the enum's storage block,
+     the value is deep-copied into a fresh block (owned Strings and
+     Bytes) whose bytes are copied over it, and
+     `lotus_self_field_retire_replaced_enum` walks the old snapshot
+     with its own variant's descriptor and the new block with the
+     new one's (the enum's variant table, picked by each value's
+     tag), retiring the payload only the old value reached and the
+     fresh copy. Before, both stayed for the locus's lifetime (~32
+     bytes a replace of a short String payload). The small-block
+     freelist those blocks return to pops best fit within its
+     probe window, as the general one does (GH #1037): first fit
+     handed the replace's String the enum's 12-byte block and left
+     the enum's request only the String's, stranding a block and a
+     shell per replace.
+
      Retiring a nested block is sound only if nothing else holds
      it, so such a store follows the retiring form's rule below
      for its own fields: the walk runs over a stack snapshot of
@@ -1494,7 +1688,17 @@ reclaim on a real-world long-running workload:
      = F { n: i, inner: self.f.inner }` keeps `inner`, copies
      nothing, and retires nothing. A `let` of a compound read
      from a field is already a deep copy in the method's scratch,
-     so it never points into a block the store retires. A locus
+     so it never points into a block the store retires. A String,
+     Bytes, tuple, array or payload-enum binding of a field (a
+     `let`, a `match` payload, a `for`'s array, an argument) is the
+     field's own pointer unless a write that may replace the field
+     comes before a use of it — a callee's store retires the block
+     and flushes at the callee's return, which the caller's frame
+     outlives — and then it is an owned copy (`spec/types.md` §
+     "Any binding of a place keeps its value"). Which writes may
+     replace the field is read over the checker's resolved types and
+     callees, the same answer the allocation survey reports; a value
+     or a callee the checker could not type costs the copy. A locus
      with such a field flushes its arena at each method's
      activation boundary, as one with a String field does.
 
@@ -1514,6 +1718,27 @@ reclaim on a real-world long-running workload:
      construction builds in the locus's arena, freshly built or
      not (~20 ns per construction for three such leaves, measured
      on a 1M-construction loop).
+
+     A record value is walked as a stack snapshot whenever it has a
+     field the walk rewrites (a String, Bytes, a nested block, a
+     payload enum), not only when the store retires nested blocks
+     (GH #1561): walked in place, a parameter's record (`fn set(x:
+     R) { self.r = x; }`) was left pointing at the clones the field
+     now owned, which the next store into the field retired under
+     the caller (its String read back empty).
+
+     A store into a locus's field from outside its methods
+     (`types.md` § A store into a locus's field is the locus's own:
+     `l.name = s` through a handle, `h.loc.f = v`, `ls[i].f = v`,
+     `self.loc.f = v`) is this store, and #7's, with the locus that
+     owns the field — the last on the lvalue's path — in place of
+     `self`. Its arena is the destination, whatever arena the caller
+     allocates in. The store then flushes that arena's pending
+     retires, as the method call it stands for would at its
+     activation boundary. Before, the slot took the caller's block
+     itself: a free fn storing 4M Strings into one locus left every
+     one in place, and a copy made in the arena of the path's root
+     was freed under a child that outlived it.
 
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
@@ -1589,7 +1814,14 @@ reclaim on a real-world long-running workload:
      as before. The compound store of #6 clones a struct's top-level
      String fields into field blocks too (`lotus_str_clone_slot`), and
      its fixup retires them the same way. Bytes fields keep the
-     general freelist.
+     general freelist. A form cell's Strings join the scheme at the
+     map's first replace (`spec/forms.md` § `@form(hashmap)`): the
+     cell-owned clone takes a field block once the arena has a table,
+     and every retire in such an arena (the deferred one,
+     `lotus_arena_retire_sized_cls`, and the immediate one,
+     `lotus_arena_free_block_now`) looks the block up first, so a
+     field block goes back to its class whole whichever path retires
+     it and the table keeps no record of a block it gave back.
 
   8. **m49 sret-pattern return-arena routing.** When a method-
      with-scratch is about to return a heap-typed value, the

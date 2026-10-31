@@ -214,3 +214,79 @@ fn byte_view_scan_scales_linearly() {
         ns2
     );
 }
+
+/// `std::str::find` over a view pays the distance to each hit, so a
+/// line-at-a-time scan is linear in the text, where `index_of_from`,
+/// which measures the whole String on every call, made it quadratic
+/// (16 MB in 32,000 lines took 4.7 s; this takes under a millisecond).
+#[test]
+fn a_find_line_scan_scales_linearly() {
+    let src = r#"
+        fn lines(s: String) -> Int {
+            let v = std::str::bytes_view(s);
+            let mut k = 0;
+            let mut nl = std::str::find(v, "\n", 0);
+            while nl >= 0 { k = k + 1; nl = std::str::find(v, "\n", nl + 1); }
+            return k;
+        }
+        fn best_of_five(s: String, label: String) {
+            let mut best = -1;
+            let mut counted = 0;
+            let mut k = 0;
+            while k < 5 {
+                let t0 = std::time::monotonic_ns();
+                let c = lines(s);
+                let ns = std::time::monotonic_ns() - t0;
+                counted = c;
+                if best < 0 || ns < best { best = ns; }
+                k = k + 1;
+            }
+            println(label, " count=", counted, " ns=", best);
+        }
+        fn main() {
+            let row = std::str::repeat("x", 499) + "\n";
+            best_of_five(std::str::repeat(row, 8192), "sz4");
+            best_of_five(std::str::repeat(row, 32768), "sz16");
+        }
+    "#;
+    let (stdout, status) = build_and_run("find_line_scan_scaling", src);
+    assert!(status.success(), "build/run failed: {:?}", stdout);
+    let read = |label: &str, key: &str| -> i64 {
+        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
+        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
+    };
+    assert_eq!(read("sz4", "count="), 8192, "every line of 4 MB was found");
+    assert_eq!(read("sz16", "count="), 32768, "every line of 16 MB was found");
+    let (ns4, ns16) = (read("sz4", "ns="), read("sz16", "ns="));
+    // Quadratic, 4x the text is 16x the time, and 16 MB took seconds.
+    assert!(ns16 < 1_000_000_000, "a 16 MB line scan took {ns16} ns: the quadratic shape");
+    assert!(ns16 < 10 * ns4.max(100_000), "4x the text took {ns16} ns against {ns4} ns: not linear");
+}
+
+/// `cp_at` / `cp_size` at an offset past the end of a String answer -1 and
+/// read nothing past its terminator. They used to load the byte at the
+/// offset whatever it was: past the end of an arena string that is a read
+/// out of bounds, which AddressSanitizer reports (or the load faults).
+#[test]
+fn a_code_point_read_past_the_end_reads_nothing_under_asan() {
+    let src = r#"
+        fn main() {
+            let s = std::str::repeat("h", 3) + "é";
+            println(std::str::cp_at(s, 5), " ", std::str::cp_size(s, 5));
+            println(std::str::cp_at(s, 6), " ", std::str::cp_size(s, 6));
+            println(std::str::cp_at(s, 4000000), " ", std::str::cp_size(s, 4000000));
+            println(std::str::cp_at(s, 3), " ", std::str::cp_size(s, 3));
+            println(std::str::cp_at(s, 9223372036854775807), " ", std::str::cp_size(s, 1099511627776));
+        }
+    "#;
+    let bin = harness::unique_bin("cp_past_end_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = std::process::Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "-1 -1\n-1 -1\n-1 -1\n233 2\n-1 -1\n");
+}
+

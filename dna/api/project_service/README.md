@@ -1,11 +1,16 @@
 # The head: project service
 
 `dna/api/project_service` is the head: the one process the face talks to
-(GH #965). It serves the face, owns the operator-machine state
+(GH #965). It serves surfaces only (the standard face, `dna/face/standard`,
+serves the shell and the project's `ui/` in front of it); it owns the operator-machine state
 under a state directory — a project registry, a receipt journal, one
 directory per run, the pid files of its children — and reverse-proxies
 every `/api/hale/v1/applications…` request to the attached project's
-API child (`dna/api/practice_review <root> <api-port>`) on the loopback.
+API child (`dna/api/practice_review <root> <api-port>`) on the loopback. An
+`<api-port>` of 0 (the default) is whatever port the child is given: the child
+binds port 0, reports the reads' and commands' ports it got in the head's
+`children/api.ports`, and the head reads them back, so a port is never drawn
+free and lost to a neighbour before the child binds it.
 Every operation is the CLI verb (`$HALE_BIN dna …`) run **detached**
 under `timeout -k 10 <secs> sh -e`; the head re-implements nothing and
 appends nothing to any Record itself.
@@ -14,7 +19,7 @@ appends nothing to any Record itself.
 hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
 hale build dna/api/project_service -o target/seeds/project_service/project_service
 HALE_BIN="$(command -v hale)" \
-  ./target/seeds/project_service/project_service 8792 dna/face/web \
+  ./target/seeds/project_service/project_service 8796 \
   target/seeds/practice_review/practice_review 8793 [/absolute/path/project]
 ```
 
@@ -54,7 +59,7 @@ ${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/<NAME>  operator-written secr
 
 ```sh
 export HALE_BIN=/abs/hale
-HALE_HEAD_BIN=$PWD/target/seeds/project_service/project_service HALE_API_BIN=$PWD/target/seeds/api/api \
+HALE_HEAD_BIN=$PWD/target/seeds/project_service/project_service HALE_HEAD_API_BIN=$PWD/target/seeds/practice_review/practice_review \
   hale test dna/api/project_service/tests
 ```
 

@@ -1,7 +1,8 @@
 // dna/api/project_service/head.hl — the head's handler
 // (GH #965, §2.4 of the head's contract). One process the browser
-// talks to: it serves the static shell through the API's own
-// `WebAssets`, owns the four head routes (`/api/hale/v1/head`,
+// talks to, through the standard face (dna/face/standard), which serves
+// the static shell and the project's `ui/` and passes every other request
+// here. The head serves surfaces only: it owns the four head routes (`/api/hale/v1/head`,
 // `/head/projects`, `/head/commands`, `/head/logs`) and reverse-proxies
 // every `/api/hale/v1/applications…` request to the attached
 // project's API child on the loopback. Before answering anything it
@@ -19,10 +20,70 @@ import "../../core" as dna;
 import "../../operations" as ops;
 
 const HEAD_PREFIX: String = "/api/hale/v1/head";
+// The head's surface as the standard face's client calls it: `POST
+// <base>/call/<member>` under `<base>` = `/api/hale/v1/head/surface`, the
+// bearer being the visitor's own Cookie header, which the face received and
+// presents on the visitor's behalf. The members relayed
+// (`HEAD_SURFACE_CALLS`) are the surface's reads, the record's index and the
+// habitat's hosts, allocations, placements, policy, alerts, UIs, nurseries and saplings, and the Board's acts the
+// operator face makes (hosts, placement, graft) and a person's toolchain
+// records (a placement it ran, `hale habitat organism place`): the API child
+// decides each by the visitor's own credential, as for any proxied command.
+const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
+const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::placements Commands::record_placed Commands::record_unplaced Commands::policy Commands::alerts Commands::uis Commands::nurseries Commands::saplings Commands::brief Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log Commands::set_model_map Commands::probe_model Commands::add_nursery Commands::ratify_sapling Commands::allocate_forge";
+
+// The members of the surface that act or read a graft's log (the Board's):
+// not the reads. In a trusted-local session each carries the launch token as a
+// head's own command does, over either route.
+const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::plan_remove_organism Commands::remove_organism Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log Commands::set_model_map Commands::probe_model Commands::add_nursery Commands::ratify_sapling Commands::allocate_forge";
+
+// Whether `path` is the relay of one of those.
+fn surface_act(path: String) -> Bool {
+    let prefix = HEAD_PREFIX + "/read-call/";
+    if !std::str::starts_with(path, prefix) { return false; }
+    let member = path[len(prefix)..len(path)];
+    return std::str::contains(" " + HEAD_SURFACE_ACTS + " ", " " + member + " ");
+}
+
+// The row `path` calls through the head's surface, "" for anything else.
+fn surface_read(path: String) -> String {
+    let raw = if std::str::starts_with(path, HEAD_SURFACE_CALL) {
+        path[len(HEAD_SURFACE_CALL)..len(path)]
+    } else if std::str::starts_with(path, "/call/") {
+        path[6..len(path)]
+    } else {
+        ""
+    };
+    let member = std::str::replace(raw, "%3A", ":");
+    if len(member) == 0 || std::str::contains(member, " ") { return ""; }
+    return if std::str::contains(" " + HEAD_SURFACE_CALLS + " ", " " + member + " ") {
+        member
+    } else {
+        ""
+    };
+}
 const APPLICATIONS_PREFIX: String = "/api/hale/v1/applications";
 const HEAD_PROFILE: String = "dna.head.v1";
 // A log page is at most this many bytes.
 const LOG_PAGE_BYTES: Int = 65536;
+// `headers` (CRLF lines) but for the lines named in `drop` (` name name `,
+// lower case, each side spaced), each remaining line kept CRLF-ended.
+fn headers_without(headers: String, drop: String) -> String {
+    let mut out = "";
+    let mut rest = headers;
+    while len(rest) > 0 {
+        let cut = std::str::index_of(rest, "\r\n");
+        let line = if cut < 0 { rest } else { rest[0..cut] };
+        rest = if cut < 0 { "" } else { rest[(cut + 2)..len(rest)] };
+        let colon = std::str::index_of(line, ":");
+        let name = if colon < 0 { "" } else { std::str::lower(line[0..colon]) };
+        if len(line) > 0 && !std::str::contains(drop, " " + name + " ") {
+            out = out + line + "\r\n";
+        }
+    }
+    return out;
+}
+
 // The API child's readiness budget (§2.1), in 100 ms steps.
 const API_READY_STEPS: Int = 150;
 
@@ -32,10 +93,17 @@ const API_READY_STEPS: Int = 150;
 // a copy.
 type HeadConfig {
     port: Int = 8792;
-    api_port: Int = 8793;
+    // the port the browser reaches the head's surfaces on: the standard
+    // face's, which passes them here (`HALE_DNA_PUBLIC_PORT`); 0 = `port`,
+    // the head reached directly
+    public_port: Int = 0;
+    // the API child's reads port when an operator pins one; 0 = whatever
+    // the child is given: it binds port 0 and reports the port it got
+    // (`api_port_of`), so no port is drawn free and lost before the bind
+    api_port: Int = 0;
     // GH #1135: the API child's api binding serves its HTTP transport
-    // here, as the launcher gives it (`HALE_DNA_COMMANDS_PORT`); 0 =
-    // none, and a command through the head is unavailable
+    // here when the launcher pins it (`HALE_DNA_COMMANDS_PORT`); 0 = the
+    // port the child reports, as for the reads (`commands_port_of`)
     commands_port: Int = 0;
     api_binary: String = "";
     hale: String = "";
@@ -71,8 +139,38 @@ type DetachResult {
     reason: String = "";
 }
 
-fn head_origin(cfg: HeadConfig) -> String { return "http://127.0.0.1:" + to_string(cfg.port); }
+// Whether `host` (a request's Host) names the head at `port`: the loopback
+// by either name, or the habitat's declared address (`declared`, "" when it
+// declares none). Anything else is a page on another name (DNS rebinding).
+fn head_host_ok(host: String, port: String, declared: String) -> Bool {
+    return host == "127.0.0.1:" + port || host == "localhost:" + port
+        || (len(declared) > 0 && host == declared + ":" + port);
+}
+
+fn public_port_of(cfg: HeadConfig) -> Int {
+    return if cfg.public_port > 0 { cfg.public_port } else { cfg.port };
+}
+// The origin a browser reaches the head at: the habitat's declared
+// address, else the loopback.
+fn head_origin(cfg: HeadConfig) -> String {
+    let declared = dna::declared_address();
+    return "http://" + (if len(declared) > 0 { declared } else { "127.0.0.1" }) + ":"
+        + to_string(public_port_of(cfg));
+}
 fn children_dir(cfg: HeadConfig) -> String { return cfg.state_dir + "/children"; }
+// Where the API child reports the ports it got (`HALE_DNA_API_PORTS`).
+fn child_ports_file(cfg: HeadConfig) -> String { return children_dir(cfg) + "/api.ports"; }
+// The API child's reads port: the pinned one, else the one the child
+// reported once it listened; 0 before it has.
+fn api_port_of(cfg: HeadConfig) -> Int {
+    if cfg.api_port > 0 { return cfg.api_port; }
+    return api::port_in(child_ports_file(cfg), "api");
+}
+// The API child's commands port, the same way.
+fn commands_port_of(cfg: HeadConfig) -> Int {
+    if cfg.commands_port > 0 { return cfg.commands_port; }
+    return api::port_in(child_ports_file(cfg), "commands");
+}
 
 // What every operation sees: the principal, the active project, the
 // directories — read from the registry now.
@@ -99,18 +197,33 @@ fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
     // the children it starts; under OIDC a child verifies the forwarded
     // token, and never inherits the fixture's mode (`env` takes `-u` only
     // before its assignments)
-    let mut out = "-u\nLOTUS_OBS\n" + (if cfg.principal_mode == "local" { "" } else { "-u\nHALE_DNA_TRUSTED_LOCAL\n" });
-    if kind != "body" { out = out + "-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n"; }
-    out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
+    let mut out = "-u\nLOTUS_OBS\n"
+        + (if cfg.principal_mode == "local" { "" } else { "-u\nHALE_DNA_TRUSTED_LOCAL\n" });
+    if kind != "body" {
+        out = out + "-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n";
+    }
+    // a commands port the head does not pin is the child's to report: an
+    // inherited one would pin it behind the head's back
+    if kind == "api" && cfg.commands_port <= 0 { out = out + "-u\nHALE_DNA_COMMANDS_PORT\n"; }
+    out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale
+        + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
     if cfg.principal_mode == "local" { out = out + "HALE_DNA_TRUSTED_LOCAL=1\n"; }
-    // the API child's commands port is the head's to give, never inherited
-    if kind == "api" && cfg.commands_port > 0 { out = out + "HALE_DNA_COMMANDS_PORT=" + to_string(cfg.commands_port) + "\n"; }
+    // the API child's commands port is the head's to give, never inherited;
+    // what the head does not pin, the child reports where the head reads
+    if kind == "api" {
+        out = out + "HALE_DNA_API_PORTS=" + child_ports_file(cfg) + "\n";
+        if cfg.commands_port > 0 {
+            out = out + "HALE_DNA_COMMANDS_PORT=" + to_string(cfg.commands_port) + "\n";
+        }
+    }
     return out + policy_env(root);
 }
 
 // ---- children ----------------------------------------------------------
 
-fn pid_file(cfg: HeadConfig, name: String) -> String { return children_dir(cfg) + "/" + name + ".pid"; }
+fn pid_file(cfg: HeadConfig, name: String) -> String {
+    return children_dir(cfg) + "/" + name + ".pid";
+}
 
 fn recorded_pid(cfg: HeadConfig, name: String) -> Int {
     let text = dna::trim_nl(std::io::fs::read_file(pid_file(cfg, name)) or "");
@@ -132,7 +245,14 @@ fn child_view(cfg: HeadConfig, name: String) -> ChildView {
     let pid = recorded_pid(cfg, name);
     let p = Proc { pid: pid, dir: children_dir(cfg), name: name };
     let j = HeadJournal { state_dir: cfg.state_dir };
-    return ChildView { name: name, pid: pid, alive: pid > 0 && alive(p), exit_code: exit_code(p), since: mtime_of(pid_file(cfg, name)), command_id: j.last_child(name) };
+    return ChildView {
+        name: name,
+        pid: pid,
+        alive: pid > 0 && alive(p),
+        exit_code: exit_code(p),
+        since: mtime_of(pid_file(cfg, name)),
+        command_id: j.last_child(name),
+    };
 }
 
 // TERM, five seconds, KILL; the pid file goes so the child is not
@@ -161,7 +281,10 @@ fn readopt_children(cfg: HeadConfig) -> String {
         rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
         let pid = recorded_pid(cfg, name);
         if pid <= 0 { continue; }
-        if cmd_matches(children_dir(cfg), name, pid) { kept = kept + (if len(kept) > 0 { " " } else { "" }) + name; continue; }
+        if cmd_matches(children_dir(cfg), name, pid) {
+            kept = kept + (if len(kept) > 0 { " " } else { "" }) + name;
+            continue;
+        }
         std::io::fs::unlink(pid_file(cfg, name)) or discard;
     }
     return kept;
@@ -178,34 +301,47 @@ fn child_proof(cfg: HeadConfig) -> String {
 }
 
 // Starts `<api-binary> <root> <api-port>` as `children/api` and waits
-// for its readiness (§2.1): 200 on `/applications` naming `identity`,
-// within 15 s; the child exiting first is a failure with its log tail.
+// for its readiness (§2.1): the port it reports (unless one is pinned),
+// then 200 on `/applications` naming `identity`, within 15 s; the child
+// exiting first is a failure with its log tail.
 fn start_api(cfg: HeadConfig, root: String, identity: String) -> AttachResult {
     let dir = children_dir(cfg);
     std::io::fs::mkdir(dir) or discard;
+    // a report a previous child left names that child's ports
+    std::io::fs::unlink(child_ports_file(cfg)) or discard;
     let argv = cfg.api_binary + "\n" + root + "\n" + to_string(cfg.api_port);
     write_cmd(dir, "api", argv);
     let mut envs = common_env(cfg, root, "api");
     if cfg.principal_mode == "oidc" {
         let proof = dna::hex(std::os::getrandom(16) or b"");
-        if len(proof) < 32 || !write_private(dir + "/api.proof", proof + "\n") { return AttachResult { reason: "no proof for the API child" }; }
+        if len(proof) < 32 || !write_private(dir + "/api.proof", proof + "\n") {
+            return AttachResult { reason: "no proof for the API child" };
+        }
         envs = envs + "HALE_DNA_CHILD_PROOF=" + proof + "\n";
     }
     let p = start(dir, "api", root, envs, argv);
     if p.pid <= 0 { return AttachResult { reason: "the API child could not be started" }; }
     let mut step = 0;
     while step < API_READY_STEPS {
-        if api_ready(cfg.api_port, identity, child_proof(cfg)) { return AttachResult { ok: true }; }
+        let port = api_port_of(cfg);
+        if port > 0 && api_ready(port, identity, child_proof(cfg)) {
+            return AttachResult { ok: true };
+        }
         if !alive(p) {
             let tail = log_tail(dir + "/api.log");
             std::io::fs::unlink(pid_file(cfg, "api")) or discard;
-            return AttachResult { reason: "the API child exited (" + to_string(exit_code(p)) + ") before it was ready" + (if len(tail) > 0 { "\n" + tail } else { "" }) };
+            return AttachResult {
+                reason: "the API child exited (" + to_string(exit_code(p)) + ") before it was ready"
+                    + (if len(tail) > 0 { "\n" + tail } else { "" }),
+            };
         }
         std::time::sleep(100ms);
         step = step + 1;
     }
     stop_child(cfg, "api");
-    return AttachResult { reason: "the API child did not become ready within 15 s\n" + log_tail(dir + "/api.log") };
+    return AttachResult {
+        reason: "the API child did not become ready within 15 s\n" + log_tail(dir + "/api.log"),
+    };
 }
 
 // The canonical form of a directory path (`pwd -P`), "" when it is not one.
@@ -221,14 +357,38 @@ fn canonical_dir(path: String) -> String {
 // that is already active with a live child.
 fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> AttachResult {
     let root = canonical_dir(root_in);
-    if len(root) == 0 { return AttachResult { refused: "path_invalid", reason: "root must be an existing absolute directory" }; }
-    let record = dna::GitRecord { repo: root };
+    if len(root) == 0 {
+        return AttachResult {
+            refused: "path_invalid",
+            reason: "root must be an existing absolute directory",
+        };
+    }
+    let record = dna::MemoryRecord { repo: root };
     let top = record.root();
-    if len(top) == 0 || canonical_dir(top) != root { return AttachResult { refused: "not_a_toplevel", reason: "root must be the top level of a Git worktree, not a subdirectory" }; }
-    if !record.git_ok("rev-parse\n--verify\nrefs/dna/journal^{commit}") { return AttachResult { refused: "no_record", reason: "the project has no DNA Record; create or initialize it first" }; }
-    if dna::run_tool("test\n-d\n" + root + "/dna").code != 0 { return AttachResult { refused: "no_seed", reason: "the project has no dna/ seed" }; }
+    if len(top) == 0 || canonical_dir(top) != root {
+        return AttachResult {
+            refused: "not_a_toplevel",
+            reason: "root must be the top level of a Git worktree, not a subdirectory",
+        };
+    }
+    // GH #1590: the record is memory's; the genome names it by its pin
+    if len(dna::record_scope(root)) == 0 {
+        return AttachResult {
+            refused: "no_record",
+            reason: "the project has no DNA Record (its hale.toml pins none); create or initialize it first",
+        };
+    }
+    if dna::run_tool("test\n-d\n" + root + "/dna").code != 0 {
+        return AttachResult { refused: "no_seed", reason: "the project has no dna/ seed" };
+    }
     let principal = record.setting("principal");
-    if cfg.principal_mode == "local" && len(principal) > 0 && principal != "local" { return AttachResult { refused: "principal_unsupported", reason: "this head runs a fixture's trusted-local session; dna.principal is " + principal }; }
+    if cfg.principal_mode == "local" && len(principal) > 0 && principal != "local" {
+        return AttachResult {
+            refused: "principal_unsupported",
+            reason: "this head runs a fixture's trusted-local session; dna.principal is "
+                + principal,
+        };
+    }
     // GH #989: under OIDC a project is served under this head's issuer,
     // client and key (pinned: the issuer is on the loopback), and the
     // person who runs the head is its member by their subject; a project
@@ -237,25 +397,57 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     let mut repinned = false;
     if cfg.principal_mode == "oidc" {
         let named = record.setting("oidc.issuer");
-        if (len(principal) > 0 && principal != "oidc") || (len(named) > 0 && named != cfg.issuer) { return AttachResult { refused: "principal_unsupported", reason: "the project is served under another principal source (dna.principal " + principal + ", issuer " + named + ")" }; }
+        if (len(principal) > 0 && principal != "oidc") || (len(named) > 0 && named != cfg.issuer) {
+            return AttachResult {
+                refused: "principal_unsupported",
+                reason: "the project is served under another principal source (dna.principal "
+                    + principal + ", issuer " + named + ")",
+            };
+        }
         repinned = record.setting("oidc.key") != cfg.pin;
-        let wrote = record.git("config\n--local\ndna.principal\noidc").code == 0 && record.git("config\n--local\ndna.oidc.issuer\n" + cfg.issuer).code == 0 && record.git("config\n--local\ndna.oidc.client\n" + cfg.client).code == 0 && record.git("config\n--local\ndna.oidc.key\n" + cfg.pin).code == 0;
+        let wrote = record.git("config\n--local\ndna.principal\noidc").code == 0
+            && record.git("config\n--local\ndna.oidc.issuer\n" + cfg.issuer).code == 0
+            && record.git("config\n--local\ndna.oidc.client\n" + cfg.client).code == 0
+            && record.git("config\n--local\ndna.oidc.key\n" + cfg.pin).code == 0;
         let members = record.git("config\n--local\n--get-all\ndna.oidc.member");
-        let seated = wrote && (std::str::contains("\n" + members.stdout, "\n" + cfg.member + "\n") || record.git("config\n--local\n--add\ndna.oidc.member\n" + cfg.member).code == 0);
-        if !seated { return AttachResult { refused: "principal_unsupported", reason: "the project's OIDC configuration could not be written" }; }
+        let seated = wrote
+            && (
+                std::str::contains("\n" + members.stdout, "\n" + cfg.member + "\n")
+                    || record.git(
+                        "config\n--local\n--add\ndna.oidc.member\n" + cfg.member,
+                    ).code == 0
+            );
+        if !seated {
+            return AttachResult {
+                refused: "principal_unsupported",
+                reason: "the project's OIDC configuration could not be written",
+            };
+        }
     }
     let trust = record.setting("trust");
-    if len(trust) > 0 && trust != "local" { return AttachResult { refused: "trust_unsupported", reason: "the head manages no signing key; dna.trust is " + trust }; }
+    if len(trust) > 0 && trust != "local" {
+        return AttachResult {
+            refused: "trust_unsupported",
+            reason: "the head manages no signing key; dna.trust is " + trust,
+        };
+    }
     let identity = record.identity();
-    if len(identity) == 0 { return AttachResult { refused: "no_record", reason: "the Record has no genesis" }; }
+    if len(identity) == 0 {
+        return AttachResult { refused: "no_record", reason: "the Record has no genesis" };
+    }
     let reg = Registry { state_dir: cfg.state_dir };
     let current = reg.active();
     let same = current.ok && current.application_id == identity;
-    if current.ok && !same && body_alive(cfg) { return AttachResult { refused: "body_running", reason: "stop the active project's body before attaching another" }; }
+    if current.ok && !same && body_alive(cfg) {
+        return AttachResult {
+            refused: "body_running",
+            reason: "stop the active project's body before attaching another",
+        };
+    }
     let authority_written = write_policies(root, identity, cfg.principal_mode, cfg.principal_name);
     let api = child_view(cfg, "api");
     let mut attached = AttachResult { ok: true };
-    if repinned || !(same && api.alive && api_ready(cfg.api_port, identity, child_proof(cfg))) {
+    if repinned || !(same && api.alive && api_ready(api_port_of(cfg), identity, child_proof(cfg))) {
         stop_child(cfg, "api");
         attached = start_api(cfg, root, identity);
         if !attached.ok { return attached; }
@@ -267,10 +459,17 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     b.string_field("application_id", identity);
     b.string_field("root", root);
     b.string_field("name", basename(root));
-    b.int_field("api_port", cfg.api_port);
+    b.int_field("api_port", api_port_of(cfg));
     b.bool_field("authority_written", authority_written);
     b.end_object();
-    return AttachResult { ok: true, application_id: identity, root: root, name: basename(root), authority_written: authority_written, outcome: b.result() };
+    return AttachResult {
+        ok: true,
+        application_id: identity,
+        root: root,
+        name: basename(root),
+        authority_written: authority_written,
+        outcome: b.result(),
+    };
 }
 
 // Detach (§2.7): refused while the body runs; else the
@@ -278,8 +477,12 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
 fn detach_project(cfg: HeadConfig, command_id: String) -> DetachResult {
     let reg = Registry { state_dir: cfg.state_dir };
     let current = reg.active();
-    if !current.ok { return DetachResult { refused: "detached", reason: "no project is attached" }; }
-    if body_alive(cfg) { return DetachResult { refused: "body_running", reason: "stop the body before detaching" }; }
+    if !current.ok {
+        return DetachResult { refused: "detached", reason: "no project is attached" };
+    }
+    if body_alive(cfg) {
+        return DetachResult { refused: "body_running", reason: "stop the body before detaching" };
+    }
     stop_child(cfg, "api");
     let d = reg.deactivate(current.application_id, command_id);
     return DetachResult { ok: true };
@@ -295,8 +498,11 @@ fn start_run(cfg: HeadConfig, ctx: HeadContext, command_id: String, plan: Plan) 
     let dir = j.run_dir(command_id);
     std::io::fs::mkdir(j.runs_dir()) or discard;
     std::io::fs::mkdir(dir) or discard;
-    if !write_private(dir + "/script.sh", plan.script + "\n") { return Proc { pid: -1, dir: dir, name: "run" }; }
-    let argv = "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + dir + "/script.sh";
+    if !write_private(dir + "/script.sh", plan.script + "\n") {
+        return Proc { pid: -1, dir: dir, name: "run" };
+    }
+    let argv = "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + dir
+        + "/script.sh";
     write_cmd(dir, "run", argv);
     let cwd = if len(plan.cwd) > 0 { plan.cwd } else { ctx.active_root };
     return start(dir, "run", cwd, common_env(cfg, ctx.active_root, "run") + plan.envs, argv);
@@ -308,7 +514,13 @@ fn start_long_child(cfg: HeadConfig, ctx: HeadContext, plan: Plan) -> Proc {
     std::io::fs::mkdir(dir) or discard;
     write_cmd(dir, plan.kind, plan.argv);
     let cwd = if len(plan.cwd) > 0 { plan.cwd } else { ctx.active_root };
-    return start(dir, plan.kind, cwd, common_env(cfg, ctx.active_root, plan.kind) + plan.envs, plan.argv);
+    return start(
+        dir,
+        plan.kind,
+        cwd,
+        common_env(cfg, ctx.active_root, plan.kind) + plan.envs,
+        plan.argv,
+    );
 }
 
 // ---- settle ----------------------------------------------------------------
@@ -320,7 +532,11 @@ locus HeadOutcomes {
     params { cfg: HeadConfig = HeadConfig { }; }
     fn outcome(receipt: Receipt, exit_code: Int, log_tail: String) -> String {
         let ctx = context_of(self.cfg);
-        let base = if s3_known(receipt.operation) { s3_outcome(ctx, receipt.operation, exit_code, log_tail) } else { own_outcome(self.cfg, receipt, exit_code, log_tail) };
+        let base = if s3_known(receipt.operation) {
+            s3_outcome(ctx, receipt.operation, exit_code, log_tail)
+        } else {
+            own_outcome(self.cfg, receipt, exit_code, log_tail)
+        };
         if !writes_rows(receipt.operation) || len(receipt.application_id) == 0 { return base; }
         let reg = Registry { state_dir: self.cfg.state_dir };
         let project = reg.find(receipt.application_id);
@@ -394,7 +610,10 @@ fn children_fallback(cfg: HeadConfig, root: String, body: ChildView) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.begin_object_field("body");
-    b.string_field("state", if !body.alive && external_body(cfg, root) { "external" } else { child_state(body) });
+    b.string_field(
+        "state",
+        if !body.alive && external_body(cfg, root) { "external" } else { child_state(body) },
+    );
     b.int_field("pid", body.pid);
     b.int_field("since", body.since);
     b.string_field("command_id", body.command_id);
@@ -440,7 +659,7 @@ fn receipts_json(cfg: HeadConfig, application_id: String, n: Int, full: Bool) ->
 
 // One `GET /head/projects` item; `detail` adds the `?id=` fields.
 fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) -> String {
-    let record = dna::GitRecord { repo: r.root };
+    let record = dna::MemoryRecord { repo: r.root };
     // `record` is null for a head there is none of to show, absent or
     // unreadable alike: the face reads null as "record unread", and
     // nothing is decided on this listing
@@ -460,10 +679,16 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
     } else {
         b.null_field("record");
     }
-    let children = if r.active { children_json(cfg, ctx) } else { children_fallback(cfg, r.root, ChildView { name: "body" }) };
+    let children = if r.active {
+        children_json(cfg, ctx)
+    } else {
+        children_fallback(cfg, r.root, ChildView { name: "body" })
+    };
     b.field("body", std::json::find_field_raw(children, "body"));
     b.begin_object_field("forge");
-    b.string_field("github", record.setting("github"));
+    // the forge the habitat allocated, read back; never a setting
+    let forge = dna::forge_allocated(r.root);
+    b.string_field("github", if forge.provider == "github" { forge.repo } else { "" });
     b.field("board", logins_json(record.setting("github.board")));
     b.end_object();
     b.field("recent", receipts_json(cfg, r.application_id, 10, false));
@@ -473,9 +698,22 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
         let connections = std::json::find_field_raw(projected, "connections");
         let handoffs = std::json::find_field_raw(projected, "handoffs");
         let secrets = std::json::find_field_raw(projected, "secrets");
-        b.field("connections", if std::str::starts_with(std::str::trim(connections), "[") { connections } else { "[]" });
-        b.field("handoffs", if std::str::starts_with(std::str::trim(handoffs), "[") { handoffs } else { "[]" });
-        b.field("secrets", if std::str::starts_with(std::str::trim(secrets), "[") { secrets } else { "[]" });
+        b.field(
+            "connections",
+            if std::str::starts_with(std::str::trim(connections), "[") {
+                connections
+            } else {
+                "[]"
+            },
+        );
+        b.field(
+            "handoffs",
+            if std::str::starts_with(std::str::trim(handoffs), "[") { handoffs } else { "[]" },
+        );
+        b.field(
+            "secrets",
+            if std::str::starts_with(std::str::trim(secrets), "[") { secrets } else { "[]" },
+        );
         b.field("receipts", receipts_json(cfg, r.application_id, 50, true));
     }
     b.end_object();
@@ -487,7 +725,6 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
 locus Head {
     params {
         cfg: HeadConfig = HeadConfig { };
-        web: api::WebAssets = api::WebAssets { };
         slots: PushSlots; // the face's open event streams (push.hl, GH #986)
         auth: ui::Ui = ui::Ui { }; // GH #989: the sign-in and its sessions, under OIDC
         // the API child pid the head last saw answer, and the one it last saw refuse a connection
@@ -498,23 +735,6 @@ locus Head {
     fn error(status: Int, code: String, message: String, retryable: Bool) -> std::http::Response {
         let http = api::Http { };
         return http.error(status, code, message, retryable);
-    }
-
-    // Ruling 11b: the attached project's `ui/` — a directory with no
-    // manifest that the repository references — as the application's
-    // static assets, under `/app/` (`ops::application_asset`).
-    fn app_assets(req: std::http::Request, path: String) -> std::http::Response {
-        let ctx = context_of(self.cfg);
-        if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
-        let a = ops::application_asset(ctx.active_root, path);
-        if a.status != 200 { return self.error(404, "not_found", a.why, false); }
-        // the bytes as they are, on the connection: a `Response` body is a
-        // String, which ends at an image's first NUL byte
-        if req.conn_fd < 0 { return self.error(500, "internal", "an asset is written to its connection, and this request has none", false); }
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: " + a.content_type + "\r\nContent-Length: " + to_string(len(a.bytes)) + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
-        std::io::tcp::send_fd(req.conn_fd, std::bytes::concat(std::bytes::from_string(head), a.bytes)) or discard;
-        std::io::tcp::close_fd(req.conn_fd);
-        return std::http::Response { status: 200, body: "", takeover_raw: true };
     }
 
     // The head envelope (§2.4) around `data`.
@@ -538,21 +758,94 @@ locus Head {
 
     // The command wire's error table (§2.7), extended with the head's codes.
     fn command_error(code: String) -> std::http::Response {
-        if code == "invalid_command" { return self.error(400, code, "invalid command fields, values, or required headers", false); }
-        if code == "invalid_query" { return self.error(400, code, "lookup requires exactly one request_id", false); }
-        if code == "forbidden" { return self.error(403, code, "this command operation is not authorized", false); }
-        if code == "invalid_origin" { return self.error(403, code, "the command origin is not permitted", false); }
-        if code == "command_not_found" { return self.error(404, code, "no visible command was found for this request identity", false); }
-        if code == "project_not_found" { return self.error(404, code, "no registered project has that application_id", false); }
-        if code == "request_conflict" { return self.error(409, code, "this request identity belongs to different command content", false); }
-        if code == "command_context_changed" { return self.error(409, code, "the expected principal is not the head's; review the command under the current identity", false); }
-        if code == "detached" { return self.error(409, code, "the command names a project that is not the attached one", false); }
-        if code == "head_busy" { return self.error(409, code, "another command is running; wait for its receipt to settle", false); }
-        if code == "command_too_large" { return self.error(413, code, "the command body exceeds the supported byte limit", false); }
-        if code == "unsupported_media_type" { return self.error(415, code, "commands require Content-Type application/json", false); }
-        if code == "commands_unsupported" { return self.error(503, code, "the head's command origin is not configured", false); }
-        if code == "record_unavailable" { return self.error(503, code, "the attached project's Record head could not be read", true); }
-        return self.error(503, "head_detached", "no project is attached; attach one from the Projects workspace", true);
+        if code == "invalid_command" {
+            return self.error(
+                400,
+                code,
+                "invalid command fields, values, or required headers",
+                false,
+            );
+        }
+        if code == "invalid_query" {
+            return self.error(400, code, "lookup requires exactly one request_id", false);
+        }
+        if code == "forbidden" {
+            return self.error(403, code, "this command operation is not authorized", false);
+        }
+        if code == "invalid_origin" {
+            return self.error(403, code, "the command origin is not permitted", false);
+        }
+        if code == "command_not_found" {
+            return self.error(
+                404,
+                code,
+                "no visible command was found for this request identity",
+                false,
+            );
+        }
+        if code == "project_not_found" {
+            return self.error(404, code, "no registered project has that application_id", false);
+        }
+        if code == "request_conflict" {
+            return self.error(
+                409,
+                code,
+                "this request identity belongs to different command content",
+                false,
+            );
+        }
+        if code == "command_context_changed" {
+            return self.error(
+                409,
+                code,
+                "the expected principal is not the head's; review the command under the current identity",
+                false,
+            );
+        }
+        if code == "detached" {
+            return self.error(
+                409,
+                code,
+                "the command names a project that is not the attached one",
+                false,
+            );
+        }
+        if code == "head_busy" {
+            return self.error(
+                409,
+                code,
+                "another command is running; wait for its receipt to settle",
+                false,
+            );
+        }
+        if code == "command_too_large" {
+            return self.error(
+                413,
+                code,
+                "the command body exceeds the supported byte limit",
+                false,
+            );
+        }
+        if code == "unsupported_media_type" {
+            return self.error(415, code, "commands require Content-Type application/json", false);
+        }
+        if code == "commands_unsupported" {
+            return self.error(503, code, "the head's command origin is not configured", false);
+        }
+        if code == "record_unavailable" {
+            return self.error(
+                503,
+                code,
+                "the attached project's Record head could not be read",
+                true,
+            );
+        }
+        return self.error(
+            503,
+            "head_detached",
+            "no project is attached; attach one from the Projects workspace",
+            true,
+        );
     }
 
     // The API child's state for `GET /head`: down when its pid is dead
@@ -561,12 +854,17 @@ locus Head {
         if pid <= 0 { return "down"; }
         if pid == self.api_ready_pid { return "ready"; }
         if pid == self.api_failed_pid { return "down"; }
-        if api_ready(self.cfg.api_port, identity, child_proof(self.cfg)) { self.api_ready_pid = pid; return "ready"; }
+        if api_ready(api_port_of(self.cfg), identity, child_proof(self.cfg)) {
+            self.api_ready_pid = pid;
+            return "ready";
+        }
         return "starting";
     }
 
     fn head_read(raw_query: String) -> std::http::Response {
-        if len(raw_query) > 0 { return self.error(400, "invalid_query", "the head read takes no query fields", false); }
+        if len(raw_query) > 0 {
+            return self.error(400, "invalid_query", "the head read takes no query fields", false);
+        }
         let ctx = context_of(self.cfg);
         let j = HeadJournal { state_dir: self.cfg.state_dir };
         let b = std::json::Builder { };
@@ -579,8 +877,11 @@ locus Head {
             b.string_field("root", ctx.active_root);
             b.string_field("name", ctx.active_name);
             b.begin_object_field("api");
-            b.int_field("port", self.cfg.api_port);
-            b.string_field("state", if api.alive { self.api_state(api.pid, ctx.active_id) } else { "down" });
+            b.int_field("port", api_port_of(self.cfg));
+            b.string_field(
+                "state",
+                if api.alive { self.api_state(api.pid, ctx.active_id) } else { "down" },
+            );
             b.int_field("pid", api.pid);
             b.end_object();
             b.end_object();
@@ -601,7 +902,11 @@ locus Head {
             let sp = std::str::index_of(rest, " ");
             let name = if sp < 0 { rest } else { rest[0..sp] };
             rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
-            let reason = if s3_known(name) { s3_available(ctx, name) } else { own_available(ctx, name) };
+            let reason = if s3_known(name) {
+                s3_available(ctx, name)
+            } else {
+                own_available(ctx, name)
+            };
             b.begin_object();
             b.string_field("name", name);
             b.string_field("version", "1");
@@ -618,9 +923,26 @@ locus Head {
         let http = api::Http { };
         let mut id = "";
         if len(raw_query) > 0 {
-            if !std::str::starts_with(raw_query, "id=") || std::str::contains(raw_query, "&") || len(raw_query) > 1024 { return self.error(400, "invalid_query", "the projects read takes one optional id", false); }
+            if !std::str::starts_with(raw_query, "id=")
+                || std::str::contains(raw_query, "&")
+                || len(raw_query) > 1024
+            {
+                return self.error(
+                    400,
+                    "invalid_query",
+                    "the projects read takes one optional id",
+                    false,
+                );
+            }
             let decoded = http.decode(raw_query[3..len(raw_query)]);
-            if !decoded.ok || len(decoded.text) == 0 || len(decoded.text) > 256 { return self.error(400, "invalid_query", "id must be a bounded application_id", false); }
+            if !decoded.ok || len(decoded.text) == 0 || len(decoded.text) > 256 {
+                return self.error(
+                    400,
+                    "invalid_query",
+                    "id must be a bounded application_id",
+                    false,
+                );
+            }
             id = decoded.text;
         }
         let ctx = context_of(self.cfg);
@@ -654,34 +976,69 @@ locus Head {
         let mut offset = 0;
         let mut seen = "|";
         let mut rest = raw_query;
-        if len(raw_query) == 0 || len(raw_query) > 1024 { return self.error(400, "invalid_query", "the logs read takes run=<command_id> or child=api|body, and an optional offset", false); }
+        if len(raw_query) == 0 || len(raw_query) > 1024 {
+            return self.error(
+                400,
+                "invalid_query",
+                "the logs read takes run=<command_id> or child=api|body, and an optional offset",
+                false,
+            );
+        }
         while len(rest) > 0 {
             let amp = std::str::index_of(rest, "&");
             let pair = if amp < 0 { rest } else { rest[0..amp] };
             rest = if amp < 0 { "" } else { rest[(amp + 1)..len(rest)] };
             let eq = std::str::index_of(pair, "=");
-            if eq <= 0 { return self.error(400, "invalid_query", "query fields require a name and value", false); }
+            if eq <= 0 {
+                return self.error(
+                    400,
+                    "invalid_query",
+                    "query fields require a name and value",
+                    false,
+                );
+            }
             let key = pair[0..eq];
             let value = http.decode(pair[(eq + 1)..len(pair)]);
-            if !value.ok || std::str::contains(seen, "|" + key + "|") { return self.error(400, "invalid_query", "invalid or duplicate query field", false); }
+            if !value.ok || std::str::contains(seen, "|" + key + "|") {
+                return self.error(400, "invalid_query", "invalid or duplicate query field", false);
+            }
             seen = seen + key + "|";
             if key == "run" { run_id = value.text; }
             else if key == "child" { child = value.text; }
-            else if key == "offset" { offset = http.integer(value.text, 1000000000); if offset < 0 { return self.error(400, "invalid_query", "offset must be a non-negative integer", false); } }
+            else if key == "offset" {
+                offset = http.integer(value.text, 1000000000);
+                if offset < 0 {
+                    return self.error(
+                        400,
+                        "invalid_query",
+                        "offset must be a non-negative integer",
+                        false,
+                    );
+                }
+            }
             else { return self.error(400, "invalid_query", "unsupported query field", false); }
         }
-        if (len(run_id) > 0) == (len(child) > 0) { return self.error(400, "invalid_query", "name exactly one of run or child", false); }
+        if (len(run_id) > 0) == (len(child) > 0) {
+            return self.error(400, "invalid_query", "name exactly one of run or child", false);
+        }
         let ctx = context_of(self.cfg);
         let mut path = "";
         let mut name = "";
         if len(run_id) > 0 {
             let j = HeadJournal { state_dir: self.cfg.state_dir };
             let r = j.find(run_id);
-            if !r.ok || r.principal_mode != self.cfg.principal_mode || r.principal_name != self.cfg.principal_name { return self.command_error("command_not_found"); }
+            if !r.ok
+                || r.principal_mode != self.cfg.principal_mode
+                || r.principal_name != self.cfg.principal_name
+            {
+                return self.command_error("command_not_found");
+            }
             path = j.run_dir(run_id) + "/run.log";
             name = run_id;
         } else {
-            if child != "api" && child != "body" { return self.error(400, "invalid_query", "child must be api or body", false); }
+            if child != "api" && child != "body" {
+                return self.error(400, "invalid_query", "child must be api or body", false);
+            }
             path = children_dir(self.cfg) + "/" + child + ".log";
             name = child;
         }
@@ -724,31 +1081,103 @@ locus Head {
         let guard = wire.guard(req, head_origin(self.cfg));
         if len(guard) > 0 { return self.command_error(guard); }
         let body = req.body;
-        if !syntax.valid(body) || !wire.fields(body, "request_id operation operation_version context target preconditions arguments", 7) { return self.error(400, "invalid_command", "the request must be a JSON object with exactly request_id, operation, operation_version, context, target, preconditions and arguments", false); }
+        if !syntax.valid(body)
+            || !wire.fields(
+                body,
+                "request_id operation operation_version context target preconditions arguments",
+                7,
+            )
+        {
+            return self.error(
+                400,
+                "invalid_command",
+                "the request must be a JSON object with exactly request_id, operation, operation_version, context, target, preconditions and arguments",
+                false,
+            );
+        }
         let operation = wire.text(body, "operation");
         let version = wire.text(body, "operation_version");
         let known = own_known(operation) || s3_known(operation);
-        if !known || version != "1" { return self.error(400, "invalid_command", "unknown operation or operation_version", false); }
+        if !known || version != "1" {
+            return self.error(
+                400,
+                "invalid_command",
+                "unknown operation or operation_version",
+                false,
+            );
+        }
         let request_id = wire.text(body, "request_id");
-        if !wire.bounded(request_id, 128, true, false) { return self.error(400, "invalid_command", "request_id must be 1..128 bytes without control characters", false); }
+        if !wire.bounded(request_id, 128, true, false) {
+            return self.error(
+                400,
+                "invalid_command",
+                "request_id must be 1..128 bytes without control characters",
+                false,
+            );
+        }
         let context = wire.raw(body, "context");
         let target = wire.raw(body, "target");
         let conditions = wire.raw(body, "preconditions");
-        if !wire.fields(context, "head application_id", 2) || wire.text(context, "head") != "local" || !wire.fields(target, "kind id", 2) || !wire.fields(conditions, "principal", 1) { return self.error(400, "invalid_command", "context is {head:\"local\", application_id}, target is {kind, id}, preconditions is {principal}", false); }
+        if !wire.fields(context, "head application_id", 2)
+            || wire.text(context, "head") != "local"
+            || !wire.fields(target, "kind id", 2)
+            || !wire.fields(conditions, "principal", 1)
+        {
+            return self.error(
+                400,
+                "invalid_command",
+                "context is {head:\"local\", application_id}, target is {kind, id}, preconditions is {principal}",
+                false,
+            );
+        }
         let expected = wire.raw(conditions, "principal");
-        if !wire.fields(expected, "mode name", 2) || !wire.is_text(wire.raw(expected, "mode")) || !wire.is_text(wire.raw(expected, "name")) { return self.error(400, "invalid_command", "preconditions.principal is {mode, name}", false); }
-        if wire.text(expected, "mode") != self.cfg.principal_mode || wire.text(expected, "name") != self.cfg.principal_name { return self.command_error("command_context_changed"); }
+        if !wire.fields(expected, "mode name", 2)
+            || !wire.is_text(wire.raw(expected, "mode"))
+            || !wire.is_text(wire.raw(expected, "name"))
+        {
+            return self.error(
+                400,
+                "invalid_command",
+                "preconditions.principal is {mode, name}",
+                false,
+            );
+        }
+        if wire.text(expected, "mode") != self.cfg.principal_mode
+            || wire.text(expected, "name") != self.cfg.principal_name
+        {
+            return self.command_error("command_context_changed");
+        }
         let application_id = wire.text(context, "application_id");
         let target_kind = wire.text(target, "kind");
         let target_id = wire.text(target, "id");
         let ctx = context_of(self.cfg);
         if head_scoped(operation) {
-            if len(application_id) > 0 || target_kind != "dna.head" || target_id != "local" { return self.error(400, "invalid_command", "a head-scoped operation has an empty context.application_id and targets dna.head local", false); }
+            if len(application_id) > 0 || target_kind != "dna.head" || target_id != "local" {
+                return self.error(
+                    400,
+                    "invalid_command",
+                    "a head-scoped operation has an empty context.application_id and targets dna.head local",
+                    false,
+                );
+            }
         } else {
-            if len(ctx.active_id) == 0 || application_id != ctx.active_id { return self.command_error("detached"); }
-            if target_kind != "dna.project" || target_id != application_id { return self.error(400, "invalid_command", "a project operation targets dna.project with the attached application_id", false); }
+            if len(ctx.active_id) == 0 || application_id != ctx.active_id {
+                return self.command_error("detached");
+            }
+            if target_kind != "dna.project" || target_id != application_id {
+                return self.error(
+                    400,
+                    "invalid_command",
+                    "a project operation targets dna.project with the attached application_id",
+                    false,
+                );
+            }
         }
-        let allowlist = if s3_known(operation) { s3_arguments(operation) } else { own_arguments(operation) };
+        let allowlist = if s3_known(operation) {
+            s3_arguments(operation)
+        } else {
+            own_arguments(operation)
+        };
         let arguments = wire.raw(body, "arguments");
         let shape = arguments_shape(arguments, allowlist);
         if len(shape) > 0 { return self.error(400, "invalid_command", shape, false); }
@@ -764,16 +1193,26 @@ locus Head {
         if len(ctx.active_root) > 0 {
             // a head that could not be read would stand as "no record
             // before" and every row would read as this command's evidence
-            let record = dna::GitRecord { repo: ctx.active_root };
+            let record = dna::MemoryRecord { repo: ctx.active_root };
             let read = record.head("journal");
             if !read.ok { return self.command_error("record_unavailable"); }
             head_before = read.id;
         }
-        let s = j.submit(self.cfg.principal_mode, self.cfg.principal_name, body, allowlist, head_before);
+        let s = j.submit(
+            self.cfg.principal_mode,
+            self.cfg.principal_name,
+            body,
+            allowlist,
+            head_before,
+        );
         if s.code == "request_conflict" { return self.command_error("request_conflict"); }
         if len(s.code) > 0 { return self.command_error("invalid_command"); }
         if s.replayed { return self.receipt_response(s.receipt, true); }
-        let plan = if s3_known(operation) { s3_plan(ctx, operation, arguments) } else { own_plan(self.cfg, ctx, id, operation, arguments) };
+        let plan = if s3_known(operation) {
+            s3_plan(ctx, operation, arguments)
+        } else {
+            own_plan(self.cfg, ctx, id, operation, arguments)
+        };
         if len(plan.refused) > 0 {
             j.refuse(id, plan.refused, plan.reason);
             return self.receipt_response(j.find(id), true);
@@ -787,10 +1226,24 @@ locus Head {
         } else if plan.kind == "run" {
             let p = start_run(self.cfg, ctx, id, plan);
             if p.pid <= 0 { j.finish(id, "failed", -1, "", "the run could not be started", "{}"); }
-            else { j.running(id, "run", p.pid, cmd_digest("timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + p.dir + "/script.sh"), deadline, plan.external); }
+            else {
+                j.running(
+                    id,
+                    "run",
+                    p.pid,
+                    cmd_digest(
+                        "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + p.dir
+                            + "/script.sh",
+                    ),
+                    deadline,
+                    plan.external,
+                );
+            }
         } else if plan.kind == "body" {
             let p = start_long_child(self.cfg, ctx, plan);
-            if p.pid <= 0 { j.finish(id, "failed", -1, "", "the body child could not be started", "{}"); }
+            if p.pid <= 0 {
+                j.finish(id, "failed", -1, "", "the body child could not be started", "{}");
+            }
             else { j.running(id, "body", p.pid, cmd_digest(plan.argv), deadline, plan.external); }
         } else {
             j.finish(id, "failed", -1, "", "the plan names no execution kind", "{}");
@@ -807,16 +1260,31 @@ locus Head {
         if len(ctx.active_id) == 0 || !child.alive { return self.command_error("head_detached"); }
         if req.method == "POST" {
             let origin = wire.header(req.headers, "Origin");
-            if !origin.valid || origin.count > 1 || (origin.count == 1 && origin.value != head_origin(self.cfg)) { return self.command_error("invalid_origin"); }
+            if !origin.valid
+                || origin.count > 1
+                || (origin.count == 1 && origin.value != head_origin(self.cfg))
+            {
+                return self.command_error("invalid_origin");
+            }
         }
         // the child's own launch token rides on a proxied POST: the head
         // started the child and can read its file, the browser cannot
         // GH #989: under OIDC the child verifies the session's own ID token,
         // forwarded as the bearer on every request
-        let child_token = if self.cfg.principal_mode == "local" && req.method == "POST" { dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "") } else { "" };
+        let child_token = if self.cfg.principal_mode == "local" && req.method == "POST" {
+            dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "")
+        } else {
+            ""
+        };
         // a service's own bearer (verified in `handle`), else the session's
         let given = dna::bearer_token(std::http::header(req, "Authorization"));
-        let bearer = if self.cfg.principal_mode != "oidc" { "" } else if len(given) > 0 { given } else { self.auth.session_token(req) };
+        let bearer = if self.cfg.principal_mode != "oidc" {
+            ""
+        } else if len(given) > 0 {
+            given
+        } else {
+            self.auth.session_token(req)
+        };
         // GH #1135: a command is a call on the child's surface, over its
         // HTTP exposure at the commands port the head gave it, under the
         // caller's bearer (in a fixture's trusted-local session, the child's
@@ -826,7 +1294,14 @@ locus Head {
         let cut = std::str::index_of(req.path, "?");
         let bare = if cut < 0 { req.path } else { req.path[0..cut] };
         if std::str::ends_with(bare, "/commands") {
-            if req.method != "POST" { return self.error(405, "method_not_allowed", "a command is one POSTed call line; a lookup is a `CommandLookup` call", false); }
+            if req.method != "POST" {
+                return self.error(
+                    405,
+                    "method_not_allowed",
+                    "a command is one POSTed call line; a lookup is a `CommandLookup` call",
+                    false,
+                );
+            }
             // a session is an ambient credential: its line keeps the CSRF
             // guard before it becomes a bearer; only an OIDC caller's own
             // bearer is not asked (a local session's bearer is always the
@@ -836,31 +1311,135 @@ locus Head {
                 if len(guard) > 0 { return self.command_error(guard); }
             }
             // the exposure waits 30 s for a handler; the relay outlasts it
-            if self.cfg.commands_port <= 0 { return self.error(503, "commands_unavailable", "this head gives its API child no commands port (HALE_DNA_COMMANDS_PORT)", false); }
-            let up = api::relay_upstream(req.body, self.cfg.commands_port, if self.cfg.principal_mode == "local" { child_token } else { bearer });
+            let commands = commands_port_of(self.cfg);
+            if commands <= 0 {
+                return self.error(
+                    503,
+                    "commands_unavailable",
+                    "the API child has not reported a commands port",
+                    true,
+                );
+            }
+            let up = api::relay_upstream(
+                req.body,
+                commands,
+                if self.cfg.principal_mode == "local" { child_token } else { bearer },
+            );
             if up.ok { self.api_ready_pid = child.pid; }
             return proxied_response(up);
         }
-        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token, bearer);
+        let up = proxy_exchange(
+            req,
+            api_port_of(self.cfg),
+            head_origin(self.cfg),
+            child_token,
+            bearer,
+        );
         if up.ok { self.api_ready_pid = child.pid; }
-        else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
+        else if up.code == "connect_failed" || up.code == "no_response" {
+            self.api_failed_pid = child.pid;
+        }
+        return proxied_response(up);
+    }
+
+    // The face's call of the surface (`HEAD_SURFACE_CALLS`: the record's
+    // index, the habitat's hosts, allocations and policy, and the host acts) for a visitor: the
+    // call reaches the API child's commands port under the visitor's own
+    // credential, a session's ID token under OIDC and the child's launch token
+    // in a trusted-local session, exactly as a proxied command does.
+    fn read_call(req: std::http::Request, member: String) -> std::http::Response {
+        let ctx = context_of(self.cfg);
+        let child = child_view(self.cfg, "api");
+        if len(ctx.active_id) == 0 || !child.alive { return self.command_error("head_detached"); }
+        let commands = commands_port_of(self.cfg);
+        if commands <= 0 {
+            return self.error(
+                503,
+                "commands_unavailable",
+                "the API child has not reported a commands port",
+                true,
+            );
+        }
+        let token_ok = len(self.cfg.token) > 0
+            && api::token_matches(std::http::header(req, "X-Hale-Token"), self.cfg.token);
+        let bearer = if self.cfg.principal_mode == "oidc" && !token_ok {
+            self.auth.session_token(req)
+        } else {
+            dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "")
+        };
+        if len(bearer) == 0 {
+            return self.error(401, "unauthenticated", "sign in at /auth/login", false);
+        }
+        let digest = std::http::header(req, "Hale-Surface-Digest");
+        let headers = "Content-Type: application/json\r\nAuthorization: Bearer " + bearer + "\r\n"
+            + (if len(digest) > 0 { "Hale-Surface-Digest: " + digest + "\r\n" } else { "" })
+            + "Content-Length: " + to_string(len(req.body)) + "\r\n";
+        let up = api::exchange(
+            commands,
+            "POST",
+            "/call/" + member,
+            headers,
+            req.body,
+            api::COMMAND_RELAY_TIMEOUT_NS,
+        );
+        if up.ok { self.api_ready_pid = child.pid; }
         return proxied_response(up);
     }
 
     fn handle(req: std::http::Request) -> std::http::Response {
+        // the face's client presents the visitor's cookies as its bearer: they
+        // become the Cookie header and the request meets the head's own gates
+        // as the visitor's, under the host the visitor used; a CLI client of
+        // the surface presents the head's launch token as its bearer
+        let read = surface_read(req.path);
+        if req.method == "POST" && len(read) > 0 {
+            let mut r = req;
+            let auth = dna::bearer_token(std::http::header(req, "Authorization"));
+            let is_token = len(auth) > 0 && !std::str::contains(auth, "=");
+            r.headers = headers_without(req.headers, " authorization host cookie ")
+                + (if is_token { "X-Hale-Token: " + auth } else { "Cookie: " + auth })
+                + "\r\nHost: 127.0.0.1:" + to_string(public_port_of(self.cfg)) + "\r\n";
+            r.path = HEAD_PREFIX + "/read-call/" + read;
+            return self.handle(r);
+        }
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
-        if req.method != "GET" && req.method != "POST" { return self.error(405, "method_not_allowed", "the head answers GET and POST only", false); }
+        if req.method != "GET" && req.method != "POST" {
+            return self.error(
+                405,
+                "method_not_allowed",
+                "the head answers GET and POST only",
+                false,
+            );
+        }
+        // who the gate at `/` lets through: the head's own principal, or
+        // under OIDC the person the session names
+        let mut gate_person = self.cfg.principal_name;
         // GH #989: under OIDC, a session a sign-in through the issuer set,
         // or nothing — the shell at `/` sends a browser to sign in, and
         // every read and command of the head's and the project's asks for it
         if self.cfg.principal_mode == "oidc" {
-            // the loopback by name only: a page on another name (DNS
-            // rebinding) reaches nothing
+            // the loopback, or the habitat's declared address, by name
+            // only: a page on another name (DNS rebinding) reaches nothing
+            // on either port it answers on: the public one (the face's,
+            // where a browser comes) and its own, where a person's
+            // toolchain calls it through a pointer (`hale habitat
+            // organism place` records a placement from that machine)
             let host = std::http::header(req, "Host");
-            let port = to_string(self.cfg.port);
-            if host != "127.0.0.1:" + port && host != "localhost:" + port { return self.error(421, "misdirected_request", "this head answers as 127.0.0.1:" + port + " or localhost:" + port + " only", false); }
+            let port = to_string(public_port_of(self.cfg));
+            let own = to_string(self.cfg.port);
+            let declared = dna::declared_address();
+            if !head_host_ok(host, port, declared) && !head_host_ok(host, own, declared) {
+                return self.error(
+                    421,
+                    "misdirected_request",
+                    "this head answers as 127.0.0.1, localhost"
+                        + (if len(declared) > 0 { " or " + declared } else { "" }) + ", on port "
+                        + port + " or " + own + " only",
+                    false,
+                );
+            }
             // Signing in is for the person who started the head: the URL it
             // printed carries a launch token (0600 in its state directory),
             // which opens `/` once and sets the dna_local cookie; only a
@@ -869,19 +1448,50 @@ locus Head {
             // provider as the person it signs in
             let given = api::query_token(raw_query);
             if path == "/" && len(given) > 0 {
-                if !api::token_matches(given, self.cfg.token) { return self.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }
-                return ui::redirect("/auth/login", "dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Lax; Path=/");
+                if !api::token_matches(given, self.cfg.token) {
+                    return self.error(
+                        401,
+                        "unauthenticated",
+                        "the token is not this head's; open the URL the head printed",
+                        false,
+                    );
+                }
+                return ui::redirect(
+                    "/auth/login",
+                    "dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Lax; Path=/",
+                );
             }
-            let launched = api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token);
-            if (path == "/auth/login" || path == "/auth/callback") && !launched { return self.error(401, "unauthenticated", "open the URL the head printed (its launch token is in the head's state directory) to sign in", false); }
+            let launched = api::token_matches(
+                dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"),
+                self.cfg.token,
+            );
+            if (path == "/auth/login" || path == "/auth/callback") && !launched {
+                return self.error(
+                    401,
+                    "unauthenticated",
+                    "open the URL the head printed (its launch token is in the head's state directory) to sign in",
+                    false,
+                );
+            }
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
             if path == "/auth/callback" {
                 let http = api::Http { };
                 let q = std::http::build_context(req);
                 let code = http.checked(std::http::query_param(q.params, "code"));
                 let state = http.checked(std::http::query_param(q.params, "state"));
-                if !code.ok || !state.ok { return self.error(400, "invalid_query", "invalid authentication query encoding", false); }
-                return self.auth.finish_sign_in(code.text, state.text, dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
+                if !code.ok || !state.ok {
+                    return self.error(
+                        400,
+                        "invalid_query",
+                        "invalid authentication query encoding",
+                        false,
+                    );
+                }
+                return self.auth.finish_sign_in(
+                    code.text,
+                    state.text,
+                    dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"),
+                );
             }
             if path == "/auth/logout" {
                 self.auth.end_session(req);
@@ -894,28 +1504,68 @@ locus Head {
             // this client, unexpired), its subject must be a service the
             // attached project's record maps (`dna.oidc.service`), and it
             // is forwarded as the bearer: never a session, never a cookie
-            let service_route = path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/");
+            let service_route = path == APPLICATIONS_PREFIX
+                || std::str::starts_with(path, APPLICATIONS_PREFIX + "/");
             if len(std::http::header(req, "Authorization")) > 0 {
-                if !service_route { return self.error(401, "unauthenticated", "a bearer is a service's, on the project's API routes only; a person signs in at /auth/login", false); }
+                if !service_route {
+                    return self.error(
+                        401,
+                        "unauthenticated",
+                        "a bearer is a service's, on the project's API routes only; a person signs in at /auth/login",
+                        false,
+                    );
+                }
                 let subject = self.auth.bearer_subject(req);
-                if len(subject) == 0 { return self.error(401, "unauthenticated", "the bearer token is refused: " + self.auth.bearer_refused, false); }
+                if len(subject) == 0 {
+                    return self.error(
+                        401,
+                        "unauthenticated",
+                        "the bearer token is refused: " + self.auth.bearer_refused,
+                        false,
+                    );
+                }
                 let ctx = context_of(self.cfg);
                 if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
                 // a service, and only a service: a subject the record maps
                 // as a person signs in, so a token that can't be told from
                 // an ID token never acts as that person without a session
-                let record = dna::GitRecord { repo: ctx.active_root };
+                let record = dna::MemoryRecord { repo: ctx.active_root };
                 let members = record.git("config\n--local\n--get-all\ndna.oidc.member");
-                if len(dna::member_of(if members.code == 0 { members.stdout } else { "" }, subject)) > 0 { return self.error(403, "forbidden", "subject `" + subject + "` is a person's (`dna.oidc.member`): a person signs in at /auth/login, and a bearer is a service's", false); }
+                if len(
+                    dna::member_of(if members.code == 0 { members.stdout } else { "" }, subject),
+                ) > 0 {
+                    return self.error(
+                        403,
+                        "forbidden",
+                        "subject `" + subject
+                            + "` is a person's (`dna.oidc.member`): a person signs in at /auth/login, and a bearer is a service's",
+                        false,
+                    );
+                }
                 let services = record.git("config\n--local\n--get-all\ndna.oidc.service");
-                if len(dna::member_of(if services.code == 0 { services.stdout } else { "" }, subject)) == 0 { return self.error(403, "forbidden", "subject `" + subject + "` is no service the attached project maps (`git config --local --add dna.oidc.service \"" + subject + "=<service>\"`)", false); }
+                if len(
+                    dna::member_of(if services.code == 0 { services.stdout } else { "" }, subject),
+                ) == 0 {
+                    return self.error(
+                        403,
+                        "forbidden",
+                        "subject `" + subject
+                            + "` is no service the attached project maps (`git config --local --add dna.oidc.service \""
+                            + subject + "=<service>\"`)",
+                        false,
+                    );
+                }
                 return self.proxy(req);
             }
             let person = self.auth.session_name(req);
-            if len(person) == 0 {
+            let token_call = std::str::starts_with(path, HEAD_PREFIX + "/read-call/")
+                && len(self.cfg.token) > 0
+                && api::token_matches(std::http::header(req, "X-Hale-Token"), self.cfg.token);
+            if len(person) == 0 && !token_call {
                 if path == "/" { return ui::redirect("/auth/login", ""); }
-                if !(req.method == "GET" && self.web.serves(path)) { return self.error(401, "unauthenticated", "sign in at /auth/login", false); }
+                return self.error(401, "unauthenticated", "sign in at /auth/login", false);
             }
+            gate_person = person;
         }
         // A fixture's trusted-local session (HALE_DNA_TRUSTED_LOCAL=1): the
         // shell at `/` and every POST carry the launch token — the URL once,
@@ -923,26 +1573,86 @@ locus Head {
         if self.cfg.principal_mode == "local" && len(self.cfg.token) > 0 {
             if path == "/" {
                 let given = api::query_token(raw_query);
-                if len(given) > 0 && !api::token_matches(given, self.cfg.token) { return self.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }
-                if len(given) > 0 {
-                    let mut shell = self.web.response(path);
-                    shell.headers = shell.headers + "\r\nSet-Cookie: dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Strict; Path=/";
-                    return shell;
+                if len(given) > 0 && !api::token_matches(given, self.cfg.token) {
+                    return self.error(
+                        401,
+                        "unauthenticated",
+                        "the token is not this head's; open the URL the head printed",
+                        false,
+                    );
                 }
-                if !api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token) { return self.error(401, "unauthenticated", "open the URL the head printed (the launch token is in the head's state directory)", false); }
+                if len(given) > 0 {
+                    return ui::redirect(
+                        "/",
+                        "dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Strict; Path=/",
+                    );
+                }
+                if !api::token_matches(
+                    dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"),
+                    self.cfg.token,
+                ) {
+                    return self.error(
+                        401,
+                        "unauthenticated",
+                        "open the URL the head printed (the launch token is in the head's state directory)",
+                        false,
+                    );
+                }
             }
             // a mutation — the head's own command, or one proxied to the
             // child — carries it; a POST to a read is still a 405 below
-            if req.method == "POST" && (path == HEAD_PREFIX + "/commands" || path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/")) {
+            if req.method == "POST"
+                && (
+                    path == HEAD_PREFIX + "/commands"
+                        || path == APPLICATIONS_PREFIX
+                        || std::str::starts_with(path, APPLICATIONS_PREFIX + "/")
+                        || surface_act(path)
+                )
+            {
                 let sent = std::http::header(req, "X-Hale-Token");
-                if !api::token_matches(sent, self.cfg.token) && !api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token) { return self.error(401, "unauthenticated", "a mutation carries the launch token: the dna_local cookie the head's URL set, or X-Hale-Token", false); }
+                if !api::token_matches(sent, self.cfg.token)
+                    && !api::token_matches(
+                        dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"),
+                        self.cfg.token,
+                    )
+                {
+                    return self.error(
+                        401,
+                        "unauthenticated",
+                        "a mutation carries the launch token: the dna_local cookie the head's URL set, or X-Hale-Token",
+                        false,
+                    );
+                }
             }
         }
-        if req.method == "GET" && self.web.serves(path) { return self.web.response(path); }
-        if req.method == "GET" && (path == ops::APP_ASSETS_PREFIX || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")) { return self.app_assets(req, path); }
+        // `/` is the face's gate, not a page: the head owns no static file.
+        // A person who may open the shell is told so (204), and the face
+        // serves it; every refusal above is the face's to pass on as it is.
+        // The answer names them (`X-Hale-Person`), for what the face serves
+        // behind the same gate in their name (the habitat's Grafana).
+        if req.method == "GET" && path == "/" {
+            let named = if std::str::contains(gate_person, "\r")
+                || std::str::contains(gate_person, "\n")
+            {
+                ""
+            } else {
+                gate_person
+            };
+            return std::http::Response {
+                status: 204,
+                headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff"
+                    + (if len(named) > 0 { "\r\nX-Hale-Person: " + named } else { "" }),
+                body: "",
+            };
+        }
         settle_all(self.cfg);
-        if path == HEAD_PREFIX || path == HEAD_PREFIX + "/projects" || path == HEAD_PREFIX + "/logs" {
-            if req.method != "GET" { return self.error(405, "method_not_allowed", "this head route is a read", false); }
+        if path == HEAD_PREFIX
+            || path == HEAD_PREFIX + "/projects"
+            || path == HEAD_PREFIX + "/logs"
+        {
+            if req.method != "GET" {
+                return self.error(405, "method_not_allowed", "this head route is a read", false);
+            }
             if path == HEAD_PREFIX { return self.head_read(raw_query); }
             if path == HEAD_PREFIX + "/projects" { return self.projects_read(raw_query); }
             return self.logs_read(raw_query);
@@ -950,9 +1660,18 @@ locus Head {
         // GH #986: the push — the stream is handed over to the watcher,
         // which writes `changed` whenever the active project's rows move
         if path == HEAD_PREFIX + "/events" {
-            if req.method != "GET" { return self.error(405, "method_not_allowed", "the event stream is a read", false); }
+            if req.method != "GET" {
+                return self.error(405, "method_not_allowed", "the event stream is a read", false);
+            }
             let slot = claim_push_slot(self.slots, req.conn_fd);
-            if slot < 0 { return self.error(503, "busy", "every event stream is held; the face reads again when the person acts", true); }
+            if slot < 0 {
+                return self.error(
+                    503,
+                    "busy",
+                    "every event stream is held; the face reads again when the person acts",
+                    true,
+                );
+            }
             // the head writes the response head itself, before the slot is
             // ready: an event is never written ahead of it
             open_push_stream(self.slots, slot, req.conn_fd);
@@ -962,7 +1681,15 @@ locus Head {
             if req.method == "POST" { return self.submit(req); }
             return self.lookup(raw_query);
         }
-        if path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/") { return self.proxy(req); }
+        if path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/") {
+            return self.proxy(req);
+        }
+        if std::str::starts_with(path, HEAD_PREFIX + "/read-call/") && req.method == "POST" {
+            let member = path[len(HEAD_PREFIX + "/read-call/")..len(path)];
+            if std::str::contains(" " + HEAD_SURFACE_CALLS + " ", " " + member + " ") {
+                return self.read_call(req, member);
+            }
+        }
         return self.error(404, "not_found", "no such head route", false);
     }
 }

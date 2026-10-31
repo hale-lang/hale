@@ -1,15 +1,21 @@
-//! GH #566 F1 — the record across clones. One bare repository, the
-//! organism running in clone A, a person in clone B with no nerves of
-//! its own: B's `hale dna task create` and its verdict are rows in the
-//! record, pushed; A's host pulls them, relays them onto the nerves,
-//! and pushes the organism's answers back; B reads them. Then, with
-//! nothing running, both clones append offline and `sync` reconciles
-//! them into one linear record with every event and identical heads.
+//! GH #566 F1, #1590 — the record across clones. One bare repository for
+//! the genome, the organism running in clone A, a person in clone B with
+//! no nerves of its own: the record is memory's, so B reaches it once its
+//! memory is migrated, and B's `hale dna task create` and its verdict are
+//! rows A's host reads at once, relays onto the nerves, and answers; B
+//! reads the answers. Then, with nothing running, both clones append and
+//! each reads the other's row at once: there is nothing to sync.
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/record.rs"]
+mod record;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -33,24 +39,25 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn record(cwd: &Path) -> Vec<serde_json::Value> {
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(cwd).output().unwrap();
-    String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
+    // the record's rows and its Ledger's (GH #1590)
+    (record::text(cwd) + "\n" + &record::ledger_text(cwd)).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
 #[test]
 fn a_person_in_another_clone_asks_and_decides_through_the_record() {
-    let Some(_nats_owner) = std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()) else {
-        eprintln!("dna_record_sync: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organism, so nothing was exercised");
+    let (Some(_nats_owner), Some(owner)) = (std::env::var("HALE_DNA_NATS_URL_OWNER").ok().filter(|d| !d.is_empty()), record::owner_dsn()) else {
+        eprintln!("dna_record_sync: no HALE_DNA_NATS_URL_OWNER or HALE_DNA_MEMORY_DSN_OWNER; an ask cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_sync_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_sync_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
     // clone A: the organism's home
-    let (ok, out) = hale_in(&["dna", "new", "orgsync", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale_in(&["habitat", "graft", "orgsync", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     let a: PathBuf = d.join("orgsync");
     git(&["config", "user.name", "organism-host"], &a);
@@ -58,16 +65,22 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     git(&["add", "-A"], &a);
     git(&["commit", "-q", "-m", "the app"], &a);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &a);
-    // clone B: a person, elsewhere, with the record fetched
+    git(&["push", "-q", "origin", "main"], &a);
+    let n_born = record(&a).len();
+    // clone B: a person, elsewhere, with the genome and, once migrated, the
+    // record's memory
     let b = d.join("riley");
     git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
     git(&["config", "user.name", "riley"], &b);
     git(&["config", "user.email", "riley@l"], &b);
-    let (ok, out) = hale_in(&["dna", "sync"], &b);
-    assert!(ok && out.contains("pulled the record"), "{out}");
+    let (ok, out) = hale_in(&["dna", "memory", "migrate"], &b);
+    assert!(ok, "B's memory: {out}");
     let (ok, st) = hale_in(&["dna", "status"], &b);
-    assert!(ok && st.contains("72 event(s), chain verified") && st.contains("not running"), "{st}");
+    assert!(ok && st.contains(&format!("{n_born} event(s), chain verified")) && st.contains("not running"), "{st}");
+    // the spine's DSN the organism in A runs on
+    let (ok, migrated_a) = hale_in(&["dna", "memory", "migrate"], &a);
+    assert!(ok, "A's memory: {migrated_a}");
+    let spine = migrated_a.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_SPINE=")).expect("the spine's DSN").to_string();
 
     // the nerves (GH #986): a verdict or a task only reaches the
     // organism over them
@@ -80,11 +93,13 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&a)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &a))
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", &spine)
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
@@ -119,240 +134,45 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let (ok1, asked) = hale_in(&["dna", "task", "create", "write", "the", "changelog"], &b);
     // B decides the purpose review the same way
     let (ok2, decided) = hale_in(&["dna", "review", "purpose", "approve", "--as", "riley", "--comment", "ratified from afar"], &b);
-    std::thread::sleep(Duration::from_secs(3));
-    let (ok3, synced) = hale_in(&["dna", "sync"], &b);
     let (ok4, st_b) = hale_in(&["dna", "status"], &b);
     finish(&mut host);
-    let (ok5, _) = hale_in(&["dna", "sync"], &a);
-    // `finish` released A's body lease as a row of its own (GH #986); B
-    // pulls it too, so both clones agree before the offline section
-    let (ok5b, _) = hale_in(&["dna", "sync"], &b);
     assert!(ok1 && asked.contains("task t1 born"), "ask from the other clone: {asked}");
     assert!(ok2 && decided.contains(" settled: approve by riley"), "verdict from the other clone: {decided}");
-    assert!(ok3, "{synced}");
     assert!(ok4 && st_b.contains("t1 [") && st_b.contains("settled approve by riley") && st_b.contains("chain verified"), "status in B:\n{st_b}");
-    assert!(ok5);
-    assert!(ok5b);
     let rows_a = record(&a);
     let rows_b = record(&b);
-    assert_eq!(git(&["rev-parse", "refs/dna/journal"], &a), git(&["rev-parse", "refs/dna/journal"], &b), "same head in both clones");
-    assert_eq!(rows_a.len(), rows_b.len());
+    assert_eq!(rows_a, rows_b, "one record, read the same from both clones");
     let kinds: Vec<String> = rows_b.iter().map(|r| r["kind"].as_str().unwrap_or("").to_string()).collect();
     for k in ["intent.requested", "intent.offered", "task.born", "review.verdict", "review.settled"] {
         assert!(kinds.iter().any(|x| x == k), "{k} in the record: {kinds:?}");
     }
     let req = rows_b.iter().find(|r| r["kind"] == "intent.requested").unwrap();
-    assert_eq!(req["author"], "riley", "the ask carries the asker's identity: {req}");
+    // the asker's identity, as the ask names its asker (`from`)
+    let asker = serde_json::from_str::<serde_json::Value>(req["body"].as_str().unwrap_or("{}")).ok().and_then(|v| v["from"].as_str().map(str::to_string)).unwrap_or_default();
+    assert!(!asker.is_empty() && req["author"] == asker.as_str(), "the ask carries the asker's identity: {req}");
     let verdict = rows_b.iter().find(|r| r["kind"] == "review.verdict").unwrap();
     assert_eq!(verdict["author"], "riley");
     let settled = rows_b.iter().find(|r| r["kind"] == "review.settled").unwrap();
     assert_eq!(settled["author"], "dna", "the organism's answer is its own");
 
-    // both clones append offline; sync makes one linear record
+    // both clones append with nothing running; each reads the other's row
+    // at once, in one order
     let n0 = rows_a.len();
     let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "tidy", "the", "readme"], &a);
-    assert!(ok && out.contains("requested in the record"), "{out}");
+    assert!(ok && out.contains("requested in the ledger"), "{out}");
     let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", "rename", "the", "topic"], &b);
-    assert!(ok && out.contains("requested in the record"), "{out}");
-    // A's ask pushed first; B's ask found the remote ahead and re-appended
-    // its own event on top before pushing (ask syncs as it appends), so
-    // A now pulls exactly one event and both heads agree
+    assert!(ok && out.contains("requested in the ledger"), "{out}");
     let (ok, out) = hale_in(&["dna", "sync"], &a);
-    assert!(ok && out.contains("pulled 1 event(s)"), "A pulls B's re-appended event: {out}");
-    let (ok, out_b) = hale_in(&["dna", "sync"], &b);
-    assert!(ok && out_b.contains("up to date"), "{out_b}");
-    assert_eq!(git(&["rev-parse", "refs/dna/journal"], &a), git(&["rev-parse", "refs/dna/journal"], &b), "converged");
+    assert!(ok && out.contains("the record is memory's: nothing to sync"), "{out}");
     let rows = record(&a);
+    assert_eq!(rows, record(&b), "both clones read one record");
     assert_eq!(rows.len(), n0 + 2);
     let asks: Vec<(u64, String)> = rows.iter().filter(|r| r["kind"] == "intent.requested").map(|r| (r["seq"].as_u64().unwrap_or(0), r["body"].as_str().unwrap_or("").to_string())).collect();
     let tidy = asks.iter().find(|(_, b)| b.contains("tidy the readme")).expect("A's ask");
     let rename = asks.iter().find(|(_, b)| b.contains("rename the topic")).expect("B's ask");
-    assert!(tidy.0 < rename.0, "B's event was re-appended after A's: {asks:?}");
-    assert_eq!(rename.0 as usize, rows.len() - 1, "at the tail, with its new seq");
+    assert!(tidy.0 < rename.0, "in the order they were appended: {asks:?}");
     let (ok, st) = hale_in(&["dna", "status"], &b);
     assert!(ok && st.contains("chain verified"), "{st}");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-/// The shakeout's finding 7: a remote that has no record yet. `sync`
-/// compared the local head with an absent remote head, took that for
-/// "nothing to do", and reported success without pushing — so the
-/// record stayed on the machine that made it and every other clone saw
-/// a governed repository with no history. The getting-started guide
-/// worked only because it told the reader to push `refs/dna/*` by hand.
-/// Here nobody does: the first `sync` after `git push origin main`
-/// carries the record, and a second clone acquires it.
-#[test]
-fn the_first_sync_carries_a_record_the_remote_does_not_have() {
-    let d = std::env::temp_dir().join(format!("hale_dna_sync_boot_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    let bare = d.join("origin.git");
-    git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
-    let (ok, out) = hale_in(&["dna", "new", "orgboot"], &d);
-    assert!(ok, "{out}");
-    let a: PathBuf = d.join("orgboot");
-    git(&["config", "user.name", "organism-host"], &a);
-    git(&["config", "user.email", "host@dna"], &a);
-    git(&["add", "-A"], &a);
-    git(&["commit", "-q", "-m", "the app"], &a);
-    git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
-    // the ordinary first push: the branch, and nothing about the record
-    git(&["push", "-q", "origin", "main"], &a);
-    let head = git(&["rev-parse", "refs/dna/journal"], &a);
-    assert!(!head.is_empty(), "the record exists in the clone that made it");
-
-    let (ok, out) = hale_in(&["dna", "sync"], &a);
-    assert!(ok, "{out}");
-    assert!(out.contains("pushed") && out.contains("the remote had none"), "sync says it carried the record: {out}");
-    let there = Command::new("git")
-        .args(["--git-dir", &bare.to_string_lossy(), "rev-parse", "refs/dna/journal"])
-        .output()
-        .expect("git");
-    assert!(there.status.success(), "the remote has the record now");
-    assert_eq!(String::from_utf8_lossy(&there.stdout).trim(), head, "the same head");
-
-    // a second clone, with nothing done by hand, has the whole record
-    let b = d.join("second");
-    git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
-    let (ok, out) = hale_in(&["dna", "sync"], &b);
-    assert!(ok && out.contains("pulled the record"), "{out}");
-    assert_eq!(git(&["rev-parse", "refs/dna/journal"], &b), head, "the same record in both clones");
-    let (ok, st) = hale_in(&["dna", "status"], &b);
-    assert!(ok && st.contains("chain verified"), "{st}");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-/// GH #603. A diverged reconcile used to rewind the live ref to the
-/// remote's head and then re-append the local-only events behind it
-/// one compare-and-swap at a time. For that whole window the record
-/// had lost rows it held a moment before: a reader saw a Review
-/// vanish from the board, an organism whose append lost the ref race
-/// reloaded without its own rows, and a re-append that lost three
-/// races left them lost for good. The reconciled chain is now built
-/// beside the ref and swapped in once. Two invariants, watched while
-/// a reconcile runs against a clone that keeps appending: every head a
-/// reader sees holds every row of the head it saw before, and nothing
-/// appended meanwhile is lost.
-#[test]
-fn a_reconcile_never_rewinds_the_record_and_keeps_rows_appended_meanwhile() {
-    let d = std::env::temp_dir().join(format!("hale_dna_sync_swap_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    let bare = d.join("origin.git");
-    git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
-    let (ok, out) = hale_in(&["dna", "new", "swapsync"], &d);
-    assert!(ok, "{out}");
-    let a: PathBuf = d.join("swapsync");
-    git(&["config", "user.name", "organism-host"], &a);
-    git(&["config", "user.email", "host@dna"], &a);
-    git(&["add", "-A"], &a);
-    git(&["commit", "-q", "-m", "the app"], &a);
-    git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &a);
-    let b = d.join("riley");
-    git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
-    git(&["config", "user.name", "riley"], &b);
-    git(&["config", "user.email", "riley@l"], &b);
-    let (ok, out) = hale_in(&["dna", "sync"], &b);
-    assert!(ok && out.contains("pulled the record"), "{out}");
-    let seed = record(&a).len();
-
-    // A appends twelve events offline (its pushes go nowhere, so the
-    // rows stay local); B appends four, each pushed: diverged.
-    git(&["config", "remote.origin.pushurl", &d.join("nowhere.git").to_string_lossy()], &a);
-    for i in 0..12 {
-        let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", &format!("local ask {i}")], &a);
-        assert!(ok, "{out}");
-    }
-    for i in 0..4 {
-        let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", &format!("remote ask {i}")], &b);
-        assert!(ok, "{out}");
-    }
-    let (ok, out) = hale_in(&["dna", "sync"], &b);
-    assert!(ok, "{out}");
-    assert_eq!(record(&a).len(), seed + 12);
-    assert_eq!(record(&b).len(), seed + 4);
-    git(&["config", "--unset", "remote.origin.pushurl"], &a);
-
-    // a reader polls A's record throughout: a head must hold every row of the head before it
-    let rows_of = |cwd: &Path| -> std::collections::BTreeSet<String> {
-        record(cwd).iter().map(|v| format!("{}|{}|{}", v["kind"], v["entity"], v["body"])).collect()
-    };
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reader = {
-        let a = a.clone();
-        let done = done.clone();
-        std::thread::spawn(move || {
-            let mut last_head = String::new();
-            let mut last_rows: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-            let mut violations: Vec<String> = Vec::new();
-            let mut heads = 0;
-            while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                let head = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/journal"]).current_dir(&a).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-                if !head.is_empty() && head != last_head {
-                    let rows = rows_of(&a);
-                    if !rows.is_empty() {
-                        let missing: Vec<&String> = last_rows.difference(&rows).collect();
-                        if !missing.is_empty() {
-                            violations.push(format!("head {} dropped {} row(s) the head before it held, e.g. {}", &head[..8], missing.len(), missing[0]));
-                        }
-                        last_rows = rows;
-                        last_head = head;
-                        heads += 1;
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            (heads, violations)
-        })
-    };
-    // …and A keeps appending while its reconcile runs
-    let appender = {
-        let a = a.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            for i in 0..3 {
-                let (ok, out) = hale_in(&["dna", "task", "create", "--no-wait", &format!("meanwhile ask {i}")], &a);
-                assert!(ok, "{out}");
-            }
-        })
-    };
-    let mut synced = false;
-    let mut last = String::new();
-    for _ in 0..6 {
-        let (ok, out) = hale_in(&["dna", "sync"], &a);
-        last = out.clone();
-        if ok && (out.contains("re-appended") || out.contains("up to date") || out.contains("pushed")) {
-            synced = true;
-            break;
-        }
-    }
-    appender.join().unwrap();
-    // one more sync carries whatever the appender added after the swap
-    let (ok, out) = hale_in(&["dna", "sync"], &a);
-    assert!(ok, "{out}");
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (heads, violations) = reader.join().unwrap();
-    assert!(synced, "the reconcile did not settle: {last}");
-    assert!(heads >= 2, "the reader saw the record move ({heads} head(s))");
-    assert!(violations.is_empty(), "the record rewound during the reconcile:\n{}", violations.join("\n"));
-    let rows = rows_of(&a);
-    for i in 0..12 {
-        assert!(rows.iter().any(|r| r.contains(&format!("local ask {i}"))), "local ask {i} survived the reconcile");
-    }
-    for i in 0..4 {
-        assert!(rows.iter().any(|r| r.contains(&format!("remote ask {i}"))), "remote ask {i} was pulled");
-    }
-    for i in 0..3 {
-        assert!(rows.iter().any(|r| r.contains(&format!("meanwhile ask {i}"))), "meanwhile ask {i}, appended during the reconcile, was kept");
-    }
-    assert_eq!(record(&a).len(), seed + 12 + 4 + 3, "every event once");
-    // and B, after its own sync, has the identical record
-    let (ok, out) = hale_in(&["dna", "sync"], &b);
-    assert!(ok, "{out}");
-    assert_eq!(git(&["rev-parse", "refs/dna/journal"], &a), git(&["rev-parse", "refs/dna/journal"], &b), "identical heads");
+    record::unmigrate(&a, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }

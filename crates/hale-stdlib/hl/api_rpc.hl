@@ -123,19 +123,76 @@ type __StdApiRequest {
     reason: String = "";
 }
 
-/// The outcome the runtime hands a transport to encode.
+/// The outcome the runtime hands a transport to encode: a handler error
+/// with the class its variant declares (spec/api.md § Error classes).
 type __StdApiOutcome = enum {
     Result(String),
-    HandlerError(String),
+    HandlerError(String, __StdApiErrorClass),
     Refusal(String, String, String),
     ServerError,
 };
+
+/// The class a handler error's variant declares (`@not_found Missing`),
+/// which a transport maps to its status; `Unclassed` for a variant that
+/// declares none and for an error type that is no enum.
+type __StdApiErrorClass = enum {
+    Unclassed,
+    NotFound,
+    Conflict,
+    Invalid,
+    Forbidden,
+    Unavailable,
+};
+
+/// The class a receiver's event numbers (`RpcEvent.class`, the expansion's
+/// numbering: 0 for none, then the classes in declaration order).
+fn __api_error_class(n: Int) -> __StdApiErrorClass {
+    if n == 1 { return __StdApiErrorClass::NotFound; }
+    if n == 2 { return __StdApiErrorClass::Conflict; }
+    if n == 3 { return __StdApiErrorClass::Invalid; }
+    if n == 4 { return __StdApiErrorClass::Forbidden; }
+    if n == 5 { return __StdApiErrorClass::Unavailable; }
+    return __StdApiErrorClass::Unclassed;
+}
+
+/// The class as a variant declares it (`not_found`), "" for none.
+fn __api_error_class_word(c: __StdApiErrorClass) -> String {
+    let mut w = "";
+    match c {
+        __StdApiErrorClass::Unclassed -> { },
+        __StdApiErrorClass::NotFound -> { w = "not_found"; },
+        __StdApiErrorClass::Conflict -> { w = "conflict"; },
+        __StdApiErrorClass::Invalid -> { w = "invalid"; },
+        __StdApiErrorClass::Forbidden -> { w = "forbidden"; },
+        __StdApiErrorClass::Unavailable -> { w = "unavailable"; },
+    }
+    return w;
+}
+
+/// A handler error's HTTP status: its class's, 422 for none.
+fn __api_http_error_status(c: __StdApiErrorClass) -> Int {
+    let mut s = 422;
+    match c {
+        __StdApiErrorClass::Unclassed -> { },
+        __StdApiErrorClass::NotFound -> { s = 404; },
+        __StdApiErrorClass::Conflict -> { s = 409; },
+        __StdApiErrorClass::Invalid -> { },
+        __StdApiErrorClass::Forbidden -> { s = 403; },
+        __StdApiErrorClass::Unavailable -> { s = 503; },
+    }
+    return s;
+}
 
 /// What a transport implements (spec/api.md § The `Rpc` interface).
 interface __StdApiRpc {
     fn attach(exposure: Int) -> String;
     fn frame(raw: Bytes, correlation: Int) -> std::api::Request;
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome);
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    );
     fn close_connection(correlation: Int);
     fn stop_listening();
 }
@@ -159,6 +216,9 @@ interface __StdApiSurface {
     fn member(name: String) -> Int;
     fn name_of(i: Int) -> String;
     fn requires(i: Int) -> String;
+    // the member's own digest (additive compatibility): a request naming it
+    // is admitted whatever else the surface has gained
+    fn member_digest(i: Int) -> String;
     fn receiver(i: Int) -> Int;
     fn check(i: Int, body: String) -> String;
     fn grants(role: String) -> String;
@@ -172,6 +232,13 @@ interface __StdApiSurface {
     fn schema_name(k: Int) -> String;
     fn schema_doc(k: Int) -> String;
     fn roles() -> String;
+    // The streams of the hubs an `http::Rest` exposure mounts (`hubs:`,
+    // GH #1780), described beside its members: stream `i` as a JSON object,
+    // the roles its row requires and the names of the schemas it reaches.
+    fn stream_count() -> Int;
+    fn stream_doc(i: Int) -> String;
+    fn stream_requires(i: Int) -> String;
+    fn stream_refs(i: Int) -> String;
 }
 
 // ---- the topics a transport, an exposure and a receiver share ----
@@ -233,6 +300,8 @@ type __StdApiRpcEvent {
     kind: Int;
     stamp: Int;
     body: String;
+    // a handler error's class (`__api_error_class`), 0 for none
+    class: Int = 0;
 }
 
 // ---- the exposure ----
@@ -262,24 +331,111 @@ type __StdApiRpcEntry {
     role: String = "";
 }
 
-fn __api_rpc_entry(rid: Int, state: Int, slot: Int, member: Int, gen: Int, correlation: Int, lost: Bool, body: String, caller: std::api::Principal, role: String) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: rid, state: state, slot: slot, member: member, gen: gen, correlation: correlation, lost: lost, body: body, caller_mode: caller.mode, caller_name: caller.name, caller_uid: caller.uid, caller_gid: caller.gid, caller_pid: caller.pid, caller_groups: caller.groups, caller_via: caller.via, role: role };
+fn __api_rpc_entry(
+    rid: Int,
+    state: Int,
+    slot: Int,
+    member: Int,
+    gen: Int,
+    correlation: Int,
+    lost: Bool,
+    body: String,
+    caller: std::api::Principal,
+    role: String
+) -> __StdApiRpcEntry {
+    return __StdApiRpcEntry {
+        rid: rid,
+        state: state,
+        slot: slot,
+        member: member,
+        gen: gen,
+        correlation: correlation,
+        lost: lost,
+        body: body,
+        caller_mode: caller.mode,
+        caller_name: caller.name,
+        caller_uid: caller.uid,
+        caller_gid: caller.gid,
+        caller_pid: caller.pid,
+        caller_groups: caller.groups,
+        caller_via: caller.via,
+        role: role,
+    };
 }
 
 fn __api_rpc_entry_caller(e: __StdApiRpcEntry) -> std::api::Principal {
-    return std::api::Principal { mode: e.caller_mode, name: e.caller_name, uid: e.caller_uid, gid: e.caller_gid, pid: e.caller_pid, groups: e.caller_groups, via: e.caller_via };
+    return std::api::Principal {
+        mode: e.caller_mode,
+        name: e.caller_name,
+        uid: e.caller_uid,
+        gid: e.caller_gid,
+        pid: e.caller_pid,
+        groups: e.caller_groups,
+        via: e.caller_via,
+    };
 }
 
 fn __api_rpc_entry_state(e: __StdApiRpcEntry, st: Int) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: e.rid, state: st, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: e.lost, body: e.body, caller_mode: e.caller_mode, caller_name: e.caller_name, caller_uid: e.caller_uid, caller_gid: e.caller_gid, caller_pid: e.caller_pid, caller_groups: e.caller_groups, caller_via: e.caller_via, role: e.role };
+    return __StdApiRpcEntry {
+        rid: e.rid,
+        state: st,
+        slot: e.slot,
+        member: e.member,
+        gen: e.gen,
+        correlation: e.correlation,
+        lost: e.lost,
+        body: e.body,
+        caller_mode: e.caller_mode,
+        caller_name: e.caller_name,
+        caller_uid: e.caller_uid,
+        caller_gid: e.caller_gid,
+        caller_pid: e.caller_pid,
+        caller_groups: e.caller_groups,
+        caller_via: e.caller_via,
+        role: e.role,
+    };
 }
 
 fn __api_rpc_entry_gen(e: __StdApiRpcEntry, g: Int) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: g, correlation: e.correlation, lost: e.lost, body: e.body, caller_mode: e.caller_mode, caller_name: e.caller_name, caller_uid: e.caller_uid, caller_gid: e.caller_gid, caller_pid: e.caller_pid, caller_groups: e.caller_groups, caller_via: e.caller_via, role: e.role };
+    return __StdApiRpcEntry {
+        rid: e.rid,
+        state: e.state,
+        slot: e.slot,
+        member: e.member,
+        gen: g,
+        correlation: e.correlation,
+        lost: e.lost,
+        body: e.body,
+        caller_mode: e.caller_mode,
+        caller_name: e.caller_name,
+        caller_uid: e.caller_uid,
+        caller_gid: e.caller_gid,
+        caller_pid: e.caller_pid,
+        caller_groups: e.caller_groups,
+        caller_via: e.caller_via,
+        role: e.role,
+    };
 }
 
 fn __api_rpc_entry_lost(e: __StdApiRpcEntry) -> __StdApiRpcEntry {
-    return __StdApiRpcEntry { rid: e.rid, state: e.state, slot: e.slot, member: e.member, gen: e.gen, correlation: e.correlation, lost: true, body: e.body, caller_mode: e.caller_mode, caller_name: e.caller_name, caller_uid: e.caller_uid, caller_gid: e.caller_gid, caller_pid: e.caller_pid, caller_groups: e.caller_groups, caller_via: e.caller_via, role: e.role };
+    return __StdApiRpcEntry {
+        rid: e.rid,
+        state: e.state,
+        slot: e.slot,
+        member: e.member,
+        gen: e.gen,
+        correlation: e.correlation,
+        lost: true,
+        body: e.body,
+        caller_mode: e.caller_mode,
+        caller_name: e.caller_name,
+        caller_uid: e.caller_uid,
+        caller_gid: e.caller_gid,
+        caller_pid: e.caller_pid,
+        caller_groups: e.caller_groups,
+        caller_via: e.caller_via,
+        role: e.role,
+    };
 }
 
 /// The first role of a comma-joined list.
@@ -350,9 +506,17 @@ fn __api_json_is_float(t: String) -> Bool {
         at = __api_json_run(t, at + 1);
         if at < 0 { return false; }
     }
-    if at < n && (std::str::byte_at_unchecked(t, at) == 101 || std::str::byte_at_unchecked(t, at) == 69) {
+    if at < n
+        && (std::str::byte_at_unchecked(t, at) == 101 || std::str::byte_at_unchecked(t, at) == 69)
+    {
         at = at + 1;
-        if at < n && (std::str::byte_at_unchecked(t, at) == 43 || std::str::byte_at_unchecked(t, at) == 45) { at = at + 1; }
+        if at < n
+            && (
+                std::str::byte_at_unchecked(t, at) == 43 || std::str::byte_at_unchecked(t, at) == 45
+            )
+        {
+            at = at + 1;
+        }
         at = __api_json_run(t, at);
         if at < 0 { return false; }
     }
@@ -364,7 +528,9 @@ fn __api_json_is_float(t: String) -> Bool {
 fn __api_json_is_string(t: String) -> Bool {
     let n = len(t);
     if n < 2 { return false; }
-    if std::str::byte_at_unchecked(t, 0) != 34 || std::str::byte_at_unchecked(t, n - 1) != 34 { return false; }
+    if std::str::byte_at_unchecked(t, 0) != 34 || std::str::byte_at_unchecked(t, n - 1) != 34 {
+        return false;
+    }
     let last = n - 1;
     let mut i = 1;
     while i < last {
@@ -381,7 +547,15 @@ fn __api_json_is_string(t: String) -> Bool {
                     k = k + 1;
                 }
                 i = i + 6;
-            } else if e == 34 || e == 92 || e == 47 || e == 98 || e == 102 || e == 110 || e == 114 || e == 116 {
+            } else if e == 34
+                || e == 92
+                || e == 47
+                || e == 98
+                || e == 102
+                || e == 110
+                || e == 114
+                || e == 116
+            {
                 i = i + 2;
             } else {
                 return false;
@@ -402,9 +576,19 @@ locus __StdApiRpcEntries {
 locus __StdApiNoRpc {
     fn attach(exposure: Int) -> String { return ""; }
     fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
-        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, reason: "no transport" };
+        return std::api::Request {
+            kind: 2,
+            bytes: raw,
+            correlation: correlation,
+            reason: "no transport",
+        };
     }
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) { }
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) { }
     fn close_connection(correlation: Int) { }
     fn stop_listening() { }
 }
@@ -416,6 +600,7 @@ locus __StdApiNoSurface {
     fn member(name: String) -> Int { return -1; }
     fn name_of(i: Int) -> String { return ""; }
     fn requires(i: Int) -> String { return ""; }
+    fn member_digest(i: Int) -> String { return ""; }
     fn receiver(i: Int) -> Int { return 0; }
     fn check(i: Int, body: String) -> String { return ""; }
     fn grants(role: String) -> String { return role; }
@@ -425,6 +610,10 @@ locus __StdApiNoSurface {
     fn schema_name(k: Int) -> String { return ""; }
     fn schema_doc(k: Int) -> String { return ""; }
     fn roles() -> String { return ""; }
+    fn stream_count() -> Int { return 0; }
+    fn stream_doc(i: Int) -> String { return ""; }
+    fn stream_requires(i: Int) -> String { return ""; }
+    fn stream_refs(i: Int) -> String { return ""; }
 }
 
 /// A role source that holds nobody: the default of an exposure's.
@@ -439,7 +628,9 @@ locus __StdApiNoExpiry {
 
 /// A role source that states no revision: the default of an exposure's.
 locus __StdApiNoRevision {
-    fn grants(p: std::api::Principal) -> std::api::Grants { return std::api::Grants { roles: "", revision: 0 }; }
+    fn grants(p: std::api::Principal) -> std::api::Grants {
+        return std::api::Grants { roles: "", revision: 0 };
+    }
 }
 
 /// The locus the runtime builds per serve site. Everything here is the
@@ -508,9 +699,20 @@ locus __StdApiExposure {
     }
     fn hello(slot: Int) {
         self.hello_sent[slot] = 1;
-        __ApiRpcHelloT <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.gone(slot);
+        __ApiRpcHelloT <- __StdApiRpcHello {
+            key: self.key_of(slot),
+            exposure: self.id,
+            slot: slot,
+        } or self.gone(slot);
     }
-    fn refuse(corr: Int, rid: Int, who: std::api::Principal, kind: String, reason: String, extra: String) {
+    fn refuse(
+        corr: Int,
+        rid: Int,
+        who: std::api::Principal,
+        kind: String,
+        reason: String,
+        extra: String
+    ) {
         self.transport.reply(corr, rid, who, __StdApiOutcome::Refusal(kind, reason, extra));
     }
     // Whether the caller holds `role` under this exposure's role source:
@@ -565,7 +767,8 @@ locus __StdApiExposure {
         return -1;
     }
     fn principal_json(p: std::api::Principal) -> String {
-        return "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\"}";
+        return "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\""
+            + std::json::escape_string(p.name) + "\"}";
     }
     // The principal as a description states it: a socket peer is its
     // kernel credentials, a bearer its name.
@@ -595,6 +798,19 @@ locus __StdApiExposure {
             }
             i = i + 1;
         }
+        // the streams of the hubs the exposure's listener mounts, by the
+        // same sources (an `http::Rest`'s `hubs:`; none elsewhere)
+        let mut streams = "";
+        let sn = self.rows.stream_count();
+        let mut j = 0;
+        while j < sn {
+            if len(self.missing_role(p, self.rows.stream_requires(j))) == 0 {
+                if len(streams) > 0 { streams = streams + ","; }
+                streams = streams + self.rows.stream_doc(j);
+                reached = reached + self.rows.stream_refs(j) + ",";
+            }
+            j = j + 1;
+        }
         let mut schemas = "";
         let sc = self.rows.schema_count();
         let mut k = 0;
@@ -622,7 +838,33 @@ locus __StdApiExposure {
                 roles = roles + "\"" + r + "\"";
             }
         }
-        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/" + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via + "\",\"address\":\"" + std::json::escape_string(self.address) + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_doc(p) + ",\"roles\":[" + roles + "]},\"members\":[" + members + "],\"streams\":[],\"outcomes\":" + (if self.via == "mcp" { __api_mcp_outcomes() } else { (if self.via == "grpc" { __api_grpc_outcomes() } else { (if self.via == "http" { __api_http_outcomes() } else { __api_unix_outcomes() }) }) }) + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
+        return "{\"description\":1,\"exposure\":\"" + self.surface + "@" + self.digest + "/"
+            + self.name + "\",\"name\":\"" + self.name + "\",\"surface\":\"" + self.surface
+            + "\",\"digest\":\"" + self.digest + "\",\"listener\":{\"transport\":\"" + self.via
+            + "\",\"address\":\"" + std::json::escape_string(self.address)
+            + "\"},\"codec\":\"json\",\"caller\":{\"principal\":" + self.principal_doc(p)
+            + ",\"roles\":[" + roles + "]},\"members\":[" + members
+            + "],\"streams\":[" + streams + "],\"outcomes\":"
+            + (
+                if self.via == "mcp" {
+                    __api_mcp_outcomes()
+                } else {
+                    (
+                        if self.via == "grpc" {
+                            __api_grpc_outcomes()
+                        } else {
+                            (
+                                if self.via == "http" {
+                                    __api_http_outcomes()
+                                } else {
+                                    __api_unix_outcomes()
+                                }
+                            )
+                        }
+                    )
+                }
+            )
+            + ",\"schemas\":{" + schemas + "},\"notes\":" + __api_notes() + "}";
     }
     fn on_ingress(i: __StdApiRpcIngress) {
         let rid = self.next_rid;
@@ -639,11 +881,26 @@ locus __StdApiExposure {
         let mut named = false;
         if len(r.credential) > 0 {
             let p = self.bearer.principal(r.credential);
-            who = std::api::Principal { mode: "bearer", name: p.name, uid: p.uid, gid: p.gid, pid: p.pid, groups: p.groups, via: self.via };
+            who = std::api::Principal {
+                mode: "bearer",
+                name: p.name,
+                uid: p.uid,
+                gid: p.gid,
+                pid: p.pid,
+                groups: p.groups,
+                via: self.via,
+            };
             named = len(p.name) > 0;
             if !named {
                 let why = self.bearer.refused();
-                self.refuse(i.correlation, rid, who, "unauthenticated", (if len(why) > 0 { why } else { "the bearer token is refused" }), "");
+                self.refuse(
+                    i.correlation,
+                    rid,
+                    who,
+                    "unauthenticated",
+                    (if len(why) > 0 { why } else { "the bearer token is refused" }),
+                    "",
+                );
                 return;
             }
             if self.has_expiry {
@@ -663,11 +920,12 @@ locus __StdApiExposure {
             return;
         }
         if r.kind == 1 {
-            self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
-            return;
-        }
-        if len(r.digest) > 0 && r.digest != self.digest {
-            self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was generated against " + r.digest, self.digest);
+            self.transport.reply(
+                i.correlation,
+                rid,
+                who,
+                __StdApiOutcome::Result(self.describe_full(who)),
+            );
             return;
         }
         let mut m = self.rows.member(r.member);
@@ -681,6 +939,23 @@ locus __StdApiExposure {
             // (`Orders__place`, the rpc of the `.proto`)
             m = self.tool_row(r.member);
         }
+        // the digest a request names is the surface's, or the member's own
+        // (additive compatibility: a client built against a member is
+        // admitted whatever else the surface has gained since)
+        if len(r.digest) > 0
+            && r.digest != self.digest
+            && (m < 0 || r.digest != self.rows.member_digest(m))
+        {
+            self.refuse(
+                i.correlation,
+                rid,
+                who,
+                "digest_mismatch",
+                "the request was generated against " + r.digest,
+                self.digest,
+            );
+            return;
+        }
         if m < 0 {
             self.refuse(i.correlation, rid, who, "malformed", "unknown_member: " + r.member, "");
             return;
@@ -688,7 +963,14 @@ locus __StdApiExposure {
         let req = self.rows.requires(m);
         let miss = self.missing_role(who, req);
         if len(miss) > 0 {
-            self.refuse(i.correlation, rid, who, "unauthorized", self.rows.name_of(m) + " requires " + miss, req);
+            self.refuse(
+                i.correlation,
+                rid,
+                who,
+                "unauthorized",
+                self.rows.name_of(m) + " requires " + miss,
+                req,
+            );
             return;
         }
         let body = std::str::from_bytes(r.bytes);
@@ -702,7 +984,14 @@ locus __StdApiExposure {
             return;
         }
         if self.inflight >= self.bound {
-            self.refuse(i.correlation, rid, who, "full", "the exposure holds its bound of requests accepted and not yet answered", "");
+            self.refuse(
+                i.correlation,
+                rid,
+                who,
+                "full",
+                "the exposure holds its bound of requests accepted and not yet answered",
+                "",
+            );
             return;
         }
         let slot = self.rows.receiver(m);
@@ -712,16 +1001,41 @@ locus __StdApiExposure {
             // nothing): ask again, and the bus says at once whether anyone
             // is there to answer.
             self.probe_ok = true;
-            __ApiRpcHelloT <- __StdApiRpcHello { key: self.key_of(slot), exposure: self.id, slot: slot } or self.probe_failed();
+            __ApiRpcHelloT <- __StdApiRpcHello {
+                key: self.key_of(slot),
+                exposure: self.id,
+                slot: slot,
+            } or self.probe_failed();
             if !self.probe_ok {
-                self.refuse(i.correlation, rid, who, "unavailable", "the receiver of " + self.rows.name_of(m) + " is unavailable; the call did not run", "");
+                self.refuse(
+                    i.correlation,
+                    rid,
+                    who,
+                    "unavailable",
+                    "the receiver of " + self.rows.name_of(m)
+                        + " is unavailable; the call did not run",
+                    "",
+                );
                 return;
             }
             self.slot_state[slot] = 0;
             self.hello_sent[slot] = 1;
         }
         self.inflight = self.inflight + 1;
-        self.admit(__api_rpc_entry(rid, 1, slot, m, self.slot_gen[slot], i.correlation, false, body, who, __api_rpc_first(req)));
+        self.admit(
+            __api_rpc_entry(
+                rid,
+                1,
+                slot,
+                m,
+                self.slot_gen[slot],
+                i.correlation,
+                false,
+                body,
+                who,
+                __api_rpc_first(req),
+            ),
+        );
         self.pump(slot);
     }
     // The pending table holds the requests accepted and not yet answered
@@ -791,7 +1105,15 @@ locus __StdApiExposure {
     }
     fn unavailable(k: Int) {
         let e = self.entries.get(k) or __StdApiRpcEntry { };
-        self.finish(k, __StdApiOutcome::Refusal("unavailable", "the receiver of " + self.rows.name_of(e.member) + " is unavailable; the call did not run", ""));
+        self.finish(
+            k,
+            __StdApiOutcome::Refusal(
+                "unavailable",
+                "the receiver of " + self.rows.name_of(e.member)
+                    + " is unavailable; the call did not run",
+                "",
+            ),
+        );
     }
     fn settle_slot(slot: Int, state: Int) {
         let n = self.entries.len();
@@ -845,7 +1167,19 @@ locus __StdApiExposure {
         }
         self.entries.set(best, __api_rpc_entry_state(e, 2)) or discard;
         self.slot_busy[slot] = e.rid;
-        __ApiRpcCallT <- __StdApiRpcCall { key: self.key_of(slot), exposure: self.id, exposure_name: self.name, member: e.member, rid: e.rid, stamp: self.slot_stamp[slot], generation: e.gen, via: self.via, body: e.body, caller: __api_rpc_entry_caller(e), role: e.role } or self.gone_dispatch(slot);
+        __ApiRpcCallT <- __StdApiRpcCall {
+            key: self.key_of(slot),
+            exposure: self.id,
+            exposure_name: self.name,
+            member: e.member,
+            rid: e.rid,
+            stamp: self.slot_stamp[slot],
+            generation: e.gen,
+            via: self.via,
+            body: e.body,
+            caller: __api_rpc_entry_caller(e),
+            role: e.role,
+        } or self.gone_dispatch(slot);
     }
     // The bus found no subscriber to hand the call to: the receiver is
     // draining or gone. The call, and every call queued behind it, did not run.
@@ -856,6 +1190,13 @@ locus __StdApiExposure {
         self.settle_slot(slot, 1);
     }
     fn on_event(ev: __StdApiRpcEvent) {
+        if ev.kind == 7 {
+            // the transport heard the address its listener was bound to (a
+            // listener born after this exposure, under a server locus the
+            // main locus holds): the description states it
+            if len(ev.body) > 0 { self.address = ev.body; }
+            return;
+        }
         if ev.kind == 5 {
             // an incarnation of the receiver is up. One announced twice (its
             // birth, and its answer to the exposure's hello) is one
@@ -877,7 +1218,10 @@ locus __StdApiExposure {
                 while k < n {
                     let e = self.entries.get(k) or __StdApiRpcEntry { };
                     if e.state == 1 && e.slot == ev.slot {
-                        self.entries.set(k, __api_rpc_entry_gen(e, self.slot_gen[ev.slot])) or discard;
+                        self.entries.set(
+                            k,
+                            __api_rpc_entry_gen(e, self.slot_gen[ev.slot]),
+                        ) or discard;
                     }
                     k = k + 1;
                 }
@@ -913,7 +1257,9 @@ locus __StdApiExposure {
         let e = self.entries.get(k) or __StdApiRpcEntry { };
         let slot = e.slot;
         if ev.kind == 0 { self.finish(k, __StdApiOutcome::Result(ev.body)); }
-        if ev.kind == 1 { self.finish(k, __StdApiOutcome::HandlerError(ev.body)); }
+        if ev.kind == 1 {
+            self.finish(k, __StdApiOutcome::HandlerError(ev.body, __api_error_class(ev.class)));
+        }
         if ev.kind == 2 { self.finish(k, __StdApiOutcome::ServerError); }
         if ev.kind == 3 { self.unavailable(k); }
         self.pump(slot);
@@ -960,7 +1306,14 @@ locus __StdApiExposure {
         while k < n {
             let e = self.entries.get(k) or __StdApiRpcEntry { };
             if e.state == 1 {
-                self.finish(k, __StdApiOutcome::Refusal("shutting_down", "the exposure is stopping; the call did not run", ""));
+                self.finish(
+                    k,
+                    __StdApiOutcome::Refusal(
+                        "shutting_down",
+                        "the exposure is stopping; the call did not run",
+                        "",
+                    ),
+                );
             }
             k = k + 1;
         }
@@ -996,7 +1349,7 @@ fn __api_outcome_kind(outcome: std::api::Outcome) -> String {
     let mut kind = "";
     match outcome {
         __StdApiOutcome::Result(b) -> { kind = "result"; },
-        __StdApiOutcome::HandlerError(b) -> { kind = "handler_error"; },
+        __StdApiOutcome::HandlerError(b, c) -> { kind = "handler_error"; },
         __StdApiOutcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
         __StdApiOutcome::ServerError -> { kind = "server_error"; },
     }
@@ -1026,7 +1379,8 @@ fn __api_refusal_object(k: String, r: String, x: String) -> String {
         }
         extra = ",\"requires\":[" + arr + "]";
     }
-    return "{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra + "}";
+    return "{\"kind\":\"" + k + "\",\"reason\":\"" + std::json::escape_string(r) + "\"" + extra
+        + "}";
 }
 
 /// The outcome encoding the HTTP transport states in a description
@@ -1061,8 +1415,10 @@ fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
         __StdApiOutcome::Result(b) -> {
             answer = "\"ok\":true,\"value\":" + b;
         },
-        __StdApiOutcome::HandlerError(b) -> {
+        __StdApiOutcome::HandlerError(b, c) -> {
             answer = "\"ok\":false,\"error\":" + b;
+            let w = __api_error_class_word(c);
+            if len(w) > 0 { answer = answer + ",\"class\":\"" + w + "\""; }
         },
         __StdApiOutcome::Refusal(k, r, x) -> {
             answer = "\"ok\":false,\"refusal\":" + __api_refusal_object(k, r, x);
@@ -1077,7 +1433,9 @@ fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
 /// The principal as a reply's `caller`; the fixture transport adds the
 /// door the call came through (`via`), a socket does not.
 fn __api_caller_json(p: std::api::Principal, with_via: Bool) -> String {
-    let mut j = "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\"" + std::json::escape_string(p.name) + "\",\"uid\":" + to_string(p.uid) + ",\"gid\":" + to_string(p.gid) + ",\"pid\":" + to_string(p.pid);
+    let mut j = "{\"mode\":\"" + std::json::escape_string(p.mode) + "\",\"name\":\""
+        + std::json::escape_string(p.name) + "\",\"uid\":" + to_string(p.uid) + ",\"gid\":"
+        + to_string(p.gid) + ",\"pid\":" + to_string(p.pid);
     if with_via && len(p.via) > 0 { j = j + ",\"via\":\"" + p.via + "\""; }
     return j + "}";
 }
@@ -1161,18 +1519,51 @@ locus __StdApiTestRpc {
         if kind == "call" { k = 0; }
         if kind == "describe" { k = 1; }
         if k == 2 {
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, reason: "not a request: a line is call or describe" };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                reason: "not a request: a line is call or describe",
+            };
         }
         let uid = std::str::parse_int(__api_test_field(text, 6)) or - 1;
-        let peer = std::api::Principal { mode: __api_test_field(text, 4), name: __api_test_field(text, 5), uid: uid, gid: uid, pid: 4242 };
+        let peer = std::api::Principal {
+            mode: __api_test_field(text, 4),
+            name: __api_test_field(text, 5),
+            uid: uid,
+            gid: uid,
+            pid: 4242,
+        };
         let payload = __api_test_field(text, 7);
-        return std::api::Request { kind: k, member: __api_test_field(text, 1), bytes: std::bytes::from_string(payload), digest: __api_test_field(text, 2), correlation: correlation, credential: __api_test_field(text, 3), peer: peer, reason: "" };
+        return std::api::Request {
+            kind: k,
+            member: __api_test_field(text, 1),
+            bytes: std::bytes::from_string(payload),
+            digest: __api_test_field(text, 2),
+            correlation: correlation,
+            credential: __api_test_field(text, 3),
+            peer: peer,
+            reason: "",
+        };
     }
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) {
         let kind = __api_outcome_kind(outcome);
         let answer = __api_outcome_answer(outcome);
-        let line = "{\"request_id\":" + to_string(request_id) + ",\"id\":" + to_string(correlation) + "," + answer + ",\"caller\":" + __api_caller_json(caller, true) + "}";
-        self.records.push(__StdApiTestRecord { correlation: correlation, request_id: request_id, kind: kind, line: line });
+        let line = "{\"request_id\":" + to_string(request_id) + ",\"id\":" + to_string(correlation)
+            + "," + answer + ",\"caller\":" + __api_caller_json(caller, true) + "}";
+        self.records.push(
+            __StdApiTestRecord {
+                correlation: correlation,
+                request_id: request_id,
+                kind: kind,
+                line: line,
+            },
+        );
     }
     fn close_connection(correlation: Int) {
         self.closed = self.closed + 1;
@@ -1183,19 +1574,40 @@ locus __StdApiTestRpc {
     }
     // ---- what a test drives ----
     fn send(correlation: Int, line: String) {
-        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.exposure, correlation: correlation, raw: std::bytes::from_string(line) };
+        __ApiRpcIngressT <- __StdApiRpcIngress {
+            exposure: self.exposure,
+            correlation: correlation,
+            raw: std::bytes::from_string(line),
+        };
     }
     /// A call as a bearer (`credential`) or a Unix peer (`credential` ""
     /// and `uid` ≥ 0 under the name `uid:<n>`), with the digest the client
     /// built against ("" for none).
     fn call(correlation: Int, member: String, payload: String, credential: String) {
-        self.send(correlation, "call\t" + member + "\t\t" + credential + "\tunix\tnobody\t-1\t" + payload);
+        self.send(
+            correlation,
+            "call\t" + member + "\t\t" + credential + "\tunix\tnobody\t-1\t" + payload,
+        );
     }
     fn call_as_peer(correlation: Int, member: String, payload: String, uid: Int) {
-        self.send(correlation, "call\t" + member + "\t\t\tunix\tuid:" + to_string(uid) + "\t" + to_string(uid) + "\t" + payload);
+        self.send(
+            correlation,
+            "call\t" + member + "\t\t\tunix\tuid:" + to_string(uid) + "\t" + to_string(uid) + "\t"
+                + payload,
+        );
     }
-    fn call_digest(correlation: Int, member: String, payload: String, credential: String, digest: String) {
-        self.send(correlation, "call\t" + member + "\t" + digest + "\t" + credential + "\tunix\tnobody\t-1\t" + payload);
+    fn call_digest(
+        correlation: Int,
+        member: String,
+        payload: String,
+        credential: String,
+        digest: String
+    ) {
+        self.send(
+            correlation,
+            "call\t" + member + "\t" + digest + "\t" + credential + "\tunix\tnobody\t-1\t"
+                + payload,
+        );
     }
     fn describe(correlation: Int, credential: String) {
         self.send(correlation, "describe\t\t\t" + credential + "\tunix\tnobody\t-1\t");
@@ -1350,30 +1762,48 @@ locus __StdApiUnixPeer {
             k = k + 1;
         }
         self.header = to_string(uid) + ":" + to_string(gid) + ":" + to_string(pid) + ":" + groups;
-        self.caller = __api_caller_json(std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: gid, pid: pid }, false);
+        self.caller = __api_caller_json(
+            std::api::Principal {
+                mode: "unix",
+                name: "uid:" + to_string(uid),
+                uid: uid,
+                gid: gid,
+                pid: pid,
+            },
+            false,
+        );
         // a reader that never reads cannot hold this connection's writer for long
         std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
     }
-    @unbounded
     run() {
+        // each read is a method of its own, so what it allocates (the
+        // chunk, the lines, the requests) is its scratch, freed when it
+        // returns: run() lasts as long as the connection, and its own
+        // scratch would hold every request the connection ever carried
         while self.open && !self.draining {
-            let chunk = self.stream.recv(65536) or "";
-            if len(chunk) == 0 {
-                self.open = false;
-            } else {
-                self.buf = self.buf + chunk;
-                if len(self.buf) > 60000 && std::str::index_of(self.buf, "\n") < 0 {
-                    self.write_line("{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one line of at most 60000 bytes\"},\"caller\":" + self.caller + "}");
-                    self.open = false;
-                } else {
-                    self.drain_lines();
-                }
-            }
+            self.read_once();
         }
         // the connection is over: the requests it still has with the
         // exposure are lost, and the descriptor is released
         self.lose_all();
         self.release_fd();
+    }
+    fn read_once() {
+        let chunk = self.stream.recv(65536) or "";
+        if len(chunk) == 0 {
+            self.open = false;
+            return;
+        }
+        self.buf = self.buf + chunk;
+        if len(self.buf) > 60000 && std::str::index_of(self.buf, "\n") < 0 {
+            self.write_line(
+                "{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one line of at most 60000 bytes\"},\"caller\":"
+                    + self.caller + "}",
+            );
+            self.open = false;
+            return;
+        }
+        self.drain_lines();
     }
     fn drain_lines() {
         let mut nl = std::str::index_of(self.buf, "\n");
@@ -1388,7 +1818,10 @@ locus __StdApiUnixPeer {
         let t = std::str::trim(line);
         if len(t) == 0 { return; }
         if len(t) > 60000 || !std::json::valid_object(t) {
-            self.write_line("{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one JSON object per line\"},\"caller\":" + self.caller + "}");
+            self.write_line(
+                "{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one JSON object per line\"},\"caller\":"
+                    + self.caller + "}",
+            );
             self.hangup();
             return;
         }
@@ -1397,7 +1830,11 @@ locus __StdApiUnixPeer {
         let mut id = std::json::find_field_raw(t, "id");
         if len(id) == 0 { id = "null"; }
         self.add(seq, id);
-        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: self.conn * 16777216 + seq, raw: std::bytes::from_string(self.header + "\t" + t) };
+        __ApiRpcIngressT <- __StdApiRpcIngress {
+            exposure: self.tid,
+            correlation: self.conn * 16777216 + seq,
+            raw: std::bytes::from_string(self.header + "\t" + t),
+        };
     }
     fn add(seq: Int, id: String) {
         let n = self.pending.len();
@@ -1429,7 +1866,10 @@ locus __StdApiUnixPeer {
             let p = self.pending.get(k) or __StdApiUnixPending { };
             if p.seq != 0 {
                 self.pending.set(k, __StdApiUnixPending { }) or discard;
-                __ApiRpcLostT <- __StdApiRpcLost { exposure: self.tid, correlation: self.conn * 16777216 + p.seq };
+                __ApiRpcLostT <- __StdApiRpcLost {
+                    exposure: self.tid,
+                    correlation: self.conn * 16777216 + p.seq,
+                };
             }
             k = k + 1;
         }
@@ -1444,7 +1884,10 @@ locus __StdApiUnixPeer {
         if k < 0 { return; }
         let p = self.pending.get(k) or __StdApiUnixPending { };
         self.pending.set(k, __StdApiUnixPending { }) or discard;
-        self.write_line("{\"request_id\":" + to_string(o.request_id) + ",\"id\":" + p.id + "," + o.answer + ",\"caller\":" + o.caller + "}");
+        self.write_line(
+            "{\"request_id\":" + to_string(o.request_id) + ",\"id\":" + p.id + "," + o.answer
+                + ",\"caller\":" + o.caller + "}",
+        );
     }
     fn on_group(o: __StdApiUnixOut) {
         if o.kind == 1 { self.hangup(); }
@@ -1481,7 +1924,12 @@ locus __StdApiUnixConns {
         tid: Int = 0;
     }
     fn serve(c: __StdIoTcpAccepted) {
-        __StdApiUnixPeer { conn: c.seq, tid: self.tid, route: self.tid * 4294967296 + c.seq, fd: c.fd };
+        __StdApiUnixPeer {
+            conn: c.seq,
+            tid: self.tid,
+            route: self.tid * 4294967296 + c.seq,
+            fd: c.fd,
+        };
     }
     accept(p: __StdApiUnixPeer) { }
     release(p: __StdApiUnixPeer) { }
@@ -1509,7 +1957,10 @@ locus __StdApiUnixListener {
         // (an inert one on no route until then)
         listener: String = "";
         relay: __StdIoTcpRelay = __StdIoTcpRelay { };
-        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdApiUnixConns { tid: self.tid }, armed: false };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections {
+            handler: __StdApiUnixConns { tid: self.tid },
+            armed: false,
+        };
     }
     bus {
         subscribe __ApiUnixOutT as on_ctl where key == self.tid;
@@ -1524,12 +1975,15 @@ locus __StdApiUnixListener {
         if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
-            eprintln("api: unix::Rpc could not listen on " + self.path);
+            __std_log_diag("api: unix::Rpc could not listen on " + self.path);
             std::process::exit(2);
         }
         self.relay.name = self.listener;
         self.relay.armed = true;
-        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdApiUnixConns { tid: self.tid } };
+        self.conns = __StdIoTcpConnections {
+            listener: self.listener,
+            handler: __StdApiUnixConns { tid: self.tid },
+        };
     }
     run() {
         if self.fd < 0 { return; }
@@ -1541,7 +1995,14 @@ locus __StdApiUnixListener {
         // exposure's subscriptions in place; the asking repeats until it does,
         // since nothing says which of the pools starts first.
         while !self.started && !self.stopped && !self.draining {
-            __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 4, seq: 0, request_id: 0, answer: "", caller: "" };
+            __ApiUnixOutT <- __StdApiUnixOut {
+                key: self.tid,
+                kind: 4,
+                seq: 0,
+                request_id: 0,
+                answer: "",
+                caller: "",
+            };
             std::time::sleep(2ms);
         }
         if !self.stopped && !self.draining {
@@ -1596,7 +2057,14 @@ locus __StdApiUnixRpc {
     // exposure, so any answer is a true one.
     fn on_ask(o: __StdApiUnixOut) {
         if o.kind == 4 {
-            __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 3, seq: 0, request_id: 0, answer: "", caller: "" };
+            __ApiUnixOutT <- __StdApiUnixOut {
+                key: self.tid,
+                kind: 3,
+                seq: 0,
+                request_id: 0,
+                answer: "",
+                caller: "",
+            };
         }
     }
     // The raw message is the connection's credentials (`uid:gid:pid:groups`),
@@ -1609,34 +2077,93 @@ locus __StdApiUnixRpc {
         let uid = std::str::parse_int(__api_field(head, ":", 0)) or - 1;
         let gid = std::str::parse_int(__api_field(head, ":", 1)) or - 1;
         let pid = std::str::parse_int(__api_field(head, ":", 2)) or - 1;
-        let peer = std::api::Principal { mode: "unix", name: "uid:" + to_string(uid), uid: uid, gid: gid, pid: pid, groups: __api_field(head, ":", 3) };
+        let peer = std::api::Principal {
+            mode: "unix",
+            name: "uid:" + to_string(uid),
+            uid: uid,
+            gid: gid,
+            pid: pid,
+            groups: __api_field(head, ":", 3),
+        };
         let call = std::json::string_field(line, "call");
         if call.kind == "string" {
             let payload = std::json::find_field_raw(line, "payload");
             if len(payload) == 0 {
-                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: peer, reason: "a call carries a \"payload\" object" };
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    peer: peer,
+                    reason: "a call carries a \"payload\" object",
+                };
             }
-            return std::api::Request { kind: 0, member: call.text, bytes: std::bytes::from_string(payload), digest: std::json::find_string_field(line, "digest"), correlation: correlation, peer: peer, reason: "" };
+            return std::api::Request {
+                kind: 0,
+                member: call.text,
+                bytes: std::bytes::from_string(payload),
+                digest: std::json::find_string_field(line, "digest"),
+                correlation: correlation,
+                peer: peer,
+                reason: "",
+            };
         }
         if std::json::find_field_raw(line, "describe") == "true" {
-            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, peer: peer, reason: "" };
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                peer: peer,
+                reason: "",
+            };
         }
-        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: peer, reason: "a request is a \"call\" or a \"describe\"" };
+        return std::api::Request {
+            kind: 2,
+            bytes: raw,
+            correlation: correlation,
+            peer: peer,
+            reason: "a request is a \"call\" or a \"describe\"",
+        };
     }
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
-        __ApiUnixOutT <- __StdApiUnixOut { key: self.tid * 4294967296 + correlation / 16777216, kind: 0, seq: correlation % 16777216, request_id: request_id, answer: __api_outcome_answer(outcome), caller: __api_caller_json(caller, false) };
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) {
+        __ApiUnixOutT <- __StdApiUnixOut {
+            key: self.tid * 4294967296 + correlation / 16777216,
+            kind: 0,
+            seq: correlation % 16777216,
+            request_id: request_id,
+            answer: __api_outcome_answer(outcome),
+            caller: __api_caller_json(caller, false),
+        };
     }
     // The request's connection is gone and its work has completed: nothing
     // is written; whatever is left of the connection is closed.
     fn close_connection(correlation: Int) {
         self.closed = self.closed + 1;
-        __ApiUnixOutT <- __StdApiUnixOut { key: self.tid * 4294967296 + correlation / 16777216, kind: 1, seq: 0, request_id: 0, answer: "", caller: "" };
+        __ApiUnixOutT <- __StdApiUnixOut {
+            key: self.tid * 4294967296 + correlation / 16777216,
+            kind: 1,
+            seq: 0,
+            request_id: 0,
+            answer: "",
+            caller: "",
+        };
     }
     // Close the listener and every connection, after the replies already
     // sent (one subscriber sees the bus in the order it was published).
     fn stop_listening() {
         self.stops = self.stops + 1;
-        __ApiUnixOutT <- __StdApiUnixOut { key: self.tid, kind: 1, seq: 0, request_id: 0, answer: "", caller: "" };
+        __ApiUnixOutT <- __StdApiUnixOut {
+            key: self.tid,
+            kind: 1,
+            seq: 0,
+            request_id: 0,
+            answer: "",
+            caller: "",
+        };
     }
 }
 
@@ -1667,6 +2194,8 @@ type __StdApiHttpOut {
     // header lines (each ending `\r\n`) a response carries besides the
     // fixed ones: the CORS headers of an `http::Rpc` with `cors` set
     headers: String = "";
+    // a reply to HEAD: the head states the body's length and sends none
+    bodyless: Bool = false;
 }
 
 /// The status a refusal kind has (spec/api.md § Outcomes).
@@ -1692,6 +2221,35 @@ locus __StdApiHttpPeer {
         published: Bool = false;
         answered: Bool = false;
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        // the most a request's body may declare: 1 MiB, or an `http::Rest`
+        // transport's `max_request_bytes` (spec/api.md § The REST transport)
+        max_request: Int = 1048576;
+        // an `http::Rest` fallback (spec/api.md § The REST transport, `fallback`): a request
+        // whose path no row serves goes to `fallback` on this connection
+        routes: String = "";
+        has_fallback: Bool = false;
+        fallback: __StdApiRestFallback = __StdApiRestFallback { };
+        // what serves it: `api_rest_fallback.hl`'s, appended only to a
+        // program that gives a fallback, so a program that gives none
+        // calls no handler from here
+        serve_fallback: fn (
+            __StdApiRestFallback,
+            std::io::tcp::Stream,
+            std::http::Request
+        ) -> Bool = __api_rest_no_fallback;
+        // the hubs an `http::Rest` mounts (spec/api.md § Streams, a hub
+        // mounted on an `http::Rest`): `<path> <hub>` per mount, joined by
+        // `,`, and what a WebSocket upgrade at a mount's path is handed to
+        // (`api_hub.hl`'s, joined only to a program that mounts one)
+        hubs: String = "";
+        mounts: __StdApiRestMounts = __StdApiRestMounts { };
+        serve_mount: fn (
+            __StdApiRestMounts,
+            String,
+            Int,
+            String,
+            std::http::Request
+        ) -> Bool = __api_rest_no_mount;
     }
     bus {
         subscribe __ApiHttpOutT as on_out where key == self.route;
@@ -1710,7 +2268,12 @@ locus __StdApiHttpPeer {
         let deadline = std::time::monotonic_ns() + 10000000000;
         let mut buf = "";
         let mut head_end = -1;
-        while self.open && head_end < 0 && len(buf) < 65536 && std::time::monotonic_ns() < deadline && !self.draining {
+        while self.open
+            && head_end < 0
+            && len(buf) < 65536
+            && std::time::monotonic_ns() < deadline
+            && !self.draining
+        {
             let chunk = self.stream.recv(65536) or "";
             if len(chunk) == 0 {
                 self.open = false;
@@ -1720,32 +2283,99 @@ locus __StdApiHttpPeer {
             }
         }
         if self.open && ((head_end < 0 && len(buf) >= 65536) || head_end > 65536) {
-            self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "") + "}", "");
+            self.respond(
+                400,
+                "{\"refusal\":"
+                    + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "")
+                    + "}",
+                "",
+                false,
+            );
             self.open = false;
         }
         if self.open && head_end >= 0 {
             let head = std::http::parse_request(buf[0..(head_end + 4)]);
+            if len(self.hubs) > 0 {
+                // a WebSocket upgrade at a mounted hub's path: the hub's
+                // connection now, with what was read of it
+                let __api_rest_mount_fn = self.serve_mount;
+                if __api_rest_mount_fn(self.mounts, self.hubs, self.fd, buf, head) {
+                    self.fd = -1;
+                    self.open = false;
+                }
+            }
             let want = std::str::parse_int(std::http::header(head, "Content-Length")) or 0;
-            if want > 1048576 {
-                self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}", "");
+            // the declared length, before a byte of the body is read
+            if !self.open {
+                // handed to a hub
+            } else if want > self.max_request {
+                self.respond(
+                    413,
+                    "{\"refusal\":"
+                        + __api_refusal_object(
+                            "too_large",
+                            "a request body is at most " + to_string(self.max_request) + " bytes",
+                            "",
+                        )
+                        + "}",
+                    "",
+                    false,
+                );
                 self.open = false;
             } else {
+                // the body goes to a builder: what a connection holds is
+                // linear in what it sent (appending each read to a String
+                // kept every prefix alive until the request was answered)
+                let body = std::bytes::BytesBuilder { initial_cap: head_end + 4 + want + 1 };
+                body.append_str(buf);
                 let mut have = len(buf) - (head_end + 4);
-                while self.open && have < want && std::time::monotonic_ns() < deadline && !self.draining {
+                while self.open
+                    && have < want
+                    && std::time::monotonic_ns() < deadline
+                    && !self.draining
+                {
                     let chunk = self.stream.recv(65536) or "";
                     if len(chunk) == 0 {
                         self.open = false;
                     } else {
-                        buf = buf + chunk;
-                        have = len(buf) - (head_end + 4);
+                        body.append_str(chunk);
+                        have = body.len() - (head_end + 4);
                     }
+                }
+                if self.open
+                    && have >= want
+                    && self.has_fallback
+                    && !__api_rest_serves(self.routes, head.path)
+                {
+                    // no row serves the path: the program's own handler
+                    // answers it on this connection, as a Server's would
+                    self.published = true;
+                    self.answered = true;
+                    let whole = body.finish() or std::bytes::from_string("");
+                    let mut req = std::http::parse_request(
+                        std::str::from_bytes(std::bytes::slice(whole, 0, head_end + 4 + want)),
+                    );
+                    req.conn_fd = self.fd;
+                    // a name no program binds: a program's own `serve`
+                    // would otherwise be the one called
+                    let __api_rest_fallback_fn = self.serve_fallback;
+                    if __api_rest_fallback_fn(self.fallback, self.stream, req) {
+                        // taken over: the connection is the handler's now
+                        self.fd = -1;
+                    }
+                    self.open = false;
                 }
                 if self.open && have >= want {
                     // the request is whole: the exposure answers it, and the
                     // wait for the answer is not on the clock of a read
                     let _ = std::io::tcp::__set_recv_timeout_ns(self.fd, 0);
                     self.published = true;
-                    __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: self.conn, raw: std::bytes::from_string(buf[0..(head_end + 4 + want)]) };
+                    let whole = body.finish() or std::bytes::from_string("");
+                    __ApiRpcIngressT <- __StdApiRpcIngress {
+                        exposure: self.tid,
+                        correlation: self.conn,
+                        raw: std::bytes::slice(whole, 0, head_end + 4 + want),
+                    };
                     // what the client sends meanwhile is not read as a request;
                     // its end of the stream is the connection lost
                     while self.open && !self.draining {
@@ -1770,16 +2400,25 @@ locus __StdApiHttpPeer {
         }
         if o.kind != 0 || !self.open || self.answered { return; }
         self.answered = true;
-        self.respond(o.status, o.body, o.headers);
+        self.respond(o.status, o.body, o.headers, o.bodyless);
         self.hangup();
     }
     fn on_group(o: __StdApiHttpOut) {
         if o.kind == 1 { self.hangup(); }
     }
-    fn respond(status: Int, body: String, extra: String) {
+    fn respond(status: Int, body: String, extra: String, bodyless: Bool) {
         if self.fd < 0 { return; }
+        let mut sent = body;
+        if bodyless { sent = ""; }
         // a write that fails closes this connection, and only this one
-        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
+        self.stream.send(
+            "HTTP/1.1 " + to_string(status) + " " + __status_phrase(status)
+                + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra
+                + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n"
+                + sent,
+        ) or {
+            self.open = false;
+        };
     }
     // Stop reading: the shutdown wakes the reader, which ends the connection.
     fn hangup() {
@@ -1802,10 +2441,41 @@ locus __StdApiHttpPeer {
 locus __StdApiHttpConns {
     params {
         tid: Int = 0;
+        max_request: Int = 1048576;
+        routes: String = "";
+        has_fallback: Bool = false;
+        fallback: __StdApiRestFallback = __StdApiRestFallback { };
+        serve_fallback: fn (
+            __StdApiRestFallback,
+            std::io::tcp::Stream,
+            std::http::Request
+        ) -> Bool = __api_rest_no_fallback;
+        hubs: String = "";
+        mounts: __StdApiRestMounts = __StdApiRestMounts { };
+        serve_mount: fn (
+            __StdApiRestMounts,
+            String,
+            Int,
+            String,
+            std::http::Request
+        ) -> Bool = __api_rest_no_mount;
     }
     fn serve(c: __StdIoTcpAccepted) {
         let n = ((c.seq - 1) % 16777215) + 1;
-        __StdApiHttpPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: c.fd };
+        __StdApiHttpPeer {
+            conn: n,
+            tid: self.tid,
+            route: self.tid * 4294967296 + n,
+            fd: c.fd,
+            max_request: self.max_request,
+            routes: self.routes,
+            has_fallback: self.has_fallback,
+            fallback: self.fallback,
+            serve_fallback: self.serve_fallback,
+            hubs: self.hubs,
+            mounts: self.mounts,
+            serve_mount: self.serve_mount,
+        };
     }
     accept(p: __StdApiHttpPeer) { }
     release(p: __StdApiHttpPeer) { }
@@ -1850,6 +2520,36 @@ locus __StdApiHttpListener {
         bind: String = "";
         what: String = "http::Rpc";
         tid: Int = 0;
+        // an `http::Rest` exposure's route table and fallback, written by
+        // the compiler from the transport literal (spec/api.md § The REST transport, `fallback`)
+        routes: String = "";
+        has_fallback: Bool = false;
+        fallback: std::http::Handler = __StdApiRestNoFallback { };
+        serve_fallback: fn (
+            __StdApiRestFallback,
+            std::io::tcp::Stream,
+            std::http::Request
+        ) -> Bool = __api_rest_no_fallback;
+        // the handler as the connections hold it
+        held: __StdApiRestFallback = __StdApiRestFallback { h: self.fallback };
+        // the hubs an `http::Rest` mounts, written by the compiler from the
+        // transport's `hubs:` (spec/api.md § Streams): the table, the hubs'
+        // connections (`std::api::ws`'s, on this listener's pool) and what
+        // hands an upgrade to them
+        hubs: String = "";
+        mounts: __StdApiRestMount = __StdApiRestNoMount { };
+        serve_mount: fn (
+            __StdApiRestMounts,
+            String,
+            Int,
+            String,
+            std::http::Request
+        ) -> Bool = __api_rest_no_mount;
+        held_mounts: __StdApiRestMounts = __StdApiRestMounts { h: self.mounts };
+        // the body cap its connections hold: 1 MiB until the transport's
+        // answer to its asking names another (an `http::Rest`'s
+        // `max_request_bytes`)
+        max_request: Int = 1048576;
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
@@ -1858,7 +2558,19 @@ locus __StdApiHttpListener {
         // consumer on it (an inert one on no route until then)
         listener: String = "";
         relay: __StdIoTcpRelay = __StdIoTcpRelay { };
-        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdApiHttpConns { tid: self.tid }, armed: false };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections {
+            handler: __StdApiHttpConns {
+                tid: self.tid,
+                routes: self.routes,
+                has_fallback: self.has_fallback,
+                fallback: self.held,
+                serve_fallback: self.serve_fallback,
+                hubs: self.hubs,
+                mounts: self.held_mounts,
+                serve_mount: self.serve_mount,
+            },
+            armed: false,
+        };
     }
     bus {
         subscribe __ApiHttpOutT as on_ctl where key == self.tid;
@@ -1874,19 +2586,54 @@ locus __StdApiHttpListener {
         if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
-            eprintln("api: " + self.what + " could not listen on " + self.bind);
+            __std_log_diag("api: " + self.what + " could not listen on " + self.bind);
             std::process::exit(2);
         }
         self.relay.name = self.listener;
         self.relay.armed = true;
-        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdApiHttpConns { tid: self.tid } };
+        self.conns = __StdIoTcpConnections {
+            listener: self.listener,
+            handler: __StdApiHttpConns {
+                tid: self.tid,
+                routes: self.routes,
+                has_fallback: self.has_fallback,
+                fallback: self.held,
+                serve_fallback: self.serve_fallback,
+                hubs: self.hubs,
+                mounts: self.held_mounts,
+                serve_mount: self.serve_mount,
+            },
+        };
     }
     run() {
         // see the Unix listener: nothing is accepted before the exposure is
         // subscribed, and the asking repeats until the transport answers
         while !self.started && !self.stopped && !self.draining {
-            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 4, status: 0, body: "" };
+            __ApiHttpOutT <- __StdApiHttpOut {
+                key: self.tid,
+                kind: 4,
+                status: 0,
+                body: self.listener,
+            };
             std::time::sleep(2ms);
+        }
+        // the cap the transport named reaches the connections before the
+        // first is accepted
+        if !self.stopped && !self.draining && self.max_request != 1048576 {
+            self.conns = __StdIoTcpConnections {
+                listener: self.listener,
+                handler: __StdApiHttpConns {
+                    tid: self.tid,
+                    max_request: self.max_request,
+                    routes: self.routes,
+                    has_fallback: self.has_fallback,
+                    fallback: self.held,
+                    serve_fallback: self.serve_fallback,
+                    hubs: self.hubs,
+                    mounts: self.held_mounts,
+                    serve_mount: self.serve_mount,
+                },
+            };
         }
         if !self.stopped && !self.draining {
             self.relay.accept_all(self.fd, -1);
@@ -1894,7 +2641,11 @@ locus __StdApiHttpListener {
         self.release_socket();
     }
     fn on_ctl(o: __StdApiHttpOut) {
-        if o.kind == 3 { self.started = true; }
+        if o.kind == 3 && !self.started {
+            // the transport's answer names the body cap its connections hold
+            if o.status > 0 { self.max_request = o.status; }
+            self.started = true;
+        }
         if o.kind == 1 {
             // the accept wakes and returns, and run() releases the socket
             self.stopped = true;
@@ -1956,7 +2707,8 @@ fn __api_cors_headers(origin: String, preflight: Bool) -> String {
     if len(origin) == 0 { return h; }
     h = h + "Access-Control-Allow-Origin: " + origin + "\r\n";
     if preflight {
-        h = h + "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Hale-Surface-Digest\r\nAccess-Control-Max-Age: 600\r\n";
+        h = h
+            + "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Hale-Surface-Digest\r\nAccess-Control-Max-Age: 600\r\n";
     }
     return h;
 }
@@ -1981,12 +2733,25 @@ locus __StdApiHttpRpc {
     bus {
         subscribe __ApiHttpOutT as on_ask where key == self.tid;
         publish __ApiHttpOutT;
+        publish __ApiRpcEventT;
     }
     fn attach(exposure: Int) -> String {
         return "http";
     }
     fn on_ask(o: __StdApiHttpOut) {
         if o.kind == 4 {
+            // the listener's asking names the address it was bound to: the
+            // exposure's description states it
+            if len(o.body) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent {
+                    exposure: self.tid,
+                    rid: 0,
+                    slot: 0,
+                    kind: 7,
+                    stamp: 0,
+                    body: o.body,
+                };
+            }
             __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
         }
     }
@@ -1999,7 +2764,10 @@ locus __StdApiHttpRpc {
         while k < n {
             let p = self.pending.get(k) or __StdApiHttpCors { };
             if p.corr == -1 || p.corr == corr {
-                self.pending.set(k, __StdApiHttpCors { corr: corr, preflight: preflight, origin: origin }) or discard;
+                self.pending.set(
+                    k,
+                    __StdApiHttpCors { corr: corr, preflight: preflight, origin: origin },
+                ) or discard;
                 return;
             }
             k = k + 1;
@@ -2025,7 +2793,13 @@ locus __StdApiHttpRpc {
         let nobody = std::api::Principal { mode: "bearer", name: "" };
         if len(req.method) == 0 || len(req.path) == 0 {
             if len(self.cors) > 0 { self.note(correlation, false, ""); }
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "not an HTTP request" };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                peer: nobody,
+                reason: "not an HTTP request",
+            };
         }
         let auth = std::http::header(req, "Authorization");
         let mut token = "";
@@ -2043,27 +2817,78 @@ locus __StdApiHttpRpc {
             let preflight = req.method == "OPTIONS" && route;
             self.note(correlation, preflight, allowed);
             if preflight {
-                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "a CORS preflight" };
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    credential: token,
+                    peer: nobody,
+                    reason: "a CORS preflight",
+                };
             }
         }
         if req.method == "GET" && path == "/.description" {
-            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
         if req.method == "POST" && std::str::starts_with(path, "/call/") {
-            let member = std::str::replace(std::str::replace(path[6..len(path)], "%3A", ":"), "%3a", ":");
+            let member = std::str::replace(
+                std::str::replace(path[6..len(path)], "%3A", ":"),
+                "%3a",
+                ":",
+            );
             if len(req.body) == 0 {
-                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "a call carries a body" };
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    credential: token,
+                    peer: nobody,
+                    reason: "a call carries a body",
+                };
             }
-            return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(req.body), digest: std::http::header(req, "Hale-Surface-Digest"), correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 0,
+                member: member,
+                bytes: std::bytes::from_string(req.body),
+                digest: std::http::header(req, "Hale-Surface-Digest"),
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
-        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "a request is POST /call/<member> or GET /.description" };
+        return std::api::Request {
+            kind: 2,
+            bytes: raw,
+            correlation: correlation,
+            credential: token,
+            peer: nobody,
+            reason: "a request is POST /call/<member> or GET /.description",
+        };
     }
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) {
         let mut status = 500;
         let mut body = "{\"refusal\":{\"kind\":\"server\"}}";
+        let mut class = "";
         match outcome {
             __StdApiOutcome::Result(b) -> { status = 200; body = b; },
-            __StdApiOutcome::HandlerError(b) -> { status = 422; body = b; },
+            __StdApiOutcome::HandlerError(b, c) -> {
+                status = __api_http_error_status(c);
+                body = b;
+                class = __api_error_class_word(c);
+            },
             __StdApiOutcome::Refusal(k, r, x) -> {
                 status = __api_http_refusal_status(k);
                 body = "{\"refusal\":" + __api_refusal_object(k, r, x) + "}";
@@ -2082,22 +2907,720 @@ locus __StdApiHttpRpc {
                     body = "";
                 } else {
                     status = 403;
-                    body = "{\"refusal\":" + __api_refusal_object("unauthorized", "the origin is not one this exposure answers CORS for", "") + "}";
+                    body = "{\"refusal\":"
+                        + __api_refusal_object(
+                            "unauthorized",
+                            "the origin is not one this exposure answers CORS for",
+                            "",
+                        )
+                        + "}";
                 }
             }
             headers = __api_cors_headers(p.origin, p.preflight);
+            if len(class) > 0 {
+                headers = headers + "Access-Control-Expose-Headers: Hale-Error-Class\r\n";
+            }
         }
-        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body, headers: headers };
+        // a classed handler error says so: its status may be a refusal's too
+        if len(class) > 0 { headers = headers + "Hale-Error-Class: " + class + "\r\n"; }
+        __ApiHttpOutT <- __StdApiHttpOut {
+            key: self.tid * 4294967296 + correlation,
+            kind: 0,
+            status: status,
+            body: body,
+            headers: headers,
+        };
     }
     // The request's connection is gone and its work has completed: nothing
     // is written; whatever is left of the connection is closed.
     fn close_connection(correlation: Int) {
         self.closed = self.closed + 1;
         if len(self.cors) > 0 { let _ = self.take(correlation); }
-        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 1, status: 0, body: "" };
+        __ApiHttpOutT <- __StdApiHttpOut {
+            key: self.tid * 4294967296 + correlation,
+            kind: 1,
+            status: 0,
+            body: "",
+        };
     }
     // Close the listener and every connection, after the responses already
     // sent (one subscriber sees the bus in the order it was published).
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };
+    }
+}
+
+// ---- the REST transport (spec/api.md § The REST transport) ----
+//
+// `std::api::http::Rest` serves an exposure over the same HTTP/1.1
+// connection substrate as `http::Rpc` (the listener and the connections are
+// `__StdApiHttpListener` and `__StdApiHttpPeer`), but a request is routed by
+// its method and path instead of being `POST /call/<member>`. The compiler
+// writes the route table into the literal (`routes`): one line per row,
+// `METHOD|/pattern/:param|Member|status|field:kind,…`, the most specific
+// pattern of a method first. A request is matched against it, its path
+// parameters and query are bound into the request's JSON object beside the
+// body, and the call goes to the exposure as a call of the row's member, so
+// the digest, the bearer, the roles, `requires` and the queue are the ones
+// `http::Rpc` has. The statuses the table and the matcher own (404, 405,
+// the success status, `OPTIONS`, `HEAD`) are decided here; every other
+// status is the contract's (§ Outcomes).
+
+/// What a route line's field list says of a field: `i` an integer, `f` a
+/// float, `b` a bool, `s` a string (text or an enum's name); "" for a name
+/// the request has no scalar field of.
+fn __api_rest_kind(fields: String, name: String) -> String {
+    let mut rest = fields;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let mut one = rest;
+        if comma >= 0 {
+            one = rest[0..comma];
+            rest = rest[(comma + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        let colon = std::str::index_of(one, ":");
+        if colon > 0 && one[0..colon] == name { return one[(colon + 1)..len(one)]; }
+    }
+    return "";
+}
+
+/// Cell `n` (from 0) of a route line.
+fn __api_rest_cell(line: String, n: Int) -> String {
+    let mut rest = line;
+    let mut k = 0;
+    while k < n {
+        let bar = std::str::index_of(rest, "|");
+        if bar < 0 { return ""; }
+        rest = rest[(bar + 1)..len(rest)];
+        k = k + 1;
+    }
+    let bar = std::str::index_of(rest, "|");
+    if bar < 0 { return rest; }
+    return rest[0..bar];
+}
+
+fn __api_rest_word(kind: String) -> String {
+    if kind == "i" { return "integer"; }
+    if kind == "f" { return "number"; }
+    if kind == "b" { return "boolean"; }
+    return "value";
+}
+
+/// `raw` as the JSON text of a field of `kind`; "" when it is none.
+fn __api_rest_json(kind: String, raw: String) -> String {
+    if kind == "s" { return "\"" + std::json::escape_string(raw) + "\""; }
+    if kind == "b" {
+        if raw == "true" || raw == "false" { return raw; }
+        return "";
+    }
+    if kind == "i" || kind == "f" {
+        let n = len(raw);
+        let mut digits = 0;
+        let mut i = 0;
+        while i < n {
+            let c = std::str::byte_at_unchecked(raw, i);
+            if c >= 48 && c <= 57 {
+                digits = digits + 1;
+            } else {
+                if kind == "i" && !(c == 45 && i == 0) { return ""; }
+                if kind == "f" && c != 45 && c != 43 && c != 46 && c != 101 && c != 69 {
+                    return "";
+                }
+            }
+            i = i + 1;
+        }
+        if digits == 0 { return ""; }
+        return raw;
+    }
+    return "";
+}
+
+/// A request bound: its JSON body, or why it could not be.
+type __StdApiRestBound {
+    ok: Bool = true;
+    body: String = "";
+    reason: String = "";
+}
+
+/// The request's JSON object: the path parameters and the query's scalar
+/// fields (a name the request has no scalar field of is ignored; a path
+/// parameter wins over a query key of its name, and a query key's first
+/// value over its later ones) laid beside the body's own members.
+fn __api_rest_bind(
+    fields: String,
+    pattern: String,
+    path: String,
+    qs: String,
+    body: String
+) -> __StdApiRestBound {
+    let p = std::http::RouteParams { qs: qs };
+    let mut pairs = "";
+    let mut seen = ",";
+    if __http_match_pattern_into(pattern, path, p) {
+        let n = count(p.path_keys);
+        let mut i = 0;
+        while i < n {
+            let k = at(p.path_keys, i) or "";
+            let kind = __api_rest_kind(fields, k);
+            let json = __api_rest_json(kind, __std_url_decode(at(p.path_vals, i) or ""));
+            if len(json) == 0 {
+                return __StdApiRestBound {
+                    ok: false,
+                    reason: "the path parameter `" + k + "` is not a " + __api_rest_word(kind),
+                };
+            }
+            pairs = pairs + "\"" + k + "\":" + json + ",";
+            seen = seen + k + ",";
+            i = i + 1;
+        }
+    }
+    let total = len(qs);
+    let mut cursor = 0;
+    while cursor < total {
+        let amp = std::str::index_of_from(qs, "&", cursor);
+        let pair_end = if amp < 0 { total } else { amp };
+        let eq = std::str::index_of_from(qs, "=", cursor);
+        let key_end = if eq < 0 || eq > pair_end { pair_end } else { eq };
+        let k = __std_url_decode_query(qs[cursor..key_end]);
+        let kind = __api_rest_kind(fields, k);
+        if len(kind) > 0 && !std::str::contains(seen, "," + k + ",") {
+            let mut raw = "";
+            if key_end < pair_end { raw = __std_url_decode_query(qs[(key_end + 1)..pair_end]); }
+            let json = __api_rest_json(kind, raw);
+            if len(json) == 0 {
+                return __StdApiRestBound {
+                    ok: false,
+                    reason: "the query parameter `" + k + "` is not a " + __api_rest_word(kind),
+                };
+            }
+            pairs = pairs + "\"" + k + "\":" + json + ",";
+            seen = seen + k + ",";
+        }
+        cursor = pair_end + 1;
+    }
+    let t = std::str::trim(body);
+    if len(pairs) == 0 {
+        if len(t) == 0 { return __StdApiRestBound { body: "{}" }; }
+        return __StdApiRestBound { body: body };
+    }
+    let inner = pairs[0..(len(pairs) - 1)];
+    if len(t) == 0 || t == "{}" { return __StdApiRestBound { body: "{" + inner + "}" }; }
+    if t[0..1] != "{" {
+        return __StdApiRestBound {
+            ok: false,
+            reason: "a body that is not an object cannot take path or query parameters",
+        };
+    }
+    return __StdApiRestBound { body: "{" + inner + "," + t[1..len(t)] };
+}
+
+/// `m` joined to the methods a path allows (a `GET` allows `HEAD`).
+fn __api_rest_allow(allow: String, m: String) -> String {
+    let mut a = allow;
+    if !std::str::contains(a, m) {
+        if len(a) > 0 { a = a + ", "; }
+        a = a + m;
+    }
+    if m == "GET" && !std::str::contains(a, "HEAD") { a = a + ", HEAD"; }
+    return a;
+}
+
+/// What the REST transport keeps of a request between `frame` and `reply`:
+/// corr, the connection (-1 for a free record); mode, 0 a call, 1 an
+/// `OPTIONS`, 2 no route for the path, 3 a route that takes no such method,
+/// 4 a body that is not `application/json`, 5 a write with no body from an
+/// origin `cors` does not list; status, the success status of the route; origin, the request's `Origin`
+/// when `cors` allows it, else ""; denied, an `Origin` that `cors` does not
+/// allow; head, a `HEAD`; allow, the methods the path takes.
+type __StdApiRestPending {
+    corr: Int = -1;
+    mode: Int = 0;
+    status: Int = 200;
+    origin: String = "";
+    denied: Bool = false;
+    head: Bool = false;
+    allow: String = "";
+}
+
+@form(vec)
+locus __StdApiRestTable {
+    capacity { heap items of __StdApiRestPending; }
+}
+
+/// The `http::Rest` fallback as a connection holds it: the program's
+/// handler (`h`). Only `api_rest_fallback.hl`, appended to a program that
+/// gives a fallback, calls it.
+locus __StdApiRestFallback {
+    params {
+        h: std::http::Handler = __StdApiRestNoFallback { };
+    }
+}
+
+/// What a REST transport with no fallback holds in its place; never called
+/// (`has_fallback` is false wherever it is).
+locus __StdApiRestNoFallback {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 404, body: "" };
+    }
+}
+
+/// Whether a row of `routes` serves the request target's path, by any
+/// method (a path a row serves keeps Rest's own `405`, `OPTIONS` and CORS),
+/// or the path is the exposure's `/.description`.
+fn __api_rest_serves(routes: String, target: String) -> Bool {
+    let path = std::str::replace(
+        std::str::replace(__http_path_only(target), "%3A", ":"),
+        "%3a",
+        ":",
+    );
+    if path == "/.description" { return true; }
+    let probe = std::http::RouteParams { qs: "" };
+    let mut rest = routes;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = rest;
+        if nl >= 0 {
+            line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        if __http_match_pattern_into(__api_rest_cell(line, 1), path, probe) { return true; }
+    }
+    return false;
+}
+
+/// What a connection holds in place of a fallback's server when the
+/// exposure has no fallback; never called (`has_fallback` is false).
+fn __api_rest_no_fallback(
+    f: __StdApiRestFallback,
+    s: std::io::tcp::Stream,
+    req: std::http::Request
+) -> Bool {
+    return false;
+}
+
+/// The hubs an `http::Rest` mounts, as its connections hold them (GH
+/// #1780): what a WebSocket upgrade at a mounted path is handed to, `h`,
+/// the hubs' connections (`std::api::ws`'s, in `api_hub.hl`). Only
+/// `api_hub.hl`'s `__api_rest_mount_serve`, joined to a program that
+/// mounts a hub, calls it.
+interface __StdApiRestMount {
+    fn mount(tid: Int, fd: Int, pre: String);
+}
+
+locus __StdApiRestMounts {
+    params {
+        h: __StdApiRestMount = __StdApiRestNoMount { };
+    }
+}
+
+/// What a REST transport that mounts no hub holds in its place; never
+/// called (`hubs` is empty wherever it is).
+locus __StdApiRestNoMount {
+    fn mount(tid: Int, fd: Int, pre: String) { }
+}
+
+/// What a connection holds in place of the mount's server when the
+/// exposure mounts no hub; never called (`hubs` is empty).
+fn __api_rest_no_mount(
+    m: __StdApiRestMounts,
+    hubs: String,
+    fd: Int,
+    pre: String,
+    req: std::http::Request
+) -> Bool {
+    return false;
+}
+
+/// The body cap an `http::Rest` transport's `max_request_bytes` sets: as
+/// `std::http::Server`'s, 1 MiB when it is not positive and at most 1 GiB.
+fn __api_rest_cap(n: Int) -> Int {
+    if n <= 0 { return 1048576; }
+    return min(n, 1073741824);
+}
+
+/// Whether a request's `Content-Type` is the json codec's: the media type
+/// `application/json`, its case and its parameters (`; charset=utf-8`)
+/// aside.
+fn __api_rest_json_type(content_type: String) -> Bool {
+    let semi = std::str::index_of(content_type, ";");
+    let media = if semi >= 0 { content_type[0..semi] } else { content_type };
+    return std::str::lower(std::str::trim(media)) == "application/json";
+}
+
+/// The REST transport (`std::api::http::Rest`; `http::Rest` at a serve
+/// site). `tid` and `routes` are written by the compiler; the rest is
+/// `http::Rpc`'s.
+locus __StdApiHttpRest {
+    params {
+        bind: String;
+        principals: std::api::BearerSource;
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        cors: String = "";
+        routes: String = "";
+        // The name a request with no `Authorization` header goes by, "" for
+        // none (such a request is then refused `unauthenticated`, as over
+        // `http::Rpc`). A request that sends a credential is judged by
+        // `principals` as ever; the role source decides what the anonymous
+        // caller holds, so a row that requires a role still refuses it.
+        anonymous: String = "";
+        // The most a request's body may declare, as `std::http::Server`'s:
+        // a declared `Content-Length` over it is refused `413` before the
+        // body is read; a larger value acts as 1 GiB.
+        max_request_bytes: Int = 1048576;
+        tid: Int = 0;
+        closed: Int = 0;
+        stops: Int = 0;
+        pending: __StdApiRestTable = __StdApiRestTable { };
+    }
+    bus {
+        subscribe __ApiHttpOutT as on_ask where key == self.tid;
+        publish __ApiHttpOutT;
+        publish __ApiRpcEventT;
+    }
+    fn attach(exposure: Int) -> String {
+        return "http";
+    }
+    fn on_ask(o: __StdApiHttpOut) {
+        if o.kind == 4 {
+            if len(o.body) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent {
+                    exposure: self.tid,
+                    rid: 0,
+                    slot: 0,
+                    kind: 7,
+                    stamp: 0,
+                    body: o.body,
+                };
+            }
+            // the answer carries the body cap the listener's connections hold
+            __ApiHttpOutT <- __StdApiHttpOut {
+                key: self.tid,
+                kind: 3,
+                status: __api_rest_cap(self.max_request_bytes),
+                body: "",
+            };
+        }
+    }
+    // One record per connection, the first free one taken (`reply` and
+    // `close_connection` free it).
+    fn note(rec: __StdApiRestPending) {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiRestPending { };
+            if p.corr == -1 || p.corr == rec.corr {
+                self.pending.set(k, rec) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.pending.push(rec);
+    }
+    fn take(corr: Int) -> __StdApiRestPending {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiRestPending { };
+            if p.corr == corr {
+                self.pending.set(k, __StdApiRestPending { }) or discard;
+                return p;
+            }
+            k = k + 1;
+        }
+        return __StdApiRestPending { corr: corr };
+    }
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let req = std::http::parse_request(std::str::from_bytes(raw));
+        let nobody = std::api::Principal { mode: "bearer", name: "" };
+        if len(req.method) == 0 || len(req.path) == 0 {
+            self.note(__StdApiRestPending { corr: correlation });
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                peer: nobody,
+                reason: "not an HTTP request",
+            };
+        }
+        let auth = std::http::header(req, "Authorization");
+        let mut token = "";
+        if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
+        let path = std::str::replace(
+            std::str::replace(__http_path_only(req.path), "%3A", ":"),
+            "%3a",
+            ":",
+        );
+        let qs = __http_query_only(req.path);
+        let origin = std::http::header(req, "Origin");
+        let mut allowed = "";
+        let mut denied = false;
+        if len(self.cors) > 0 && len(origin) > 0 {
+            if __api_cors_allows(self.cors, origin) { allowed = origin; } else { denied = true; }
+        }
+        let mut who = nobody;
+        if len(auth) == 0 && len(self.anonymous) > 0 {
+            who = std::api::Principal { mode: "bearer", name: self.anonymous, uid: 0 };
+        }
+        let head = req.method == "HEAD";
+        let mut method = req.method;
+        if head { method = "GET"; }
+        if method == "GET" && path == "/.description" {
+            self.note(__StdApiRestPending { corr: correlation, origin: allowed, head: head });
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: who,
+                reason: "",
+            };
+        }
+        // the route: the first line of the method whose pattern matches,
+        // and every method a matching pattern takes
+        let mut found = "";
+        let mut allow = "";
+        let mut rest = self.routes;
+        let probe = std::http::RouteParams { qs: "" };
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let mut line = rest;
+            if nl >= 0 {
+                line = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if __http_match_pattern_into(__api_rest_cell(line, 1), path, probe) {
+                let m = __api_rest_cell(line, 0);
+                if m == method && len(found) == 0 { found = line; }
+                allow = __api_rest_allow(allow, m);
+            }
+        }
+        if path == "/.description" { allow = "GET, HEAD"; }
+        if req.method == "OPTIONS" && len(allow) > 0 {
+            self.note(
+                __StdApiRestPending {
+                    corr: correlation,
+                    mode: 1,
+                    origin: allowed,
+                    denied: denied,
+                    allow: allow + ", OPTIONS",
+                },
+            );
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                peer: nobody,
+                reason: "an OPTIONS request",
+            };
+        }
+        if len(found) > 0 {
+            // the cross-origin write guard (spec/api.md § The REST transport):
+            // a body is the codec's media type, which a browser sends only
+            // after a preflight, and a write with no body is refused to an
+            // origin `cors` does not list
+            let has_body = len(req.body) > 0;
+            if has_body && !__api_rest_json_type(std::http::header(req, "Content-Type")) {
+                self.note(
+                    __StdApiRestPending { corr: correlation, mode: 4, origin: allowed, head: head },
+                );
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    peer: nobody,
+                    reason: "a request body is application/json",
+                };
+            }
+            if !has_body
+                && method != "GET"
+                && len(origin) > 0
+                && !__api_cors_allows(self.cors, origin)
+            {
+                self.note(
+                    __StdApiRestPending { corr: correlation, mode: 5, origin: allowed, head: head },
+                );
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    peer: nobody,
+                    reason: "a write from an origin cors does not list",
+                };
+            }
+            let status = std::str::parse_int(__api_rest_cell(found, 3)) or 200;
+            self.note(
+                __StdApiRestPending {
+                    corr: correlation,
+                    status: status,
+                    origin: allowed,
+                    head: head,
+                },
+            );
+            let bound = __api_rest_bind(
+                __api_rest_cell(found, 4),
+                __api_rest_cell(found, 1),
+                path,
+                qs,
+                req.body,
+            );
+            if !bound.ok {
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    credential: token,
+                    peer: nobody,
+                    reason: bound.reason,
+                };
+            }
+            return std::api::Request {
+                kind: 0,
+                member: __api_rest_cell(found, 2),
+                bytes: std::bytes::from_string(bound.body),
+                digest: std::http::header(req, "Hale-Surface-Digest"),
+                correlation: correlation,
+                credential: token,
+                peer: who,
+                reason: "",
+            };
+        }
+        if len(allow) > 0 {
+            self.note(
+                __StdApiRestPending {
+                    corr: correlation,
+                    mode: 3,
+                    origin: allowed,
+                    head: head,
+                    allow: allow + ", OPTIONS",
+                },
+            );
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                peer: nobody,
+                reason: "no route takes " + req.method + " " + path,
+            };
+        }
+        self.note(__StdApiRestPending { corr: correlation, mode: 2, origin: allowed, head: head });
+        return std::api::Request {
+            kind: 2,
+            bytes: raw,
+            correlation: correlation,
+            peer: nobody,
+            reason: "no route serves " + path,
+        };
+    }
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) {
+        let p = self.take(correlation);
+        let mut status = 500;
+        let mut body = "{\"refusal\":{\"kind\":\"server\"}}";
+        let mut class = "";
+        match outcome {
+            __StdApiOutcome::Result(b) -> { status = p.status; body = b; },
+            __StdApiOutcome::HandlerError(b, c) -> {
+                status = __api_http_error_status(c);
+                body = b;
+                class = __api_error_class_word(c);
+            },
+            __StdApiOutcome::Refusal(k, r, x) -> {
+                status = __api_http_refusal_status(k);
+                body = "{\"refusal\":" + __api_refusal_object(k, r, x) + "}";
+            },
+            __StdApiOutcome::ServerError -> { },
+        }
+        let mut headers = "";
+        if len(self.cors) > 0 {
+            headers = __api_cors_headers(p.origin, false);
+            if len(class) > 0 {
+                headers = headers + "Access-Control-Expose-Headers: Hale-Error-Class\r\n";
+            }
+        }
+        if p.mode == 1 {
+            if p.denied {
+                status = 403;
+                body = "{\"refusal\":"
+                    + __api_refusal_object(
+                        "unauthorized",
+                        "the origin is not one this exposure answers CORS for",
+                        "",
+                    )
+                    + "}";
+            } else {
+                status = 204;
+                body = "";
+                headers = headers + "Allow: " + p.allow + "\r\n";
+                if len(p.origin) > 0 {
+                    headers = headers + "Access-Control-Allow-Methods: " + p.allow
+                        + "\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Hale-Surface-Digest\r\nAccess-Control-Max-Age: 600\r\n";
+                }
+            }
+        }
+        if p.mode == 2 {
+            status = 404;
+            body = "{\"refusal\":"
+                + __api_refusal_object("not_found", "no route serves this path", "") + "}";
+        }
+        if p.mode == 4 {
+            status = 415;
+            body = "{\"refusal\":"
+                + __api_refusal_object(
+                    "unsupported_media_type",
+                    "a request body is application/json",
+                    "",
+                )
+                + "}";
+        }
+        if p.mode == 5 {
+            status = 403;
+            body = "{\"refusal\":"
+                + __api_refusal_object(
+                    "unauthorized",
+                    "a write with no body from an origin this exposure does not answer CORS for",
+                    "",
+                )
+                + "}";
+        }
+        if p.mode == 3 {
+            status = 405;
+            body = "{\"refusal\":"
+                + __api_refusal_object("method_not_allowed", "this path takes " + p.allow, "")
+                + "}";
+            headers = headers + "Allow: " + p.allow + "\r\n";
+        }
+        if len(class) > 0 { headers = headers + "Hale-Error-Class: " + class + "\r\n"; }
+        if status == 204 { body = ""; }
+        __ApiHttpOutT <- __StdApiHttpOut {
+            key: self.tid * 4294967296 + correlation,
+            kind: 0,
+            status: status,
+            body: body,
+            headers: headers,
+            bodyless: p.head,
+        };
+    }
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        let _ = self.take(correlation);
+        __ApiHttpOutT <- __StdApiHttpOut {
+            key: self.tid * 4294967296 + correlation,
+            kind: 1,
+            status: 0,
+            body: "",
+        };
+    }
     fn stop_listening() {
         self.stops = self.stops + 1;
         __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };
@@ -2157,7 +3680,8 @@ fn __api_mcp_outcomes() -> String {
 
 /// A JSON-RPC error answer.
 fn __api_mcp_error(id: String, code: Int, message: String, data: String) -> String {
-    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + to_string(code) + ",\"message\":\"" + message + "\",\"data\":" + data + "}}";
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + to_string(code)
+        + ",\"message\":\"" + message + "\",\"data\":" + data + "}}";
 }
 
 /// The schema a `{"$ref": "#/schemas/X"}` names, "" for any other value.
@@ -2234,7 +3758,11 @@ fn __api_mcp_tools(doc: String) -> String {
                     o = std::json::object_next(o, schemas);
                 }
                 if len(defs) > 0 {
-                    input = std::str::replace(input[0..(len(input) - 1)] + ",\"$defs\":{" + defs + "}}", "#/schemas/", "#/$defs/");
+                    input = std::str::replace(
+                        input[0..(len(input) - 1)] + ",\"$defs\":{" + defs + "}}",
+                        "#/schemas/",
+                        "#/$defs/",
+                    );
                 }
             }
             let err = std::json::find_field_raw(el, "error");
@@ -2249,9 +3777,13 @@ fn __api_mcp_tools(doc: String) -> String {
             if len(roles) >= 2 { roles = roles[1..(len(roles) - 1)]; } else { roles = ""; }
             let mut needs = "Requires no role";
             if len(roles) > 0 { needs = "Requires " + roles + " under the exposure's role source"; }
-            let text = "rpc " + name + " of " + surface + ": returns " + __api_mcp_type_name(std::json::find_field_raw(el, "response")) + fails + ". " + needs + "; the server still authorizes every request.";
+            let text = "rpc " + name + " of " + surface + ": returns "
+                + __api_mcp_type_name(std::json::find_field_raw(el, "response")) + fails + ". "
+                + needs + "; the server still authorizes every request.";
             if len(tools) > 0 { tools = tools + ","; }
-            tools = tools + "{\"name\":\"" + __api_mcp_tool(name) + "\",\"description\":\"" + std::json::escape_string(text) + "\",\"inputSchema\":" + input + ",\"x-hale-requires\":" + (if len(requires) > 0 { requires } else { "[]" }) + "}";
+            tools = tools + "{\"name\":\"" + __api_mcp_tool(name) + "\",\"description\":\""
+                + std::json::escape_string(text) + "\",\"inputSchema\":" + input
+                + ",\"x-hale-requires\":" + (if len(requires) > 0 { requires } else { "[]" }) + "}";
         }
     }
     return tools;
@@ -2274,12 +3806,25 @@ locus __StdApiMcpRpc {
     bus {
         subscribe __ApiHttpOutT as on_ask where key == self.tid;
         publish __ApiHttpOutT;
+        publish __ApiRpcEventT;
     }
     fn attach(exposure: Int) -> String {
         return "mcp";
     }
     fn on_ask(o: __StdApiHttpOut) {
         if o.kind == 4 {
+            // the listener's asking names the address it was bound to: the
+            // exposure's description states it
+            if len(o.body) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent {
+                    exposure: self.tid,
+                    rid: 0,
+                    slot: 0,
+                    kind: 7,
+                    stamp: 0,
+                    body: o.body,
+                };
+            }
             __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
         }
     }
@@ -2289,7 +3834,10 @@ locus __StdApiMcpRpc {
         while k < n {
             let p = self.pending.get(k) or __StdApiMcpPending { };
             if p.corr == -1 || p.corr == corr {
-                self.pending.set(k, __StdApiMcpPending { corr: corr, kind: kind, id: id, version: version }) or discard;
+                self.pending.set(
+                    k,
+                    __StdApiMcpPending { corr: corr, kind: kind, id: id, version: version },
+                ) or discard;
                 return;
             }
             k = k + 1;
@@ -2315,7 +3863,13 @@ locus __StdApiMcpRpc {
         let nobody = std::api::Principal { mode: "bearer", name: "" };
         if len(req.method) == 0 || len(req.path) == 0 {
             self.note(correlation, 0, "null", "");
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "invalid request: not an HTTP request" };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                peer: nobody,
+                reason: "invalid request: not an HTTP request",
+            };
         }
         let auth = std::http::header(req, "Authorization");
         let mut token = "";
@@ -2325,17 +3879,44 @@ locus __StdApiMcpRpc {
         if q >= 0 { path = path[0..q]; }
         if req.method != "POST" {
             self.note(correlation, 6, "null", "");
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "an MCP endpoint takes POST " + path };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "an MCP endpoint takes POST " + path,
+            };
         }
         if path != "/mcp" {
             self.note(correlation, 0, "null", "");
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "invalid request: an MCP message is POST /mcp" };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "invalid request: an MCP message is POST /mcp",
+            };
         }
         let body = req.body;
         if len(body) == 0 || !std::json::valid_object(body) {
             self.note(correlation, 0, "null", "");
             let batch = std::str::starts_with(std::str::trim(body), "[");
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: (if batch { "invalid request: a batch is not supported" } else { "parse error: a message is one JSON-RPC object" }) };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: (
+                    if batch {
+                        "invalid request: a batch is not supported"
+                    } else {
+                        "parse error: a message is one JSON-RPC object"
+                    }
+                ),
+            };
         }
         let mut id = std::json::find_field_raw(body, "id");
         let has_id = len(id) > 0;
@@ -2344,42 +3925,110 @@ locus __StdApiMcpRpc {
         let pm = std::json::find_field_raw(body, "params");
         if len(method) == 0 && has_id {
             self.note(correlation, 0, id, "");
-            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "invalid request: a message names its method" };
+            return std::api::Request {
+                kind: 2,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "invalid request: a message names its method",
+            };
         }
         if !has_id {
             // a notification, or a response to a request we never made:
             // accepted, and answered with nothing
             self.note(correlation, 5, id, "");
-            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
         if method == "initialize" {
             self.note(correlation, 1, id, std::json::find_string_field(pm, "protocolVersion"));
-            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
         if method == "ping" {
             self.note(correlation, 2, id, "");
-            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
         if method == "tools/list" {
             self.note(correlation, 3, id, "");
-            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 1,
+                bytes: raw,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
         if method == "tools/call" {
             self.note(correlation, 4, id, "");
             let name = std::json::find_string_field(pm, "name");
             if len(name) == 0 {
-                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "invalid params: a tools/call names its tool" };
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    credential: token,
+                    peer: nobody,
+                    reason: "invalid params: a tools/call names its tool",
+                };
             }
             let mut args = std::json::find_field_raw(pm, "arguments");
             if len(args) == 0 { args = "{}"; }
             let mut digest = std::http::header(req, "Hale-Surface-Digest");
-            if len(digest) == 0 { digest = std::json::find_string_field(std::json::find_field_raw(pm, "_meta"), "hale/digest"); }
-            return std::api::Request { kind: 0, member: name, bytes: std::bytes::from_string(args), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            if len(digest) == 0 {
+                digest = std::json::find_string_field(
+                    std::json::find_field_raw(pm, "_meta"),
+                    "hale/digest",
+                );
+            }
+            return std::api::Request {
+                kind: 0,
+                member: name,
+                bytes: std::bytes::from_string(args),
+                digest: digest,
+                correlation: correlation,
+                credential: token,
+                peer: nobody,
+                reason: "",
+            };
         }
         self.note(correlation, 0, id, "");
-        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "method not found: " + method };
+        return std::api::Request {
+            kind: 2,
+            bytes: raw,
+            correlation: correlation,
+            credential: token,
+            peer: nobody,
+            reason: "method not found: " + method,
+        };
     }
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) {
         let p = self.take(correlation);
         let mut status = 200;
         let mut body = "";
@@ -2388,19 +4037,33 @@ locus __StdApiMcpRpc {
                 if p.kind == 1 {
                     let mut version = p.version;
                     if len(version) == 0 { version = "2025-06-18"; }
-                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"protocolVersion\":\"" + std::json::escape_string(version) + "\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"" + std::json::escape_string(std::json::find_string_field(b, "surface")) + "\",\"version\":\"" + std::json::escape_string(std::json::find_string_field(b, "digest")) + "\"}}}";
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id
+                        + ",\"result\":{\"protocolVersion\":\"" + std::json::escape_string(version)
+                        + "\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\""
+                        + std::json::escape_string(std::json::find_string_field(b, "surface"))
+                        + "\",\"version\":\""
+                        + std::json::escape_string(std::json::find_string_field(b, "digest"))
+                        + "\"}}}";
                 } else if p.kind == 2 {
                     body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{}}";
                 } else if p.kind == 3 {
-                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"tools\":[" + __api_mcp_tools(b) + "]}}";
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"tools\":["
+                        + __api_mcp_tools(b) + "]}}";
                 } else if p.kind == 5 {
                     status = 202;
                 } else {
-                    let structured = if std::str::starts_with(b, "{") { ",\"structuredContent\":" + b } else { "" };
-                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + std::json::escape_string(b) + "\"}]" + structured + ",\"isError\":false}}";
+                    let structured = if std::str::starts_with(b, "{") {
+                        ",\"structuredContent\":" + b
+                    } else {
+                        ""
+                    };
+                    body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id
+                        + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\""
+                        + std::json::escape_string(b) + "\"}]" + structured
+                        + ",\"isError\":false}}";
                 }
             },
-            __StdApiOutcome::HandlerError(b) -> {
+            __StdApiOutcome::HandlerError(b, c) -> {
                 body = __api_mcp_error(p.id, -32001, "handler_error", b);
             },
             __StdApiOutcome::Refusal(k, r, x) -> {
@@ -2408,21 +4071,36 @@ locus __StdApiMcpRpc {
                 if p.kind == 6 {
                     status = 405;
                 } else {
-                    body = __api_mcp_error(p.id, __api_mcp_code(k, r), k, __api_refusal_object(k, r, x));
+                    body = __api_mcp_error(
+                        p.id,
+                        __api_mcp_code(k, r),
+                        k,
+                        __api_refusal_object(k, r, x),
+                    );
                 }
             },
             __StdApiOutcome::ServerError -> {
                 body = __api_mcp_error(p.id, -32603, "server_error", "{\"kind\":\"server\"}");
             },
         }
-        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body };
+        __ApiHttpOutT <- __StdApiHttpOut {
+            key: self.tid * 4294967296 + correlation,
+            kind: 0,
+            status: status,
+            body: body,
+        };
     }
     // The request's connection is gone and its work has completed: nothing
     // is written; whatever is left of the connection is closed.
     fn close_connection(correlation: Int) {
         self.closed = self.closed + 1;
         let _ = self.take(correlation);
-        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 1, status: 0, body: "" };
+        __ApiHttpOutT <- __StdApiHttpOut {
+            key: self.tid * 4294967296 + correlation,
+            kind: 1,
+            status: 0,
+            body: "",
+        };
     }
     // Close the listener and every connection, after the responses already
     // sent.

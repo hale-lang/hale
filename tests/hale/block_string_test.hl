@@ -1,0 +1,55 @@
+// tests/hale/block_string_test.hl — the block string (spec/tokens.md §
+// Block strings): the closing line's whitespace is stripped from every
+// line, the body is raw (no escapes, no interpolation), a blank line
+// before the closing fence ends the value with a line break, and a
+// longer fence carries a body with a line that starts with three quotes.
+
+const PROGRAM: String = """
+    fn main() {
+        println("a\n{b}");
+    }
+
+    """;
+
+fn quoted(s: String) -> String {
+    return "[" + s + "]";
+}
+
+fn main() {
+    std::test::assert_eq_str(
+        PROGRAM,
+        "fn main() {\n    println(\"a\\n{b}\");\n}\n",
+        "the closing indent is stripped and the body is raw",
+    );
+    let sql = """
+        SELECT id, name
+          FROM people
+         WHERE id = 1
+        """;
+    std::test::assert_eq_str(
+        sql,
+        "SELECT id, name\n  FROM people\n WHERE id = 1",
+        "deeper lines keep their surplus; no break after the last line",
+    );
+    std::test::assert_eq_str(
+        quoted("""
+            one
+                two
+            """),
+        "[one\n    two]",
+        "a block string is an argument like any string",
+    );
+    let nested = """"
+        let s = """
+            x
+            """;
+        """";
+    std::test::assert_eq_str(
+        nested,
+        "let s = \"\"\"\n    x\n    \"\"\";",
+        "a four-quote fence carries a three-quote line",
+    );
+    std::test::assert_eq_int(len("""
+        ab
+        """), 2, "len of a one-line block");
+}

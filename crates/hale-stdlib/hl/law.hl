@@ -1,0 +1,13 @@
+// Hale stdlib — std::law: the standard constitutions a program or an
+// environment adopts without importing anything (`hale check --adopt
+// std::law::Standard`, `[environments.<env>] constitution =
+// "std::law::Standard"`). Loaded only when one is adopted, so a program
+// that adopts none pays nothing.
+
+// The standard practices' law (#1591). A served or attached program
+// writes to the terminal only through its logger: nothing it declares
+// reaches a write to standard output or standard error except through
+// `std::log`'s sinks.
+constitution Standard {
+    logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;
+}

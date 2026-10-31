@@ -523,3 +523,283 @@ fn main() { App { }; }
         );
     }
 }
+
+// ---- 2.11, S15 and S16: what a running program shows ----------------
+
+/// 2.11: the wire the shapes cross as. An absent presence pair is no
+/// key and its flag is never written (a `null`, or a flag sent alone,
+/// is an absence); a wire map is an object keyed by its field, and a
+/// repeated key is `duplicate_key`; an enum is its variant, and an
+/// absent enum field is `missing_field`; a set is the enum it is, the
+/// member's type name its tag (2.9).
+#[test]
+fn claim_wire_shapes_cross_as_the_guide_says() {
+    let out = build_and_run(
+        r#"
+type Status = enum { Up, Degraded(String), Down };
+type Check { name: String; ok: Bool; }
+type Reply {
+    n: Int;
+    note: String = "";
+    has_note: Bool = false;
+    checks: bounded[Check; 4] indexed_by name;
+}
+type Probe { status: Status; }
+type NewOrder { id: Int; }
+type Cancel { id: Int; }
+type Inbound = NewOrder | Cancel;
+type Env { m: Inbound; }
+fn main() {
+    let mut r = Reply { n: 1 };
+    println(Reply::api_encode(r));
+    r.note = "x";
+    r.has_note = true;
+    push(r.checks, Check { name: "db", ok: true }) or discard;
+    println(Reply::api_encode(r));
+    let back = Reply::api_decode("{\"n\":2,\"note\":null,\"has_note\":true}") or Reply { n: -1 };
+    println(back.has_note);
+    let dup = Reply::api_decode("{\"n\":2,\"checks\":{\"db\":{\"ok\":true},\"db\":{\"ok\":false}}}") or { println(err.kind, ": ", err.field); Reply { n: -1 } };
+    println(Probe::api_encode(Probe { status: Status::Up }), " ", Probe::api_encode(Probe { status: Status::Degraded("cold") }));
+    let p = Probe::api_decode("{}") or { println(err.kind, ": ", err.field); Probe { status: Status::Down } };
+    println(Env::api_encode(Env { m: Cancel { id: 1 } }));
+}
+"#,
+        "wire-shapes",
+    );
+    let want = [
+        "{\"n\":1,\"checks\":{}}",
+        "{\"n\":1,\"note\":\"x\",\"checks\":{\"db\":{\"ok\":true}}}",
+        "false",
+        "duplicate_key: checks",
+        "{\"status\":\"Up\"} {\"status\":{\"Degraded\":\"cold\"}}",
+        "missing_field: status",
+        "{\"m\":{\"Cancel\":{\"id\":1}}}",
+    ];
+    let got: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        got, want,
+        "spec/styleguide.md 2.11 (and 2.9's last bullet) describe these \
+         encodings. If the codec changed, update the guide with it"
+    );
+}
+
+/// The growth of the peak resident set (`VmHWM`, kB) the program
+/// reports for one run of `mode` over `n` rows.
+fn peak_growth_kb(bin: &std::path::Path, mode: &str, n: usize) -> i64 {
+    let run = Command::new(bin)
+        .arg(mode)
+        .arg(n.to_string())
+        .output()
+        .expect("run program");
+    let text = output_text(&run);
+    assert!(run.status.success(), "{} {} failed:\n{}", mode, n, text);
+    text.lines()
+        .find_map(|l| l.strip_prefix("grew_kb="))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no grew_kb= line from {} {}:\n{}", mode, n, text))
+}
+
+/// S15 and S16: a String grown with `+` in a loop, and a text read by
+/// slicing off the rest, hold memory quadratic in the text, because
+/// every intermediate stays in the method's scratch until it returns;
+/// a `BytesBuilder`, and reading by position over a `ByteView`, hold it
+/// once. Twice the rows is four times the memory for the first two.
+#[test]
+fn claim_text_built_or_read_by_copy_is_quadratic() {
+    if asan_build() {
+        eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
+        return;
+    }
+    let dir = seed_dir(
+        r#"
+fn peak_kb() -> Int {
+    let status = std::io::fs::read_file("/proc/self/status") or "";
+    let at = std::str::index_of(status, "VmHWM:");
+    if at < 0 { return 0; }
+    let rest = std::str::trim(status[at + 6..len(status)]);
+    return std::str::parse_int(rest[0..std::str::index_of(rest, " ")]) or 0;
+}
+fn row() -> String { return std::str::repeat("x", 499) + "\n"; }
+fn by_concat(n: Int) -> Int {
+    let mut out = "";
+    let mut i = 0;
+    while i < n { out = out + row(); i = i + 1; }
+    return len(out);
+}
+fn text(n: Int) -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: 4096 };
+    let mut i = 0;
+    while i < n { b.append_str(row()); i = i + 1; }
+    return std::str::from_bytes(b.snapshot() or b"");
+}
+fn by_rest(all: String) -> Int {
+    let mut rest = all;
+    let mut k = 0;
+    let mut nl = std::str::index_of(rest, "\n");
+    while nl >= 0 { k = k + 1; rest = rest[(nl + 1)..len(rest)]; nl = std::str::index_of(rest, "\n"); }
+    return k;
+}
+fn line_end(v: std::str::ByteView, start: Int) -> Int {
+    let mut i = start;
+    while i < v.n { if std::str::byte_at(v, i) == 10 { return i; } i = i + 1; }
+    return v.n;
+}
+fn by_position(all: String) -> Int {
+    let v = std::str::bytes_view(all);
+    let mut k = 0;
+    let mut start = 0;
+    while start < v.n { let nl = line_end(v, start); let line = std::str::slice(v, start, nl); start = nl + 1; if len(line) > 0 { k = k + 1; } }
+    return k;
+}
+fn main() {
+    let mode = std::env::arg(1);
+    let n = std::str::parse_int(std::env::arg(2)) or 0;
+    let mut all = "";
+    if mode == "rest" || mode == "position" { all = text(n); }
+    let before = peak_kb();
+    let mut r = 0;
+    if mode == "concat" { r = by_concat(n); }
+    if mode == "builder" { r = len(text(n)); }
+    if mode == "rest" { r = by_rest(all); }
+    if mode == "position" { r = by_position(all); }
+    println("result=", r);
+    println("grew_kb=", peak_kb() - before);
+}
+"#,
+        "quadratic-text",
+    );
+    let bin = dir.join("prog");
+    let build = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("build")
+        .arg(&dir)
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .expect("run hale build");
+    assert!(build.status.success(), "build failed:\n{}", output_text(&build));
+    let concat_half = peak_growth_kb(&bin, "concat", 500);
+    let concat = peak_growth_kb(&bin, "concat", 1000);
+    let builder = peak_growth_kb(&bin, "builder", 1000);
+    let rest = peak_growth_kb(&bin, "rest", 1000);
+    let position = peak_growth_kb(&bin, "position", 1000);
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!(
+        "peak growth (kB) over 500 KB of text: concat {} (half the rows: {}), builder {}, rest {}, position {}",
+        concat, concat_half, builder, rest, position
+    );
+    assert!(
+        concat > 100 * 1024 && concat > 3 * concat_half,
+        "spec/styleguide.md S15 says `out = out + row` in a loop holds \
+         memory quadratic in the text (about 250 MB for 500 KB in 1 000 \
+         rows, four times what half the rows hold). It grew {} kB, and \
+         {} kB for half: if the concat no longer copies, retire S15",
+        concat,
+        concat_half
+    );
+    assert!(
+        builder < 16 * 1024,
+        "S15 says a BytesBuilder holds the text once; it grew {} kB",
+        builder
+    );
+    assert!(
+        rest > 100 * 1024,
+        "spec/styleguide.md S16 says slicing off the rest is quadratic \
+         (about 250 MB for 500 KB in 1 000 lines); it grew {} kB",
+        rest
+    );
+    assert!(
+        position < 8 * 1024,
+        "S16 says reading by position over a ByteView holds next to \
+         nothing; it grew {} kB",
+        position
+    );
+}
+
+/// 2.10: a closed seam's frame is a turn, a method of its own that `run`
+/// calls, so 20 000 frames hold flat, as the same chain does as a
+/// callable seam called once per frame from a method. (Before the turn,
+/// the chain was inlined into the one activation of `run` and kept about
+/// 1.7 KB a frame, 34 MB over these frames, until the locus dissolved.)
+#[test]
+fn a_closed_seam_holds_flat_over_its_frames() {
+    if asan_build() {
+        eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
+        return;
+    }
+    let out = build_and_run(
+        r#"
+type NewOrder { id: Int; note: String; }
+type Cancel { id: Int; }
+type Ack { id: Int; text: String; }
+type Inbound = NewOrder | Cancel;
+type Ended { why: String; }
+locus Wire {
+    fn decode(frame: String) -> Inbound {
+        if frame == "cancel" { return Cancel { id: 1 }; }
+        return NewOrder { id: 2, note: frame + " " + frame };
+    }
+    fn encode(a: Ack) -> String { return "ack " + to_string(a.id) + a.text; }
+}
+locus Desk {
+    fn new_order(n: NewOrder) -> Ack { return Ack { id: n.id, text: n.note + "!" }; }
+    fn cancel(c: Cancel) -> Ack { return Ack { id: c.id, text: "c" }; }
+}
+locus Feed {
+    params { at: Int = 0; n: Int = 0; }
+    fn next() -> String fallible(Ended) {
+        self.at = self.at + 1;
+        if self.at > self.n { fail Ended { why: "end" }; }
+        return std::str::repeat("x", 200);
+    }
+}
+locus Log { params { k: Int = 0; } fn write(line: String) { self.k = self.k + len(line); } }
+locus Closed {
+    params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
+    seam {
+        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        or end;
+    }
+}
+locus Stepped {
+    params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
+    seam answer(frame: String) { frame -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write; }
+    fn step() -> Bool {
+        let f = self.feed.next() or { return false; };
+        self.answer(f);
+        return true;
+    }
+    run() { while !self.draining { if !self.step() { return; } } }
+}
+fn statm(tag: String) {
+    print(tag);
+    println(std::io::fs::read_file("/proc/self/statm") or "");
+}
+fn main() {
+    Stepped { feed: Feed { n: 1000 } };
+    statm("start=");
+    Stepped { feed: Feed { n: 20000 } };
+    statm("stepped=");
+    Closed { feed: Feed { n: 20000 } };
+    statm("closed=");
+}
+"#,
+        "closed-seam",
+    );
+    let g = phase_growth(&out);
+    eprintln!("resident growth per phase (bytes): {:?}", g);
+    assert!(
+        g["stepped"] < MIB,
+        "a callable seam called once per frame from a method holds \
+         flat; 20 000 frames grew \
+         {} bytes:\n{}",
+        g["stepped"],
+        out
+    );
+    assert!(
+        g["closed"] < MIB,
+        "spec/styleguide.md 2.10 says a closed seam frees each frame at \
+         the end of its turn; 20 000 frames grew {} bytes:\n{}",
+        g["closed"],
+        out
+    );
+}

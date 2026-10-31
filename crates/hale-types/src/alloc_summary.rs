@@ -124,6 +124,28 @@ pub enum AllocKind {
     /// String concatenation (`a + b` where an operand is provably a
     /// String). Each `+` builds a fresh String in the arena.
     StringConcat,
+    /// A copy of a value read from a form's cell, which the cell-read
+    /// rule adds where a write into the value could otherwise show in
+    /// the cell (`crate::view_bindings`): a copy on write at the write, an
+    /// owned binding, a copied argument. The reason says why the write
+    /// could not stay in the cell (spec/forms.md § Reading a cell). The
+    /// local-place rule's copies are this kind too, with a `PLACE_*`
+    /// reason (labelled `place-copy`): a write into a local bound from a
+    /// place, copied at its first write (spec/types.md § A local bound
+    /// from a place is yours).
+    CellCopy(&'static str),
+    /// The fresh String or Bytes a call returns into the caller's arena
+    /// (`buf.snapshot()`, `body.chunk()`): the callee's declared return,
+    /// by the callee as written. Kept beside the sites
+    /// ([`FnSummary::call_results`]), read only by the leak survey: a
+    /// loop that keeps one per iteration is named at the call.
+    CallResult(String),
+    /// What a call's callee stores through the arguments it is handed
+    /// (an assignment through its parameter, or a writer it hands the
+    /// parameter on to), placed at the call, where the arena it lands in
+    /// is known: the escape says whose ([`FnSummary::call_stores`]). The
+    /// callee as written.
+    CallStore(String),
 }
 
 impl AllocKind {
@@ -135,8 +157,51 @@ impl AllocKind {
             AllocKind::BytesLit => "bytes-literal".to_string(),
             AllocKind::CollectionInsert(form) => format!("{}-insert", form),
             AllocKind::StringConcat => "string-concat".to_string(),
+            AllocKind::CellCopy(reason) if crate::view_bindings::reasons::is_place(reason) => {
+                format!("place-copy ({reason})")
+            }
+            AllocKind::CellCopy(reason) => format!("cell-copy ({reason})"),
+            AllocKind::CallResult(callee) => format!("fresh value `{callee}(..)` returns"),
+            AllocKind::CallStore(callee) => format!("store through `{callee}(..)`"),
         }
     }
+}
+
+/// A fresh String or Bytes a call in a loop returns
+/// ([`FnSummary::call_results`]): the callee, and the site it is judged
+/// as ([`AllocKind::CallResult`]).
+#[derive(Debug, Clone)]
+pub struct CallResult {
+    pub callee: FnKey,
+    pub site: AllocSite,
+}
+
+/// The stdlib's locus names, and its free fns that return one, by their
+/// declared (mangled) names: read from the stdlib's own source, whether
+/// or not a summary holds its analysis copy, so the judgment of a loop
+/// body ([`Walker::loop_reclaims`]) is the same over the program alone
+/// and beside the copy (its own rows are the program's alone).
+fn stdlib_locus_facts() -> &'static (BTreeSet<String>, BTreeSet<String>) {
+    static FACTS: std::sync::OnceLock<(BTreeSet<String>, BTreeSet<String>)> = std::sync::OnceLock::new();
+    FACTS.get_or_init(|| {
+        let mut loci = BTreeSet::new();
+        let mut fns = BTreeSet::new();
+        if let Some(p) = crate::stdlib_bodies::program() {
+            for item in flat_decls(&p.items) {
+                if let TopDecl::Locus(l) = item {
+                    loci.insert(l.name.name.clone());
+                }
+            }
+            for item in flat_decls(&p.items) {
+                if let TopDecl::Fn(f) = item {
+                    if f.ret.as_ref().and_then(type_expr_name).is_some_and(|t| loci.contains(&t)) {
+                        fns.insert(f.name.name.clone());
+                    }
+                }
+            }
+        }
+        (loci, fns)
+    })
 }
 
 /// Phase D / D2: the `@form(...)` names whose inserts grow without bound
@@ -181,6 +246,21 @@ enum StrTy {
     Str,
     StrArray,
     Other,
+}
+
+/// Is `te` an owned String or Bytes, as a primitive or written as the
+/// bare name: what a call returning one hands its caller is a fresh
+/// value in the caller's arena (a view is not).
+fn is_fresh_heap_type(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Primitive(PrimType::String | PrimType::Bytes, _) => true,
+        TypeExpr::Named { path, generic_args, .. } => {
+            generic_args.is_empty()
+                && path.segments.len() == 1
+                && matches!(path.segments[0].name.as_str(), "String" | "Bytes")
+        }
+        _ => false,
+    }
 }
 
 /// Is `te` a String type: `String` or `StringView`, as a primitive or
@@ -300,8 +380,8 @@ fn param_str_types(params: &[Param]) -> Vec<(String, StrTy)> {
 /// Does a struct field of type `ty` retire with its struct when a
 /// whole-field replace overwrites it (Gap D)? A scalar, a String or
 /// Bytes, a struct already found retirable, or a tuple or array of
-/// such. A view, an enum, an interface, a locus, a bounded field or
-/// anything unrecognized does not.
+/// such, or an enum whose payloads are. A view, an interface, a locus, a
+/// bounded field or anything unrecognized does not.
 fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
     match ty {
         TypeExpr::Primitive(
@@ -392,12 +472,35 @@ fn type_expr_name(te: &TypeExpr) -> Option<String> {
 /// arena/subregion reclaims it). The escaping variants persist past the
 /// scope and so accumulate in the owner across invocations — the leak
 /// channel the bound solver cares about.
+///
+/// Two escapes come from a write through a parameter (spec/memory.md §
+/// "A method's write through a record parameter"): what a body stores
+/// through a parameter of caller storage lands in the arena that owns
+/// the caller's value, never in the body's frame, and nothing recycles it
+/// when the body returns (the value it replaces is not retired).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Escape {
     Local,
     Returned,
     StoredToSelf,
     Sent,
+    /// Stored into caller-owned storage through a parameter: an
+    /// assignment rooted at a parameter of caller storage (`x.b = v`,
+    /// `x.inner.b = v`, `xs[i] = v`; the owned-view column's
+    /// `writes_param`), or a call handing a writer (a callee that stores
+    /// through its parameters, transitively) one of the body's own
+    /// parameters or a place the pass cannot name (the column's
+    /// hand-offs). It lives as long as the record's owner, which is
+    /// above the body: its growth across calls is judged at each call
+    /// that hands the record ([`AllocSummary::call_stores`]), its growth
+    /// within the body's own loop here.
+    ParamStore,
+    /// Stored into the locus's own arena through a record `self` holds:
+    /// a call handing a writer a place under a field of `self`, and
+    /// nothing of a parameter's (the column's hand-offs), whose writes
+    /// lowering lands in the locus arena. It lives until the locus
+    /// dissolves, as a store into `self` does, but is not retired.
+    HeldStore,
 }
 
 impl Escape {
@@ -407,6 +510,8 @@ impl Escape {
             Escape::Returned => "escaping=return",
             Escape::StoredToSelf => "escaping=self-store",
             Escape::Sent => "escaping=bus-send",
+            Escape::ParamStore => "escaping=param-store",
+            Escape::HeldStore => "escaping=held-store",
         }
     }
     /// Does this value survive its method's return — i.e. persist across
@@ -429,8 +534,14 @@ impl Escape {
     /// scratch-local opens no scratch, its body allocates into its
     /// caller's arena, and the boundary there is the caller's
     /// (`ReclaimScope`, E3b).
+    ///
+    /// A `HeldStore` persists in the locus as a `StoredToSelf` does. A
+    /// `ParamStore` survives its method's return too, but the record's
+    /// owner is above the body: whether it accumulates across calls is
+    /// the question each call that hands the record answers, by what it
+    /// hands (its own site at the call, [`AllocSummary::call_stores`]).
     fn persists_across_calls(&self) -> bool {
-        matches!(self, Escape::StoredToSelf | Escape::Returned)
+        matches!(self, Escape::StoredToSelf | Escape::Returned | Escape::HeldStore)
     }
 }
 
@@ -492,6 +603,17 @@ pub enum LoopAt {
     OwnBody,
     /// In a caller, enclosing a call that reaches the allocation's fn.
     Caller,
+}
+
+impl AllocSite {
+    /// GH #1561: the copy a store into a locus's field from outside its
+    /// methods makes into that locus. The store retires the value it
+    /// replaces and flushes the locus's retires at once, so the copy
+    /// never outlives the next store into the field: one block per
+    /// field, however often (or in whatever loop) the store runs.
+    pub fn store_latest_copy(&self) -> bool {
+        matches!(&self.kind, AllocKind::CellCopy(r) if *r == crate::view_bindings::reasons::LOCUS_STORED)
+    }
 }
 
 impl ReclaimScope {
@@ -582,8 +704,8 @@ pub struct AllocSite {
     /// still grows and stays flagged. Since 2026-10-12 a struct with
     /// Bytes fields and nested records, tuples and arrays of such
     /// qualifies too (`lotus_self_field_retire_replaced` retires the
-    /// nested blocks); a view, enum or interface field keeps the
-    /// conservative verdict.
+    /// nested blocks), and an enum field whose payloads do; a view or
+    /// interface field keeps the conservative verdict.
     pub retired_store: bool,
     /// The site is written inside a loop body. `loop_depth` is how
     /// deep the allocation repeats, which a `return` / `fail` payload
@@ -599,6 +721,10 @@ pub struct AllocSite {
     /// (`(field, params)`): `retired_store` once every caller is shown
     /// to pass none of it ([`resolve_param_provenance`]).
     pub(crate) retire_if_params: Option<(String, BTreeSet<String>)>,
+    /// The site's innermost loop body reclaims per iteration
+    /// (`crate::iteration_reclaim`): the value lives in that iteration's
+    /// own arena, freed when the iteration ends.
+    pub iteration_reclaimed: bool,
     pub span: Span,
 }
 
@@ -606,6 +732,11 @@ impl AllocSite {
     pub fn verdict(&self) -> SiteVerdict {
         if self.loop_depth == 0 {
             SiteVerdict::OncePerInvocation
+        } else if self.iteration_reclaimed {
+            SiteVerdict::PerIterationReclaim
+        } else if self.store_latest_copy() {
+            // Retired by the next store into the field, at that store.
+            SiteVerdict::PerIterationReclaim
         } else if !self.reclaim.accumulates_in_loop(LoopAt::OwnBody) {
             SiteVerdict::PerIterationReclaim
         } else if self.in_unbounded_loop {
@@ -983,6 +1114,33 @@ pub struct FnSummary {
     /// them over the existing value, so they allocate nothing and are
     /// not in `sites`. Kept for a reader about the literal as written.
     pub in_place_sites: Vec<AllocSite>,
+    /// The fresh Strings and Bytes the body's calls inside loops return
+    /// into its arena ([`AllocKind::CallResult`]), with each loop's
+    /// verdict as a site's. Not in `sites`: the budgets and certificates
+    /// that count sites count literals, and these are read only by the
+    /// leak survey ([`AllocSummary::leak_sites`]).
+    pub call_results: Vec<CallResult>,
+    /// What the body's calls store through the records they hand a
+    /// writer, one site per call ([`AllocKind::CallStore`]): a callee
+    /// that stores an allocation through a parameter, directly or by
+    /// handing it on ([`FnSummary::stores_through_params`]), lands it in
+    /// the arena the call publishes. The escape is whose that arena is,
+    /// by the owned-view column's hand-offs, as lowering reads them: a
+    /// record `self` holds and nothing of a parameter's, the locus's
+    /// (`HeldStore`); one of the body's parameters or a place the pass
+    /// cannot name, the caller's (`ParamStore`); only fresh arguments,
+    /// this frame's (`Local`). Not in `sites`: the budgets and
+    /// certificates count the callee's own sites at the callee; these are
+    /// read by the leak survey and the dump.
+    pub call_stores: Vec<AllocSite>,
+    /// The calls handing a writer anything, before the summary knows
+    /// which callees store through their parameters: `call_stores`'
+    /// candidates.
+    pub(crate) store_calls: Vec<AllocSite>,
+    /// The body may store an allocation through a parameter into the
+    /// arena that owns the caller's value: a `ParamStore` site of its
+    /// own, or a call handing a parameter on to a callee that does.
+    pub stores_through_params: bool,
     /// GH #1490 (step 4): what each publish of the body carries.
     pub(crate) sends: Vec<Taint>,
     /// What a free fn's body allocates into, as lowering routes it
@@ -1100,6 +1258,10 @@ pub struct FormShape {
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
+    /// The program's calls that hand a writer storage of two owners at
+    /// once (`crate::view_bindings::MixedOwners`), which the check
+    /// refuses: the owned-view column the summary was derived over.
+    pub mixed_owner_calls: Vec<crate::view_bindings::MixedOwners>,
     /// iris handoff P2.2: loci only ever instantiated eagerly.
     pub eager_only_loci: BTreeSet<String>,
     /// Flow loci: the types some `release(c: T)` clause names, the
@@ -1161,11 +1323,15 @@ pub struct AllocSummary {
     pub locus_shapes: BTreeMap<String, LocusShape>,
     /// The fns the program reaches, when the summary holds the stdlib's
     /// analysis copy beside the program: the program's own fns, what
-    /// their calls reach, and the hooks and bus handlers of every locus
-    /// they start (an instantiation, or a param field of a started
-    /// locus). A copy's fn the program never reaches is not run, so it
-    /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
-    /// every fn is the program's.
+    /// their calls reach (a stdlib fn called by its public path or as a
+    /// handle's member, the copy's fn; a method call whose receiver the
+    /// walk could not type, the method of its name of every copy locus
+    /// they start), the calls of the program's declaration bodies, and
+    /// the hooks and
+    /// bus handlers of every locus they start (an instantiation, or a
+    /// param field of a started locus). A copy's fn the program never
+    /// reaches is not run, so it invokes, passes and consumes nothing
+    /// ([`AllocSummary::runs`]). `None` when every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
     /// The loci each body starts (a literal of the locus in it): what
     /// [`AllocSummary::unbounded_invoked`] follows from an unboundedly
@@ -1433,7 +1599,10 @@ impl AllocSummary {
                 }
                 calls.push(e);
             }
-            fns.insert(f.key.clone(), FnSummary { calls, ..f.clone() });
+            // A call into the copy is unresolved alone, so it returns
+            // nothing the program alone knows of.
+            let call_results = f.call_results.iter().filter(|r| !copy(&r.callee)).cloned().collect();
+            fns.insert(f.key.clone(), FnSummary { calls, call_results, ..f.clone() });
         }
         // The program alone numbers its function-value dispatches after
         // all of its interface dispatches, each in the fns' order.
@@ -1459,7 +1628,8 @@ impl AllocSummary {
         }
         let own_locus = |l: &String| self.own_locus_of(l, runtime_own);
         let own_key = |k: &FnKey| is_own(k);
-        AllocSummary {
+        let mut out = AllocSummary {
+            mixed_owner_calls: self.mixed_owner_calls.clone(),
             eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             flow_loci: self.flow_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
             fns,
@@ -1485,7 +1655,12 @@ impl AllocSummary {
             // Classified over the stdlib's declarations whether or not
             // the copy's rows are beside: the program's set either way.
             scratch_local: self.scratch_local.clone(),
-        }
+        };
+        // What the program's calls store through the records they hand,
+        // judged over its own rows: a writer of the copy is a call the
+        // program alone does not resolve.
+        resolve_call_stores(&mut out);
+        out
     }
 }
 
@@ -1515,6 +1690,28 @@ pub struct LeakSite {
 }
 
 impl AllocSummary {
+    /// Whether the fn `key` can run: one the program reaches
+    /// ([`AllocSummary::reached`]), or any fn when every fn is the
+    /// program's. The passes that join over the rows read only these: a
+    /// copy's fn the program never reaches calls nothing, consumes
+    /// nothing and seeds no long-lived frame.
+    fn runs(&self, key: &FnKey) -> bool {
+        self.reached.as_ref().is_none_or(|r| r.contains(key))
+    }
+
+    /// Each fn's callers among the fns that run ([`AllocSummary::runs`]).
+    fn callers(&self) -> BTreeMap<FnKey, BTreeSet<FnKey>> {
+        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
+        for f in self.fns.values().filter(|f| self.runs(&f.key)) {
+            for c in &f.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    callers.entry(callee.clone()).or_default().insert(f.key.clone());
+                }
+            }
+        }
+        callers
+    }
+
     /// Fns reached under an unbounded-multiplicity context — the call-graph
     /// half of the bound solver. Seeded with bus handlers (per-message),
     /// then a fixed point: a resolved callee is invoked unboundedly if its
@@ -1628,14 +1825,16 @@ impl AllocSummary {
     /// — a value consumed there dies at its exit. A flow's `run()` that
     /// is one activation ([`AllocSummary::flow_run_is_activation`]) is
     /// not long-lived either: it runs once per flow instance and the
-    /// flow's arena is reclaimed when it returns, so it seeds nothing.
+    /// flow's arena is reclaimed when it returns, so it seeds nothing,
+    /// and neither does a hook of the stdlib's analysis copy the program
+    /// never reaches ([`AllocSummary::runs`]).
     fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
         let flow_run = |f: &FnSummary| self.flow_run_is_activation(f);
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
             .filter(|f| {
-                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run)) && !flow_run(f)
+                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run)) && !flow_run(f) && self.runs(&f.key)
             })
             .map(|f| f.key.clone())
             .collect();
@@ -1770,12 +1969,19 @@ impl AllocSummary {
                 if self.eager_only_loci.contains(l)
                     && matches!(
                         site.escape,
-                        Escape::Local | Escape::StoredToSelf
+                        Escape::Local | Escape::StoredToSelf | Escape::HeldStore
                     )
                 {
                     return SiteVerdict::PerIterationReclaim;
                 }
             }
+        }
+        // GH #1561: a store into a locus's field from outside its methods
+        // copies its value into that locus and retires the value it
+        // replaces, flushing the locus's retires at the store: one block
+        // per field, however often the store runs.
+        if site.store_latest_copy() {
+            return site.verdict();
         }
         let owner_scratchless = scratchless.contains(owner);
         // GH #1490 (C2): a returned value built in its fn's own loop —
@@ -1931,17 +2137,7 @@ impl AllocSummary {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
         let repeated = self.repeated_in_longlived(&scratchless);
-        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
-        for f in self.fns.values() {
-            for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    callers
-                        .entry(callee.clone())
-                        .or_default()
-                        .insert(f.key.clone());
-                }
-            }
-        }
+        let callers = self.callers();
         let mut out = Vec::new();
         for f in self.fns.values() {
             // `@unbounded` is the acknowledged carve-out — its sites never
@@ -1950,7 +2146,9 @@ impl AllocSummary {
             if skip_unbounded && self.unbounded_fns.contains(&f.key) {
                 continue;
             }
-            for s in &f.sites {
+            // A call's store through what it hands a writer is judged at
+            // the call, where the arena it lands in is known.
+            for s in f.sites.iter().chain(&f.call_stores) {
                 if self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers) == SiteVerdict::AccumulatesUnbounded {
                     let reason = if matches!(s.verdict(), SiteVerdict::AccumulatesUnbounded)
                         && !returned_loop_bounded_by_activation(s, scratchless.contains(&f.key))
@@ -1970,6 +2168,23 @@ impl AllocSummary {
                     });
                 }
             }
+            // A fresh String or Bytes a call returns, kept once per
+            // iteration of the body's own unbounded loop: named at the
+            // call, as a literal is named at the literal.
+            for s in f.call_results.iter().map(|r| &r.site) {
+                if s.verdict() == SiteVerdict::AccumulatesUnbounded
+                    && self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers)
+                        == SiteVerdict::AccumulatesUnbounded
+                {
+                    out.push(LeakSite {
+                        owner: f.key.clone(),
+                        kind: s.kind.clone(),
+                        escape: s.escape,
+                        reason: LeakReason::InUnboundedLoop,
+                        span: s.span,
+                    });
+                }
+            }
         }
         out
     }
@@ -1981,17 +2196,7 @@ impl AllocSummary {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
         let repeated = self.repeated_in_longlived(&scratchless);
-        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
-        for f in self.fns.values() {
-            for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    callers
-                        .entry(callee.clone())
-                        .or_default()
-                        .insert(f.key.clone());
-                }
-            }
-        }
+        let callers = self.callers();
         let mut out = String::new();
         out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
         let own_fns: Vec<&FnSummary> = self.fns.values().filter(|f| self.is_own(&f.key)).collect();
@@ -2094,6 +2299,22 @@ impl AllocSummary {
                     flag
                 ));
             }
+            // What a call stores through the records it hands a writer,
+            // with the escape of the arena it lands in.
+            for s in &f.call_stores {
+                let v = self.final_verdict(&f.key, s, &unbounded, &scratchless, &repeated, &callers);
+                let flag = if matches!(v, SiteVerdict::AccumulatesUnbounded) { "  <-- LEAK" } else { "" };
+                out.push_str(&format!(
+                    "    store {:<16} {:<20} {:<22} {:<22} @{}..{}{}\n",
+                    s.kind.label(),
+                    s.escape.label(),
+                    v.label(),
+                    s.reclaim.label(),
+                    s.span.start.0,
+                    s.span.end.0,
+                    flag
+                ));
+            }
             for c in &f.calls {
                 let tgt = match &c.callee {
                     Callee::Resolved(k) => k.display(),
@@ -2142,6 +2363,16 @@ fn carried_by(
 /// (`hale_frontend::snapshot::Snapshot::demand_alloc_summary`); a
 /// bundle no snapshot holds runs it once for itself.
 pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary {
+    derive_alloc_summary_over(bundle, &crate::view_bindings::OwnedViewColumn::of_bundle(bundle))
+}
+
+/// [`derive_alloc_summary`] over the owned-view column the snapshot
+/// computed for the bundle (`views`, GH #1554): each copy the pass adds is
+/// a site of the summary, the very copies lowering makes.
+pub fn derive_alloc_summary_over(
+    bundle: &crate::symbol::Bundle<'_>,
+    views: &crate::view_bindings::OwnedViewColumn,
+) -> AllocSummary {
     let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
         bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
     // The stdlib's analysis copy, with its own identities: a call through
@@ -2151,7 +2382,56 @@ pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary 
     {
         identified.push((program, ids));
     }
-    summarize_identified(&identified, &bundle.import_renames)
+    summarize_identified_over(&identified, &bundle.import_renames, views)
+}
+
+/// The check's allocation summary, which the effect rows, the certificate
+/// engine and every reader the snapshot hands it to read: the summary of
+/// [`derive_alloc_summary_over`] with the stdlib's analysis copy beside
+/// the programs where they can reach it ([`crate::stdlib_reach`]) rather
+/// than whole ([`summarize_within`]).
+///
+/// The owned-view column it reads is derived here over the same reach,
+/// from the checker's walk of the programs (`views`, `monos`) and the
+/// intra-locus relation (`sends`). The snapshot's column, the one
+/// lowering reads, stays whole, since lowering lowers every stdlib body.
+/// When the column or the summary resolves into an item outside the
+/// reach, the reach widens and both are derived again, so every row of
+/// the program and every copy row it reaches is the row the whole copy
+/// beside it gives.
+pub fn derive_alloc_summary_reaching(
+    bundle: &crate::symbol::Bundle<'_>,
+    views: &crate::typed_bodies::ProgramViews,
+    monos: &crate::typed_bodies::MonoShapes,
+    sends: &[hale_syntax::desugar::IntraLocusRewrite],
+    top: &crate::resolve::TopScope,
+) -> AllocSummary {
+    let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
+        bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
+    let copy = crate::stdlib_bodies::program().zip(crate::stdlib_bodies::identities());
+    if let Some((program, ids)) = copy {
+        identified.push((program, ids));
+    }
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let mut reach = crate::stdlib_reach::StdlibReach::of(&programs);
+    loop {
+        let column = crate::view_bindings::OwnedViewColumn::derive_within(
+            &bundle.programs,
+            views,
+            monos,
+            sends,
+            top,
+            copy.is_some().then_some(&mut reach),
+        );
+        match summarize_within(&identified, &bundle.import_renames, &column, Some(&reach)) {
+            Ok(summary) => return summary,
+            Err(beyond) => {
+                if !reach.widen(beyond) {
+                    unreachable!("a body outside the reach is in it once widened");
+                }
+            }
+        }
+    }
 }
 
 /// Every top-level locus of `programs` with a param whose type is one of
@@ -2297,6 +2577,53 @@ pub fn summarize_identified(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
 ) -> AllocSummary {
+    let is_copy = |ids: &crate::snapshot::Snapshot| {
+        crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
+    };
+    let own: BTreeMap<String, &Program> = identified
+        .iter()
+        .filter(|(_, ids)| !is_copy(ids))
+        .enumerate()
+        .map(|(i, (p, _))| (format!("{i:04}"), *p))
+        .collect();
+    let mut bundle = crate::symbol::Bundle::new(own);
+    bundle.import_renames = import_renames.to_vec();
+    let views = crate::view_bindings::OwnedViewColumn::of_bundle(&bundle);
+    summarize_identified_over(identified, import_renames, &views)
+}
+
+/// [`summarize_identified`] over an owned-view column already computed
+/// (`views`): the copies of the programs that are not the stdlib's
+/// analysis copy are the column's `program` part, the copy's its
+/// `stdlib` part.
+pub fn summarize_identified_over(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+    views: &crate::view_bindings::OwnedViewColumn,
+) -> AllocSummary {
+    summarize_within(identified, import_renames, views, None)
+        .unwrap_or_else(|_| unreachable!("every body of the stdlib's analysis copy is walked without a reach"))
+}
+
+/// [`summarize_identified_over`] with the bodies of the stdlib's analysis
+/// copy summarized where `reach` says (`None`: every one), beside an
+/// owned-view column over the same reach. Every declaration of the copy
+/// is read whatever the reach, so what a call resolves to is what it
+/// resolves to beside the whole copy. The passes that join over the rows
+/// (a parameter's provenance, a long-lived frame's seeds, a returned
+/// value's callers) read only the rows the program reaches, as the
+/// unbounded-invocation fixpoint does, so a body outside the reach moves
+/// no row the program reaches. The summary is the whole copy's on every
+/// row it holds if the reach is closed under what the rows follow: no row
+/// inside it calls a body outside it, or starts a locus outside it. When
+/// one does, the summary is `Err` with the items those are in, for the
+/// caller to widen the reach to.
+pub fn summarize_within(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+    views: &crate::view_bindings::OwnedViewColumn,
+    reach: Option<&crate::stdlib_reach::StdlibReach>,
+) -> Result<AllocSummary, BTreeSet<usize>> {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
     // Each seed's names resolve in its own scope. The programs minted
@@ -2387,6 +2714,29 @@ pub fn summarize_identified(
     // #345: what each `@effects(is: {…})` declares, through the bundle's
     // one class table.
     let classes = crate::effect_classes::EffectClassTable::of(programs);
+    // The copy's declarations outside the reach, whose rows lack the
+    // column's copies. A body's declaration is its fn's, or for a locus
+    // member its locus's; each is in one top-level item of the copy.
+    let mut beyond_items: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut beyond_loci: BTreeMap<String, usize> = BTreeMap::new();
+    if let Some(reach) = reach {
+        for (program, ids) in identified.iter().filter(|(_, ids)| is_stdlib_copy(ids)) {
+            for (top, outer) in program.items.iter().enumerate().filter(|(top, _)| !reach.contains(*top)) {
+                for item in flat_decls(std::slice::from_ref(outer)).filter(|item| !shadowed(ids, item)) {
+                    match item {
+                        TopDecl::Fn(f) => {
+                            beyond_items.insert(f.id.0, top);
+                        }
+                        TopDecl::Locus(l) => {
+                            beyond_items.insert(l.id.0, top);
+                            beyond_loci.insert(l.name.name.clone(), top);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
@@ -2404,6 +2754,9 @@ pub fn summarize_identified(
     // the String fields of every struct type and locus, so a `+` is
     // read as a concatenation by its operands' declared types.
     let mut string_rets: BTreeSet<FnKey> = BTreeSet::new();
+    // The fns and methods that return a fresh String or Bytes (a call's
+    // result in a loop: `Walker::record_call`).
+    let mut heap_rets: BTreeSet<FnKey> = BTreeSet::new();
     // GH #1490 (step 4): every fn's and method's parameters with their
     // defaults — a default is evaluated in the CALLER's scope, so a call
     // that leaves a parameter passes what the default reads there — and
@@ -2477,8 +2830,8 @@ pub fn summarize_identified(
     let walked_stores = std::cell::RefCell::new(SlotStores::default());
     // Gap D — struct types a whole-field replace fully reclaims via
     // anchor retirement (Gap A): fields of scalars, Strings, Bytes and
-    // records, tuples and arrays of such (`retirable_field_ty`).
-    // Conservative: a view, enum or interface field disqualifies.
+    // records, tuples, arrays and enums of such (`retirable_field_ty`).
+    // Conservative: a view or interface field disqualifies.
     let mut retirable_structs: BTreeSet<String> = BTreeSet::new();
     // Each struct declaration's field types, read into
     // `retirable_structs` once every declaration is in.
@@ -2679,6 +3032,17 @@ pub fn summarize_identified(
         }
     }
 
+    // A body outside the reach is never walked (phase 2 keys it and moves
+    // on), so what only its walk reads — its parameters' types — is not
+    // gathered for it.
+    let outside = |ids: &crate::snapshot::Snapshot, decl: NodeId| is_stdlib_copy(ids) && beyond_items.contains_key(&decl.0);
+    fn unless_beyond<T: Default>(beyond: bool, f: impl FnOnce() -> T) -> T {
+        if beyond {
+            T::default()
+        } else {
+            f()
+        }
+    }
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
         let universe = universe_of(ids);
@@ -2690,6 +3054,7 @@ pub fn summarize_identified(
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
+                    let beyond = outside(ids, decl.id);
                     if in_runtime(&decl.name) {
                         runtime_ids.insert(decl.id);
                     }
@@ -2703,11 +3068,14 @@ pub fn summarize_identified(
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
                     silence(&key, decl.unbounded, &decl.bounded_by);
                     known.insert((None, key.fn_name.clone()), key.clone());
+                    if decl.ret.as_ref().is_some_and(is_fresh_heap_type) {
+                        heap_rets.insert(key.clone());
+                    }
                     if decl.ret.as_ref().is_some_and(is_string_type) {
                         string_rets.insert(key.clone());
                     }
                     note_params(&key, &decl.params, &mut param_info);
-                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params), param_str_types(&decl.params)));
+                    bodies.push((key, &decl.body, entry, None, unless_beyond(beyond, || param_var_types(&decl.params)), unless_beyond(beyond, || fn_typed_params(&decl.params)), unless_beyond(beyond, || param_var_elem_types(&decl.params)), ids, (decl.hot, false), decl.id, param_names(&decl.params), unless_beyond(beyond, || param_str_types(&decl.params))));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -2725,8 +3093,21 @@ pub fn summarize_identified(
                         struct_decl_tys
                             .insert(td.name.name.clone(), fields.iter().map(|f| f.ty.clone()).collect());
                     }
+                    // An enum retires like a record of its payloads: a
+                    // unit-only one is an inline tag, and a payload
+                    // enum's block, with what its variant holds, retires
+                    // when the field or the record holding it is
+                    // replaced (`lotus_self_field_retire_replaced_enum`,
+                    // and the nested walk's enum entry).
+                    if let TypeDeclBody::Enum(variants) = &td.body {
+                        struct_decl_tys.insert(
+                            td.name.name.clone(),
+                            variants.iter().flat_map(|v| v.fields.iter().cloned()).collect(),
+                        );
+                    }
                 }
                 TopDecl::Locus(l) => {
+                    let beyond = outside(ids, l.id);
                     let locus = l.name.name.clone();
                     if is_stdlib_copy(ids) {
                         analysis_copy_loci.insert(locus.clone());
@@ -2791,14 +3172,14 @@ pub fn summarize_identified(
                                     &md.body,
                                     None,
                                     Some(locus.clone()),
-                                    param_var_types(&md.params),
-                                    fn_typed_params(&md.params),
-                                    param_var_elem_types(&md.params),
+                                    unless_beyond(beyond, || param_var_types(&md.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&md.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&md.params)),
                                     ids,
                                     (false, true),
                                     l.id,
                                     param_names(&md.params),
-                                    param_str_types(&md.params),
+                                    unless_beyond(beyond, || param_str_types(&md.params)),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -2815,6 +3196,9 @@ pub fn summarize_identified(
                                 };
                                 silence(&key, decl.unbounded, &decl.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
+                                if decl.ret.as_ref().is_some_and(is_fresh_heap_type) {
+                                    heap_rets.insert(key.clone());
+                                }
                                 if decl.ret.as_ref().is_some_and(is_string_type) {
                                     string_rets.insert(key.clone());
                                 }
@@ -2824,14 +3208,14 @@ pub fn summarize_identified(
                                     &decl.body,
                                     entry,
                                     Some(locus.clone()),
-                                    param_var_types(&decl.params),
-                                    fn_typed_params(&decl.params),
-                                    param_var_elem_types(&decl.params),
+                                    unless_beyond(beyond, || param_var_types(&decl.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&decl.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&decl.params)),
                                     ids,
                                     (decl.hot, false),
                                     l.id,
                                     param_names(&decl.params),
-                                    param_str_types(&decl.params),
+                                    unless_beyond(beyond, || param_str_types(&decl.params)),
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -2848,14 +3232,14 @@ pub fn summarize_identified(
                                     &lc.body,
                                     Some(entry),
                                     Some(locus.clone()),
-                                    param_var_types(&lc.params),
-                                    fn_typed_params(&lc.params),
-                                    param_var_elem_types(&lc.params),
+                                    unless_beyond(beyond, || param_var_types(&lc.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&lc.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&lc.params)),
                                     ids,
                                     (false, false),
                                     l.id,
                                     param_names(&lc.params),
-                                    param_str_types(&lc.params),
+                                    unless_beyond(beyond, || param_str_types(&lc.params)),
                                 ));
                             }
                             _ => {}
@@ -3074,6 +3458,27 @@ pub fn summarize_identified(
         }
     }
 
+    // The owned-view pass's copies (`crate::view_bindings`): the
+    // column's, the one computation lowering reads too, over the checked
+    // programs and the stdlib's analysis copy — always the copy, whether
+    // or not this summary holds its rows, so the program's copies are the
+    // same summarized alone or beside it — each copy keyed by its
+    // program's scope and its span.
+    let no_cell_copies: BTreeMap<(u32, u32), &'static str> = BTreeMap::new();
+    let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = identified
+        .iter()
+        .map(|(_, ids)| {
+            let column = if is_stdlib_copy(ids) { &views.stdlib } else { &views.program };
+            let copies = column.cell_copies().iter().map(|c| ((c.span.start.0, c.span.end.0), c.reason)).collect();
+            (scope_index(ids), copies)
+        })
+        .collect();
+
+    let beyond_body = |ids: &crate::snapshot::Snapshot, decl: NodeId| -> Option<usize> {
+        is_stdlib_copy(ids).then(|| beyond_items.get(&decl.0).copied()).flatten()
+    };
+    let mut beyond_keys: BTreeMap<FnKey, usize> = BTreeMap::new();
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
@@ -3097,7 +3502,8 @@ pub fn summarize_identified(
                 ids: &crate::snapshot::Snapshot,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
-        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
+        let column = if is_stdlib_copy(ids) { &views.stdlib } else { &views.program };
+        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids, column) };
         let field_types = enclosing_locus
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
@@ -3150,8 +3556,15 @@ pub fn summarize_identified(
             self_replace: None,
             let_call: None,
             in_place_sites: Vec::new(),
+            call_results: Vec::new(),
+            store_calls: Vec::new(),
+            views: column,
+            heap_rets: &heap_rets,
+            claimed: (Vec::new(), Vec::new(), Vec::new()),
             sends: Vec::new(),
             retired_init: false,
+            cell_copies: cell_copies.get(&scope_index(ids)).unwrap_or(&no_cell_copies),
+            placed_cell_copies: BTreeSet::new(),
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -3169,6 +3582,10 @@ pub fn summarize_identified(
                 mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
+                call_results: w.call_results,
+                stores_through_params: false,
+                call_stores: Vec::new(),
+                store_calls: w.store_calls,
                 sends: w.sends,
                 frame: None,
             },
@@ -3190,6 +3607,11 @@ pub fn summarize_identified(
     for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params, str_params)) in
         bodies.iter().enumerate()
     {
+        if let Some(top) = beyond_body(ids, *decl) {
+            summary.analysis_copy.insert(key.clone());
+            beyond_keys.insert(key.clone(), top);
+            continue;
+        }
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts.clone());
@@ -3526,6 +3948,7 @@ pub fn summarize_identified(
     // hooks and bus handlers, and starts the loci its param fields hold
     // (by declared type, or a default's literal). Every locus of the
     // program's own is started.
+    let mut reached_loci: BTreeSet<String> = BTreeSet::new();
     if identified.iter().any(|(_, ids)| is_stdlib_copy(ids)) {
         let mut param_starts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut started: BTreeSet<String> = BTreeSet::new();
@@ -3552,8 +3975,40 @@ pub fn summarize_identified(
                 }
             }
         }
+        // A method call whose receiver the walk could not type may be a
+        // call of a method of its name on any locus a value of the program
+        // can be: the copy's methods of the name, on each copy locus that
+        // reached code starts (an instance exists only where code that runs
+        // builds one), run, as the provenance pass taints them all.
+        let mut copy_methods: BTreeMap<&str, Vec<&FnKey>> = BTreeMap::new();
+        for b in bodies.iter().filter(|b| is_stdlib_copy(b.7)) {
+            if let Some(l) = &b.0.locus {
+                copy_methods.entry(l.as_str()).or_default().push(&b.0);
+            }
+        }
+        // A call of a stdlib fn by its public path (`std::metrics::gauge(..)`)
+        // is a call of the copy's fn it is the spelling of, and a stdlib
+        // handle's member (`reg.gauge(..)`) one of its namespace's fn: what
+        // either builds is started.
+        let copy_fns: BTreeMap<&str, &FnKey> = bodies
+            .iter()
+            .filter(|b| b.0.locus.is_none() && is_stdlib_copy(b.7))
+            .map(|b| (b.0.fn_name.as_str(), &b.0))
+            .collect();
+        let public: BTreeMap<&str, &[&str]> = hale_stdlib::PATH_RENAMES.iter().map(|(p, m)| (*m, *p)).collect();
+        let copy_fn_at = |path: &[&str]| crate::stdlib_bodies::mangled_locus_name(path).and_then(|m| copy_fns.get(m)).map(|k| (*k).clone());
+        let mut untyped: BTreeSet<&str> = BTreeSet::new();
         let mut reached: BTreeSet<FnKey> = BTreeSet::new();
         let mut work: Vec<FnKey> = own.into_iter().collect();
+        // The calls still to follow: a reached row's, and the program's
+        // declaration bodies' (a started locus's params initializers and
+        // hooks, a constant's value), which run with what declares them.
+        let mut calls: Vec<&[CallEdge]> = summary
+            .declaration_bodies
+            .iter()
+            .filter(|b| b.summary.key.locus.is_none())
+            .map(|b| b.summary.calls.as_slice())
+            .collect();
         loop {
             while let Some(l) = pending.pop() {
                 if !started.insert(l.clone()) {
@@ -3566,27 +4021,146 @@ pub fn summarize_identified(
                         .filter(|f| f.key.locus.as_ref() == Some(&l) && f.entry.is_some())
                         .map(|f| f.key.clone()),
                 );
+                let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                work.extend(methods.filter(|m| untyped.contains(m.fn_name.as_str())).map(|m| (*m).clone()));
+                let declared = summary.declaration_bodies.iter().filter(|b| b.summary.key.locus.as_ref() == Some(&l));
+                calls.extend(declared.map(|b| b.summary.calls.as_slice()));
                 pending.extend(param_starts.get(&l).into_iter().flatten().cloned());
+            }
+            if let Some(cs) = calls.pop() {
+                for c in cs {
+                    match &c.callee {
+                        Callee::Resolved(callee) => work.push(callee.clone()),
+                        Callee::Unresolved(name) if c.receiver_present => {
+                            if untyped.insert(name.as_str()) {
+                                for l in &started {
+                                    let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                                    work.extend(methods.filter(|m| m.fn_name == *name).map(|m| (*m).clone()));
+                                }
+                            }
+                            let member = c.recv_ty.as_deref().and_then(|t| public.get(t)).and_then(|p| {
+                                let (_, ns) = p.split_last()?;
+                                copy_fn_at(&ns.iter().copied().chain([name.as_str()]).collect::<Vec<&str>>())
+                            });
+                            work.extend(member);
+                        }
+                        Callee::Unresolved(name) => {
+                            work.extend(copy_fn_at(&name.split("::").collect::<Vec<&str>>()));
+                        }
+                    }
+                }
+                continue;
             }
             let Some(k) = work.pop() else { break };
             if !reached.insert(k.clone()) {
                 continue;
             }
             let Some(f) = summary.fns.get(&k) else { continue };
-            for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    work.push(callee.clone());
-                }
-            }
+            calls.push(&f.calls);
             pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
         }
         summary.reached = Some(reached);
+        reached_loci = started;
     }
     summary.startable = loci_started_from_main(identified, import_renames, &is_stdlib_copy, &summary);
+    // The reach is closed under what the summary followed: no row inside
+    // it calls a body outside it, and no locus the program reaches or
+    // starts is outside it (a started locus's hooks and handlers are rows
+    // the judgments read).
+    if !beyond_keys.is_empty() {
+        let inside = |f: &&FnSummary| !beyond_keys.contains_key(&f.key);
+        let rows = summary.fns.values().filter(inside).chain(summary.declaration_bodies.iter().map(|b| &b.summary));
+        let mut beyond: BTreeSet<usize> = rows
+            .flat_map(|f| &f.calls)
+            .filter_map(|c| match &c.callee {
+                Callee::Resolved(k) => beyond_keys.get(k).copied(),
+                Callee::Unresolved(_) => None,
+            })
+            .collect();
+        // And a fn the program reaches through a call whose receiver the
+        // walk could not type is a row, so what it does counts.
+        beyond.extend(summary.reached.iter().flatten().filter_map(|k| beyond_keys.get(k).copied()));
+        let starts = summary.starts.iter().filter(|(k, _)| !beyond_keys.contains_key(*k)).flat_map(|(_, s)| s);
+        let started = starts.chain(&reached_loci).chain(summary.startable.iter().flatten());
+        beyond.extend(started.filter_map(|l| beyond_loci.get(l).copied()));
+        if !beyond.is_empty() {
+            return Err(beyond);
+        }
+    }
     let param_order: BTreeMap<FnKey, Vec<String>> =
         bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
     resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
-    summary
+    resolve_call_stores(&mut summary);
+    // The one-owner rule's refusals (`check.rs`), the program's own calls.
+    summary.mixed_owner_calls = views.program.mixed_owners().to_vec();
+    Ok(summary)
+}
+
+/// What each call stores through the records it hands a writer
+/// ([`FnSummary::call_stores`]). A body stores through its parameters
+/// ([`FnSummary::stores_through_params`]) when it has a `ParamStore` site
+/// of its own, or a call that hands a parameter on (a `ParamStore`
+/// candidate) to a callee that does: the least fixpoint over the
+/// resolved calls, an interface dispatch's alternatives each. Then every
+/// candidate whose callee stores through its parameters is a site of the
+/// call. A callee the summary cannot resolve stores nothing it knows of.
+fn resolve_call_stores(summary: &mut AllocSummary) {
+    let callees = |f: &FnSummary, at: Span| -> Vec<FnKey> {
+        f.calls
+            .iter()
+            .filter(|c| c.span == at)
+            .filter_map(|c| match &c.callee {
+                Callee::Resolved(k) => Some(k.clone()),
+                Callee::Unresolved(_) => None,
+            })
+            .collect()
+    };
+    let own_store = |f: &FnSummary| {
+        f.sites.iter().chain(f.call_results.iter().map(|r| &r.site)).any(|s| s.escape == Escape::ParamStore)
+    };
+    let mut storing: BTreeSet<FnKey> = summary.fns.values().filter(|f| own_store(f)).map(|f| f.key.clone()).collect();
+    loop {
+        let mut next = Vec::new();
+        for f in summary.fns.values().filter(|f| !storing.contains(&f.key)) {
+            let relays = f
+                .store_calls
+                .iter()
+                .filter(|c| c.escape == Escape::ParamStore)
+                .any(|c| callees(f, c.span).iter().any(|k| storing.contains(k)));
+            if relays {
+                next.push(f.key.clone());
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        storing.extend(next);
+    }
+    // A candidate whose call resolves to nothing stores nothing the
+    // summary knows of, whatever the column says of its arguments.
+    for f in summary.fns.values_mut() {
+        let calls = &f.calls;
+        f.store_calls.retain(|c| calls.iter().any(|e| e.span == c.span && matches!(e.callee, Callee::Resolved(_))));
+    }
+    let stores: BTreeMap<FnKey, Vec<AllocSite>> = summary
+        .fns
+        .values()
+        .map(|f| {
+            let kept = f
+                .store_calls
+                .iter()
+                .filter(|c| callees(f, c.span).iter().any(|k| storing.contains(k)))
+                .cloned()
+                .collect();
+            (f.key.clone(), kept)
+        })
+        .collect();
+    for (k, kept) in stores {
+        if let Some(f) = summary.fns.get_mut(&k) {
+            f.stores_through_params = storing.contains(&k);
+            f.call_stores = kept;
+        }
+    }
 }
 
 /// GH #1490 (step 4): each locus's bus handlers.
@@ -3658,7 +4232,9 @@ fn idents_of(e: &Expr, out: &mut BTreeSet<String>) -> bool {
 /// no such record, and a parameter it leaves that has a default carries
 /// anything. A parameter with no call — a bus handler's
 /// message, a hook's argument — carries nothing: the runtime passes a
-/// fresh value.
+/// fresh value. Only a call in a fn that runs passes anything
+/// ([`AllocSummary::runs`]): a body of the stdlib's analysis copy the
+/// program never reaches is never executed.
 ///
 /// A field replace whose new value read only parameters then retires
 /// what it replaces when none of them may carry the field.
@@ -3685,7 +4261,7 @@ fn resolve_param_provenance(
             }
             false
         }
-        for f in summary.fns.values() {
+        for f in summary.fns.values().filter(|f| summary.runs(&f.key)) {
             for e in &f.calls {
                 let args: Vec<Taint> = e
                     .arg_taints
@@ -3743,7 +4319,7 @@ fn resolve_param_provenance(
         // transport's own pattern dialect, topics declared over subjects,
         // computed subjects) nor by type (aliases): every handler of the
         // locus receives what any of its publishes carries.
-        for f in summary.fns.values() {
+        for f in summary.fns.values().filter(|f| summary.runs(&f.key)) {
             let Some(locus) = &f.key.locus else { continue };
             let Some(subs) = subscriptions.get(locus) else { continue };
             for payload in &f.sends {
@@ -3878,8 +4454,11 @@ fn loci_started_from_main(
         });
         out
     };
-    let mut fn_names: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
-    let mut locus_names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // What each fn's and each locus's declaration names is read when the
+    // walk reaches it, not up front: a program pays for the declarations
+    // it starts or calls, not for every one of the stdlib's copy.
+    let mut fn_items: BTreeMap<FnKey, &TopDecl> = BTreeMap::new();
+    let mut locus_items: BTreeMap<String, Vec<&TopDecl>> = BTreeMap::new();
     let mut pending: Vec<String> = Vec::new();
     for (p, ids) in identified {
         let copy = is_copy(ids);
@@ -3887,10 +4466,10 @@ fn loci_started_from_main(
         for item in flat_decls(&p.items) {
             match item {
                 TopDecl::Fn(f) => {
-                    fn_names.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), named_in(item));
+                    fn_items.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), item);
                 }
                 TopDecl::Locus(l) => {
-                    locus_names.entry(l.name.name.clone()).or_default().extend(named_in(item));
+                    locus_items.entry(l.name.name.clone()).or_default().push(item);
                     // The TCP substrate is appended to the program's own
                     // seed (`rpc_expand::inject_tcp_serve`) but is stdlib
                     // source: its loci start where the program names them
@@ -3917,13 +4496,17 @@ fn loci_started_from_main(
                 continue;
             }
             work.extend(summary.fns.values().filter(|f| f.key.locus.as_ref() == Some(&l)).map(|f| f.key.clone()));
-            pending.extend(locus_names.get(&l).into_iter().flatten().cloned());
+            for item in locus_items.get(&l).into_iter().flatten() {
+                pending.extend(named_in(item));
+            }
         }
         let Some(k) = work.pop() else { break };
         if !reached.insert(k.clone()) {
             continue;
         }
-        pending.extend(fn_names.get(&k).into_iter().flatten().cloned());
+        if let Some(item) = fn_items.get(&k) {
+            pending.extend(named_in(item));
+        }
         let Some(f) = summary.fns.get(&k) else { continue };
         for c in &f.calls {
             match &c.callee {
@@ -4636,6 +5219,35 @@ pub fn unbounded_alloc_diags(
         .iter()
         .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
+            // A value written through a parameter (or through a record
+            // `self` holds, handed to a writer) lives with the record's
+            // owner and is never recycled when the writer returns.
+            if matches!(ls.escape, Escape::ParamStore | Escape::HeldStore) {
+                let whose = if ls.escape == Escape::HeldStore {
+                    "the locus's own arena (the record is one `self` holds)"
+                } else {
+                    "the arena that owns the caller's record"
+                };
+                let where_ = match ls.reason {
+                    LeakReason::InUnboundedLoop => "inside an unbounded loop",
+                    _ => "in a fn invoked unboundedly (a per-message bus handler, or reached through a call inside an unbounded loop)",
+                };
+                return Diag::warn(
+                    ls.span,
+                    format!(
+                        "unbounded allocation: this {} {where_} is written through a parameter into \
+                         {whose}, not into `{}`'s frame — a write through a parameter is not \
+                         recycled when the writer returns, and the value it replaces is not \
+                         retired — so it accumulates until that owner dissolves (or acknowledge an \
+                         intentionally-/domain-bounded shape with `@unbounded` on the enclosing fn). \
+                         Bound the loop; hand the writer a record the iteration builds, which the \
+                         iteration's frame owns; or store into the field of `self` directly \
+                         (`self.bag.b = v`), a store that recycles the String it replaces.",
+                        ls.kind.label(),
+                        ls.owner.display()
+                    ),
+                );
+            }
             let where_ = match ls.reason {
                 LeakReason::InUnboundedLoop => "inside an unbounded loop",
                 LeakReason::InvokedUnboundedly => {
@@ -4669,7 +5281,10 @@ pub fn unbounded_alloc_diags(
                      until the locus dissolves — it is never reclaimed per iteration, \
                      so it grows without bound (or acknowledge an \
                      intentionally-/domain-bounded shape with `@unbounded` \
-                     on the enclosing fn, lifecycle hook or mode). Bound the loop; \
+                     on the enclosing fn, lifecycle hook or mode). Keep it in its \
+                     iteration: a method's loop body that assigns no binding declared \
+                     before the loop with a value that is not a scalar or a locus frees \
+                     what each iteration makes when the iteration ends. Bound the loop; \
                      store it in a \
                      capacity-bounded form (`@form(ring_buffer)` / `@form(lru_cache)` / \
                      a `capacity` slot) instead of a replaced field; mutate fixed state \
@@ -5370,14 +5985,271 @@ struct Walker<'a> {
     let_call: Option<(Span, Span)>,
     /// `FnSummary::in_place_sites`.
     in_place_sites: Vec<AllocSite>,
+    /// [`FnSummary::call_results`].
+    call_results: Vec<CallResult>,
+    /// `FnSummary::store_calls`.
+    store_calls: Vec<AllocSite>,
+    /// The owned-view column of this body's scope: which assignments
+    /// write through a parameter, and what each call hands a writer.
+    views: &'a crate::view_bindings::OwnedViews,
+    /// The fns and methods whose declared return is a String or Bytes:
+    /// a call to one returns a fresh value into the caller's arena.
+    heap_rets: &'a BTreeSet<FnKey>,
+    /// Which `sites`, `call_results` and `store_calls` an inner loop
+    /// already judged ([`Walker::judge_iteration`]).
+    claimed: (Vec<bool>, Vec<bool>, Vec<bool>),
     /// `FnSummary::sends`.
     sends: Vec<Taint>,
     /// GH #1490 (step 4): the expression walked next is a whole field
     /// of a retired struct replace (`AllocSite::retired_store`).
     retired_init: bool,
+    /// The cell-read rule's copies in this body's scope, by span
+    /// (`crate::view_bindings`), and the ones this walk has placed.
+    cell_copies: &'a BTreeMap<(u32, u32), &'static str>,
+    placed_cell_copies: BTreeSet<(u32, u32)>,
 }
 
 impl<'a> Walker<'a> {
+    /// Does this loop `body` reclaim per iteration, as lowering decides
+    /// (`crate::iteration_reclaim`)? Only a locus member's frame has the
+    /// per-call scratch the iteration arenas hang off. The bindings
+    /// outside the body are judged by their declarations
+    /// ([`Walker::outer_kinds`]), a locus by its literal or a free fn
+    /// returning one.
+    fn loop_reclaims(&self, body: &Block) -> bool {
+        if self.enclosing_locus.is_none() {
+            return false;
+        }
+        let kinds = self.outer_kinds();
+        let outer = |n: &str| kinds.get(n).copied();
+        let produces_locus = |e: &Expr| self.makes_locus(e);
+        let decl_of = crate::iteration_reclaim::decl_of(self.escaping.ids);
+        crate::iteration_reclaim::reclaims_per_iteration(body, &outer, &produces_locus, &decl_of)
+    }
+
+    /// Does `e` make a locus: a literal of one, or a call of a free fn
+    /// whose declared return is one.
+    fn makes_locus(&self, e: &Expr) -> bool {
+        let (std_loci, std_makers) = stdlib_locus_facts();
+        match e {
+            Expr::Struct { path, .. } => {
+                let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                slot_locus(path, self.locus_types, self.rename_map).is_some_and(|l| self.is_locus_name(&l))
+                    || crate::stdlib_bodies::mangled_locus_name(&segs).is_some_and(|m| std_loci.contains(m))
+            }
+            Expr::Call { callee, .. } => {
+                let std_maker = match callee.as_ref() {
+                    Expr::Path(qp) => {
+                        let segs: Vec<&str> = qp.segments.iter().map(|s| s.name.as_str()).collect();
+                        crate::ownership::stdlib_mangled_for_path(&segs).is_some_and(|m| std_makers.contains(m))
+                    }
+                    _ => false,
+                };
+                std_maker || self.receiver_type_name(e).is_some_and(|t| self.is_locus_name(&t))
+            }
+            _ => false,
+        }
+    }
+
+    /// Is `name` a locus: the program's, or the stdlib's whether or not
+    /// its analysis copy is beside the program ([`stdlib_locus_facts`]).
+    fn is_locus_name(&self, name: &str) -> bool {
+        self.locus_types.contains(name) || stdlib_locus_facts().0.contains(name)
+    }
+
+    /// What each binding of the body holds, by its declaration: a
+    /// parameter, a `let`, a tuple `let`'s names, a `for` binder. A name
+    /// declared more than once takes the widest of its kinds.
+    fn outer_kinds(&self) -> BTreeMap<String, crate::iteration_reclaim::OuterLocal> {
+        use crate::iteration_reclaim::OuterLocal;
+        let mut out: BTreeMap<String, OuterLocal> = BTreeMap::new();
+        fn rank(k: OuterLocal) -> u8 {
+            match k {
+                OuterLocal::Scalar => 0,
+                OuterLocal::Locus => 1,
+                OuterLocal::Heap => 2,
+                OuterLocal::Buffer => 3,
+            }
+        }
+        fn join(out: &mut BTreeMap<String, OuterLocal>, name: &str, k: OuterLocal) {
+            let merged = match out.get(name) {
+                None => k,
+                Some(&prev) if prev == k => k,
+                Some(&prev) => {
+                    if rank(prev).max(rank(k)) >= 2 {
+                        if rank(prev) > rank(k) { prev } else { k }
+                    } else {
+                        OuterLocal::Heap
+                    }
+                }
+            };
+            out.insert(name.to_string(), merged);
+        }
+        for p in &self.fn_params {
+            let k = match self.var_types.get(p) {
+                Some(t) if self.is_locus_name(t) => OuterLocal::Locus,
+                _ => OuterLocal::Heap,
+            };
+            join(&mut out, p, k);
+        }
+        fn walk_block(w: &Walker<'_>, b: &Block, out: &mut BTreeMap<String, OuterLocal>) {
+            for st in &b.stmts {
+                walk_stmt(w, st, out);
+            }
+        }
+        fn walk_stmt(w: &Walker<'_>, st: &Stmt, out: &mut BTreeMap<String, OuterLocal>) {
+            match st {
+                Stmt::Let { name, ty, value, .. } => {
+                    let k = w.declared_kind(ty.as_ref(), value, out);
+                    join(out, &name.name, k);
+                }
+                Stmt::LetTuple { names, .. } => {
+                    for n in names {
+                        join(out, &n.name, OuterLocal::Heap);
+                    }
+                }
+                Stmt::For { name, iter, body, .. } => {
+                    let k = if matches!(iter, Expr::Range { .. }) { OuterLocal::Scalar } else { OuterLocal::Heap };
+                    join(out, &name.name, k);
+                    walk_block(w, body, out);
+                }
+                Stmt::While { body, .. } => walk_block(w, body, out),
+                Stmt::Block(b) => walk_block(w, b, out),
+                Stmt::If(i) => walk_if(w, i, out),
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(b) = &arm.body {
+                            walk_block(w, b, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn walk_if(w: &Walker<'_>, i: &IfStmt, out: &mut BTreeMap<String, OuterLocal>) {
+            walk_block(w, &i.then_block, out);
+            match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => walk_block(w, b, out),
+                Some(ElseBranch::ElseIf(e)) => walk_if(w, e, out),
+                None => {}
+            }
+        }
+        walk_block(self, self.fn_body, &mut out);
+        out
+    }
+
+    /// What a `let` declared `ty` and bound to `value` holds: a scalar by
+    /// its type, a scalar literal or a scalar expression over the
+    /// bindings declared so far (`known`), a locus by its type or its
+    /// making; anything else may point into an arena.
+    fn declared_kind(
+        &self,
+        ty: Option<&TypeExpr>,
+        value: &Expr,
+        known: &BTreeMap<String, crate::iteration_reclaim::OuterLocal>,
+    ) -> crate::iteration_reclaim::OuterLocal {
+        use crate::iteration_reclaim::OuterLocal;
+        if let Some(te) = ty {
+            return match te {
+                TypeExpr::Primitive(
+                    PrimType::Int
+                    | PrimType::Uint
+                    | PrimType::Float
+                    | PrimType::Decimal(_)
+                    | PrimType::Bool
+                    | PrimType::Time
+                    | PrimType::Duration,
+                    _,
+                ) => OuterLocal::Scalar,
+                TypeExpr::Primitive(PrimType::BytesMut, _) | TypeExpr::Bounded { .. } => OuterLocal::Buffer,
+                _ if type_expr_name(te).is_some_and(|n| self.is_locus_name(&n)) => OuterLocal::Locus,
+                _ => OuterLocal::Heap,
+            };
+        }
+        if self.makes_locus(value) {
+            return OuterLocal::Locus;
+        }
+        if self.scalar_expr(value, known) {
+            OuterLocal::Scalar
+        } else {
+            OuterLocal::Heap
+        }
+    }
+
+    /// Is `e` certainly a scalar: a numeric, boolean or time literal, a
+    /// comparison or logic, arithmetic over scalars, a scalar binding, a
+    /// builtin returning a scalar (`len`).
+    fn scalar_expr(&self, e: &Expr, known: &BTreeMap<String, crate::iteration_reclaim::OuterLocal>) -> bool {
+        use crate::iteration_reclaim::OuterLocal;
+        match e {
+            Expr::Literal(l, _) => matches!(
+                l,
+                Literal::Int(_) | Literal::Float(_) | Literal::Decimal(_) | Literal::Bool(_) | Literal::Time(_) | Literal::Quantity { .. }
+            ),
+            Expr::Ident(i) => known.get(&i.name) == Some(&OuterLocal::Scalar),
+            Expr::Unary { operand, .. } => self.scalar_expr(operand, known),
+            Expr::Binary { op, left, right, .. } => match op {
+                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq | BinOp::And | BinOp::Or => true,
+                _ => self.scalar_expr(left, known) && self.scalar_expr(right, known),
+            },
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(id) if self.local(&id.name).is_none() && self.own_fn(&id.name).is_none() => {
+                    crate::builtin_sigs::bare_builtin_sig(&id.name).is_some_and(|s| {
+                        matches!(
+                            s.returns,
+                            crate::builtin_sigs::Returns::Prim(PrimType::Int | PrimType::Float | PrimType::Bool)
+                        )
+                    })
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// A loop body was just walked, its sites from `marks` on: the ones
+    /// no inner loop judged are this loop's, reclaimed per iteration when
+    /// the body is (`reclaims`) and the value stays in the iteration (a
+    /// `Local` literal, concatenation or call result; a locus literal has
+    /// an arena of its own, a cell copy is made before the body).
+    fn judge_iteration(&mut self, marks: (usize, usize, usize), reclaims: bool) {
+        let eligible = |site: &AllocSite, locus_types: &BTreeSet<String>| {
+            site.escape == Escape::Local
+                && match &site.kind {
+                    AllocKind::StructLit(n) => !locus_types.contains(n) && !stdlib_locus_facts().0.contains(n),
+                    AllocKind::ArrayLit
+                    | AllocKind::ArrayRepeat
+                    | AllocKind::BytesLit
+                    | AllocKind::StringConcat
+                    | AllocKind::CallResult(_)
+                    | AllocKind::CallStore(_) => true,
+                    AllocKind::CollectionInsert(_) | AllocKind::CellCopy(_) => false,
+                }
+        };
+        let locus_types = self.locus_types;
+        self.claimed.0.resize(self.sites.len(), false);
+        for i in marks.0..self.sites.len() {
+            if !std::mem::replace(&mut self.claimed.0[i], true) && reclaims && eligible(&self.sites[i], locus_types) {
+                self.sites[i].iteration_reclaimed = true;
+            }
+        }
+        self.claimed.1.resize(self.call_results.len(), false);
+        for i in marks.1..self.call_results.len() {
+            if !std::mem::replace(&mut self.claimed.1[i], true)
+                && reclaims
+                && eligible(&self.call_results[i].site, locus_types)
+            {
+                self.call_results[i].site.iteration_reclaimed = true;
+            }
+        }
+        self.claimed.2.resize(self.store_calls.len(), false);
+        for i in marks.2..self.store_calls.len() {
+            if !std::mem::replace(&mut self.claimed.2[i], true) && reclaims && eligible(&self.store_calls[i], locus_types) {
+                self.store_calls[i].iteration_reclaimed = true;
+            }
+        }
+    }
+
     /// GH #265: record a syntactic effect site (publish / spawn) in
     /// the fn currently being summarized.
     fn push_effect_site(
@@ -5395,6 +6267,24 @@ impl<'a> Walker<'a> {
 
     fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
         let site = self.site(kind, escape, depth, span);
+        self.sites.push(site);
+    }
+
+    /// A copy the cell-read rule adds at `span` (a statement, a binding,
+    /// an argument), once. A `for` over a map's entries copies each entry
+    /// it binds: the copy is in the loop.
+    fn place_cell_copy(&mut self, span: Span, depth: u32, per_iteration: bool) {
+        let key = (span.start.0, span.end.0);
+        let Some(reason) = self.cell_copies.get(&key).copied() else { return };
+        if !self.placed_cell_copies.insert(key) {
+            return;
+        }
+        let mut site = self.site(AllocKind::CellCopy(reason), Escape::Local, depth, span);
+        if per_iteration {
+            site.loop_depth = depth + 1;
+            site.in_loop = true;
+            site.in_unbounded_loop = true;
+        }
         self.sites.push(site);
     }
 
@@ -5424,6 +6314,7 @@ impl<'a> Walker<'a> {
             bare_stmt: false,
             self_replace: None,
             retire_if_params: None,
+            iteration_reclaimed: false,
             span,
         }
     }
@@ -5482,6 +6373,18 @@ impl<'a> Walker<'a> {
             // arm's value answers.
             Expr::If(ifs) => self.if_is_string(ifs),
             Expr::Block(b) => b.tail.as_deref().is_some_and(|t| self.is_string_expr(t)),
+            _ => false,
+        }
+    }
+
+    /// Is the place an assignment writes a String: a String binding, or
+    /// a String field of `self` or of a typed binding?
+    fn target_is_string(&self, target: &LValue) -> bool {
+        let head = &target.head;
+        match target.tail.as_slice() {
+            [] => self.is_string_expr(&Expr::Ident(head.clone())),
+            [LValueSeg::Field(f)] if head.name == "self" => self.self_field_str(&f.name) == StrTy::Str,
+            [LValueSeg::Field(f)] => self.field_str(&Expr::Ident(head.clone()), &f.name) == StrTy::Str,
             _ => false,
         }
     }
@@ -5764,6 +6667,7 @@ impl<'a> Walker<'a> {
             bare_stmt: false,
             self_replace: None,
             retire_if_params: None,
+            iteration_reclaimed: false,
             span,
         });
     }
@@ -6131,6 +7035,8 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_stmt(&mut self, stmt: &Stmt, depth: u32) {
+        let per_iteration = matches!(stmt, Stmt::For { iter: Expr::Field { name, .. }, .. } if name.name == "entries");
+        self.place_cell_copy(stmt.span(), depth, per_iteration);
         match stmt {
             Stmt::Let { name, ty, value, id, span, .. } => {
                 // D2: a typed `let v: T = …` extends the var→type map so a
@@ -6195,7 +7101,7 @@ impl<'a> Walker<'a> {
                     self.bind_taint(&n.name, taint.clone());
                 }
             }
-            Stmt::Assign { target, value, id, span, .. } => {
+            Stmt::Assign { target, op, value, id, span, .. } => {
                 // GH #540: a write to a field of any place may be a write
                 // to an interface-typed slot of that name.
                 for seg in &target.tail {
@@ -6212,8 +7118,14 @@ impl<'a> Walker<'a> {
                 {
                     self.self_replace = Some((value.span(), *span));
                 }
+                // A write through a parameter of caller storage (the
+                // owned-view column's `writes_param`, the writes the
+                // positional summaries start from) stores into the arena
+                // that owns the caller's value.
                 let mut esc = if target.head.name == "self" {
                     Escape::StoredToSelf
+                } else if self.views.writes_param(*id) {
+                    Escape::ParamStore
                 } else {
                     self.escaping.of_assign(*id)
                 };
@@ -6240,7 +7152,38 @@ impl<'a> Walker<'a> {
                         self.store_target = target_field;
                     }
                 }
-                self.walk_expr(value, depth, esc);
+                if matches!(op, AssignOp::PlusEq) {
+                    // GH #1490 (step 3): `s += x` is `s = s + x`: the
+                    // same concatenation, the same escape as the binding
+                    // it extends. It reads the field it extends, so it
+                    // is never a store-latest replace.
+                    if self.is_string_expr(value) || self.target_is_string(target) {
+                        let target_field = if esc == Escape::StoredToSelf {
+                            self.store_target.clone()
+                        } else {
+                            None
+                        };
+                        self.sites.push(AllocSite {
+                            kind: AllocKind::StringConcat,
+                            escape: esc,
+                            loop_depth: depth,
+                            in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                            in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
+                            reclaim: ReclaimScope::EnclosingLocus,
+                            target_field,
+                            retired_store: false,
+                            in_loop: self.loops_as_written > 0,
+                            bare_stmt: false,
+                            self_replace: None,
+                            retire_if_params: None,
+                            iteration_reclaimed: false,
+                            span: *span,
+                        });
+                    }
+                    self.walk_expr(value, depth, Escape::Local);
+                } else {
+                    self.walk_expr(value, depth, esc);
+                }
                 self.store_target = prev;
                 self.self_replace = None;
                 // A reassigned local holds whichever value the run took
@@ -6277,8 +7220,13 @@ impl<'a> Walker<'a> {
                         })
                     }
                     // A declared topic name (`Sig <- v`) parses as a
-                    // bare identifier.
-                    Expr::Ident(id) => Some(PublishSubject {
+                    // bare identifier — unless the name is a binding
+                    // in scope (`let subj = "log." + p; subj <- v`),
+                    // whose value is a subject computed at run time.
+                    // Read as a topic it named a topic called `subj`,
+                    // with no subscriber, and every judgment walked
+                    // past a publish it could not see.
+                    Expr::Ident(id) if self.local(&id.name).is_none() => Some(PublishSubject {
                         text: id.name.clone(),
                         literal: false,
                     }),
@@ -6337,7 +7285,10 @@ impl<'a> Walker<'a> {
                 self.strs.push(BTreeMap::from([(name.name.clone(), binder)]));
                 let iter_t = self.taint_of(iter);
                 self.taints.push(BTreeMap::from([(name.name.clone(), iter_t)]));
+                let reclaims = self.loop_reclaims(body);
+                let marks = (self.sites.len(), self.call_results.len(), self.store_calls.len());
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.judge_iteration(marks, reclaims);
                 self.taints.pop();
                 self.strs.pop();
                 self.locals.pop();
@@ -6371,7 +7322,10 @@ impl<'a> Walker<'a> {
                 self.loop_stack.push(bounded);
                 self.infinite_stack.push(infinite);
                 self.loops_as_written += 1;
+                let reclaims = self.loop_reclaims(body);
+                let marks = (self.sites.len(), self.call_results.len(), self.store_calls.len());
                 self.walk_block(body, depth + 1, Escape::Local);
+                self.judge_iteration(marks, reclaims);
                 self.loops_as_written -= 1;
                 self.loop_stack.pop();
                 self.infinite_stack.pop();
@@ -6457,6 +7411,7 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_expr(&mut self, expr: &Expr, depth: u32, escape: Escape) {
+        self.place_cell_copy(expr.span(), depth, false);
         match expr {
             Expr::Struct { path, inits, span, .. } => {
                 // The *qualified* path (joined) — a local struct is
@@ -6613,6 +7568,7 @@ impl<'a> Walker<'a> {
                         bare_stmt: false,
                         self_replace: None,
                         retire_if_params,
+                        iteration_reclaimed: false,
                         span,
                     });
                 }
@@ -6620,8 +7576,8 @@ impl<'a> Walker<'a> {
                 self.walk_expr(right, depth, Escape::Local);
             }
             Expr::Unary { operand, .. } => self.walk_expr(operand, depth, Escape::Local),
-            Expr::Call { callee, args, span, .. } => {
-                self.record_call(callee, args, *span, depth, escape);
+            Expr::Call { callee, args, span, id } => {
+                self.record_call(callee, args, *span, *id, depth, escape);
                 // D2: a `recv.<insert>(x)` where `recv`'s declared type is a
                 // growing form is itself an accumulating allocation.
                 if let Expr::Field { receiver, name, .. }
@@ -6689,7 +7645,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, depth: u32, escape: Escape) {
+    fn record_call(&mut self, callee: &Expr, args: &[Expr], span: Span, id: NodeId, depth: u32, escape: Escape) {
         let arity = args.len();
         // GH #1490 (step 4): what each argument carries, for the callee's
         // parameters' provenance, and whether the call is on `self`.
@@ -6710,9 +7666,13 @@ impl<'a> Walker<'a> {
                     Callee::Unresolved(id.name.clone())
                 } else {
                     // A bare callee names a builtin or a fn before a
-                    // local, as codegen lowers it. A call through a
-                    // local the bindings follow to a fn reaches that fn;
-                    // through any other, the edge is what it always was.
+                    // local: a binding in scope that shadows a fn of its
+                    // name is called as a value, `{ f }(x)`, by the desugar
+                    // sequence (`crate::shadowed_callees`), so the name of
+                    // a fn reaches here only where no binding shadows it.
+                    // A call through a local the bindings follow to a fn
+                    // reaches that fn; through any other, the edge is what
+                    // it always was.
                     match self.local(&id.name) {
                         Some(Local::Fn(c)) => {
                             via_local = Some(id.name.clone());
@@ -6852,6 +7812,52 @@ impl<'a> Walker<'a> {
                 arg_taints: vec![Taint::none(), Taint::none()],
                 self_call,
             });
+        }
+        // A call handing a callee that may write through them any
+        // arguments (the owned-view column's hand-offs, fresh ones
+        // included): what the callee stores through them lands in the
+        // arena the call publishes, as lowering picks it
+        // (`call_site_arena`): the locus's, when every non-fresh one may
+        // only be a record `self` holds; the caller's, when one may be a
+        // parameter or a place the pass cannot name; this frame's when
+        // all are fresh. A candidate until the summary knows whether the
+        // callee stores anything through its parameters
+        // ([`FnSummary::call_stores`]).
+        let handed: Vec<crate::view_bindings::Handoff> =
+            args.iter().filter_map(|a| self.views.writer_arg(id, a.span().start.0)).collect();
+        if !handed.is_empty() {
+            let placed: Vec<_> = handed.iter().filter(|h| !h.fresh()).collect();
+            let store = if placed.is_empty() {
+                Escape::Local
+            } else if placed.iter().any(|h| h.held()) && !placed.iter().any(|h| h.param()) {
+                Escape::HeldStore
+            } else {
+                Escape::ParamStore
+            };
+            // The callee as written, which the program alone spells the
+            // same whether or not it resolves the call.
+            let written = match callee {
+                Expr::Ident(i) => i.name.clone(),
+                Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+                Expr::Field { name, .. } | Expr::Path2 { name, .. } => name.name.clone(),
+                _ => "<expr>".to_string(),
+            };
+            let site = self.site(AllocKind::CallStore(written), store, depth, span);
+            self.store_calls.push(site);
+        }
+        // A call in a loop of a locus member whose callee returns a fresh
+        // String or Bytes leaves it in this frame's arena (the caller
+        // arena it publishes), one per iteration unless the iteration is
+        // reclaimed (`crate::iteration_reclaim`, which only a locus
+        // member's frame has). Written through a parameter, the value is
+        // stored into the caller's record instead, one per iteration.
+        if depth > 0 && matches!(escape, Escape::Local | Escape::ParamStore) && self.enclosing_locus.is_some() {
+            if let Callee::Resolved(key) = &resolved {
+                if self.heap_rets.contains(key) {
+                    let site = self.site(AllocKind::CallResult(key.fn_name.clone()), escape, depth, span);
+                    self.call_results.push(CallResult { callee: key.clone(), site });
+                }
+            }
         }
         self.calls.push(CallEdge {
             recv_ty,
@@ -7360,6 +8366,7 @@ impl Escaping<'_> {
 fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
+    views: &crate::view_bindings::OwnedViews,
 ) -> BTreeMap<SiteId, Escape> {
     let mut out: BTreeMap<SiteId, Escape> = BTreeMap::new();
     // `let x = y;`: x's statement and the declaration y names.
@@ -7368,6 +8375,13 @@ fn collect_escaping_decls(
         Flow::Escapes(i, esc) => {
             if let Some(d) = ids.declaration_of(i.id) {
                 note_obligation(&mut out, d, esc);
+            }
+        }
+        // A name written through a parameter (`x.b = v`): the owned-view
+        // column says which assignments do.
+        Flow::Written { assign, value } => {
+            if let (true, Some(d)) = (views.writes_param(assign), ids.declaration_of(value.id)) {
+                note_obligation(&mut out, d, Escape::ParamStore);
             }
         }
         Flow::Alias { let_id, from } => {
@@ -7388,7 +8402,7 @@ fn collect_escaping_decls(
         let mut changed = false;
         for (alias, source) in &aliases {
             match out.get(alias).copied() {
-                Some(esc @ (Escape::Returned | Escape::StoredToSelf)) => {
+                Some(esc @ (Escape::Returned | Escape::StoredToSelf | Escape::ParamStore)) => {
                     let before = out.get(source).copied();
                     note_obligation(&mut out, *source, esc);
                     changed |= out.get(source).copied() != before;
@@ -7413,7 +8427,7 @@ fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
         (None, e) => {
             out.insert(d, e);
         }
-        (Some(Escape::Sent), e @ (Escape::Returned | Escape::StoredToSelf)) => {
+        (Some(Escape::Sent), e @ (Escape::Returned | Escape::StoredToSelf | Escape::ParamStore)) => {
             out.insert(d, e);
         }
         _ => {}
@@ -7425,6 +8439,10 @@ fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
 enum Flow<'e> {
     Escapes(&'e hale_syntax::ast::Ident, Escape),
     Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
+    /// A name assigned into a path below a binding that is not `self`
+    /// (`x.b = v`): an escape when the assignment writes through a
+    /// parameter (`OwnedViews::writes_param`).
+    Written { assign: hale_syntax::ast::NodeId, value: &'e hale_syntax::ast::Ident },
 }
 
 type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
@@ -7446,6 +8464,9 @@ fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
         Stmt::Send { value, .. } => note_escape(value, Escape::Sent, out),
         Stmt::Assign { target, value, .. } if target.head.name == "self" => {
             note_escape(value, Escape::StoredToSelf, out)
+        }
+        Stmt::Assign { target, value: Expr::Ident(value), id, .. } if !target.tail.is_empty() => {
+            out(Flow::Written { assign: *id, value })
         }
         Stmt::If(if_stmt) => collect_escaping_in_if(if_stmt, out),
         Stmt::Match(m) => {
@@ -7480,12 +8501,14 @@ fn note_escape(e: &Expr, esc: Escape, out: &mut EscapeSink<'_>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hale_syntax::parse_source;
 
     /// A parsed program and the identities minted over it.
-    fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
+    /// `src` parsed and minted, as an entry point would (also the
+    /// `iteration_reclaim` tests' one mint).
+    pub(crate) fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
         minted_with(src, |_| {})
     }
 
@@ -7812,7 +8835,7 @@ mod tests {
             type Tmp { a: Int; }
             locus L {
                 bus { subscribe "in" as on_in of type T; }
-                fn on_in(m: T) { while true { let tmp = Tmp { a: m.n }; let _ = tmp.a; } }
+                fn on_in(m: T) { let mut keep = Tmp { a: 0 }; while true { let tmp = Tmp { a: m.n }; keep = tmp; } }
             }
             fn main() { }
         "#;
@@ -8012,6 +9035,11 @@ mod tests {
         ("let mut out = sep;", "out = out + (if i > 2 { sep } else { piece(i) });"),
         ("let mut out = sep;", "for s in names { out = out + s; }"),
         ("let mut out = piece(0) or sep;", "out = out + self.label;"),
+        // `+=` and an interpolation lower to the same concatenation.
+        ("let mut out = sep;", "out += sep;"),
+        ("let mut out = \"\";", "out += piece(i);"),
+        ("let mut out = \"\";", "out = f\"{out},{i}\";"),
+        ("let mut out = sep;", "out = f\"{out}{sep}\";"),
     ];
 
     fn join_concats(src: &str) -> usize {
@@ -8042,6 +9070,66 @@ mod tests {
             let leaks = join_leaks(&spelled_accumulator(init, step, "method"));
             assert!(leaks.is_empty(), "`{init} … {step}` consumed in a method: {leaks:?}");
         }
+    }
+
+    /// `store` is a statement run after the loop, in `join_n`.
+    fn stored_accumulator(step: &str, store: &str) -> String {
+        format!(
+            "locus App {{
+                 params {{ n: Int = 1000; label: String = \"x\"; }}
+                 fn join_n(k: Int, sep: String) {{
+                     let mut out = \"\";
+                     let mut i = 0;
+                     while i < k {{ {step} i = i + 1; }}
+                     {store}
+                 }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.join_n(20, \",\"); i = i + 1; }} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn an_accumulator_stored_into_a_field_is_still_flagged() {
+        // The value outlives the call in the locus: the loop's growth
+        // stays reported, however the concatenation is spelled.
+        for step in ["out = out + sep;", "out += sep;", "out = f\"{out}{sep}\";"] {
+            let leaks = join_leaks(&stored_accumulator(step, "self.label = out;"));
+            assert!(!leaks.is_empty(), "`{step}` stored to a field must be flagged");
+        }
+        let leaks = join_leaks(&stored_accumulator("self.label += sep;", ""));
+        assert!(!leaks.is_empty(), "`self.label += sep` in a loop must be flagged");
+    }
+
+    /// A shape taken from a decorated fn of a downstream-handoff DNA
+    /// tree, identifiers renamed: an inferred-String local grown by a
+    /// call result.
+    fn dna_shaped(body: &str) -> String {
+        format!(
+            "fn tag(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; live: String = \"\"; }}
+                 fn join_n(k: Int, text: String) -> String {{
+                     {body}
+                 }}
+                 fn record(i: Int) {{ self.sink = self.sink + len(self.join_n(20, \"a\")); }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn an_inferred_string_grown_by_call_results_is_an_accumulator() {
+        // No literal and no declared `String` in the chain: the local's
+        // type comes from the call that initializes it.
+        let body = "let mut out = tag(text);
+             let mut i = 0;
+             while i < k { out = out + tag(text) + tag(out); i = i + 1; }
+             return out;";
+        let src = dna_shaped(body);
+        assert!(join_concats(&src) >= 1, "call-result chain recorded as a concatenation");
+        assert!(join_leaks(&src).is_empty());
     }
 
     #[test]
@@ -8547,21 +9635,62 @@ mod tests {
     #[test]
     fn struct_in_while_true_is_leak_precursor() {
         // The empirically-validated model: a value alloc in an unbounded
-        // loop accumulates (reclaim@locus-dissolve), so the verdict is
-        // ACCUMULATES-UNBOUNDED — even though it never escapes.
+        // loop whose body keeps it past the iteration (here in a binding
+        // declared before the loop, so the body is not reclaimed per
+        // iteration) accumulates (reclaim@locus-dissolve), so the verdict
+        // is ACCUMULATES-UNBOUNDED — even though it never escapes the fn.
         let src = r#"
             type Q { a: Int; }
             locus C {
-                run { let mut i = 0; while true { let q = Q { a: i }; i = i + 1; } }
+                run { let mut i = 0; let mut last = Q { a: 0 }; while true { let q = Q { a: i }; last = q; i = i + 1; } }
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, Some("C"), "run");
+        let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_)) && s.loop_depth > 0).expect("struct");
+        assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
+        assert!(st.in_unbounded_loop);
+        assert!(!st.iteration_reclaimed);
+        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+    }
+
+    /// The same literal in a body that keeps nothing past its iteration
+    /// (a scalar counter is all it assigns from outside): the body has an
+    /// arena of its own per iteration (`crate::iteration_reclaim`), so
+    /// the site is reclaimed per iteration, and so is the fresh Bytes a
+    /// call returns there.
+    #[test]
+    fn a_loop_body_that_keeps_nothing_reclaims_per_iteration() {
+        let src = r#"
+            type Q { a: Int; }
+            locus C {
+                fn piece(b: Bytes) -> Bytes { return b; }
+                run { let mut i = 0; while true { let q = Q { a: i }; let c = self.piece(b"y"); i = i + len(c); } }
             }
             fn main() { }
         "#;
         let s = summarize(src);
         let f = fns(&s, Some("C"), "run");
         let st = f.sites.iter().find(|s| matches!(s.kind, AllocKind::StructLit(_))).expect("struct");
-        assert_eq!(st.reclaim, ReclaimScope::EnclosingLocus);
-        assert!(st.in_unbounded_loop);
-        assert_eq!(st.verdict(), SiteVerdict::AccumulatesUnbounded);
+        assert!(st.iteration_reclaimed);
+        assert_eq!(st.verdict(), SiteVerdict::PerIterationReclaim);
+        let [call] = f.call_results.as_slice() else { panic!("one call result: {:?}", f.call_results) };
+        assert_eq!(call.site.kind, AllocKind::CallResult("piece".to_string()));
+        assert!(call.site.iteration_reclaimed);
+        assert!(s.leak_sites().is_empty(), "{:?}", s.leak_sites());
+        // Kept in a binding from before the loop, the call is the leak,
+        // named at the call.
+        let kept = r#"
+            locus C {
+                fn piece(b: Bytes) -> Bytes { return b; }
+                run { let mut last = b""; let b = b"y"; while true { let c = self.piece(b); last = c; } }
+            }
+            fn main() { }
+        "#;
+        let leaks = summarize(kept).leak_sites();
+        assert_eq!(leaks.len(), 1, "{leaks:?}");
+        assert_eq!(leaks[0].kind, AllocKind::CallResult("piece".to_string()));
     }
 
     #[test]
@@ -8902,7 +10031,7 @@ mod tests {
     fn a_stdlib_decorator_counts_what_its_removal_adds() {
         let judged = |deco: &str| {
             let runtime = format!(
-                "type __StdTestQ {{ a: Int; }}\nlocus __StdTestLoop {{\n    {deco}\n    run {{ while true {{ let q = __StdTestQ {{ a: 1 }}; }} }}\n}}\n"
+                "type __StdTestQ {{ a: Int; }}\nlocus __StdTestLoop {{\n    {deco}\n    run {{ let mut keep = __StdTestQ {{ a: 0 }}; while true {{ let q = __StdTestQ {{ a: 1 }}; keep = q; }} }}\n}}\n"
             );
             let rt = hale_syntax::parse_source_at(&runtime, crate::rpc_expand::RUNTIME_BASE).expect("parse");
             let (program, ids) = minted_with("locus Mine { run { } }", |p| p.items.extend(rt.items));
@@ -8927,7 +10056,7 @@ mod tests {
     fn diags_are_located_and_nonempty_for_a_leak() {
         let src = r#"
             type Q { a: Int; }
-            locus C { run { while true { let q = Q { a: 1 }; } } }
+            locus C { run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 1 }; keep = q; } } }
             fn main() { }
         "#;
         let (program, ids) = minted(src);
@@ -8944,7 +10073,7 @@ mod tests {
         // default (non-survey) scope reports it.
         let src = r#"
             type Q { a: Int; }
-            @bounded locus C { run { while true { let q = Q { a: 1 }; } } }
+            @bounded locus C { run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 1 }; keep = q; } } }
             fn main() { }
         "#;
         let (program, ids) = minted(src);
@@ -8960,7 +10089,7 @@ mod tests {
         let src = r#"
             type Q { a: Int; }
             @bounded locus C {
-                @unbounded run { while true { let q = Q { a: 1 }; } }
+                @unbounded run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 1 }; keep = q; } }
             }
             fn main() { }
         "#;
@@ -9048,7 +10177,7 @@ mod tests {
         // The same locus parsed at 0 and at the api binding's base, beside
         // the author's program, in a harness bundle (no origin rows): the
         // span alone decides.
-        let synth = "locus S { run { while true { let q = Q { a: 3 }; } } }\n";
+        let synth = "locus S { run { let mut keep = Q { a: 0 }; while true { let q = Q { a: 3 }; keep = q; } } }\n";
         let harness = crate::snapshot::Snapshot::default();
         let reported = |base: u32| {
             let generated = hale_syntax::parse_source_at(synth, base).expect("parse");
@@ -9242,6 +10371,56 @@ mod tests {
         assert!(
             msgs.iter().any(|m| m.contains("struct Cell")),
             "a view-field struct replace must stay flagged, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn enum_field_struct_replace_retires() {
+        // A struct with an enum field — a unit-only enum (an inline tag)
+        // or a payload enum of retirable payloads, whose block retires
+        // with the record — retires whole on a replace in a method...
+        let src = r#"
+            type Inner { s: String = ""; }
+            type Mode = enum { On, Off };
+            type Tag = enum { Named(String), Rec(Inner, Bytes), Empty };
+            type Cell { s: String = ""; n: Int = 0; mode: Mode = Mode::Off; tag: Tag = Tag::Empty; }
+            locus Rec {
+                params { st: Cell; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, n: i, mode: Mode::On, tag: Tag::Named("w" + i) };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            !msgs.iter().any(|m| m.contains("struct Cell")),
+            "an enum-field struct replace retires, got: {:?}",
+            msgs
+        );
+        // ...while an enum carrying a view keeps the conservative verdict.
+        let view = r#"
+            type Tag = enum { Seen(StringView), Empty };
+            type Cell { s: String = ""; tag: Tag = Tag::Empty; }
+            locus Rec {
+                params { st: Cell; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, tag: Tag::Empty };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(view);
+        assert!(
+            msgs.iter().any(|m| m.contains("struct Cell")),
+            "a view-payload enum field must stay flagged, got: {:?}",
             msgs
         );
     }
@@ -9674,7 +10853,9 @@ mod tests {
 
     /// An inner binding shadows an outer one for its scope only; a
     /// parameter shadows a fn of the same name; a bare callee names a fn
-    /// before a local, as codegen lowers it.
+    /// before a local here, over a program the desugar sequence has not
+    /// shaped (it calls a shadowing binding as a value, `{ make }()`,
+    /// `crate::shadowed_callees`, before any pass reads the program).
     #[test]
     fn a_shadowing_binding_is_the_one_called() {
         let src = r#"
@@ -9840,5 +11021,187 @@ mod tests {
         let s = summarize(src);
         let marked: Vec<bool> = fns(&s, None, "g").calls.iter().map(|c| c.unresolved_local).collect();
         assert_eq!(marked, [true, true, true, true, true, true, true, true, false, false, false, false]);
+    }
+
+    /// A write through a parameter (spec/memory.md § "A method's write
+    /// through a record parameter"): the locus, its writers, and `BODY`.
+    const WRITERS: &str = r#"
+        type Bag { b: String = ""; n: Int = 0; nums: [Int; 2] = [0, 0]; }
+        type Outer { bag: Bag = Bag { }; }
+        locus S {
+            params { bag: Bag = Bag { }; outer: Outer = Outer { }; }
+            bus { subscribe "t" as on_t of type String; }
+            fn put(x: Bag, s: String) { x.b = s + "!"; }
+            fn read(x: Bag) -> String { return x.b; }
+            fn relay(x: Bag, s: String) { self.put({ x }, s); }
+            BODY
+        }
+    "#;
+
+    fn writers(body: &str) -> AllocSummary {
+        summarize(&WRITERS.replace("BODY", body))
+    }
+
+    /// What a body's own sites escape as, in body order.
+    fn site_escapes(s: &AllocSummary, name: &str) -> Vec<Escape> {
+        fns(s, Some("S"), name).sites.iter().map(|x| x.escape).collect()
+    }
+
+    /// The final verdict of each of a body's call stores, with its escape.
+    fn store_verdicts(s: &AllocSummary, name: &str) -> Vec<(Escape, SiteVerdict)> {
+        let f = fns(s, Some("S"), name);
+        let unbounded = s.unbounded_invoked();
+        let scratchless = s.scratchless_longlived();
+        let repeated = s.repeated_in_longlived(&scratchless);
+        let callers = s.callers();
+        f.call_stores
+            .iter()
+            .map(|x| (x.escape, s.final_verdict(&f.key, x, &unbounded, &scratchless, &repeated, &callers)))
+            .collect()
+    }
+
+    /// The leak sites of one body: escape and reason.
+    fn leaks_in(s: &AllocSummary, name: &str) -> Vec<(Escape, LeakReason)> {
+        s.leak_sites().into_iter().filter(|l| l.owner.fn_name == name).map(|l| (l.escape, l.reason)).collect()
+    }
+
+    /// A value written through a parameter is stored into the caller's
+    /// record, in the arena that owns it: `ParamStore`, whether it is the
+    /// value written or a binding of it. It survives the writer's return,
+    /// so a loop of the writer's own grows it; across calls the owner
+    /// decides, at the call (the writer invoked unboundedly with a record
+    /// its caller builds fresh accumulates nothing).
+    #[test]
+    fn a_direct_write_through_a_parameter_is_a_param_store() {
+        let s = writers(
+            r#"fn let_bound(x: Bag, s: String) { let t = s + "?"; x.b = t; }
+               fn appended(x: Bag, s: String) { x.b += s; }
+               fn fill(x: Bag, xs: [String]) { for v in xs { x.b = v + "!"; } }
+               fn refill(x: Bag, xs: [String]) { for v in xs { x.b = self.read(x); } }
+               fn on_t(m: String) { let b = Bag { }; self.put(b, m); }"#,
+        );
+        assert_eq!(site_escapes(&s, "put"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "let_bound"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "appended"), [Escape::ParamStore]);
+        assert!(fns(&s, Some("S"), "put").stores_through_params);
+        assert!(!fns(&s, Some("S"), "read").stores_through_params);
+        // Once per call of the writer, and nothing across calls at the writer.
+        assert!(s.unbounded_invoked().contains(&named(&s, Some("S"), "put")));
+        assert_eq!(leaks_in(&s, "put"), []);
+        // The writer's own loop: every iteration's value stays with the record.
+        assert_eq!(leaks_in(&s, "fill"), [(Escape::ParamStore, LeakReason::InUnboundedLoop)]);
+        // A fresh String a call returns, written through the parameter.
+        assert_eq!(leaks_in(&s, "refill"), [(Escape::ParamStore, LeakReason::InUnboundedLoop)]);
+        // A fresh record the handler builds dies with the handler's frame.
+        assert_eq!(store_verdicts(&s, "on_t"), [(Escape::Local, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(leaks_in(&s, "on_t"), []);
+    }
+
+    /// A nested path below the parameter, a field's field or an element,
+    /// is the same write; a local bound from the parameter is the
+    /// frame's own copy (the local-place rule), and `self`'s field is a
+    /// store into `self`.
+    #[test]
+    fn a_nested_write_through_a_parameter_is_a_param_store() {
+        let s = writers(
+            r#"fn deep(o: Outer, s: String) { o.bag.b = s + "!"; }
+               fn elem(xs: [String; 4], s: String) { xs[0] = s + "!"; }
+               fn copied(x: Bag, s: String) { let y = x; y.b = s + "!"; }
+               fn held(s: String) { self.bag.b = s + "!"; }"#,
+        );
+        assert_eq!(site_escapes(&s, "deep"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "elem"), [Escape::ParamStore]);
+        assert_eq!(site_escapes(&s, "copied"), [Escape::Local]);
+        assert_eq!(site_escapes(&s, "held"), [Escape::StoredToSelf]);
+        assert!(!fns(&s, Some("S"), "copied").stores_through_params);
+    }
+
+    /// A relay that hands its parameter on to a writer through a carrier
+    /// (`self.put({ x }, s)`) stores through it too: a `ParamStore` at
+    /// its call, and its own callers place the store by what they hand
+    /// it. A reader handed the record stores nothing.
+    #[test]
+    fn a_relay_through_a_carrier_stores_through_its_parameter() {
+        let s = writers(
+            r#"fn twice(x: Bag, s: String) { self.relay(if s == "" { x } else { x }, s); }
+               fn on_t(m: String) { self.twice(self.bag, m); let r = self.read(self.bag); }"#,
+        );
+        assert!(fns(&s, Some("S"), "relay").stores_through_params);
+        assert!(fns(&s, Some("S"), "twice").stores_through_params);
+        assert_eq!(store_verdicts(&s, "relay"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(store_verdicts(&s, "twice"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(leaks_in(&s, "relay"), []);
+        // The handler hands the chain a record `self` holds: each delivery
+        // stores one more value into the locus arena.
+        assert_eq!(store_verdicts(&s, "on_t"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
+        assert_eq!(leaks_in(&s, "on_t"), [(Escape::HeldStore, LeakReason::InvokedUnboundedly)]);
+    }
+
+    /// A record `self` holds, handed to a writer, takes the write into
+    /// the locus arena (`HeldStore`), which lives until the locus
+    /// dissolves and is not retired: once in a one-shot hook, growth in a
+    /// handler. Handed with a parameter, the write is the caller's
+    /// (`ParamStore`).
+    #[test]
+    fn a_self_held_record_handed_to_a_writer_is_a_held_store() {
+        let s = writers(
+            r#"birth() { self.put(self.bag, "start"); }
+               fn on_t(m: String) { self.put(self.outer.bag, m); }
+               fn mine(x: Bag, s: String) { self.put(x, s); }"#,
+        );
+        assert_eq!(store_verdicts(&s, "birth"), [(Escape::HeldStore, SiteVerdict::OncePerInvocation)]);
+        assert_eq!(leaks_in(&s, "birth"), []);
+        assert_eq!(store_verdicts(&s, "on_t"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
+        assert_eq!(leaks_in(&s, "on_t"), [(Escape::HeldStore, LeakReason::InvokedUnboundedly)]);
+        assert_eq!(store_verdicts(&s, "mine"), [(Escape::ParamStore, SiteVerdict::OncePerInvocation)]);
+    }
+
+    /// A write into an inline array of scalars through a parameter
+    /// (`x.nums = [1, 2]`, `[1; 2]`, a local holding a literal) copies the
+    /// value's bytes into the record; the literal is the frame's and is
+    /// freed with it. No store is kept through the parameter, so a writer
+    /// that only does that stores nothing, and a `run()` loop handing it
+    /// a record `self` holds is no finding.
+    #[test]
+    fn a_write_into_an_inline_scalar_array_keeps_nothing_through_the_parameter() {
+        for write in ["x.nums = [1, 2];", "x.nums = [1; 2];", "let a = [1, 2]; x.nums = a;"] {
+            let src = WRITERS.replace(
+                "BODY",
+                &format!("fn set(x: Bag) {{ {write} }} run() {{ while true {{ self.set(self.bag); }} }}"),
+            );
+            let s = summarize(&src);
+            let set = fns(&s, Some("S"), "set");
+            assert!(set.sites.iter().all(|x| x.escape == Escape::Local), "{write}: {:?}", set.sites);
+            assert!(!set.stores_through_params, "{write}");
+            assert_eq!(store_verdicts(&s, "run"), [], "{write}");
+            let (program, ids) = minted(&src);
+            assert_eq!(plain_advisory(&[&program], &ids, &[], true).len(), 0, "{write}");
+        }
+    }
+
+    /// The `run()` loop handing a writer a record `self` holds grows the
+    /// locus arena once per iteration, and the advisory (`hale verify`)
+    /// names it at the call, not at the writer. A method's loop handing
+    /// it a record each iteration builds keeps the store in the
+    /// iteration.
+    #[test]
+    fn a_run_loop_handing_a_held_record_to_a_writer_is_flagged_at_the_call() {
+        let src = WRITERS.replace(
+            "BODY",
+            r#"run() { while true { self.put(self.bag, "x"); } }
+               fn each(xs: [String]) { for v in xs { let b = Bag { }; self.put(b, v); } }"#,
+        );
+        let s = summarize(&src);
+        assert_eq!(store_verdicts(&s, "run"), [(Escape::HeldStore, SiteVerdict::AccumulatesUnbounded)]);
+        assert_eq!(store_verdicts(&s, "each"), [(Escape::Local, SiteVerdict::PerIterationReclaim)]);
+        assert_eq!(leaks_in(&s, "put"), []);
+        assert_eq!(leaks_in(&s, "each"), []);
+        let (program, ids) = minted(&src);
+        let diags = plain_advisory(&[&program], &ids, &[], true);
+        let call = src.find("self.put(self.bag").expect("the call") as u32;
+        let at: Vec<u32> = diags.iter().map(|d| d.span.start.0).collect();
+        assert_eq!(at, [call], "{diags:?}");
+        assert!(diags[0].message.contains("store through `put(..)`"), "{}", diags[0].message);
+        assert!(diags[0].message.contains("the locus's own arena"), "{}", diags[0].message);
     }
 }

@@ -33,9 +33,13 @@ pub const EK_DROP_MARK: u32 = 14;
 pub const OFF_PROTO_MINOR: usize = 0x0A;
 pub const OFF_RING_COUNT: usize = 0x1C;
 pub const OFF_RING_SLOTS: usize = 0x20;
+pub const OFF_CONTROL_OFF: usize = 0x38;
 pub const OFF_MANIFEST_OFF: usize = 0x40;
 pub const OFF_COUNTERS_OFF: usize = 0x58;
 pub const OFF_RINGS_OFF: usize = 0x68;
+pub const OFF_FLAGS: usize = 0x70;
+/// `flags` bit 0: the emitter is alive, its header written.
+pub const FLAG_ALIVE: u64 = 1;
 pub const OFF_MODEL_HASH: usize = 0x80;
 pub const OFF_ENTITY_ID_DIGEST: usize = 0x88;
 
@@ -107,28 +111,60 @@ pub fn map_shm(pid: u32) -> Option<&'static [u8]> {
     Some(unsafe { std::slice::from_raw_parts(p as *const u8, len) })
 }
 
-/// Attach as an observer: bump `observer_count` on the control page
-/// so ring emission turns on (requires a writable map).
-pub fn attach_observer(pid: u32) {
-    if let Ok(f) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(format!("/dev/shm/hale-obs-{}", pid))
-    {
-        let len = f.metadata().unwrap().len() as usize;
-        let p = unsafe { mmap_raw(&f, len, 0x3) };
-        if !p.is_null() {
-            let seg =
-                unsafe { std::slice::from_raw_parts(p as *const u8, len) };
-            let control_off = read_u64(seg, 0x38) as usize;
-            unsafe {
-                std::ptr::write_volatile(
-                    p.add(control_off) as *mut u32,
-                    1,
-                )
-            };
-        }
+/// Map a live process's obs segment writable once its header is
+/// published, and LEAK the mapping (as [`map_shm`] does); `None` when
+/// there is no segment, or its emitter ran to its end first.
+///
+/// The segment's file exists from `shm_open` on, a moment before the
+/// emitter sizes it and writes its header: a consumer that maps it then
+/// reads zeros where the offsets go, and a write it makes through them
+/// (an observer's `observer_count`) lands on bytes the header then
+/// overwrites. The header is published by its `flags` alive bit, stored
+/// after the rest, so this waits for that bit before handing it back.
+pub fn map_published(pid: u32) -> Option<(*mut u8, usize)> {
+    let path = format!("/dev/shm/hale-obs-{}", pid);
+    let f = std::fs::OpenOptions::new().read(true).write(true).open(&path).ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut len = f.metadata().unwrap().len() as usize;
+    while len < OFF_FLAGS + 8 {
+        assert!(std::time::Instant::now() < deadline, "{path} was never sized");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        len = f.metadata().unwrap().len() as usize;
     }
+    let p = unsafe { mmap_raw(&f, len, 0x3) };
+    assert!(!p.is_null(), "{path}: mmap failed");
+    let flags = unsafe { &*(p.add(OFF_FLAGS) as *const std::sync::atomic::AtomicU64) };
+    while flags.load(std::sync::atomic::Ordering::Acquire) & FLAG_ALIVE == 0 {
+        // An emitter that already ran to its end cleared the bit: there
+        // is nothing left to observe.
+        if !running(pid) {
+            return None;
+        }
+        assert!(std::time::Instant::now() < deadline, "{path} never published its header");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let seg = unsafe { std::slice::from_raw_parts(p as *const u8, len) };
+    assert_eq!(read_u64(seg, 0), MAGIC, "{path}: header magic");
+    Some((p, len))
+}
+
+/// Attach as an observer: bump `observer_count` on the control page
+/// so ring emission turns on, once the header says where that is
+/// ([`map_published`]).
+pub fn attach_observer(pid: u32) {
+    if let Some((p, len)) = map_published(pid) {
+        let seg = unsafe { std::slice::from_raw_parts(p as *const u8, len) };
+        let control_off = read_u64(seg, OFF_CONTROL_OFF) as usize;
+        unsafe { std::ptr::write_volatile(p.add(control_off) as *mut u32, 1) };
+    }
+}
+
+/// Whether process `pid` is still running: not gone, not a zombie.
+fn running(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| stat.rsplit_once(')').map(|(_, rest)| rest.trim_start().chars().next() != Some('Z')))
+        .unwrap_or(false)
 }
 
 /// The manifest topic id (join key) + counter line for a subject, or
