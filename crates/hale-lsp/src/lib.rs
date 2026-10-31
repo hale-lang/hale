@@ -2364,23 +2364,243 @@ fn definition(
         return stdlib_definition(&segs);
     }
 
+    let base = base_of(&snap, &path)?;
+    let merged = base as usize + tokens[idx].span.start.as_usize();
+
+    // `alias::name` through an import: the imported seed's declaration,
+    // under the name the cross-seed rename gave it.
+    let prefix = &segs[..=segs.iter().position(|s| *s == word).unwrap_or(0)];
+    if prefix.len() >= 2 {
+        if let Some((_, mangled)) = snap.import_renames().iter().find(|(p, _)| p[..] == *prefix) {
+            if let Some(loc) = decl_location(&snap, mangled) {
+                return Some(loc);
+            }
+        }
+    }
+
+    // What the checker resolved the name to where it is written: a
+    // call's callee (a locus method, a stdlib handle's member, a fn),
+    // a field read through its receiver's type, a local's binding.
+    if let Some(loc) = resolved_definition(&snap, merged) {
+        return Some(loc);
+    }
+
     // self.<field> → the param decl on the enclosing locus.
     use hale_syntax::lexer::TokenKind as TK;
     if idx >= 2
         && matches!(tokens[idx - 1].kind, TK::Dot)
         && matches!(tokens[idx - 2].kind, TK::KwSelf)
     {
-        let base = base_of(&snap, &path)?;
-        let merged = base as usize + tokens[idx].span.start.as_usize();
         let l = enclosing_locus(top, merged)?;
-        let p = l.params.iter().find(|p| p.name == word)?;
-        return merged_span_to_location(&snap, p.span);
+        if let Some(p) = l.params.iter().find(|p| p.name == word) {
+            return merged_span_to_location(&snap, p.span);
+        }
+        return member_location(&snap, &l.name, &word);
     }
 
+    // A top-level name: the declaration that spells it, the seed's
+    // before the stdlib's. A stdlib symbol's span is in the stdlib's
+    // own coordinate space, which overlaps the first seed file's, so
+    // the declaration is found by name before the scope's span is
+    // mapped through the seed's file bases.
+    if let Some(loc) = decl_location(&snap, &word) {
+        return Some(loc);
+    }
     match top.lookup(&word) {
         Some(sym) => merged_span_to_location(&snap, sym.span()),
         None => merged_span_to_location(&snap, unit_decl_span(&snap, &word)?),
     }
+}
+
+/// The node under a position a definition is asked for, as the
+/// expression walk finds it in the merged programs.
+enum Under<'a> {
+    /// A call whose callee's name holds the position, with the key of
+    /// the program it is in (the views column is keyed by it).
+    Call(String, &'a hale_syntax::ast::Expr),
+    /// A field read (`recv.name`, not called) whose name holds it.
+    Field(String, &'a hale_syntax::ast::Expr, &'a str),
+    /// A struct literal's field init (`T { name: … }`) whose name holds
+    /// it, with the literal's path.
+    Init(&'a hale_syntax::ast::QualifiedName, &'a str),
+    /// An identifier expression.
+    Use(&'a hale_syntax::ast::Ident),
+}
+
+fn resolved_definition(snap: &Snapshot, merged: usize) -> Option<Value> {
+    use hale_syntax::ast::{Expr, Stmt};
+    use hale_types::expr_walk::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
+    let within =
+        |s: hale_syntax::Span| s.start.as_usize() <= merged && merged < s.end.as_usize();
+    let (mut call, mut field, mut used) = (None, None, None);
+    // Every `let`'s name by its site: a use resolves to the site, and
+    // the checker types the binding by its name.
+    let mut lets: Vec<(u32, &hale_syntax::ast::Ident)> = Vec::new();
+    for (path, program) in snap.programs() {
+        let key = path.display().to_string();
+        for_each_expression_root(&program.items, &mut |root| {
+            let mut visit = |v| {
+                let e = match v {
+                    Visited::Expr(e) => e,
+                    Visited::Stmt(Stmt::Let { name, id, .. }) => return lets.push((id.0, name)),
+                    _ => return,
+                };
+                match e {
+                    Expr::Call { callee, .. } => {
+                        let name = match &**callee {
+                            Expr::Field { name, .. } | Expr::Path2 { name, .. } => name.span,
+                            Expr::Ident(i) => i.span,
+                            Expr::Path(q) => q.span,
+                            _ => return,
+                        };
+                        if within(name) {
+                            call = Some(Under::Call(key.clone(), e));
+                        }
+                    }
+                    Expr::Field { receiver, name, .. } if within(name.span) => {
+                        field = Some(Under::Field(key.clone(), &**receiver, name.name.as_str()));
+                    }
+                    Expr::Struct { path, inits, .. } => {
+                        if let Some(init) = inits.iter().find(|i| within(i.name.span)) {
+                            field = Some(Under::Init(path, init.name.name.as_str()));
+                        }
+                    }
+                    Expr::Ident(i) if within(i.span) => used = Some(Under::Use(i)),
+                    _ => {}
+                }
+            };
+            match root {
+                Root::Block(b) => visit_block(b, &mut visit),
+                Root::Expr(e) => visit_expr(e, &mut visit),
+            }
+        });
+    }
+    // A call's callee is also a field or a use: the call answers first.
+    [call, field, used].into_iter().flatten().find_map(|u| under_location(snap, u, &lets))
+}
+
+fn under_location(
+    snap: &Snapshot,
+    under: Under<'_>,
+    lets: &[(u32, &hale_syntax::ast::Ident)],
+) -> Option<Value> {
+    use hale_syntax::ast::Expr;
+    let ids = snap.identities();
+    // The `let` a local's use names, by its name.
+    let let_of = |i: &hale_syntax::ast::Ident| {
+        let decl = ids.declaration_of(i.id)?;
+        lets.iter().find(|(index, _)| *index == decl.index).map(|(_, name)| *name)
+    };
+    use hale_types::typed_bodies::CalleeRef;
+    match under {
+        Under::Call(key, call) => {
+            let typed = snap.demand_typed_bodies().ok()?;
+            let callee = typed.views().get(&key)?.iter().find_map(|v| v.callee(call))?;
+            match callee {
+                CalleeRef::Method { owner, name } => member_location(snap, owner, name),
+                CalleeRef::Fn(name) | CalleeRef::HandleFn(name) => decl_location(snap, name),
+                _ => None,
+            }
+        }
+        Under::Field(key, receiver, name) => {
+            let typed = snap.demand_typed_bodies().ok()?;
+            // A local's use is typed through its binding.
+            let binding = match receiver {
+                Expr::Ident(i) => let_of(i),
+                _ => None,
+            };
+            let owner = typed.views().get(&key)?.iter().find_map(|v| {
+                let ty = match binding {
+                    Some(name) if !v.has_expr(receiver) => v.binding(name),
+                    _ => v.expr(receiver),
+                };
+                match ty {
+                    hale_types::Ty::Named(n) => Some(n.clone()),
+                    _ => None,
+                }
+            })?;
+            member_location(snap, &owner, name)
+        }
+        Under::Init(path, name) => {
+            let segs: Vec<String> = path.segments.iter().map(|s| s.name.clone()).collect();
+            let owner = hale_stdlib::PATH_RENAMES
+                .iter()
+                .find(|(p, _)| p[..] == segs[..])
+                .map(|(_, m)| m.to_string())
+                .or_else(|| {
+                    snap.import_renames().iter().find(|(p, _)| *p == segs).map(|(_, m)| m.clone())
+                })
+                .or_else(|| segs.last().cloned())?;
+            member_location(snap, &owner, name)
+        }
+        Under::Use(ident) => {
+            // A `let` by its name; a `for` or a binder by its site.
+            let span = match let_of(ident) {
+                Some(name) => name.span,
+                None => ids.site(ids.declaration_of(ident.id)?)?.span,
+            };
+            merged_span_to_location(snap, span)
+        }
+    }
+}
+
+/// The name of a declaration called `name` in `items`, nested modules
+/// included.
+fn find_decl(items: &[hale_syntax::ast::TopDecl], name: &str) -> Option<hale_syntax::Span> {
+    hale_syntax::ast::flat_decls(items)
+        .find_map(|d| top_decl_name(d).filter(|n| n.name == name).map(|n| n.span))
+}
+
+/// The name of `owner`'s member `member` in `items`: a locus's fn,
+/// param or const, a record's field, a perspective's fn.
+fn find_member(
+    items: &[hale_syntax::ast::TopDecl],
+    owner: &str,
+    member: &str,
+) -> Option<hale_syntax::Span> {
+    use hale_syntax::ast::{LocusMember, PerspectiveMember, TopDecl, TypeDeclBody};
+    hale_syntax::ast::flat_decls(items).find_map(|d| match d {
+        TopDecl::Locus(l) if l.name.name == owner => l.members.iter().find_map(|m| match m {
+            LocusMember::Fn(f) if f.name.name == member => Some(f.name.span),
+            LocusMember::Const(c) if c.name.name == member => Some(c.name.span),
+            LocusMember::Params(pb) => {
+                pb.params.iter().find(|p| p.name.name == member).map(|p| p.name.span)
+            }
+            _ => None,
+        }),
+        TopDecl::Type(t) if t.name.name == owner => match &t.body {
+            TypeDeclBody::Struct(fs) => {
+                fs.iter().find(|f| f.name.name == member).map(|f| f.name.span)
+            }
+            _ => None,
+        },
+        TopDecl::Perspective(p) if p.name.name == owner => p.members.iter().find_map(|m| match m {
+            PerspectiveMember::Fn(f) if f.name.name == member => Some(f.name.span),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+/// Where the declaration `name` is: the seed's programs first, then
+/// the embedded stdlib (a mangled `__Std…` locus, a `HaleBody` fn).
+fn decl_location(snap: &Snapshot, name: &str) -> Option<Value> {
+    snap.programs()
+        .values()
+        .find_map(|p| find_decl(&p.items, name))
+        .and_then(|s| merged_span_to_location(snap, s))
+        .or_else(|| stdlib_span_location(find_decl(&stdlib_ast()?.items, name)?))
+}
+
+/// Where `owner`'s member `member` is, the seed's before the stdlib's.
+fn member_location(snap: &Snapshot, owner: &str, member: &str) -> Option<Value> {
+    snap.programs()
+        .values()
+        .find_map(|p| find_member(&p.items, owner, member))
+        .and_then(|s| merged_span_to_location(snap, s))
+        .or_else(|| {
+            stdlib_span_location(find_member(&stdlib_ast()?.items, owner, member)?)
+        })
 }
 
 /// GH #1076: the unit a quantity literal at `offset` names (`bp` in
@@ -2496,12 +2716,39 @@ fn stdlib_definition(segs: &[String]) -> Option<Value> {
                 .filter(|(p, _)| matches_entry(p, false))
                 .max_by_key(|(p, _)| p.len())
         })
-        .map(|(_, m)| *m)?;
-    let ast = stdlib_ast()?;
-    let name_span = ast.items.iter().find_map(|d| {
-        let n = top_decl_name(d)?;
-        (n.name == mangled).then_some(n.span)
-    })?;
+        .map(|(_, m)| *m);
+    let Some(mangled) = mangled else {
+        return stdlib_fn_definition(segs);
+    };
+    let name_span = find_decl(&stdlib_ast()?.items, mangled)?;
+    stdlib_span_location(name_span)
+}
+
+/// The fn a `std::` path calls, when the stdlib's Hale source declares
+/// its body: a `HaleBody` row's, or each receiver's body of a
+/// `HaleBodyByReceiver` row. An intrinsic has no Hale definition.
+fn stdlib_fn_definition(segs: &[String]) -> Option<Value> {
+    use hale_types::stdlib_surface::{row, Lower};
+    let seg_refs: Vec<&str> = segs.iter().map(String::as_str).collect();
+    let items = &stdlib_ast()?.items;
+    let locations: Vec<Value> = match row(&seg_refs)?.lower {
+        Lower::HaleBody(body) => vec![stdlib_span_location(find_decl(items, body)?)?],
+        Lower::HaleBodyByReceiver(bodies) => bodies
+            .iter()
+            .filter_map(|(_, body)| stdlib_span_location(find_decl(items, body)?))
+            .collect(),
+        _ => return None,
+    };
+    match locations.len() {
+        0 => None,
+        1 => locations.into_iter().next(),
+        _ => Some(Value::Array(locations)),
+    }
+}
+
+/// A span of the embedded stdlib source → its location in the
+/// materialized cache file.
+fn stdlib_span_location(name_span: hale_syntax::Span) -> Option<Value> {
     let (file_name, content, local_start) =
         hale_stdlib::ap_file_at(name_span.start.as_usize())?;
     let local_end = (local_start
