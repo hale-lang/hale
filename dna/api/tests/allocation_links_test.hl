@@ -54,6 +54,15 @@ fn main() {
         "[{\"service\": \"api\", \"url\": \"http://rack-b.lan:8080\", \"note\": \"\"}, {\"service\": \"admin\", \"url\": \"\", \"note\": \"loopback only on rack-b.lan\"}]",
         "another host is linked at its address",
     );
+    // a host added by its name, resolved to an address: a port bound to that
+    // address, or to every interface, links at the name; one bound to
+    // another address of the host links there
+    let bound = "[{\"service\": \"api\", \"port\": \"8080\", \"bind\": \"192.0.2.10\"}, {\"service\": \"all\", \"port\": \"8081\", \"bind\": \"0.0.0.0\"}, {\"service\": \"side\", \"port\": \"8082\", \"bind\": \"192.0.2.99\"}]";
+    std::test::assert_eq_str(
+        api::allocation_links_at(bound, "rack-b.lan", false, "192.0.2.10", false, "rack-a.lan"),
+        "[{\"service\": \"api\", \"url\": \"http://rack-b.lan:8080\", \"note\": \"\"}, {\"service\": \"all\", \"url\": \"http://rack-b.lan:8081\", \"note\": \"\"}, {\"service\": \"side\", \"url\": \"http://192.0.2.99:8082\", \"note\": \"\"}]",
+        "a host is linked by the name it was added by, an other address as it is",
+    );
     // this machine under a local habitat
     std::test::assert_eq_str(
         api::allocation_links_at(published, "local", true, "127.0.0.1", true, ""),

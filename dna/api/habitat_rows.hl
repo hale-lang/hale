@@ -418,7 +418,10 @@ fn publishes_loopback(published: String) -> Bool {
 // links there, and one bound to the loopback gets no URL (its note says
 // `loopback only on <host>`). On any other host a port bound to every
 // interface links at the host's address, one bound to a specific address
-// at that address, and one bound to the loopback gets the note.
+// at that address, and one bound to the loopback gets the note. A host is
+// named as it was added (`hale habitat host add <name>`): a port bound to
+// every interface, or to the host's own address, links at that name, not
+// the address it resolved to; one bound to another address links there.
 fn allocation_links_at(
     published: String,
     applied: String,
@@ -430,8 +433,11 @@ fn allocation_links_at(
     let local = habitat_is_local(declared);
     // this machine's loopback, reachable from the browser
     let mine = local && on_head;
-    let base = if !local && on_head { declared } else if here { "127.0.0.1" } else { address };
     let host = if len(applied) == 0 { "local" } else { applied };
+    // a host as a person knows it: the name it was added by, when it has
+    // one, never the address it resolved to then (`local` has none)
+    let named = if host != "local" && len(host) > 0 { host } else { address };
+    let base = if !local && on_head { declared } else if here { "127.0.0.1" } else { named };
     let out = std::json::Builder { };
     out.begin_array();
     if std::str::starts_with(published, "[") {
@@ -448,6 +454,9 @@ fn allocation_links_at(
                 "127.0.0.1"
             } else if loopback {
                 ""
+            } else if bind == address && !here {
+                // bound to the host's own address: the host, by its name
+                named
             } else if std::str::contains(bind, ":") {
                 "[" + bind + "]"
             } else {
