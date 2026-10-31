@@ -11,17 +11,22 @@
 #   cli=true|false    the diff touches the cli family (hale-cli and the
 #                     crates only it builds, tests/hale, the manifests),
 #                     or dna is true: the cli jobs run on the pull request
-# The merge queue and main's push run every job whatever these say.
+#   assets=true|false every changed path is README art: assets/ or the
+#                     root README.md, which nothing builds or tests; no
+#                     test job runs, on a pull request or in the queue
+# Otherwise the merge queue and main's push run every job whatever these
+# say.
 #
 # Fails SAFE: an unusable base or head, or an empty diff, is
-# prose=false dna=true cli=true. The workflow redirects the output into
-# $GITHUB_OUTPUT; run it by hand to see what a branch would trigger.
+# prose=false dna=true cli=true assets=false. The workflow redirects the
+# output into $GITHUB_OUTPUT; run it by hand to see what a branch would
+# trigger.
 set -uo pipefail
 
 base="${1:-}"
 head="${2:-HEAD}"
 
-verdict() { echo "prose=$1"; echo "dna=$2"; echo "cli=$3"; }
+verdict() { echo "prose=$1"; echo "dna=$2"; echo "cli=$3"; echo "assets=${4:-false}"; }
 
 if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null \
   || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
@@ -38,6 +43,9 @@ if [ -z "$changed" ]; then
   verdict false true true; exit 0
 fi
 echo "changed files:" >&2; echo "$changed" >&2
+
+# Paths no build, test, model or embed reads: the README and its art.
+assets='^assets/|^README\.md$'
 
 # Paths that cannot reach the runtime, the models, or codegen.
 prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents|unreleased)/|\.md$'
@@ -57,6 +65,7 @@ dna_suite='^crates/hale-cli/tests/(dna_native_suite\.rs|support/|fixtures/)'
 # jobs run (tests/hale), and the workspace manifests.
 cli='^crates/(hale-cli|hale-lsp|hale-frontend|hale-ts-shim)/|^tests/hale/|^Cargo\.(toml|lock)$'
 
+nonassets=$(printf '%s\n' "$changed" | grep -cvE "$assets" || true)
 nonprose=$(printf '%s\n' "$changed" | grep -cvE "$prose" || true)
 hit=$(printf '%s\n' "$changed" | grep -cE "$dna" || true)
 suite=$(printf '%s\n' "$changed" | grep -cE "$dna_suite" || true)
@@ -67,4 +76,5 @@ d=false
 if [ "${hit:-1}" -gt 0 ] || [ "${suite:-0}" -gt 0 ]; then d=true; fi
 c=$d
 if [ "${clihit:-1}" -gt 0 ]; then c=true; fi
-verdict "$p" "$d" "$c"
+a=false; [ "${nonassets:-1}" -eq 0 ] && a=true
+verdict "$p" "$d" "$c" "$a"

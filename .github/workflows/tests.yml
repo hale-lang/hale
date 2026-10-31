@@ -49,7 +49,9 @@ on:
   pull_request:
     branches: [main]
   # The merge queue tests the combination a stack becomes, with
-  # every job: the scope outputs are forced true on this event.
+  # every job: the scope outputs are forced true on this event, unless
+  # the group only touches the README and its art (assets/), which
+  # nothing builds or tests; then no test job runs.
   merge_group:
   workflow_dispatch:
 
@@ -127,6 +129,10 @@ jobs:
       # and the cli jobs, run on a pull request only when these are true.
       dna: ${{ steps.classify.outputs.dna }}
       cli: ${{ steps.classify.outputs.cli }}
+      # The diff only touches the README and its art (assets/): no test
+      # job runs, on a pull request, in the merge queue or on main's push.
+      # `required` still passes.
+      assets: ${{ steps.classify.outputs.assets }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -135,8 +141,16 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "merge_group" ]; then
-            echo "merge group: every job runs"
-            { echo "substrate=true"; echo "dna=true"; echo "cli=true"; } >> "$GITHUB_OUTPUT"
+            # The group's own diff decides one thing only: whether it is
+            # README art alone. Anything else runs every job.
+            verdict="$(bash scripts/ci-scope.sh "${{ github.event.merge_group.base_sha }}" HEAD)"
+            if printf '%s\n' "$verdict" | grep -qx 'assets=true'; then
+              echo "merge group only touches README art: no test job runs"
+              { echo "substrate=false"; echo "dna=false"; echo "cli=false"; echo "assets=true"; } >> "$GITHUB_OUTPUT"
+            else
+              echo "merge group: every job runs"
+              { echo "substrate=true"; echo "dna=true"; echo "cli=true"; echo "assets=false"; } >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           base=""
@@ -163,18 +177,22 @@ jobs:
           # empty diff comes back as everything-true.
           verdict="$(bash scripts/ci-scope.sh "$base" HEAD)"
           echo "$verdict"
-          if printf '%s\n' "$verdict" | grep -qx 'prose=true'; then
+          if printf '%s\n' "$verdict" | grep -qx 'assets=true'; then
+            echo "README art only, no test job runs"
+            echo "substrate=false" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$verdict" | grep -qx 'prose=true'; then
             echo "prose-only diff, skipping sanitizer + model-checker jobs"
             echo "substrate=false" >> "$GITHUB_OUTPUT"
           else
             echo "substrate=true" >> "$GITHUB_OUTPUT"
           fi
-          printf '%s\n' "$verdict" | grep -E '^(dna|cli)=' >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$verdict" | grep -E '^(dna|cli|assets)=' >> "$GITHUB_OUTPUT"
 
   # The fast lane: everything that needs no LLVM. hale-syntax,
   # hale-types, hale-model, hale-graph, hale-stdlib and hale-corpus have
   # no dependency on inkwell, so these jobs skip the LLVM install and the
-  # codegen build entirely. They run on every diff, prose included.
+  # codegen build entirely. They run on every diff, prose included, but
+  # not on one that only touches README art (`assets` above).
   #
   # `quick-build` compiles their ~180 test binaries (about six minutes:
   # each is a bin crate, which sccache cannot cache) and archives them;
@@ -188,6 +206,8 @@ jobs:
   # minutes (2026-10-16).
   quick-build:
     name: quick build (LLVM-free test archive)
+    needs: scope
+    if: needs.scope.outputs.assets != 'true'
     runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-quick
@@ -300,7 +320,7 @@ jobs:
   docs:
     name: docs (embedded spec)
     needs: scope
-    if: github.event_name == 'merge_group' || needs.scope.outputs.code != 'true'
+    if: needs.scope.outputs.assets != 'true' && (github.event_name == 'merge_group' || needs.scope.outputs.code != 'true')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -364,7 +384,7 @@ jobs:
     needs: scope
     # The cli and dna jobs' archive: on a pull request only when one of
     # them runs there (`scope.cli` is true whenever `scope.dna` is).
-    if: github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true'
+    if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true')
     runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-cli
@@ -783,7 +803,7 @@ jobs:
   dna:
     name: dna ${{ matrix.part }}/6
     needs: [scope, build-cli]
-    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-24.04
@@ -939,7 +959,7 @@ jobs:
   face-api:
     name: face (DNA API + head)
     needs: scope
-    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
     runs-on: ubuntu-24.04
     # GH #985: the API's Knowledge tests migrate a record into this
     # Postgres with the owner's DSN and read it as the head; without it
@@ -1104,7 +1124,7 @@ jobs:
   face-browser:
     name: face (browser, ${{ matrix.shard }}/2)
     needs: scope
-    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    if: needs.scope.outputs.assets != 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -1857,9 +1877,10 @@ jobs:
   # under its template name ("cli ${{ matrix.part }}/5"), so the expanded
   # names cannot be required one by one: a docs-only pull request would
   # wait forever for "cli 1/5". This job runs always, and is green when
-  # scope and the quick jobs succeeded and every other job succeeded or was
-  # scoped out, red when any failed or was cancelled. The merge queue's
-  # run, where every job runs, gates the merge through the same check.
+  # scope and the quick jobs succeeded (on README art alone, scope) and
+  # every other job succeeded or was scoped out, red when any failed or
+  # was cancelled. The merge queue's run, where every job runs, gates the
+  # merge through the same check.
   required:
     name: required
     runs-on: ubuntu-24.04
@@ -1871,6 +1892,8 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
-          must=$(echo "$RESULTS" | jq -r '["scope","quick-build","quick"][] as $k | select(.[$k].result != "success") | $k')
+          # the quick jobs must pass, except on a diff that only touches
+          # README art, where no test job runs
+          must=$(echo "$RESULTS" | jq -r --arg assets "${{ needs.scope.outputs.assets }}" '(["scope"] + (if $assets == "true" then [] else ["quick-build","quick"] end))[] as $k | select(.[$k].result != "success") | $k')
           bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
           if [ -n "$must$bad" ]; then echo "::error::not green: $must $bad"; exit 1; fi
