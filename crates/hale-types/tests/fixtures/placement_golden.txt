@@ -694,7 +694,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#b2cfa865
+== crates/hale-stdlib/hl/api_rpc.hl#533ed679
 
 == crates/hale-stdlib/hl/crypto.hl#c68ea340
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
