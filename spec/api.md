@@ -1053,8 +1053,13 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
   - `403`, kind `unauthorized`, when it is a write with no body (any
     method but `GET`, `HEAD` and `OPTIONS`: a `DELETE`, a `POST` of a
     request with no fields) and carries an `Origin` that `cors` does not
-    list; with `cors` unset no origin is listed, so a page that writes
-    with no body to its own origin's exposure lists that origin.
+    list and that is not the request's own (2026-10-31): a browser sends
+    `Origin` on a same-origin write too, so an `Origin` of `http://` or
+    `https://` and an authority that is the request's `Host` header,
+    case aside, passes as a listed one would. An origin with a path, a
+    scheme other than those two, `null`, or a request with no `Host` is
+    not the request's own. A same-origin request is not answered CORS:
+    nothing is echoed for it.
   A caller that is not a browser sends no `Origin` and is not refused.
   The `fallback` is not guarded: it gets the request untouched and
   guards itself.

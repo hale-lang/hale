@@ -301,10 +301,14 @@ impl Response {
     }
 }
 
-/// An HTTP request as text: `headers` are `Name: value` pairs; a body
-/// carries its `Content-Length`.
+/// An HTTP request as text: `headers` are `Name: value` pairs (a `Host`
+/// among them replaces the default `127.0.0.1`); a body carries its
+/// `Content-Length`.
 pub fn request_text(method: &str, path: &str, headers: &[(String, String)], body: Option<&str>) -> String {
-    let mut s = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+    let mut s = format!("{method} {path} HTTP/1.1\r\n");
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("Host")) {
+        s.push_str("Host: 127.0.0.1\r\n");
+    }
     for (k, v) in headers {
         s.push_str(&format!("{k}: {v}\r\n"));
     }

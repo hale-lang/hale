@@ -3252,6 +3252,28 @@ fn __api_rest_json_type(content_type: String) -> Bool {
     return std::str::lower(std::str::trim(media)) == "application/json";
 }
 
+/// Whether a request's `Origin` names its own `Host`: the origin is
+/// `http://` or `https://` and an authority, nothing after it, and the
+/// authority is the `Host` header's, case aside. A page an exposure serves
+/// itself sends that `Origin` on every write, and the cross-origin write
+/// guard does not refuse it (spec/api.md § The REST transport). `null`, an
+/// origin with a path and an empty `Host` never are.
+fn __api_same_origin(origin: String, host: String) -> Bool {
+    let o = std::str::lower(std::str::trim(origin));
+    let h = std::str::lower(std::str::trim(host));
+    if len(h) == 0 { return false; }
+    let mut authority = "";
+    if std::str::starts_with(o, "http://") {
+        authority = o[7..len(o)];
+    } else if std::str::starts_with(o, "https://") {
+        authority = o[8..len(o)];
+    } else {
+        return false;
+    }
+    if len(authority) == 0 || std::str::index_of(authority, "/") >= 0 { return false; }
+    return authority == h;
+}
+
 /// The REST transport (`std::api::http::Rest`; `http::Rest` at a serve
 /// site). `tid` and `routes` are written by the compiler; the rest is
 /// `http::Rpc`'s.
@@ -3424,7 +3446,8 @@ locus __StdApiHttpRest {
             // the cross-origin write guard (spec/api.md § The REST transport):
             // a body is the codec's media type, which a browser sends only
             // after a preflight, and a write with no body is refused to an
-            // origin `cors` does not list
+            // origin `cors` does not list and that is not the request's own
+            // `Host` (a browser sends `Origin` on a same-origin write too)
             let has_body = len(req.body) > 0;
             if has_body && !__api_rest_json_type(std::http::header(req, "Content-Type")) {
                 self.note(
@@ -3442,6 +3465,7 @@ locus __StdApiHttpRest {
                 && method != "GET"
                 && len(origin) > 0
                 && !__api_cors_allows(self.cors, origin)
+                && !__api_same_origin(origin, std::http::header(req, "Host"))
             {
                 self.note(
                     __StdApiRestPending { corr: correlation, mode: 5, origin: allowed, head: head },
