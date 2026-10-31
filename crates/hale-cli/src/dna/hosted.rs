@@ -636,14 +636,17 @@ fn habitat_vault(entries: &[String], values: bool) -> Result<BTreeMap<String, Op
 /// a placement's): `--host local` places there.
 pub(super) const LOCAL: &str = "local";
 
-/// Whether `name` names the habitat's own machine: `local`, or the name it
-/// is reached by, whole or by its first label (`rack-a` for `rack-a.lan`):
+/// Whether `name` names the habitat's own machine: `local` when the habitat
+/// runs on this one, or the name it is reached by, whole or by its first
+/// label (`rack-a` for `rack-a.lan`):
 /// the pointer's host when the habitat runs on another machine (`up
 /// --host`), else the habitat's address where it runs, or this machine's
 /// own hostname for a habitat on this one.
 pub(super) fn names_own_machine(name: &str, pointer: Option<&serde_json::Value>) -> bool {
+    // `local` is the machine the person types on: the habitat's own only
+    // when the habitat runs on it
     if name == LOCAL {
-        return true;
+        return pointer.is_none();
     }
     let mut names: Vec<String> = Vec::new();
     match pointer.and_then(|p| p["host"].as_str()).filter(|h| !h.is_empty()) {
@@ -673,17 +676,53 @@ fn this_hostname() -> Option<String> {
     (out.status.success() && !h.is_empty()).then_some(h)
 }
 
-/// The host `name` as the habitat's rows call it: a host it added, by that
-/// name; else `local` when it names the habitat's own machine
-/// (`names_own_machine`); else `name` as given (refused where it is used).
+/// The host `name` as the habitat's rows call it. `local` is the machine
+/// the person types on: the habitat's own (`local` in its rows) when the
+/// habitat runs here; through a pointer, the host the habitat added that is
+/// this machine (`this_machine_host`), refused, naming the one `host add`
+/// that makes it one, when there is none. Any other name: a host the
+/// habitat added, by that name; else `local` when it names the habitat's
+/// own machine (`names_own_machine`); else `name` as given (refused where
+/// it is used).
 pub(super) fn host_key(name: &str, pointer: Option<&serde_json::Value>, hosts: impl FnOnce() -> Result<Vec<serde_json::Value>, String>) -> Result<String, String> {
-    if name == LOCAL {
+    if name == LOCAL && pointer.is_none() {
         return Ok(LOCAL.to_string());
     }
-    if hosts()?.iter().any(|h| h["name"] == name) {
+    let rows = hosts()?;
+    if name == LOCAL {
+        return this_machine_host(&rows, is_this_machine).ok_or_else(|| not_a_host_here(pointer));
+    }
+    if rows.iter().any(|h| h["name"] == name) {
         return Ok(name.to_string());
     }
     Ok(if names_own_machine(name, pointer) { LOCAL.to_string() } else { name.to_string() })
+}
+
+/// The host the habitat added that is this machine (`here` says whether an
+/// address is one of this machine's), by its name: the first `ready` row
+/// whose address resolves to one, `None` for none.
+pub(super) fn this_machine_host(rows: &[serde_json::Value], here: impl Fn(&str) -> bool) -> Option<String> {
+    rows.iter()
+        .filter(|h| h["state"] == "ready")
+        .find(|h| here(h["address"].as_str().filter(|a| !a.is_empty()).or(h["name"].as_str()).unwrap_or("")))
+        .and_then(|h| h["name"].as_str().map(str::to_string))
+}
+
+/// Whether `address` (a name or an IP) resolves to an address of this
+/// machine's own, the loopback aside: one a socket here can bind.
+fn is_this_machine(address: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = (address, 0u16).to_socket_addrs() else { return false };
+    addrs.into_iter().any(|a| !a.ip().is_loopback() && std::net::UdpSocket::bind((a.ip(), 0)).is_ok())
+}
+
+/// Why `--host local` has nowhere to go: this machine points at a habitat
+/// on another and is no host of it yet.
+fn not_a_host_here(pointer: Option<&serde_json::Value>) -> String {
+    let at = pointer.and_then(|p| p["host"].as_str()).unwrap_or("another machine");
+    format!(
+        "`local` is this machine, and it is no host of the habitat, which runs on {at}: add it once, by a name {at} reaches it at (`hale habitat host add <this machine's name>`; on macOS, Remote Login on), and `--host local` places here; `--host {at}` is the habitat's own machine"
+    )
 }
 
 /// Where a host command's scripts run: over the person's own SSH login to
@@ -706,6 +745,11 @@ impl Target {
         let row = hosts()?.into_iter().find(|h| h["name"] == host).ok_or_else(|| format!("`{host}` is no host of the habitat (`hale habitat host add {host}`; the habitat's own machine is `--host {LOCAL}`, or its own name)"))?;
         if row["state"] != "ready" {
             return Err(format!("`{host}` is {}, not ready (`hale habitat host probe {host}`)", row["state"].as_str().unwrap_or("unknown")));
+        }
+        // the host is this machine (a person placing on their own): its
+        // scripts run here, with no SSH to oneself
+        if pointer.is_some() && this_machine_host(std::slice::from_ref(&row), is_this_machine).is_some() {
+            return Ok(Target::Here);
         }
         let port = row["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
         Ok(Target::Ssh { host: host.to_string(), user: None, port })
@@ -982,10 +1026,12 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
 
     println!("{:<8}{organism}'s `{name}` on {shown} ({platform}{}), as {organism} {revision} declares it", if install { "place" } else { "unplace" }, if cmd.root { ", as root through your sudo" } else { "" });
     if host == LOCAL {
-        println!("{:<8}{LOCAL} is the habitat's own machine, reached {}", "host", match &at {
+        println!("{:<8}{} the habitat's own machine, reached {}", "host", if shown == LOCAL { "this machine is".to_string() } else { format!("{shown} is") }, match &at {
             Target::Ssh { host: h, .. } => format!("over your SSH login to {h}"),
             Target::Here => at.how().to_string(),
         });
+    } else if at == Target::Here {
+        println!("{:<8}{shown} is this machine, a host of the habitat: its scripts run here", "host");
     }
     println!("{:<8}{}", "runs", argv.join(" "));
     println!("{builds}");
@@ -1001,7 +1047,7 @@ pub(super) fn place_lines(organism: &str, name: &str, host: &str, id: Option<&st
     for s in &skipped {
         println!("{:<8}{s}", "skips");
     }
-    println!("{:<8}{}", "reserve", reserve_line(host, own, organisms));
+    println!("{:<8}{}", "reserve", reserve_line(&shown, own, organisms));
     if !service.is_empty() {
         println!("{:<8}{service}, {} on {shown}", "service", if platform == "macos" { "a launchd service in the system domain" } else { "a systemd unit" });
     }
@@ -1068,10 +1114,13 @@ mod tests {
     #[test]
     fn the_habitats_own_machine_answers_to_its_name() {
         let pointer = serde_json::json!({ "host": "habitat-box.lab.lan", "name": "h" });
-        for n in ["local", "habitat-box.lab.lan", "habitat-box", "HABITAT-BOX"] {
+        for n in ["habitat-box.lab.lan", "habitat-box", "HABITAT-BOX"] {
             assert!(super::names_own_machine(n, Some(&pointer)), "{n}");
         }
-        for n in ["gpu-1.lab.lan", "lab", "habitat-box.other.lan", "box"] {
+        // `local` is the machine the person types on: the habitat's own
+        // only when the habitat runs there
+        assert!(super::names_own_machine("local", None));
+        for n in ["local", "gpu-1.lab.lan", "lab", "habitat-box.other.lan", "box"] {
             assert!(!super::names_own_machine(n, Some(&pointer)), "{n}");
         }
         // a host the habitat added keeps its own name, whatever it looks like
@@ -1080,6 +1129,18 @@ mod tests {
         let none = || Ok(Vec::new());
         assert_eq!(super::host_key("habitat-box.lab.lan", Some(&pointer), none).unwrap(), "local");
         assert_eq!(super::host_key("gpu-1.lab.lan", Some(&pointer), || Ok(Vec::new())).unwrap(), "gpu-1.lab.lan");
+        // with no pointer `local` is the habitat's own machine, as ever
+        assert_eq!(super::host_key("local", None, || Ok(Vec::new())).unwrap(), "local");
+        // through a pointer, `local` is this machine: the added host that is
+        // it, or refused naming the `host add` that makes it one
+        let rows = vec![
+            serde_json::json!({ "name": "gpu-1.lab.lan", "address": "gpu-1.lab.lan", "state": "ready" }),
+            serde_json::json!({ "name": "desk.lab.lan", "address": "desk.lab.lan", "state": "ready" }),
+        ];
+        assert_eq!(super::this_machine_host(&rows, |a| a == "desk.lab.lan").as_deref(), Some("desk.lab.lan"));
+        assert_eq!(super::this_machine_host(&rows, |_| false), None);
+        let why = super::host_key("local", Some(&pointer), || Ok(Vec::new())).unwrap_err();
+        assert!(why.contains("no host of the habitat, which runs on habitat-box.lab.lan") && why.contains("hale habitat host add") && why.contains("`--host habitat-box.lab.lan`"), "{why}");
     }
 
     use super::*;

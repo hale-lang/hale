@@ -1389,12 +1389,60 @@ pub(super) fn run_there(p: &serde_json::Value, verb: &str, args: &[&str]) -> Exi
 /// and its progress print here as they happen, and at a terminal the person
 /// confirms the plan there. `--no-head`: it acts itself, never through the
 /// head, which would take the plan as it stands and ask no one.
+/// A graft's `--host <h>` and `--own <part>=<h>` as the habitat's machine
+/// reads them (`hosted::host_key` here, then the habitat's own machine
+/// said as `local` there); the rest as given.
+fn graft_hosts_said_there(p: &serde_json::Value, args: &[String]) -> Result<Vec<String>, String> {
+    let mut hosts: Option<Vec<serde_json::Value>> = None;
+    let mut said = |h: &str| -> Result<String, String> {
+        super::hosted::host_key(h, Some(p), || {
+            if hosts.is_none() {
+                let v = super::sapling::head_call("Commands::hosts", serde_json::json!({ "limit": 500 }))?;
+                hosts = Some(v["hosts"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default());
+            }
+            Ok(hosts.clone().unwrap_or_default())
+        })
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--host" && i + 1 < args.len() {
+            out.push(a.clone());
+            out.push(said(&args[i + 1])?);
+            i += 2;
+            continue;
+        }
+        if a == "--own" && i + 1 < args.len() {
+            out.push(a.clone());
+            out.push(match args[i + 1].split_once('=') {
+                Some((part, h)) => format!("{part}={}", said(h)?),
+                None => args[i + 1].clone(),
+            });
+            i += 2;
+            continue;
+        }
+        out.push(a.clone());
+        i += 1;
+    }
+    Ok(out)
+}
+
 pub(super) fn graft_sapling(p: &serde_json::Value, args: &[String]) -> ExitCode {
     let (t, m) = match checked_machine(p, "graft") {
         Ok(tm) => tm,
         Err(code) => return code,
     };
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    // a placement said here means what it means here: `local` is this
+    // machine, the habitat's own machine is `local` there
+    let args = match graft_hosts_said_there(p, args) {
+        Ok(a) => a,
+        Err(why) => {
+            eprintln!("hale habitat graft: {why}");
+            return ExitCode::from(1);
+        }
+    };
     let mut a: Vec<&str> = vec!["graft"];
     a.extend(args.iter().map(String::as_str));
     a.push("--no-head");
