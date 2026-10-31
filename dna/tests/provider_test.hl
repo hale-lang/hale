@@ -195,4 +195,30 @@ fn main() {
         "degraded",
         "one that failed is not",
     );
+    // with the compose service on each line, what is not running is named
+    // (a finished one-shot is not), and a state that is not up says so
+    let named = dna::seen_containers(
+        "postgres:17|running Up 9 seconds (healthy)|postgres\nvoice-api|created Created|api\nnats:2.11-alpine|created Created|nats\nvoice-api|exited Exited (0) 3 seconds ago|migrate",
+    );
+    std::test::assert_eq_str(
+        named.down,
+        "api (created), nats (created)",
+        "the services not running, each once",
+    );
+    std::test::assert_eq_str(
+        named.states,
+        "running Up 9 seconds (healthy)\ncreated Created\ncreated Created\nexited Exited (0) 3 seconds ago",
+        "the state lines without image or service",
+    );
+    let st = dna::naming_down(dna::containers_state("voice", named.states), named.down);
+    std::test::assert_eq_str(
+        st.detail,
+        "1 of 3 running; not running: api (created), nats (created)",
+        "a degraded state names them",
+    );
+    std::test::assert_eq_str(
+        dna::naming_down(dna::containers_state("voice", "running Up 1 minute"), "").detail,
+        "running Up 1 minute",
+        "an up state is as it was",
+    );
 }
