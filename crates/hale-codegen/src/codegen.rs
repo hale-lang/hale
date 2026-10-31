@@ -2672,24 +2672,66 @@ fn build_resolved_lowered(
     for lib in &options.link_libs {
         clang.arg(format!("-l{}", lib));
     }
-    let status = clang
+    // clang's stderr is read, then passed on whole, so a failed link can
+    // be named when its cause is the machine's developer tools
+    let output = clang
         .arg("-o")
         .arg(&out_tmp)
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .output()
         .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)));
     phase("emit+link", &mut t_last);
     // Only the per-build user input (object, or bitcode under LTO) is
     // transient; the cached runtime objects persist for reuse by later
     // builds.
     let _ = std::fs::remove_file(&main_input);
-    let linked = status.and_then(|status| {
-        if status.success() {
+    let linked = output.and_then(|output| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprint!("{stderr}");
+        if output.status.success() {
             Ok(())
         } else {
-            Err(CodegenError::Link(format!("clang exited with {}", status)))
+            let hint = if target_spec.is_macos() {
+                macos_sdk_mismatch_hint(&stderr, macos_developer_dir().as_deref())
+            } else {
+                None
+            };
+            Err(CodegenError::Link(match hint {
+                Some(hint) => format!("clang exited with {}: {hint}", output.status),
+                None => format!("clang exited with {}", output.status),
+            }))
         }
     });
     publish_output(linked, &out_tmp, output_path)
+}
+
+/// Why a macOS link failed, when the cause is the machine's developer
+/// tools rather than the program: the selected toolchain's linker cannot
+/// read the SDK clang chose (`tapi error: malformed file` … `unknown
+/// architecture` in a `.tbd`), which happens when Xcode is selected
+/// (`xcode-select -p`) but the default SDK is a newer Command Line Tools'
+/// one. A plain C program fails to link the same way there.
+fn macos_sdk_mismatch_hint(stderr: &str, developer_dir: Option<&str>) -> Option<String> {
+    if !(stderr.contains("tapi error") && stderr.contains("unknown architecture")) {
+        return None;
+    }
+    let selected = match developer_dir {
+        Some(d) => format!("the selected developer tools (`xcode-select -p`: {d})"),
+        None => "the selected developer tools (`xcode-select -p`)".to_string(),
+    };
+    Some(format!(
+        "{selected} are older than the macOS SDK clang linked against, and their linker cannot read it; \
+         select tools that match it (`sudo xcode-select -s /Library/Developer/CommandLineTools`, or \
+         update Xcode), or set SDKROOT to an SDK they read (under \
+         /Library/Developer/CommandLineTools/SDKs)"
+    ))
+}
+
+/// The developer directory `xcode-select` names, if it answers.
+fn macos_developer_dir() -> Option<String> {
+    let out = Command::new("xcode-select").arg("-p").output().ok()?;
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !dir.is_empty()).then_some(dir)
 }
 
 /// `{pid}.{nonce}`: unique across processes by pid, across threads of
@@ -38436,6 +38478,15 @@ pub fn host_triple() -> TargetTriple {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn macos_sdk_mismatch_is_named() {
+        let tapi = "ld: tapi error: malformed file\n/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture\n";
+        let hint = super::macos_sdk_mismatch_hint(tapi, Some("/Applications/Xcode.app/Contents/Developer")).unwrap();
+        assert!(hint.contains("/Applications/Xcode.app/Contents/Developer") && hint.contains("sudo xcode-select -s") && hint.contains("SDKROOT"), "{hint}");
+        // any other link failure is left as clang said it
+        assert_eq!(super::macos_sdk_mismatch_hint("ld: symbol(s) not found for architecture arm64", None), None);
+    }
+
     use super::*;
 
     /// F.32-3: the chunk-hint formula. Pins the table referenced
