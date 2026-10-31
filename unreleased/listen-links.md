@@ -1,0 +1,1 @@
+- A host's services link by the name it was added by when they bind the address that name resolves to (`HALE_DNA_HOST_LISTEN`, what a host's compose projects are told to bind): #1819 matched only a host recorded by its address, so a host added by name still linked at its IP.
