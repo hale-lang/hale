@@ -726,7 +726,7 @@ pub(super) fn this_machine_host(rows: &[serde_json::Value], here: impl Fn(&str) 
 
 /// Whether `address` (a name or an IP) resolves to an address of this
 /// machine's own, the loopback aside: one a socket here can bind.
-fn is_this_machine(address: &str) -> bool {
+pub(super) fn is_this_machine(address: &str) -> bool {
     use std::net::ToSocketAddrs;
     let Ok(addrs) = (address, 0u16).to_socket_addrs() else { return false };
     addrs.into_iter().any(|a| !a.ip().is_loopback() && std::net::UdpSocket::bind((a.ip(), 0)).is_ok())
@@ -737,7 +737,7 @@ fn is_this_machine(address: &str) -> bool {
 fn not_a_host_here(pointer: Option<&serde_json::Value>) -> String {
     let at = pointer.and_then(|p| p["host"].as_str()).unwrap_or("another machine");
     format!(
-        "`local` is this machine, and it is no host of the habitat, which runs on {at}: add it once, by a name {at} reaches it at (`hale habitat host add <this machine's name>`; on macOS, Remote Login on), and `--host local` places here; `--host {at}` is the habitat's own machine"
+        "`local` is this machine, and it is no host of the habitat, which runs on {at}: join it once, from here, by a name {at} reaches it at (`hale habitat host join <this machine's name>`: the habitat reaches it on its services' ports, never logs in), and `--host local` places here; `--host {at}` is the habitat's own machine"
     )
 }
 
@@ -766,6 +766,11 @@ impl Target {
         // scripts run here, with no SSH to oneself
         if pointer.is_some() && this_machine_host(std::slice::from_ref(&row), is_this_machine).is_some() {
             return Ok(Target::Here);
+        }
+        // a machine that joined from itself is reached by no one's login:
+        // its scripts run there, from it
+        if row["provider"] == "joined" {
+            return Err(format!("`{host}` joined the habitat from itself, and nothing logs in there: run this on {host} (`--host local` there)"));
         }
         let port = row["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0);
         Ok(Target::Ssh { host: host.to_string(), user: None, port })
@@ -1171,7 +1176,7 @@ mod tests {
         assert_eq!(super::this_machine_host(&rows, |a| a == "desk.lab.lan").as_deref(), Some("desk.lab.lan"));
         assert_eq!(super::this_machine_host(&rows, |_| false), None);
         let why = super::host_key("local", Some(&pointer), || Ok(Vec::new())).unwrap_err();
-        assert!(why.contains("no host of the habitat, which runs on habitat-box.lab.lan") && why.contains("hale habitat host add") && why.contains("`--host habitat-box.lab.lan`"), "{why}");
+        assert!(why.contains("no host of the habitat, which runs on habitat-box.lab.lan") && why.contains("hale habitat host join") && why.contains("`--host habitat-box.lab.lan`"), "{why}");
     }
 
     use super::*;

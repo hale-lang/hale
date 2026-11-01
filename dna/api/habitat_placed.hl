@@ -104,7 +104,7 @@ fn placement_word(s: String) -> Bool {
 // "" when it serves no readings.
 fn placement_target(h: dna::Host, p: PlacementRecord) -> String {
     if p.readings <= 0 { return ""; }
-    let address = if h.provider != "ssh" || len(h.address) == 0 {
+    let address = if (h.provider != "ssh" && h.provider != "joined") || len(h.address) == 0 {
         "host.docker.internal"
     } else {
         h.address

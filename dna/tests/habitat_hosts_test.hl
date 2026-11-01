@@ -70,6 +70,18 @@ fn surface_read(face: String, member: String, field: String) -> String {
     return std::json::find_string_field(r, field);
 }
 
+// What the head's surface answers `member` with `payload`, through the face,
+// as the trusted-local session writes: with the head's launch token.
+fn surface_call(face: String, member: String, payload: String) -> String {
+    let token = dna::trim_nl(
+        std::io::fs::read_file(dna::local_habitat_dir() + "/face-state/head.token") or "",
+    );
+    return dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Token: " + token
+            + "\n--data\n" + payload + "\n" + face + "/api/hale/v1/head/surface/call/" + member,
+    ).stdout;
+}
+
 // The element of the JSON `array` whose `key` is `value`, "" for none.
 fn element(array: String, key: String, value: String) -> String {
     let mut it = std::json::array_first(array);
@@ -165,6 +177,61 @@ fn main() {
     std::test::assert(
         len(host_in(face, "local", "ready", 300)) > 0,
         "the head answers, the compose provider's host `local` ready: " + face,
+    );
+
+    // ---- joined from itself (`hale habitat host join`, run on the
+    // machine): ready at once, with no key, no account and no probe, its
+    // exporter scraped by the name it joined by; a probe is refused, and its
+    // removal is its entry alone
+    let joined = surface_call(
+        face,
+        "Commands::add_host",
+        "{\"name\": \"joined-box.lan\", \"joined\": true, \"os\": \"Darwin\", \"arch\": \"arm64\"}",
+    );
+    let jh = host_in(face, "joined-box.lan", "ready", 30);
+    std::test::assert(
+        std::json::find_string_field(jh, "provider") == "joined"
+            && len(std::json::find_string_field(jh, "host_key")) == 0
+            && len(std::json::find_string_field(jh, "user")) == 0
+            && std::json::find_string_field(jh, "os") == "Darwin",
+        "a joined host is ready with no key and no login: " + joined + " / " + jh,
+    );
+    let targets = std::io::fs::read_file(
+        dna::allocation_dir(genome) + "/senses.d/hosts.json",
+    ) or "";
+    std::test::assert(
+        std::str::contains(targets, "joined-box.lan:9100"),
+        "its node exporter is scraped by the name it joined by: " + targets,
+    );
+    let probed = surface_call(face, "Commands::probe_host", "{\"name\": \"joined-box.lan\"}");
+    std::test::assert(
+        std::str::contains(probed, "\"code\": \"joined\"")
+            || std::str::contains(probed, "\"code\":\"joined\""),
+        "a joined host is never probed: " + probed,
+    );
+    let ssh_over = surface_call(
+        face,
+        "Commands::add_host",
+        "{\"name\": \"joined-box.lan\", \"port\": 22}",
+    );
+    std::test::assert(
+        std::str::contains(ssh_over, "host_exists"),
+        "a joined host is not added over SSH on top: " + ssh_over,
+    );
+    let left = in_dir(scratch, toolchain() + "\nhabitat\nhost\nremove\njoined-box.lan");
+    std::test::assert(
+        left.code == 0
+            && std::str::contains(left.stdout, "joined from itself")
+            && !std::str::contains(left.stdout, "authorized_keys")
+            && std::str::contains(left.stdout, "host    joined-box.lan (joined): removed"),
+        "a joined host's removal is its entry, with nothing over SSH: " + left.stdout + left.stderr,
+    );
+    std::test::assert(
+        !std::str::contains(
+            std::io::fs::read_file(dna::allocation_dir(genome) + "/senses.d/hosts.json") or "",
+            "joined-box.lan",
+        ),
+        "a removed joined host is scraped no more",
     );
 
     // ---- the machine: an sshd of the fixture's own on the loopback

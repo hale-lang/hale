@@ -26,6 +26,13 @@ type HostAdd {
     name: String = "";
     user: String = "";
     port: Int = 22;
+    // a machine joining from itself (`hale habitat host join`): the habitat
+    // never logs in there (no key, no account, no probe); it reaches the
+    // machine on its services' ports alone, its readings among them. Its
+    // system and architecture, as the machine itself says them.
+    joined: Bool = false;
+    os: String = "";
+    arch: String = "";
 }
 
 type HostNamed { name: String = ""; }
@@ -164,7 +171,12 @@ fn host_targets_file(root: String, at: String, name: String, port: Int) {
         i = i + 1;
         if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
         let h = dna::host_of_row(e.body);
-        if h.state == "removed" || h.provider != "ssh" || len(h.address) == 0 { continue; }
+        if h.state == "removed"
+            || (h.provider != "ssh" && h.provider != "joined")
+            || len(h.address) == 0
+        {
+            continue;
+        }
         b.begin_object();
         b.begin_array_field("targets");
         b.string_value(h.address + ":" + to_string(port));
@@ -219,6 +231,7 @@ fn habitat_host_add(root: String, a: HostAdd, by: String) -> HostReply {
     if a.port < 1 || a.port > 65535 {
         return host_refused("invalid_host", "the port is 1 to 65535");
     }
+    if a.joined { return habitat_host_join(root, a, by); }
     let had = dna::recorded_host(root, a.name);
     if len(had.provider) > 0 && had.state != "removed" {
         return host_refused(
@@ -259,8 +272,51 @@ fn habitat_host_add(root: String, a: HostAdd, by: String) -> HostReply {
     return r;
 }
 
+// A machine joining the habitat from itself (`hale habitat host join`, run
+// on it by a person the head admits): recorded `joined` and `ready`, by the
+// name the habitat's machine reaches it at, with no key, no account and no
+// probe. The habitat never logs in there: its scripts run there from the
+// machine itself, and the habitat reaches it on its services' ports alone
+// (its readings). Joining again rewrites its system; a host the habitat
+// added over SSH is refused, never turned into a joined one.
+fn habitat_host_join(root: String, a: HostAdd, by: String) -> HostReply {
+    let had = dna::recorded_host(root, a.name);
+    if len(had.provider) > 0 && had.state != "removed" && had.provider != "joined" {
+        return host_refused(
+            "host_exists",
+            "`" + a.name + "` is a host the habitat added over SSH (" + had.state
+                + "): `hale habitat host remove " + a.name + "` first, to join it from itself",
+        );
+    }
+    let h = dna::Host {
+        name: a.name,
+        provider: "joined",
+        state: "ready",
+        address: a.name,
+        port: 0,
+        os: a.os,
+        arch: a.arch,
+    };
+    if had.provider == "joined" && had.state != "removed"
+        && dna::host_row_body(had) == dna::host_row_body(h)
+    {
+        return host_reply(h, "", "");
+    }
+    let wrote = host_write(root, h, by);
+    if len(wrote) > 0 { return host_refused("record_refused", wrote); }
+    return host_reply(h, "", "");
+}
+
 fn habitat_host_probe(root: String, name: String, by: String) -> HostReply {
     let h = dna::recorded_host(root, name);
+    if h.provider == "joined" && h.state != "removed" {
+        return host_refused(
+            "joined",
+            "`" + name
+                + "` joined from itself, and the habitat never logs in there: `hale habitat host join "
+                + name + "` on it records it again",
+        );
+    }
     if h.provider != "ssh" || h.state == "removed" {
         return host_refused("not_found", "no ssh host `" + name + "` was added");
     }

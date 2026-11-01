@@ -1,0 +1,1 @@
+- The `ghcr.io/hale-lang/hale` image is published for linux/arm64 as well as linux/amd64 (one manifest list, each architecture built natively), so `hale habitat up` on a release pulls its habitat image on an arm64 machine, a Mac's docker VM included, instead of building it.
