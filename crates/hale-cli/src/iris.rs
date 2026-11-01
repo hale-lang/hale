@@ -31,130 +31,201 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
     Ok((root, bin_path))
 }
 
-/// Build `seed` under the materialized cache `root` once, under the
-/// cache's build lock, and return its binary. `hale dna` builds its
-/// own programs from the same cache the same way (GH #566 F7: two
-/// commands racing to build one binary exec'd a half-written file —
-/// `Permission denied`).
+/// Build `seed` under the materialized cache `root` once and return its
+/// binary. `hale dna` builds its own programs from the same cache the
+/// same way; see [`ensure_seeds`] for how a build and a reader of the
+/// cache stay out of each other's way (GH #566 F7).
 pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) -> Result<PathBuf, String> {
-    let bin_path = root.join(bin);
-    // One build per cache, ever: two `hale iris` (or a test shard's
-    // five) racing to build the same seed into the same directory
-    // would trample each other's objects. An exclusive flock on the
-    // cache root serializes them; the loser finds the binary built.
-    // The lock is taken BEFORE the existence check: the linker creates
-    // the output before it is complete or executable, and a caller
-    // that saw the file and exec'd it got `Permission denied`.
-    let lock_path = root.join(".build.lock");
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|e| format!("hale iris: cannot open {}: {e}", lock_path.display()))?;
-    let _guard = BuildLock::acquire(&lock);
-    // The DNA toolchain cache is restored from a GitHub Actions cache
-    // entry before this runs; a truncated or zero-byte file from an
-    // incomplete save (or an interrupted earlier build) is still
-    // `is_file()`, and handing its path to a caller that execs it is
-    // worse than a slow rebuild. A present, non-empty file is trusted;
-    // anything else is removed and treated as absent.
-    match std::fs::metadata(&bin_path) {
-        Ok(m) if m.is_file() && m.len() > 0 => return Ok(bin_path),
-        Ok(_) => {
-            let _ = std::fs::remove_file(&bin_path);
-        }
-        Err(_) => {}
-    }
-    let me = std::env::current_exe().map_err(|e| format!("hale iris: cannot locate the hale binary: {e}"))?;
-    eprintln!("hale iris: building {what} ({} @ {})", seed, root.display());
-    let mut build = Command::new(&me);
-    build.arg("build").arg(root.join(seed)).stdin(Stdio::null()).stdout(Stdio::null());
-    crate::shared::process::dies_with_us(&mut build);
-    let status = build.status().map_err(|e| format!("hale iris: build failed to start: {e}"))?;
-    if !status.success() {
-        return Err(format!("hale iris: building {} failed ({status})", seed));
-    }
-    if !bin_path.is_file() {
-        return Err(format!("hale iris: build produced no binary at {}", bin_path.display()));
-    }
-    Ok(bin_path)
+    let built = ensure_seeds(root, &[(seed, bin)], &Report::Inherit(what), &|seed, out| hale_build(root, seed, out))?;
+    Ok(built.into_iter().next().unwrap_or_else(|| root.join(bin)))
 }
 
 /// Build several seeds under the materialized cache `root`, side by side,
-/// under the cache's build lock held once for all of them, and return
-/// their binaries in the order given. A seed whose binary is already
-/// there is not rebuilt. Each `hale build` is one single-threaded
+/// and return their binaries in the order given. A seed whose binary is
+/// already there is not rebuilt. Each `hale build` is one single-threaded
 /// process, so the head's four seeds build in parallel as
 /// `dna/face/start.sh` builds them from a checkout (GH #1147); every
 /// build is waited for even after one fails, and a failed build's output
 /// is printed under its seed's name.
 pub(crate) fn ensure_all_built_in(root: &Path, seeds: &[(&str, &str)], what: &str) -> Result<Vec<PathBuf>, String> {
-    let lock_path = root.join(".build.lock");
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|e| format!("cannot open {}: {e}", lock_path.display()))?;
-    let _guard = BuildLock::acquire(&lock);
+    ensure_seeds(root, seeds, &Report::Logged(what), &|seed, out| {
+        let mut build = hale_build(root, seed, out)?;
+        // observation belongs to the application, never the head's parts
+        build.env_remove("LOTUS_OBS");
+        Ok(build)
+    })
+}
+
+/// `hale build <root>/<seed> -o <out>` with THIS binary.
+fn hale_build(root: &Path, seed: &str, out: &Path) -> Result<Command, String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot locate the hale binary: {e}"))?;
+    let mut build = Command::new(me);
+    build.arg("build").arg(root.join(seed)).arg("-o").arg(out).stdin(Stdio::null()).stdout(Stdio::null());
+    Ok(build)
+}
+
+/// What a build of `what` says while it runs and when it fails.
+enum Report<'a> {
+    /// One line as it starts, `hale iris: building <what> (<seed>)`; its
+    /// own output on our stderr as it comes.
+    Inherit(&'a str),
+    /// One line per seed as it starts, `hale: building <what>: <seed>`;
+    /// its output kept under `<root>/.build-logs` and printed only when
+    /// it fails.
+    Logged(&'a str),
+}
+
+/// The command that compiles `seed` (relative to the cache root) into
+/// the file `out`.
+type BuildCommand<'a> = dyn Fn(&str, &Path) -> Result<Command, String> + 'a;
+
+/// A cached binary is trusted when it is a non-empty file. The DNA
+/// toolchain cache is restored from a GitHub Actions cache entry before
+/// this runs; a truncated or zero-byte file from an incomplete save is
+/// still `is_file()`, and handing its path to a caller that execs it is
+/// worse than a slow rebuild, so anything else is rebuilt.
+fn is_built(bin: &Path) -> bool {
+    matches!(std::fs::metadata(bin), Ok(m) if m.is_file() && m.len() > 0)
+}
+
+/// Make every `(seed, bin)` of `seeds` present under `root` and return
+/// the binaries in the order given.
+///
+/// A binary only ever appears at its path complete: each build writes a
+/// private sibling (`<bin>.tmp-<pid>-<n>`) and renames it into place once
+/// it succeeded, so a reader that finds the path finds the whole file —
+/// the guarantee GH #566 F7 needed (two commands racing to build one
+/// binary exec'd a half-written one, `Permission denied`). That is what
+/// lets the common case skip the lock: when every binary is already
+/// there, this returns without touching it, so a host start never waits
+/// behind `hale dna head` building its seeds cold into the same cache.
+/// Only what is missing is built, under an exclusive flock on
+/// `<root>/.build.lock` (one build per cache: two builds of one seed
+/// would trample each other's work), and every binary is looked at again
+/// once the lock is held, since the holder we waited for may have built
+/// it. A wait for the lock says so, once.
+fn ensure_seeds(root: &Path, seeds: &[(&str, &str)], report: &Report<'_>, command: &BuildCommand<'_>) -> Result<Vec<PathBuf>, String> {
+    let bins: Vec<PathBuf> = seeds.iter().map(|(_, bin)| root.join(bin)).collect();
+    if bins.iter().all(|b| is_built(b)) {
+        return Ok(bins);
+    }
+    let _guard = BuildLock::acquire(root)?;
     let logs = root.join(".build-logs");
     let mut running = Vec::new();
-    for (seed, bin) in seeds {
-        let bin_path = root.join(bin);
-        // a present, non-empty file is trusted, as in `ensure_built_in`
-        match std::fs::metadata(&bin_path) {
-            Ok(m) if m.is_file() && m.len() > 0 => continue,
-            Ok(_) => {
-                let _ = std::fs::remove_file(&bin_path);
-            }
-            Err(_) => {}
+    for ((seed, _), bin_path) in seeds.iter().zip(&bins) {
+        if is_built(bin_path) {
+            continue;
         }
-        std::fs::create_dir_all(&logs).map_err(|e| format!("{}: {e}", logs.display()))?;
-        let log_path = logs.join(format!("{}.log", seed.replace('/', "_")));
-        let log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
-        eprintln!("hale: building {what}: {seed} @ {}", root.display());
-        let mut build = Command::new(&me);
-        // observation belongs to the application, never the head's parts
-        build.arg("build").arg(root.join(seed)).arg("-o").arg(&bin_path).env_remove("LOTUS_OBS").stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+        let tmp = tmp_sibling(bin_path);
+        let mut build = command(seed, &tmp)?;
+        let log_path = match report {
+            Report::Inherit(what) => {
+                eprintln!("hale iris: building {what} ({seed} @ {})", root.display());
+                None
+            }
+            Report::Logged(what) => {
+                std::fs::create_dir_all(&logs).map_err(|e| format!("{}: {e}", logs.display()))?;
+                let log_path = logs.join(format!("{}.log", seed.replace('/', "_")));
+                let log = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
+                eprintln!("hale: building {what}: {seed} @ {}", root.display());
+                build.stderr(log);
+                Some(log_path)
+            }
+        };
         crate::shared::process::dies_with_us(&mut build);
         let child = build.spawn().map_err(|e| format!("building {seed} failed to start: {e}"))?;
-        running.push((*seed, bin_path, log_path, child));
+        running.push((*seed, bin_path, tmp, log_path, child));
     }
     let mut failed = Vec::new();
-    for (seed, bin_path, log_path, mut child) in running {
-        let ok = matches!(child.wait(), Ok(st) if st.success()) && bin_path.is_file();
-        if !ok {
-            eprintln!("hale: ── {seed}: FAILED");
-            eprint!("{}", std::fs::read_to_string(&log_path).unwrap_or_default());
-            failed.push(seed);
+    for (seed, bin_path, tmp, log_path, mut child) in running {
+        let outcome = match child.wait() {
+            Err(e) => Err(format!("failed: {e}")),
+            Ok(st) if !st.success() => Err(format!("failed ({st})")),
+            Ok(_) if !is_built(&tmp) => Err(format!("produced no binary at {}", tmp.display())),
+            Ok(_) => publish(&tmp, bin_path),
+        };
+        if let Err(why) = outcome {
+            let _ = std::fs::remove_file(&tmp);
+            if let Some(log_path) = &log_path {
+                eprintln!("hale: ── {seed}: FAILED ({why})");
+                eprint!("{}", std::fs::read_to_string(log_path).unwrap_or_default());
+            }
+            failed.push(format!("{seed} {why}"));
         }
     }
     if !failed.is_empty() {
-        return Err(format!("cannot build {} (its output is above)", failed.join(", ")));
+        return Err(match report {
+            Report::Logged(_) => format!("cannot build {} (its output is above)", failed.join(", ")),
+            Report::Inherit(_) => format!("hale iris: building {}", failed.join(", ")),
+        });
     }
-    Ok(seeds.iter().map(|(_, bin)| root.join(bin)).collect())
+    Ok(bins)
 }
 
-/// An exclusive advisory lock held for the build; released on drop.
-struct BuildLock<'a>(&'a std::fs::File);
+/// A build-private name beside `bin` (the same directory, so the rename
+/// into place is atomic): `<bin>.tmp-<pid>-<n>`. `LOTUS_DUMP_IR` leaves a
+/// build's IR at its output's `with_extension("ll")`, which for this name
+/// is already `<bin>.ll`, where `scripts/warm-dna-cache.sh` reads it.
+fn tmp_sibling(bin: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+    let name = bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "bin".into());
+    bin.with_file_name(format!("{name}.tmp-{}-{}", std::process::id(), NONCE.fetch_add(1, Ordering::Relaxed)))
+}
 
-impl<'a> BuildLock<'a> {
-    fn acquire(f: &'a std::fs::File) -> Self {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: flock on a valid, open descriptor we own for the
-        // guard's lifetime; EINTR is retried, other errors mean "no
-        // lock", which degrades to the old racy behavior, never worse.
-        loop {
-            let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
-            if r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                break;
-            }
+/// Rename a finished build into place, with its `LOTUS_DUMP_IR` IR when
+/// that did not already land where the binary's own would.
+fn publish(tmp: &Path, bin: &Path) -> Result<(), String> {
+    std::fs::rename(tmp, bin).map_err(|e| format!("cannot move the built binary to {}: {e}", bin.display()))?;
+    let (ir, want) = (tmp.with_extension("ll"), bin.with_extension("ll"));
+    if ir != want && ir.is_file() {
+        let _ = std::fs::rename(&ir, &want);
+    }
+    Ok(())
+}
+
+/// The cache's exclusive advisory build lock, held until drop.
+struct BuildLock(std::fs::File);
+
+impl BuildLock {
+    /// Take `<root>/.build.lock`. A holder that makes us wait (another
+    /// `hale` building into this cache) is announced with one line, so a
+    /// wait is never silent.
+    fn acquire(root: &Path) -> Result<Self, String> {
+        let lock_path = root.join(".build.lock");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| format!("cannot open {}: {e}", lock_path.display()))?;
+        if flock(&lock, libc::LOCK_EX | libc::LOCK_NB) == Err(libc::EWOULDBLOCK) {
+            eprintln!("hale: waiting for the build lock at {} (another hale is building into this cache)", root.display());
+            let _ = flock(&lock, libc::LOCK_EX);
         }
-        BuildLock(f)
+        Ok(BuildLock(lock))
     }
 }
 
-impl Drop for BuildLock<'_> {
+/// `flock(2)` with EINTR retried; the errno when it was not taken. An
+/// error other than a held lock means "no lock", which degrades to the
+/// old racy behavior, never worse: no caller refuses on it.
+fn flock(f: &std::fs::File, op: libc::c_int) -> Result<(), i32> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: flock on a valid, open descriptor the caller owns.
+        let r = unsafe { libc::flock(f.as_raw_fd(), op) };
+        if r == 0 {
+            return Ok(());
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => continue,
+            e => return Err(e.unwrap_or(0)),
+        }
+    }
+}
+
+impl Drop for BuildLock {
     fn drop(&mut self) {
         use std::os::unix::io::AsRawFd;
         // SAFETY: same descriptor, still open.
@@ -399,4 +470,116 @@ fn relay_to_stderr<R: std::io::Read + Send + 'static>(mut src: R) {
     std::thread::spawn(move || {
         let _ = std::io::copy(&mut src, &mut std::io::stderr());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// A fresh cache root of this test's own.
+    fn root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("hale-iris-build-lock-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("seed")).unwrap();
+        root
+    }
+
+    /// Hold `<root>/.build.lock` from an open file of the test's own, as
+    /// another `hale` building into the cache would.
+    fn hold_lock(root: &Path) -> std::fs::File {
+        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".build.lock")).unwrap();
+        flock(&f, libc::LOCK_EX).unwrap();
+        f
+    }
+
+    /// A build that takes its time: half the binary, a pause, the rest,
+    /// and a line in `<root>/builds` per build that ran.
+    fn slow_build(root: &Path) -> impl Fn(&str, &Path) -> Result<Command, String> + Send + Sync + 'static {
+        let builds = root.join("builds");
+        move |_seed: &str, out: &Path| {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg("printf part > \"$1\"; sleep 0.5; printf rest >> \"$1\"; echo built >> \"$2\"").arg("sh").arg(out).arg(&builds);
+            Ok(c)
+        }
+    }
+
+    fn ensure_on_thread(root: &Path) -> mpsc::Receiver<Result<Vec<PathBuf>, String>> {
+        let (tx, rx) = mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let build = slow_build(&root);
+            let _ = tx.send(ensure_seeds(&root, &[("seed", "seed/bin")], &Report::Logged("the test"), &build));
+        });
+        rx
+    }
+
+    /// The bug: a host start waited, silently, for the whole of
+    /// `hale dna head`'s cold build of seeds it did not need, because the
+    /// lock was taken before anything was looked at. With every binary
+    /// present the lock is never touched.
+    #[test]
+    fn present_binaries_are_returned_while_another_holds_the_build_lock() {
+        let root = root("present");
+        std::fs::write(root.join("seed/bin"), b"complete").unwrap();
+        let _held = hold_lock(&root);
+        let rx = ensure_on_thread(&root);
+        let got = rx.recv_timeout(Duration::from_secs(1)).expect("blocked on the build lock with every binary present");
+        assert_eq!(got.unwrap(), vec![root.join("seed/bin")]);
+        assert!(!root.join("builds").exists(), "nothing was built");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A missing binary is still built under the lock: the caller waits for
+    /// the holder, then builds, and the binary is complete.
+    #[test]
+    fn a_missing_binary_is_built_under_the_build_lock() {
+        let root = root("missing");
+        // a truncated restore is not trusted
+        std::fs::write(root.join("seed/bin"), b"").unwrap();
+        let held = hold_lock(&root);
+        let rx = ensure_on_thread(&root);
+        assert!(rx.recv_timeout(Duration::from_millis(400)).is_err(), "built while another held the build lock");
+        assert!(!root.join("builds").exists(), "built while another held the build lock");
+        drop(held);
+        let got = rx.recv_timeout(Duration::from_secs(20)).expect("never built after the lock was released");
+        assert_eq!(got.unwrap(), vec![root.join("seed/bin")]);
+        assert_eq!(std::fs::read(root.join("seed/bin")).unwrap(), b"partrest");
+        let leftovers: Vec<_> = std::fs::read_dir(root.join("seed")).unwrap().flatten().map(|e| e.file_name()).filter(|n| n != "bin").collect();
+        assert!(leftovers.is_empty(), "the build's private file was left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Two callers racing on one missing binary: one builds, the other
+    /// finds it built once the lock is free, and nobody — the second
+    /// caller or a reader polling the path — ever sees a partial file.
+    #[test]
+    fn a_concurrent_caller_never_sees_a_partial_binary() {
+        let root = root("race");
+        let bin = root.join("seed/bin");
+        let first = ensure_on_thread(&root);
+        std::thread::sleep(Duration::from_millis(100));
+        let second = ensure_on_thread(&root);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut results = Vec::new();
+        while results.len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "the builds never finished");
+            if let Ok(bytes) = std::fs::read(&bin) {
+                assert_eq!(bytes, b"partrest", "a reader saw a partial binary");
+            }
+            for rx in [&first, &second] {
+                if let Ok(r) = rx.try_recv() {
+                    results.push(r);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for r in results {
+            assert_eq!(r.unwrap(), vec![bin.clone()]);
+        }
+        assert_eq!(std::fs::read(&bin).unwrap(), b"partrest");
+        assert_eq!(std::fs::read_to_string(root.join("builds")).unwrap().lines().count(), 1, "the binary was built twice");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

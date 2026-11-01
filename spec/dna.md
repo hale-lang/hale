@@ -6524,7 +6524,11 @@ over one seed, one command per process (GH #1490):
 `hale dna <verb>` resolves the project from the manifest (the root, the
 application's seed, the fleet and its fleet seed under `[dna]`), builds both
 programs once into the toolchain cache (side by side, the first time
-any host verb needs either), and execs the one the verb belongs to in
+any host verb needs either; a program already in the cache is used
+without taking the cache's build lock, only a missing one is built
+under it, each build is renamed into place once complete so a program
+present is never half-written, and a `hale` that has to wait for the
+lock says so on stderr), and execs the one the verb belongs to in
 place — the pid that ran `hale dna <verb>` is the host:
 `<program> <verb> <root> <seed> <fleet> <fleet seed> …`, with `HALE_BIN` (the
 toolchain) and `HALE_DNA_TOOLCHAIN` in the environment. Either program
