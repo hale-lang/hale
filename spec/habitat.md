@@ -1684,5 +1684,20 @@ provider names what it keeps for the habitat it serves by it, as voice
 names a tenant's project `<habitat>-<label>` (`spec/dna.md`, The
 habitat's models).
 
+They are also handed `HALE_DNA_REVISION`, the full commit the
+organism's checkout is at (its sapling's pinned revision), the same way.
+A compose file that names its images by it (`image:
+ghcr.io/<org>/<app>:${HALE_DNA_REVISION:-dev}` beside its `build:`) has
+them pulled, not built: the habitat applies such a render without
+`--build`, and compose pulls the revision's published image, building
+from the context only when none is published (the compose
+specification's pull-then-build for a service with both `image` and
+`build`). An image named by its revision is that revision's, so nothing
+stale under one tag is kept. Any other render is applied with `--build`,
+as before. A host command (`organism place`) and a heart migration
+(`[dna.migrations.<role>]`) are handed `HALE_DNA_REVISION` as well, so a
+command can fetch a published build of itself instead of compiling its
+source.
+
 The manifest is read once, by graft; every reader after it reads the
 roles the habitat allocated, as `allocation.json` keeps them.

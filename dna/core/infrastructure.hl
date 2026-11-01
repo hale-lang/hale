@@ -292,6 +292,13 @@ type Render {
     // the habitat's name, handed its services as `HALE_DNA_HABITAT_NAME`
     // when it is an organism's own the habitat applies; "" for none
     habitat: String = "";
+    // the commit its services are applied at (an organism's own: its
+    // sapling's revision), handed them as `HALE_DNA_REVISION`; "" for none
+    revision: String = "";
+    // whether its compose file names its images by that revision
+    // (`${HALE_DNA_REVISION}`): applied without `--build`, so compose
+    // pulls the revision's published image and builds only when none is
+    by_revision: Bool = false;
 }
 
 // An organism's own compose services labelled as the habitat's
@@ -547,8 +554,14 @@ fn compose_services(render: Render, sep: String) -> String {
 // on an image an earlier revision built under the same tag; docker's
 // cache keeps an unchanged context's build cheap, and a service that
 // only names an image builds nothing.
+// A render whose images are named by the revision it is applied at
+// (`by_revision`) leaves `--build` out: an image is that revision's, never
+// an earlier one's under the same tag, so compose pulls it where it is
+// published and builds it from the context only where it is not (the
+// compose specification's pull-then-build for a service with both).
 fn compose_up_args(render: Render, sep: String) -> String {
-    return "up" + sep + "-d" + sep + "--build" + sep + "--wait" + compose_services(render, sep);
+    let build = if render.by_revision && len(render.revision) > 0 { "" } else { sep + "--build" };
+    return "up" + sep + "-d" + build + sep + "--wait" + compose_services(render, sep);
 }
 
 // What `render` brought up taken down: the services it names, removed
@@ -649,7 +662,7 @@ locus ComposeProvider {
         }
         let staged = stage_reader_vault(render.vault, render.secrets);
         if len(staged) > 0 { return RenderApplied { why: staged }; }
-        let wrap = services_wrap(render.habitat, render.secrets, render.vault);
+        let wrap = services_wrap(render.habitat, render.revision, render.secrets, render.vault);
         let up = run_tool(
             wrap + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n" + compose_args(render, "\n")
                 + "\n" + compose_up_args(render, "\n"),
@@ -676,7 +689,7 @@ locus ComposeProvider {
             return RenderApplied { why: "nothing to withdraw: the render names no project" };
         }
         let down = run_tool(
-            services_wrap(render.habitat, render.secrets, render.vault)
+            services_wrap(render.habitat, render.revision, render.secrets, render.vault)
                 + "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n"
                 + compose_args(render, "\n") + "\n" + compose_down_args(render, "\n"),
         );
