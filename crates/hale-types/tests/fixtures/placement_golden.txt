@@ -8449,6 +8449,11 @@ dynamic	Inner	on main
 dynamic	Router	on main|unknown (no caller)
 dynamic	Wrap	on main
 
+== tests/hale/fallible_member_param_write_test.hl
+-- Svc@main1	Svc
+row	~	Svc	main	default
+row	~.backend	Backend	main	inherited
+
 == tests/hale/float_cast_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
